@@ -487,7 +487,7 @@ impl From<TokenLogRecord> for TokenLogView {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct TokenRequestKindOptionView {
     key: String,
     label: String,
@@ -557,7 +557,20 @@ struct TokenCursorLogsQuery {
     operational_class: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize)]
+struct AlertsQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+    #[serde(rename = "type")]
+    alert_type: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    user_id: Option<String>,
+    token_id: Option<String>,
+    key_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LogFacetOptionView {
     value: String,
@@ -650,6 +663,315 @@ impl From<RequestLogsCatalog> for RequestLogsCatalogView {
                     .map(LogFacetOptionView::from)
                     .collect(),
             },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertFacetOptionView {
+    value: String,
+    label: String,
+    count: i64,
+}
+
+impl From<tavily_hikari::AlertFacetOption> for AlertFacetOptionView {
+    fn from(value: tavily_hikari::AlertFacetOption) -> Self {
+        Self {
+            value: value.value,
+            label: value.label,
+            count: value.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertEntityRefView {
+    id: String,
+    label: String,
+}
+
+impl From<tavily_hikari::AlertEntityRef> for AlertEntityRefView {
+    fn from(value: tavily_hikari::AlertEntityRef) -> Self {
+        Self {
+            id: value.id,
+            label: value.label,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertUserView {
+    user_id: String,
+    display_name: Option<String>,
+    username: Option<String>,
+}
+
+impl From<tavily_hikari::AlertUserRef> for AlertUserView {
+    fn from(value: tavily_hikari::AlertUserRef) -> Self {
+        Self {
+            user_id: value.user_id,
+            display_name: value.display_name,
+            username: value.username,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertRequestRefView {
+    id: i64,
+    method: String,
+    path: String,
+    query: Option<String>,
+}
+
+impl From<tavily_hikari::AlertRequestRef> for AlertRequestRefView {
+    fn from(value: tavily_hikari::AlertRequestRef) -> Self {
+        Self {
+            id: value.id,
+            method: value.method,
+            path: value.path,
+            query: value.query,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertSourceView {
+    kind: String,
+    id: String,
+}
+
+impl From<tavily_hikari::AlertSourceRef> for AlertSourceView {
+    fn from(value: tavily_hikari::AlertSourceRef) -> Self {
+        Self {
+            kind: value.kind,
+            id: value.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertTypeCountView {
+    #[serde(rename = "type")]
+    alert_type: String,
+    count: i64,
+}
+
+impl From<tavily_hikari::AlertTypeCount> for AlertTypeCountView {
+    fn from(value: tavily_hikari::AlertTypeCount) -> Self {
+        Self {
+            alert_type: value.alert_type,
+            count: value.count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertRequestKindView {
+    key: String,
+    label: String,
+    detail: Option<String>,
+}
+
+impl From<tavily_hikari::TokenRequestKind> for AlertRequestKindView {
+    fn from(value: tavily_hikari::TokenRequestKind) -> Self {
+        Self {
+            key: value.key,
+            label: value.label,
+            detail: value.detail,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertEventView {
+    id: String,
+    #[serde(rename = "type")]
+    alert_type: String,
+    title: String,
+    summary: String,
+    occurred_at: i64,
+    subject_kind: String,
+    subject_id: String,
+    subject_label: String,
+    user: Option<AlertUserView>,
+    token: Option<AlertEntityRefView>,
+    key: Option<AlertEntityRefView>,
+    request: Option<AlertRequestRefView>,
+    request_kind: Option<AlertRequestKindView>,
+    failure_kind: Option<String>,
+    result_status: Option<String>,
+    error_message: Option<String>,
+    reason_code: Option<String>,
+    reason_summary: Option<String>,
+    reason_detail: Option<String>,
+    source: AlertSourceView,
+}
+
+impl From<tavily_hikari::AlertEventRecord> for AlertEventView {
+    fn from(value: tavily_hikari::AlertEventRecord) -> Self {
+        Self {
+            id: value.id,
+            alert_type: value.alert_type,
+            title: value.title,
+            summary: value.summary,
+            occurred_at: value.occurred_at,
+            subject_kind: value.subject_kind,
+            subject_id: value.subject_id,
+            subject_label: value.subject_label,
+            user: value.user.map(AlertUserView::from),
+            token: value.token.map(AlertEntityRefView::from),
+            key: value.key.map(AlertEntityRefView::from),
+            request: value.request.map(AlertRequestRefView::from),
+            request_kind: value.request_kind.map(AlertRequestKindView::from),
+            failure_kind: value.failure_kind,
+            result_status: value.result_status,
+            error_message: value.error_message,
+            reason_code: value.reason_code,
+            reason_summary: value.reason_summary,
+            reason_detail: value.reason_detail,
+            source: AlertSourceView::from(value.source),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertGroupView {
+    id: String,
+    #[serde(rename = "type")]
+    alert_type: String,
+    subject_kind: String,
+    subject_id: String,
+    subject_label: String,
+    user: Option<AlertUserView>,
+    token: Option<AlertEntityRefView>,
+    key: Option<AlertEntityRefView>,
+    request_kind: Option<AlertRequestKindView>,
+    count: i64,
+    first_seen: i64,
+    last_seen: i64,
+    latest_event: AlertEventView,
+}
+
+impl From<tavily_hikari::AlertGroupRecord> for AlertGroupView {
+    fn from(value: tavily_hikari::AlertGroupRecord) -> Self {
+        Self {
+            id: value.id,
+            alert_type: value.alert_type,
+            subject_kind: value.subject_kind,
+            subject_id: value.subject_id,
+            subject_label: value.subject_label,
+            user: value.user.map(AlertUserView::from),
+            token: value.token.map(AlertEntityRefView::from),
+            key: value.key.map(AlertEntityRefView::from),
+            request_kind: value.request_kind.map(AlertRequestKindView::from),
+            count: value.count,
+            first_seen: value.first_seen,
+            last_seen: value.last_seen,
+            latest_event: AlertEventView::from(value.latest_event),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedAlertEventsView {
+    items: Vec<AlertEventView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+}
+
+impl From<tavily_hikari::PaginatedAlertEvents> for PaginatedAlertEventsView {
+    fn from(value: tavily_hikari::PaginatedAlertEvents) -> Self {
+        Self {
+            items: value.items.into_iter().map(AlertEventView::from).collect(),
+            total: value.total,
+            page: value.page,
+            per_page: value.per_page,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedAlertGroupsView {
+    items: Vec<AlertGroupView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+}
+
+impl From<tavily_hikari::PaginatedAlertGroups> for PaginatedAlertGroupsView {
+    fn from(value: tavily_hikari::PaginatedAlertGroups) -> Self {
+        Self {
+            items: value.items.into_iter().map(AlertGroupView::from).collect(),
+            total: value.total,
+            page: value.page,
+            per_page: value.per_page,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertCatalogView {
+    retention_days: i64,
+    types: Vec<LogFacetOptionView>,
+    request_kind_options: Vec<TokenRequestKindOptionView>,
+    users: Vec<AlertFacetOptionView>,
+    tokens: Vec<AlertFacetOptionView>,
+    keys: Vec<AlertFacetOptionView>,
+}
+
+impl From<tavily_hikari::AlertCatalog> for AlertCatalogView {
+    fn from(value: tavily_hikari::AlertCatalog) -> Self {
+        Self {
+            retention_days: value.retention_days,
+            types: value.types.into_iter().map(LogFacetOptionView::from).collect(),
+            request_kind_options: value
+                .request_kind_options
+                .into_iter()
+                .map(TokenRequestKindOptionView::from)
+                .collect(),
+            users: value.users.into_iter().map(AlertFacetOptionView::from).collect(),
+            tokens: value.tokens.into_iter().map(AlertFacetOptionView::from).collect(),
+            keys: value.keys.into_iter().map(AlertFacetOptionView::from).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardRecentAlertsView {
+    window_hours: i64,
+    total_events: i64,
+    grouped_count: i64,
+    counts_by_type: Vec<AlertTypeCountView>,
+    top_groups: Vec<AlertGroupView>,
+}
+
+impl From<tavily_hikari::RecentAlertsSummary> for DashboardRecentAlertsView {
+    fn from(value: tavily_hikari::RecentAlertsSummary) -> Self {
+        Self {
+            window_hours: value.window_hours,
+            total_events: value.total_events,
+            grouped_count: value.grouped_count,
+            counts_by_type: value
+                .counts_by_type
+                .into_iter()
+                .map(AlertTypeCountView::from)
+                .collect(),
+            top_groups: value.top_groups.into_iter().map(AlertGroupView::from).collect(),
         }
     }
 }

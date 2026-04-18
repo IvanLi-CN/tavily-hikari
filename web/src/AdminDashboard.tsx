@@ -70,7 +70,7 @@ import ForwardProxySettingsModule, {
   type ForwardProxyValidationEntry,
 } from './admin/ForwardProxySettingsModule'
 import KeyStickyPanels from './admin/KeyStickyPanels'
-import ModulePlaceholder from './admin/ModulePlaceholder'
+import AlertsCenter from './admin/AlertsCenter'
 import SystemSettingsModule from './admin/SystemSettingsModule'
 import {
   type QueryLoadState,
@@ -109,6 +109,7 @@ import {
   type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
+  alertsPath,
   buildAdminKeysPath,
   isSameAdminRoute,
   keyDetailPath,
@@ -149,6 +150,7 @@ import {
   applyApiKeyBulkAction,
   syncApiKeyBulkUsageWithProgress,
   type ApiKeyBulkAction,
+  type RecentAlertsSummary,
   type PaginatedApiKeys,
   fetchApiKeySecret,
   addApiKeysBatch,
@@ -1497,6 +1499,13 @@ function AdminDashboard(): JSX.Element {
   const [dashboardHourlyRequestWindow, setDashboardHourlyRequestWindow] = useState<DashboardHourlyRequestWindow>(
     () => createEmptyDashboardHourlyRequestWindow(),
   )
+  const [dashboardRecentAlerts, setDashboardRecentAlerts] = useState<RecentAlertsSummary>({
+    windowHours: 24,
+    totalEvents: 0,
+    groupedCount: 0,
+    countsByType: [],
+    topGroups: [],
+  })
   const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
   const [tokensPage, setTokensPage] = useState(1)
   const tokensPerPage = 10
@@ -1616,6 +1625,7 @@ function AdminDashboard(): JSX.Element {
   const [forwardProxyRevalidateProgress, setForwardProxyRevalidateProgress] =
     useState<ForwardProxyDialogProgressState | null>(null)
   const [forwardProxySavedAt, setForwardProxySavedAt] = useState<number | null>(null)
+  const [alertsRefreshToken, setAlertsRefreshToken] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
@@ -2395,6 +2405,7 @@ function AdminDashboard(): JSX.Element {
           setDashboardKeys(overview.exhaustedKeys)
           setDashboardLogs(overview.recentLogs)
           setDashboardJobs(overview.recentJobs)
+          setDashboardRecentAlerts(overview.recentAlerts)
           setDashboardOverviewLoaded(true)
           setLastUpdated(new Date())
           setError(null)
@@ -2417,6 +2428,13 @@ function AdminDashboard(): JSX.Element {
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
+        setDashboardRecentAlerts({
+          windowHours: 24,
+          totalEvents: 0,
+          groupedCount: 0,
+          countsByType: [],
+          topGroups: [],
+        })
         setDashboardOverviewLoaded(true)
       }
     },
@@ -3665,6 +3683,9 @@ function AdminDashboard(): JSX.Element {
         if (route.name === 'unbound-token-usage') {
           tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
         }
+        if (route.name === 'module' && route.module === 'alerts') {
+          setAlertsRefreshToken((current) => current + 1)
+        }
         void Promise.all(tasks).finally(() => controller.abort())
       }
 
@@ -3813,6 +3834,10 @@ function AdminDashboard(): JSX.Element {
             getAdminUsersSortDirectionFromLocation(),
           ),
         )
+        return
+      }
+      if (target === 'alerts') {
+        navigateToPath(alertsPath())
         return
       }
       navigateToPath(modulePath(target))
@@ -4127,6 +4152,9 @@ function AdminDashboard(): JSX.Element {
         : [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
+    }
+    if (route.name === 'module' && route.module === 'alerts') {
+      setAlertsRefreshToken((current) => current + 1)
     }
     if (route.name === 'module' && route.module === 'system-settings') {
       tasks.push(loadSystemSettingsData({ signal: controller.signal, reason: 'refresh' }))
@@ -9142,6 +9170,7 @@ function AdminDashboard(): JSX.Element {
           keys={dashboardKeys}
           logs={dashboardLogs}
           jobs={dashboardJobs}
+          recentAlerts={dashboardRecentAlerts}
           onOpenModule={navigateModule}
           onOpenToken={navigateToken}
           onOpenKey={navigateKey}
@@ -11000,16 +11029,16 @@ function AdminDashboard(): JSX.Element {
         </>
       )}
       {showAlerts && (
-
-        <ModulePlaceholder
-          title={adminStrings.modules.alerts.title}
-          description={adminStrings.modules.alerts.description}
-          comingSoonLabel={adminStrings.modules.comingSoon}
-          sections={[
-            adminStrings.modules.alerts.sections.rules,
-            adminStrings.modules.alerts.sections.thresholds,
-            adminStrings.modules.alerts.sections.channels,
-          ]}
+        <AlertsCenter
+          language={language}
+          search={window.location.search}
+          refreshToken={alertsRefreshToken}
+          onNavigate={navigateToPath}
+          onOpenUser={navigateUser}
+          onOpenToken={navigateToken}
+          onOpenKey={navigateKey}
+          formatTime={formatTimestamp}
+          formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
         />
       )}
 

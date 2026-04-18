@@ -108,11 +108,121 @@ export interface DashboardOverviewResponse {
   recentJobs: JobLogView[]
   disabledTokens: AuthToken[]
   tokenCoverage: DashboardTokenCoverage
+  recentAlerts: RecentAlertsSummary
 }
 
 export interface DashboardSnapshotEvent extends DashboardOverviewResponse {
   keys: ApiKeyStats[]
   logs: RequestLog[]
+}
+
+export type AlertType =
+  | 'upstream_rate_limited_429'
+  | 'upstream_key_blocked'
+  | 'user_request_rate_limited'
+  | 'user_quota_exhausted'
+
+export interface AlertFacetOption {
+  value: string
+  label: string
+  count: number
+}
+
+export interface AlertEntityRef {
+  id: string
+  label: string
+}
+
+export interface AlertUserRef {
+  userId: string
+  displayName: string | null
+  username: string | null
+}
+
+export interface AlertRequestRef {
+  id: number
+  method: string
+  path: string
+  query: string | null
+}
+
+export interface AlertRequestKind {
+  key: string
+  label: string
+  detail: string | null
+}
+
+export interface AlertSourceRef {
+  kind: string
+  id: string
+}
+
+export interface AlertEvent {
+  id: string
+  type: AlertType
+  title: string
+  summary: string
+  occurredAt: number
+  subjectKind: 'user' | 'token' | 'key'
+  subjectId: string
+  subjectLabel: string
+  user: AlertUserRef | null
+  token: AlertEntityRef | null
+  key: AlertEntityRef | null
+  request: AlertRequestRef | null
+  requestKind: AlertRequestKind | null
+  failureKind: string | null
+  resultStatus: string | null
+  errorMessage: string | null
+  reasonCode: string | null
+  reasonSummary: string | null
+  reasonDetail: string | null
+  source: AlertSourceRef
+}
+
+export interface AlertGroup {
+  id: string
+  type: AlertType
+  subjectKind: 'user' | 'token' | 'key'
+  subjectId: string
+  subjectLabel: string
+  user: AlertUserRef | null
+  token: AlertEntityRef | null
+  key: AlertEntityRef | null
+  requestKind: AlertRequestKind | null
+  count: number
+  firstSeen: number
+  lastSeen: number
+  latestEvent: AlertEvent
+}
+
+export interface AlertTypeCount {
+  type: AlertType
+  count: number
+}
+
+export interface AlertCatalog {
+  retentionDays: number
+  types: LogFacetOption[]
+  requestKindOptions: TokenLogRequestKindOption[]
+  users: AlertFacetOption[]
+  tokens: AlertFacetOption[]
+  keys: AlertFacetOption[]
+}
+
+export interface RecentAlertsSummary {
+  windowHours: number
+  totalEvents: number
+  groupedCount: number
+  countsByType: AlertTypeCount[]
+  topGroups: AlertGroup[]
+}
+
+export interface AlertsPage<T> {
+  items: T[]
+  total: number
+  page: number
+  perPage: number
 }
 
 export interface PublicMetrics {
@@ -296,6 +406,117 @@ export interface RequestLogsCatalog {
   facets: RequestLogFacets
 }
 
+interface ServerAlertFacetOption {
+  value: string
+  label: string
+  count: number
+}
+
+interface ServerAlertEntityRef {
+  id: string
+  label: string
+}
+
+interface ServerAlertUserRef {
+  userId: string
+  displayName: string | null
+  username: string | null
+}
+
+interface ServerAlertRequestRef {
+  id: number
+  method: string
+  path: string
+  query?: string | null
+}
+
+interface ServerAlertRequestKind {
+  key: string
+  label: string
+  detail?: string | null
+}
+
+interface ServerAlertSourceRef {
+  kind: string
+  id: string
+}
+
+interface ServerAlertEvent {
+  id: string
+  type: AlertType
+  title: string
+  summary: string
+  occurredAt: number
+  subjectKind: 'user' | 'token' | 'key'
+  subjectId: string
+  subjectLabel: string
+  user?: ServerAlertUserRef | null
+  token?: ServerAlertEntityRef | null
+  key?: ServerAlertEntityRef | null
+  request?: ServerAlertRequestRef | null
+  requestKind?: ServerAlertRequestKind | null
+  failureKind?: string | null
+  resultStatus?: string | null
+  errorMessage?: string | null
+  reasonCode?: string | null
+  reasonSummary?: string | null
+  reasonDetail?: string | null
+  source: ServerAlertSourceRef
+}
+
+interface ServerAlertGroup {
+  id: string
+  type: AlertType
+  subjectKind: 'user' | 'token' | 'key'
+  subjectId: string
+  subjectLabel: string
+  user?: ServerAlertUserRef | null
+  token?: ServerAlertEntityRef | null
+  key?: ServerAlertEntityRef | null
+  requestKind?: ServerAlertRequestKind | null
+  count: number
+  firstSeen: number
+  lastSeen: number
+  latestEvent: ServerAlertEvent
+}
+
+interface ServerAlertsPage<T> {
+  items: T[]
+  total: number
+  page: number
+  perPage?: number
+  per_page?: number
+}
+
+interface ServerAlertCatalog {
+  retentionDays?: number
+  retention_days?: number
+  types?: LogFacetOption[]
+  requestKindOptions?: TokenLogRequestKindOption[]
+  request_kind_options?: TokenLogRequestKindOption[]
+  users?: ServerAlertFacetOption[]
+  tokens?: ServerAlertFacetOption[]
+  keys?: ServerAlertFacetOption[]
+}
+
+interface ServerAlertTypeCount {
+  type: AlertType
+  count: number
+}
+
+interface ServerRecentAlertsSummary {
+  windowHours?: number
+  window_hours?: number
+  totalEvents?: number
+  total_events?: number
+  groupedCount?: number
+  grouped_count?: number
+  countsByType?: ServerAlertTypeCount[]
+  counts_by_type?: ServerAlertTypeCount[]
+  topGroups?: ServerAlertGroup[]
+  top_groups?: ServerAlertGroup[]
+}
+
 interface ServerLogFacetOption {
   value: string
   count: number
@@ -410,6 +631,163 @@ function normalizeRequestLogsCatalog(value: ServerRequestLogsCatalog): RequestLo
     retentionDays: value.retentionDays ?? value.retention_days ?? 0,
     requestKindOptions: value.requestKindOptions ?? value.request_kind_options ?? [],
     facets: normalizeRequestLogFacets(value.facets),
+  }
+}
+
+function normalizeAlertFacetOption(value: ServerAlertFacetOption): AlertFacetOption {
+  return {
+    value: value.value,
+    label: value.label,
+    count: value.count,
+  }
+}
+
+function normalizeAlertEntityRef(value?: ServerAlertEntityRef | null): AlertEntityRef | null {
+  if (!value) return null
+  return {
+    id: value.id,
+    label: value.label,
+  }
+}
+
+function normalizeAlertUserRef(value?: ServerAlertUserRef | null): AlertUserRef | null {
+  if (!value) return null
+  return {
+    userId: value.userId,
+    displayName: value.displayName ?? null,
+    username: value.username ?? null,
+  }
+}
+
+function normalizeAlertRequestRef(value?: ServerAlertRequestRef | null): AlertRequestRef | null {
+  if (!value) return null
+  return {
+    id: value.id,
+    method: value.method,
+    path: value.path,
+    query: value.query ?? null,
+  }
+}
+
+function normalizeAlertRequestKind(value?: ServerAlertRequestKind | null): AlertRequestKind | null {
+  if (!value) return null
+  return {
+    key: value.key,
+    label: value.label,
+    detail: value.detail ?? null,
+  }
+}
+
+function normalizeAlertSource(value: ServerAlertSourceRef): AlertSourceRef {
+  return {
+    kind: value.kind,
+    id: value.id,
+  }
+}
+
+function normalizeAlertEvent(value: ServerAlertEvent): AlertEvent {
+  return {
+    id: value.id,
+    type: value.type,
+    title: value.title,
+    summary: value.summary,
+    occurredAt: value.occurredAt,
+    subjectKind: value.subjectKind,
+    subjectId: value.subjectId,
+    subjectLabel: value.subjectLabel,
+    user: normalizeAlertUserRef(value.user),
+    token: normalizeAlertEntityRef(value.token),
+    key: normalizeAlertEntityRef(value.key),
+    request: normalizeAlertRequestRef(value.request),
+    requestKind: normalizeAlertRequestKind(value.requestKind),
+    failureKind: value.failureKind ?? null,
+    resultStatus: value.resultStatus ?? null,
+    errorMessage: value.errorMessage ?? null,
+    reasonCode: value.reasonCode ?? null,
+    reasonSummary: value.reasonSummary ?? null,
+    reasonDetail: value.reasonDetail ?? null,
+    source: normalizeAlertSource(value.source),
+  }
+}
+
+function normalizeAlertGroup(value: ServerAlertGroup): AlertGroup {
+  return {
+    id: value.id,
+    type: value.type,
+    subjectKind: value.subjectKind,
+    subjectId: value.subjectId,
+    subjectLabel: value.subjectLabel,
+    user: normalizeAlertUserRef(value.user),
+    token: normalizeAlertEntityRef(value.token),
+    key: normalizeAlertEntityRef(value.key),
+    requestKind: normalizeAlertRequestKind(value.requestKind),
+    count: value.count,
+    firstSeen: value.firstSeen,
+    lastSeen: value.lastSeen,
+    latestEvent: normalizeAlertEvent(value.latestEvent),
+  }
+}
+
+function normalizeAlertsPage<TSource, TTarget>(
+  value: ServerAlertsPage<TSource>,
+  mapItem: (item: TSource) => TTarget,
+): AlertsPage<TTarget> {
+  return {
+    items: (value.items ?? []).map(mapItem),
+    total: value.total ?? 0,
+    page: value.page ?? 1,
+    perPage: value.perPage ?? value.per_page ?? 20,
+  }
+}
+
+function normalizeAlertCatalog(value: ServerAlertCatalog): AlertCatalog {
+  return {
+    retentionDays: value.retentionDays ?? value.retention_days ?? 0,
+    types: value.types ?? [],
+    requestKindOptions: value.requestKindOptions ?? value.request_kind_options ?? [],
+    users: (value.users ?? []).map(normalizeAlertFacetOption),
+    tokens: (value.tokens ?? []).map(normalizeAlertFacetOption),
+    keys: (value.keys ?? []).map(normalizeAlertFacetOption),
+  }
+}
+
+function normalizeRecentAlertsSummary(value: ServerRecentAlertsSummary): RecentAlertsSummary {
+  return {
+    windowHours: value.windowHours ?? value.window_hours ?? 24,
+    totalEvents: value.totalEvents ?? value.total_events ?? 0,
+    groupedCount: value.groupedCount ?? value.grouped_count ?? 0,
+    countsByType: (value.countsByType ?? value.counts_by_type ?? []).map((item) => ({
+      type: item.type,
+      count: item.count,
+    })),
+    topGroups: (value.topGroups ?? value.top_groups ?? []).map(normalizeAlertGroup),
+  }
+}
+
+export interface AlertsQuery {
+  page?: number
+  perPage?: number
+  type?: AlertType | null
+  since?: string | null
+  until?: string | null
+  userId?: string | null
+  tokenId?: string | null
+  keyId?: string | null
+  requestKinds?: string[]
+}
+
+function appendAlertsQueryParams(params: URLSearchParams, query: AlertsQuery): void {
+  params.set('page', String(query.page ?? 1))
+  params.set('per_page', String(query.perPage ?? 20))
+  if (query.type) params.set('type', query.type)
+  if (query.since?.trim()) params.set('since', query.since.trim())
+  if (query.until?.trim()) params.set('until', query.until.trim())
+  if (query.userId?.trim()) params.set('user_id', query.userId.trim())
+  if (query.tokenId?.trim()) params.set('token_id', query.tokenId.trim())
+  if (query.keyId?.trim()) params.set('key_id', query.keyId.trim())
+  for (const requestKind of query.requestKinds ?? []) {
+    const trimmed = requestKind.trim()
+    if (trimmed) params.append('request_kind', trimmed)
   }
 }
 
@@ -2107,6 +2485,32 @@ export function fetchRequestLogsCatalog(
   return requestJson<ServerRequestLogsCatalog>(`/api/logs/catalog${suffix}`, { signal }).then(
     normalizeRequestLogsCatalog,
   )
+}
+
+export function fetchAlertCatalog(signal?: AbortSignal): Promise<AlertCatalog> {
+  return requestJson<ServerAlertCatalog>('/api/alerts/catalog', { signal }).then(normalizeAlertCatalog)
+}
+
+export function fetchAlertEvents(
+  query: AlertsQuery = {},
+  signal?: AbortSignal,
+): Promise<AlertsPage<AlertEvent>> {
+  const params = new URLSearchParams()
+  appendAlertsQueryParams(params, query)
+  return requestJson<ServerAlertsPage<ServerAlertEvent>>(`/api/alerts/events?${params.toString()}`, {
+    signal,
+  }).then((value) => normalizeAlertsPage(value, normalizeAlertEvent))
+}
+
+export function fetchAlertGroups(
+  query: AlertsQuery = {},
+  signal?: AbortSignal,
+): Promise<AlertsPage<AlertGroup>> {
+  const params = new URLSearchParams()
+  appendAlertsQueryParams(params, query)
+  return requestJson<ServerAlertsPage<ServerAlertGroup>>(`/api/alerts/groups?${params.toString()}`, {
+    signal,
+  }).then((value) => normalizeAlertsPage(value, normalizeAlertGroup))
 }
 
 export function fetchRequestLogs(

@@ -276,6 +276,18 @@ interface AdminTranslationsShape {
     failedJobRisk: string
     tokenCoverageTruncated: string
     tokenCoverageError: string
+    recentAlertsTitle: string
+    recentAlertsDescription: string
+    recentAlertsEvents: string
+    recentAlertsGroups: string
+    recentAlertsEmpty: string
+    recentAlertsOpen: string
+    recentAlertsTypeLabels: {
+      upstream_rate_limited_429: string
+      upstream_key_blocked: string
+      user_request_rate_limited: string
+      user_quota_exhausted: string
+    }
   }
   modules: {
     comingSoon: string
@@ -1681,6 +1693,18 @@ export const translations: Record<Language, TranslationShape> = {
         failedJobRisk: 'Job #{id} status: {status}',
         tokenCoverageTruncated: 'Token risk scope is truncated. Open Tokens for complete coverage.',
         tokenCoverageError: 'Token risk scope could not be loaded. Open Tokens to retry.',
+        recentAlertsTitle: 'Recent alerts',
+        recentAlertsDescription: '24-hour alert summary aligned with the Alerts center default window.',
+        recentAlertsEvents: 'Events',
+        recentAlertsGroups: 'Groups',
+        recentAlertsEmpty: 'No alert activity in the last 24 hours.',
+        recentAlertsOpen: 'Open alerts',
+        recentAlertsTypeLabels: {
+          upstream_rate_limited_429: 'Upstream 429',
+          upstream_key_blocked: 'Upstream key blocked',
+          user_request_rate_limited: 'User request rate limited',
+          user_quota_exhausted: 'User quota exhausted',
+        },
       },
       modules: {
         comingSoon: 'Coming soon',
@@ -1695,7 +1719,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         alerts: {
           title: 'Alerts',
-          description: 'Skeleton module reserved for alert rules and notifications.',
+          description: 'Review 429s, blocked upstream keys, local rate limits, and quota exhaustion with shared filters.',
           sections: {
             rules: 'Alert rules',
             thresholds: 'Threshold policy',
@@ -3077,6 +3101,18 @@ export const translations: Record<Language, TranslationShape> = {
         failedJobRisk: '任务 #{id} 状态：{status}',
         tokenCoverageTruncated: '令牌风险范围已截断，请进入“访问令牌”查看完整数据。',
         tokenCoverageError: '令牌风险数据加载失败，请进入“访问令牌”重试。',
+        recentAlertsTitle: '近期告警',
+        recentAlertsDescription: '默认按最近 24 小时汇总，和告警中心首屏口径保持一致。',
+        recentAlertsEvents: '事件数',
+        recentAlertsGroups: '分组数',
+        recentAlertsEmpty: '最近 24 小时暂无告警活动。',
+        recentAlertsOpen: '打开告警中心',
+        recentAlertsTypeLabels: {
+          upstream_rate_limited_429: '上游 429',
+          upstream_key_blocked: '上游 Key 封禁',
+          user_request_rate_limited: '用户请求限流',
+          user_quota_exhausted: '用户额度耗尽',
+        },
       },
       modules: {
         comingSoon: '即将支持',
@@ -3091,7 +3127,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         alerts: {
           title: '告警中心',
-          description: '预留骨架页：后续接入规则告警与通知策略。',
+          description: '查看 429、上游 Key 封禁、本地请求限流与额度耗尽，并按共享筛选聚合。',
           sections: {
             rules: '告警规则',
             thresholds: '阈值策略',

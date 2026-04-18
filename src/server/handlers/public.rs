@@ -626,6 +626,8 @@ struct DashboardOverviewPayload {
     disabled_tokens: Vec<AuthTokenView>,
     #[serde(rename = "tokenCoverage")]
     token_coverage: String,
+    #[serde(rename = "recentAlerts")]
+    recent_alerts: DashboardRecentAlertsView,
 }
 
 #[derive(Debug, Serialize)]
@@ -915,6 +917,17 @@ async fn build_dashboard_overview_payload(
         .list_recent_jobs(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
         .unwrap_or_default();
+    let recent_alerts = state
+        .proxy
+        .recent_alerts_summary(24)
+        .await
+        .unwrap_or(tavily_hikari::RecentAlertsSummary {
+            window_hours: 24,
+            total_events: 0,
+            grouped_count: 0,
+            counts_by_type: tavily_hikari::default_alert_type_counts(),
+            top_groups: Vec::new(),
+        });
     let (mut disabled_tokens, token_coverage) = match state
         .proxy
         .list_dashboard_disabled_tokens(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
@@ -961,6 +974,7 @@ async fn build_dashboard_overview_payload(
         recent_jobs: recent_jobs.into_iter().map(JobLogView::from).collect(),
         disabled_tokens: disabled_tokens.into_iter().map(AuthTokenView::from).collect(),
         token_coverage: token_coverage.to_string(),
+        recent_alerts: DashboardRecentAlertsView::from(recent_alerts),
     })
 }
 
@@ -1014,6 +1028,17 @@ async fn compute_signatures(
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
         .unwrap_or_default();
+    let recent_alerts = state
+        .proxy
+        .recent_alerts_summary(24)
+        .await
+        .unwrap_or(tavily_hikari::RecentAlertsSummary {
+            window_hours: 24,
+            total_events: 0,
+            grouped_count: 0,
+            counts_by_type: tavily_hikari::default_alert_type_counts(),
+            top_groups: Vec::new(),
+        });
     let hourly_window_anchor = Utc::now()
         .timestamp()
         .div_euclid(DASHBOARD_HOURLY_BUCKET_SECS)
@@ -1097,6 +1122,18 @@ async fn compute_signatures(
         disabled_tokens_truncated: disabled_token_truncated,
         recent_jobs,
         hourly_window_anchor,
+        recent_alerts_total_events: recent_alerts.total_events,
+        recent_alerts_grouped_count: recent_alerts.grouped_count,
+        recent_alerts_counts: recent_alerts
+            .counts_by_type
+            .into_iter()
+            .map(|item| (item.alert_type, item.count))
+            .collect(),
+        recent_alerts_top_groups: recent_alerts
+            .top_groups
+            .into_iter()
+            .map(|group| (group.id, group.count, group.last_seen))
+            .collect(),
     });
     Ok((sig, latest_id))
 }

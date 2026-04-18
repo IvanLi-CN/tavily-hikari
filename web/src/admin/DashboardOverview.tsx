@@ -5,9 +5,12 @@ import type {
   AuthToken,
   DashboardHourlyRequestWindow,
   JobLogView,
+  RecentAlertsSummary,
   RequestLog,
 } from '../api'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
+import RequestKindBadge from '../components/RequestKindBadge'
+import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import type { AdminModuleId } from './routes'
 import { Bar } from 'react-chartjs-2'
 import {
@@ -125,6 +128,13 @@ export interface DashboardOverviewStrings {
   failedJobRisk: string
   tokenCoverageTruncated: string
   tokenCoverageError: string
+  recentAlertsTitle: string
+  recentAlertsDescription: string
+  recentAlertsEvents: string
+  recentAlertsGroups: string
+  recentAlertsEmpty: string
+  recentAlertsOpen: string
+  recentAlertsTypeLabels: Record<'upstream_rate_limited_429' | 'upstream_key_blocked' | 'user_request_rate_limited' | 'user_quota_exhausted', string>
 }
 
 interface DashboardOverviewProps {
@@ -142,6 +152,7 @@ interface DashboardOverviewProps {
   keys: ApiKeyStats[]
   logs: RequestLog[]
   jobs: JobLogView[]
+  recentAlerts: RecentAlertsSummary
   onOpenModule: (module: AdminModuleId) => void
   onOpenToken: (id: string) => void
   onOpenKey: (id: string) => void
@@ -283,6 +294,19 @@ function QuotaChargeCard({ card }: { card: DashboardQuotaChargeCardData }): JSX.
       </div>
     </article>
   )
+}
+
+function alertSummaryTone(type: keyof DashboardOverviewStrings['recentAlertsTypeLabels']): StatusTone {
+  switch (type) {
+    case 'upstream_key_blocked':
+    case 'user_quota_exhausted':
+      return 'error'
+    case 'upstream_rate_limited_429':
+    case 'user_request_rate_limited':
+      return 'warning'
+    default:
+      return 'neutral'
+  }
 }
 
 function DashboardChartSeriesButton({
@@ -642,6 +666,7 @@ export default function DashboardOverview({
   keys,
   logs,
   jobs,
+  recentAlerts,
   onOpenModule,
   onOpenToken,
   onOpenKey,
@@ -838,6 +863,65 @@ export default function DashboardOverview({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>{strings.recentAlertsTitle}</h2>
+            <p className="panel-description">{strings.recentAlertsDescription}</p>
+          </div>
+          <button type="button" className="btn btn-outline" onClick={() => onOpenModule('alerts')}>
+            {strings.recentAlertsOpen}
+          </button>
+        </div>
+        {!overviewReady ? (
+          <div className="empty-state alert">{strings.loading}</div>
+        ) : recentAlerts.totalEvents === 0 ? (
+          <div className="empty-state alert">{strings.recentAlertsEmpty}</div>
+        ) : (
+          <div className="dashboard-alerts-summary">
+            <div className="dashboard-alerts-summary__metrics">
+              <article className="dashboard-alerts-summary__metric-card">
+                <span>{strings.recentAlertsEvents}</span>
+                <strong>{recentAlerts.totalEvents}</strong>
+              </article>
+              <article className="dashboard-alerts-summary__metric-card">
+                <span>{strings.recentAlertsGroups}</span>
+                <strong>{recentAlerts.groupedCount}</strong>
+              </article>
+              {recentAlerts.countsByType.map((item) => (
+                <article className="dashboard-alerts-summary__metric-card" key={item.type}>
+                  <span>{strings.recentAlertsTypeLabels[item.type]}</span>
+                  <strong>{item.count}</strong>
+                </article>
+              ))}
+            </div>
+            <div className="dashboard-alerts-summary__groups">
+              {recentAlerts.topGroups.map((group) => (
+                <article key={group.id} className="dashboard-alerts-summary__group-card">
+                  <div className="dashboard-alerts-summary__group-header">
+                    <StatusBadge tone={alertSummaryTone(group.type)}>
+                      {strings.recentAlertsTypeLabels[group.type]}
+                    </StatusBadge>
+                    <strong>{group.subjectLabel}</strong>
+                    <span>x{group.count}</span>
+                  </div>
+                  <div className="dashboard-alerts-summary__group-body">
+                    {group.requestKind ? (
+                      <RequestKindBadge
+                        requestKindKey={group.requestKind.key}
+                        requestKindLabel={group.requestKind.label}
+                        size="sm"
+                      />
+                    ) : null}
+                    <span>{group.latestEvent.summary}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
         )}
       </section>
 

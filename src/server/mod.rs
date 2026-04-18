@@ -47,6 +47,10 @@ struct SummarySig {
     disabled_tokens_truncated: bool,
     recent_jobs: Vec<(i64, String, Option<i64>)>,
     hourly_window_anchor: i64,
+    recent_alerts_total_events: i64,
+    recent_alerts_grouped_count: i64,
+    recent_alerts_counts: Vec<(String, i64)>,
+    recent_alerts_top_groups: Vec<(String, i64, i64)>,
 }
 use std::time::{Duration, Instant};
 use tavily_hikari::{

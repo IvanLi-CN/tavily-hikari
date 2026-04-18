@@ -8,6 +8,9 @@ import {
   fetchAdminUnboundTokenUsage,
   fetchAdminUsers,
   fetchAdminUserTags,
+  fetchAlertCatalog,
+  fetchAlertEvents,
+  fetchAlertGroups,
   fetchApiKeys,
   fetchDashboardOverview,
   fetchJobs,
@@ -199,6 +202,53 @@ describe('admin user tag api helpers', () => {
             recentJobs: [],
             disabledTokens: [],
             tokenCoverage: 'ok',
+            recentAlerts: {
+              windowHours: 24,
+              totalEvents: 3,
+              groupedCount: 2,
+              countsByType: [
+                { type: 'upstream_rate_limited_429', count: 1 },
+                { type: 'user_quota_exhausted', count: 2 },
+              ],
+              topGroups: [
+                {
+                  id: 'group-1',
+                  type: 'user_quota_exhausted',
+                  subjectKind: 'user',
+                  subjectId: 'usr_001',
+                  subjectLabel: 'Alice Wang',
+                  user: { userId: 'usr_001', displayName: 'Alice Wang', username: 'alice' },
+                  token: { id: 'tok_001', label: 'tok_001' },
+                  key: null,
+                  requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: null },
+                  count: 2,
+                  firstSeen: 1_775_534_400,
+                  lastSeen: 1_775_535_400,
+                  latestEvent: {
+                    id: 'alert_evt_001',
+                    type: 'user_quota_exhausted',
+                    title: 'User quota exhausted',
+                    summary: 'Alice Wang reached the quota ceiling.',
+                    occurredAt: 1_775_535_400,
+                    subjectKind: 'user',
+                    subjectId: 'usr_001',
+                    subjectLabel: 'Alice Wang',
+                    user: { userId: 'usr_001', displayName: 'Alice Wang', username: 'alice' },
+                    token: { id: 'tok_001', label: 'tok_001' },
+                    key: null,
+                    request: { id: 91, method: 'POST', path: '/api/tavily/search', query: null },
+                    requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: null },
+                    failureKind: null,
+                    resultStatus: 'quota_exhausted',
+                    errorMessage: 'quota exhausted',
+                    reasonCode: null,
+                    reasonSummary: null,
+                    reasonDetail: null,
+                    source: { kind: 'auth_token_log', id: 'log_91' },
+                  },
+                },
+              ],
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -213,6 +263,168 @@ describe('admin user tag api helpers', () => {
     expect(overview.trend.request).toHaveLength(8)
     expect(overview.hourlyRequestWindow.buckets).toHaveLength(49)
     expect(overview.tokenCoverage).toBe('ok')
+    expect(overview.recentAlerts.totalEvents).toBe(3)
+    expect(overview.recentAlerts.topGroups[0]?.latestEvent.request?.id).toBe(91)
+  })
+
+  it('fetches the alert catalog from the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            retentionDays: 30,
+            types: [{ value: 'upstream_rate_limited_429', count: 2 }],
+            requestKindOptions: [
+              {
+                key: 'tavily_search',
+                label: 'Tavily Search',
+                protocol_group: 'api',
+                billing_group: 'billable',
+                count: 2,
+              },
+            ],
+            users: [{ value: 'usr_001', label: 'Alice Wang', count: 2 }],
+            tokens: [{ value: 'tok_001', label: 'tok_001', count: 2 }],
+            keys: [{ value: 'key_001', label: 'key_001', count: 1 }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const catalog = await fetchAlertCatalog()
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/alerts/catalog')
+    expect(catalog.types[0]).toEqual({ value: 'upstream_rate_limited_429', count: 2 })
+    expect(catalog.requestKindOptions[0]?.key).toBe('tavily_search')
+    expect(catalog.users[0]?.label).toBe('Alice Wang')
+  })
+
+  it('builds repeated alert query params and normalizes event payloads', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 'alert_evt_001',
+                type: 'upstream_rate_limited_429',
+                title: 'Upstream 429',
+                summary: 'The upstream returned 429.',
+                occurredAt: 1_775_535_400,
+                subjectKind: 'user',
+                subjectId: 'usr_001',
+                subjectLabel: 'Alice Wang',
+                user: { userId: 'usr_001', displayName: 'Alice Wang', username: 'alice' },
+                token: { id: 'tok_001', label: 'tok_001' },
+                key: { id: 'key_001', label: 'key_001' },
+                request: { id: 91, method: 'POST', path: '/api/tavily/search', query: null },
+                requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
+                failureKind: 'upstream_rate_limited_429',
+                resultStatus: 'error',
+                errorMessage: 'HTTP 429',
+                reasonCode: null,
+                reasonSummary: null,
+                reasonDetail: null,
+                source: { kind: 'auth_token_log', id: 'log_91' },
+              },
+            ],
+            total: 1,
+            page: 2,
+            per_page: 50,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const page = await fetchAlertEvents({
+      page: 2,
+      perPage: 50,
+      type: 'upstream_rate_limited_429',
+      since: '2026-04-18T00:00:00+08:00',
+      until: '2026-04-18T12:00:00+08:00',
+      userId: 'usr_001',
+      tokenId: 'tok_001',
+      keyId: 'key_001',
+      requestKinds: ['tavily_search', 'mcp_search'],
+    })
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+      '/api/alerts/events?page=2&per_page=50&type=upstream_rate_limited_429&since=2026-04-18T00%3A00%3A00%2B08%3A00&until=2026-04-18T12%3A00%3A00%2B08%3A00&user_id=usr_001&token_id=tok_001&key_id=key_001&request_kind=tavily_search&request_kind=mcp_search',
+    )
+    expect(page.perPage).toBe(50)
+    expect(page.items[0]?.requestKind?.label).toBe('Tavily Search')
+    expect(page.items[0]?.source.kind).toBe('auth_token_log')
+  })
+
+  it('normalizes grouped alert payloads from the groups endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 'group-1',
+                type: 'upstream_key_blocked',
+                subjectKind: 'key',
+                subjectId: 'key_001',
+                subjectLabel: 'key_001',
+                user: null,
+                token: null,
+                key: { id: 'key_001', label: 'key_001' },
+                requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'POST /mcp' },
+                count: 2,
+                firstSeen: 1_775_534_400,
+                lastSeen: 1_775_535_400,
+                latestEvent: {
+                  id: 'alert_evt_003',
+                  type: 'upstream_key_blocked',
+                  title: 'Upstream key blocked',
+                  summary: 'The upstream disabled key_001.',
+                  occurredAt: 1_775_535_400,
+                  subjectKind: 'key',
+                  subjectId: 'key_001',
+                  subjectLabel: 'key_001',
+                  user: null,
+                  token: null,
+                  key: { id: 'key_001', label: 'key_001' },
+                  request: null,
+                  requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'POST /mcp' },
+                  failureKind: null,
+                  resultStatus: null,
+                  errorMessage: null,
+                  reasonCode: 'account_deactivated',
+                  reasonSummary: 'Upstream account deactivated',
+                  reasonDetail: 'quarantined locally',
+                  source: { kind: 'api_key_maintenance_record', id: 'maint_3' },
+                },
+              },
+            ],
+            total: 1,
+            page: 1,
+            perPage: 20,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const page = await fetchAlertGroups({
+      page: 1,
+      perPage: 20,
+      requestKinds: ['mcp_search'],
+    })
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+      '/api/alerts/groups?page=1&per_page=20&request_kind=mcp_search',
+    )
+    expect(page.items[0]?.count).toBe(2)
+    expect(page.items[0]?.latestEvent.reasonCode).toBe('account_deactivated')
+    expect(page.items[0]?.requestKind?.key).toBe('mcp_search')
   })
 
   it('builds the public SSE url with token and explicit today windows', () => {

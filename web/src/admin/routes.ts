@@ -2,6 +2,7 @@ import type { AdminUnboundTokenUsageSortField, AdminUsersSortField, SortDirectio
 
 export type AdminUsersCollectionView = 'users' | 'usage'
 export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
+export type AlertsCenterView = 'events' | 'groups'
 
 export type AdminModuleId =
   | 'dashboard'
@@ -140,6 +141,91 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
 export function modulePath(module: AdminModuleId): string {
   if (module === 'dashboard') return `${ADMIN_BASE}/dashboard`
   return `${ADMIN_BASE}/${module}`
+}
+
+export interface AdminAlertsPathContext {
+  view?: AlertsCenterView | null
+  type?: string | null
+  since?: string | null
+  until?: string | null
+  userId?: string | null
+  tokenId?: string | null
+  keyId?: string | null
+  requestKinds?: string[] | null
+  page?: number | null
+}
+
+function normalizeAlertRequestKinds(values?: string[] | null): string[] {
+  const normalized = new Set<string>()
+  for (const value of values ?? []) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    normalized.add(trimmed)
+  }
+  return Array.from(normalized)
+}
+
+export function alertsPath(context?: AdminAlertsPathContext): string {
+  const params = new URLSearchParams()
+  params.set('view', context?.view === 'groups' ? 'groups' : 'events')
+  if (context?.type?.trim()) params.set('type', context.type.trim())
+  if (context?.since?.trim()) params.set('since', context.since.trim())
+  if (context?.until?.trim()) params.set('until', context.until.trim())
+  if (context?.userId?.trim()) params.set('userId', context.userId.trim())
+  if (context?.tokenId?.trim()) params.set('tokenId', context.tokenId.trim())
+  if (context?.keyId?.trim()) params.set('keyId', context.keyId.trim())
+  for (const requestKind of normalizeAlertRequestKinds(context?.requestKinds)) {
+    params.append('requestKinds', requestKind)
+  }
+  const normalizedPage = Number.isFinite(context?.page)
+    ? Math.max(1, Math.trunc(context?.page as number))
+    : 1
+  if (normalizedPage > 1) params.set('page', String(normalizedPage))
+  return `${ADMIN_BASE}/alerts?${params.toString()}`
+}
+
+export function getAlertsViewFromSearch(search: string): AlertsCenterView {
+  return new URLSearchParams(search).get('view') === 'groups' ? 'groups' : 'events'
+}
+
+export function getAlertTypeFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('type')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertSinceFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('since')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertUntilFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('until')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertUserIdFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('userId')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertTokenIdFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('tokenId')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertKeyIdFromSearch(search: string): string | null {
+  const value = new URLSearchParams(search).get('keyId')?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getAlertRequestKindsFromSearch(search: string): string[] {
+  return normalizeAlertRequestKinds(new URLSearchParams(search).getAll('requestKinds'))
+}
+
+export function getAlertPageFromSearch(search: string): number {
+  const rawPage = new URLSearchParams(search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
 }
 
 function appendTokensContext(
