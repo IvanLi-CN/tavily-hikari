@@ -11,7 +11,8 @@
     "storybook:ci": "bun --bun ./node_modules/.bin/storybook dev --ci --no-open --host 127.0.0.1 --port 56006 --disable-telemetry",
     "build-storybook": "bun --bun ./node_modules/.bin/storybook build --disable-telemetry",
     "preview": "bun --bun ./node_modules/.bin/vite preview",
-    "test": "bun test"
+    "test": "bun test",
+    "test:source-budgets": "bun test tests/sourceLineBudgets.test.ts"
   },
   "dependencies": {
     "@iconify/react": "^4.1.1",

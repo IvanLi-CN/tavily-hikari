@@ -88,10 +88,41 @@ jobs:
       - name: Run cargo test
         run: cargo test --locked --all-features
 
+  frontend-checks:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Enforce frontend source budgets
+        working-directory: web
+        run: bun run test:source-budgets
+
+      - name: Run frontend tests
+        working-directory: web
+        run: bun test
+
+      - name: Build frontend
+        working-directory: web
+        run: bun run build
+
   compose-smoke-forwardauth-caddy:
     name: Compose Smoke (ForwardAuth + Caddy)
     runs-on: ubuntu-latest
-    needs: [lint, unit-tests]
+    needs: [lint, unit-tests, frontend-checks]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 20
     env:
@@ -221,7 +252,7 @@ jobs:
     name: Build (Release)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    needs: [lint, unit-tests]
+    needs: [lint, unit-tests, frontend-checks]
     timeout-minutes: 25
     steps:
       - name: Checkout

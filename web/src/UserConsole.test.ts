@@ -1,10 +1,36 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
-import { __testables } from './UserConsole'
+import { resolveGuideSamples } from './user-console/guide'
+import {
+  applyLoggedOutConsoleReset,
+  buildApiProbeStepDefinitions,
+  buildMcpProbeStepDefinitions,
+  buildMcpToolCallProbeStepDefinitions,
+  createClearedProbeUiState,
+  createMcpProbeIdentityGenerator,
+  extractAdvertisedMcpTools,
+  isActiveGuideRevealContext,
+  isIdentifierLikePropertyName,
+  nextRunningMcpProbeModel,
+  performUserLogoutFlow,
+  resetActiveProbeUiState,
+  resolveDetailLogsPushIssueMessage,
+  resolveGuideRevealContextKey,
+  resolveGuideToken,
+  resolveGuideTokenId,
+  resolvePostLogoutTarget,
+  resolveFallbackLogoutTarget,
+  resolveUserConsoleIdentityName,
+  resolveUserConsoleProviderLabel,
+  resolveUserConsoleView,
+  shouldRedirectToLogoutTarget,
+  shouldRenderLandingGuide,
+  toLoggedOutConsoleProfile,
+} from './user-console/runtime'
 
 const originalFetch = globalThis.fetch
 
-const mcpProbeText: Parameters<typeof __testables.buildMcpProbeStepDefinitions>[0] = {
+const mcpProbeText: Parameters<typeof buildMcpProbeStepDefinitions>[0] = {
   steps: {
     mcpInitialize: 'MCP 会话初始化',
     mcpInitialized: 'MCP initialized 通知',
@@ -18,7 +44,7 @@ const mcpProbeText: Parameters<typeof __testables.buildMcpProbeStepDefinitions>[
   },
 }
 
-const apiProbeText: Parameters<typeof __testables.buildApiProbeStepDefinitions>[0] = {
+const apiProbeText: Parameters<typeof buildApiProbeStepDefinitions>[0] = {
   steps: {
     apiSearch: 'Search API',
     apiExtract: 'Extract API',
@@ -46,12 +72,12 @@ function requestUrl(input: RequestInfo | URL): string {
   return input.url
 }
 
-function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnType<typeof __testables.buildMcpProbeStepDefinitions>[number]['run']>>[1]> = {}) {
+function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnType<typeof buildMcpProbeStepDefinitions>[number]['run']>>[1]> = {}) {
   return {
     protocolVersion: '2025-03-26',
     sessionId: null,
     clientVersion: '0.29.5-test',
-    identity: __testables.createMcpProbeIdentityGenerator({
+    identity: createMcpProbeIdentityGenerator({
       now: Date.UTC(2026, 2, 27, 8, 15, 42),
       random: () => 0.123456789,
     }),
@@ -61,11 +87,11 @@ function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnT
 
 describe('UserConsole landing guide helpers', () => {
   it('derives header view, identity, and provider labels from the active session state', () => {
-    expect(__testables.resolveUserConsoleView({ name: 'landing', section: 'dashboard' })).toBe('dashboard')
-    expect(__testables.resolveUserConsoleView({ name: 'landing', section: 'tokens' })).toBe('tokens')
-    expect(__testables.resolveUserConsoleView({ name: 'token', id: 'a1b2' })).toBe('tokenDetail')
+    expect(resolveUserConsoleView({ name: 'landing', section: 'dashboard' })).toBe('dashboard')
+    expect(resolveUserConsoleView({ name: 'landing', section: 'tokens' })).toBe('tokens')
+    expect(resolveUserConsoleView({ name: 'token', id: 'a1b2' })).toBe('tokenDetail')
 
-    expect(__testables.resolveUserConsoleIdentityName({
+    expect(resolveUserConsoleIdentityName({
       displayName: 'ops-admin',
       isAdmin: true,
       forwardAuthEnabled: true,
@@ -76,7 +102,7 @@ describe('UserConsole landing guide helpers', () => {
       userDisplayName: 'Ivan',
     })).toBe('Ivan')
 
-    expect(__testables.resolveUserConsoleIdentityName({
+    expect(resolveUserConsoleIdentityName({
       displayName: 'dev-mode',
       isAdmin: true,
       forwardAuthEnabled: true,
@@ -84,14 +110,14 @@ describe('UserConsole landing guide helpers', () => {
       allowRegistration: true,
     })).toBe('dev-mode')
 
-    expect(__testables.resolveUserConsoleProviderLabel('linuxdo', { linuxdo: 'LinuxDo' })).toBe('LinuxDo')
-    expect(__testables.resolveUserConsoleProviderLabel(null, { linuxdo: 'LinuxDo' })).toBeNull()
+    expect(resolveUserConsoleProviderLabel('linuxdo', { linuxdo: 'LinuxDo' })).toBe('LinuxDo')
+    expect(resolveUserConsoleProviderLabel(null, { linuxdo: 'LinuxDo' })).toBeNull()
   })
 
   it('prefers the public home as the logout redirect when it is available', async () => {
     const probe = mock(async () => ({ ok: true, status: 200 }))
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console',
       search: '',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
@@ -104,12 +130,12 @@ describe('UserConsole landing guide helpers', () => {
   it('falls back to the active console entry path when the public home is unavailable', async () => {
     const probe = mock(async () => ({ ok: false, status: 404 }))
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: 'console.html',
       search: '?from=oauth',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console.html?from=oauth')
 
-    expect(__testables.resolveFallbackLogoutTarget({
+    expect(resolveFallbackLogoutTarget({
       pathname: '',
       search: '',
     } as Pick<Location, 'pathname' | 'search'>)).toBe('/')
@@ -123,7 +149,7 @@ describe('UserConsole landing guide helpers', () => {
       url: 'https://app.test/console',
     }))
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console',
       search: '?from=logout',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console?from=logout')
@@ -137,7 +163,7 @@ describe('UserConsole landing guide helpers', () => {
       url: 'https://app.test/auth/linuxdo',
     }))
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console',
       search: '?from=logout',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console?from=logout')
@@ -146,7 +172,7 @@ describe('UserConsole landing guide helpers', () => {
   it('keeps nested console paths as the logout fallback when the public home is unavailable', async () => {
     const probe = mock(async () => ({ ok: false, status: 404 }))
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console/tokens/a1b2',
       search: '?from=logout',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console/tokens/a1b2?from=logout')
@@ -171,7 +197,7 @@ describe('UserConsole landing guide helpers', () => {
       }
     })
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console',
       search: '',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
@@ -200,7 +226,7 @@ describe('UserConsole landing guide helpers', () => {
       }
     })
 
-    await expect(__testables.resolvePostLogoutTarget({
+    await expect(resolvePostLogoutTarget({
       pathname: '/console',
       search: '',
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
@@ -211,24 +237,24 @@ describe('UserConsole landing guide helpers', () => {
   })
 
   it('does not redirect again when logout already landed on the console fallback entry', () => {
-    expect(__testables.shouldRedirectToLogoutTarget({
+    expect(shouldRedirectToLogoutTarget({
       pathname: '/console.html',
       search: '?from=oauth',
     } as Pick<Location, 'pathname' | 'search'>, '/console.html?from=oauth')).toBe(false)
 
-    expect(__testables.shouldRedirectToLogoutTarget({
+    expect(shouldRedirectToLogoutTarget({
       pathname: '/console/tokens/a1b2',
       search: '?from=logout',
     } as Pick<Location, 'pathname' | 'search'>, '/console/tokens/a1b2?from=logout')).toBe(false)
 
-    expect(__testables.shouldRedirectToLogoutTarget({
+    expect(shouldRedirectToLogoutTarget({
       pathname: '/console',
       search: '',
     } as Pick<Location, 'pathname' | 'search'>, '/')).toBe(true)
   })
 
   it('invalidates active probe runs by resetting both probe buttons to idle', () => {
-    expect(__testables.createClearedProbeUiState(7)).toEqual({
+    expect(createClearedProbeUiState(7)).toEqual({
       nextRunId: 8,
       mcpProbe: {
         state: 'idle',
@@ -246,7 +272,7 @@ describe('UserConsole landing guide helpers', () => {
   it('aborts the active probe request when the route resets probe state', () => {
     const abortActiveProbeRun = mock(() => {})
 
-    expect(__testables.resetActiveProbeUiState(7, abortActiveProbeRun)).toEqual({
+    expect(resetActiveProbeUiState(7, abortActiveProbeRun)).toEqual({
       nextRunId: 8,
       mcpProbe: {
         state: 'idle',
@@ -265,7 +291,7 @@ describe('UserConsole landing guide helpers', () => {
   it('clears sensitive console state when profile refresh reports a logged-out session', () => {
     const events: string[] = []
 
-    __testables.applyLoggedOutConsoleReset({
+    applyLoggedOutConsoleReset({
       clearSensitiveConsoleState: () => {
         events.push('clear')
       },
@@ -295,7 +321,7 @@ describe('UserConsole landing guide helpers', () => {
       events.push('redirect')
     })
 
-    const logoutFlow = __testables.performUserLogoutFlow({
+    const logoutFlow = performUserLogoutFlow({
       logoutRequest,
       abortActiveConsoleLoads,
       redirectAfterLogout,
@@ -320,7 +346,7 @@ describe('UserConsole landing guide helpers', () => {
     const abortActiveConsoleLoads = mock(() => {})
     const redirectAfterLogout = mock(async () => {})
 
-    await expect(__testables.performUserLogoutFlow({
+    await expect(performUserLogoutFlow({
       logoutRequest: async () => {
         throw new Error('temporary failure')
       },
@@ -333,7 +359,7 @@ describe('UserConsole landing guide helpers', () => {
   })
 
   it('preserves admin affordances when only the user session logs out', () => {
-    expect(__testables.toLoggedOutConsoleProfile({
+    expect(toLoggedOutConsoleProfile({
       displayName: 'ops-admin',
       isAdmin: true,
       forwardAuthEnabled: true,
@@ -357,7 +383,7 @@ describe('UserConsole landing guide helpers', () => {
   })
 
   it('materializes a logged-out placeholder profile when the first profile load returns 401', () => {
-    expect(__testables.toLoggedOutConsoleProfile(null)).toEqual({
+    expect(toLoggedOutConsoleProfile(null)).toEqual({
       displayName: null,
       isAdmin: false,
       forwardAuthEnabled: false,
@@ -378,65 +404,65 @@ describe('UserConsole landing guide helpers', () => {
       closed: 'closed',
     }
 
-    expect(__testables.resolveDetailLogsPushIssueMessage('unsupported', copy)).toBe('unsupported')
-    expect(__testables.resolveDetailLogsPushIssueMessage('reconnecting', copy)).toBe('reconnecting')
-    expect(__testables.resolveDetailLogsPushIssueMessage('closed', copy)).toBe('closed')
+    expect(resolveDetailLogsPushIssueMessage('unsupported', copy)).toBe('unsupported')
+    expect(resolveDetailLogsPushIssueMessage('reconnecting', copy)).toBe('reconnecting')
+    expect(resolveDetailLogsPushIssueMessage('closed', copy)).toBe('closed')
   })
 
   it('shows the landing guide only when exactly one token is visible on the merged landing page', () => {
-    expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'dashboard' }, 1)).toBe(true)
-    expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 1)).toBe(true)
-    expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 0)).toBe(false)
-    expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 2)).toBe(false)
-    expect(__testables.shouldRenderLandingGuide({ name: 'token', id: 'a1b2' }, 1)).toBe(false)
+    expect(shouldRenderLandingGuide({ name: 'landing', section: 'dashboard' }, 1)).toBe(true)
+    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 1)).toBe(true)
+    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 0)).toBe(false)
+    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 2)).toBe(false)
+    expect(shouldRenderLandingGuide({ name: 'token', id: 'a1b2' }, 1)).toBe(false)
   })
 
   it('prefers the detail token id and otherwise falls back to the single landing token mask', () => {
-    expect(__testables.resolveGuideToken({ name: 'token', id: 'a1b2' }, [])).toBe(
+    expect(resolveGuideToken({ name: 'token', id: 'a1b2' }, [])).toBe(
       'th-a1b2-************************',
     )
-    expect(__testables.resolveGuideToken(
+    expect(resolveGuideToken(
       { name: 'landing', section: 'tokens' },
       [{ tokenId: 'c3d4' } as any],
     )).toBe('th-c3d4-************************')
-    expect(__testables.resolveGuideToken(
+    expect(resolveGuideToken(
       { name: 'landing', section: 'dashboard' },
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBe('th-xxxx-xxxxxxxxxxxx')
   })
 
   it('returns the revealable guide token id only for token detail or single-token landing routes', () => {
-    expect(__testables.resolveGuideTokenId({ name: 'token', id: 'a1b2' }, [])).toBe('a1b2')
-    expect(__testables.resolveGuideTokenId(
+    expect(resolveGuideTokenId({ name: 'token', id: 'a1b2' }, [])).toBe('a1b2')
+    expect(resolveGuideTokenId(
       { name: 'landing', section: 'tokens' },
       [{ tokenId: 'c3d4' } as any],
     )).toBe('c3d4')
-    expect(__testables.resolveGuideTokenId(
+    expect(resolveGuideTokenId(
       { name: 'landing', section: 'dashboard' },
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBeNull()
   })
 
   it('derives a distinct guide reveal context for each route and visible token set', () => {
-    expect(__testables.resolveGuideRevealContextKey({ name: 'token', id: 'a1b2' }, [])).toBe('token:a1b2')
-    expect(__testables.resolveGuideRevealContextKey(
+    expect(resolveGuideRevealContextKey({ name: 'token', id: 'a1b2' }, [])).toBe('token:a1b2')
+    expect(resolveGuideRevealContextKey(
       { name: 'landing', section: 'tokens' },
       [{ tokenId: 'c3d4' } as any],
     )).toBe('landing:tokens:c3d4')
-    expect(__testables.resolveGuideRevealContextKey(
+    expect(resolveGuideRevealContextKey(
       { name: 'landing', section: 'dashboard' },
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBeNull()
   })
 
   it('renders a revealed guide token only while the reveal context still matches', () => {
-    expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:a1b2')).toBe(true)
-    expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
-    expect(__testables.isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
+    expect(isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:a1b2')).toBe(true)
+    expect(isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
+    expect(isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
   })
 
   it('normalizes guide samples so the other tab can render both MCP and API examples', () => {
-    expect(__testables.resolveGuideSamples({
+    expect(resolveGuideSamples({
       title: 'Legacy',
       steps: [],
       sampleTitle: 'Example',
@@ -456,13 +482,13 @@ describe('UserConsole landing guide helpers', () => {
       { title: 'MCP', language: 'json', snippet: '{}' },
       { title: 'API', language: 'bash', snippet: 'curl ...' },
     ]
-    expect(__testables.resolveGuideSamples({ title: 'Other', steps: [], samples })).toBe(samples)
+    expect(resolveGuideSamples({ title: 'Other', steps: [], samples })).toBe(samples)
   })
 })
 
 describe('UserConsole probe step definitions', () => {
   it('keeps MCP lifecycle control-plane steps non-billable so exhausted tokens can still test connectivity', () => {
-    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const steps = buildMcpProbeStepDefinitions(mcpProbeText)
 
     expect(steps[0]?.id).toBe('mcp-initialize')
     expect(steps[0]?.billable).toBe(false)
@@ -488,7 +514,7 @@ describe('UserConsole probe step definitions', () => {
     globalThis.fetch = fetchMock as typeof fetch
 
     const controller = new AbortController()
-    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const steps = buildMcpProbeStepDefinitions(mcpProbeText)
     await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext({ signal: controller.signal }))).resolves.toBeNull()
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -496,7 +522,7 @@ describe('UserConsole probe step definitions', () => {
   })
 
   it('preserves every advertised MCP tool name, including legacy aliases', () => {
-    expect(__testables.extractAdvertisedMcpTools({
+    expect(extractAdvertisedMcpTools({
       result: {
         tools: [
           { name: ' tavily_search ' },
@@ -524,7 +550,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
       ' tavily_search ',
       'tavily-search',
       {
@@ -598,7 +624,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const steps = buildMcpProbeStepDefinitions(mcpProbeText)
 
     await expect(steps[3]?.run('th-zjvc-secret', createMcpProbeContext())).resolves.toEqual({
       discoveredTools: [
@@ -622,14 +648,14 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const steps = buildMcpProbeStepDefinitions(mcpProbeText)
     await expect(steps[1]?.run('th-zjvc-secret', createMcpProbeContext({ sessionId: 'session-123' }))).rejects.toThrow(
       'initialized rejected',
     )
   })
 
   it('skips advertised tools only when discovery provides no fixture and no input schema', async () => {
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
       requestName: 'Acme_Lookup',
       displayName: 'Acme_Lookup',
       inputSchema: null,
@@ -659,7 +685,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-search'])
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-search'])
 
     await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).rejects.toThrow('Request failed with status 500')
   })
@@ -685,7 +711,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-research'])
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-research'])
 
     await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).rejects.toThrow(
       "This request exceeds your plan's set usage limit.",
@@ -748,13 +774,13 @@ describe('UserConsole probe step definitions', () => {
     }) as typeof fetch
 
     const token = 'th-zjvc-secret'
-    const baseSteps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const baseSteps = buildMcpProbeStepDefinitions(mcpProbeText)
     const context = createMcpProbeContext()
     await baseSteps[0]?.run(token, context)
     await baseSteps[1]?.run(token, context)
     await baseSteps[2]?.run(token, context)
     const toolsListResult = await baseSteps[3]?.run(token, context)
-    const toolSteps = __testables.buildMcpToolCallProbeStepDefinitions(
+    const toolSteps = buildMcpToolCallProbeStepDefinitions(
       mcpProbeText,
       toolsListResult?.discoveredTools ?? [],
     )
@@ -865,7 +891,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
       requestName: 'tavily_agents',
       displayName: 'tavily-agents',
       inputSchema: {
@@ -903,7 +929,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
       {
         requestName: 'tavily_agents',
         displayName: 'tavily-agents',
@@ -951,14 +977,14 @@ describe('UserConsole probe step definitions', () => {
   })
 
   it('only treats actual identifier-like field names as dynamic identifiers', () => {
-    expect(__testables.isIdentifierLikePropertyName('requestId')).toBe(true)
-    expect(__testables.isIdentifierLikePropertyName('session_id')).toBe(true)
-    expect(__testables.isIdentifierLikePropertyName('traceUuid')).toBe(true)
-    expect(__testables.isIdentifierLikePropertyName('cursor')).toBe(true)
+    expect(isIdentifierLikePropertyName('requestId')).toBe(true)
+    expect(isIdentifierLikePropertyName('session_id')).toBe(true)
+    expect(isIdentifierLikePropertyName('traceUuid')).toBe(true)
+    expect(isIdentifierLikePropertyName('cursor')).toBe(true)
 
-    expect(__testables.isIdentifierLikePropertyName('hybrid')).toBe(false)
-    expect(__testables.isIdentifierLikePropertyName('grid')).toBe(false)
-    expect(__testables.isIdentifierLikePropertyName('valid')).toBe(false)
+    expect(isIdentifierLikePropertyName('hybrid')).toBe(false)
+    expect(isIdentifierLikePropertyName('grid')).toBe(false)
+    expect(isIdentifierLikePropertyName('valid')).toBe(false)
   })
 
   it('skips Tavily tools when required schema fields cannot be synthesized safely', async () => {
@@ -971,7 +997,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+    const steps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
       requestName: 'tavily-new',
       displayName: 'tavily-new',
       inputSchema: {
@@ -990,8 +1016,8 @@ describe('UserConsole probe step definitions', () => {
   })
 
   it('updates the running MCP progress total after discovering tool call steps', () => {
-    const baseSteps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
-    const toolSteps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+    const baseSteps = buildMcpProbeStepDefinitions(mcpProbeText)
+    const toolSteps = buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
       'tavily-search',
       'tavily-extract',
       'tavily-crawl',
@@ -1000,7 +1026,7 @@ describe('UserConsole probe step definitions', () => {
     ])
 
     const stepDefinitions = [...baseSteps, ...toolSteps]
-    const nextModel = __testables.nextRunningMcpProbeModel(
+    const nextModel = nextRunningMcpProbeModel(
       { state: 'running', completed: 2, total: 2 },
       stepDefinitions,
       3,
@@ -1039,7 +1065,7 @@ describe('UserConsole probe step definitions', () => {
       })
     }) as typeof fetch
 
-    const steps = __testables.buildApiProbeStepDefinitions(apiProbeText)
+    const steps = buildApiProbeStepDefinitions(apiProbeText)
     let requestId: string | null = null
     let researchResultDetail: string | null = null
 
@@ -1109,7 +1135,7 @@ describe('UserConsole probe step definitions', () => {
     }) as typeof fetch
 
     const controller = new AbortController()
-    const steps = __testables.buildApiProbeStepDefinitions(apiProbeText)
+    const steps = buildApiProbeStepDefinitions(apiProbeText)
     await expect(steps[0]?.run('th-zjvc-secret', { requestId: null, signal: controller.signal })).resolves.toBeNull()
 
     expect(calls).toHaveLength(1)
