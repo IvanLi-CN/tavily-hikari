@@ -1,4 +1,24 @@
 impl TavilyProxy {
+    pub fn current_request_rate_limit(&self) -> i64 {
+        self.token_request_limit.current_request_limit()
+    }
+
+    pub fn default_request_rate_verdict(
+        &self,
+        scope: RequestRateScope,
+    ) -> TokenHourlyRequestVerdict {
+        TokenHourlyRequestVerdict::new(
+            0,
+            self.current_request_rate_limit(),
+            request_rate_limit_window_minutes(),
+            scope,
+            0,
+        )
+    }
+
+    pub fn default_request_rate_view(&self, scope: RequestRateScope) -> RequestRateView {
+        self.default_request_rate_verdict(scope).request_rate()
+    }
 
     /// Check and update the hourly *raw request* usage for a token.
     /// This limiter counts every authenticated request (regardless of MCP method)

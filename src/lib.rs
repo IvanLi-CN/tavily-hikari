@@ -502,7 +502,8 @@ pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
 pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
 pub const REQUEST_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
 pub const REQUEST_RATE_LIMIT_WINDOW_SECS: i64 = REQUEST_RATE_LIMIT_WINDOW_MINUTES * SECS_PER_MINUTE;
-pub const REQUEST_RATE_LIMIT: i64 = 60;
+pub const REQUEST_RATE_LIMIT: i64 = 100;
+pub const REQUEST_RATE_LIMIT_MIN: i64 = 1;
 // Keep a request_id -> key affinity for Tavily research result polling.
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
@@ -582,6 +583,7 @@ const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
 const META_KEY_ACCOUNT_QUOTA_ZERO_BASE_CUTOVER_V1: &str = "account_quota_zero_base_cutover_v1";
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
+const META_KEY_REQUEST_RATE_LIMIT_V1: &str = "request_rate_limit_v1";
 const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
 const META_KEY_REBALANCE_MCP_ENABLED_V1: &str = "rebalance_mcp_enabled_v1";
 const META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1: &str = "rebalance_mcp_session_percent_v1";

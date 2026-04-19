@@ -22,6 +22,7 @@ import {
   fetchRequestLogsCatalog,
   fetchRequestLogDetails,
   fetchRequestLogsList,
+  fetchSystemSettings,
   fetchTokenLogsCatalog,
   fetchTokenMetrics,
   fetchTokenLogDetails,
@@ -34,6 +35,7 @@ import {
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAdminUserQuota,
+  updateSystemSettings,
   validateForwardProxyCandidateWithProgress,
 } from './api'
 
@@ -1066,5 +1068,75 @@ describe('admin user tag api helpers', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       '/api/tokens/T001/logs/list?limit=10&direction=older&selection_effect=mcp_session_init_pressure_avoided&operational_class=neutral&key_id=K001&since=2026-04-01T00%3A00%3A00%2B08%3A00&until=2026-04-02T00%3A00%3A00%2B08%3A00',
     )
+  })
+
+  it('loads system settings including the request-rate threshold', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            systemSettings: {
+              requestRateLimit: 72,
+              mcpSessionAffinityKeyCount: 3,
+              rebalanceMcpEnabled: true,
+              rebalanceMcpSessionPercent: 35,
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(fetchSystemSettings()).resolves.toEqual({
+      requestRateLimit: 72,
+      mcpSessionAffinityKeyCount: 3,
+      rebalanceMcpEnabled: true,
+      rebalanceMcpSessionPercent: 35,
+    })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings')
+  })
+
+  it('updates system settings with requestRateLimit in the payload body', async () => {
+    const fetchMock = mock((_input: RequestInfo | URL, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            requestRateLimit: 75,
+            mcpSessionAffinityKeyCount: 4,
+            rebalanceMcpEnabled: false,
+            rebalanceMcpSessionPercent: 100,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(
+      updateSystemSettings({
+        requestRateLimit: 75,
+        mcpSessionAffinityKeyCount: 4,
+        rebalanceMcpEnabled: false,
+        rebalanceMcpSessionPercent: 100,
+      }),
+    ).resolves.toEqual({
+      requestRateLimit: 75,
+      mcpSessionAffinityKeyCount: 4,
+      rebalanceMcpEnabled: false,
+      rebalanceMcpSessionPercent: 100,
+    })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/system')
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestRateLimit: 75,
+        mcpSessionAffinityKeyCount: 4,
+        rebalanceMcpEnabled: false,
+        rebalanceMcpSessionPercent: 100,
+      }),
+    })
   })
 })

@@ -868,13 +868,9 @@ async fn build_user_token_detail_view(
         .get(&token.id)
         .cloned()
         .unwrap_or_else(|| {
-            TokenHourlyRequestVerdict::new(
-                0,
-                request_rate_limit(),
-                request_rate_limit_window_minutes(),
-                tavily_hikari::RequestRateScope::Token,
-                0,
-            )
+            state
+                .proxy
+                .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
         });
     let (hourly_any_used, hourly_any_limit) = (request_rate.hourly_used, request_rate.hourly_limit);
     let (
@@ -1013,13 +1009,9 @@ async fn get_user_tokens(
             .get(&token.id)
             .cloned()
             .unwrap_or_else(|| {
-                TokenHourlyRequestVerdict::new(
-                    0,
-                    request_rate_limit(),
-                    request_rate_limit_window_minutes(),
-                    tavily_hikari::RequestRateScope::Token,
-                    0,
-                )
+                state
+                    .proxy
+                    .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
             });
         let (hourly_any_used, hourly_any_limit) =
             (request_rate.hourly_used, request_rate.hourly_limit);

@@ -28,9 +28,17 @@ async fn put_system_settings(
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
 
+    let current_settings = state.proxy.get_system_settings().await.map_err(|err| {
+        eprintln!("get current system settings error: {err}");
+        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+    })?;
+
     state
         .proxy
         .set_system_settings(&tavily_hikari::SystemSettings {
+            request_rate_limit: payload
+                .request_rate_limit
+                .unwrap_or(current_settings.request_rate_limit),
             mcp_session_affinity_key_count: payload.mcp_session_affinity_key_count,
             rebalance_mcp_enabled: payload.rebalance_mcp_enabled,
             rebalance_mcp_session_percent: payload.rebalance_mcp_session_percent,
@@ -40,7 +48,8 @@ async fn put_system_settings(
         .map_err(|err| {
             eprintln!("update system settings error: {err}");
             let message = err.to_string();
-            if message.contains("mcp_session_affinity_key_count must be between")
+            if message.contains("request_rate_limit must be at least")
+                || message.contains("mcp_session_affinity_key_count must be between")
                 || message.contains("rebalance_mcp_session_percent must be between")
             {
                 (StatusCode::BAD_REQUEST, message)
@@ -626,4 +635,3 @@ async fn validate_single_key(
         ),
     }
 }
-

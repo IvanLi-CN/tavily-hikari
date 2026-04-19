@@ -1621,6 +1621,11 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
+        let request_rate_limit = self
+            .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
+            .await?
+            .unwrap_or(REQUEST_RATE_LIMIT)
+            .max(REQUEST_RATE_LIMIT_MIN);
         let count = self
             .get_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
             .await?
@@ -1643,6 +1648,7 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MAX,
             );
         Ok(SystemSettings {
+            request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
             rebalance_mcp_session_percent,
@@ -1653,6 +1659,12 @@ impl KeyStore {
         &self,
         settings: &SystemSettings,
     ) -> Result<SystemSettings, ProxyError> {
+        if settings.request_rate_limit < REQUEST_RATE_LIMIT_MIN {
+            return Err(ProxyError::Other(format!(
+                "request_rate_limit must be at least {}",
+                REQUEST_RATE_LIMIT_MIN,
+            )));
+        }
         if !(MCP_SESSION_AFFINITY_KEY_COUNT_MIN..=MCP_SESSION_AFFINITY_KEY_COUNT_MAX)
             .contains(&settings.mcp_session_affinity_key_count)
         {
@@ -1669,6 +1681,8 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN, REBALANCE_MCP_SESSION_PERCENT_MAX,
             )));
         }
+        self.set_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1, settings.request_rate_limit)
+            .await?;
         self.set_meta_i64(
             META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1,
             settings.mcp_session_affinity_key_count,

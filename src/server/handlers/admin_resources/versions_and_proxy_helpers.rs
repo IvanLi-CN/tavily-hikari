@@ -668,6 +668,7 @@ struct ForwardProxySettingsUpdatePayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SystemSettingsUpdatePayload {
+    request_rate_limit: Option<i64>,
     mcp_session_affinity_key_count: i64,
     #[serde(default)]
     rebalance_mcp_enabled: bool,
@@ -814,4 +815,3 @@ fn build_forward_proxy_validation_view(
         nodes: Vec::new(),
     }
 }
-

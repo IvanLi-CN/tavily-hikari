@@ -332,6 +332,8 @@ impl TavilyProxy {
         let key_store = Arc::new(key_store);
         let token_quota = TokenQuota::new(key_store.clone());
         let token_request_limit = TokenRequestLimit::new(key_store.clone());
+        let system_settings = key_store.get_system_settings().await?;
+        token_request_limit.set_request_limit(system_settings.request_rate_limit);
         let forward_proxy_clients = forward_proxy::ForwardProxyClientPool::new()?;
         let mut proxy = Self {
             client: forward_proxy_clients.direct_client(),
@@ -418,7 +420,10 @@ impl TavilyProxy {
         &self,
         settings: &SystemSettings,
     ) -> Result<SystemSettings, ProxyError> {
-        self.key_store.set_system_settings(settings).await
+        let updated = self.key_store.set_system_settings(settings).await?;
+        self.token_request_limit
+            .set_request_limit(updated.request_rate_limit);
+        Ok(updated)
     }
 
     pub async fn set_mcp_session_affinity_key_count(

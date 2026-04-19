@@ -67,6 +67,42 @@
     }
 
     #[tokio::test]
+    async fn admin_system_settings_reject_invalid_request_rate_limit() {
+        let db_path = temp_db_path("admin-system-settings-invalid-request-rate");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/system"))
+            .json(&serde_json::json!({
+                "requestRateLimit": 0,
+                "mcpSessionAffinityKeyCount": 5,
+                "rebalanceMcpEnabled": false,
+                "rebalanceMcpSessionPercent": 100,
+            }))
+            .send()
+            .await
+            .expect("update invalid request-rate limit");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.expect("invalid body");
+        assert!(
+            body.contains("request_rate_limit"),
+            "expected request-rate validation error, got {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_forward_proxy_settings_and_stats_expose_persisted_geo_metadata() {
         let db_path = temp_db_path("admin-forward-proxy-geo-metadata");
         let db_str = db_path.to_string_lossy().to_string();
@@ -1348,6 +1384,7 @@
                 .expect("proxy created");
         proxy
             .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: request_rate_limit(),
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
@@ -1617,6 +1654,7 @@
                 .expect("proxy created");
         proxy
             .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: request_rate_limit(),
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
@@ -1744,6 +1782,7 @@
                 .expect("proxy created");
         proxy
             .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: request_rate_limit(),
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,

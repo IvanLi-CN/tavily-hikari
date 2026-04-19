@@ -13,6 +13,7 @@ describe('SystemSettingsModule rendering', () => {
       createElement(SystemSettingsModule, {
         strings,
         settings: {
+          requestRateLimit: 100,
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 100,
@@ -27,6 +28,8 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.title)
     expect(markup).toContain(strings.helpLabel)
     expect(markup.match(/system-settings-help-trigger/g)?.length).toBe(1)
+    expect(markup).toContain(strings.form.currentRequestRateLimitValue.replace('{count}', '100'))
+    expect(markup).toContain(strings.form.requestRateLimitHint)
     expect(markup).toContain(strings.form.currentValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.currentPercentValue.replace('{percent}', '100'))
     expect(markup).not.toContain(strings.description)
@@ -41,6 +44,7 @@ describe('SystemSettingsModule rendering', () => {
       createElement(SystemSettingsModule, {
         strings,
         settings: {
+          requestRateLimit: 100,
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: true,
           rebalanceMcpSessionPercent: 35,
@@ -61,6 +65,7 @@ describe('SystemSettingsModule rendering', () => {
       createElement(SystemSettingsModule, {
         strings,
         settings: {
+          requestRateLimit: 100,
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 35,

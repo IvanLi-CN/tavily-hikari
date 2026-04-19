@@ -6139,6 +6139,7 @@ function SystemSettingsPageCanvas(): JSX.Element {
       <SystemSettingsModule
         strings={admin.systemSettings}
         settings={{
+          requestRateLimit: 100,
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 100,

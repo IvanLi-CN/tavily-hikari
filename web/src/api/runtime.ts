@@ -2901,6 +2901,7 @@ export interface ForwardProxySettings {
 }
 
 export interface SystemSettings {
+  requestRateLimit: number
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
@@ -2922,6 +2923,7 @@ export interface UpdateForwardProxySettingsPayload {
 }
 
 export interface UpdateSystemSettingsPayload {
+  requestRateLimit: number
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
@@ -2997,6 +2999,7 @@ function createEmptyForwardProxySettings(): ForwardProxySettings {
 
 function createEmptySystemSettings(): SystemSettings {
   return {
+    requestRateLimit: 100,
     mcpSessionAffinityKeyCount: 5,
     rebalanceMcpEnabled: false,
     rebalanceMcpSessionPercent: 100,

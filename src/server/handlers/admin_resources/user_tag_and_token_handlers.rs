@@ -429,13 +429,9 @@ async fn list_unbound_token_usage(
         .into_iter()
         .map(|token| {
             let hourly_any = hourly_any_map.get(&token.id).cloned().unwrap_or_else(|| {
-                TokenHourlyRequestVerdict::new(
-                    0,
-                    request_rate_limit(),
-                    request_rate_limit_window_minutes(),
-                    tavily_hikari::RequestRateScope::Token,
-                    0,
-                )
+                state
+                    .proxy
+                    .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
             });
             let metrics = log_metrics.get(&token.id).cloned().unwrap_or_default();
             let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
@@ -591,13 +587,9 @@ async fn get_user_detail(
             .get(&token.id)
             .cloned()
             .unwrap_or_else(|| {
-                TokenHourlyRequestVerdict::new(
-                    0,
-                    request_rate_limit(),
-                    request_rate_limit_window_minutes(),
-                    tavily_hikari::RequestRateScope::Token,
-                    0,
-                )
+                state
+                    .proxy
+                    .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
             });
         let (hourly_any_used, hourly_any_limit) =
             (request_rate.hourly_used, request_rate.hourly_limit);
@@ -1124,4 +1116,3 @@ async fn create_tokens_batch(
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
-

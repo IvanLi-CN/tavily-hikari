@@ -433,12 +433,7 @@ impl TavilyProxy {
             .user_dashboard_summaries_for_users(&[user_id.to_string()], daily_window)
             .await?;
         Ok(summaries.remove(user_id).unwrap_or(UserDashboardSummary {
-            request_rate: RequestRateView {
-                used: 0,
-                limit: request_rate_limit(),
-                window_minutes: request_rate_limit_window_minutes(),
-                scope: RequestRateScope::User,
-            },
+            request_rate: self.default_request_rate_view(RequestRateScope::User),
             hourly_any_used: 0,
             hourly_any_limit: 0,
             quota_hourly_used: 0,
@@ -535,15 +530,7 @@ impl TavilyProxy {
                     request_rate_totals
                         .get(&user_id)
                         .cloned()
-                        .unwrap_or_else(|| {
-                            TokenHourlyRequestVerdict::new(
-                                0,
-                                request_rate_limit(),
-                                request_rate_limit_window_minutes(),
-                                RequestRateScope::User,
-                                0,
-                            )
-                        });
+                        .unwrap_or_else(|| self.default_request_rate_verdict(RequestRateScope::User));
                 (
                     user_id.clone(),
                     UserDashboardSummary {

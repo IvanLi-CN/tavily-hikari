@@ -4,6 +4,7 @@ import SystemSettingsModule from './SystemSettingsModule'
 import { translations } from '../i18n'
 
 function SystemSettingsCanvas(props: {
+  requestRateLimit?: number
   count?: number
   rebalanceEnabled?: boolean
   rebalancePercent?: number
@@ -17,6 +18,7 @@ function SystemSettingsCanvas(props: {
       <SystemSettingsModule
         strings={translations.zh.admin.systemSettings}
         settings={{
+          requestRateLimit: props.requestRateLimit ?? 100,
           mcpSessionAffinityKeyCount: props.count ?? 5,
           rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
           rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
@@ -45,6 +47,7 @@ const meta = {
   args: {
     strings: translations.zh.admin.systemSettings,
     settings: {
+      requestRateLimit: 100,
       mcpSessionAffinityKeyCount: 5,
       rebalanceMcpEnabled: false,
       rebalanceMcpSessionPercent: 100,
@@ -82,4 +85,8 @@ export const ErrorState: Story = {
 
 export const HelpBubbleOpen: Story = {
   render: () => <SystemSettingsCanvas helpBubbleOpen />,
+}
+
+export const RequestRateEdited: Story = {
+  render: () => <SystemSettingsCanvas requestRateLimit={80} rebalanceEnabled rebalancePercent={35} />,
 }

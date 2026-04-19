@@ -813,6 +813,11 @@ async fn mcp_session_affinity_settings_rebalance_new_sessions_without_breaking_e
         Some(5),
         "default affinity pool size should stay 5"
     );
+    assert_eq!(
+        settings["systemSettings"]["requestRateLimit"].as_i64(),
+        Some(100),
+        "default request-rate limit should stay 100"
+    );
 
     let token = create_test_token(&base_url).await;
     let token_id = token_id_from_secret(&token).to_string();
@@ -830,6 +835,11 @@ async fn mcp_session_affinity_settings_rebalance_new_sessions_without_breaking_e
         updated["mcpSessionAffinityKeyCount"].as_i64(),
         Some(2),
         "system settings should apply immediately"
+    );
+    assert_eq!(
+        updated["requestRateLimit"].as_i64(),
+        Some(100),
+        "legacy affinity-only payload should preserve request-rate limit"
     );
 
     let mut initial_secrets = Vec::new();
@@ -859,6 +869,7 @@ async fn mcp_session_affinity_settings_rebalance_new_sessions_without_breaking_e
         Some(3),
         "increasing affinity pool size should persist"
     );
+    assert_eq!(expanded["requestRateLimit"].as_i64(), Some(100));
 
     let expanded_session = initialize_mcp_session(&base_url, &token, "expanded").await;
     notify_initialized(&base_url, &token, &expanded_session).await;
@@ -875,6 +886,7 @@ async fn mcp_session_affinity_settings_rebalance_new_sessions_without_breaking_e
         Some(2),
         "shrinking affinity pool size should persist"
     );
+    assert_eq!(shrunken["requestRateLimit"].as_i64(), Some(100));
 
     let mut shrunken_secrets = Vec::new();
     for idx in 0..4 {
@@ -957,6 +969,7 @@ async fn mcp_session_affinity_prefers_user_subject_over_individual_token_subject
         Some(2),
         "user-priority E2E should run with a 2-key affinity pool"
     );
+    assert_eq!(updated["requestRateLimit"].as_i64(), Some(100));
 
     let key_records = fetch_api_key_records(&db_path).await;
     let user_id = "e2e-user-priority";
@@ -1077,6 +1090,7 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     let token = create_test_token(&base_url).await;
     let updated = put_affinity_count(&base_url, 2).await;
     assert_eq!(updated["mcpSessionAffinityKeyCount"].as_i64(), Some(2));
+    assert_eq!(updated["requestRateLimit"].as_i64(), Some(100));
 
     let expected_top2_ids = rank_top_key_ids(
         &format!("token:{}", token_id_from_secret(&token)),

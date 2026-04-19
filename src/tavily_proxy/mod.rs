@@ -4,6 +4,7 @@ use crate::store::*;
 use crate::*;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 #[derive(Clone, Debug)]
 struct TokenQuota {
@@ -20,7 +21,7 @@ struct TokenQuota {
 struct TokenRequestLimit {
     store: Arc<KeyStore>,
     backend: RequestRateLimitBackend,
-    request_limit: i64,
+    request_limit: Arc<AtomicI64>,
     window_minutes: i64,
     window_secs: i64,
 }
@@ -970,10 +971,21 @@ impl TokenRequestLimit {
             backend: RequestRateLimitBackend::Memory(Arc::new(
                 MemoryRequestRateLimitBackend::default(),
             )),
-            request_limit: request_rate_limit(),
+            request_limit: Arc::new(AtomicI64::new(request_rate_limit())),
             window_minutes: request_rate_limit_window_minutes(),
             window_secs: request_rate_limit_window_secs(),
         }
+    }
+
+    pub(crate) fn current_request_limit(&self) -> i64 {
+        self.request_limit
+            .load(Ordering::Relaxed)
+            .max(REQUEST_RATE_LIMIT_MIN)
+    }
+
+    pub(crate) fn set_request_limit(&self, request_limit: i64) {
+        self.request_limit
+            .store(request_limit.max(REQUEST_RATE_LIMIT_MIN), Ordering::Relaxed);
     }
 
     pub(crate) async fn check(
@@ -982,12 +994,13 @@ impl TokenRequestLimit {
     ) -> Result<TokenHourlyRequestVerdict, ProxyError> {
         let now_ts = Utc::now().timestamp();
         let subject = self.resolve_subject_for_token(token_id).await?;
+        let request_limit = self.current_request_limit();
         Ok(self
             .backend
             .check(
                 &subject,
                 now_ts,
-                self.request_limit,
+                request_limit,
                 self.window_minutes,
                 self.window_secs,
             )
@@ -1004,6 +1017,7 @@ impl TokenRequestLimit {
             return Ok(HashMap::new());
         }
         let now_ts = Utc::now().timestamp();
+        let request_limit = self.current_request_limit();
         let subjects_by_token = self.resolve_subjects_for_tokens(token_ids).await?;
         let mut unique_subjects: Vec<RequestRateSubject> =
             subjects_by_token.values().cloned().collect();
@@ -1014,7 +1028,7 @@ impl TokenRequestLimit {
             .snapshot_many(
                 &unique_subjects,
                 now_ts,
-                self.request_limit,
+                request_limit,
                 self.window_minutes,
                 self.window_secs,
             )
@@ -1038,6 +1052,7 @@ impl TokenRequestLimit {
             return Ok(HashMap::new());
         }
         let now_ts = Utc::now().timestamp();
+        let request_limit = self.current_request_limit();
         let mut unique_subjects: Vec<RequestRateSubject> = user_ids
             .iter()
             .map(|user_id| RequestRateSubject::user(user_id))
@@ -1049,7 +1064,7 @@ impl TokenRequestLimit {
             .snapshot_many(
                 &unique_subjects,
                 now_ts,
-                self.request_limit,
+                request_limit,
                 self.window_minutes,
                 self.window_secs,
             )

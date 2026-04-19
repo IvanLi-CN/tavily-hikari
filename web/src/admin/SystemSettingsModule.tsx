@@ -26,6 +26,12 @@ function isValidCountDraft(value: string): value is `${number}` {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1000
 }
 
+function isValidRequestRateLimitDraft(value: string): value is `${number}` {
+  if (!/^\d+$/.test(value)) return false
+  const parsed = Number.parseInt(value, 10)
+  return Number.isSafeInteger(parsed) && parsed >= 1
+}
+
 function isValidPercentDraft(value: string): value is `${number}` {
   if (!/^\d+$/.test(value)) return false
   const parsed = Number.parseInt(value, 10)
@@ -58,6 +64,7 @@ function SystemSettingsHelpBubble({
           <div style={{ display: 'grid', gap: 8 }}>
             <p>{strings.description}</p>
             <p>{strings.form.description}</p>
+            <p>{strings.form.requestRateLimitHint}</p>
             <p>{strings.form.countHint}</p>
             <p>{strings.form.rebalanceHint}</p>
             <p>{strings.form.percentHint}</p>
@@ -78,6 +85,9 @@ export default function SystemSettingsModule({
   helpBubbleOpen,
   onApply,
 }: SystemSettingsModuleProps): JSX.Element {
+  const [draftRequestRateLimit, setDraftRequestRateLimit] = useState(() =>
+    settings ? String(settings.requestRateLimit) : '100',
+  )
   const [draftCount, setDraftCount] = useState(() =>
     settings ? String(settings.mcpSessionAffinityKeyCount) : '',
   )
@@ -89,30 +99,40 @@ export default function SystemSettingsModule({
   )
 
   useEffect(() => {
+    setDraftRequestRateLimit(settings ? String(settings.requestRateLimit) : '100')
     setDraftCount(settings ? String(settings.mcpSessionAffinityKeyCount) : '')
     setDraftRebalanceEnabled(settings?.rebalanceMcpEnabled ?? false)
     setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
   }, [
+    settings?.requestRateLimit,
     settings?.mcpSessionAffinityKeyCount,
     settings?.rebalanceMcpEnabled,
     settings?.rebalanceMcpSessionPercent,
   ])
 
+  const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
   const normalizedPercent = draftPercent.trim()
+  const parsedRequestRateLimit = isValidRequestRateLimitDraft(normalizedRequestRateLimit)
+    ? Number.parseInt(normalizedRequestRateLimit, 10)
+    : null
   const parsedCount = isValidCountDraft(normalizedCount) ? Number.parseInt(normalizedCount, 10) : null
   const parsedPercent = isValidPercentDraft(normalizedPercent)
     ? Number.parseInt(normalizedPercent, 10)
     : null
   const changed =
     settings != null &&
+    parsedRequestRateLimit != null &&
     parsedCount != null &&
     parsedPercent != null &&
-    (parsedCount !== settings.mcpSessionAffinityKeyCount ||
+    (parsedRequestRateLimit !== settings.requestRateLimit ||
+      parsedCount !== settings.mcpSessionAffinityKeyCount ||
       draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
       parsedPercent !== settings.rebalanceMcpSessionPercent)
   const inlineError =
-    normalizedCount.length > 0 && parsedCount == null
+    normalizedRequestRateLimit.length > 0 && parsedRequestRateLimit == null
+      ? strings.form.invalidRequestRateLimit
+      : normalizedCount.length > 0 && parsedCount == null
       ? strings.form.invalidCount
       : normalizedPercent.length > 0 && parsedPercent == null
         ? strings.form.invalidPercent
@@ -141,6 +161,32 @@ export default function SystemSettingsModule({
           </div>
 
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(220px, 420px)' }}>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-request-rate-limit">
+                {strings.form.requestRateLimitLabel}
+              </label>
+              <Input
+                id="system-settings-request-rate-limit"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                step={1}
+                value={draftRequestRateLimit}
+                disabled={saving}
+                onChange={(event) => setDraftRequestRateLimit(event.target.value)}
+                aria-invalid={inlineError ? true : undefined}
+              />
+              {settings && (
+                <p className="text-xs text-muted-foreground">
+                  {strings.form.currentRequestRateLimitValue.replace(
+                    '{count}',
+                    String(settings.requestRateLimit),
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">{strings.form.requestRateLimitHint}</p>
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <label className="text-sm font-medium" htmlFor="system-settings-affinity-count">
                 {strings.form.countLabel}
@@ -239,14 +285,27 @@ export default function SystemSettingsModule({
             <Button
               type="button"
               onClick={() => {
-                if (parsedCount == null || parsedPercent == null || saving || !changed) return
+                if (
+                  parsedRequestRateLimit == null ||
+                  parsedCount == null ||
+                  parsedPercent == null ||
+                  saving ||
+                  !changed
+                ) return
                 void onApply({
+                  requestRateLimit: parsedRequestRateLimit,
                   mcpSessionAffinityKeyCount: parsedCount,
                   rebalanceMcpEnabled: draftRebalanceEnabled,
                   rebalanceMcpSessionPercent: parsedPercent,
                 })
               }}
-              disabled={saving || !changed || parsedCount == null || parsedPercent == null}
+              disabled={
+                saving ||
+                !changed ||
+                parsedRequestRateLimit == null ||
+                parsedCount == null ||
+                parsedPercent == null
+              }
               data-testid="system-settings-apply"
             >
               <Icon

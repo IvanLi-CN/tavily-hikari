@@ -877,6 +877,18 @@
         )
         .await
         .expect("proxy created");
+        let configured_limit = 4;
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: configured_limit,
+                mcp_session_affinity_key_count:
+                    tavily_hikari::MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT,
+                rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
+                rebalance_mcp_session_percent:
+                    tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+            })
+            .await
+            .expect("set request-rate limit");
 
         let access_token = proxy
             .create_access_token(Some("hourly-any-e2e"))
@@ -907,7 +919,7 @@
             first.status()
         );
 
-        for _ in 1..request_rate_limit() {
+        for _ in 1..configured_limit {
             let verdict = proxy
                 .check_token_hourly_requests(&access_token.id)
                 .await
@@ -915,7 +927,7 @@
             assert!(verdict.allowed, "prefill raw limiter should stay allowed");
         }
 
-        // 61st request should be blocked by request-rate limiter before upstream.
+        // Next request should be blocked by request-rate limiter before upstream.
         let second = client
             .post(url)
             .json(&serde_json::json!({
@@ -943,7 +955,7 @@
                 .get("requestRate")
                 .and_then(|value| value.get("limit"))
                 .and_then(|value| value.as_i64()),
-            Some(request_rate_limit())
+            Some(configured_limit)
         );
         assert_eq!(
             second_body
@@ -1077,6 +1089,18 @@
         )
         .await
         .expect("proxy created");
+        let configured_limit = 3;
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: configured_limit,
+                mcp_session_affinity_key_count:
+                    tavily_hikari::MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT,
+                rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
+                rebalance_mcp_session_percent:
+                    tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+            })
+            .await
+            .expect("set request-rate limit");
 
         let access_token = proxy
             .create_access_token(Some("hourly-any-map"))
@@ -1091,7 +1115,7 @@
         let client = Client::new();
         let url = format!("http://{}/api/tavily/map", proxy_addr);
 
-        for _ in 0..request_rate_limit() {
+        for _ in 0..configured_limit {
             let verdict = proxy
                 .check_token_hourly_requests(&access_token.id)
                 .await
@@ -1121,6 +1145,73 @@
             .expect("429 response should include Retry-After");
         assert!(retry_after > 0);
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_hot_updates_request_rate_limit_without_clearing_existing_window() {
+        let db_path = temp_db_path("http-search-hot-request-rate-limit");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-search-hot-limit";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("hourly-any-hot-update"))
+            .await
+            .expect("create token");
+
+        for _ in 0..2 {
+            let verdict = proxy
+                .check_token_hourly_requests(&access_token.id)
+                .await
+                .expect("prefill request-rate window");
+            assert!(verdict.allowed, "prefill raw limiter should stay allowed");
+        }
+
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: 2,
+                mcp_session_affinity_key_count:
+                    tavily_hikari::MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT,
+                rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
+                rebalance_mcp_session_percent:
+                    tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+            })
+            .await
+            .expect("lower request-rate limit");
+
+        let (upstream_addr, hits) =
+            spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let blocked = Client::new()
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "query": "hot update blocked"
+            }))
+            .send()
+            .await
+            .expect("blocked request");
+
+        assert_eq!(blocked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "request should stop before upstream");
+        let body: Value = blocked.json().await.expect("429 json body");
+        assert_eq!(
+            body.get("requestRate")
+                .and_then(|value| value.get("limit"))
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2445,4 +2536,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

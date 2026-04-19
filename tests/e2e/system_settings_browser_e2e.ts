@@ -179,17 +179,31 @@ async function waitForInputValue(
   );
 }
 
-async function assertServerSetting(baseUrl: string, expected: number) {
+async function assertServerSetting(
+  baseUrl: string,
+  expected: { requestRateLimit: number; mcpSessionAffinityKeyCount: number },
+) {
   const response = await fetch(`${baseUrl}/api/settings`);
   if (!response.ok) {
     throw new Error(`GET /api/settings failed with ${response.status}`);
   }
   const payload = (await response.json()) as {
-    systemSettings?: { mcpSessionAffinityKeyCount?: number };
+    systemSettings?: {
+      requestRateLimit?: number;
+      mcpSessionAffinityKeyCount?: number;
+    };
   };
-  const actual = payload.systemSettings?.mcpSessionAffinityKeyCount;
-  if (actual !== expected) {
-    throw new Error(`expected server setting ${expected}, got ${actual ?? "undefined"}`);
+  const actualRequestRateLimit = payload.systemSettings?.requestRateLimit;
+  const actualAffinityCount = payload.systemSettings?.mcpSessionAffinityKeyCount;
+  if (actualRequestRateLimit !== expected.requestRateLimit) {
+    throw new Error(
+      `expected requestRateLimit ${expected.requestRateLimit}, got ${actualRequestRateLimit ?? "undefined"}`,
+    );
+  }
+  if (actualAffinityCount !== expected.mcpSessionAffinityKeyCount) {
+    throw new Error(
+      `expected mcpSessionAffinityKeyCount ${expected.mcpSessionAffinityKeyCount}, got ${actualAffinityCount ?? "undefined"}`,
+    );
   }
 }
 
@@ -263,7 +277,9 @@ async function main() {
 
     log("Opening /admin/system-settings");
     await page.goto(`${baseUrl}/admin/system-settings`, { waitUntil: "domcontentloaded" });
+    await page.locator("#system-settings-request-rate-limit").waitFor({ state: "visible" });
     await page.locator("#system-settings-affinity-count").waitFor({ state: "visible" });
+    await waitForInputValue(page, "#system-settings-request-rate-limit", "100");
     await waitForInputValue(page, "#system-settings-affinity-count", "5");
 
     const applyButton = page.getByTestId("system-settings-apply");
@@ -271,9 +287,18 @@ async function main() {
       throw new Error("apply button should be disabled before any changes");
     }
 
+    await page.locator("#system-settings-request-rate-limit").fill("0");
+    await page.getByText("Enter a safe integer greater than or equal to 1.").waitFor({
+      state: "visible",
+    });
+    if (await applyButton.isEnabled()) {
+      throw new Error("apply button should stay disabled for an invalid request-rate limit");
+    }
+
+    await page.locator("#system-settings-request-rate-limit").fill("75");
     await page.locator("#system-settings-affinity-count").fill("3");
     if (!(await applyButton.isEnabled())) {
-      throw new Error("apply button should enable after editing the affinity count");
+      throw new Error("apply button should enable after editing valid system settings");
     }
 
     const saveResponse = page.waitForResponse(
@@ -315,11 +340,16 @@ async function main() {
       { timeout: 10_000 },
     );
 
-    await assertServerSetting(baseUrl, 3);
+    await assertServerSetting(baseUrl, {
+      requestRateLimit: 75,
+      mcpSessionAffinityKeyCount: 3,
+    });
 
     log("Reloading page to verify the saved value persists");
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator("#system-settings-request-rate-limit").waitFor({ state: "visible" });
     await page.locator("#system-settings-affinity-count").waitFor({ state: "visible" });
+    await waitForInputValue(page, "#system-settings-request-rate-limit", "75");
     await waitForInputValue(page, "#system-settings-affinity-count", "3");
 
     log("Browser E2E passed");

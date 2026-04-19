@@ -522,6 +522,9 @@ export interface AdminTranslationsShape {
     form: {
       title: string
       description: string
+      requestRateLimitLabel: string
+      requestRateLimitHint: string
+      currentRequestRateLimitValue: string
       countLabel: string
       countHint: string
       currentValue: string
@@ -532,6 +535,7 @@ export interface AdminTranslationsShape {
       percentDisabledHint: string
       currentPercentValue: string
       applyScopeHint: string
+      invalidRequestRateLimit: string
       invalidCount: string
       invalidPercent: string
       saveFailed: string
