@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
@@ -173,16 +173,72 @@ export function AlertsCenterStoryShell({ initialSearch = alertsPath() }: { initi
         onNavigate={setSearch}
         onOpenUser={() => {}}
         onOpenToken={() => {}}
-      onOpenKey={() => {}}
-      formatTime={formatTs}
-      formatTimeDetail={formatTs}
-      initialCatalog={catalog}
-      initialEventsPage={{ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }}
-      initialGroupsPage={groupsPage}
-      disableAutoLoad
-      catalogLoader={async () => catalog}
-      eventsLoader={async () => ({ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents })}
-      groupsLoader={async () => groupsPage}
+        onOpenKey={() => {}}
+        formatTime={formatTs}
+        formatTimeDetail={formatTs}
+        initialCatalog={catalog}
+        initialEventsPage={{ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }}
+        initialGroupsPage={groupsPage}
+        disableAutoLoad
+        catalogLoader={async () => catalog}
+        eventsLoader={async () => ({ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents })}
+        groupsLoader={async () => groupsPage}
+        requestLoader={async (requestId) => requestBodies[requestId] ?? { request_body: null, response_body: null }}
+      />
+    </div>
+  )
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+export function AlertsCenterRefreshingStoryShell({
+  initialSearch = alertsPath({ view: 'events', requestKinds: ['tavily_search'] }),
+}: { initialSearch?: string }): JSX.Element {
+  const [search, setSearch] = useState(initialSearch.replace('/admin/alerts', ''))
+  const [refreshToken, setRefreshToken] = useState(0)
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setRefreshToken(1)
+    }, 220)
+    return () => window.clearTimeout(id)
+  }, [])
+
+  const delayedCatalogLoader = useMemo(() => async () => {
+    await wait(420)
+    return catalog
+  }, [])
+
+  const delayedEventsLoader = useMemo(() => async () => {
+    await wait(420)
+    return { page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }
+  }, [])
+
+  const delayedGroupsLoader = useMemo(() => async () => {
+    await wait(420)
+    return groupsPage
+  }, [])
+
+  return (
+    <div style={{ padding: 24, background: 'hsl(var(--background))' }}>
+      <AlertsCenter
+        language="zh"
+        search={search}
+        refreshToken={refreshToken}
+        onNavigate={setSearch}
+        onOpenUser={() => {}}
+        onOpenToken={() => {}}
+        onOpenKey={() => {}}
+        formatTime={formatTs}
+        formatTimeDetail={formatTs}
+        initialCatalog={catalog}
+        initialEventsPage={{ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }}
+        initialGroupsPage={groupsPage}
+        catalogLoader={delayedCatalogLoader}
+        eventsLoader={delayedEventsLoader}
+        groupsLoader={delayedGroupsLoader}
         requestLoader={async (requestId) => requestBodies[requestId] ?? { request_body: null, response_body: null }}
       />
     </div>
@@ -216,5 +272,23 @@ export const EventsDefault: Story = {
 export const GroupsView: Story = {
   args: {
     initialSearch: alertsPath({ view: 'groups', type: 'upstream_key_blocked', requestKinds: ['mcp_search'] }),
+  },
+}
+
+export const BackgroundRefreshKeepsRows: Story = {
+  render: (args) => <AlertsCenterRefreshingStoryShell {...args} />,
+  args: {
+    initialSearch: alertsPath({ view: 'events', requestKinds: ['tavily_search'] }),
+  },
+  play: async ({ canvasElement }) => {
+    await wait(260)
+    const placeholder = canvasElement.querySelector('.alerts-center-table-shell .admin-loading-region-placeholder')
+    if (placeholder) {
+      throw new Error('Expected background refresh to keep the current rows visible instead of switching to a blocking skeleton.')
+    }
+    const text = canvasElement.textContent ?? ''
+    if (!text.includes('用户额度耗尽')) {
+      throw new Error('Expected background refresh story to keep the loaded event row visible during refresh.')
+    }
   },
 }
