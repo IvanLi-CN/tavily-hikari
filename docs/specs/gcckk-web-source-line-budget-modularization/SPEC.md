@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成
 - Created: 2026-04-19
 - Last: 2026-04-19
 
@@ -123,4 +123,4 @@
 - [x] M2: 拆分 `api` / `i18n` / `styles` 与 admin shared helpers
 - [x] M3: 拆分 `AdminDashboard` / `UserConsole` / `AdminPages.stories`
 - [x] M4: 新增前端 budget test 与 CI 接线
-- [ ] M5: 完成验证与 PR review-loop 收敛到 merge-ready
+- [x] M5: 完成验证与 PR review-loop 收敛到 merge-ready
