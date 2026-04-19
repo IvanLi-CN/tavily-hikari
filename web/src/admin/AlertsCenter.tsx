@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   AlertCatalog,
@@ -11,7 +11,7 @@ import type {
 } from '../api'
 import { fetchAlertCatalog, fetchAlertEvents, fetchAlertGroups, fetchRequestLogDetails } from '../api'
 import type { Language } from '../i18n'
-import type { QueryLoadState } from './queryLoadState'
+import { getBlockingLoadState, getRefreshingLoadState, type QueryLoadState } from './queryLoadState'
 import {
   alertsPath,
   getAlertKeyIdFromSearch,
@@ -256,6 +256,33 @@ function paginationSummary(copy: ReturnType<typeof defaultCopy>, total: number, 
   return `${total} · ${page}/${totalPageCount}`
 }
 
+interface AlertsSearchState {
+  view: AlertsCenterView
+  type: AlertType | null
+  since: string | null
+  until: string | null
+  userId: string | null
+  tokenId: string | null
+  keyId: string | null
+  requestKinds: string[]
+  page: number
+}
+
+function listQueryKey(view: AlertsCenterView, query: AlertsQuery): string {
+  return JSON.stringify({
+    view,
+    page: query.page ?? 1,
+    perPage: query.perPage ?? 20,
+    type: query.type ?? null,
+    since: query.since ?? null,
+    until: query.until ?? null,
+    userId: query.userId ?? null,
+    tokenId: query.tokenId ?? null,
+    keyId: query.keyId ?? null,
+    requestKinds: [...(query.requestKinds ?? [])],
+  })
+}
+
 interface AlertsCenterProps {
   language: Language
   search: string
@@ -296,15 +323,21 @@ export default function AlertsCenter({
   disableAutoLoad = false,
 }: AlertsCenterProps): JSX.Element {
   const copy = useMemo(() => defaultCopy(language), [language])
-  const view = getAlertsViewFromSearch(search)
-  const type = getAlertTypeFromSearch(search) as AlertType | null
-  const since = getAlertSinceFromSearch(search)
-  const until = getAlertUntilFromSearch(search)
-  const userId = getAlertUserIdFromSearch(search)
-  const tokenId = getAlertTokenIdFromSearch(search)
-  const keyId = getAlertKeyIdFromSearch(search)
-  const requestKinds = getAlertRequestKindsFromSearch(search)
-  const page = getAlertPageFromSearch(search)
+  const searchState = useMemo<AlertsSearchState>(
+    () => ({
+      view: getAlertsViewFromSearch(search),
+      type: getAlertTypeFromSearch(search) as AlertType | null,
+      since: getAlertSinceFromSearch(search),
+      until: getAlertUntilFromSearch(search),
+      userId: getAlertUserIdFromSearch(search),
+      tokenId: getAlertTokenIdFromSearch(search),
+      keyId: getAlertKeyIdFromSearch(search),
+      requestKinds: getAlertRequestKindsFromSearch(search),
+      page: getAlertPageFromSearch(search),
+    }),
+    [search],
+  )
+  const { view, type, since, until, userId, tokenId, keyId, requestKinds, page } = searchState
 
   const [draftSince, setDraftSince] = useState(() => isoToDateTimeLocal(since))
   const [draftUntil, setDraftUntil] = useState(() => isoToDateTimeLocal(until))
@@ -323,6 +356,28 @@ export default function AlertsCenter({
   const [requestBodies, setRequestBodies] = useState<RequestLogBodies | null>(null)
   const [requestLoadState, setRequestLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestLoadError, setRequestLoadError] = useState<string | null>(null)
+  const hasLoadedCatalogRef = useRef(Boolean(initialCatalog))
+  const currentPerPage = view === 'events' ? eventsPage.perPage : groupsPage.perPage
+  const currentListQuery = useMemo<AlertsQuery>(
+    () => ({
+      page,
+      perPage: currentPerPage,
+      type,
+      since,
+      until,
+      userId,
+      tokenId,
+      keyId,
+      requestKinds,
+    }),
+    [currentPerPage, keyId, page, requestKinds, since, tokenId, type, until, userId],
+  )
+  const currentListQueryKey = useMemo(() => listQueryKey(view, currentListQuery), [currentListQuery, view])
+  const hasInitialListPage = Boolean(view === 'events' ? initialEventsPage : initialGroupsPage)
+  const hasLoadedListRef = useRef(hasInitialListPage)
+  const lastListQueryKeyRef = useRef<string | null>(
+    hasInitialListPage ? currentListQueryKey : null,
+  )
 
   useEffect(() => {
     setDraftSince(isoToDateTimeLocal(since))
@@ -352,17 +407,20 @@ export default function AlertsCenter({
   useEffect(() => {
     if (disableAutoLoad) return
     const controller = new AbortController()
-    setCatalogLoadState((current) => (current === 'ready' ? 'refreshing' : 'initial_loading'))
+    setCatalogLoadState(hasLoadedCatalogRef.current ? 'refreshing' : 'initial_loading')
     setCatalogError(null)
     catalogLoader(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return
+        hasLoadedCatalogRef.current = true
         setCatalog(value)
         setCatalogLoadState('ready')
       })
       .catch((error) => {
         if (controller.signal.aborted) return
-        setCatalog(null)
+        if (!hasLoadedCatalogRef.current) {
+          setCatalog(null)
+        }
         setCatalogError(error instanceof Error ? error.message : 'Failed to load alert catalog')
         setCatalogLoadState('error')
       })
@@ -372,25 +430,21 @@ export default function AlertsCenter({
   useEffect(() => {
     if (disableAutoLoad) return
     const controller = new AbortController()
-    setListLoadState((current) => (current === 'ready' ? 'refreshing' : 'initial_loading'))
+    const queryChanged = lastListQueryKeyRef.current !== currentListQueryKey
+    setListLoadState(
+      queryChanged
+        ? getBlockingLoadState(hasLoadedListRef.current)
+        : getRefreshingLoadState(hasLoadedListRef.current),
+    )
     setListError(null)
-    const query = {
-      page,
-      perPage: view === 'events' ? eventsPage.perPage : groupsPage.perPage,
-      type,
-      since,
-      until,
-      userId,
-      tokenId,
-      keyId,
-      requestKinds,
-    }
+    lastListQueryKeyRef.current = currentListQueryKey
     const loader = view === 'events'
-      ? eventsLoader(query, controller.signal)
-      : groupsLoader(query, controller.signal)
+      ? eventsLoader(currentListQuery, controller.signal)
+      : groupsLoader(currentListQuery, controller.signal)
     loader
       .then((value) => {
         if (controller.signal.aborted) return
+        hasLoadedListRef.current = true
         if (view === 'events') {
           setEventsPage(value as AlertsPage<AlertEvent>)
         } else {
@@ -401,29 +455,21 @@ export default function AlertsCenter({
       .catch((error) => {
         if (controller.signal.aborted) return
         if (view === 'events') {
-          setEventsPage({ ...EMPTY_ALERT_EVENTS_PAGE, page, perPage: query.perPage ?? 20 })
+          setEventsPage({ ...EMPTY_ALERT_EVENTS_PAGE, page, perPage: currentListQuery.perPage ?? 20 })
         } else {
-          setGroupsPage({ ...EMPTY_ALERT_GROUPS_PAGE, page, perPage: query.perPage ?? 20 })
+          setGroupsPage({ ...EMPTY_ALERT_GROUPS_PAGE, page, perPage: currentListQuery.perPage ?? 20 })
         }
         setListError(error instanceof Error ? error.message : 'Failed to load alerts')
         setListLoadState('error')
       })
     return () => controller.abort()
   }, [
+    currentListQuery,
+    currentListQueryKey,
     disableAutoLoad,
     eventsLoader,
-    eventsPage.perPage,
     groupsLoader,
-    groupsPage.perPage,
-    keyId,
-    page,
     refreshToken,
-    requestKinds,
-    since,
-    tokenId,
-    type,
-    until,
-    userId,
     view,
   ])
 
