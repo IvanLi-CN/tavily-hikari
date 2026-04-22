@@ -62,6 +62,7 @@ function alertTypeTone(type: AlertType): StatusTone {
     case 'upstream_key_blocked':
     case 'user_quota_exhausted':
       return 'error'
+    case 'upstream_usage_limit_432':
     case 'upstream_rate_limited_429':
     case 'user_request_rate_limited':
       return 'warning'
@@ -119,7 +120,7 @@ function defaultCopy(language: Language) {
   return language === 'zh'
     ? {
         title: '告警中心',
-        description: '查看 429、上游 Key 封禁、本地请求限流与额度耗尽事件，并按同一筛选口径聚合。',
+        description: '查看 429、上游用量限制 432、上游 Key 封禁、本地请求限流与额度耗尽事件，并按同一筛选口径聚合。',
         tabs: { events: '事件记录', groups: '聚合告警' },
         filters: {
           type: '告警类型',
@@ -178,6 +179,7 @@ function defaultCopy(language: Language) {
         },
         types: {
           upstream_rate_limited_429: '上游 429',
+          upstream_usage_limit_432: '上游用量限制 432',
           upstream_key_blocked: '上游 Key 封禁',
           user_request_rate_limited: '用户请求限流',
           user_quota_exhausted: '用户额度耗尽',
@@ -185,7 +187,7 @@ function defaultCopy(language: Language) {
       }
     : {
         title: 'Alerts',
-        description: 'Review upstream 429s, upstream key blocks, local request-rate limits, and quota exhaustion with shared filters.',
+        description: 'Review upstream 429s, upstream usage-limit 432 events, upstream key blocks, local request-rate limits, and quota exhaustion with shared filters.',
         tabs: { events: 'Events', groups: 'Groups' },
         filters: {
           type: 'Alert type',
@@ -244,6 +246,7 @@ function defaultCopy(language: Language) {
         },
         types: {
           upstream_rate_limited_429: 'Upstream 429',
+          upstream_usage_limit_432: 'Upstream usage limit 432',
           upstream_key_blocked: 'Upstream key blocked',
           user_request_rate_limited: 'User request rate limited',
           user_quota_exhausted: 'User quota exhausted',

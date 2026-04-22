@@ -15,6 +15,7 @@ struct RawAuthTokenAlertRow {
     token_id: String,
     key_id: Option<String>,
     request_log_id: Option<i64>,
+    tavily_status_code: Option<i64>,
     method: String,
     path: String,
     query: Option<String>,
@@ -206,6 +207,12 @@ fn build_alert_title_and_summary(
                 "Token {token_label} received an upstream 429 response for {request_kind_label}."
             ),
         ),
+        ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432 => (
+            format!("{subject_label} hit Tavily usage limit"),
+            format!(
+                "Token {token_label} received Tavily usage-limit 432 for {request_kind_label} via key {key_label}."
+            ),
+        ),
         ALERT_TYPE_UPSTREAM_KEY_BLOCKED => (
             format!("Upstream key {key_label} was blocked"),
             format!("Maintenance evidence marked key {key_label} as blocked.{reason_suffix}"),
@@ -255,8 +262,9 @@ impl KeyStore {
             SELECT
                 atl.id,
                 atl.token_id,
-                atl.api_key_id,
+                COALESCE(atl.api_key_id, rl.api_key_id) AS api_key_id,
                 atl.request_log_id,
+                rl.tavily_status_code,
                 atl.method,
                 atl.path,
                 atl.query,
@@ -272,6 +280,7 @@ impl KeyStore {
                 u.display_name AS user_display_name,
                 u.username AS user_username
             FROM auth_token_logs atl
+            LEFT JOIN request_logs rl ON rl.id = atl.request_log_id
             LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
             LEFT JOIN users u ON u.id = b.user_id
             WHERE (
@@ -294,7 +303,8 @@ impl KeyStore {
             query.push(" AND atl.token_id = ").push_bind(token_id);
         }
         if let Some(key_id) = filters.key_id {
-            query.push(" AND atl.api_key_id = ").push_bind(key_id);
+            query.push(" AND COALESCE(atl.api_key_id, rl.api_key_id) = ")
+                .push_bind(key_id);
         }
         query.push(" ORDER BY atl.created_at DESC, atl.id DESC");
 
@@ -309,6 +319,7 @@ impl KeyStore {
                     token_id: row.try_get("token_id")?,
                     key_id: row.try_get("api_key_id")?,
                     request_log_id: row.try_get("request_log_id")?,
+                    tavily_status_code: row.try_get("tavily_status_code")?,
                     method: row.try_get("method")?,
                     path: row.try_get("path")?,
                     query: row.try_get("query")?,
@@ -331,6 +342,10 @@ impl KeyStore {
                 let alert_type =
                     if row.failure_kind.as_deref() == Some(ALERT_TYPE_UPSTREAM_RATE_LIMITED_429) {
                         ALERT_TYPE_UPSTREAM_RATE_LIMITED_429.to_string()
+                    } else if row.result_status == "quota_exhausted"
+                        && row.tavily_status_code == Some(432)
+                    {
+                        ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432.to_string()
                     } else if row.result_status == "quota_exhausted" && !row.counts_business_quota {
                         ALERT_TYPE_USER_REQUEST_RATE_LIMITED.to_string()
                     } else if row.result_status == "quota_exhausted" {

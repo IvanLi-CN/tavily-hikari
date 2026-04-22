@@ -149,14 +149,17 @@ impl TavilyProxy {
         user_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let lease = self
-            .key_store
-            .acquire_active_key_excluding(old_key_id)
-            .await?;
+        let lease = match self.key_store.acquire_active_key_excluding(old_key_id).await {
+            Ok(lease) => lease,
+            Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
+            Err(err) => return Err(err),
+        };
         self.key_store
             .sync_user_primary_api_key_affinity(user_id, &lease.id)
             .await?;
-        if let Some(old_key_id) = old_key_id {
+        if let Some(old_key_id) = old_key_id
+            && old_key_id != lease.id
+        {
             self.key_store
                 .revoke_mcp_sessions_for_user_key(user_id, old_key_id, "primary_api_key_rebound")
                 .await?;
@@ -169,14 +172,17 @@ impl TavilyProxy {
         token_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let lease = self
-            .key_store
-            .acquire_active_key_excluding(old_key_id)
-            .await?;
+        let lease = match self.key_store.acquire_active_key_excluding(old_key_id).await {
+            Ok(lease) => lease,
+            Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
+            Err(err) => return Err(err),
+        };
         self.key_store
             .set_token_primary_api_key_affinity(token_id, None, &lease.id)
             .await?;
-        if let Some(old_key_id) = old_key_id {
+        if let Some(old_key_id) = old_key_id
+            && old_key_id != lease.id
+        {
             self.key_store
                 .revoke_mcp_sessions_for_token_key(token_id, old_key_id, "primary_api_key_rebound")
                 .await?;
@@ -319,7 +325,11 @@ impl TavilyProxy {
 
         for candidate in ordered {
             let key_id = candidate.key_id.clone();
-            if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_affinity_specific_key(&key_id)
+                .await?
+            {
                 let key_effect = if preferred_key_id.as_deref() == Some(key_id.as_str()) {
                     preferred_effect.clone()
                 } else {
@@ -493,7 +503,7 @@ impl TavilyProxy {
             if !is_cooled
                 && let Some(lease) = self
                     .key_store
-                    .try_acquire_specific_key(existing_key_id)
+                    .try_acquire_affinity_specific_key(existing_key_id)
                     .await?
             {
                 return Ok(Some(HttpProjectAffinitySelection {
@@ -526,7 +536,11 @@ impl TavilyProxy {
 
         for candidate in ordered {
             let key_id = candidate.key_id.clone();
-            if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_affinity_specific_key(&key_id)
+                .await?
+            {
                 self.key_store
                     .set_http_project_api_key_affinity(
                         &context.owner_subject,
@@ -591,7 +605,7 @@ impl TavilyProxy {
         for candidate in ordered {
             if let Some(lease) = self
                 .key_store
-                .try_acquire_specific_key(&candidate.key_id)
+                .try_acquire_affinity_specific_key(&candidate.key_id)
                 .await?
             {
                 return Ok(lease);
@@ -705,29 +719,35 @@ impl TavilyProxy {
 
             let mut candidates = Vec::new();
             if let Some(user_primary) = user_primary.as_ref() {
-                candidates.push(user_primary.clone());
+                candidates.push((user_primary.clone(), false));
             }
             if let Some(token_primary) = token_primary.as_ref()
                 && token_primary.user_id.as_deref() == Some(user_id.as_str())
                 && !candidates
                     .iter()
-                    .any(|candidate| candidate == &token_primary.api_key_id)
+                    .any(|(candidate, _)| candidate == &token_primary.api_key_id)
             {
-                candidates.push(token_primary.api_key_id.clone());
+                candidates.push((token_primary.api_key_id.clone(), false));
             }
             if let Some(legacy_primary) = legacy_primary.as_ref()
                 && !candidates
                     .iter()
-                    .any(|candidate| candidate == legacy_primary)
+                    .any(|(candidate, _)| candidate == legacy_primary)
             {
-                candidates.push(legacy_primary.clone());
+                candidates.push((legacy_primary.clone(), true));
             }
 
-            for key_id in candidates {
-                if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
-                    self.key_store
-                        .sync_user_primary_api_key_affinity(&user_id, &lease.id)
-                        .await?;
+            for (key_id, sync_on_acquire) in candidates {
+                if let Some(lease) = self
+                    .key_store
+                    .try_acquire_affinity_specific_key(&key_id)
+                    .await?
+                {
+                    if sync_on_acquire {
+                        self.key_store
+                            .sync_user_primary_api_key_affinity(&user_id, &lease.id)
+                            .await?;
+                    }
                     return Ok(lease);
                 }
             }
@@ -752,12 +772,9 @@ impl TavilyProxy {
         {
             if let Some(lease) = self
                 .key_store
-                .try_acquire_specific_key(&token_primary.api_key_id)
+                .try_acquire_affinity_specific_key(&token_primary.api_key_id)
                 .await?
             {
-                self.key_store
-                    .set_token_primary_api_key_affinity(token_id, None, &lease.id)
-                    .await?;
                 return Ok(lease);
             }
 
@@ -803,7 +820,11 @@ impl TavilyProxy {
             }
 
             if let Some(key_id) = candidate_key_id {
-                if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+                if let Some(lease) = self
+                    .key_store
+                    .try_acquire_affinity_specific_key(&key_id)
+                    .await?
+                {
                     return Ok(lease);
                 }
                 return Err(ProxyError::NoAvailableKeys);

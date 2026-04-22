@@ -280,6 +280,7 @@ export interface AdminTranslationsShape {
     recentAlertsOpen: string
     recentAlertsTypeLabels: {
       upstream_rate_limited_429: string
+      upstream_usage_limit_432: string
       upstream_key_blocked: string
       user_request_rate_limited: string
       user_quota_exhausted: string

@@ -298,6 +298,7 @@ export const ZH: TranslationShape = {
         recentAlertsOpen: '打开告警中心',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: '上游 429',
+          upstream_usage_limit_432: '上游用量限制 432',
           upstream_key_blocked: '上游 Key 封禁',
           user_request_rate_limited: '用户请求限流',
           user_quota_exhausted: '用户额度耗尽',
@@ -316,7 +317,7 @@ export const ZH: TranslationShape = {
         },
         alerts: {
           title: '告警中心',
-          description: '查看 429、上游 Key 封禁、本地请求限流与额度耗尽，并按共享筛选聚合。',
+          description: '查看 429、上游用量限制 432、上游 Key 封禁、本地请求限流与额度耗尽，并按共享筛选聚合。',
           sections: {
             rules: '告警规则',
             thresholds: '阈值策略',

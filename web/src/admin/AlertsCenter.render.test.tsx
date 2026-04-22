@@ -11,7 +11,7 @@ import { alertsPath } from './routes'
 const storyCatalog: AlertCatalog = {
   retentionDays: 30,
   types: [
-    { value: 'user_quota_exhausted', count: 2 },
+    { value: 'upstream_usage_limit_432', count: 2 },
     { value: 'upstream_rate_limited_429', count: 1 },
   ],
   requestKindOptions: [
@@ -30,21 +30,21 @@ const storyEvents: AlertsPage<AlertEvent> = {
   items: [
     {
       id: 'alert_evt_001',
-      type: 'user_quota_exhausted',
-      title: '用户额度耗尽',
-      summary: 'Alice Wang 的 Tavily Search 请求触发本地额度上限。',
+      type: 'upstream_usage_limit_432',
+      title: '上游用量限制 432',
+      summary: 'Alice Wang 的 Tavily Search 请求命中了上游 Tavily 用量限制。',
       occurredAt: 1_776_220_680,
       subjectKind: 'user',
       subjectId: 'usr_alice',
       subjectLabel: 'Alice Wang',
       user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
       token: { id: 'tok_ops_01', label: 'tok_ops_01' },
-      key: null,
+      key: { id: 'key_001', label: 'key_001' },
       request: { id: 501, method: 'POST', path: '/api/tavily/search', query: null },
       requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
       failureKind: null,
       resultStatus: 'quota_exhausted',
-      errorMessage: 'quota exhausted',
+      errorMessage: 'This request exceeds your plan\'s set usage limit.',
       reasonCode: null,
       reasonSummary: null,
       reasonDetail: null,
@@ -168,7 +168,7 @@ describe('AlertsCenter loading behavior', () => {
 
     await rerender({ refreshToken: 1 })
     expect(eventsCalls).toBe(2)
-    expect(container.textContent).toContain('用户额度耗尽')
+    expect(container.textContent).toContain('上游用量限制 432')
     expect(container.querySelector('.alerts-center-table-shell .admin-loading-region-placeholder')).toBeNull()
 
     await flushEffects()

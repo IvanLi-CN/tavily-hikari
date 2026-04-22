@@ -12,9 +12,10 @@ const catalog: AlertCatalog = {
   retentionDays: 30,
   types: [
     { value: 'upstream_rate_limited_429', count: 2 },
+    { value: 'upstream_usage_limit_432', count: 1 },
     { value: 'upstream_key_blocked', count: 1 },
     { value: 'user_request_rate_limited', count: 1 },
-    { value: 'user_quota_exhausted', count: 2 },
+    { value: 'user_quota_exhausted', count: 1 },
   ],
   requestKindOptions: [
     { key: 'tavily_search', label: 'Tavily Search', protocol_group: 'api', billing_group: 'billable', count: 4 },
@@ -36,21 +37,21 @@ const catalog: AlertCatalog = {
 const baseEvents: AlertEvent[] = [
   {
     id: 'alert_evt_001',
-    type: 'user_quota_exhausted',
-    title: '用户额度耗尽',
-    summary: 'Alice Wang 的 Tavily Search 请求触发本地额度上限。',
+    type: 'upstream_usage_limit_432',
+    title: '上游用量限制 432',
+    summary: 'Alice Wang 的 Tavily Search 请求命中了上游 Tavily 用量限制。',
     occurredAt: now - 120,
     subjectKind: 'user',
     subjectId: 'usr_alice',
     subjectLabel: 'Alice Wang',
     user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
     token: { id: 'tok_ops_01', label: 'tok_ops_01' },
-    key: null,
+    key: { id: 'key_001', label: 'key_001' },
     request: { id: 501, method: 'POST', path: '/api/tavily/search', query: null },
     requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
     failureKind: null,
     resultStatus: 'quota_exhausted',
-    errorMessage: 'quota exhausted',
+    errorMessage: 'This request exceeds your plan\'s set usage limit.',
     reasonCode: null,
     reasonSummary: null,
     reasonDetail: null,
@@ -108,14 +109,14 @@ const groupsPage: AlertsPage<AlertGroup> = {
   total: 2,
   items: [
     {
-      id: 'group:user_quota_exhausted:user:usr_alice:tavily_search',
-      type: 'user_quota_exhausted',
+      id: 'group:upstream_usage_limit_432:user:usr_alice:tavily_search',
+      type: 'upstream_usage_limit_432',
       subjectKind: 'user',
       subjectId: 'usr_alice',
       subjectLabel: 'Alice Wang',
       user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
       token: { id: 'tok_ops_01', label: 'tok_ops_01' },
-      key: null,
+      key: { id: 'key_001', label: 'key_001' },
       requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
       count: 2,
       firstSeen: now - 1800,
@@ -142,8 +143,8 @@ const groupsPage: AlertsPage<AlertGroup> = {
 
 const requestBodies: Record<number, RequestLogBodies> = {
   501: {
-    request_body: JSON.stringify({ query: 'quota exhausted', max_results: 5 }, null, 2),
-    response_body: JSON.stringify({ error: 'quota exhausted' }, null, 2),
+    request_body: JSON.stringify({ query: 'usage limit', max_results: 5 }, null, 2),
+    response_body: JSON.stringify({ detail: { error: "This request exceeds your plan's set usage limit." } }, null, 2),
   },
   502: {
     request_body: JSON.stringify({ query: '429', max_results: 5 }, null, 2),
@@ -287,7 +288,7 @@ export const BackgroundRefreshKeepsRows: Story = {
       throw new Error('Expected background refresh to keep the current rows visible instead of switching to a blocking skeleton.')
     }
     const text = canvasElement.textContent ?? ''
-    if (!text.includes('用户额度耗尽')) {
+    if (!text.includes('上游用量限制 432')) {
       throw new Error('Expected background refresh story to keep the loaded event row visible during refresh.')
     }
   },

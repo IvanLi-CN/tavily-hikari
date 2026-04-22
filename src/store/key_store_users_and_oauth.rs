@@ -1370,6 +1370,47 @@ impl KeyStore {
                 if result_status == OUTCOME_SUCCESS {
                     self.refresh_user_api_key_binding(&mut tx, user_id, api_key_id, created_at)
                         .await?;
+                    let now = Utc::now().timestamp();
+                    sqlx::query(
+                        r#"
+                        INSERT INTO user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            api_key_id = excluded.api_key_id,
+                            updated_at = excluded.updated_at
+                        "#,
+                    )
+                    .bind(user_id)
+                    .bind(api_key_id)
+                    .bind(now)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+
+                    sqlx::query(
+                        r#"
+                        INSERT INTO token_primary_api_key_affinity (
+                            token_id,
+                            user_id,
+                            api_key_id,
+                            created_at,
+                            updated_at
+                        )
+                        SELECT token_id, user_id, ?, ?, ?
+                        FROM user_token_bindings
+                        WHERE user_id = ?
+                        ON CONFLICT(token_id) DO UPDATE SET
+                            user_id = excluded.user_id,
+                            api_key_id = excluded.api_key_id,
+                            updated_at = excluded.updated_at
+                        "#,
+                    )
+                    .bind(api_key_id)
+                    .bind(now)
+                    .bind(now)
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
                 }
             }
         } else if let Some(token_id) = billing_subject.strip_prefix("token:") {
@@ -1431,6 +1472,29 @@ impl KeyStore {
             {
                 self.refresh_token_api_key_binding(&mut tx, token_id, api_key_id, created_at)
                     .await?;
+                let now = Utc::now().timestamp();
+                sqlx::query(
+                    r#"
+                    INSERT INTO token_primary_api_key_affinity (
+                        token_id,
+                        user_id,
+                        api_key_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, NULL, ?, ?, ?)
+                    ON CONFLICT(token_id) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        api_key_id = excluded.api_key_id,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(token_id)
+                .bind(api_key_id)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
             }
         } else {
             tx.rollback().await.ok();

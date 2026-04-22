@@ -134,7 +134,7 @@ export interface DashboardOverviewStrings {
   recentAlertsGroups: string
   recentAlertsEmpty: string
   recentAlertsOpen: string
-  recentAlertsTypeLabels: Record<'upstream_rate_limited_429' | 'upstream_key_blocked' | 'user_request_rate_limited' | 'user_quota_exhausted', string>
+  recentAlertsTypeLabels: Record<'upstream_rate_limited_429' | 'upstream_usage_limit_432' | 'upstream_key_blocked' | 'user_request_rate_limited' | 'user_quota_exhausted', string>
 }
 
 interface DashboardOverviewProps {
@@ -301,6 +301,7 @@ function alertSummaryTone(type: keyof DashboardOverviewStrings['recentAlertsType
     case 'upstream_key_blocked':
     case 'user_quota_exhausted':
       return 'error'
+    case 'upstream_usage_limit_432':
     case 'upstream_rate_limited_429':
     case 'user_request_rate_limited':
       return 'warning'

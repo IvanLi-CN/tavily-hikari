@@ -13,6 +13,7 @@
   "retentionDays": 30,
   "types": [
     { "value": "upstream_rate_limited_429", "count": 12 },
+    { "value": "upstream_usage_limit_432", "count": 7 },
     { "value": "upstream_key_blocked", "count": 2 },
     { "value": "user_request_rate_limited", "count": 9 },
     { "value": "user_quota_exhausted", "count": 4 }
@@ -53,9 +54,9 @@
   "items": [
     {
       "id": "atl:1823",
-      "type": "user_request_rate_limited",
-      "title": "Alice Wang 命中本地请求限流",
-      "summary": "Token qa13 在最近 5 分钟窗口内被限流。",
+      "type": "upstream_usage_limit_432",
+      "title": "Alice Wang hit Tavily usage limit",
+      "summary": "Token qa13 received Tavily usage-limit 432 for Search via key_live_001.",
       "occurredAt": 1765389200,
       "subjectKind": "user",
       "subjectId": "usr_alice",
@@ -88,8 +89,8 @@
 {
   "items": [
     {
-      "id": "user_request_rate_limited:user:usr_alice:search",
-      "type": "user_request_rate_limited",
+      "id": "upstream_usage_limit_432:user:usr_alice:search",
+      "type": "upstream_usage_limit_432",
       "subjectKind": "user",
       "subjectId": "usr_alice",
       "subjectLabel": "Alice Wang",
@@ -100,8 +101,8 @@
       "lastSeen": 1765389200,
       "latestEvent": {
         "id": "atl:1823",
-        "title": "Alice Wang 命中本地请求限流",
-        "summary": "Token qa13 在最近 5 分钟窗口内被限流。"
+        "title": "Alice Wang hit Tavily usage limit",
+        "summary": "Token qa13 received Tavily usage-limit 432 for Search via key_live_001."
       }
     }
   ],

@@ -299,6 +299,7 @@ export const EN: TranslationShape = {
         recentAlertsOpen: 'Open alerts',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: 'Upstream 429',
+          upstream_usage_limit_432: 'Upstream usage limit 432',
           upstream_key_blocked: 'Upstream key blocked',
           user_request_rate_limited: 'User request rate limited',
           user_quota_exhausted: 'User quota exhausted',
@@ -317,7 +318,7 @@ export const EN: TranslationShape = {
         },
         alerts: {
           title: 'Alerts',
-          description: 'Review 429s, blocked upstream keys, local rate limits, and quota exhaustion with shared filters.',
+          description: 'Review 429s, upstream usage-limit 432 events, blocked upstream keys, local rate limits, and quota exhaustion with shared filters.',
           sections: {
             rules: 'Alert rules',
             thresholds: 'Threshold policy',

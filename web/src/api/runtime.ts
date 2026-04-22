@@ -118,6 +118,7 @@ export interface DashboardSnapshotEvent extends DashboardOverviewResponse {
 
 export type AlertType =
   | 'upstream_rate_limited_429'
+  | 'upstream_usage_limit_432'
   | 'upstream_key_blocked'
   | 'user_request_rate_limited'
   | 'user_quota_exhausted'

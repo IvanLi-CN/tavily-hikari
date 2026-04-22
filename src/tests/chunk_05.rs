@@ -1263,6 +1263,112 @@ async fn lock_token_billing_uses_fresh_binding_after_external_rebind() {
 }
 
 #[tokio::test]
+async fn settling_successful_account_billing_resyncs_primary_affinity_to_the_success_key() {
+    let db_path = temp_db_path("pending-billing-success-resyncs-primary-affinity");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-pending-billing-primary-a".to_string(),
+            "tvly-pending-billing-primary-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "pending-billing-primary-user".to_string(),
+            username: Some("pending_billing_primary_user".to_string()),
+            name: Some("Pending Billing Primary User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding_with_preferred(
+            &user.user_id,
+            Some("linuxdo:pending_billing_primary_user"),
+            None,
+        )
+        .await
+        .expect("bind token to user");
+
+    let key_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM api_keys ORDER BY id ASC")
+        .fetch_all(&proxy.key_store.pool)
+        .await
+        .expect("load key ids");
+    let old_key_id = key_ids[0].clone();
+    let success_key_id = key_ids[1].clone();
+    proxy
+        .key_store
+        .sync_user_primary_api_key_affinity(&user.user_id, &old_key_id)
+        .await
+        .expect("seed stale primary affinity");
+
+    let guard = proxy
+        .lock_token_billing(&token.id)
+        .await
+        .expect("lock token billing");
+    assert_eq!(guard.billing_subject(), format!("account:{}", user.user_id));
+
+    let log_id = proxy
+        .record_pending_billing_attempt_for_subject(
+            &token.id,
+            &Method::POST,
+            "/api/tavily/search",
+            None,
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            Some("success on a newer key"),
+            2,
+            guard.billing_subject(),
+            Some(&success_key_id),
+        )
+        .await
+        .expect("record pending billing attempt");
+    proxy
+        .settle_pending_billing_attempt(log_id)
+        .await
+        .expect("settle pending billing attempt");
+
+    let user_primary: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM user_primary_api_key_affinity
+           WHERE user_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load user primary affinity");
+    assert_eq!(user_primary, success_key_id);
+
+    let token_primary: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&token.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load token primary affinity");
+    assert_eq!(token_primary, success_key_id);
+
+    drop(guard);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn pending_billing_replay_does_not_backfill_previous_month_into_current_token_quota() {
     let db_path = temp_db_path("pending-billing-token-old-month");
     let db_str = db_path.to_string_lossy().to_string();
@@ -2449,4 +2555,3 @@ async fn shared_legacy_noncurrent_tuple_is_left_custom_during_reclassification()
     }
     let _ = std::fs::remove_file(db_path);
 }
-

@@ -1242,6 +1242,128 @@ async fn token_primary_rebind_falls_back_to_exhausted_key_when_no_other_active_k
 }
 
 #[tokio::test]
+async fn token_primary_rebind_prefers_active_key_over_existing_exhausted_primary() {
+    let db_path = temp_db_path("token-primary-rebind-active-over-exhausted");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let app = Router::new().route(
+        "/mcp",
+        post(|| async {
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "ok": true }
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let upstream = format!("http://{addr}/mcp");
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-token-rebind-active-a".to_string(),
+            "tvly-token-rebind-active-b".to_string(),
+        ],
+        &upstream,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("token-primary-rebind-active"))
+        .await
+        .expect("create token");
+
+    let request = || ProxyRequest {
+        method: Method::POST,
+        path: "/mcp".to_string(),
+        query: None,
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+        auth_token_id: Some(token.id.clone()),
+        prefer_mcp_session_affinity: false,
+        pinned_api_key_id: None,
+        gateway_mode: None,
+        experiment_variant: None,
+        proxy_session_id: None,
+        routing_subject_hash: None,
+        upstream_operation: None,
+        fallback_reason: None,
+    };
+
+    let first = proxy
+        .proxy_request(request())
+        .await
+        .expect("initial request succeeds");
+    assert!(first.status.is_success());
+
+    let pool = open_sqlite_pool(&db_str, false, false)
+        .await
+        .expect("open sqlite pool");
+    let old_key_id: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("old primary key");
+
+    let all_keys: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT id, api_key
+           FROM api_keys
+           ORDER BY id ASC"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("all keys");
+    let (old_key_secret, rebound_key_id) = all_keys
+        .iter()
+        .fold((None, None), |(old_secret, rebound), (id, secret)| {
+            (
+                old_secret.or_else(|| (id == &old_key_id).then_some(secret.clone())),
+                rebound.or_else(|| (id != &old_key_id).then_some(id.clone())),
+            )
+        });
+    let old_key_secret = old_key_secret.expect("old primary key secret");
+    let rebound_key_id = rebound_key_id.expect("active fallback key");
+
+    proxy
+        .mark_key_quota_exhausted_by_secret(&old_key_secret)
+        .await
+        .expect("mark old primary exhausted");
+
+    let rebound = proxy
+        .proxy_request(request())
+        .await
+        .expect("request should rebind to active key");
+    assert!(rebound.status.is_success());
+    assert_eq!(rebound.api_key_id.as_deref(), Some(rebound_key_id.as_str()));
+
+    let rebound_primary_key_id: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("rebound primary key");
+    assert_eq!(rebound_primary_key_id, rebound_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     let db_path = temp_db_path("token-log-request-kind-backfill");
     let db_str = db_path.to_string_lossy().to_string();
@@ -2540,4 +2662,3 @@ async fn request_kind_database_migration_uses_persisted_upper_bounds() {
 
     let _ = std::fs::remove_file(db_path);
 }
-

@@ -100,6 +100,67 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
         .await
         .expect("insert upstream 429 auth token log");
 
+    let upstream_432_request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            ) VALUES (?, ?, 'POST', '/api/tavily/search', NULL, 432, 432, 'usage limit', 'quota_exhausted', ?, ?, '[]', '[]', ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&key_id)
+        .bind(&token.id)
+        .bind(r#"{"query":"usage"}"#)
+        .bind(r#"{"detail":{"error":"This request exceeds your plan's set usage limit."}}"#)
+        .bind(now - 45)
+        .fetch_one(&pool)
+        .await
+        .expect("insert upstream 432 request log");
+
+    sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                counts_business_quota,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/api/tavily/search', NULL, 432, NULL, 'tavily_search', 'Tavily Search', 'POST /api/tavily/search', 'quota_exhausted', ?, 'none', 'none', 'none', 1, ?, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind("This request exceeds your plan's set usage limit.")
+        .bind(upstream_432_request_log_id)
+        .bind(now - 45)
+        .execute(&pool)
+        .await
+        .expect("insert upstream 432 auth token log");
+
     sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
@@ -267,7 +328,7 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
     let events_body: serde_json::Value = events_resp.json().await.expect("alert events json");
     assert_eq!(
         events_body.get("total").and_then(|value| value.as_i64()),
-        Some(4)
+        Some(5)
     );
     assert_eq!(
         events_body
@@ -279,17 +340,35 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
         events_body
             .pointer("/items/1/type")
             .and_then(|value| value.as_str()),
-        Some("upstream_rate_limited_429")
+        Some("upstream_usage_limit_432")
+    );
+    assert_eq!(
+        events_body
+            .pointer("/items/1/key/id")
+            .and_then(|value| value.as_str()),
+        Some(key_id.as_str())
     );
     assert_eq!(
         events_body
             .pointer("/items/1/request/id")
             .and_then(|value| value.as_i64()),
+        Some(upstream_432_request_log_id)
+    );
+    assert_eq!(
+        events_body
+            .pointer("/items/2/type")
+            .and_then(|value| value.as_str()),
+        Some("upstream_rate_limited_429")
+    );
+    assert_eq!(
+        events_body
+            .pointer("/items/2/request/id")
+            .and_then(|value| value.as_i64()),
         Some(request_log_id)
     );
 
     let upstream_429_request_kind = events_body
-        .pointer("/items/1/requestKind/key")
+        .pointer("/items/2/requestKind/key")
         .and_then(|value| value.as_str())
         .expect("upstream 429 request kind key");
 
@@ -324,7 +403,7 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
     let groups_body: serde_json::Value = groups_resp.json().await.expect("alert groups json");
     assert_eq!(
         groups_body.get("total").and_then(|value| value.as_i64()),
-        Some(4)
+        Some(5)
     );
     assert_eq!(
         groups_body
@@ -352,13 +431,13 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
         overview_body
             .pointer("/recentAlerts/totalEvents")
             .and_then(|value| value.as_i64()),
-        Some(4)
+        Some(5)
     );
     assert_eq!(
         overview_body
             .pointer("/recentAlerts/groupedCount")
             .and_then(|value| value.as_i64()),
-        Some(4)
+        Some(5)
     );
     assert_eq!(
         overview_body
@@ -368,7 +447,7 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
                 .iter()
                 .filter_map(|item| item.get("count").and_then(|value| value.as_i64()))
                 .sum::<i64>()),
-        Some(4)
+        Some(5)
     );
     assert_eq!(
         overview_body
@@ -470,6 +549,10 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
         vec![
             (
                 tavily_hikari::ALERT_TYPE_UPSTREAM_RATE_LIMITED_429.to_string(),
+                0
+            ),
+            (
+                tavily_hikari::ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432.to_string(),
                 0
             ),
             (

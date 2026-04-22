@@ -311,10 +311,46 @@ impl KeyStore {
         key_id: &str,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
         self.reset_monthly().await?;
+        if let Some(lease) = self
+            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE)
+            .await?
+        {
+            return Ok(Some(lease));
+        }
 
+        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED)
+            .await
+    }
+
+    pub(crate) async fn try_acquire_affinity_specific_key(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.reset_monthly().await?;
+
+        if let Some(lease) = self
+            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE)
+            .await?
+        {
+            return Ok(Some(lease));
+        }
+
+        if self.has_available_active_key_excluding(None).await? {
+            return Ok(None);
+        }
+
+        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED)
+            .await
+    }
+
+    async fn try_acquire_specific_key_with_status(
+        &self,
+        key_id: &str,
+        status: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
         let now = Utc::now().timestamp();
 
-        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+        let lease = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
             FROM api_keys
@@ -328,43 +364,63 @@ impl KeyStore {
             "#,
         )
         .bind(key_id)
-        .bind(STATUS_ACTIVE)
+        .bind(status)
         .fetch_optional(&self.pool)
-        .await?
-        {
-            self.touch_key(&api_key, now).await?;
-            return Ok(Some(ApiKeyLease {
-                id,
-                secret: api_key,
-            }));
-        }
+        .await?;
 
-        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
-            r#"
-            SELECT id, api_key
-            FROM api_keys
-            WHERE id = ? AND status = ? AND deleted_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_quarantines q
-                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
-              )
-            LIMIT 1
-            "#,
-        )
-        .bind(key_id)
-        .bind(STATUS_EXHAUSTED)
-        .fetch_optional(&self.pool)
-        .await?
-        {
-            self.touch_key(&api_key, now).await?;
-            return Ok(Some(ApiKeyLease {
-                id,
-                secret: api_key,
-            }));
-        }
+        let Some((id, api_key)) = lease else {
+            return Ok(None);
+        };
 
-        Ok(None)
+        self.touch_key(&api_key, now).await?;
+        Ok(Some(ApiKeyLease {
+            id,
+            secret: api_key,
+        }))
+    }
+
+    pub(crate) async fn has_available_active_key_excluding(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        self.reset_monthly().await?;
+
+        let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_ACTIVE)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(STATUS_ACTIVE)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        Ok(count > 0)
     }
 
     pub(crate) async fn acquire_active_key_excluding(
@@ -414,54 +470,7 @@ impl KeyStore {
             .await?
         };
 
-        let candidate = if let Some(candidate) = active_candidate {
-            Some(candidate)
-        } else if let Some(excluded_key_id) = excluded_key_id {
-            sqlx::query_as::<_, (String, String)>(
-                r#"
-                SELECT id, api_key
-                FROM api_keys
-                WHERE id != ? AND status = ? AND deleted_at IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM api_key_quarantines q
-                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
-                  )
-                ORDER BY
-                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
-                    status_changed_at ASC,
-                    id ASC
-                LIMIT 1
-                "#,
-            )
-            .bind(excluded_key_id)
-            .bind(STATUS_EXHAUSTED)
-            .fetch_optional(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as::<_, (String, String)>(
-                r#"
-                SELECT id, api_key
-                FROM api_keys
-                WHERE status = ? AND deleted_at IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM api_key_quarantines q
-                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
-                  )
-                ORDER BY
-                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
-                    status_changed_at ASC,
-                    id ASC
-                LIMIT 1
-                "#,
-            )
-            .bind(STATUS_EXHAUSTED)
-            .fetch_optional(&self.pool)
-            .await?
-        };
-
-        let Some((id, api_key)) = candidate else {
+        let Some((id, api_key)) = active_candidate else {
             return Err(ProxyError::NoAvailableKeys);
         };
 

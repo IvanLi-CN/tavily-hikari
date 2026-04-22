@@ -627,6 +627,7 @@ pub struct RequestLogsCatalog {
 }
 
 pub const ALERT_TYPE_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
+pub const ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432: &str = "upstream_usage_limit_432";
 pub const ALERT_TYPE_UPSTREAM_KEY_BLOCKED: &str = "upstream_key_blocked";
 pub const ALERT_TYPE_USER_REQUEST_RATE_LIMITED: &str = "user_request_rate_limited";
 pub const ALERT_TYPE_USER_QUOTA_EXHAUSTED: &str = "user_quota_exhausted";
@@ -642,6 +643,7 @@ pub fn is_supported_alert_type(value: &str) -> bool {
     matches!(
         value,
         ALERT_TYPE_UPSTREAM_RATE_LIMITED_429
+            | ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432
             | ALERT_TYPE_UPSTREAM_KEY_BLOCKED
             | ALERT_TYPE_USER_REQUEST_RATE_LIMITED
             | ALERT_TYPE_USER_QUOTA_EXHAUSTED
@@ -651,6 +653,7 @@ pub fn is_supported_alert_type(value: &str) -> bool {
 pub fn default_alert_type_counts() -> Vec<AlertTypeCount> {
     [
         ALERT_TYPE_UPSTREAM_RATE_LIMITED_429,
+        ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432,
         ALERT_TYPE_UPSTREAM_KEY_BLOCKED,
         ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
         ALERT_TYPE_USER_QUOTA_EXHAUSTED,
