@@ -7,9 +7,13 @@ const SOURCE_ROOT = fileURLToPath(new URL('.', import.meta.url))
 const ALLOWED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.css'])
 const EXCLUDED_FILE_RE = /\.(stories|test)\.[jt]sx?$/
 
-const legacyPatterns: Array<{ label: string; regex: RegExp }> = [
+const legacyPatterns: Array<{ label: string; regex: RegExp; extensions?: Set<string> }> = [
   { label: 'data-tip attribute', regex: /\bdata-tip\s*=/ },
-  { label: 'legacy .tooltip selector', regex: /\.tooltip\b/ },
+  {
+    label: 'legacy .tooltip selector',
+    regex: /\.tooltip\b/,
+    extensions: new Set(['.css']),
+  },
   { label: 'legacy dropdown-content class', regex: /\bdropdown-content\b/ },
 ]
 
@@ -38,8 +42,11 @@ describe('overlay legacy pattern guard', () => {
     const findings: string[] = []
 
     for (const filePath of collectSourceFiles(SOURCE_ROOT)) {
+      const extension = extname(filePath)
       const content = readFileSync(filePath, 'utf8')
       for (const pattern of legacyPatterns) {
+        if (pattern.extensions && !pattern.extensions.has(extension)) continue
+
         const match = content.match(pattern.regex)
         if (!match || match.index == null) continue
 

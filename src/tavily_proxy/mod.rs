@@ -492,6 +492,7 @@ include!("proxy_auth_and_oauth.rs");
 include!("proxy_usage_and_metrics.rs");
 include!("proxy_request_limits.rs");
 include!("proxy_alerts.rs");
+include!("proxy_admin_user_usage_series.rs");
 
 impl TokenQuota {
     pub(crate) fn new(store: Arc<KeyStore>) -> Self {
@@ -957,6 +958,37 @@ impl TokenQuota {
                 .await?;
             self.store
                 .delete_old_account_usage_buckets(GRANULARITY_DAY, threshold)
+                .await?;
+            self.store
+                .delete_old_account_usage_rollup_buckets(
+                    AccountUsageRollupMetricKind::RequestCount,
+                    AccountUsageRollupBucketKind::FiveMinute,
+                    now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_FIVE_MINUTE_RETENTION_SECS),
+                )
+                .await?;
+            self.store
+                .delete_old_account_usage_rollup_buckets(
+                    AccountUsageRollupMetricKind::BusinessCredits,
+                    AccountUsageRollupBucketKind::Hour,
+                    now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_HOUR_RETENTION_SECS),
+                )
+                .await?;
+            self.store
+                .delete_old_account_usage_rollup_buckets(
+                    AccountUsageRollupMetricKind::BusinessCredits,
+                    AccountUsageRollupBucketKind::Day,
+                    now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_DAY_RETENTION_SECS),
+                )
+                .await?;
+            self.store
+                .delete_old_account_usage_rollup_buckets(
+                    AccountUsageRollupMetricKind::BusinessCredits,
+                    AccountUsageRollupBucketKind::Month,
+                    shift_month_start_utc_ts(
+                        start_of_month(Utc::now()).timestamp(),
+                        -ACCOUNT_USAGE_ROLLUP_MONTH_RETENTION_MONTHS,
+                    ),
+                )
                 .await?;
         }
 

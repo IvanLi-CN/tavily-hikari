@@ -1650,16 +1650,9 @@ export interface AdminUserTokenSummary {
   tokenId: string
   enabled: boolean
   note: string | null
+  createdAt: number
   lastUsedAt: number | null
-  requestRate: RequestRate
-  hourlyAnyUsed: number
-  hourlyAnyLimit: number
-  quotaHourlyUsed: number
-  quotaHourlyLimit: number
-  quotaDailyUsed: number
-  quotaDailyLimit: number
-  quotaMonthlyUsed: number
-  quotaMonthlyLimit: number
+  totalRequests: number
   dailySuccess: number
   dailyFailure: number
   monthlySuccess: number
@@ -1693,6 +1686,20 @@ export interface AdminUserDetail extends AdminUserSummary {
   quotaBase: AdminQuotaLimitSet
   effectiveQuota: AdminQuotaLimitSet
   quotaBreakdown: AdminUserQuotaBreakdownEntry[]
+}
+
+export type AdminUserUsageSeriesKey = 'rate5m' | 'quota1h' | 'quota24h' | 'quotaMonth'
+
+export interface AdminUserUsageSeriesPoint {
+  bucketStart: number
+  displayBucketStart?: number | null
+  value: number | null
+  limitValue: number | null
+}
+
+export interface AdminUserUsageSeries {
+  limit: number
+  points: AdminUserUsageSeriesPoint[]
 }
 
 export interface UpdateUserQuotaPayload {
@@ -2649,6 +2656,16 @@ export function fetchTokenBrokenKeys(
 export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<AdminUserDetail> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/users/${encoded}`, { signal })
+}
+
+export function fetchAdminUserUsageSeries(
+  id: string,
+  series: AdminUserUsageSeriesKey,
+  signal?: AbortSignal,
+): Promise<AdminUserUsageSeries> {
+  const encoded = encodeURIComponent(id)
+  const params = new URLSearchParams({ series })
+  return requestJson(`/api/users/${encoded}/usage-series?${params.toString()}`, { signal })
 }
 
 export async function updateAdminUserQuota(id: string, payload: UpdateUserQuotaPayload): Promise<void> {

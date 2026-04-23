@@ -321,6 +321,7 @@ impl KeyStore {
                         business_credits,
                         billing_subject,
                         billing_state,
+                        request_user_id,
                         api_key_id,
                         request_log_id,
                         created_at
@@ -349,6 +350,7 @@ impl KeyStore {
                         business_credits,
                         billing_subject,
                         billing_state,
+                        request_user_id,
                         api_key_id,
                         request_log_id,
                         created_at
@@ -505,6 +507,12 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_token_logs_binding_effect_time
                ON auth_token_logs(token_id, binding_effect_code, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_user_time
+               ON auth_token_logs(request_user_id, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;

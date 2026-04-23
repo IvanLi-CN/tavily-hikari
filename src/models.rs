@@ -1023,6 +1023,40 @@ pub struct TokenLogMetricsSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminUserUsageSeriesKind {
+    Rate5m,
+    Quota1h,
+    Quota24h,
+    QuotaMonth,
+}
+
+impl AdminUserUsageSeriesKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "rate5m" => Some(Self::Rate5m),
+            "quota1h" => Some(Self::Quota1h),
+            "quota24h" => Some(Self::Quota24h),
+            "quotaMonth" => Some(Self::QuotaMonth),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminUserUsageSeriesPoint {
+    pub bucket_start: i64,
+    pub display_bucket_start: Option<i64>,
+    pub value: Option<i64>,
+    pub limit_value: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminUserUsageSeries {
+    pub limit: i64,
+    pub points: Vec<AdminUserUsageSeriesPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeRangeUtc {
     pub start: i64,
     pub end: i64,
@@ -1421,6 +1455,20 @@ pub(crate) fn start_of_next_month(
     Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0)
         .single()
         .expect("valid start of next month")
+}
+
+pub(crate) fn shift_month_start_utc_ts(current_month_start_utc_ts: i64, delta_months: i32) -> i64 {
+    let Some(current_month_start) = Utc.timestamp_opt(current_month_start_utc_ts, 0).single()
+    else {
+        return current_month_start_utc_ts;
+    };
+    let zero_indexed = current_month_start.month0() as i32 + delta_months;
+    let year = current_month_start.year() + zero_indexed.div_euclid(12);
+    let month0 = zero_indexed.rem_euclid(12) as u32;
+    Utc.with_ymd_and_hms(year, month0 + 1, 1, 0, 0, 0)
+        .single()
+        .expect("valid shifted month start")
+        .timestamp()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2134,6 +2182,25 @@ pub(crate) fn next_local_day_start_utc_ts(current_day_start_utc_ts: i64) -> i64 
         .succ_opt()
         .unwrap_or_else(|| local_dt.date_naive());
     local_date_start_utc_ts(next_date, local_dt)
+}
+
+pub(crate) fn shift_local_day_start_utc_ts(current_day_start_utc_ts: i64, delta_days: i32) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(current_day_start_utc_ts, 0).single() else {
+        return current_day_start_utc_ts;
+    };
+    let local_dt = utc_dt.with_timezone(&Local);
+    let target_date = if delta_days >= 0 {
+        local_dt
+            .date_naive()
+            .checked_add_days(chrono::Days::new(delta_days as u64))
+            .unwrap_or_else(|| local_dt.date_naive())
+    } else {
+        local_dt
+            .date_naive()
+            .checked_sub_days(chrono::Days::new(delta_days.unsigned_abs() as u64))
+            .unwrap_or_else(|| local_dt.date_naive())
+    };
+    local_date_start_utc_ts(target_date, local_dt)
 }
 
 pub(crate) fn server_local_day_window_utc(now: chrono::DateTime<Local>) -> TimeRangeUtc {

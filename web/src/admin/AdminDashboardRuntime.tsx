@@ -1,14 +1,23 @@
 import { Icon } from '../lib/icons'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
-import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
+import type { RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
 import AdminTablePagination from '../components/AdminTablePagination'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminTableShell from '../components/AdminTableShell'
-import { ApiKeysValidationDialog } from '../components/ApiKeysValidationDialog'
 import JobKeyLink from '../components/JobKeyLink'
 import ManualCopyBubble from '../components/ManualCopyBubble'
 import QuotaRangeField from '../components/QuotaRangeField'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { createPortal } from 'react-dom'
 import ThemeToggle from '../components/ThemeToggle'
 import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
@@ -49,7 +58,6 @@ import { Table } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import { AnchoredInfoDisclosure } from '../components/ui/anchored-info-disclosure'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
-import TokenDetail from '../pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
@@ -65,13 +73,10 @@ import {
   summarizeAdminJobFilter,
 } from './jobFilters'
 import { fetchAllMonthlyBrokenKeyItems } from './fetchAllMonthlyBrokenKeyItems'
-import ForwardProxySettingsModule, {
-  type ForwardProxyDraft,
-  type ForwardProxyValidationEntry,
+import type {
+  ForwardProxyDraft,
+  ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
-import KeyStickyPanels from './KeyStickyPanels'
-import AlertsCenter from './AlertsCenter'
-import SystemSettingsModule from './SystemSettingsModule'
 import {
   type QueryLoadState,
   getBlockingLoadState,
@@ -88,6 +93,7 @@ import {
   updateApiKeyBulkSyncProgressState,
 } from './apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from './apiKeySelection'
+import { UserDetailQuotaBreakdown } from './UserDetailQuotaBreakdown'
 import {
   createApiKeyBulkSyncBubblePinnedPosition,
   type ApiKeyBulkSyncBubblePinnedPosition,
@@ -211,6 +217,7 @@ import {
   fetchAdminUserBrokenKeys,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
+  fetchAdminUserUsageSeries,
   fetchAdminRegistrationSettings,
   fetchTokenBrokenKeys,
   updateAdminUserQuota,
@@ -263,6 +270,52 @@ import {
   type TokenLogRequestKindQuickProtocol,
 } from '../tokenLogRequestKinds'
 import { finalizeForwardProxyRevalidate } from './forwardProxyRevalidate'
+
+const LazyAdminRecentRequestsPanel = lazy(() => import('../components/AdminRecentRequestsPanel'))
+const LazyApiKeysValidationDialog = lazy(async () =>
+  import('../components/ApiKeysValidationDialog').then((module) => ({
+    default: module.ApiKeysValidationDialog,
+  })),
+)
+const LazyTokenDetail = lazy(() => import('../pages/TokenDetail'))
+const LazyForwardProxySettingsModule = lazy(() => import('./ForwardProxySettingsModule'))
+const LazyKeyStickyPanels = lazy(() => import('./KeyStickyPanels'))
+const LazyAlertsCenter = lazy(() => import('./AlertsCenter'))
+const LazySystemSettingsModule = lazy(() => import('./SystemSettingsModule'))
+const LazyUserDetailSharedUsagePanel = lazy(async () =>
+  import('./UserDetailSharedUsagePanel').then((module) => ({
+    default: module.UserDetailSharedUsagePanel,
+  })),
+)
+const LazyUserDetailTokenTable = lazy(async () =>
+  import('./UserDetailTokenTable').then((module) => ({
+    default: module.UserDetailTokenTable,
+  })),
+)
+
+function AdminLazyBoundary({
+  children,
+  loadingLabel,
+  minHeight = 220,
+}: {
+  children: ReactNode
+  loadingLabel: ReactNode
+  minHeight?: number | string
+}): JSX.Element {
+  return (
+    <Suspense
+      fallback={
+        <AdminLoadingRegion
+          loadState="initial_loading"
+          loadingLabel={loadingLabel}
+          minHeight={minHeight}
+        />
+      }
+    >
+      {children}
+    </Suspense>
+  )
+}
 
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
@@ -7133,14 +7186,16 @@ function AdminDashboard(): JSX.Element {
                 onOpenToken={navigateToken}
               />
             ) : requestEntityDrawer?.kind === 'token' ? (
-              <TokenDetail
-                key={`drawer-token-${requestEntityDrawer.id}`}
-                id={requestEntityDrawer.id}
-                onBack={closeRequestEntityDrawer}
-                onOpenKey={navigateKey}
-                onOpenUser={navigateUser}
-                onSecretRotated={handleTokenSecretRotated}
-              />
+              <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={240}>
+                <LazyTokenDetail
+                  key={`drawer-token-${requestEntityDrawer.id}`}
+                  id={requestEntityDrawer.id}
+                  onBack={closeRequestEntityDrawer}
+                  onOpenKey={navigateKey}
+                  onOpenUser={navigateUser}
+                  onSecretRotated={handleTokenSecretRotated}
+                />
+              </AdminLazyBoundary>
             ) : null}
           </div>
         </DrawerContent>
@@ -7233,17 +7288,21 @@ function AdminDashboard(): JSX.Element {
     </Dialog>
 
 {/* API Keys Validation modal */}
-<ApiKeysValidationDialog
-  open={keysValidationVisibleState != null}
-  state={keysValidationVisibleState}
-  counts={keysValidationCounts}
-  validKeys={keysValidationValidKeys}
-  exhaustedKeys={keysValidationExhaustedKeys}
-  onClose={closeKeysValidationDialog}
-  onRetryFailed={() => void handleRetryFailedValidation()}
-  onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
-  onImportValid={() => void handleImportValidatedKeys()}
-/>
+{keysValidationVisibleState != null ? (
+  <Suspense fallback={null}>
+    <LazyApiKeysValidationDialog
+      open
+      state={keysValidationVisibleState}
+      counts={keysValidationCounts}
+      validKeys={keysValidationValidKeys}
+      exhaustedKeys={keysValidationExhaustedKeys}
+      onClose={closeKeysValidationDialog}
+      onRetryFailed={() => void handleRetryFailedValidation()}
+      onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
+      onImportValid={() => void handleImportValidatedKeys()}
+    />
+  </Suspense>
+) : null}
 
 {/* Batch Add API Keys Report modal */}
 <Dialog open={keysBatchReport != null} onOpenChange={(open) => { if (!open) closeKeysBatchReportDialog() }}>
@@ -7537,14 +7596,16 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
-        <TokenDetail
-          key={route.id}
-          id={route.id}
-          onBack={navigateBackFromTokenDetail}
-          onOpenKey={navigateKey}
-          onOpenUser={navigateUser}
-          onSecretRotated={handleTokenSecretRotated}
-        />
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={360}>
+          <LazyTokenDetail
+            key={route.id}
+            id={route.id}
+            onBack={navigateBackFromTokenDetail}
+            onOpenKey={navigateKey}
+            onOpenUser={navigateUser}
+            onSecretRotated={handleTokenSecretRotated}
+          />
+        </AdminLazyBoundary>
       </AdminShell>
     )
   }
@@ -7946,65 +8007,29 @@ function AdminDashboard(): JSX.Element {
                   </div>
                 ))}
               </div>
-              <div className="table-wrapper jobs-table-wrapper" style={{ marginTop: 12 }}>
-                <table className="jobs-table admin-users-table user-tag-breakdown-table">
-                  <thead>
-                    <tr>
-                      <th>{usersStrings.effectiveQuota.columns.item}</th>
-                      <th>{usersStrings.effectiveQuota.columns.source}</th>
-                      <th>{usersStrings.effectiveQuota.columns.effect}</th>
-                      <th>{usersStrings.quota.hourly}</th>
-                      <th>{usersStrings.quota.daily}</th>
-                      <th>{usersStrings.quota.monthly}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.quotaBreakdown.map((entry, index) => {
-                      const isAbsoluteRow = entry.kind === 'base' || entry.kind === 'effective'
-                      const breakdownLabel =
-                        entry.kind === 'base'
-                          ? usersStrings.effectiveQuota.baseLabel
-                          : entry.kind === 'effective'
-                            ? usersStrings.effectiveQuota.effectiveLabel
-                            : entry.label
-                      const formatBreakdownValue = (value: number) => (
-                        isAbsoluteRow ? formatQuotaLimitValue(value) : formatSignedQuotaDelta(value)
-                      )
-                      return (
-                        <tr key={`${entry.kind}:${entry.tagId ?? 'row'}:${index}`}>
-                          <td>
-                            <div className="token-compact-pair">
-                              <div className="token-compact-field">
-                                <span className="token-compact-value">{breakdownLabel}</span>
-                              </div>
-                              {entry.tagName && (
-                                <div className="token-compact-field">
-                                  <code className="token-compact-value">{entry.tagName}</code>
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                          <td>{entry.source ? (entry.source === 'system_linuxdo' ? usersStrings.userTags.sourceSystem : usersStrings.userTags.sourceManual) : '—'}</td>
-                          <td>
-                            <StatusBadge tone={entry.effectKind === 'block_all' ? 'error' : 'neutral'}>
-                              {entry.effectKind === 'block_all'
-                                ? usersStrings.catalog.effectKinds.blockAll
-                                : entry.effectKind === 'base'
-                                  ? usersStrings.effectiveQuota.baseLabel
-                                  : entry.kind === 'effective' || entry.effectKind === 'effective'
-                                    ? usersStrings.effectiveQuota.effectiveLabel
-                                    : usersStrings.catalog.effectKinds.quotaDelta}
-                            </StatusBadge>
-                          </td>
-                          <td>{formatBreakdownValue(entry.hourlyDelta)}</td>
-                          <td>{formatBreakdownValue(entry.dailyDelta)}</td>
-                          <td>{formatBreakdownValue(entry.monthlyDelta)}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              <UserDetailQuotaBreakdown
+                entries={detail.quotaBreakdown}
+                usersStrings={usersStrings}
+                formatQuotaLimitValue={formatQuotaLimitValue}
+                formatSignedQuotaDelta={formatSignedQuotaDelta}
+              />
+            </section>
+
+            <section className="surface panel">
+              <div className="panel-header">
+                <div>
+                  <h2>{usersStrings.detail.sharedUsageTitle}</h2>
+                  <p className="panel-description">{usersStrings.detail.sharedUsageDescription}</p>
+                </div>
               </div>
+              <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={280}>
+                <LazyUserDetailSharedUsagePanel
+                  key={`usage:${detail.userId}`}
+                  usersStrings={usersStrings}
+                  language={language}
+                  loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
+                />
+              </AdminLazyBoundary>
             </section>
 
             <section className="surface panel">
@@ -8015,110 +8040,15 @@ function AdminDashboard(): JSX.Element {
                 </div>
               </div>
               <div className="table-wrapper jobs-table-wrapper">
-                {tokenItems.length === 0 ? (
-                  <div className="empty-state alert">{usersStrings.empty.noTokens}</div>
-                ) : (
-                  <Table className="jobs-table admin-users-table admin-user-tokens-table">
-                    <thead>
-                      <tr>
-                        <th>{`${usersStrings.tokens.table.id} · ${usersStrings.tokens.table.note}`}</th>
-                        <th>{`${usersStrings.tokens.table.status} · ${usersStrings.tokens.table.lastUsed}`}</th>
-                        <th>{`${usersStrings.tokens.table.hourlyAny} · ${usersStrings.tokens.table.hourly}`}</th>
-                        <th>{`${usersStrings.tokens.table.daily} · ${usersStrings.tokens.table.monthly}`}</th>
-                        <th>{`${usersStrings.tokens.table.successDaily} · ${usersStrings.tokens.table.successMonthly}`}</th>
-                        <th>{usersStrings.tokens.table.actions}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tokenItems.map((token) => {
-                        const requestRate = resolveRequestRate(token, token.requestRate?.scope ?? 'token')
-                        const hourlyAnyText = formatQuotaUsagePair(requestRate.used, requestRate.limit)
-                        const hourlyText = formatQuotaUsagePair(token.quotaHourlyUsed, token.quotaHourlyLimit)
-                        const dailyText = formatQuotaUsagePair(token.quotaDailyUsed, token.quotaDailyLimit)
-                        const monthlyText = formatQuotaUsagePair(token.quotaMonthlyUsed, token.quotaMonthlyLimit)
-                        const successDailyText = `${formatNumber(token.dailySuccess)} / ${formatNumber(token.dailyFailure)}`
-                        const successMonthlyText = formatNumber(token.monthlySuccess)
-                        return (
-                          <tr key={token.tokenId}>
-                            <td>
-                              <div className="token-compact-pair">
-                                <div className="token-compact-field">
-                                  <code className="token-compact-value">{token.tokenId}</code>
-                                </div>
-                                <div className="token-compact-field">
-                                  <span className="token-compact-value">{token.note || '—'}</span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <div className="token-compact-pair">
-                                <div className="token-compact-field">
-                                  <StatusBadge tone={token.enabled ? 'success' : 'neutral'}>
-                                    {token.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
-                                  </StatusBadge>
-                                </div>
-                                <div className="token-compact-field">
-                                  <span className="token-compact-value">{formatTimestamp(token.lastUsedAt)}</span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <div className="token-compact-pair">
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {formatRequestRateSummary(requestRate, language)}
-                                  </span>
-                                  <span className="token-compact-value">{hourlyAnyText}</span>
-                                </div>
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.hourly}</span>
-                                  <span className="token-compact-value">{hourlyText}</span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <div className="token-compact-pair">
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.daily}</span>
-                                  <span className="token-compact-value">{dailyText}</span>
-                                </div>
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.monthly}</span>
-                                  <span className="token-compact-value">{monthlyText}</span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-                              <div className="token-compact-pair">
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.successDaily}</span>
-                                  <span className="token-compact-value">{successDailyText}</span>
-                                </div>
-                                <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.successMonthly}</span>
-                                  <span className="token-compact-value">{successMonthlyText}</span>
-                                </div>
-                              </div>
-                            </td>
-                            <td>
-<Button
-  type="button"
-  variant="ghost"
-  size="icon"
-  className="h-8 w-8 rounded-full p-0 shadow-none"
-  title={usersStrings.tokens.actions.view}
-  aria-label={usersStrings.tokens.actions.view}
-  onClick={() => navigateToken(token.tokenId)}
->
-  <Icon icon="mdi:eye-outline" width={16} height={16} />
-</Button>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </Table>
-                )}
+                <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={220}>
+                  <LazyUserDetailTokenTable
+                    tokens={tokenItems}
+                    usersStrings={usersStrings}
+                    formatNumber={formatNumber}
+                    formatTimestamp={(value) => formatTimestamp(value ?? null)}
+                    onViewToken={navigateToken}
+                  />
+                </AdminLazyBoundary>
               </div>
             </section>
           </>
@@ -10373,7 +10303,8 @@ function AdminDashboard(): JSX.Element {
       )}
 
       {showRequests && (
-        <AdminRecentRequestsPanel
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>
+          <LazyAdminRecentRequestsPanel
           variant="admin"
           language={language}
           strings={adminStrings}
@@ -10415,7 +10346,8 @@ function AdminDashboard(): JSX.Element {
           onOpenKey={openRequestKeyDrawer}
           onOpenToken={openRequestTokenDrawer}
           loadLogBodies={loadRequestLogBodies}
-        />
+          />
+        </AdminLazyBoundary>
       )}
 
       {showJobs && (
@@ -11029,50 +10961,56 @@ function AdminDashboard(): JSX.Element {
         </>
       )}
       {showAlerts && (
-        <AlertsCenter
-          language={language}
-          search={window.location.search}
-          refreshToken={alertsRefreshToken}
-          onNavigate={navigateToPath}
-          onOpenUser={navigateUser}
-          onOpenToken={navigateToken}
-          onOpenKey={navigateKey}
-          formatTime={formatTimestamp}
-          formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
-        />
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>
+          <LazyAlertsCenter
+            language={language}
+            search={window.location.search}
+            refreshToken={alertsRefreshToken}
+            onNavigate={navigateToPath}
+            onOpenUser={navigateUser}
+            onOpenToken={navigateToken}
+            onOpenKey={navigateKey}
+            formatTime={formatTimestamp}
+            formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
+          />
+        </AdminLazyBoundary>
       )}
 
       {showSystemSettings && (
-        <SystemSettingsModule
-          strings={systemSettingsStrings}
-          settings={systemSettings}
-          loadState={systemSettingsLoadState}
-          error={systemSettingsError}
-          saving={systemSettingsSaving}
-          onApply={saveSystemSettings}
-        />
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={260}>
+          <LazySystemSettingsModule
+            strings={systemSettingsStrings}
+            settings={systemSettings}
+            loadState={systemSettingsLoadState}
+            error={systemSettingsError}
+            saving={systemSettingsSaving}
+            onApply={saveSystemSettings}
+          />
+        </AdminLazyBoundary>
       )}
 
       {showProxySettings && (
-        <ForwardProxySettingsModule
-          strings={proxySettingsStrings}
-          settings={forwardProxySettings}
-          stats={forwardProxyStats}
-          settingsLoadState={forwardProxySettingsLoadState}
-          statsLoadState={forwardProxyStatsLoadState}
-          settingsError={forwardProxySettingsError}
-          statsError={forwardProxyStatsError}
-          saveError={forwardProxySaveError}
-          revalidateError={forwardProxyRevalidateError}
-          saving={forwardProxySaving}
-          revalidating={forwardProxyRevalidating}
-          savedAt={forwardProxySavedAt}
-          revalidateProgress={forwardProxyRevalidateProgress}
-          onPersistDraft={saveForwardProxySettings}
-          onValidateCandidates={validateForwardProxyCandidates}
-          onRefresh={handleManualRefresh}
-          onRevalidate={() => void revalidateForwardProxy()}
-        />
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>
+          <LazyForwardProxySettingsModule
+            strings={proxySettingsStrings}
+            settings={forwardProxySettings}
+            stats={forwardProxyStats}
+            settingsLoadState={forwardProxySettingsLoadState}
+            statsLoadState={forwardProxyStatsLoadState}
+            settingsError={forwardProxySettingsError}
+            statsError={forwardProxyStatsError}
+            saveError={forwardProxySaveError}
+            revalidateError={forwardProxyRevalidateError}
+            saving={forwardProxySaving}
+            revalidating={forwardProxyRevalidating}
+            savedAt={forwardProxySavedAt}
+            revalidateProgress={forwardProxyRevalidateProgress}
+            onPersistDraft={saveForwardProxySettings}
+            onValidateCandidates={validateForwardProxyCandidates}
+            onRefresh={handleManualRefresh}
+            onRevalidate={() => void revalidateForwardProxy()}
+          />
+        </AdminLazyBoundary>
       )}
 
           {appFooter}
@@ -12111,21 +12049,24 @@ export function KeyDetails({
         </AdminLoadingRegion>
       </section>
 
-      <KeyStickyPanels
-        stickyUsers={stickyUsers}
-        stickyUsersLoadState={stickyUsersLoadState}
-        stickyUsersError={stickyUsersError}
-        stickyUsersPage={stickyUsersPage}
-        stickyUsersTotal={stickyUsersTotal}
-        stickyUsersPerPage={stickyUsersPerPage}
-        onStickyUsersPrevious={() => setStickyUsersPage((current) => Math.max(1, current - 1))}
-        onStickyUsersNext={() => setStickyUsersPage((current) => Math.min(stickyUsersTotalPages, current + 1))}
-        stickyNodes={stickyNodes}
-        stickyNodesLoadState={stickyNodesLoadState}
-        stickyNodesError={stickyNodesError}
-        onOpenUser={onOpenUser}
-      />
-      <AdminRecentRequestsPanel
+      <AdminLazyBoundary loadingLabel={detailLoadingLabel} minHeight={260}>
+        <LazyKeyStickyPanels
+          stickyUsers={stickyUsers}
+          stickyUsersLoadState={stickyUsersLoadState}
+          stickyUsersError={stickyUsersError}
+          stickyUsersPage={stickyUsersPage}
+          stickyUsersTotal={stickyUsersTotal}
+          stickyUsersPerPage={stickyUsersPerPage}
+          onStickyUsersPrevious={() => setStickyUsersPage((current) => Math.max(1, current - 1))}
+          onStickyUsersNext={() => setStickyUsersPage((current) => Math.min(stickyUsersTotalPages, current + 1))}
+          stickyNodes={stickyNodes}
+          stickyNodesLoadState={stickyNodesLoadState}
+          stickyNodesError={stickyNodesError}
+          onOpenUser={onOpenUser}
+        />
+      </AdminLazyBoundary>
+      <AdminLazyBoundary loadingLabel={detailLoadingLabel} minHeight={320}>
+        <LazyAdminRecentRequestsPanel
           variant="admin"
           language={language}
           strings={adminStrings}
@@ -12165,6 +12106,7 @@ export function KeyDetails({
           formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
           loadLogBodies={loadKeyLogBodies}
         />
+      </AdminLazyBoundary>
     </div>
   )
 }

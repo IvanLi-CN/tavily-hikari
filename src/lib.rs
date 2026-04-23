@@ -556,6 +556,7 @@ const GRANULARITY_REQUEST_MINUTE: &str = "request_minute";
 const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
 const CLEANUP_INTERVAL_SECS: i64 = 600;
 const SECS_PER_MINUTE: i64 = 60;
+const SECS_PER_FIVE_MINUTES: i64 = 5 * SECS_PER_MINUTE;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
@@ -582,6 +583,16 @@ const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
     "account_quota_inherits_defaults_backfill_v1";
 const META_KEY_ACCOUNT_QUOTA_ZERO_BASE_CUTOVER_V1: &str = "account_quota_zero_base_cutover_v1";
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
+const META_KEY_ACCOUNT_USAGE_ROLLUP_V1_DONE: &str = "account_usage_rollup_v1_done";
+const META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START: &str =
+    "account_usage_rollup_rate5m_coverage_start";
+const META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START: &str =
+    "account_usage_rollup_quota1h_coverage_start";
+const META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA24H_COVERAGE_START: &str =
+    "account_usage_rollup_quota24h_coverage_start";
+const META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA_MONTH_COVERAGE_START: &str =
+    "account_usage_rollup_quota_month_coverage_start";
+const META_KEY_ACCOUNT_LIMIT_SNAPSHOT_BACKFILL_V1: &str = "account_limit_snapshot_backfill_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_REQUEST_RATE_LIMIT_V1: &str = "request_rate_limit_v1";
 const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
@@ -607,6 +618,13 @@ const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfi
 // lightweight counters once and start charging by upstream credits going forward.
 const META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1: &str = "business_quota_credits_cutover_v1";
 const META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1: &str = "business_quota_monthly_rebase_v1";
+const ACCOUNT_USAGE_ROLLUP_REQUEST_BACKFILL_SECS: i64 = SECS_PER_DAY;
+const ACCOUNT_USAGE_ROLLUP_BUSINESS_BACKFILL_SECS: i64 = 90 * SECS_PER_DAY;
+const ACCOUNT_USAGE_ROLLUP_MONTH_CHART_MONTHS: i32 = 12;
+const ACCOUNT_USAGE_ROLLUP_FIVE_MINUTE_RETENTION_SECS: i64 = 2 * SECS_PER_DAY;
+const ACCOUNT_USAGE_ROLLUP_HOUR_RETENTION_SECS: i64 = 8 * SECS_PER_DAY;
+const ACCOUNT_USAGE_ROLLUP_DAY_RETENTION_SECS: i64 = 400 * SECS_PER_DAY;
+const ACCOUNT_USAGE_ROLLUP_MONTH_RETENTION_MONTHS: i32 = 24;
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
 const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
 

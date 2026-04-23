@@ -693,6 +693,8 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         self.invalidate_account_quota_resolution(user_id).await;
+        self.record_effective_account_quota_snapshot_at(user_id, now)
+            .await?;
         Ok(true)
     }
 
@@ -745,7 +747,14 @@ impl KeyStore {
     pub(crate) async fn sync_account_quota_limits_with_defaults(&self) -> Result<(), ProxyError> {
         let now = Utc::now().timestamp();
         let defaults = AccountQuotaLimits::legacy_defaults();
-        sqlx::query(
+        let affected_user_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT user_id
+               FROM account_quota_limits
+               WHERE inherits_defaults = 1"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let updated = sqlx::query(
             r#"UPDATE account_quota_limits
                SET hourly_any_limit = ?,
                    hourly_limit = ?,
@@ -762,6 +771,10 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         self.invalidate_all_account_quota_resolutions().await;
+        if updated.rows_affected() > 0 {
+            self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+                .await?;
+        }
         Ok(())
     }
 
@@ -1583,6 +1596,18 @@ impl KeyStore {
         Ok(expected)
     }
 
+    async fn list_user_ids_for_linuxdo_system_tags(&self) -> Result<Vec<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT DISTINCT b.user_id
+               FROM user_tag_bindings b
+               JOIN user_tags t ON t.id = b.tag_id
+               WHERE t.system_key LIKE 'linuxdo_l%'"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
     pub(crate) async fn get_linuxdo_system_tag_default_deltas_meta(
         &self,
     ) -> Result<Option<(i64, i64, i64, i64)>, ProxyError> {
@@ -1698,6 +1723,11 @@ impl KeyStore {
             settings.rebalance_mcp_session_percent,
         )
         .await?;
+        self.record_request_rate_limit_snapshot_at(
+            settings.request_rate_limit,
+            Utc::now().timestamp(),
+        )
+        .await?;
         self.get_system_settings().await
     }
 
@@ -1728,6 +1758,7 @@ impl KeyStore {
         }
 
         let now = Utc::now().timestamp();
+        let affected_user_ids = self.list_user_ids_for_linuxdo_system_tags().await?;
         let updated = sqlx::query(
             r#"UPDATE user_tags
                SET hourly_any_delta = ?,
@@ -1756,6 +1787,8 @@ impl KeyStore {
         .await?;
         if updated.rows_affected() > 0 {
             self.invalidate_all_account_quota_resolutions().await;
+            self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+                .await?;
         }
         self.set_linuxdo_system_tag_default_deltas_meta(current)
             .await?;
@@ -1768,6 +1801,7 @@ impl KeyStore {
         let now = Utc::now().timestamp();
         let (hourly_any_delta, hourly_delta, daily_delta, monthly_delta) =
             linuxdo_system_tag_default_deltas();
+        let affected_user_ids = self.list_user_ids_for_linuxdo_system_tags().await?;
         let updated = sqlx::query(
             r#"UPDATE user_tags
                SET hourly_any_delta = ?,
@@ -1792,6 +1826,8 @@ impl KeyStore {
         .await?;
         if updated.rows_affected() > 0 {
             self.invalidate_all_account_quota_resolutions().await;
+            self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+                .await?;
         }
         Ok(())
     }
@@ -1801,11 +1837,14 @@ impl KeyStore {
         user_id: &str,
         trust_level: Option<i64>,
     ) -> Result<(), ProxyError> {
+        let changed_at = Utc::now().timestamp();
         let mut tx = self.pool.begin().await?;
         self.sync_linuxdo_system_tag_binding_in_tx(&mut tx, user_id, trust_level)
             .await?;
         tx.commit().await?;
         self.invalidate_account_quota_resolution(user_id).await;
+        self.record_effective_account_quota_snapshot_at(user_id, changed_at)
+            .await?;
         Ok(())
     }
 
@@ -2184,6 +2223,8 @@ impl KeyStore {
         }
         self.invalidate_account_quota_resolutions(&affected_user_ids)
             .await;
+        self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+            .await?;
         self.fetch_user_tag_by_id(tag_id).await
     }
 
@@ -2209,6 +2250,11 @@ impl KeyStore {
         tx.commit().await?;
         self.invalidate_account_quota_resolutions(&affected_user_ids)
             .await;
+        self.record_effective_account_quota_snapshots_for_users_at(
+            &affected_user_ids,
+            Utc::now().timestamp(),
+        )
+        .await?;
         Ok(true)
     }
 
@@ -2248,6 +2294,8 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         self.invalidate_account_quota_resolution(user_id).await;
+        self.record_effective_account_quota_snapshot_at(user_id, now)
+            .await?;
         Ok(true)
     }
 
@@ -2281,6 +2329,8 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
         self.invalidate_account_quota_resolution(user_id).await;
+        self.record_effective_account_quota_snapshot_at(user_id, Utc::now().timestamp())
+            .await?;
         Ok(true)
     }
 

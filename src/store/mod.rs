@@ -273,6 +273,7 @@ CREATE TABLE auth_token_logs_new (
     business_credits INTEGER,
     billing_subject TEXT,
     billing_state TEXT NOT NULL DEFAULT 'none',
+    request_user_id TEXT,
     api_key_id TEXT,
     request_log_id INTEGER REFERENCES request_logs(id),
     created_at INTEGER NOT NULL
@@ -1186,3 +1187,5 @@ include!("key_store_users_and_oauth.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alerts.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_account_limit_snapshots.rs");
+include!("key_store_account_usage_rollups.rs");

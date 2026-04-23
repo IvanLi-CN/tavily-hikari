@@ -54,8 +54,8 @@ struct SummarySig {
 }
 use std::time::{Duration, Instant};
 use tavily_hikari::{
-    AdminUserIdentity, ApiKeyMetrics, ApiKeyStickyNode, ApiKeyStickyUser, ApiKeyUserUsageBucket,
-    AuthToken, ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
+    AdminUserIdentity, AdminUserUsageSeriesKind, ApiKeyMetrics, ApiKeyStickyNode, ApiKeyStickyUser,
+    ApiKeyUserUsageBucket, AuthToken, ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
     ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption, OAuthAccountProfile,
     PendingBillingSettleOutcome, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
     RequestLogBodiesRecord, RequestLogRecord, RequestLogsCatalog, RequestLogsCursor,

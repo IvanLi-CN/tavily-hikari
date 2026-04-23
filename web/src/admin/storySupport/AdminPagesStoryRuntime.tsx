@@ -19,6 +19,8 @@ import type {
   AdminUserTag,
   AdminUserTagBinding,
   AdminUserTokenSummary,
+  AdminUserUsageSeries,
+  AdminUserUsageSeriesKey,
   ApiKeyStats,
   AuthToken,
   JobGroup,
@@ -83,6 +85,9 @@ import {
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from '../AdminShell'
 import AlertsCenter from '../AlertsCenter'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
+import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
+import { UserDetailSharedUsagePanel } from '../UserDetailSharedUsagePanel'
+import { UserDetailTokenTable } from '../UserDetailTokenTable'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -1463,16 +1468,9 @@ const MOCK_USER_TOKENS: AdminUserTokenSummary[] = [
     tokenId: 'V3P2',
     enabled: true,
     note: 'Primary production',
+    createdAt: now - 120 * 86_400,
     lastUsedAt: now - 24,
-    requestRate: createRequestRate(58, 60, 'user'),
-    hourlyAnyUsed: 58,
-    hourlyAnyLimit: 60,
-    quotaHourlyUsed: 180,
-    quotaHourlyLimit: 500,
-    quotaDailyUsed: 2_840,
-    quotaDailyLimit: 12_000,
-    quotaMonthlyUsed: 42_000,
-    quotaMonthlyLimit: 160_000,
+    totalRequests: 48_204,
     dailySuccess: 2_701,
     dailyFailure: 139,
     monthlySuccess: 39_420,
@@ -1481,21 +1479,55 @@ const MOCK_USER_TOKENS: AdminUserTokenSummary[] = [
     tokenId: 'R8K1',
     enabled: true,
     note: 'Batch backfill',
+    createdAt: now - 46 * 86_400,
     lastUsedAt: now - 400,
-    requestRate: createRequestRate(58, 60, 'user'),
-    hourlyAnyUsed: 58,
-    hourlyAnyLimit: 60,
-    quotaHourlyUsed: 118,
-    quotaHourlyLimit: 500,
-    quotaDailyUsed: 2_361,
-    quotaDailyLimit: 12_000,
-    quotaMonthlyUsed: 100_922,
-    quotaMonthlyLimit: 440_000,
+    totalRequests: 16_288,
     dailySuccess: 2_297,
     dailyFailure: 64,
     monthlySuccess: 90_022,
   },
 ]
+
+const MOCK_USER_USAGE_SERIES: Record<AdminUserUsageSeriesKey, AdminUserUsageSeries> = {
+  quota1h: {
+    limit: 500,
+    points: Array.from({ length: 72 }, (_, index) => ({
+      bucketStart: now - (71 - index) * 3_600,
+      value: [44, 88, 129, 160, 202, 233][index % 6] + Math.floor(index / 10) * 6,
+      limitValue: index < 18 ? 360 : index < 42 ? 420 : 500,
+    })),
+  },
+  rate5m: {
+    limit: 100,
+    points: Array.from({ length: 288 }, (_, index) => ({
+      bucketStart: now - (287 - index) * 300,
+      value: index % 17 === 0 ? 92 : 24 + ((index * 7) % 39),
+      limitValue: index < 144 ? 80 : 100,
+    })),
+  },
+  quota24h: {
+    limit: 12_000,
+    points: Array.from({ length: 7 }, (_, index) => ({
+      bucketStart: now - (6 - index) * 86_400,
+      value: [5_120, 5_840, 6_210, 7_080, 8_420, 6_980, 4_912][index],
+      limitValue: index < 3 ? 9_000 : 12_000,
+    })),
+  },
+  quotaMonth: {
+    limit: 160_000,
+    points: Array.from({ length: 12 }, (_, index) => ({
+      bucketStart: Date.UTC(2025, 4 + index, 1, 0, 0, 0) / 1000,
+      value: index < 6
+        ? null
+        : [42_000, 58_200, 66_400, 73_880, 89_120, 97_360][index - 6],
+      limitValue: index < 6
+        ? null
+        : index < 9
+          ? 120_000
+          : 160_000,
+    })),
+  },
+}
 
 const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
   {
@@ -5668,7 +5700,11 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
   )
 }
 
-function UserDetailPageCanvas(): JSX.Element {
+function UserDetailPageCanvas({
+  initialUsageSeries = 'quota1h',
+}: {
+  initialUsageSeries?: AdminUserUsageSeriesKey
+} = {}): JSX.Element {
   const users = useTranslate().admin.users
   const { language } = useLanguage()
   const detail = MOCK_USER_DETAIL
@@ -5960,70 +5996,30 @@ function UserDetailPageCanvas(): JSX.Element {
             </div>
           ))}
         </div>
-        <div className="table-wrapper jobs-table-wrapper" style={{ marginTop: 12 }}>
-          <table className="jobs-table admin-users-table user-tag-breakdown-table">
-            <thead>
-              <tr>
-                <th>{users.effectiveQuota.columns.item}</th>
-                <th>{users.effectiveQuota.columns.source}</th>
-                <th>{users.effectiveQuota.columns.effect}</th>
-                <th>{users.quota.hourly}</th>
-                <th>{users.quota.daily}</th>
-                <th>{users.quota.monthly}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.quotaBreakdown.map((entry, index) => {
-                const isAbsoluteRow = entry.kind === 'base' || entry.kind === 'effective'
-                const breakdownLabel =
-                  entry.kind === 'base'
-                    ? users.effectiveQuota.baseLabel
-                    : entry.kind === 'effective'
-                      ? users.effectiveQuota.effectiveLabel
-                      : entry.label
-                const formatBreakdownValue = (value: number) =>
-                  isAbsoluteRow ? formatQuotaLimitValue(value) : formatSignedQuotaDelta(value)
-                return (
-                  <tr key={`${entry.kind}:${entry.tagId ?? 'row'}:${index}`}>
-                    <td>
-                      <div className="token-compact-pair">
-                        <div className="token-compact-field">
-                          <span className="token-compact-value">{breakdownLabel}</span>
-                        </div>
-                        {entry.tagName && (
-                          <div className="token-compact-field">
-                            <code className="token-compact-value">{entry.tagName}</code>
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td>
-                      {entry.source
-                        ? entry.source === 'system_linuxdo'
-                          ? users.userTags.sourceSystem
-                          : users.userTags.sourceManual
-                        : '—'}
-                    </td>
-                    <td>
-                      <StatusBadge tone={entry.effectKind === 'block_all' ? 'error' : 'neutral'}>
-                        {entry.effectKind === 'block_all'
-                          ? users.catalog.effectKinds.blockAll
-                          : entry.effectKind === 'base'
-                            ? users.effectiveQuota.baseLabel
-                            : entry.kind === 'effective' || entry.effectKind === 'effective'
-                              ? users.effectiveQuota.effectiveLabel
-                              : users.catalog.effectKinds.quotaDelta}
-                      </StatusBadge>
-                    </td>
-                    <td>{formatBreakdownValue(entry.hourlyDelta)}</td>
-                    <td>{formatBreakdownValue(entry.dailyDelta)}</td>
-                    <td>{formatBreakdownValue(entry.monthlyDelta)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+        <UserDetailQuotaBreakdown
+          entries={detail.quotaBreakdown}
+          usersStrings={users}
+          formatQuotaLimitValue={formatQuotaLimitValue}
+          formatSignedQuotaDelta={formatSignedQuotaDelta}
+        />
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>{users.detail.sharedUsageTitle}</h2>
+            <p className="panel-description">{users.detail.sharedUsageDescription}</p>
+          </div>
         </div>
+        <UserDetailSharedUsagePanel
+          usersStrings={users}
+          language={language}
+          initialSeries={initialUsageSeries}
+          loadSeries={async (series) => {
+            await new Promise((resolve) => window.setTimeout(resolve, 20))
+            return MOCK_USER_USAGE_SERIES[series]
+          }}
+        />
       </section>
 
       <section className="surface panel">
@@ -6034,89 +6030,13 @@ function UserDetailPageCanvas(): JSX.Element {
           </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
-          <table className="jobs-table admin-users-table admin-user-tokens-table">
-            <thead>
-              <tr>
-                <th>{`${users.tokens.table.id} · ${users.tokens.table.note}`}</th>
-                <th>{`${users.tokens.table.status} · ${users.tokens.table.lastUsed}`}</th>
-                <th>{`${users.tokens.table.hourlyAny} · ${users.tokens.table.hourly}`}</th>
-                <th>{`${users.tokens.table.daily} · ${users.tokens.table.monthly}`}</th>
-                <th>{`${users.tokens.table.successDaily} · ${users.tokens.table.successMonthly}`}</th>
-                <th>{users.tokens.table.actions}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.tokens.map((token) => {
-                const requestRate = resolveRequestRate(token, token.requestRate?.scope ?? 'token')
-                return (
-                <tr key={token.tokenId}>
-                  <td>
-                    <div className="token-compact-pair">
-                      <div className="token-compact-field">
-                        <span className="token-compact-value"><code>{token.tokenId}</code></span>
-                      </div>
-                      <div className="token-compact-field">
-                        <span className="token-compact-value">{token.note ?? '—'}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="token-compact-pair">
-                      <div className="token-compact-field">
-                        <StatusBadge tone={token.enabled ? 'success' : 'neutral'}>
-                          {token.enabled ? users.status.enabled : users.status.disabled}
-                        </StatusBadge>
-                      </div>
-                      <div className="token-compact-field">
-                        <span className="token-compact-value">{formatTimestamp(token.lastUsedAt)}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="token-compact-pair">
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{formatRequestRateSummary(requestRate, language)}</span>
-                        <span className="token-compact-value">{formatQuotaUsagePair(requestRate.used, requestRate.limit)}</span>
-                      </div>
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.hourly}</span>
-                        <span className="token-compact-value">{formatQuotaUsagePair(token.quotaHourlyUsed, token.quotaHourlyLimit)}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="token-compact-pair">
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.daily}</span>
-                        <span className="token-compact-value">{formatQuotaUsagePair(token.quotaDailyUsed, token.quotaDailyLimit)}</span>
-                      </div>
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.monthly}</span>
-                        <span className="token-compact-value">{formatQuotaUsagePair(token.quotaMonthlyUsed, token.quotaMonthlyLimit)}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="token-compact-pair">
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.successDaily}</span>
-                        <span className="token-compact-value">{formatNumber(token.dailySuccess)} / {formatNumber(token.dailyFailure)}</span>
-                      </div>
-                      <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.successMonthly}</span>
-                        <span className="token-compact-value">{formatNumber(token.monthlySuccess)}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <button type="button" className="btn btn-circle btn-ghost btn-sm" title={users.tokens.actions.view}>
-                      <Icon icon="mdi:eye-outline" width={16} height={16} />
-                    </button>
-                  </td>
-                </tr>
-              )})}
-            </tbody>
-          </table>
+          <UserDetailTokenTable
+            tokens={detail.tokens}
+            usersStrings={users}
+            formatNumber={formatNumber}
+            formatTimestamp={(value) => formatTimestamp(value ?? null)}
+            onViewToken={() => {}}
+          />
         </div>
       </section>
     </AdminPageFrame>
@@ -6688,8 +6608,178 @@ export const UserTagEdit: Story = {
   },
 }
 
+export const UserDetailSharedUsageTooltip: Story = {
+  render: () => <UserDetailPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+    const canvas = canvasElement.querySelector<HTMLCanvasElement>('.admin-user-shared-usage-chart canvas')
+    const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    if (!canvas || !usagePanel) {
+      throw new Error('Expected the tooltip proof story to render the shared usage chart canvas.')
+    }
+
+    const rect = canvas.getBoundingClientRect()
+    const clientX = rect.left + rect.width * 0.72
+    const clientY = rect.top + rect.height * 0.32
+    const pointerTarget = canvas.ownerDocument.elementFromPoint(clientX, clientY) ?? canvas
+
+    pointerTarget.dispatchEvent(
+      new MouseEvent('mousemove', {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+      }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    const hoverTooltip = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-tooltip')
+    const tooltipOpenWhileHovering = usagePanel.getAttribute('data-tooltip-open')
+    if (!hoverTooltip?.textContent?.includes('已用') || tooltipOpenWhileHovering !== 'true') {
+      throw new Error('Expected hovering the shared usage chart to open the floating detail bubble.')
+    }
+
+    const outsidePlotClientY = rect.top + 6
+    pointerTarget.dispatchEvent(
+      new MouseEvent('mousemove', {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY: outsidePlotClientY,
+      }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    const tooltipOpenAfterLeaving = usagePanel.getAttribute('data-tooltip-open')
+    if (tooltipOpenAfterLeaving !== 'false') {
+      throw new Error('Expected hover tooltip to disappear after leaving the plot area vertically.')
+    }
+
+    pointerTarget.dispatchEvent(
+      new MouseEvent('mousemove', {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+      }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    pointerTarget.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+      }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    if (usagePanel.dataset.tooltipPinned !== 'true') {
+      throw new Error('Expected clicking the shared usage chart to pin the floating detail bubble.')
+    }
+  },
+}
+
 export const UserDetail: Story = {
   render: () => <UserDetailPageCanvas />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    if (!usagePanel) {
+      throw new Error('Expected user detail story to render the shared usage panel.')
+    }
+    if (usagePanel.dataset.loadedSeries !== 'quota1h') {
+      throw new Error(`Expected the default story to lazy-load only quota1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
+    }
+
+    const headerText = canvasElement.querySelector('.admin-user-tokens-table thead')?.textContent ?? ''
+    if (headerText.includes('限流') || headerText.includes('24h') || headerText.includes('月度')) {
+      throw new Error('Expected the token table headers to drop shared quota columns.')
+    }
+    if (!headerText.includes('累计请求') || !headerText.includes('创建时间')) {
+      throw new Error('Expected the token table headers to include total requests and created time.')
+    }
+
+    const tokenTableWrapper = canvasElement.querySelector('.admin-user-tokens-table')?.closest<HTMLElement>('.admin-responsive-up')
+    const breakdownTableWrapper = canvasElement.querySelector('.user-tag-breakdown-table')?.closest<HTMLElement>('.admin-responsive-up')
+    for (const [label, wrapper] of [
+      ['token table', tokenTableWrapper],
+      ['quota breakdown table', breakdownTableWrapper],
+    ] as const) {
+      if (!wrapper) {
+        throw new Error(`Expected the ${label} wrapper to exist in the desktop story.`)
+      }
+      if (wrapper.scrollWidth > wrapper.clientWidth + 1) {
+        throw new Error(`Expected the desktop ${label} wrapper to avoid horizontal overflow.`)
+      }
+    }
+
+    ;['5m', '24h', '月'].forEach((label) => {
+      const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.segmented-tab'))
+        .find((item) => item.textContent?.trim() === label)
+      button?.click()
+    })
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    const loadedSeries = usagePanel.dataset.loadedSeries?.split(',').filter(Boolean) ?? []
+    const expected = ['quota1h', 'rate5m', 'quota24h', 'quotaMonth']
+    if (expected.some((value) => !loadedSeries.includes(value))) {
+      throw new Error(`Expected shared usage tabs to lazy-load all series after interaction, received ${loadedSeries.join(',')}.`)
+    }
+  },
+}
+
+export const UserDetailCompact: Story = {
+  render: () => <UserDetailPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    const mainContent = canvasElement.querySelector<HTMLElement>('.admin-main-content')
+    if (!mainContent?.classList.contains('is-compact-layout')) {
+      throw new Error('Expected the compact user detail story to activate the compact admin layout.')
+    }
+
+    const tokenCards = Array.from(canvasElement.querySelectorAll<HTMLElement>('.admin-user-token-card'))
+    const breakdownCards = Array.from(canvasElement.querySelectorAll<HTMLElement>('.admin-user-breakdown-card'))
+    if (tokenCards.length === 0 || breakdownCards.length === 0) {
+      throw new Error('Expected the compact user detail story to render both token cards and quota breakdown cards.')
+    }
+    if (
+      tokenCards.some((card) => !card.querySelector('.admin-user-mobile-metric-grid')) ||
+      breakdownCards.some((card) => !card.querySelector('.admin-user-mobile-metric-grid'))
+    ) {
+      throw new Error('Expected compact user detail cards to render the denser metric-grid layout.')
+    }
+
+    const desktopTokenWrapper = canvasElement.querySelector('.admin-user-tokens-table')?.closest<HTMLElement>('.admin-responsive-up')
+    const desktopBreakdownWrapper = canvasElement.querySelector('.user-tag-breakdown-table')?.closest<HTMLElement>('.admin-responsive-up')
+    if (
+      (desktopTokenWrapper && getComputedStyle(desktopTokenWrapper).display !== 'none') ||
+      (desktopBreakdownWrapper && getComputedStyle(desktopBreakdownWrapper).display !== 'none')
+    ) {
+      throw new Error('Expected compact user detail story to hide desktop tables.')
+    }
+
+    for (const [label, cards] of [
+      ['token', tokenCards],
+      ['quota breakdown', breakdownCards],
+    ] as const) {
+      if (cards.some((card) => card.scrollWidth > card.clientWidth + 1)) {
+        throw new Error(`Expected compact ${label} cards to avoid horizontal overflow.`)
+      }
+    }
+  },
+}
+
+export const UserDetailMonthlyGap: Story = {
+  render: () => <UserDetailPageCanvas initialUsageSeries="quotaMonth" />,
 }
 
 export const Alerts: Story = {
