@@ -201,6 +201,29 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
       root.unmount()
     })
   })
+
+  it('settles into an error state without retrying forever after a failed load', async () => {
+    let attempts = 0
+    const { container, root } = await mountPanel({
+      loadSeries: async () => {
+        attempts += 1
+        throw new Error('boom')
+      },
+    })
+
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoadFailed)
+    expect(attempts).toBe(1)
+
+    await flushEffects()
+    await flushEffects()
+
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoadFailed)
+    expect(attempts).toBe(1)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
 })
 
 describe('UserDetailSharedUsagePanel theme behavior', () => {

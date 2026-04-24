@@ -262,7 +262,7 @@ export function UserDetailSharedUsagePanel({
 
   useEffect(() => {
     if (currentSeries) return
-    if (activeStatus === 'loading' || activeStatus === 'success') return
+    if (activeStatus !== 'idle') return
 
     const controller = new AbortController()
     inflightControllersRef.current[activeSeries]?.abort()
