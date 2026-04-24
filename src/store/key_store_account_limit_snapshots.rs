@@ -410,11 +410,7 @@ impl KeyStore {
                 .get_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START)
                 .await?;
             let default_limit = request_rate_limit();
-            let changed_at = match configured_limit {
-                None => coverage_start.unwrap_or(now),
-                Some(limit) if limit != default_limit => coverage_start.unwrap_or(now),
-                Some(_) => now,
-            };
+            let changed_at = coverage_start.unwrap_or(now);
             self.record_request_rate_limit_snapshot_at(
                 configured_limit.unwrap_or(default_limit),
                 changed_at,

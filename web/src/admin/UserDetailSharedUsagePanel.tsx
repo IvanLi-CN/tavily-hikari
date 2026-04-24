@@ -20,6 +20,7 @@ import { Chart } from 'react-chartjs-2'
 import type { AdminUserUsageSeries, AdminUserUsageSeriesKey, AdminUserUsageSeriesPoint } from '../api'
 import type { AdminTranslations } from '../i18n'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
+import { Button } from '../components/ui/button'
 import { useTheme } from '../theme'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineController, LineElement, PointElement, Tooltip, Legend)
@@ -308,6 +309,14 @@ export function UserDetailSharedUsagePanel({
   const activeTooltipPoint = activeTooltip ? currentSeries?.points[activeTooltip.index] ?? null : null
   const tooltipHasGap = activeTooltipPoint ? activeTooltipPoint.value == null || activeTooltipPoint.limitValue == null : false
 
+  const retryActiveSeries = () => {
+    inflightControllersRef.current[activeSeries]?.abort()
+    delete inflightControllersRef.current[activeSeries]
+    setStatusBySeries((current) => ({ ...current, [activeSeries]: 'idle' }))
+    setHoverTooltip(null)
+    setPinnedTooltip(null)
+  }
+
   const chartData = useMemo(() => {
     const labels = currentSeries?.points.map((point) => formatBucketAxisLabel(language, activeSeries, point)) ?? []
     return {
@@ -495,7 +504,18 @@ export function UserDetailSharedUsagePanel({
         {(statusBySeries[activeSeries] ?? 'idle') === 'loading' && !currentSeries ? (
           <div className="empty-state alert">{usersStrings.detail.sharedUsageLoading}</div>
         ) : (statusBySeries[activeSeries] ?? 'idle') === 'error' && !currentSeries ? (
-          <div className="empty-state alert">{usersStrings.detail.sharedUsageLoadFailed}</div>
+          <div className="empty-state alert">
+            <div>{usersStrings.detail.sharedUsageLoadFailed}</div>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={retryActiveSeries}
+              style={{ marginTop: 12 }}
+            >
+              {usersStrings.detail.sharedUsageRetryAction}
+            </Button>
+          </div>
         ) : !hasRenderablePoints ? (
           <div className="empty-state alert">{usersStrings.detail.sharedUsageEmpty}</div>
         ) : (

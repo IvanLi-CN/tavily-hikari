@@ -643,6 +643,7 @@ export const EN: TranslationShape = {
           sharedUsageDescription: 'Account-shared request rate and business credits across the main review windows.',
           sharedUsageLoading: 'Loading shared usage trends…',
           sharedUsageLoadFailed: 'Failed to load shared usage trends.',
+          sharedUsageRetryAction: 'Retry',
           sharedUsageEmpty: 'No usage data is available for this window yet.',
           sharedUsagePartialHint: 'Older history outside the backfill coverage stays empty instead of being faked as zero.',
           sharedUsageLegendUsed: 'Used',

@@ -202,16 +202,20 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     })
   })
 
-  it('settles into an error state without retrying forever after a failed load', async () => {
+  it('settles into an error state without retrying forever and lets the operator retry manually', async () => {
     let attempts = 0
     const { container, root } = await mountPanel({
       loadSeries: async () => {
         attempts += 1
-        throw new Error('boom')
+        if (attempts === 1) {
+          throw new Error('boom')
+        }
+        return buildEmptySeries(100)
       },
     })
 
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoadFailed)
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageRetryAction)
     expect(attempts).toBe(1)
 
     await flushEffects()
@@ -219,6 +223,19 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
 
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoadFailed)
     expect(attempts).toBe(1)
+
+    const retryButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === ZH.admin.users.detail.sharedUsageRetryAction,
+    )
+    expect(retryButton).toBeDefined()
+
+    await act(async () => {
+      retryButton?.click()
+    })
+    await flushEffects()
+
+    expect(attempts).toBe(2)
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageEmpty)
 
     await act(async () => {
       root.unmount()

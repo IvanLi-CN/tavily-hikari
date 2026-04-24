@@ -625,6 +625,7 @@ export interface AdminTranslationsShape {
       sharedUsageDescription: string
       sharedUsageLoading: string
       sharedUsageLoadFailed: string
+      sharedUsageRetryAction: string
       sharedUsageEmpty: string
       sharedUsagePartialHint: string
       sharedUsageLegendUsed: string

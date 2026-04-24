@@ -642,6 +642,7 @@ export const ZH: TranslationShape = {
           sharedUsageDescription: '账户级共享请求频率与业务额度消耗，按时间窗口切换查看。',
           sharedUsageLoading: '正在加载共享额度趋势…',
           sharedUsageLoadFailed: '加载共享额度趋势失败，请稍后重试。',
+          sharedUsageRetryAction: '重试',
           sharedUsageEmpty: '当前时间范围内暂无可展示的数据。',
           sharedUsagePartialHint: '更早的历史超出可追溯范围时会显示为空白，不会伪造为 0。',
           sharedUsageLegendUsed: '已用',

@@ -244,7 +244,7 @@ async fn account_limit_snapshot_backfill_treats_absent_request_limit_setting_as_
 }
 
 #[tokio::test]
-async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_as_partial_history() {
+async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_as_long_term_history() {
     let db_path = temp_db_path("account-limit-snapshot-backfill-persisted-default-request-gap");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -311,7 +311,7 @@ async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_
         .expect("load rate5m series");
 
     assert_eq!(series.limit, default_limit);
-    assert_eq!(series.points[286].limit_value, None);
+    assert_eq!(series.points.first().and_then(|point| point.limit_value), Some(default_limit));
     assert_eq!(series.points[287].limit_value, Some(default_limit));
 
     let _ = std::fs::remove_file(db_path);
