@@ -165,6 +165,42 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
       root.unmount()
     })
   })
+
+  it('refetches the active series after the backing user detail refreshes', async () => {
+    const firstLoader = createAbortableLoader()
+    const secondLoader = createAbortableLoader()
+    const { container, root } = await mountPanel({ loadSeries: firstLoader.loadSeries })
+
+    expect(firstLoader.requests.quota1h?.length).toBe(1)
+    firstLoader.requests.quota1h?.[0]?.deferred.resolve(buildEmptySeries(120))
+    await flushEffects()
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageEmpty)
+
+    await act(async () => {
+      root.render(
+        <ThemeProvider>
+          <UserDetailSharedUsagePanel
+            key="after-refresh"
+            usersStrings={ZH.admin.users}
+            language="zh"
+            loadSeries={secondLoader.loadSeries}
+          />
+        </ThemeProvider>,
+      )
+    })
+    await flushEffects()
+
+    expect(secondLoader.requests.quota1h?.length).toBe(1)
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoading)
+
+    secondLoader.requests.quota1h?.[0]?.deferred.resolve(buildEmptySeries(200))
+    await flushEffects()
+    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageEmpty)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
 })
 
 describe('UserDetailSharedUsagePanel theme behavior', () => {

@@ -106,7 +106,7 @@ async fn account_usage_rollup_rebuild_backfills_full_month_chart_horizon() {
 }
 
 #[tokio::test]
-async fn account_limit_snapshot_backfill_preserves_gaps_for_existing_custom_request_limit() {
+async fn account_limit_snapshot_backfill_preserves_history_for_existing_custom_request_limit() {
     let db_path = temp_db_path("account-limit-snapshot-backfill-custom-request-gap");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -171,7 +171,7 @@ async fn account_limit_snapshot_backfill_preserves_gaps_for_existing_custom_requ
 
     assert_eq!(series.limit, 80);
     assert_eq!(series.points.len(), 288);
-    assert_eq!(series.points[286].limit_value, None);
+    assert_eq!(series.points.first().and_then(|point| point.limit_value), Some(80));
     assert_eq!(series.points[287].limit_value, Some(80));
 
     let _ = std::fs::remove_file(db_path);

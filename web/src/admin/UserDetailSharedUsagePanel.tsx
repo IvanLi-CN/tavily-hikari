@@ -229,6 +229,7 @@ export function UserDetailSharedUsagePanel({
   const loadSeriesRef = useRef(loadSeries)
   const inflightControllersRef = useRef<Partial<Record<AdminUserUsageSeriesKey, AbortController>>>({})
   const currentSeries = seriesCache[activeSeries] ?? null
+  const activeStatus = statusBySeries[activeSeries] ?? 'idle'
 
   useEffect(() => {
     loadSeriesRef.current = loadSeries
@@ -261,8 +262,7 @@ export function UserDetailSharedUsagePanel({
 
   useEffect(() => {
     if (currentSeries) return
-    const status = statusBySeries[activeSeries] ?? 'idle'
-    if (status === 'loading' || status === 'success') return
+    if (activeStatus === 'loading' || activeStatus === 'success') return
 
     const controller = new AbortController()
     inflightControllersRef.current[activeSeries]?.abort()
@@ -285,7 +285,7 @@ export function UserDetailSharedUsagePanel({
         console.error('load admin user usage series failed', error)
         setStatusBySeries((current) => ({ ...current, [activeSeries]: 'error' }))
       })
-  }, [activeSeries])
+  }, [activeSeries, activeStatus, currentSeries])
 
   const loadedSeries = useMemo(
     () => USAGE_TAB_ORDER.filter((key) => seriesCache[key] != null),

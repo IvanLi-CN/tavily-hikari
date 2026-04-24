@@ -1636,6 +1636,7 @@ function AdminDashboard(): JSX.Element {
   const [registrationSettingsSaving, setRegistrationSettingsSaving] = useState(false)
   const [registrationSettingsError, setRegistrationSettingsError] = useState<string | null>(null)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
+  const [userDetailRevision, setUserDetailRevision] = useState(0)
   const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
   const [userQuotaDraft, setUserQuotaDraft] = useState<Record<QuotaSliderField, string> | null>(null)
@@ -3649,6 +3650,7 @@ function AdminDashboard(): JSX.Element {
       .then((detail) => {
         if (controller.signal.aborted) return
         setSelectedUserDetail(detail)
+        setUserDetailRevision((current) => current + 1)
         setUserQuotaSnapshot(buildUserQuotaSnapshot(detail))
         setUserQuotaDraft({
           hourlyAnyLimit: String(detail.quotaBase.hourlyAnyLimit),
@@ -5702,6 +5704,7 @@ function AdminDashboard(): JSX.Element {
   const refreshUserDetail = async (userId: string) => {
     const detail = await fetchAdminUserDetail(userId)
     setSelectedUserDetail(detail)
+    setUserDetailRevision((current) => current + 1)
     setUserQuotaSnapshot(buildUserQuotaSnapshot(detail))
     setUserQuotaDraft({
       hourlyAnyLimit: String(detail.quotaBase.hourlyAnyLimit),
@@ -8024,7 +8027,7 @@ function AdminDashboard(): JSX.Element {
               </div>
               <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={280}>
                 <LazyUserDetailSharedUsagePanel
-                  key={`usage:${detail.userId}`}
+                  key={`usage:${detail.userId}:${userDetailRevision}`}
                   usersStrings={usersStrings}
                   language={language}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
