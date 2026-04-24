@@ -17,66 +17,6 @@
   word-break: normal;
 }
 
-.jobs-table.admin-user-tokens-table th:last-child,
-.jobs-table.admin-user-tokens-table td:last-child {
-  width: 86px;
-  min-width: 86px;
-  text-align: center;
-}
-
-.jobs-table.admin-user-tokens-table {
-  min-width: 940px;
-}
-
-.jobs-table.admin-user-tokens-table th:nth-child(1),
-.jobs-table.admin-user-tokens-table td:nth-child(1) {
-  min-width: 13rem;
-}
-
-.jobs-table.admin-user-tokens-table th:nth-child(2),
-.jobs-table.admin-user-tokens-table td:nth-child(2),
-.jobs-table.admin-user-tokens-table th:nth-child(3),
-.jobs-table.admin-user-tokens-table td:nth-child(3),
-.jobs-table.admin-user-tokens-table th:nth-child(4),
-.jobs-table.admin-user-tokens-table td:nth-child(4),
-.jobs-table.admin-user-tokens-table th:nth-child(5),
-.jobs-table.admin-user-tokens-table td:nth-child(5) {
-  min-width: 10.5rem;
-}
-
-.token-compact-pair {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.token-compact-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.token-compact-label {
-  flex-shrink: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 0.76rem;
-}
-
-.token-compact-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.token-compact-pair .status-badge {
-  width: fit-content;
-}
-
 .users-search-controls {
   display: flex;
   align-items: center;
@@ -486,7 +426,39 @@
 }
 
 .user-tag-breakdown-table {
-  min-width: 900px;
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.user-tag-breakdown-table th,
+.user-tag-breakdown-table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.user-tag-breakdown-table th:nth-child(1),
+.user-tag-breakdown-table td:nth-child(1) {
+  width: 25%;
+}
+
+.user-tag-breakdown-table th:nth-child(2),
+.user-tag-breakdown-table td:nth-child(2) {
+  width: 16%;
+}
+
+.user-tag-breakdown-table th:nth-child(3),
+.user-tag-breakdown-table td:nth-child(3) {
+  width: 17%;
+}
+
+.user-tag-breakdown-table th:nth-child(4),
+.user-tag-breakdown-table td:nth-child(4),
+.user-tag-breakdown-table th:nth-child(5),
+.user-tag-breakdown-table td:nth-child(5),
+.user-tag-breakdown-table th:nth-child(6),
+.user-tag-breakdown-table td:nth-child(6) {
+  width: 14%;
 }
 
 .user-tag-form-panel {
@@ -2196,4 +2168,3 @@ tbody .log-details-row:hover {
 .admin-mobile-kv span {
   color: hsl(var(--muted-foreground));
 }
-

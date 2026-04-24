@@ -6,6 +6,7 @@ import {
   createBrowserTodayWindow,
   fetchAdminRegistrationSettings,
   fetchAdminUnboundTokenUsage,
+  fetchAdminUserUsageSeries,
   fetchAdminUsers,
   fetchAdminUserTags,
   fetchAlertCatalog,
@@ -267,6 +268,20 @@ describe('admin user tag api helpers', () => {
     expect(overview.tokenCoverage).toBe('ok')
     expect(overview.recentAlerts.totalEvents).toBe(3)
     expect(overview.recentAlerts.topGroups[0]?.latestEvent.request?.id).toBe(91)
+  })
+
+  it('formats the admin user usage series URL with the selected series key', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ limit: 100, points: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await fetchAdminUserUsageSeries('user/abc', 'quotaMonth')
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/users/user%2Fabc/usage-series?series=quotaMonth')
   })
 
   it('fetches the alert catalog from the dedicated endpoint', async () => {

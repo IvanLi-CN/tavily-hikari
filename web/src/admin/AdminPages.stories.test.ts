@@ -20,6 +20,8 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.Requests).toMatchObject({})
     expect(adminPageStories.KeyDetailRecentRequests).toMatchObject({})
     expect(adminPageStories.TokenDetailRecentRequests).toMatchObject({})
+    expect(adminPageStories.UserDetailSharedUsageTooltip).toMatchObject({})
+    expect(adminPageStories.UserDetailCompact).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -87,5 +89,25 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-nav-item-active')
     expect(markup).toContain('admin-nav-item-icon')
     expect(markup).toContain('<svg')
+  })
+
+  it('renders the user detail story with compact card fallbacks for tokens and quota breakdown', () => {
+    const renderStory = adminPageStories.UserDetailCompact.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('admin-user-token-card')
+    expect(markup).toContain('admin-user-breakdown-card')
+    expect(markup).toContain('admin-user-mobile-metric-grid')
+    expect(markup).toContain('admin-user-mobile-chip')
+    expect(markup).toContain('累计请求')
+    expect(markup).toContain('最终有效额度')
   })
 })

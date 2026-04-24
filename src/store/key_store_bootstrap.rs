@@ -716,6 +716,7 @@ impl KeyStore {
                 business_credits INTEGER,
                 billing_subject TEXT,
                 billing_state TEXT NOT NULL DEFAULT 'none',
+                request_user_id TEXT,
                 api_key_id TEXT,
                 request_log_id INTEGER REFERENCES request_logs(id),
                 created_at INTEGER NOT NULL
@@ -876,6 +877,14 @@ impl KeyStore {
             )
             .execute(&self.pool)
             .await?;
+        }
+        if !self
+            .table_column_exists("auth_token_logs", "request_user_id")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_user_id TEXT")
+                .execute(&self.pool)
+                .await?;
         }
 
         if !self
@@ -1129,6 +1138,73 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS account_usage_rollup_buckets (
+                user_id TEXT NOT NULL,
+                metric_kind TEXT NOT NULL,
+                bucket_kind TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                value INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, metric_kind, bucket_kind, bucket_start),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_account_usage_rollup_lookup
+               ON account_usage_rollup_buckets(user_id, metric_kind, bucket_kind, bucket_start DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS request_rate_limit_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                changed_at INTEGER NOT NULL,
+                limit_value INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_rate_limit_snapshots_changed
+               ON request_rate_limit_snapshots(changed_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS account_quota_limit_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                changed_at INTEGER NOT NULL,
+                hourly_any_limit INTEGER NOT NULL,
+                hourly_limit INTEGER NOT NULL,
+                daily_limit INTEGER NOT NULL,
+                monthly_limit INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_account_quota_limit_snapshots_user_changed
+               ON account_quota_limit_snapshots(user_id, changed_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS token_usage_stats (
                 token_id TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL,
@@ -1316,6 +1392,15 @@ impl KeyStore {
             )
             .await?;
         }
+        if self
+            .get_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_V1_DONE)
+            .await?
+            .unwrap_or_default()
+            <= 0
+        {
+            self.rebuild_account_usage_rollup_buckets_v1().await?;
+        }
+        self.backfill_account_limit_snapshot_history_v1().await?;
         if self
             .get_meta_i64(META_KEY_FORCE_USER_RELOGIN_V1)
             .await?

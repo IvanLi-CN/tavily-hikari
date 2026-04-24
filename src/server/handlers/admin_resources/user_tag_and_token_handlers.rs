@@ -556,15 +556,6 @@ async fn get_user_detail(
             eprintln!("get admin user tokens error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let token_ids: Vec<String> = tokens.iter().map(|token| token.id.clone()).collect();
-    let hourly_any = state
-        .proxy
-        .token_hourly_any_snapshot(&token_ids)
-        .await
-        .map_err(|err| {
-            eprintln!("get admin user token hourly snapshot error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
     let mut token_items = Vec::with_capacity(tokens.len());
     for token in tokens {
         let (monthly_success, daily_success, daily_failure) = state
@@ -575,38 +566,13 @@ async fn get_user_detail(
                 eprintln!("get admin user token success breakdown error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        let (
-            quota_hourly_used,
-            quota_hourly_limit,
-            quota_daily_used,
-            quota_daily_limit,
-            quota_monthly_used,
-            quota_monthly_limit,
-        ) = user_token_quota_values(&token);
-        let request_rate = hourly_any
-            .get(&token.id)
-            .cloned()
-            .unwrap_or_else(|| {
-                state
-                    .proxy
-                    .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
-            });
-        let (hourly_any_used, hourly_any_limit) =
-            (request_rate.hourly_used, request_rate.hourly_limit);
         token_items.push(AdminUserTokenSummaryView {
             token_id: token.id,
             enabled: token.enabled,
             note: token.note,
+            created_at: token.created_at,
             last_used_at: token.last_used_at,
-            request_rate: request_rate.request_rate(),
-            hourly_any_used,
-            hourly_any_limit,
-            quota_hourly_used,
-            quota_hourly_limit,
-            quota_daily_used,
-            quota_daily_limit,
-            quota_monthly_used,
-            quota_monthly_limit,
+            total_requests: token.total_requests,
             daily_success,
             daily_failure,
             monthly_success,
@@ -650,6 +616,57 @@ async fn get_user_detail(
             .map(build_admin_quota_breakdown_view)
             .collect(),
         tokens: token_items,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserUsageSeriesQuery {
+    series: Option<String>,
+}
+
+async fn get_user_usage_series(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<AdminUserUsageSeriesQuery>,
+) -> Result<Json<AdminUserUsageSeriesView>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let Some(series_key) = q.series.as_deref() else {
+        return Err((StatusCode::BAD_REQUEST, "series is required".to_string()));
+    };
+    let Some(series) = AdminUserUsageSeriesKind::parse(series_key) else {
+        return Err((StatusCode::BAD_REQUEST, "invalid series".to_string()));
+    };
+    let Some(_) = state
+        .proxy
+        .get_admin_user_identity(&id)
+        .await
+        .map_err(|err| admin_proxy_error_response("get admin user identity error", err))?
+    else {
+        return Err((StatusCode::NOT_FOUND, "user not found".to_string()));
+    };
+
+    let usage = state
+        .proxy
+        .admin_user_usage_series(&id, series)
+        .await
+        .map_err(|err| admin_proxy_error_response("get admin user usage series error", err))?;
+
+    Ok(Json(AdminUserUsageSeriesView {
+        limit: usage.limit,
+        points: usage
+            .points
+            .into_iter()
+            .map(|point| AdminUserUsageSeriesPointView {
+                bucket_start: point.bucket_start,
+                display_bucket_start: point.display_bucket_start,
+                value: point.value,
+                limit_value: point.limit_value,
+            })
+            .collect(),
     }))
 }
 

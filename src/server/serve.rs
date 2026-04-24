@@ -160,6 +160,7 @@ pub async fn serve(
         .route("/api/user-tags/:tag_id", delete(delete_user_tag))
         .route("/api/users", get(list_users))
         .route("/api/users/:id", get(get_user_detail))
+        .route("/api/users/:id/usage-series", get(get_user_usage_series))
         .route("/api/users/:id/quota", patch(update_user_quota))
         .route(
             "/api/users/:id/broken-key-limit",

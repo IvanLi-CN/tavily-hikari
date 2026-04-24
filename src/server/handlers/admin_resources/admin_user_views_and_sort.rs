@@ -121,16 +121,9 @@ struct AdminUserTokenSummaryView {
     token_id: String,
     enabled: bool,
     note: Option<String>,
+    created_at: i64,
     last_used_at: Option<i64>,
-    request_rate: tavily_hikari::RequestRateView,
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    quota_hourly_used: i64,
-    quota_hourly_limit: i64,
-    quota_daily_used: i64,
-    quota_daily_limit: i64,
-    quota_monthly_used: i64,
-    quota_monthly_limit: i64,
+    total_requests: i64,
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
@@ -149,6 +142,22 @@ struct ListUsersResponse {
 #[serde(rename_all = "camelCase")]
 struct ListUserTagsResponse {
     items: Vec<AdminUserTagView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserUsageSeriesPointView {
+    bucket_start: i64,
+    display_bucket_start: Option<i64>,
+    value: Option<i64>,
+    limit_value: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserUsageSeriesView {
+    limit: i64,
+    points: Vec<AdminUserUsageSeriesPointView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -823,4 +832,3 @@ fn build_admin_unbound_token_usage_view(
         last_used_at: row.last_used_at,
     }
 }
-

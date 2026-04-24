@@ -1,4 +1,16 @@
 impl KeyStore {
+    async fn resolve_request_rollup_user_id(
+        &self,
+        token_id: &str,
+        billing_subject: Option<&str>,
+    ) -> Result<Option<String>, ProxyError> {
+        if let Some(user_id) = billing_subject.and_then(|subject| subject.strip_prefix("account:")) {
+            return Ok(Some(user_id.to_string()));
+        }
+
+        self.find_user_id_by_token_fresh(token_id).await
+    }
+
     async fn upsert_oauth_account_with_options(
         &self,
         profile: &OAuthAccountProfile,
@@ -233,6 +245,8 @@ impl KeyStore {
                 self.sync_linuxdo_system_tag_binding_best_effort(&user_id, profile.trust_level)
                     .await;
             }
+            self.record_effective_account_quota_snapshot_at(&user_id, now)
+                .await?;
             return Ok(UserIdentity {
                 user_id,
                 provider: profile.provider.clone(),
@@ -862,6 +876,7 @@ impl KeyStore {
         let key_effect_summary = key_effect_summary.map(str::to_string);
         let binding_effect_summary = binding_effect_summary.map(str::to_string);
         let selection_effect_summary = selection_effect_summary.map(str::to_string);
+        let request_user_id = self.resolve_request_rollup_user_id(token_id, None).await?;
         let diagnostic_metadata = self
             .resolve_request_log_diagnostic_metadata(request_log_id)
             .await?;
@@ -876,7 +891,8 @@ impl KeyStore {
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
                 counts_business_quota, request_log_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                , request_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -906,6 +922,7 @@ impl KeyStore {
         .bind(counts_business_quota)
         .bind(request_log_id)
         .bind(created_at)
+        .bind(request_user_id.as_deref())
         .execute(&self.pool)
         .await?;
 
@@ -916,6 +933,8 @@ impl KeyStore {
         .bind(token_id)
         .execute(&self.pool)
         .await?;
+        self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
+            .await?;
 
         self.invalidate_request_logs_catalog_cache().await;
         Ok(())
@@ -973,6 +992,9 @@ impl KeyStore {
         let key_effect_summary = key_effect_summary.map(str::to_string);
         let binding_effect_summary = binding_effect_summary.map(str::to_string);
         let selection_effect_summary = selection_effect_summary.map(str::to_string);
+        let request_user_id = self
+            .resolve_request_rollup_user_id(token_id, Some(billing_subject))
+            .await?;
         let diagnostic_metadata = self
             .resolve_request_log_diagnostic_metadata(request_log_id)
             .await?;
@@ -1009,8 +1031,9 @@ impl KeyStore {
                 billing_state,
                 api_key_id,
                 request_log_id,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at,
+                request_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -1045,6 +1068,7 @@ impl KeyStore {
         .bind(api_key_id)
         .bind(request_log_id)
         .bind(created_at)
+        .bind(request_user_id.as_deref())
         .fetch_one(&self.pool)
         .await?;
 
@@ -1055,6 +1079,8 @@ impl KeyStore {
         .bind(token_id)
         .execute(&self.pool)
         .await?;
+        self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
+            .await?;
 
         self.invalidate_request_logs_catalog_cache().await;
         Ok(log_id)
@@ -1355,6 +1381,9 @@ impl KeyStore {
             .bind(credits)
             .fetch_one(&mut *tx)
             .await?;
+
+            self.record_account_business_credit_rollups(&mut tx, user_id, created_at, credits)
+                .await?;
 
             if let Some(api_key_id) = api_key_id.as_deref() {
                 self.increment_api_key_user_usage_bucket(

@@ -1802,6 +1802,12 @@
   backdrop-filter: blur(16px);
 }
 
+.admin-user-shared-usage-tooltip {
+  --admin-user-shared-usage-tooltip-shadow:
+    0 24px 52px -30px rgb(2 6 23 / 0.62),
+    0 12px 28px -24px rgb(15 23 42 / 0.34);
+}
+
 .anchored-info-disclosure-bubble {
   position: fixed;
   width: min(18rem, calc(100vw - 24px));

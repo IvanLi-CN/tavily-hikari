@@ -621,6 +621,21 @@ export interface AdminTranslationsShape {
       userId: string
       identityTitle: string
       identityDescription: string
+      sharedUsageTitle: string
+      sharedUsageDescription: string
+      sharedUsageLoading: string
+      sharedUsageLoadFailed: string
+      sharedUsageRetryAction: string
+      sharedUsageEmpty: string
+      sharedUsagePartialHint: string
+      sharedUsageLegendUsed: string
+      sharedUsageLegendLimit: string
+      sharedUsageTabs: {
+        oneHour: string
+        fiveMinute: string
+        daily: string
+        monthly: string
+      }
       tokensTitle: string
       tokensDescription: string
     }
@@ -767,10 +782,8 @@ export interface AdminTranslationsShape {
         id: string
         note: string
         status: string
-        hourlyAny: string
-        hourly: string
-        daily: string
-        monthly: string
+        totalRequests: string
+        createdAt: string
         successDaily: string
         successMonthly: string
         lastUsed: string
