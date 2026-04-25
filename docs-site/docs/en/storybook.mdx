@@ -7,13 +7,34 @@ import { useEffect, useMemo } from 'react'
 
 export const DEFAULT_LOCAL_STORYBOOK_DEV_ORIGIN = 'http://127.0.0.1:56006'
 export const DOCS_ORIGIN_QUERY_KEY = 'docsOrigin'
+export const DOCS_BASE = process.env.RSPRESS_DOCS_BASE || process.env.DOCS_BASE || '/'
+export const PUBLISHED_STORYBOOK_FALLBACK_HREF = 'storybook/index.html'
 
 export function isStandaloneDocsServer(currentUrl) {
-  return ['127.0.0.1', 'localhost'].includes(currentUrl.hostname) && currentUrl.pathname.endsWith('/storybook.html')
+  return (
+    normalizeDocsBase(DOCS_BASE) === '/' &&
+    ['127.0.0.1', 'localhost'].includes(currentUrl.hostname) &&
+    currentUrl.pathname.endsWith('/storybook.html')
+  )
 }
 
 export function getLocalStorybookDevOrigin(currentUrl) {
   return process.env.RSPRESS_STORYBOOK_DEV_ORIGIN || `${currentUrl.protocol}//${currentUrl.hostname}:56006`
+}
+
+export function normalizeDocsBase(base) {
+  const raw = (base || '/').trim()
+  if (!raw || raw === '/') return '/'
+  const withLeading = raw.startsWith('/') ? raw : `/${raw}`
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
+}
+
+export function getPublishedStorybookTarget(currentUrl) {
+  return new URL(`${normalizeDocsBase(DOCS_BASE)}storybook/index.html`, currentUrl.origin)
+}
+
+export function getPublishedStorybookFallbackHref() {
+  return PUBLISHED_STORYBOOK_FALLBACK_HREF
 }
 
 export function buildStorybookTarget(currentHref) {
@@ -21,7 +42,7 @@ export function buildStorybookTarget(currentHref) {
   const requestedPath = currentUrl.searchParams.get('path')
   const target = isStandaloneDocsServer(currentUrl)
     ? new URL('/', getLocalStorybookDevOrigin(currentUrl))
-    : new URL('../storybook/index.html', currentUrl)
+    : getPublishedStorybookTarget(currentUrl)
 
   if (requestedPath) {
     target.searchParams.set('path', requestedPath)
@@ -36,7 +57,7 @@ export function buildStorybookTarget(currentHref) {
 
 export const StorybookRedirect = () => {
   const fallbackHref = useMemo(() => {
-    if (typeof window === 'undefined') return '../storybook/index.html'
+    if (typeof window === 'undefined') return getPublishedStorybookFallbackHref()
     return buildStorybookTarget(window.location.href).toString()
   }, [])
 

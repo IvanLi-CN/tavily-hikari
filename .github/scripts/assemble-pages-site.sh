@@ -78,7 +78,27 @@ if [[ ! -f "$output_dir/storybook.html" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$output_dir/zh/storybook.html" ]]; then
+  echo "assembled site is missing zh/storybook.html" >&2
+  exit 1
+fi
+
 if ! grep -q 'Redirecting to Storybook' "$output_dir/storybook.html"; then
   echo "storybook.html is missing the Storybook redirect copy" >&2
+  exit 1
+fi
+
+if grep -q '/\.\./storybook/index.html\|\.\./storybook/index.html' "$output_dir/storybook.html"; then
+  echo "storybook.html contains a parent-relative Storybook target" >&2
+  exit 1
+fi
+
+if ! grep -q 'storybook/index.html' "$output_dir/storybook.html"; then
+  echo "storybook.html is missing the published Storybook target" >&2
+  exit 1
+fi
+
+if grep -q 'zh/storybook/index.html' "$output_dir/zh/storybook.html"; then
+  echo "zh/storybook.html points at a locale-nested Storybook target" >&2
   exit 1
 fi

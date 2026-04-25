@@ -32,6 +32,7 @@ export default defineConfig({
     source: {
       define: {
         'process.env.RSPRESS_STORYBOOK_DEV_ORIGIN': JSON.stringify(localStorybookDevOrigin),
+        'process.env.RSPRESS_DOCS_BASE': JSON.stringify(docsBase),
       },
     },
   },
