@@ -88,7 +88,7 @@ if ! grep -q 'Redirecting to Storybook' "$output_dir/storybook.html"; then
   exit 1
 fi
 
-if grep -q '/\.\./storybook/index.html\|\.\./storybook/index.html' "$output_dir/storybook.html"; then
+if grep -Fq '../storybook/index.html' "$output_dir/storybook.html"; then
   echo "storybook.html contains a parent-relative Storybook target" >&2
   exit 1
 fi
