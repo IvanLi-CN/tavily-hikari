@@ -41,10 +41,11 @@
 - `README.md`、`README.zh-CN.md`、`web/README.md`
 - `.github/workflows/docs-pages.yml`
 - `.github/scripts/assemble-pages-site.sh`
+- CI-only stabilization in backend tests when required to keep the Pages fix mergeable.
 
 ### Out of scope
 
-- `src/**` Rust runtime 行为
+- `src/**` Rust runtime 行为；允许不影响运行时语义的测试稳定性修复
 - 现有业务路由与 API contract
 - 任何 GitHub Pages 以外的发布目标
 
@@ -93,6 +94,7 @@ Storybook redirect behavior:
 - 英文与中文文档都覆盖首发页族，且语言切换不会出现死链。
 - 发布产物中不直接暴露 `docs/specs/**` 或 `docs/plan/**` 原始入口。
 - Pages artifact smoke checks fail if the English Storybook redirect can escape the repo Pages base or if the Chinese redirect points at a locale-nested Storybook path.
+- Repository CI remains green for the redirect fix PR, including backend tests that exercise local port reuse behavior.
 
 ## 实现里程碑
 
@@ -113,3 +115,4 @@ Storybook redirect behavior:
 - 2026-03-19: 创建 spec，冻结公开 docs-site + Storybook Pages 化方案与首发页族。
 - 2026-03-19: 完成 Rspress 双语 docs-site、Storybook 双向回链、Pages 组装 workflow，并通过构建与浏览器验收。
 - 2026-04-25: 修复 GitHub Pages 子路径下英文 Storybook 入口跳出 repo base 的问题，并补充 Pages artifact smoke 检查。
+- 2026-04-25: 同步记录为保持 PR merge-ready 所需的 backend local-port 测试稳定性修复，运行时行为不变。
