@@ -507,8 +507,18 @@ if __name__ == "__main__":
 
         reservation.release();
 
-        let rebound = std::net::TcpListener::bind(("127.0.0.1", port))
-            .expect("released port should be reusable");
+        let rebound = (0..20)
+            .find_map(
+                |_| match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    Ok(listener) => Some(listener),
+                    Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        None
+                    }
+                    Err(err) => panic!("released port should be reusable: {err}"),
+                },
+            )
+            .expect("released port should become reusable");
         drop(rebound);
     }
 
