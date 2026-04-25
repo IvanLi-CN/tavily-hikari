@@ -95,6 +95,7 @@ Storybook redirect behavior:
 - 发布产物中不直接暴露 `docs/specs/**` 或 `docs/plan/**` 原始入口。
 - Pages artifact smoke checks fail if the English Storybook redirect can escape the repo Pages base or if the Chinese redirect points at a locale-nested Storybook path.
 - Repository CI remains green for the redirect fix PR, including backend tests that exercise local port reuse behavior.
+- Storybook redirect target construction does not throw for opaque origins such as direct `file://` artifact inspection.
 
 ## 实现里程碑
 
@@ -116,3 +117,4 @@ Storybook redirect behavior:
 - 2026-03-19: 完成 Rspress 双语 docs-site、Storybook 双向回链、Pages 组装 workflow，并通过构建与浏览器验收。
 - 2026-04-25: 修复 GitHub Pages 子路径下英文 Storybook 入口跳出 repo base 的问题，并补充 Pages artifact smoke 检查。
 - 2026-04-25: 同步记录为保持 PR merge-ready 所需的 backend local-port 测试稳定性修复，运行时行为不变。
+- 2026-04-26: 补齐 Storybook redirect target 在 opaque origin 下的兼容要求。

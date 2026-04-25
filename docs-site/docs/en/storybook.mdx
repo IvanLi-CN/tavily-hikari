@@ -30,7 +30,8 @@ export function normalizeDocsBase(base) {
 }
 
 export function getPublishedStorybookTarget(currentUrl) {
-  return new URL(`${normalizeDocsBase(DOCS_BASE)}storybook/index.html`, currentUrl.origin)
+  const baseUrl = currentUrl.origin === 'null' ? currentUrl : currentUrl.origin
+  return new URL(`${normalizeDocsBase(DOCS_BASE)}storybook/index.html`, baseUrl)
 }
 
 export function getPublishedStorybookFallbackHref() {
