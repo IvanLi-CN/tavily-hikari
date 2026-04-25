@@ -98,7 +98,7 @@ if ! grep -q 'storybook/index.html' "$output_dir/storybook.html"; then
   exit 1
 fi
 
-if grep -q '/zh/storybook/index.html' "$output_dir/zh/storybook.html"; then
+if grep -q 'zh/storybook/index.html' "$output_dir/zh/storybook.html"; then
   echo "zh/storybook.html points at a locale-nested Storybook target" >&2
   exit 1
 fi
