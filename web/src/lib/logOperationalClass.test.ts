@@ -20,6 +20,7 @@ describe('log operational class helpers', () => {
     expect(operationalClassLabel('success', 'en')).toBe('Success')
     expect(operationalClassLabel('neutral', 'zh')).toBe('中性')
     expect(operationalClassLabel('quota_exhausted', 'en')).toBe('Quota Exhausted')
+    expect(operationalClassLabel('quota_exhausted', 'zh')).toBe('限额')
   })
 
   it('prefers failure-kind guidance and falls back to generic operational guidance', () => {

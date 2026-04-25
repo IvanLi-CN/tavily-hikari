@@ -59,7 +59,7 @@ export function operationalClassLabel(
     case 'system_error':
       return language === 'zh' ? '系统错误' : 'System Error'
     case 'quota_exhausted':
-      return language === 'zh' ? '额度耗尽' : 'Quota Exhausted'
+      return language === 'zh' ? '限额' : 'Quota Exhausted'
     default:
       return value?.trim() || (language === 'zh' ? '未知' : 'Unknown')
   }

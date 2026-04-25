@@ -6257,6 +6257,40 @@ export const Requests: Story = {
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+    const text = canvasElement.ownerDocument.body.textContent ?? ''
+    for (const expected of ['结果与影响', '限额', '已耗尽']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected requests story to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const RequestsResultFilterOpen: Story = {
+  render: () => <RequestsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+    const root = canvasElement.ownerDocument
+    const trigger = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      button.getAttribute('aria-label')?.startsWith('结果与影响:'),
+    )
+    if (!trigger) {
+      throw new Error('Expected result/effect filter trigger to render.')
+    }
+    trigger.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+    const text = root.body.textContent ?? ''
+    for (const expected of ['结果', '限额', 'Key 影响', '已耗尽']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected open result filter to contain: ${expected}`)
+      }
+    }
+  },
 }
 
 export const KeyDetailRecentRequests: Story = {

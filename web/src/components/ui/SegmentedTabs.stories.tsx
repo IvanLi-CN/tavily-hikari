@@ -18,7 +18,7 @@ const meta = {
       { value: 'all', label: '全部' },
       { value: 'success', label: '成功' },
       { value: 'error', label: '错误' },
-      { value: 'quota_exhausted', label: '额度耗尽' },
+      { value: 'quota_exhausted', label: '限额' },
     ] as ReadonlyArray<SegmentedTabsOption<DemoValue>>,
     onChange: () => undefined,
   },
@@ -51,7 +51,7 @@ export const RequestResult: Story = {
       { value: 'all', label: '全部' },
       { value: 'success', label: '成功' },
       { value: 'error', label: '错误' },
-      { value: 'quota_exhausted', label: '额度耗尽' },
+      { value: 'quota_exhausted', label: '限额' },
     ],
   },
 }
