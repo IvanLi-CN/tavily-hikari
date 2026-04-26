@@ -31,6 +31,7 @@ Tavily Hikari 至少有两层访问要分清：
 | `--bind` / `PROXY_BIND`           | 是             | 监听地址                       |
 | `--port` / `PROXY_PORT`           | 是             | 监听端口                       |
 | `--db-path` / `PROXY_DB_PATH`     | 是             | SQLite 数据库路径              |
+| `LOW_QUOTA_DEPLETION_THRESHOLD`   | 可选           | 低余额 432 key 阈值            |
 | `--static-dir` / `WEB_STATIC_DIR` | 视情况         | 静态前端目录                   |
 | `--keys` / `TAVILY_API_KEYS`      | 可选           | 启动时一次性导入 key           |
 
@@ -40,6 +41,7 @@ Tavily Hikari 至少有两层访问要分清：
 - `TAVILY_USAGE_BASE` 默认是 `https://api.tavily.com`，它影响 usage / 配额同步相关能力。
 - `TAVILY_UPSTREAM` 按完整的 MCP 端点解释；如果你的反代保留了 path prefix，配置值里需要包含最终的 `/mcp` 路径。
 - `TAVILY_USAGE_BASE` 也可以带 path prefix；Hikari 会在这个 prefix 后继续追加 `/search`、`/extract`、`/crawl`、`/map`、`/research`、`/research/{id}` 与 `/usage`。
+- `LOW_QUOTA_DEPLETION_THRESHOLD` 默认是 `15`。当上游 key 返回 432，且最新已知剩余额度小于等于这个值时，Hikari 会在当前 UTC 月把它排除出正常 key 池，但仍允许作为最终兜底。
 - `WEB_STATIC_DIR` 不配置时，会自动尝试使用当前仓库下的 `web/dist`。
 - `TAVILY_API_KEYS` 只是引导启动时导入 key 的助手，不适合长期运维；长期管理还是用管理员后台或管理员 API。
 

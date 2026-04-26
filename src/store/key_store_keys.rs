@@ -205,12 +205,18 @@ impl KeyStore {
         self.reset_monthly().await?;
 
         let now = Utc::now().timestamp();
+        let month_start = start_of_month(Utc::now()).timestamp();
 
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines q
@@ -221,6 +227,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_ACTIVE)
+        .bind(month_start)
         .fetch_optional(&self.pool)
         .await?
         {
@@ -238,6 +245,11 @@ impl KeyStore {
             WHERE status = ? AND deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1
                   FROM api_key_quarantines q
                   WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
@@ -249,6 +261,41 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY
+                CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                status_changed_at ASC,
+                id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
         .fetch_optional(&self.pool)
         .await?
         {
@@ -266,12 +313,18 @@ impl KeyStore {
         &self,
     ) -> Result<Vec<String>, ProxyError> {
         self.reset_monthly().await?;
+        let month_start = start_of_month(Utc::now()).timestamp();
 
         let active = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines q
@@ -281,17 +334,23 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_ACTIVE)
+        .bind(month_start)
         .fetch_all(&self.pool)
         .await?;
         if !active.is_empty() {
             return Ok(active);
         }
 
-        sqlx::query_scalar::<_, String>(
+        let exhausted = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines q
@@ -301,6 +360,33 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_all(&self.pool)
+        .await?;
+        if !exhausted.is_empty() {
+            return Ok(exhausted);
+        }
+
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
         .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
@@ -312,13 +398,13 @@ impl KeyStore {
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
         self.reset_monthly().await?;
         if let Some(lease) = self
-            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE)
+            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false)
             .await?
         {
             return Ok(Some(lease));
         }
 
-        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED)
+        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true)
             .await
     }
 
@@ -329,7 +415,7 @@ impl KeyStore {
         self.reset_monthly().await?;
 
         if let Some(lease) = self
-            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE)
+            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false)
             .await?
         {
             return Ok(Some(lease));
@@ -339,7 +425,18 @@ impl KeyStore {
             return Ok(None);
         }
 
-        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED)
+        if let Some(lease) = self
+            .try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, false)
+            .await?
+        {
+            return Ok(Some(lease));
+        }
+
+        if self.has_available_regular_exhausted_key_excluding(Some(key_id)).await? {
+            return Ok(None);
+        }
+
+        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true)
             .await
     }
 
@@ -347,14 +444,24 @@ impl KeyStore {
         &self,
         key_id: &str,
         status: &str,
+        allow_low_quota_depleted: bool,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
         let now = Utc::now().timestamp();
+        let month_start = start_of_month(Utc::now()).timestamp();
 
         let lease = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
             FROM api_keys
             WHERE id = ? AND status = ? AND deleted_at IS NULL
+              AND (
+                  ? = 1
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines q
@@ -365,6 +472,8 @@ impl KeyStore {
         )
         .bind(key_id)
         .bind(status)
+        .bind(if allow_low_quota_depleted { 1 } else { 0 })
+        .bind(month_start)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -384,6 +493,7 @@ impl KeyStore {
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
         self.reset_monthly().await?;
+        let month_start = start_of_month(Utc::now()).timestamp();
 
         let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_scalar(
@@ -393,6 +503,11 @@ impl KeyStore {
                 WHERE id != ? AND status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
                       FROM api_key_quarantines q
                       WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
@@ -400,6 +515,7 @@ impl KeyStore {
             )
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
+            .bind(month_start)
             .fetch_one(&self.pool)
             .await?
         } else {
@@ -410,17 +526,147 @@ impl KeyStore {
                 WHERE status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
                       FROM api_key_quarantines q
                       WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 "#,
             )
             .bind(STATUS_ACTIVE)
+            .bind(month_start)
             .fetch_one(&self.pool)
             .await?
         };
 
         Ok(count > 0)
+    }
+
+    pub(crate) async fn has_available_regular_exhausted_key_excluding(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        self.reset_monthly().await?;
+        let month_start = start_of_month(Utc::now()).timestamp();
+
+        let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_EXHAUSTED)
+            .bind(month_start)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .bind(month_start)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        Ok(count > 0)
+    }
+
+    pub(crate) async fn is_low_quota_depleted_this_month(
+        &self,
+        key_id: &str,
+    ) -> Result<bool, ProxyError> {
+        let month_start = start_of_month(Utc::now()).timestamp();
+        let exists = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM api_key_low_quota_depletions
+            WHERE key_id = ? AND month_start = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .bind(month_start)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+        Ok(exists)
+    }
+
+    pub(crate) async fn record_low_quota_depletion_if_needed(
+        &self,
+        key_id: &str,
+        threshold: i64,
+    ) -> Result<bool, ProxyError> {
+        let Some(quota_remaining) =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT quota_remaining FROM api_keys WHERE id = ?")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten()
+        else {
+            return Ok(false);
+        };
+
+        if quota_remaining > threshold {
+            return Ok(false);
+        }
+
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_low_quota_depletions (
+                key_id,
+                month_start,
+                threshold,
+                quota_remaining,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key_id, month_start) DO UPDATE SET
+                threshold = excluded.threshold,
+                quota_remaining = MIN(api_key_low_quota_depletions.quota_remaining, excluded.quota_remaining)
+            "#,
+        )
+        .bind(key_id)
+        .bind(month_start)
+        .bind(threshold)
+        .bind(quota_remaining)
+        .bind(now.timestamp())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(true)
     }
 
     pub(crate) async fn acquire_active_key_excluding(
@@ -430,6 +676,7 @@ impl KeyStore {
         self.reset_monthly().await?;
 
         let now = Utc::now().timestamp();
+        let month_start = start_of_month(Utc::now()).timestamp();
 
         let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_as::<_, (String, String)>(
@@ -437,6 +684,11 @@ impl KeyStore {
                 SELECT id, api_key
                 FROM api_keys
                 WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_quarantines q
@@ -448,6 +700,7 @@ impl KeyStore {
             )
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
+            .bind(month_start)
             .fetch_optional(&self.pool)
             .await?
         } else {
@@ -458,14 +711,20 @@ impl KeyStore {
                 WHERE status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
                       FROM api_key_quarantines q
                       WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 ORDER BY last_used_at ASC, id ASC
                 LIMIT 1
-                "#,
+            "#,
             )
             .bind(STATUS_ACTIVE)
+            .bind(month_start)
             .fetch_optional(&self.pool)
             .await?
         };

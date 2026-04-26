@@ -2,6 +2,7 @@
 mod tests {
     use super::*;
     use crate::tavily_proxy::{TavilyProxy, TavilyProxyOptions};
+    use crate::LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -805,6 +806,7 @@ if __name__ == "__main__":
                 xray_runtime_dir: runtime_dir,
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
             },
         )
         .await
@@ -937,6 +939,7 @@ if __name__ == "__main__":
                 xray_runtime_dir: runtime_dir,
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
             },
         )
         .await
@@ -981,6 +984,7 @@ if __name__ == "__main__":
                 xray_runtime_dir: runtime_dir,
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
             },
         )
         .await
@@ -1069,6 +1073,7 @@ if __name__ == "__main__":
                 xray_runtime_dir: runtime_dir,
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
             },
         )
         .await
@@ -1256,6 +1261,7 @@ if __name__ == "__main__":
                 xray_runtime_dir: runtime_dir,
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
             },
         )
         .await
@@ -1335,6 +1341,7 @@ if __name__ == "__main__":
                     xray_runtime_dir: runtime_dir,
                     forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                         .expect("valid trace url"),
+                    low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 },
             )
             .await

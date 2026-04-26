@@ -97,6 +97,7 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--bind` / `PROXY_BIND`                                                             | Listen address (default `127.0.0.1`).                                                                                |
 | `--port` / `PROXY_PORT`                                                             | Listen port (default `8787`).                                                                                        |
 | `--db-path` / `PROXY_DB_PATH`                                                       | SQLite file path (default `tavily_proxy.db`).                                                                        |
+| `--low-quota-depletion-threshold` / `LOW_QUOTA_DEPLETION_THRESHOLD`                 | Remaining-credit threshold for keeping 432-exhausted upstream keys out of normal monthly pools (default `15`).       |
 | `--static-dir` / `WEB_STATIC_DIR`                                                   | Directory for static assets; auto-detected if `web/dist` exists.                                                     |
 | `--forward-auth-header` / `FORWARD_AUTH_HEADER`                                     | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                                  |
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | Header value that grants admin privileges; leave empty to disable.                                                   |

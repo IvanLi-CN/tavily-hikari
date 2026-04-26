@@ -917,6 +917,13 @@ impl TavilyProxy {
                 if analysis.status != OUTCOME_SUCCESS {
                     return Ok(KeyEffect::none());
                 }
+                if self
+                    .key_store
+                    .is_low_quota_depleted_this_month(&lease.id)
+                    .await?
+                {
+                    return Ok(KeyEffect::none());
+                }
                 let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
                 let changed = self.key_store.restore_active_status(&lease.secret).await?;
                 if !changed {
@@ -953,6 +960,15 @@ impl TavilyProxy {
             KeyHealthAction::MarkExhausted => {
                 let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
                 let changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                if analysis.tavily_status_code == Some(432) {
+                    let _ = self
+                        .key_store
+                        .record_low_quota_depletion_if_needed(
+                            &lease.id,
+                            self.low_quota_depletion_threshold,
+                        )
+                        .await?;
+                }
                 if !changed {
                     return Ok(KeyEffect::none());
                 }
