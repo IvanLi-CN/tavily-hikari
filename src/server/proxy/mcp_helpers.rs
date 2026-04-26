@@ -977,6 +977,7 @@ async fn build_and_log_local_mcp_protocol_response(
     routing_subject_hash: Option<&str>,
     upstream_operation: Option<&str>,
     fallback_reason: Option<&str>,
+    sse_transport: bool,
 ) -> Result<Response<Body>, StatusCode> {
     let analysis = analyze_mcp_attempt(response_status, response_body);
     let request_kind = classify_token_request_kind(path, Some(request_body));
@@ -1038,10 +1039,22 @@ async fn build_and_log_local_mcp_protocol_response(
             .await;
     }
 
+    let (content_type, body) = if sse_transport && !response_body.is_empty() {
+        (
+            "text/event-stream",
+            wrap_mcp_sse_message_body(response_body),
+        )
+    } else {
+        (
+            "application/json; charset=utf-8",
+            response_body.to_vec(),
+        )
+    };
+
     Response::builder()
         .status(response_status)
-        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-        .body(Body::from(response_body.to_vec()))
+        .header(CONTENT_TYPE, content_type)
+        .body(Body::from(body))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 

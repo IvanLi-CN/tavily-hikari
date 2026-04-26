@@ -2068,6 +2068,15 @@
             .await
             .expect("parse-error request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance parse errors should use official-style SSE transport"
+        );
         let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32700));
         assert_eq!(body["error"]["message"].as_str(), Some("Parse error"));
@@ -2128,6 +2137,15 @@
             .await
             .expect("empty-batch request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance empty batch errors should use official-style SSE transport"
+        );
         let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
         assert_eq!(body["error"]["message"].as_str(), Some("Invalid Request"));
@@ -2211,6 +2229,15 @@
             .await
             .expect("response-only batch request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance invalid JSON-RPC shape errors should use official-style SSE transport"
+        );
         let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
 

@@ -62,11 +62,41 @@ async fn proxy_handler(
     } else {
         None
     };
+    let early_mcp_rebalance_transport = if is_mcp_request && !is_mcp_delete_root_request {
+        if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref()
+            && let Some(session) = state
+                .proxy
+                .get_active_mcp_session(proxy_session_id)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+        } else {
+            let has_active_control_session = if let Some(token_id) = token_id.as_deref() {
+                state
+                    .proxy
+                    .token_has_active_non_rebalance_mcp_session(token_id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            } else {
+                false
+            };
+            let settings = state
+                .proxy
+                .get_system_settings()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            !has_active_control_session
+                && settings.rebalance_mcp_enabled
+                && settings.rebalance_mcp_session_percent > 0
+        }
+    } else {
+        false
+    };
     if is_mcp_request && !is_mcp_delete_root_request {
         match mcp_body_summary.as_ref().expect("mcp body summary must exist") {
             Err(_) => {
-                let response_body =
-                    build_rebalance_mcp_error_body(None, -32700, "Parse error");
+                let response_body = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 return build_and_log_local_mcp_protocol_response(
                     &state,
                     token_id.as_deref(),
@@ -83,6 +113,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("parse_error"),
+                    early_mcp_rebalance_transport,
                 )
                 .await;
             }
@@ -105,6 +136,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("empty_batch"),
+                    early_mcp_rebalance_transport,
                 )
                 .await;
             }
@@ -130,6 +162,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("invalid_request"),
+                    early_mcp_rebalance_transport,
                 )
                 .await;
             }
@@ -156,6 +189,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("missing_session_id"),
+                    false,
                 )
                 .await;
             }
@@ -192,6 +226,7 @@ async fn proxy_handler(
                         None,
                         Some("mcp"),
                         Some("response_session_unavailable"),
+                        false,
                     )
                     .await;
                 }
@@ -212,6 +247,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("response_accepted"),
+                    false,
                 )
                 .await;
             }
@@ -250,6 +286,7 @@ async fn proxy_handler(
                         None,
                         Some("mcp"),
                         Some("missing_session_id"),
+                        false,
                     )
                     .await;
                 }
@@ -1003,8 +1040,8 @@ async fn proxy_handler(
                 let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
-                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                    .body(Body::from(payload))
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(wrap_mcp_sse_message_body(&payload)))
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 return Ok(response);
             }
@@ -1030,8 +1067,8 @@ async fn proxy_handler(
                 let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
-                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                    .body(Body::from(payload))
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(wrap_mcp_sse_message_body(&payload)))
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 return Ok(response);
             }
