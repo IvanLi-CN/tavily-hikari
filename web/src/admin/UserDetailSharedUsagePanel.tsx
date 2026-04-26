@@ -25,7 +25,7 @@ import { useTheme } from '../theme'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineController, LineElement, PointElement, Tooltip, Legend)
 
-const USAGE_TAB_ORDER: readonly AdminUserUsageSeriesKey[] = ['quota1h', 'rate5m', 'quota24h', 'quotaMonth']
+const USAGE_TAB_ORDER: readonly AdminUserUsageSeriesKey[] = ['rate5m', 'quota1h', 'quota24h', 'quotaMonth']
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error'
 type TooltipVerticalPlacement = 'top' | 'bottom'
@@ -46,6 +46,8 @@ interface UserDetailSharedUsagePanelProps {
   language: string
   loadSeries: (series: AdminUserUsageSeriesKey, signal: AbortSignal) => Promise<AdminUserUsageSeries>
   initialSeries?: AdminUserUsageSeriesKey
+  title?: string
+  description?: string
 }
 
 function readChartColorVar(name: string, fallback: string): string {
@@ -219,6 +221,8 @@ export function UserDetailSharedUsagePanel({
   language,
   loadSeries,
   initialSeries = 'quota1h',
+  title,
+  description,
 }: UserDetailSharedUsagePanelProps): JSX.Element {
   const { resolvedTheme } = useTheme()
   const [activeSeries, setActiveSeries] = useState<AdminUserUsageSeriesKey>(initialSeries)
@@ -305,6 +309,7 @@ export function UserDetailSharedUsagePanel({
     [resolvedTheme],
   )
 
+  const activeDescription = description ? usersStrings.detail.sharedUsageDescriptions[activeSeries] : undefined
   const activeTooltip = pinnedTooltip ?? hoverTooltip
   const activeTooltipPoint = activeTooltip ? currentSeries?.points[activeTooltip.index] ?? null : null
   const tooltipHasGap = activeTooltipPoint ? activeTooltipPoint.value == null || activeTooltipPoint.limitValue == null : false
@@ -460,13 +465,19 @@ export function UserDetailSharedUsagePanel({
       data-tooltip-open={activeTooltip != null ? 'true' : 'false'}
       data-tooltip-pinned={pinnedTooltip != null ? 'true' : 'false'}
     >
-      <div className="admin-user-shared-usage-panel-header">
+      <div className={title || activeDescription ? 'panel-header admin-user-shared-usage-panel-header' : 'admin-user-shared-usage-panel-header'}>
+        {title || activeDescription ? (
+          <div className="admin-user-shared-usage-heading">
+            {title ? <h2>{title}</h2> : null}
+            {activeDescription ? <p className="panel-description">{activeDescription}</p> : null}
+          </div>
+        ) : null}
         <SegmentedTabs<AdminUserUsageSeriesKey>
           value={activeSeries}
           onChange={setActiveSeries}
           options={[
-            { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
             { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
+            { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
             { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
             { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
           ]}

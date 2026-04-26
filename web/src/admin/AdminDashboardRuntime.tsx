@@ -8019,17 +8019,13 @@ function AdminDashboard(): JSX.Element {
             </section>
 
             <section className="surface panel">
-              <div className="panel-header">
-                <div>
-                  <h2>{usersStrings.detail.sharedUsageTitle}</h2>
-                  <p className="panel-description">{usersStrings.detail.sharedUsageDescription}</p>
-                </div>
-              </div>
               <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={280}>
                 <LazyUserDetailSharedUsagePanel
                   key={`usage:${detail.userId}:${userDetailRevision}`}
                   usersStrings={usersStrings}
                   language={language}
+                  title={usersStrings.detail.sharedUsageTitle}
+                  description={usersStrings.detail.sharedUsageDescription}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
                 />
               </AdminLazyBoundary>

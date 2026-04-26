@@ -86,7 +86,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run cargo test
-        run: cargo test --locked --all-features
+        run: cargo test --locked --all-features -- --test-threads=1
 
   frontend-checks:
     name: Frontend Checks

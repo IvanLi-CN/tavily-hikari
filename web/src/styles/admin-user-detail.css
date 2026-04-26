@@ -243,14 +243,20 @@
 
 .admin-user-shared-usage-panel-header {
   display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
   flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.admin-user-shared-usage-heading {
+  min-width: min(34rem, 100%);
 }
 
 .admin-user-shared-usage-tabs {
   margin-left: auto;
+  align-self: flex-start;
 }
 
 .admin-user-shared-usage-meta {

@@ -6005,15 +6005,11 @@ function UserDetailPageCanvas({
       </section>
 
       <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{users.detail.sharedUsageTitle}</h2>
-            <p className="panel-description">{users.detail.sharedUsageDescription}</p>
-          </div>
-        </div>
         <UserDetailSharedUsagePanel
           usersStrings={users}
           language={language}
+          title={users.detail.sharedUsageTitle}
+          description={users.detail.sharedUsageDescription}
           initialSeries={initialUsageSeries}
           loadSeries={async (series) => {
             await new Promise((resolve) => window.setTimeout(resolve, 20))
@@ -6728,6 +6724,18 @@ export const UserDetail: Story = {
     }
     if (usagePanel.dataset.loadedSeries !== 'quota1h') {
       throw new Error(`Expected the default story to lazy-load only quota1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
+    }
+
+    const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
+      .map((item) => item.textContent?.trim())
+    const expectedTabLabels = ['5m', '1h', '24h', '月']
+    if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
+      throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
+    }
+
+    const sharedUsageHeader = canvasElement.querySelector('.admin-user-shared-usage-panel-header')?.textContent ?? ''
+    if (!sharedUsageHeader.includes('1h：业务额度消耗') || sharedUsageHeader.includes('5m：请求频率限制')) {
+      throw new Error('Expected the default shared usage description to explain the active 1h business-credit window only.')
     }
 
     const headerText = canvasElement.querySelector('.admin-user-tokens-table thead')?.textContent ?? ''

@@ -623,6 +623,12 @@ export interface AdminTranslationsShape {
       identityDescription: string
       sharedUsageTitle: string
       sharedUsageDescription: string
+      sharedUsageDescriptions: {
+        rate5m: string
+        quota1h: string
+        quota24h: string
+        quotaMonth: string
+      }
       sharedUsageLoading: string
       sharedUsageLoadFailed: string
       sharedUsageRetryAction: string
