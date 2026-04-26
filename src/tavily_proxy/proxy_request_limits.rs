@@ -617,6 +617,24 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn token_has_active_non_rebalance_mcp_session(
+        &self,
+        token_id: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .has_active_non_rebalance_mcp_session_for_token(token_id, Utc::now().timestamp())
+            .await
+    }
+
+    pub async fn latest_active_mcp_session_for_token(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        self.key_store
+            .get_latest_active_mcp_session_for_token(token_id, Utc::now().timestamp())
+            .await
+    }
+
     pub async fn create_mcp_session(
         &self,
         upstream_session_id: &str,

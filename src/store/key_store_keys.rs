@@ -2506,6 +2506,96 @@ impl KeyStore {
         }))
     }
 
+    pub(crate) async fn get_latest_active_mcp_session_for_token(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            FROM mcp_sessions
+            WHERE auth_token_id = ?
+              AND revoked_at IS NULL
+              AND expires_at > ?
+            ORDER BY updated_at DESC, expires_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(token_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| McpSessionBinding {
+            proxy_session_id: row.get("proxy_session_id"),
+            upstream_session_id: row.get("upstream_session_id"),
+            upstream_key_id: row.get("upstream_key_id"),
+            auth_token_id: row.get("auth_token_id"),
+            user_id: row.get("user_id"),
+            protocol_version: row.get("protocol_version"),
+            last_event_id: row.get("last_event_id"),
+            gateway_mode: row.get("gateway_mode"),
+            experiment_variant: row.get("experiment_variant"),
+            ab_bucket: row.get("ab_bucket"),
+            routing_subject_hash: row.get("routing_subject_hash"),
+            fallback_reason: row.get("fallback_reason"),
+            rate_limited_until: row.get("rate_limited_until"),
+            last_rate_limited_at: row.get("last_rate_limited_at"),
+            last_rate_limit_reason: row.get("last_rate_limit_reason"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+            revoke_reason: row.get("revoke_reason"),
+        }))
+    }
+
+    pub(crate) async fn has_active_non_rebalance_mcp_session_for_token(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        let exists: i64 = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM mcp_sessions
+                WHERE auth_token_id = ?
+                  AND gateway_mode <> ?
+                  AND revoked_at IS NULL
+                  AND expires_at > ?
+            )
+            "#,
+        )
+        .bind(token_id)
+        .bind(MCP_GATEWAY_MODE_REBALANCE)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists != 0)
+    }
+
     pub(crate) async fn touch_mcp_session(
         &self,
         proxy_session_id: &str,

@@ -1,3 +1,21 @@
+    fn decode_sse_json_text(text: &str) -> Value {
+        if let Ok(value) = serde_json::from_str::<Value>(text) {
+            return value;
+        }
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data:").map(str::trim))
+            .unwrap_or_else(|| panic!("SSE response should include a data line, got: {text}"));
+        serde_json::from_str(data).unwrap_or_else(|err| {
+            panic!("SSE data line should decode as JSON: {err}; data: {data}")
+        })
+    }
+
+    async fn decode_sse_json_response(response: reqwest::Response) -> Value {
+        let text = response.text().await.expect("read SSE response body");
+        decode_sse_json_text(&text)
+    }
+
     #[tokio::test]
     async fn mcp_primary_rebind_only_revokes_sessions_on_the_old_key() {
         let db_path = temp_db_path("mcp-session-rebind-scoped");
@@ -1187,10 +1205,24 @@
             .and_then(|value| value.to_str().ok())
             .expect("initialize response should expose mcp-session-id")
             .to_string();
-        let initialize_body: Value = initialize
-            .json()
-            .await
-            .expect("decode rebalance initialize response");
+        assert_eq!(
+            initialize
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance initialize should use official-style SSE transport"
+        );
+        let initialize_body = decode_sse_json_response(initialize).await;
+        assert_eq!(
+            initialize_body["result"]["serverInfo"],
+            json!({
+                "name": "tavily-mcp",
+                "version": "3.2.4"
+            }),
+            "rebalance initialize should match the official Remote MCP serverInfo snapshot"
+        );
         assert_eq!(
             initialize_body["result"]["capabilities"]["prompts"]["listChanged"].as_bool(),
             Some(false),
@@ -1208,7 +1240,6 @@
             .header("accept", "application/json, text/event-stream")
             .header("content-type", "application/json")
             .header("mcp-protocol-version", "2025-03-26")
-            .header("mcp-session-id", proxy_session_id.as_str())
             .json(&json!({
                 "jsonrpc": "2.0",
                 "id": "rebalance-tools-list",
@@ -1218,7 +1249,16 @@
             .await
             .expect("tools/list request");
         assert_eq!(tools_list.status(), StatusCode::OK);
-        let body: Value = tools_list.json().await.expect("decode tools/list response");
+        assert_eq!(
+            tools_list
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance tools/list should use official-style SSE transport"
+        );
+        let body = decode_sse_json_response(tools_list).await;
         assert_eq!(
             body["result"]["tools"].as_array().map(Vec::len),
             Some(5),
@@ -1234,84 +1274,119 @@
                 Some((name, tool))
             })
             .collect::<std::collections::HashMap<_, _>>();
+        let prop_keys = |name: &str| {
+            let mut keys = tool_by_name[name]["inputSchema"]["properties"]
+                .as_object()
+                .expect("schema properties object")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.sort();
+            keys
+        };
         assert_eq!(
-            tool_by_name
-                .get("tavily_search")
-                .and_then(|tool| tool.get("inputSchema")),
-            Some(&json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" }
-                },
-                "required": ["query"],
-                "additionalProperties": true
-            })),
-            "rebalance search schema should advertise required query"
+            prop_keys("tavily_search"),
+            vec![
+                "country",
+                "end_date",
+                "exact_match",
+                "exclude_domains",
+                "include_domains",
+                "include_favicon",
+                "include_image_descriptions",
+                "include_images",
+                "include_raw_content",
+                "max_results",
+                "query",
+                "search_depth",
+                "start_date",
+                "time_range",
+                "topic",
+            ],
+            "rebalance search schema should match the official field set"
         );
         assert_eq!(
-            tool_by_name
-                .get("tavily_extract")
-                .and_then(|tool| tool.get("inputSchema")),
-            Some(&json!({
-                "type": "object",
-                "properties": {
-                    "urls": {
-                        "oneOf": [
-                            { "type": "string" },
-                            {
-                                "type": "array",
-                                "items": { "type": "string" }
-                            }
-                        ]
-                    }
-                },
-                "required": ["urls"],
-                "additionalProperties": true
-            })),
-            "rebalance extract schema should advertise required urls"
+            prop_keys("tavily_extract"),
+            vec![
+                "extract_depth",
+                "format",
+                "include_favicon",
+                "include_images",
+                "query",
+                "urls",
+            ],
+            "rebalance extract schema should match the official field set"
         );
         assert_eq!(
-            tool_by_name
-                .get("tavily_crawl")
-                .and_then(|tool| tool.get("inputSchema")),
-            Some(&json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" }
-                },
-                "required": ["url"],
-                "additionalProperties": true
-            })),
-            "rebalance crawl schema should advertise required url"
+            prop_keys("tavily_crawl"),
+            vec![
+                "allow_external",
+                "extract_depth",
+                "format",
+                "include_favicon",
+                "instructions",
+                "limit",
+                "max_breadth",
+                "max_depth",
+                "select_domains",
+                "select_paths",
+                "url",
+            ],
+            "rebalance crawl schema should match the official field set"
         );
         assert_eq!(
-            tool_by_name
-                .get("tavily_map")
-                .and_then(|tool| tool.get("inputSchema")),
-            Some(&json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" }
-                },
-                "required": ["url"],
-                "additionalProperties": true
-            })),
-            "rebalance map schema should advertise required url"
+            prop_keys("tavily_map"),
+            vec![
+                "allow_external",
+                "instructions",
+                "limit",
+                "max_breadth",
+                "max_depth",
+                "select_domains",
+                "select_paths",
+                "url",
+            ],
+            "rebalance map schema should match the official field set"
         );
         assert_eq!(
-            tool_by_name
-                .get("tavily_research")
-                .and_then(|tool| tool.get("inputSchema")),
-            Some(&json!({
-                "type": "object",
-                "properties": {
-                    "input": { "type": "string" }
-                },
-                "required": ["input"],
-                "additionalProperties": true
-            })),
-            "rebalance research schema should advertise required input"
+            prop_keys("tavily_research"),
+            vec!["input", "model"],
+            "rebalance research schema should match the official field set"
         );
+        for (name, required) in [
+            ("tavily_search", "query"),
+            ("tavily_extract", "urls"),
+            ("tavily_crawl", "url"),
+            ("tavily_map", "url"),
+            ("tavily_research", "input"),
+        ] {
+            assert_eq!(
+                tool_by_name[name]["inputSchema"]["required"],
+                json!([required]),
+                "{name} should keep the official required field"
+            );
+        }
+
+        let ping = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-ping-no-session",
+                "method": "ping"
+            }))
+            .send()
+            .await
+            .expect("ping request");
+        assert_eq!(
+            ping.status(),
+            StatusCode::OK,
+            "rebalance ping follow-up should not require mcp-session-id"
+        );
+        let ping_body = decode_sse_json_response(ping).await;
+        assert_eq!(ping_body["result"], json!({}));
 
         let recorded = seen
             .lock()
@@ -1351,6 +1426,134 @@
         assert_eq!(
             row.try_get::<Option<String>, _>("upstream_key_id").unwrap(),
             None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_no_session_follow_up_does_not_bypass_active_control_session() {
+        let db_path = temp_db_path("mcp-rebalance-no-session-mixed-control");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-no-session-mixed-control";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: request_rate_limit(),
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: false,
+                rebalance_mcp_session_percent: 0,
+                user_blocked_key_base_limit: 7,
+            })
+            .await
+            .expect("disable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-no-session-mixed-control"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let control_initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "control-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("control initialize request");
+        assert_eq!(control_initialize.status(), StatusCode::OK);
+        assert!(
+            control_initialize.headers().get("mcp-session-id").is_some(),
+            "control initialize should create an upstream-backed proxy session"
+        );
+
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: request_rate_limit(),
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let rebalance_initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-init-after-control",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("rebalance initialize request");
+        assert_eq!(rebalance_initialize.status(), StatusCode::OK);
+        assert!(
+            rebalance_initialize.headers().get("mcp-session-id").is_some(),
+            "rebalance initialize should create a local proxy session"
+        );
+
+        let missing_session = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "ambiguous-tools-list",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("headerless tools/list request");
+        assert_eq!(
+            missing_session.status(),
+            StatusCode::BAD_REQUEST,
+            "headerless follow-up should not bypass an active control session on the same token"
+        );
+        let body = decode_sse_json_response(missing_session).await;
+        assert_eq!(
+            body.get("error").and_then(Value::as_str),
+            Some("session_required")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.iter().filter(|call| call.method == "initialize").count(),
+            1,
+            "only the control initialize should hit upstream /mcp"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -1446,10 +1649,7 @@
                 StatusCode::OK,
                 "{method_name} should succeed under rebalance parity"
             );
-            let body: Value = response
-                .json()
-                .await
-                .unwrap_or_else(|err| panic!("decode {method_name} response: {err}"));
+            let body = decode_sse_json_response(response).await;
             assert_eq!(
                 body["result"][expected_field].as_array().map(Vec::len),
                 Some(0),
@@ -1465,6 +1665,29 @@
             recorded.is_empty(),
             "initialize + prompts/resources parity methods should stay local under rebalance mode"
         );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = sqlx::query(
+            r#"
+            SELECT proxy_session_id
+            FROM request_logs
+            WHERE path = '/mcp'
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("fetch rebalance control-plane request logs");
+        assert_eq!(rows.len(), 4, "initialize plus three list calls should be logged");
+        for row in rows {
+            assert_eq!(
+                row.try_get::<Option<String>, _>("proxy_session_id")
+                    .unwrap()
+                    .as_deref(),
+                Some(proxy_session_id.as_str()),
+                "stateful rebalance requests must preserve proxy session attribution"
+            );
+        }
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -1535,7 +1758,6 @@
             .header("accept", "application/json, text/event-stream")
             .header("content-type", "application/json")
             .header("mcp-protocol-version", "2025-03-26")
-            .header("mcp-session-id", proxy_session_id.as_str())
             .header("x-forwarded-for", "198.51.100.1")
             .header("cookie", "session=should-not-leak")
             .header("sec-fetch-mode", "cors")
@@ -1555,7 +1777,16 @@
             .await
             .expect("rebalance search request");
         assert_eq!(search.status(), StatusCode::OK);
-        let body: Value = search.json().await.expect("decode rebalance search body");
+        assert_eq!(
+            search
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance tools/call should use official-style SSE transport"
+        );
+        let body = decode_sse_json_response(search).await;
         assert_eq!(
             body["result"]["structuredContent"]["usage"]["credits"].as_i64(),
             Some(1)
@@ -1774,10 +2005,7 @@
             .await
             .expect("rebalance search request");
         assert_eq!(search.status(), StatusCode::OK);
-        let body: Value = search
-            .json()
-            .await
-            .expect("decode rebalance error response");
+        let body = decode_sse_json_response(search).await;
         assert_eq!(body["result"]["isError"].as_bool(), Some(true));
         assert!(
             body["result"]["content"].is_array(),
@@ -1840,7 +2068,16 @@
             .await
             .expect("parse-error request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body: Value = response.json().await.expect("decode parse-error body");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance parse errors should use official-style SSE transport"
+        );
+        let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32700));
         assert_eq!(body["error"]["message"].as_str(), Some("Parse error"));
 
@@ -1900,7 +2137,16 @@
             .await
             .expect("empty-batch request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body: Value = response.json().await.expect("decode empty-batch body");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance empty batch errors should use official-style SSE transport"
+        );
+        let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
         assert_eq!(body["error"]["message"].as_str(), Some("Invalid Request"));
 
@@ -1983,10 +2229,16 @@
             .await
             .expect("response-only batch request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body: Value = response
-            .json()
-            .await
-            .expect("decode response-only batch body");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("text/event-stream")),
+            Some(true),
+            "rebalance invalid JSON-RPC shape errors should use official-style SSE transport"
+        );
+        let body = decode_sse_json_response(response).await;
         assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
 
         let recorded = seen
