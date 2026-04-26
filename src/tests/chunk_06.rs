@@ -2244,31 +2244,20 @@ async fn manual_key_breakage_fanout_attributes_bound_subjects_as_breakers() {
         .fetch_monthly_broken_keys_page(BROKEN_KEY_SUBJECT_USER, &user.user_id, 1, 20, month_start)
         .await
         .expect("fetch user monthly broken keys");
-    let user_item = user_page.items.first().expect("user monthly broken item");
-    assert_eq!(
-        user_item.breaker_user_id.as_deref(),
-        Some(user.user_id.as_str())
+    assert!(
+        user_page.items.is_empty(),
+        "manual quota exhaustion is not upstream-blocked evidence"
     );
-    assert_eq!(
-        user_item.breaker_user_display_name.as_deref(),
-        Some("Alice Wang")
-    );
-    assert_eq!(user_item.breaker_token_id.as_deref(), None);
-    assert_eq!(user_item.source, BROKEN_KEY_SOURCE_MANUAL);
 
     let token_page = proxy
         .key_store
         .fetch_monthly_broken_keys_page(BROKEN_KEY_SUBJECT_TOKEN, &token.id, 1, 20, month_start)
         .await
         .expect("fetch token monthly broken keys");
-    let token_item = token_page.items.first().expect("token monthly broken item");
-    assert_eq!(
-        token_item.breaker_token_id.as_deref(),
-        Some(token.id.as_str())
+    assert!(
+        token_page.items.is_empty(),
+        "manual quota exhaustion is not upstream-blocked evidence"
     );
-    assert_eq!(token_item.breaker_user_id.as_deref(), None);
-    assert_eq!(token_item.breaker_user_display_name.as_deref(), None);
-    assert_eq!(token_item.source, BROKEN_KEY_SOURCE_MANUAL);
 
     let _ = std::fs::remove_file(db_path);
 }

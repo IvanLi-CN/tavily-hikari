@@ -1847,7 +1847,7 @@ const MONTHLY_BROKEN_DRAWER_LONG_CONTENT_ITEMS: MonthlyBrokenKeyDetail[] = [
     keyId: 'key_enterprise_cn_001',
     latestBreakAt: now - 1_500,
     reasonSummary:
-      '系统确认同一上游账号下多个区域节点在短时间内连续进入风控，本主体当前仍关联该 Key，因此继续计入本月蹬坏统计。',
+      '系统确认上游账号或 Key 已被明确封禁/失效，本主体当前仍关联该 Key，因此继续计入本月封禁数统计。',
     relatedUsers: [
       { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
       { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
@@ -2279,7 +2279,7 @@ function MonthlyBrokenDrawerStoryCanvas({
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
-            <h2>Monthly Broken Drawer Sandbox</h2>
+            <h2>Blocked-key Drawer Sandbox</h2>
             <p className="panel-description">Focused Storybook surface for verifying adaptive drawer height.</p>
           </div>
         </div>
@@ -5715,9 +5715,6 @@ function UserDetailPageCanvas({
     dailyLimit: String(detail.quotaBase.dailyLimit),
     monthlyLimit: String(detail.quotaBase.monthlyLimit),
   })
-  const [brokenLimitDraft, setBrokenLimitDraft] = useState(String(detail.monthlyBrokenLimit))
-  const [brokenLimitSavedAt, setBrokenLimitSavedAt] = useState<number | null>(null)
-  const [brokenLimitError, setBrokenLimitError] = useState<string | null>(null)
   const [monthlyBrokenDrawerOpen, setMonthlyBrokenDrawerOpen] = useState(false)
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
 
@@ -5773,76 +5770,6 @@ function UserDetailPageCanvas({
             <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
           </div>
         </div>
-      </section>
-
-      <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h2>{users.brokenKeys.limitTitle}</h2>
-            <p className="panel-description">{users.brokenKeys.limitDescription}</p>
-          </div>
-          {detail.monthlyBrokenCount > 0 ? (
-            <Button type="button" variant="outline" onClick={() => setMonthlyBrokenDrawerOpen(true)}>
-              {users.brokenKeys.openAction}
-            </Button>
-          ) : null}
-        </div>
-        <div className="token-info-grid">
-          <div className="token-info-card">
-            <span className="token-info-label">{users.usage.table.monthlyBroken}</span>
-            <span className="token-info-value">{formatNumber(detail.monthlyBrokenCount)}</span>
-          </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.brokenKeys.limitField}</span>
-            <span className="token-info-value">{formatNumber(detail.monthlyBrokenLimit)}</span>
-          </div>
-        </div>
-        <div
-          style={{
-            marginTop: 16,
-            display: 'flex',
-            gap: 12,
-            alignItems: 'flex-end',
-            flexWrap: 'wrap',
-          }}
-        >
-          <label style={{ display: 'grid', gap: 6, minWidth: 220 }}>
-            <span className="token-info-label">{users.brokenKeys.limitField}</span>
-            <Input
-              type="text"
-              inputMode="numeric"
-              value={brokenLimitDraft}
-              onChange={(event) => setBrokenLimitDraft(event.target.value)}
-              aria-label={users.brokenKeys.limitField}
-            />
-          </label>
-          <Button
-            type="button"
-            onClick={() => {
-              const parsed = Number.parseInt(brokenLimitDraft, 10)
-              if (!Number.isFinite(parsed) || parsed < 0) {
-                setBrokenLimitError(users.brokenKeys.invalid)
-                return
-              }
-              setBrokenLimitError(null)
-              setBrokenLimitSavedAt(Date.now())
-            }}
-          >
-            {users.brokenKeys.save}
-          </Button>
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <span className="panel-description">
-            {brokenLimitSavedAt
-              ? users.brokenKeys.savedAt.replace('{time}', new Date(brokenLimitSavedAt).toLocaleTimeString())
-              : users.brokenKeys.hint}
-          </span>
-        </div>
-        {brokenLimitError ? (
-          <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
-            {brokenLimitError}
-          </div>
-        ) : null}
       </section>
 
       <section className="surface panel">
@@ -6104,6 +6031,7 @@ function SystemSettingsPageCanvas(): JSX.Element {
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 100,
+          userBlockedKeyBaseLimit: 5,
         }}
         loadState="ready"
         error={null}
@@ -6725,17 +6653,15 @@ export const UserDetail: Story = {
     if (usagePanel.dataset.loadedSeries !== 'quota1h') {
       throw new Error(`Expected the default story to lazy-load only quota1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
     }
+    if (canvasElement.textContent?.includes('封禁数限额')) {
+      throw new Error('Expected user detail story to hide the per-user blocked-key limit card.')
+    }
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
       .map((item) => item.textContent?.trim())
     const expectedTabLabels = ['5m', '1h', '24h', '月']
     if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
       throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
-    }
-
-    const sharedUsageHeader = canvasElement.querySelector('.admin-user-shared-usage-panel-header')?.textContent ?? ''
-    if (!sharedUsageHeader.includes('1h：业务额度消耗') || sharedUsageHeader.includes('5m：请求频率限制')) {
-      throw new Error('Expected the default shared usage description to explain the active 1h business-credit window only.')
     }
 
     const headerText = canvasElement.querySelector('.admin-user-tokens-table thead')?.textContent ?? ''

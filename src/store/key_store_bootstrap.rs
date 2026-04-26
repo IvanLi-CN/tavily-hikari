@@ -1017,6 +1017,7 @@ impl KeyStore {
                 daily_limit INTEGER NOT NULL,
                 monthly_limit INTEGER NOT NULL,
                 monthly_broken_limit INTEGER NOT NULL DEFAULT 5,
+                monthly_blocked_key_limit_delta INTEGER NOT NULL DEFAULT 0,
                 inherits_defaults INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -1045,6 +1046,23 @@ impl KeyStore {
             sqlx::query(
                 "ALTER TABLE account_quota_limits ADD COLUMN monthly_broken_limit INTEGER NOT NULL DEFAULT 5",
             )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .table_column_exists("account_quota_limits", "monthly_blocked_key_limit_delta")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE account_quota_limits ADD COLUMN monthly_blocked_key_limit_delta INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "UPDATE account_quota_limits SET monthly_blocked_key_limit_delta = monthly_broken_limit - ?",
+            )
+            .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
             .execute(&self.pool)
             .await?;
         }

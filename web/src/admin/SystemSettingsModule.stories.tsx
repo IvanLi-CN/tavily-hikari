@@ -6,6 +6,7 @@ import { translations } from '../i18n'
 function SystemSettingsCanvas(props: {
   requestRateLimit?: number
   count?: number
+  blockedKeyBaseLimit?: number
   rebalanceEnabled?: boolean
   rebalancePercent?: number
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
@@ -22,6 +23,7 @@ function SystemSettingsCanvas(props: {
           mcpSessionAffinityKeyCount: props.count ?? 5,
           rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
           rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
+          userBlockedKeyBaseLimit: props.blockedKeyBaseLimit ?? 5,
         }}
         loadState={props.loadState ?? 'ready'}
         error={props.error ?? null}
@@ -51,6 +53,7 @@ const meta = {
       mcpSessionAffinityKeyCount: 5,
       rebalanceMcpEnabled: false,
       rebalanceMcpSessionPercent: 100,
+      userBlockedKeyBaseLimit: 5,
     },
     loadState: 'ready',
     error: null,
@@ -89,4 +92,9 @@ export const HelpBubbleOpen: Story = {
 
 export const RequestRateEdited: Story = {
   render: () => <SystemSettingsCanvas requestRateLimit={80} rebalanceEnabled rebalancePercent={35} />,
+}
+
+
+export const BlockedKeyBaseConfigured: Story = {
+  render: () => <SystemSettingsCanvas blockedKeyBaseLimit={8} rebalanceEnabled rebalancePercent={35} />,
 }

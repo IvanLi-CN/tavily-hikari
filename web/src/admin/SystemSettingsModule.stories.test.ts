@@ -17,6 +17,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
+    expect(systemSettingsStories.BlockedKeyBaseConfigured).toMatchObject({})
   })
 
   it('renders the applying story without Storybook runtime helpers', () => {
@@ -43,5 +44,14 @@ describe('SystemSettingsModule Storybook proofs', () => {
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('5 分钟最大请求数')
     expect(markup).toContain('当前阈值：80')
+  })
+
+  it('renders the blocked-key base limit story with the configured base value', () => {
+    const renderStory = systemSettingsStories.BlockedKeyBaseConfigured.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup).toContain('封禁数基础值')
+    expect(markup).toContain('当前基础值：8')
   })
 })

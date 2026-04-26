@@ -26,6 +26,12 @@ function isValidCountDraft(value: string): value is `${number}` {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1000
 }
 
+function isValidNonNegativeIntegerDraft(value: string): value is `${number}` {
+  if (!/^\d+$/.test(value)) return false
+  const parsed = Number.parseInt(value, 10)
+  return Number.isSafeInteger(parsed) && parsed >= 0
+}
+
 function isValidRequestRateLimitDraft(value: string): value is `${number}` {
   if (!/^\d+$/.test(value)) return false
   const parsed = Number.parseInt(value, 10)
@@ -68,6 +74,7 @@ function SystemSettingsHelpBubble({
             <p>{strings.form.countHint}</p>
             <p>{strings.form.rebalanceHint}</p>
             <p>{strings.form.percentHint}</p>
+            <p>{strings.form.blockedKeyBaseLimitHint}</p>
             <p>{strings.form.applyScopeHint}</p>
           </div>
         </TooltipContent>
@@ -97,22 +104,28 @@ export default function SystemSettingsModule({
   const [draftPercent, setDraftPercent] = useState(() =>
     settings ? String(settings.rebalanceMcpSessionPercent) : '100',
   )
+  const [draftBlockedKeyBaseLimit, setDraftBlockedKeyBaseLimit] = useState(() =>
+    settings ? String(settings.userBlockedKeyBaseLimit) : '5',
+  )
 
   useEffect(() => {
     setDraftRequestRateLimit(settings ? String(settings.requestRateLimit) : '100')
     setDraftCount(settings ? String(settings.mcpSessionAffinityKeyCount) : '')
     setDraftRebalanceEnabled(settings?.rebalanceMcpEnabled ?? false)
     setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
+    setDraftBlockedKeyBaseLimit(settings ? String(settings.userBlockedKeyBaseLimit) : '5')
   }, [
     settings?.requestRateLimit,
     settings?.mcpSessionAffinityKeyCount,
     settings?.rebalanceMcpEnabled,
     settings?.rebalanceMcpSessionPercent,
+    settings?.userBlockedKeyBaseLimit,
   ])
 
   const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
   const normalizedPercent = draftPercent.trim()
+  const normalizedBlockedKeyBaseLimit = draftBlockedKeyBaseLimit.trim()
   const parsedRequestRateLimit = isValidRequestRateLimitDraft(normalizedRequestRateLimit)
     ? Number.parseInt(normalizedRequestRateLimit, 10)
     : null
@@ -120,15 +133,20 @@ export default function SystemSettingsModule({
   const parsedPercent = isValidPercentDraft(normalizedPercent)
     ? Number.parseInt(normalizedPercent, 10)
     : null
+  const parsedBlockedKeyBaseLimit = isValidNonNegativeIntegerDraft(normalizedBlockedKeyBaseLimit)
+    ? Number.parseInt(normalizedBlockedKeyBaseLimit, 10)
+    : null
   const changed =
     settings != null &&
     parsedRequestRateLimit != null &&
     parsedCount != null &&
     parsedPercent != null &&
+    parsedBlockedKeyBaseLimit != null &&
     (parsedRequestRateLimit !== settings.requestRateLimit ||
       parsedCount !== settings.mcpSessionAffinityKeyCount ||
       draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
-      parsedPercent !== settings.rebalanceMcpSessionPercent)
+      parsedPercent !== settings.rebalanceMcpSessionPercent ||
+      parsedBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit)
   const inlineError =
     normalizedRequestRateLimit.length > 0 && parsedRequestRateLimit == null
       ? strings.form.invalidRequestRateLimit
@@ -136,7 +154,9 @@ export default function SystemSettingsModule({
       ? strings.form.invalidCount
       : normalizedPercent.length > 0 && parsedPercent == null
         ? strings.form.invalidPercent
-        : error
+        : normalizedBlockedKeyBaseLimit.length > 0 && parsedBlockedKeyBaseLimit == null
+          ? strings.form.invalidBlockedKeyBaseLimit
+          : error
 
   return (
     <section className="surface panel">
@@ -268,6 +288,32 @@ export default function SystemSettingsModule({
                 {draftRebalanceEnabled ? strings.form.percentHint : strings.form.percentDisabledHint}
               </p>
             </div>
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-blocked-key-base-limit">
+                {strings.form.blockedKeyBaseLimitLabel}
+              </label>
+              <Input
+                id="system-settings-blocked-key-base-limit"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                step={1}
+                value={draftBlockedKeyBaseLimit}
+                disabled={saving}
+                onChange={(event) => setDraftBlockedKeyBaseLimit(event.target.value)}
+                aria-invalid={inlineError ? true : undefined}
+              />
+              {settings && (
+                <p className="text-xs text-muted-foreground">
+                  {strings.form.currentBlockedKeyBaseLimitValue.replace(
+                    '{count}',
+                    String(settings.userBlockedKeyBaseLimit),
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">{strings.form.blockedKeyBaseLimitHint}</p>
+            </div>
           </div>
 
           {(inlineError || saving) && (
@@ -289,6 +335,7 @@ export default function SystemSettingsModule({
                   parsedRequestRateLimit == null ||
                   parsedCount == null ||
                   parsedPercent == null ||
+                  parsedBlockedKeyBaseLimit == null ||
                   saving ||
                   !changed
                 ) return
@@ -297,6 +344,7 @@ export default function SystemSettingsModule({
                   mcpSessionAffinityKeyCount: parsedCount,
                   rebalanceMcpEnabled: draftRebalanceEnabled,
                   rebalanceMcpSessionPercent: parsedPercent,
+                  userBlockedKeyBaseLimit: parsedBlockedKeyBaseLimit,
                 })
               }}
               disabled={
@@ -304,7 +352,8 @@ export default function SystemSettingsModule({
                 !changed ||
                 parsedRequestRateLimit == null ||
                 parsedCount == null ||
-                parsedPercent == null
+                parsedPercent == null ||
+                parsedBlockedKeyBaseLimit == null
               }
               data-testid="system-settings-apply"
             >

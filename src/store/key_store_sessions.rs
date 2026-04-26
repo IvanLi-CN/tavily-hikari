@@ -997,20 +997,28 @@ impl KeyStore {
         Ok(map)
     }
 
+    pub(crate) async fn fetch_user_blocked_key_base_limit(&self) -> Result<i64, ProxyError> {
+        Ok(self
+            .get_meta_i64(META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1)
+            .await?
+            .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+            .max(0))
+    }
+
     pub(crate) async fn fetch_account_monthly_broken_limit(
         &self,
         user_id: &str,
     ) -> Result<i64, ProxyError> {
         self.ensure_account_quota_limits(user_id).await?;
-        Ok(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(monthly_broken_limit, ?) FROM account_quota_limits WHERE user_id = ? LIMIT 1",
-            )
-            .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
-            .bind(user_id)
-            .fetch_one(&self.pool)
-            .await?,
+        let base_limit = self.fetch_user_blocked_key_base_limit().await?;
+        let delta = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ?) FROM account_quota_limits WHERE user_id = ? LIMIT 1",
         )
+        .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((base_limit + delta).max(0))
     }
 
     pub(crate) async fn fetch_account_monthly_broken_limits_bulk(
@@ -1022,7 +1030,8 @@ impl KeyStore {
         }
 
         self.ensure_account_quota_limits_for_users(user_ids).await?;
-        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_broken_limit, ");
+        let base_limit = self.fetch_user_blocked_key_base_limit().await?;
+        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ");
         builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
         builder.push(") FROM account_quota_limits WHERE user_id IN (");
         {
@@ -1037,7 +1046,10 @@ impl KeyStore {
             .build_query_as::<(String, i64)>()
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().collect())
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, delta)| (user_id, (base_limit + delta).max(0)))
+            .collect())
     }
 
     pub(crate) async fn update_account_monthly_broken_limit(
@@ -1054,13 +1066,15 @@ impl KeyStore {
         }
 
         self.ensure_account_quota_limits(user_id).await?;
+        let base_limit = self.fetch_user_blocked_key_base_limit().await?;
         let now = Utc::now().timestamp();
         sqlx::query(
             r#"UPDATE account_quota_limits
-               SET monthly_broken_limit = ?, updated_at = ?
+               SET monthly_broken_limit = ?, monthly_blocked_key_limit_delta = ?, updated_at = ?
                WHERE user_id = ?"#,
         )
         .bind(monthly_broken_limit)
+        .bind(monthly_broken_limit - base_limit)
         .bind(now)
         .bind(user_id)
         .execute(&self.pool)
@@ -1159,14 +1173,17 @@ impl KeyStore {
             WHERE source = ?
               AND created_at >= ?
               AND auth_token_id IS NOT NULL
-              AND operation_code IN (?, ?)
+              AND operation_code = ?
+              AND COALESCE(reason_code, '') IN (?, ?, ?)
             ORDER BY created_at ASC, key_id ASC
             "#,
             )
             .bind(MAINTENANCE_SOURCE_SYSTEM)
             .bind(month_start)
             .bind(MAINTENANCE_OP_AUTO_QUARANTINE)
-            .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+            .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+            .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+            .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
             .fetch_all(&self.pool)
             .await?;
         if rows.is_empty() {
@@ -1188,11 +1205,8 @@ impl KeyStore {
 
         let mut tx = self.pool.begin().await?;
         for (key_id, token_id, operation_code, created_at, reason_code, reason_summary) in rows {
-            let key_status = if operation_code == MAINTENANCE_OP_AUTO_QUARANTINE {
-                KEY_EFFECT_QUARANTINED
-            } else {
-                STATUS_EXHAUSTED
-            };
+            let _operation_code = operation_code;
+            let key_status = KEY_EFFECT_QUARANTINED;
             let breaker_user_id = token_bindings.get(&token_id).cloned();
             let breaker_identity = breaker_user_id
                 .as_ref()
@@ -1264,8 +1278,12 @@ impl KeyStore {
         builder.push_bind(BROKEN_KEY_SUBJECT_USER);
         builder.push(" AND skb.month_start = ");
         builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(" AND aq.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
         builder.push(") AND skb.subject_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -1301,8 +1319,12 @@ impl KeyStore {
         builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
         builder.push(" AND skb.month_start = ");
         builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(" AND aq.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
         builder.push(") AND skb.subject_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -1338,8 +1360,12 @@ impl KeyStore {
         builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
         builder.push(" AND skb.month_start = ");
         builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(" AND aq.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
         builder.push(") AND skb.subject_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -1420,13 +1446,15 @@ impl KeyStore {
             WHERE skb.subject_kind = ?
               AND skb.subject_id = ?
               AND skb.month_start = ?
-              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+              AND aq.reason_code IN (?, ?, ?)
             "#,
         )
         .bind(subject_kind)
         .bind(subject_id)
         .bind(month_start)
-        .bind(STATUS_EXHAUSTED)
+        .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+        .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+        .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1463,7 +1491,7 @@ impl KeyStore {
             WHERE skb.subject_kind = ?
               AND skb.subject_id = ?
               AND skb.month_start = ?
-              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+              AND aq.reason_code IN (?, ?, ?)
             ORDER BY skb.latest_break_at DESC, skb.key_id ASC
             LIMIT ? OFFSET ?
             "#,
@@ -1472,7 +1500,9 @@ impl KeyStore {
         .bind(subject_kind)
         .bind(subject_id)
         .bind(month_start)
-        .bind(STATUS_EXHAUSTED)
+        .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+        .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+        .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
         .bind(per_page)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -1672,11 +1702,13 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN,
                 REBALANCE_MCP_SESSION_PERCENT_MAX,
             );
+        let user_blocked_key_base_limit = self.fetch_user_blocked_key_base_limit().await?;
         Ok(SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
             rebalance_mcp_session_percent,
+            user_blocked_key_base_limit,
         })
     }
 
@@ -1706,6 +1738,11 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN, REBALANCE_MCP_SESSION_PERCENT_MAX,
             )));
         }
+        if settings.user_blocked_key_base_limit < 0 {
+            return Err(ProxyError::Other(
+                "user_blocked_key_base_limit must be a non-negative integer".to_string(),
+            ));
+        }
         self.set_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1, settings.request_rate_limit)
             .await?;
         self.set_meta_i64(
@@ -1721,6 +1758,11 @@ impl KeyStore {
         self.set_meta_i64(
             META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
             settings.rebalance_mcp_session_percent,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1,
+            settings.user_blocked_key_base_limit,
         )
         .await?;
         self.record_request_rate_limit_snapshot_at(

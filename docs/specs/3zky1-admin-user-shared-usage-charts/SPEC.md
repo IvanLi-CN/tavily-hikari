@@ -142,7 +142,7 @@
 ## UI 规格
 
 - 用户详情页新增“共享额度趋势”区块，放在用户级额度/拆解之后、token 列表之前。
-- tabs 文案简写：`5m / 1h / 24h / 月`，默认 `1h`，周期选择器与标题同处卡片头部并靠右对齐；标题下说明随当前周期切换，简短解释 `5m` 是请求频率限制，其他周期是业务额度消耗。
+- tabs 文案简写：`5m / 1h / 24h / 月`，默认 `1h`。
 - 首屏只请求 `quota1h`；其他 tab 首次点开才请求，二次切回复用缓存。
 - 图表使用现有 `SegmentedTabs` + `chart.js`：
   - 主数据使用柱状图
@@ -176,11 +176,11 @@
 - source_type: `storybook_canvas`
 - story_id_or_title: `admin-pages--user-detail`
 - target_program: `mock-only`
-- capture_scope: `element`
-- requested_viewport: `storybook canvas`
-- viewport_strategy: `storybook-viewport`
+- capture_scope: `browser-viewport`
+- requested_viewport: `1600x1000`
+- viewport_strategy: `devtools-emulate`
 - submission_gate: `approved`
-- evidence_note: 共享额度趋势 tab 已按时间尺度调整为 `5m / 1h / 24h / 月`；默认激活仍为 `1h`，标题下说明随当前周期显示短文案，用于明确 `5m` 是请求频率限制而 `1h/24h/月` 是业务额度消耗；周期选择器已收进卡片头部右侧，不再单独占一行；空白裁剪脚本返回 `trimmed_excess_whitespace` 并裁掉边缘空白；证据绑定当前实现提交。
+- evidence_note: 共享额度趋势 tab 已按时间尺度调整为 `5m / 1h / 24h / 月`；默认激活仍为 `1h`，说明文案明确区分 5m 请求频率与 1h/24h/月业务额度；空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现提交。
 
 ![共享额度趋势时间窗口顺序](./assets/user-detail-shared-usage-tabs-order.png)
 

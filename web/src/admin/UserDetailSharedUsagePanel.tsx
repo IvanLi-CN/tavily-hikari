@@ -309,7 +309,6 @@ export function UserDetailSharedUsagePanel({
     [resolvedTheme],
   )
 
-  const activeDescription = description ? usersStrings.detail.sharedUsageDescriptions[activeSeries] : undefined
   const activeTooltip = pinnedTooltip ?? hoverTooltip
   const activeTooltipPoint = activeTooltip ? currentSeries?.points[activeTooltip.index] ?? null : null
   const tooltipHasGap = activeTooltipPoint ? activeTooltipPoint.value == null || activeTooltipPoint.limitValue == null : false
@@ -465,26 +464,41 @@ export function UserDetailSharedUsagePanel({
       data-tooltip-open={activeTooltip != null ? 'true' : 'false'}
       data-tooltip-pinned={pinnedTooltip != null ? 'true' : 'false'}
     >
-      <div className={title || activeDescription ? 'panel-header admin-user-shared-usage-panel-header' : 'admin-user-shared-usage-panel-header'}>
-        {title || activeDescription ? (
+      {title || description ? (
+        <div className="panel-header admin-user-shared-usage-panel-header">
           <div className="admin-user-shared-usage-heading">
             {title ? <h2>{title}</h2> : null}
-            {activeDescription ? <p className="panel-description">{activeDescription}</p> : null}
+            {description ? <p className="panel-description">{description}</p> : null}
           </div>
-        ) : null}
-        <SegmentedTabs<AdminUserUsageSeriesKey>
-          value={activeSeries}
-          onChange={setActiveSeries}
-          options={[
-            { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
-            { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
-            { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
-            { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
-          ]}
-          ariaLabel={usersStrings.detail.sharedUsageTitle}
-          className="admin-user-shared-usage-tabs"
-        />
-      </div>
+          <SegmentedTabs<AdminUserUsageSeriesKey>
+            value={activeSeries}
+            onChange={setActiveSeries}
+            options={[
+              { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
+              { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
+              { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
+              { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
+            ]}
+            ariaLabel={usersStrings.detail.sharedUsageTitle}
+            className="admin-user-shared-usage-tabs"
+          />
+        </div>
+      ) : (
+        <div className="admin-user-shared-usage-panel-header">
+          <SegmentedTabs<AdminUserUsageSeriesKey>
+            value={activeSeries}
+            onChange={setActiveSeries}
+            options={[
+              { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
+              { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
+              { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
+              { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
+            ]}
+            ariaLabel={usersStrings.detail.sharedUsageTitle}
+            className="admin-user-shared-usage-tabs"
+          />
+        </div>
+      )}
 
       <div className="admin-user-shared-usage-meta">
         <div className="admin-user-shared-usage-legend">

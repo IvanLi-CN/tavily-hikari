@@ -618,3 +618,178 @@ async fn account_limit_snapshot_backfill_preserves_gaps_for_existing_custom_quot
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn user_blocked_key_limit_uses_global_base_plus_hidden_delta() {
+    let db_path = temp_db_path("user-blocked-key-limit-base-delta");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "blocked-key-limit-user".to_string(),
+            username: Some("blocked_key_limit_user".to_string()),
+            name: Some("Blocked Key Limit User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("get system settings");
+    settings.user_blocked_key_base_limit = 7;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("set blocked-key base limit");
+    proxy
+        .key_store
+        .update_account_monthly_broken_limit(&user.user_id, 4)
+        .await
+        .expect("set effective blocked-key limit");
+
+    assert_eq!(
+        proxy
+            .key_store
+            .fetch_account_monthly_broken_limit(&user.user_id)
+            .await
+            .expect("fetch effective limit"),
+        4
+    );
+
+    settings.user_blocked_key_base_limit = 10;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("raise blocked-key base limit");
+    assert_eq!(
+        proxy
+            .key_store
+            .fetch_account_monthly_broken_limit(&user.user_id)
+            .await
+            .expect("fetch shifted effective limit"),
+        7
+    );
+
+    proxy
+        .key_store
+        .update_account_monthly_broken_limit(&user.user_id, 0)
+        .await
+        .expect("set negative delta clamped effective limit");
+    assert_eq!(
+        proxy
+            .key_store
+            .fetch_account_monthly_broken_limit(&user.user_id)
+            .await
+            .expect("fetch clamped limit"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_blocked_quarantines() {
+    let db_path = temp_db_path("monthly-blocked-key-count-excludes-quota");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "blocked-key-count-user".to_string(),
+            username: Some("blocked_key_count_user".to_string()),
+            name: Some("Blocked Key Count User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let (exhausted_key_id, _) = proxy
+        .add_or_undelete_key_with_status("tvly-blocked-count-exhausted")
+        .await
+        .expect("create exhausted key");
+    let (quota_quarantine_key_id, _) = proxy
+        .add_or_undelete_key_with_status("tvly-blocked-count-quota-quarantine")
+        .await
+        .expect("create quota quarantine key");
+    let (blocked_key_id, _) = proxy
+        .add_or_undelete_key_with_status("tvly-blocked-count-account-deactivated")
+        .await
+        .expect("create blocked key");
+
+    let now = Utc::now().timestamp();
+    let month_start = start_of_month(Utc::now()).timestamp();
+    sqlx::query("UPDATE api_keys SET status = ? WHERE id = ?")
+        .bind(STATUS_EXHAUSTED)
+        .bind(&exhausted_key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("mark key exhausted");
+    sqlx::query(
+        r#"INSERT INTO api_key_quarantines
+           (id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
+           VALUES (?, ?, 'system', 'quota_exhausted', 'Upstream quota exhausted', 'not a blocked key', ?, NULL),
+                  (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked key', ?, NULL)"#,
+    )
+    .bind("blocked-count-quota-quarantine")
+    .bind(&quota_quarantine_key_id)
+    .bind(now)
+    .bind("blocked-count-account-deactivated")
+    .bind(&blocked_key_id)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed quarantines");
+
+    for (key_id, status, reason_code, reason_summary) in [
+        (&exhausted_key_id, STATUS_EXHAUSTED, "quota_exhausted", "Upstream quota exhausted"),
+        (&quota_quarantine_key_id, KEY_EFFECT_QUARANTINED, "quota_exhausted", "Upstream quota exhausted"),
+        (&blocked_key_id, KEY_EFFECT_QUARANTINED, "account_deactivated", "Upstream account deactivated"),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO subject_key_breakages (
+                subject_kind, subject_id, key_id, month_start, created_at, updated_at,
+                latest_break_at, key_status, reason_code, reason_summary, source,
+                breaker_token_id, breaker_user_id, breaker_user_display_name, manual_actor_display_name
+            ) VALUES ('user', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, ?, NULL, NULL)"#,
+        )
+        .bind(&user.user_id)
+        .bind(key_id)
+        .bind(month_start)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .bind(status)
+        .bind(reason_code)
+        .bind(reason_summary)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed subject key breakage");
+    }
+
+    let counts = proxy
+        .key_store
+        .fetch_monthly_broken_counts_for_users(std::slice::from_ref(&user.user_id), month_start)
+        .await
+        .expect("fetch blocked-key counts");
+    assert_eq!(counts.get(&user.user_id).copied(), Some(1));
+
+    let page = proxy
+        .key_store
+        .fetch_monthly_broken_keys_page("user", &user.user_id, 1, 20, month_start)
+        .await
+        .expect("fetch blocked-key details");
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].key_id, blocked_key_id);
+    assert_eq!(page.items[0].reason_code.as_deref(), Some("account_deactivated"));
+}

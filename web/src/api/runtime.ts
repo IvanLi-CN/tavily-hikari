@@ -2923,6 +2923,7 @@ export interface SystemSettings {
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
+  userBlockedKeyBaseLimit: number
 }
 
 export interface ForwardProxySettingsEnvelope {
@@ -2945,6 +2946,7 @@ export interface UpdateSystemSettingsPayload {
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
+  userBlockedKeyBaseLimit: number
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -3021,6 +3023,7 @@ function createEmptySystemSettings(): SystemSettings {
     mcpSessionAffinityKeyCount: 5,
     rebalanceMcpEnabled: false,
     rebalanceMcpSessionPercent: 100,
+    userBlockedKeyBaseLimit: 5,
   }
 }
 

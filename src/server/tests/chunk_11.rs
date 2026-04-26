@@ -1146,6 +1146,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1375,6 +1376,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1487,6 +1489,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1711,6 +1714,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1812,6 +1816,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1871,6 +1876,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1921,6 +1927,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("enable rebalance mcp");
@@ -2381,6 +2388,10 @@
             settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
             Some(100)
         );
+        assert_eq!(
+            settings_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
+            Some(tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+        );
 
         let updated_system = client
             .put(format!("http://{addr}/api/settings/system"))
@@ -2389,6 +2400,7 @@
                 "mcpSessionAffinityKeyCount": 3,
                 "rebalanceMcpEnabled": true,
                 "rebalanceMcpSessionPercent": 35,
+                "userBlockedKeyBaseLimit": 8,
             }))
             .send()
             .await
@@ -2411,6 +2423,7 @@
             updated_system_body["rebalanceMcpSessionPercent"].as_i64(),
             Some(35)
         );
+        assert_eq!(updated_system_body["userBlockedKeyBaseLimit"].as_i64(), Some(8));
 
         let persisted_settings = client
             .get(format!("http://{addr}/api/settings"))
@@ -2437,6 +2450,10 @@
         assert_eq!(
             persisted_settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
             Some(35)
+        );
+        assert_eq!(
+            persisted_settings_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
+            Some(8)
         );
 
         let updated = client
@@ -2527,6 +2544,7 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: false,
                 rebalance_mcp_session_percent: 100,
+                user_blocked_key_base_limit: 7,
             })
             .await
             .expect("seed system settings");
@@ -2553,6 +2571,7 @@
         assert_eq!(updated_body["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
         assert_eq!(updated_body["rebalanceMcpEnabled"].as_bool(), Some(true));
         assert_eq!(updated_body["rebalanceMcpSessionPercent"].as_i64(), Some(40));
+        assert_eq!(updated_body["userBlockedKeyBaseLimit"].as_i64(), Some(7));
 
         let persisted = client
             .get(format!("http://{addr}/api/settings"))
@@ -2567,6 +2586,10 @@
         assert_eq!(
             persisted_body["systemSettings"]["requestRateLimit"].as_i64(),
             Some(88)
+        );
+        assert_eq!(
+            persisted_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
+            Some(7)
         );
 
         let _ = std::fs::remove_file(db_path);

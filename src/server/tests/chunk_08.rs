@@ -886,6 +886,7 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
             .expect("set request-rate limit");
@@ -1098,6 +1099,7 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
             .expect("set request-rate limit");
@@ -1184,6 +1186,7 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
             .expect("lower request-rate limit");

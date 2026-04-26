@@ -135,28 +135,6 @@ describe('UserDetailSharedUsagePanel tab presentation', () => {
       root.unmount()
     })
   })
-
-  it('uses a short description that follows the selected window semantics', async () => {
-    const { container, root } = await mountPanel({
-      title: ZH.admin.users.detail.sharedUsageTitle,
-      description: ZH.admin.users.detail.sharedUsageDescription,
-    })
-
-    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageDescriptions.quota1h)
-    expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageDescriptions.rate5m)
-
-    await act(async () => {
-      clickTab(container, ZH.admin.users.detail.sharedUsageTabs.fiveMinute)
-    })
-    await flushEffects()
-
-    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageDescriptions.rate5m)
-    expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageDescriptions.quota1h)
-
-    await act(async () => {
-      root.unmount()
-    })
-  })
 })
 
 describe('UserDetailSharedUsagePanel loading behavior', () => {

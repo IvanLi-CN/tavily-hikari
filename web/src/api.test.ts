@@ -1095,6 +1095,7 @@ describe('admin user tag api helpers', () => {
               mcpSessionAffinityKeyCount: 3,
               rebalanceMcpEnabled: true,
               rebalanceMcpSessionPercent: 35,
+              userBlockedKeyBaseLimit: 8,
             },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1108,6 +1109,7 @@ describe('admin user tag api helpers', () => {
       mcpSessionAffinityKeyCount: 3,
       rebalanceMcpEnabled: true,
       rebalanceMcpSessionPercent: 35,
+      userBlockedKeyBaseLimit: 8,
     })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings')
   })
@@ -1121,6 +1123,7 @@ describe('admin user tag api helpers', () => {
             mcpSessionAffinityKeyCount: 4,
             rebalanceMcpEnabled: false,
             rebalanceMcpSessionPercent: 100,
+            userBlockedKeyBaseLimit: 5,
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -1134,12 +1137,14 @@ describe('admin user tag api helpers', () => {
         mcpSessionAffinityKeyCount: 4,
         rebalanceMcpEnabled: false,
         rebalanceMcpSessionPercent: 100,
+        userBlockedKeyBaseLimit: 5,
       }),
     ).resolves.toEqual({
       requestRateLimit: 75,
       mcpSessionAffinityKeyCount: 4,
       rebalanceMcpEnabled: false,
       rebalanceMcpSessionPercent: 100,
+      userBlockedKeyBaseLimit: 5,
     })
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/system')
@@ -1151,6 +1156,7 @@ describe('admin user tag api helpers', () => {
         mcpSessionAffinityKeyCount: 4,
         rebalanceMcpEnabled: false,
         rebalanceMcpSessionPercent: 100,
+        userBlockedKeyBaseLimit: 5,
       }),
     })
   })

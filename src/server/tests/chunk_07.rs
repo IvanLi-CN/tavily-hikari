@@ -1311,6 +1311,21 @@
             .mark_key_quota_exhausted_by_secret("tvly-unbound-breakage-sort-key-b")
             .await
             .expect("mark breakage key b exhausted");
+        sqlx::query(
+            r#"INSERT INTO api_key_quarantines
+               (id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
+               VALUES (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked-key test fixture', ?, NULL),
+                      (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked-key test fixture', ?, NULL)"#,
+        )
+        .bind("unbound-breakage-sort-quarantine-a")
+        .bind(&breakage_key_a_id)
+        .bind(now)
+        .bind("unbound-breakage-sort-quarantine-b")
+        .bind(&breakage_key_b_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed active blocked-key quarantines");
 
         let addr = spawn_admin_tokens_server(proxy, true).await;
         let client = Client::new();

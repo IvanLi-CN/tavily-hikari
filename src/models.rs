@@ -515,6 +515,7 @@ pub struct SystemSettings {
     pub mcp_session_affinity_key_count: i64,
     pub rebalance_mcp_enabled: bool,
     pub rebalance_mcp_session_percent: i64,
+    pub user_blocked_key_base_limit: i64,
 }
 
 /// 单条请求日志记录的关键信息。

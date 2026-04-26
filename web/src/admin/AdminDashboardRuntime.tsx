@@ -221,7 +221,6 @@ import {
   fetchAdminRegistrationSettings,
   fetchTokenBrokenKeys,
   updateAdminUserQuota,
-  updateAdminUserBrokenKeyLimit,
   updateAdminRegistrationSettings,
   fetchAdminUserTags,
   createAdminUserTag,
@@ -1643,10 +1642,6 @@ function AdminDashboard(): JSX.Element {
   const [savingUserQuota, setSavingUserQuota] = useState(false)
   const [userQuotaError, setUserQuotaError] = useState<string | null>(null)
   const [userQuotaSavedAt, setUserQuotaSavedAt] = useState<number | null>(null)
-  const [userBrokenLimitDraft, setUserBrokenLimitDraft] = useState('')
-  const [savingUserBrokenLimit, setSavingUserBrokenLimit] = useState(false)
-  const [userBrokenLimitError, setUserBrokenLimitError] = useState<string | null>(null)
-  const [userBrokenLimitSavedAt, setUserBrokenLimitSavedAt] = useState<number | null>(null)
   const [tagCatalog, setTagCatalog] = useState<AdminUserTag[]>([])
   const [tagCatalogLoading, setTagCatalogLoading] = useState(false)
   const [tagCatalogLoadedOnce, setTagCatalogLoadedOnce] = useState(false)
@@ -3658,7 +3653,6 @@ function AdminDashboard(): JSX.Element {
           dailyLimit: String(detail.quotaBase.dailyLimit),
           monthlyLimit: String(detail.quotaBase.monthlyLimit),
         })
-        setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
         setSelectedBindableTagId('')
         setUserTagError(null)
       })
@@ -3668,7 +3662,6 @@ function AdminDashboard(): JSX.Element {
         setSelectedUserDetail(null)
         setUserQuotaSnapshot(null)
         setUserQuotaDraft(null)
-        setUserBrokenLimitDraft('')
       })
       .finally(() => {
         if (!controller.signal.aborted) {
@@ -5712,7 +5705,6 @@ function AdminDashboard(): JSX.Element {
       dailyLimit: String(detail.quotaBase.dailyLimit),
       monthlyLimit: String(detail.quotaBase.monthlyLimit),
     })
-    setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
     setSelectedBindableTagId('')
     return detail
   }
@@ -5743,14 +5735,6 @@ function AdminDashboard(): JSX.Element {
     })
     setUserQuotaSavedAt(null)
     setUserQuotaError(null)
-  }
-
-  const updateUserBrokenLimitDraft = (value: string) => {
-    const normalizedValue = normalizeQuotaDraftInput(value)
-    if (normalizedValue == null) return
-    setUserBrokenLimitDraft(normalizedValue)
-    setUserBrokenLimitError(null)
-    setUserBrokenLimitSavedAt(null)
   }
 
   const updateUserTagCatalogField = (field: keyof UserTagFormState, value: string) => {
@@ -5804,29 +5788,6 @@ function AdminDashboard(): JSX.Element {
       setUserQuotaError(err instanceof Error ? err.message : adminStrings.users.quota.saveFailed)
     } finally {
       setSavingUserQuota(false)
-    }
-  }
-
-  const saveUserBrokenLimit = async () => {
-    if (route.name !== 'user') return
-    const monthlyBrokenLimit = Number.parseInt(userBrokenLimitDraft, 10)
-    if (!Number.isFinite(monthlyBrokenLimit) || monthlyBrokenLimit < 0) {
-      setUserBrokenLimitError(adminStrings.users.brokenKeys.invalid)
-      return
-    }
-    setSavingUserBrokenLimit(true)
-    setUserBrokenLimitError(null)
-    try {
-      await updateAdminUserBrokenKeyLimit(route.id, { monthlyBrokenLimit })
-      await Promise.all([refreshUserDetail(route.id), refreshUsersList()])
-      setUserBrokenLimitSavedAt(Date.now())
-    } catch (err) {
-      console.error(err)
-      setUserBrokenLimitError(
-        err instanceof Error ? err.message : adminStrings.users.brokenKeys.saveFailed,
-      )
-    } finally {
-      setSavingUserBrokenLimit(false)
     }
   }
 
@@ -7908,82 +7869,6 @@ function AdminDashboard(): JSX.Element {
                   {savingUserQuota ? usersStrings.quota.saving : usersStrings.quota.save}
                 </Button>
               </div>
-            </section>
-
-            <section className="surface panel">
-              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-                <div>
-                  <h2>{usersStrings.brokenKeys.limitTitle}</h2>
-                  <p className="panel-description">{usersStrings.brokenKeys.limitDescription}</p>
-                </div>
-                {detail.monthlyBrokenCount > 0 ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() =>
-                      openMonthlyBrokenDrawer(
-                        'user',
-                        detail.userId,
-                        detail.displayName || detail.username || detail.userId,
-                      )
-                    }
-                  >
-                    {usersStrings.brokenKeys.openAction}
-                  </Button>
-                ) : null}
-              </div>
-              <div className="token-info-grid">
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.usage.table.monthlyBroken}</span>
-                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenCount)}</span>
-                </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
-                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenLimit)}</span>
-                </div>
-              </div>
-              <div
-                style={{
-                  marginTop: 16,
-                  display: 'flex',
-                  gap: 12,
-                  alignItems: 'flex-end',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <label style={{ display: 'grid', gap: 6, minWidth: 220 }}>
-                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    value={userBrokenLimitDraft}
-                    onChange={(event) => updateUserBrokenLimitDraft(event.target.value)}
-                    aria-label={usersStrings.brokenKeys.limitField}
-                  />
-                </label>
-                <Button
-                  type="button"
-                  onClick={() => void saveUserBrokenLimit()}
-                  disabled={savingUserBrokenLimit}
-                >
-                  {savingUserBrokenLimit ? usersStrings.brokenKeys.saving : usersStrings.brokenKeys.save}
-                </Button>
-              </div>
-              <div style={{ marginTop: 12 }}>
-                <span className="panel-description">
-                  {userBrokenLimitSavedAt
-                    ? usersStrings.brokenKeys.savedAt.replace(
-                        '{time}',
-                        timeOnlyFormatter.format(new Date(userBrokenLimitSavedAt)),
-                      )
-                    : usersStrings.brokenKeys.hint}
-                </span>
-              </div>
-              {userBrokenLimitError ? (
-                <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
-                  {userBrokenLimitError}
-                </div>
-              ) : null}
             </section>
 
             <section className="surface panel">

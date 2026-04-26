@@ -42,6 +42,9 @@ async fn put_system_settings(
             mcp_session_affinity_key_count: payload.mcp_session_affinity_key_count,
             rebalance_mcp_enabled: payload.rebalance_mcp_enabled,
             rebalance_mcp_session_percent: payload.rebalance_mcp_session_percent,
+            user_blocked_key_base_limit: payload
+                .user_blocked_key_base_limit
+                .unwrap_or(current_settings.user_blocked_key_base_limit),
         })
         .await
         .map(Json)
@@ -51,6 +54,7 @@ async fn put_system_settings(
             if message.contains("request_rate_limit must be at least")
                 || message.contains("mcp_session_affinity_key_count must be between")
                 || message.contains("rebalance_mcp_session_percent must be between")
+                || message.contains("user_blocked_key_base_limit must be")
             {
                 (StatusCode::BAD_REQUEST, message)
             } else {

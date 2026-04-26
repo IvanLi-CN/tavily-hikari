@@ -535,10 +535,14 @@ export interface AdminTranslationsShape {
       percentHint: string
       percentDisabledHint: string
       currentPercentValue: string
+      blockedKeyBaseLimitLabel: string
+      blockedKeyBaseLimitHint: string
+      currentBlockedKeyBaseLimitValue: string
       applyScopeHint: string
       invalidRequestRateLimit: string
       invalidCount: string
       invalidPercent: string
+      invalidBlockedKeyBaseLimit: string
       saveFailed: string
     }
     actions: {
@@ -623,12 +627,6 @@ export interface AdminTranslationsShape {
       identityDescription: string
       sharedUsageTitle: string
       sharedUsageDescription: string
-      sharedUsageDescriptions: {
-        rate5m: string
-        quota1h: string
-        quota24h: string
-        quotaMonth: string
-      }
       sharedUsageLoading: string
       sharedUsageLoadFailed: string
       sharedUsageRetryAction: string
