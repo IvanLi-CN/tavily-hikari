@@ -1326,6 +1326,23 @@
         .execute(&pool)
         .await
         .expect("seed active blocked-key quarantines");
+        sqlx::query(
+            r#"UPDATE subject_key_breakages
+               SET key_status = 'quarantined',
+                   reason_code = 'account_deactivated',
+                   reason_summary = 'Upstream account deactivated',
+                   source = 'auto',
+                   updated_at = ?,
+                   latest_break_at = ?
+               WHERE key_id IN (?, ?)"#,
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&breakage_key_a_id)
+        .bind(&breakage_key_b_id)
+        .execute(&pool)
+        .await
+        .expect("promote breakage fixtures to blocked-key reasons");
 
         let addr = spawn_admin_tokens_server(proxy, true).await;
         let client = Client::new();
@@ -2473,4 +2490,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

@@ -1284,6 +1284,12 @@ impl KeyStore {
         builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
         builder.push(", ");
         builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+        builder.push(") AND skb.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
         builder.push(") AND skb.subject_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -1325,6 +1331,12 @@ impl KeyStore {
         builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
         builder.push(", ");
         builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+        builder.push(") AND skb.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
         builder.push(") AND skb.subject_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -1361,6 +1373,12 @@ impl KeyStore {
         builder.push(" AND skb.month_start = ");
         builder.push_bind(month_start);
         builder.push(" AND aq.reason_code IN (");
+        builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+        builder.push(", ");
+        builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+        builder.push(") AND skb.reason_code IN (");
         builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
         builder.push(", ");
         builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
@@ -1447,11 +1465,15 @@ impl KeyStore {
               AND skb.subject_id = ?
               AND skb.month_start = ?
               AND aq.reason_code IN (?, ?, ?)
+              AND skb.reason_code IN (?, ?, ?)
             "#,
         )
         .bind(subject_kind)
         .bind(subject_id)
         .bind(month_start)
+        .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+        .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+        .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
         .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
         .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
         .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
@@ -1492,6 +1514,7 @@ impl KeyStore {
               AND skb.subject_id = ?
               AND skb.month_start = ?
               AND aq.reason_code IN (?, ?, ?)
+              AND skb.reason_code IN (?, ?, ?)
             ORDER BY skb.latest_break_at DESC, skb.key_id ASC
             LIMIT ? OFFSET ?
             "#,
@@ -1500,6 +1523,9 @@ impl KeyStore {
         .bind(subject_kind)
         .bind(subject_id)
         .bind(month_start)
+        .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+        .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+        .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
         .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
         .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
         .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)

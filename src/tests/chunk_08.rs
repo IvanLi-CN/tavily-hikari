@@ -725,6 +725,10 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
         .add_or_undelete_key_with_status("tvly-blocked-count-account-deactivated")
         .await
         .expect("create blocked key");
+    let (quota_then_blocked_key_id, _) = proxy
+        .add_or_undelete_key_with_status("tvly-blocked-count-quota-then-blocked")
+        .await
+        .expect("create quota-then-blocked key");
 
     let now = Utc::now().timestamp();
     let month_start = start_of_month(Utc::now()).timestamp();
@@ -738,13 +742,17 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
         r#"INSERT INTO api_key_quarantines
            (id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
            VALUES (?, ?, 'system', 'quota_exhausted', 'Upstream quota exhausted', 'not a blocked key', ?, NULL),
-                  (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked key', ?, NULL)"#,
+                  (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked key', ?, NULL),
+                  (?, ?, 'system', 'account_deactivated', 'Upstream account deactivated', 'blocked key after quota', ?, NULL)"#,
     )
     .bind("blocked-count-quota-quarantine")
     .bind(&quota_quarantine_key_id)
     .bind(now)
     .bind("blocked-count-account-deactivated")
     .bind(&blocked_key_id)
+    .bind(now)
+    .bind("blocked-count-quota-then-blocked")
+    .bind(&quota_then_blocked_key_id)
     .bind(now)
     .execute(&proxy.key_store.pool)
     .await
@@ -754,6 +762,7 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
         (&exhausted_key_id, STATUS_EXHAUSTED, "quota_exhausted", "Upstream quota exhausted"),
         (&quota_quarantine_key_id, KEY_EFFECT_QUARANTINED, "quota_exhausted", "Upstream quota exhausted"),
         (&blocked_key_id, KEY_EFFECT_QUARANTINED, "account_deactivated", "Upstream account deactivated"),
+        (&quota_then_blocked_key_id, STATUS_EXHAUSTED, "quota_exhausted", "Old upstream quota exhausted"),
     ] {
         sqlx::query(
             r#"INSERT INTO subject_key_breakages (
