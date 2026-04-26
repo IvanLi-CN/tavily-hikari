@@ -215,6 +215,7 @@ pub struct TavilyProxy {
     pub(crate) mcp_session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) mcp_session_request_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) research_key_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    pub(crate) low_quota_depletion_threshold: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -222,6 +223,7 @@ pub struct TavilyProxyOptions {
     pub xray_binary: String,
     pub xray_runtime_dir: std::path::PathBuf,
     pub forward_proxy_trace_url: Url,
+    pub low_quota_depletion_threshold: i64,
 }
 
 impl TavilyProxyOptions {
@@ -230,6 +232,7 @@ impl TavilyProxyOptions {
             xray_binary: forward_proxy::default_xray_binary(),
             xray_runtime_dir: forward_proxy::default_xray_runtime_dir(database_path),
             forward_proxy_trace_url: default_forward_proxy_trace_url(),
+            low_quota_depletion_threshold: low_quota_depletion_threshold_from_env(),
         }
     }
 }
@@ -482,6 +485,30 @@ fn default_forward_proxy_trace_url() -> Url {
         .filter(|value| !value.is_empty())
         .and_then(|value| Url::parse(&value).ok())
         .unwrap_or_else(|| Url::parse(FORWARD_PROXY_TRACE_URL).expect("valid trace url"))
+}
+
+pub fn parse_low_quota_depletion_threshold(raw: Option<&str>, source: &str) -> i64 {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT;
+    };
+    match raw.parse::<i64>() {
+        Ok(value) if value >= 0 => value,
+        _ => {
+            eprintln!(
+                "warning: {source} must be a non-negative integer; using default {LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT}"
+            );
+            LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT
+        }
+    }
+}
+
+fn low_quota_depletion_threshold_from_env() -> i64 {
+    parse_low_quota_depletion_threshold(
+        std::env::var("LOW_QUOTA_DEPLETION_THRESHOLD")
+            .ok()
+            .as_deref(),
+        "LOW_QUOTA_DEPLETION_THRESHOLD",
+    )
 }
 
 include!("proxy_core.rs");

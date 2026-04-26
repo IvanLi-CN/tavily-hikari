@@ -31,6 +31,7 @@ No matter which access model you choose, these settings are the main runtime con
 | `--bind` / `PROXY_BIND`           | yes             | listen address                  |
 | `--port` / `PROXY_PORT`           | yes             | listen port                     |
 | `--db-path` / `PROXY_DB_PATH`     | yes             | SQLite database path            |
+| `LOW_QUOTA_DEPLETION_THRESHOLD`   | optional        | low-balance 432 key threshold   |
 | `--static-dir` / `WEB_STATIC_DIR` | depends         | frontend static asset directory |
 | `--keys` / `TAVILY_API_KEYS`      | optional        | one-time key bootstrap helper   |
 
@@ -43,6 +44,9 @@ Notes:
   prefix, include the final `/mcp` path in the configured URL.
 - `TAVILY_USAGE_BASE` may also include a path prefix. Hikari appends `/search`, `/extract`,
   `/crawl`, `/map`, `/research`, `/research/{id}`, and `/usage` under that prefix.
+- `LOW_QUOTA_DEPLETION_THRESHOLD` defaults to `15`. When an upstream key returns 432 and its
+  latest known remaining credits are at or below this value, Hikari keeps it out of normal key
+  pools for the current UTC month while still allowing it as a final fallback.
 - `WEB_STATIC_DIR` is optional. If omitted, the app will try to use `web/dist` when that directory
   exists.
 - `TAVILY_API_KEYS` is convenient for bootstrapping, but long-term key lifecycle should be managed

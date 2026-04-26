@@ -390,6 +390,7 @@ const DEV_OPEN_ADMIN_TOKEN_SECRET: &str = "dev-open-admin";
 const DEV_OPEN_ADMIN_TOKEN_NOTE: &str = "[system] dev-open-admin placeholder";
 pub const USER_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 5;
 pub const UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 2;
+pub const LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT: i64 = 15;
 const BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED: &str = "account_deactivated";
 const BLOCKED_KEY_REASON_KEY_REVOKED: &str = "key_revoked";
 const BLOCKED_KEY_REASON_INVALID_API_KEY: &str = "invalid_api_key";

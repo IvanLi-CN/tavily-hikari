@@ -152,6 +152,331 @@ async fn reconcile_key_health_does_not_restore_exhausted_key_on_error() {
 }
 
 #[tokio::test]
+async fn low_quota_432_records_monthly_depletion_at_threshold() {
+    let db_path = temp_db_path("low-quota-depletion-threshold");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-low-quota-threshold".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    sqlx::query("UPDATE api_keys SET quota_limit = 1000, quota_remaining = 15 WHERE id = ?")
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed quota");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret,
+    };
+
+    let effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/api/tavily/search",
+            &AttemptAnalysis {
+                status: OUTCOME_QUOTA_EXHAUSTED,
+                tavily_status_code: Some(432),
+                key_health_action: KeyHealthAction::MarkExhausted,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("mark exhausted");
+    assert_eq!(effect.code, KEY_EFFECT_MARKED_EXHAUSTED);
+
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT threshold, quota_remaining FROM api_key_low_quota_depletions WHERE key_id = ?",
+    )
+    .bind(&key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch depletion row");
+    assert_eq!(row, (15, 15));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn low_quota_432_does_not_record_above_threshold() {
+    let db_path = temp_db_path("low-quota-depletion-above-threshold");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-low-quota-above-threshold".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    sqlx::query("UPDATE api_keys SET quota_limit = 1000, quota_remaining = 16 WHERE id = ?")
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed quota");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret,
+    };
+
+    proxy
+        .reconcile_key_health(
+            &lease,
+            "/api/tavily/search",
+            &AttemptAnalysis {
+                status: OUTCOME_QUOTA_EXHAUSTED,
+                tavily_status_code: Some(432),
+                key_health_action: KeyHealthAction::MarkExhausted,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("mark exhausted");
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM api_key_low_quota_depletions WHERE key_id = ?")
+            .bind(&key_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count depletion rows");
+    assert_eq!(count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn low_quota_depleted_keys_are_final_fallback_only() {
+    let db_path = temp_db_path("low-quota-depletion-final-fallback");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-low-quota-active".to_string(),
+            "tvly-low-quota-regular-exhausted".to_string(),
+            "tvly-low-quota-depleted".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let active_id: String =
+        sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = 'tvly-low-quota-active'")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("active id");
+    let regular_id: String = sqlx::query_scalar(
+        "SELECT id FROM api_keys WHERE api_key = 'tvly-low-quota-regular-exhausted'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("regular id");
+    let depleted_id: String =
+        sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = 'tvly-low-quota-depleted'")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("depleted id");
+
+    proxy
+        .key_store
+        .mark_quota_exhausted("tvly-low-quota-regular-exhausted")
+        .await
+        .expect("regular exhausted");
+    proxy
+        .key_store
+        .mark_quota_exhausted("tvly-low-quota-depleted")
+        .await
+        .expect("depleted exhausted");
+    sqlx::query("UPDATE api_keys SET quota_limit = 1000, quota_remaining = 1 WHERE id = ?")
+        .bind(&depleted_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed depleted quota");
+    assert!(
+        proxy
+            .key_store
+            .record_low_quota_depletion_if_needed(&depleted_id, 15)
+            .await
+            .expect("record depletion")
+    );
+
+    let lease = proxy.key_store.acquire_key().await.expect("active selected");
+    assert_eq!(lease.id, active_id);
+
+    proxy
+        .key_store
+        .mark_quota_exhausted("tvly-low-quota-active")
+        .await
+        .expect("active exhausted");
+    let lease = proxy
+        .key_store
+        .acquire_key()
+        .await
+        .expect("regular exhausted selected");
+    assert_ne!(lease.id, depleted_id);
+
+    proxy
+        .key_store
+        .quarantine_key_by_id(
+            &regular_id,
+            "/api/tavily/search",
+            "test_quarantine",
+            "test quarantine",
+            "test",
+        )
+        .await
+        .expect("quarantine regular exhausted");
+    proxy
+        .key_store
+        .quarantine_key_by_id(
+            &active_id,
+            "/api/tavily/search",
+            "test_quarantine",
+            "test quarantine",
+            "test",
+        )
+        .await
+        .expect("quarantine formerly active exhausted");
+    let lease = proxy
+        .key_store
+        .acquire_key()
+        .await
+        .expect("depleted selected as final fallback");
+    assert_eq!(lease.id, depleted_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn low_quota_depleted_key_success_does_not_auto_restore_until_next_month() {
+    let db_path = temp_db_path("low-quota-depletion-no-restore");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-low-quota-no-restore".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    sqlx::query("UPDATE api_keys SET quota_limit = 1000, quota_remaining = 5 WHERE id = ?")
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed quota");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret: secret.clone(),
+    };
+
+    proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_QUOTA_EXHAUSTED,
+                tavily_status_code: Some(432),
+                key_health_action: KeyHealthAction::MarkExhausted,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("record depletion");
+
+    let restore_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_SUCCESS,
+                tavily_status_code: Some(200),
+                key_health_action: KeyHealthAction::None,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("suppressed restore");
+    assert_eq!(restore_effect.code, KEY_EFFECT_NONE);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id = ?")
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch status");
+    assert_eq!(status, STATUS_EXHAUSTED);
+
+    let old_month_start = start_of_month(Utc::now()).timestamp() - 31 * 24 * 60 * 60;
+    sqlx::query("UPDATE api_key_low_quota_depletions SET month_start = ? WHERE key_id = ?")
+        .bind(old_month_start)
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("move depletion to previous month");
+
+    let restore_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_SUCCESS,
+                tavily_status_code: Some(200),
+                key_health_action: KeyHealthAction::None,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("restore after month boundary");
+    assert_eq!(restore_effect.code, KEY_EFFECT_RESTORED_ACTIVE);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn usage_error_quarantine_appends_audit_record() {
     let db_path = temp_db_path("maintenance-usage-quarantine");
     let db_str = db_path.to_string_lossy().to_string();

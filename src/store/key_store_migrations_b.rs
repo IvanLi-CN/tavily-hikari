@@ -850,6 +850,35 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn ensure_api_key_low_quota_depletions_schema(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_low_quota_depletions (
+                key_id TEXT NOT NULL,
+                month_start INTEGER NOT NULL,
+                threshold INTEGER NOT NULL,
+                quota_remaining INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (key_id, month_start),
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_low_quota_depletions_month
+               ON api_key_low_quota_depletions(month_start, key_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub(crate) async fn ensure_api_key_ids(&self) -> Result<(), ProxyError> {
         if !self.api_keys_column_exists("id").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN id TEXT")

@@ -8,7 +8,9 @@ use std::{
 use argon2::password_hash::PasswordHash;
 use clap::Parser;
 use dotenvy::dotenv;
-use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy, TavilyProxyOptions};
+use tavily_hikari::{
+    DEFAULT_UPSTREAM, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, TavilyProxy, TavilyProxyOptions,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Tavily reverse proxy with key rotation")]
@@ -93,6 +95,14 @@ struct Cli {
         default_value = "https://api.tavily.com"
     )]
     usage_base: String,
+
+    /// Low remaining-credit threshold for suppressing monthly auto-restore after Tavily 432.
+    #[arg(
+        long,
+        env = "LOW_QUOTA_DEPLETION_THRESHOLD",
+        default_value_t = LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT.to_string()
+    )]
+    low_quota_depletion_threshold: String,
 
     /// Hosted API origin used to resolve registration IP geo metadata for imported API keys.
     #[arg(
@@ -192,6 +202,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         forward_proxy_trace_url: TavilyProxyOptions::from_database_path(&cli.db_path)
             .forward_proxy_trace_url,
+        low_quota_depletion_threshold: tavily_hikari::parse_low_quota_depletion_threshold(
+            Some(&cli.low_quota_depletion_threshold),
+            "LOW_QUOTA_DEPLETION_THRESHOLD",
+        ),
     };
     let proxy =
         TavilyProxy::with_options(cli.keys, &cli.upstream, &cli.db_path, proxy_options).await?;
