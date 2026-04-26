@@ -223,7 +223,7 @@ async fn proxy_handler(
                 let requires_session = if let Some(token_id) = token_id.as_deref() {
                     state
                         .proxy
-                        .token_has_active_mcp_session(token_id)
+                        .token_has_active_non_rebalance_mcp_session(token_id)
                         .await
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 } else {
@@ -360,6 +360,24 @@ async fn proxy_handler(
         }
         active_mcp_session = Some(session);
     }
+    let mut stateless_rebalance_proxy_session_id: Option<String> = None;
+    if is_mcp_request
+        && incoming_proxy_session_id.is_none()
+        && !is_mcp_initialize
+        && let Some(token_id) = token_id.as_deref()
+        && let Some(session) = state
+            .proxy
+            .latest_active_mcp_session_for_token(token_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        && session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+        && session.auth_token_id.as_deref() == Some(token_id)
+    {
+        stateless_rebalance_proxy_session_id = Some(session.proxy_session_id.clone());
+        active_mcp_gateway_mode = session.gateway_mode.clone();
+        active_mcp_experiment_variant = session.experiment_variant.clone();
+        active_mcp_session = Some(session);
+    }
     let mut planned_initialize_proxy_session_id: Option<String> = None;
     let mut planned_initialize_ab_bucket: Option<i64> = None;
     let mut planned_initialize_gateway_mode = active_mcp_gateway_mode.clone();
@@ -387,6 +405,19 @@ async fn proxy_handler(
         } else {
             tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string()
         };
+    } else if is_mcp_request
+        && incoming_proxy_session_id.is_none()
+        && active_mcp_session.is_none()
+        && !is_mcp_delete_root_request
+    {
+        let settings = state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if settings.rebalance_mcp_enabled && settings.rebalance_mcp_session_percent > 0 {
+            active_mcp_gateway_mode = tavily_hikari::MCP_GATEWAY_MODE_REBALANCE.to_string();
+        }
     }
     let rebalance_mcp_facade_active = is_mcp_request
         && (active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
@@ -986,7 +1017,9 @@ async fn proxy_handler(
             &headers,
             &body_bytes,
             token_id.as_deref(),
-            incoming_proxy_session_id.as_deref(),
+            incoming_proxy_session_id
+                .as_deref()
+                .or(stateless_rebalance_proxy_session_id.as_deref()),
             incoming_protocol_version.as_deref(),
             rebalance_routing_subject_hash.as_deref(),
         )
@@ -1113,6 +1146,51 @@ async fn proxy_handler(
                                     HeaderName::from_static("mcp-session-id"),
                                     proxy_header,
                                 );
+                            }
+                        }
+                    }
+                } else if let Some(proxy_session_id) =
+                    stateless_rebalance_proxy_session_id.as_deref()
+                {
+                    if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
+                        let response_protocol_version = resp
+                            .headers
+                            .get("mcp-protocol-version")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string);
+                        let _ = state
+                            .proxy
+                            .touch_mcp_session(
+                                proxy_session_id,
+                                response_protocol_version
+                                    .as_deref()
+                                    .or(incoming_protocol_version.as_deref()),
+                                incoming_last_event_id.as_deref(),
+                            )
+                            .await;
+                        if rebalance_routing_subject_hash.is_some() {
+                            let _ = state
+                                .proxy
+                                .update_mcp_session_rebalance_metadata(
+                                    proxy_session_id,
+                                    rebalance_routing_subject_hash.as_deref(),
+                                    None,
+                                )
+                                .await;
+                        }
+                        if !resp.headers.contains_key("mcp-protocol-version") {
+                            let protocol_version = response_protocol_version
+                                .as_deref()
+                                .or(incoming_protocol_version.as_deref())
+                                .or(active_mcp_session
+                                    .as_ref()
+                                    .and_then(|session| session.protocol_version.as_deref()))
+                                .unwrap_or(REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT);
+                            if let Ok(value) = ReqHeaderValue::from_str(protocol_version) {
+                                resp.headers
+                                    .insert(HeaderName::from_static("mcp-protocol-version"), value);
                             }
                         }
                     }

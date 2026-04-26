@@ -602,7 +602,8 @@ fn mcp_response_requires_reconnect(status: StatusCode, body: &[u8]) -> bool {
 }
 
 const REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT: &str = "2025-03-26";
-const REBALANCE_MCP_SERVER_NAME: &str = "tavily-hikari-rebalance-mcp";
+const REBALANCE_MCP_SERVER_NAME: &str = "tavily-mcp";
+const REBALANCE_MCP_SERVER_VERSION: &str = "3.2.4";
 
 #[derive(Clone, Copy)]
 enum RebalanceMcpRequiredFieldType {
@@ -670,6 +671,18 @@ fn rebalance_mcp_tool_definition_by_name(tool: &str) -> Option<&'static Rebalanc
         .find(|definition| definition.hyphen_name == normalized)
 }
 
+fn schema_string(description: &str) -> Value {
+    json!({ "type": "string", "description": description })
+}
+
+fn schema_integer(description: &str, default: i64) -> Value {
+    json!({ "type": "integer", "description": description, "default": default })
+}
+
+fn schema_boolean(description: &str, default: bool) -> Value {
+    json!({ "type": "boolean", "description": description, "default": default })
+}
+
 fn rebalance_mcp_required_field_schema(kind: RebalanceMcpRequiredFieldType) -> Value {
     match kind {
         RebalanceMcpRequiredFieldType::String => json!({ "type": "string" }),
@@ -686,20 +699,124 @@ fn rebalance_mcp_required_field_schema(kind: RebalanceMcpRequiredFieldType) -> V
 }
 
 fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        tool.required_field.to_string(),
-        rebalance_mcp_required_field_schema(tool.required_field_type),
-    );
-    Value::Object(serde_json::Map::from_iter([
-        ("type".to_string(), Value::String("object".to_string())),
-        ("properties".to_string(), Value::Object(properties)),
-        (
-            "required".to_string(),
-            Value::Array(vec![Value::String(tool.required_field.to_string())]),
-        ),
-        ("additionalProperties".to_string(), Value::Bool(true)),
-    ]))
+    let properties = match tool.upstream_tool {
+        "search" => json!({
+            "query": schema_string("Search query"),
+            "max_results": schema_integer("The maximum number of search results to return", 5),
+            "search_depth": {
+                "type": "string",
+                "description": "The depth of the search. 'basic' for generic results, 'advanced' for more thorough search, 'fast' for optimized low latency with high relevance, 'ultra-fast' for prioritizing latency above all else",
+                "enum": ["basic", "advanced", "fast", "ultra-fast"],
+                "default": "basic"
+            },
+            "topic": {
+                "type": "string",
+                "description": "The category of the search.",
+                "const": "general",
+                "default": "general"
+            },
+            "include_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "A list of domains to specifically include in the search results"
+            },
+            "exclude_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "A list of domains to specifically exclude from the search results"
+            },
+            "time_range": schema_string("Time range filter for search results"),
+            "start_date": schema_string("Start date for filtering search results"),
+            "end_date": schema_string("End date for filtering search results"),
+            "country": schema_string("Country filter for search results"),
+            "include_images": schema_boolean("Include a list of query-related images in the response", false),
+            "include_image_descriptions": schema_boolean("Include descriptions for returned images", false),
+            "include_raw_content": schema_boolean("Include cleaned and parsed HTML content for each search result", false),
+            "include_favicon": schema_boolean("Include favicon URLs for each result", true),
+            "exact_match": schema_boolean("Only return results that exactly match the query", false)
+        }),
+        "extract" => json!({
+            "urls": rebalance_mcp_required_field_schema(tool.required_field_type),
+            "extract_depth": {
+                "type": "string",
+                "description": "The depth of the extraction process",
+                "enum": ["basic", "advanced"],
+                "default": "basic"
+            },
+            "format": {
+                "type": "string",
+                "description": "The format of the extracted content",
+                "enum": ["markdown", "text"],
+                "default": "markdown"
+            },
+            "query": schema_string("Optional query to guide extraction"),
+            "include_images": schema_boolean("Include images extracted from the page", false),
+            "include_favicon": schema_boolean("Include favicon URLs in the response", true)
+        }),
+        "crawl" => json!({
+            "url": schema_string("The root URL to crawl"),
+            "max_depth": schema_integer("Maximum crawl depth", 1),
+            "max_breadth": schema_integer("Maximum number of links to follow per level", 20),
+            "limit": schema_integer("Maximum number of pages to crawl", 50),
+            "instructions": schema_string("Instructions to guide the crawl"),
+            "select_paths": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "URL path patterns to include"
+            },
+            "select_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Domains to include"
+            },
+            "allow_external": schema_boolean("Allow crawling external domains", false),
+            "extract_depth": {
+                "type": "string",
+                "description": "The depth of the extraction process",
+                "enum": ["basic", "advanced"],
+                "default": "basic"
+            },
+            "format": {
+                "type": "string",
+                "description": "The format of the extracted content",
+                "enum": ["markdown", "text"],
+                "default": "markdown"
+            },
+            "include_favicon": schema_boolean("Include favicon URLs in the response", true)
+        }),
+        "map" => json!({
+            "url": schema_string("The root URL to map"),
+            "max_depth": schema_integer("Maximum crawl depth", 1),
+            "max_breadth": schema_integer("Maximum number of links to follow per level", 20),
+            "limit": schema_integer("Maximum number of URLs to return", 50),
+            "instructions": schema_string("Instructions to guide site mapping"),
+            "select_paths": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "URL path patterns to include"
+            },
+            "select_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Domains to include"
+            },
+            "allow_external": schema_boolean("Allow mapping external domains", false)
+        }),
+        "research" => json!({
+            "input": schema_string("Research task or question"),
+            "model": schema_string("Research model to use")
+        }),
+        _ => json!({
+            tool.required_field: rebalance_mcp_required_field_schema(tool.required_field_type)
+        }),
+    };
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": [tool.required_field],
+        "additionalProperties": false,
+    })
 }
 
 fn rebalance_mcp_argument_matches_type(value: &Value, kind: RebalanceMcpRequiredFieldType) -> bool {
@@ -809,6 +926,40 @@ fn build_rebalance_mcp_error_body(
     })
 }
 
+fn build_rebalance_mcp_tool_error_result_body(
+    response_id: Option<&Value>,
+    message: &str,
+) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": message
+                }
+            ],
+            "isError": true
+        }),
+    )
+}
+
+fn wrap_mcp_sse_message_body(body: &[u8]) -> Vec<u8> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let payload = String::from_utf8_lossy(body);
+    format!("event: message\ndata: {payload}\n\n").into_bytes()
+}
+
+fn parse_mcp_sse_message_body(body: &[u8]) -> Option<Value> {
+    let text = std::str::from_utf8(body).ok()?;
+    let data = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data:").map(str::trim))?;
+    serde_json::from_str(data).ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build_and_log_local_mcp_protocol_response(
     state: &Arc<AppState>,
@@ -913,7 +1064,7 @@ fn build_rebalance_mcp_initialize_body(
             },
             "serverInfo": {
                 "name": REBALANCE_MCP_SERVER_NAME,
-                "version": env!("CARGO_PKG_VERSION")
+                "version": REBALANCE_MCP_SERVER_VERSION
             }
         }),
     )
@@ -1012,6 +1163,22 @@ fn proxy_response_with_json_body(
         selection_effect_code: "none".to_string(),
         selection_effect_summary: None,
     }
+}
+
+fn proxy_response_with_mcp_body(
+    status: StatusCode,
+    body: Vec<u8>,
+    request_log_id: Option<i64>,
+) -> ProxyResponse {
+    let sse_body = wrap_mcp_sse_message_body(&body);
+    let mut response = proxy_response_with_json_body(status, sse_body, request_log_id);
+    if !response.body.is_empty() {
+        response.headers.insert(
+            CONTENT_TYPE,
+            ReqHeaderValue::from_static("text/event-stream"),
+        );
+    }
+    response
 }
 
 #[allow(clippy::too_many_arguments)]

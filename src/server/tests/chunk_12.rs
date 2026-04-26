@@ -1558,19 +1558,20 @@
                 .unwrap_or_else(|err| panic!("{case_id} request should complete: {err}"));
             assert_eq!(
                 response.status(),
-                StatusCode::BAD_REQUEST,
-                "{case_id} should be rejected locally"
+                StatusCode::OK,
+                "{case_id} should return an official-style tool error envelope"
             );
-            let body: Value = response
-                .json()
-                .await
-                .unwrap_or_else(|err| panic!("{case_id} response should decode: {err}"));
+            let body = decode_sse_json_response(response).await;
             assert_eq!(
-                body["error"]["code"].as_i64(),
-                Some(-32602),
-                "{case_id} should return invalid params"
+                body["result"]["isError"].as_bool(),
+                Some(true),
+                "{case_id} should return result.isError=true"
             );
-            let message = body["error"]["message"]
+            assert!(
+                body["result"]["content"].as_array().is_some(),
+                "{case_id} should return a content array"
+            );
+            let message = body["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap_or_else(|| panic!("{case_id} should include error message"));
             assert!(
@@ -1608,8 +1609,8 @@
         for row in rows.iter().skip(1) {
             assert_eq!(
                 row.try_get::<Option<i64>, _>("status_code").unwrap(),
-                Some(400),
-                "invalid tool arguments should log bad request status"
+                Some(200),
+                "invalid tool arguments should log official-style HTTP 200 status"
             );
             assert_eq!(
                 row.try_get::<Option<String>, _>("failure_kind")
@@ -1718,10 +1719,13 @@
             .send()
             .await
             .expect("unknown tool request");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body: Value = response.json().await.expect("decode unknown tool response");
-        assert_eq!(body["error"]["code"].as_i64(), Some(-32601));
-        assert_eq!(body["error"]["message"].as_str(), Some("Unknown tool"));
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = decode_sse_json_response(response).await;
+        assert_eq!(body["result"]["isError"].as_bool(), Some(true));
+        assert_eq!(
+            body["result"]["content"][0]["text"].as_str(),
+            Some("Not found: Unknown tool: 'totally_not_real'")
+        );
 
         let recorded = seen
             .lock()
@@ -1747,8 +1751,8 @@
         .expect("fetch unknown tool request log");
         assert_eq!(
             row.try_get::<Option<i64>, _>("status_code").unwrap(),
-            Some(404),
-            "unknown tool should log not found status"
+            Some(200),
+            "unknown tool should log official-style HTTP 200 status"
         );
         assert_eq!(
             row.try_get::<Option<String>, _>("failure_kind")
@@ -1840,18 +1844,15 @@
             response.headers().get("mcp-session-id").is_some(),
             "initialize batch should still mint a proxy mcp-session-id"
         );
-        let body: Value = response
-            .json()
-            .await
-            .expect("decode initialize batch response");
+        let body = decode_sse_json_response(response).await;
         let items = body
             .as_array()
             .expect("initialize batch should return a JSON-RPC array");
         assert_eq!(items.len(), 2, "initialize batch should return two responses");
         assert_eq!(
-            items[1]["error"]["code"].as_i64(),
-            Some(-32602),
-            "invalid rebalance tool args should be rejected by the local facade even in an initialize batch"
+            items[1]["result"]["isError"].as_bool(),
+            Some(true),
+            "invalid rebalance tool args should return an official-style tool error even in an initialize batch"
         );
 
         let recorded = seen

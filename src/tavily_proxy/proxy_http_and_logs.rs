@@ -514,6 +514,14 @@ impl TavilyProxy {
         })
     }
 
+    fn wrap_rebalance_mcp_sse_message_body(body: &[u8]) -> Bytes {
+        if body.is_empty() {
+            return Bytes::new();
+        }
+        let payload = String::from_utf8_lossy(body);
+        Bytes::from(format!("event: message\ndata: {payload}\n\n"))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn proxy_rebalance_mcp_http_json_endpoint(
         &self,
@@ -656,13 +664,14 @@ impl TavilyProxy {
                 let mut headers = HeaderMap::new();
                 headers.insert(
                     reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
+                    HeaderValue::from_static("text/event-stream"),
                 );
+                let response_body = Self::wrap_rebalance_mcp_sse_message_body(&response_body);
 
                 Ok(ProxyResponse {
                     status: StatusCode::OK,
                     headers,
-                    body: Bytes::from(response_body),
+                    body: response_body,
                     api_key_id: Some(lease.id),
                     request_log_id: Some(request_log_id),
                     key_effect_code: key_effect.code,
@@ -716,12 +725,13 @@ impl TavilyProxy {
                 let mut headers = HeaderMap::new();
                 headers.insert(
                     reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
+                    HeaderValue::from_static("text/event-stream"),
                 );
+                let response_body = Self::wrap_rebalance_mcp_sse_message_body(&response_body);
                 Ok(ProxyResponse {
                     status: StatusCode::OK,
                     headers,
-                    body: Bytes::from(response_body),
+                    body: response_body,
                     api_key_id: Some(lease.id),
                     request_log_id: Some(request_log_id),
                     key_effect_code: KEY_EFFECT_NONE.to_string(),
@@ -925,13 +935,14 @@ impl TavilyProxy {
                 let mut headers = HeaderMap::new();
                 headers.insert(
                     reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
+                    HeaderValue::from_static("text/event-stream"),
                 );
+                let response_body = Self::wrap_rebalance_mcp_sse_message_body(&response_body);
 
                 Ok(ProxyResponse {
                     status: StatusCode::OK,
                     headers,
-                    body: Bytes::from(response_body),
+                    body: response_body,
                     api_key_id: Some(lease.id),
                     request_log_id: Some(request_log_id),
                     key_effect_code: key_effect.code,
@@ -985,12 +996,13 @@ impl TavilyProxy {
                 let mut headers = HeaderMap::new();
                 headers.insert(
                     reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
+                    HeaderValue::from_static("text/event-stream"),
                 );
+                let response_body = Self::wrap_rebalance_mcp_sse_message_body(&response_body);
                 Ok(ProxyResponse {
                     status: StatusCode::OK,
                     headers,
-                    body: Bytes::from(response_body),
+                    body: response_body,
                     api_key_id: Some(lease.id),
                     request_log_id: Some(request_log_id),
                     key_effect_code: KEY_EFFECT_NONE.to_string(),

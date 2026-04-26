@@ -33,7 +33,7 @@ async fn handle_rebalance_mcp_single_message(
             Some("invalid_jsonrpc_request"),
         )
         .await;
-        return Ok(proxy_response_with_json_body(
+        return Ok(proxy_response_with_mcp_body(
             StatusCode::BAD_REQUEST,
             body,
             request_log_id,
@@ -58,7 +58,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -79,7 +79,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::ACCEPTED,
                 body,
                 request_log_id,
@@ -100,7 +100,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -121,7 +121,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -142,7 +142,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -163,7 +163,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -184,7 +184,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::OK,
                 body,
                 request_log_id,
@@ -193,9 +193,8 @@ async fn handle_rebalance_mcp_single_message(
         "tools/call" => {
             let params = message.get("params").and_then(Value::as_object);
             let Some(params) = params else {
-                let body = build_rebalance_mcp_error_body(
+                let body = build_rebalance_mcp_tool_error_result_body(
                     response_id,
-                    -32602,
                     "Invalid tools/call params",
                 );
                 let request_log_id = log_rebalance_local_control_plane_response(
@@ -204,15 +203,15 @@ async fn handle_rebalance_mcp_single_message(
                     method,
                     path,
                     message_body,
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::OK,
                     &body,
                     proxy_session_id,
                     routing_subject_hash,
                     Some("invalid_tool_params"),
                 )
                 .await;
-                return Ok(proxy_response_with_json_body(
-                    StatusCode::BAD_REQUEST,
+                return Ok(proxy_response_with_mcp_body(
+                    StatusCode::OK,
                     body,
                     request_log_id,
                 ));
@@ -222,22 +221,23 @@ async fn handle_rebalance_mcp_single_message(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let Some(tool) = rebalance_mcp_tool_definition_by_name(tool_name) else {
-                let body = build_rebalance_mcp_error_body(response_id, -32601, "Unknown tool");
+                let message = format!("Not found: Unknown tool: '{tool_name}'");
+                let body = build_rebalance_mcp_tool_error_result_body(response_id, &message);
                 let request_log_id = log_rebalance_local_control_plane_response(
                     state,
                     token_id,
                     method,
                     path,
                     message_body,
-                    StatusCode::NOT_FOUND,
+                    StatusCode::OK,
                     &body,
                     proxy_session_id,
                     routing_subject_hash,
                     Some("unknown_tool"),
                 )
                 .await;
-                return Ok(proxy_response_with_json_body(
-                    StatusCode::NOT_FOUND,
+                return Ok(proxy_response_with_mcp_body(
+                    StatusCode::OK,
                     body,
                     request_log_id,
                 ));
@@ -245,22 +245,22 @@ async fn handle_rebalance_mcp_single_message(
             let options = match validate_rebalance_mcp_tool_arguments(tool, params.get("arguments")) {
                 Ok(arguments) => arguments,
                 Err(message) => {
-                    let body = build_rebalance_mcp_error_body(response_id, -32602, &message);
+                    let body = build_rebalance_mcp_tool_error_result_body(response_id, &message);
                     let request_log_id = log_rebalance_local_control_plane_response(
                         state,
                         token_id,
                         method,
                         path,
                         message_body,
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::OK,
                         &body,
                         proxy_session_id,
                         routing_subject_hash,
                         Some("invalid_tool_arguments"),
                     )
                     .await;
-                    return Ok(proxy_response_with_json_body(
-                        StatusCode::BAD_REQUEST,
+                    return Ok(proxy_response_with_mcp_body(
+                        StatusCode::OK,
                         body,
                         request_log_id,
                     ));
@@ -374,7 +374,7 @@ async fn handle_rebalance_mcp_single_message(
                 None,
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::ACCEPTED,
                 body,
                 request_log_id,
@@ -395,7 +395,7 @@ async fn handle_rebalance_mcp_single_message(
                 Some("method_not_found"),
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::NOT_FOUND,
                 body,
                 request_log_id,
@@ -451,7 +451,7 @@ async fn handle_rebalance_mcp_request_body(
                     Some("invalid_jsonrpc_request"),
                 )
                 .await;
-                return Ok(proxy_response_with_json_body(
+                return Ok(proxy_response_with_mcp_body(
                     StatusCode::BAD_REQUEST,
                     body,
                     request_log_id,
@@ -478,7 +478,8 @@ async fn handle_rebalance_mcp_request_body(
                 .await?;
 
                 if !response.body.is_empty()
-                    && let Ok(value) = serde_json::from_slice::<Value>(&response.body)
+                    && let Some(value) = parse_mcp_sse_message_body(&response.body)
+                        .or_else(|| serde_json::from_slice::<Value>(&response.body).ok())
                 {
                     responses.push(value);
                 }
@@ -489,14 +490,14 @@ async fn handle_rebalance_mcp_request_body(
                 let request_log_id = last_response
                     .as_ref()
                     .and_then(|response| response.request_log_id);
-                return Ok(proxy_response_with_json_body(
+                return Ok(proxy_response_with_mcp_body(
                     StatusCode::ACCEPTED,
                     Vec::new(),
                     request_log_id,
                 ));
             }
 
-            let mut aggregated = proxy_response_with_json_body(
+            let mut aggregated = proxy_response_with_mcp_body(
                 StatusCode::OK,
                 serde_json::to_vec(&Value::Array(responses))
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
@@ -530,7 +531,7 @@ async fn handle_rebalance_mcp_request_body(
                 Some("invalid_jsonrpc_request"),
             )
             .await;
-            Ok(proxy_response_with_json_body(
+            Ok(proxy_response_with_mcp_body(
                 StatusCode::BAD_REQUEST,
                 body,
                 request_log_id,
@@ -623,4 +624,3 @@ async fn mcp_subpath_reject_handler(
         .body(Body::from(response_body.to_vec()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
-
