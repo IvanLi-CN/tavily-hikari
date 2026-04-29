@@ -4,19 +4,19 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-03-06
-- Last: 2026-03-07
+- Last: 2026-04-29
 
 ## 背景 / 问题陈述
 
 - 当前下游“业务配额”（hour/day/month）按 requests 口径累计，而 Tavily 上游真实成本按 API credits 计费。
 - 两套口径不一致会导致 Search / Research / Extract 等调用出现误扣、漏扣或过早阻断，最终让下游配额与上游账单难以对齐。
-- Research 响应目前不直接返回 `usage.credits`，需要通过同一 upstream key 的 `/usage` `research_usage` 差分归因。
+- Research 响应目前不直接返回 `usage.credits`；共享 upstream key 下 `/usage.research_usage` 差分不可安全归因到单个用户，因此本地用户计费改为按请求模型固定估算。
 
 ## 目标 / 非目标
 
 ### Goals
 
-- 将 `/api/tavily/*` 与 `/mcp` 的业务配额切换为 Tavily credits 口径，并按上游真实消耗 1:1 扣减。
+- 将 `/api/tavily/*` 与 `/mcp` 的业务配额切换为 Tavily credits 口径；Search / Extract / Crawl / Map 按上游可观测 `usage.credits` 扣减，Research 按本地模型估算价扣减。
 - Search / Research 采用“先检查再放行”；Extract / Crawl / Map 采用“按保守预估 credits 先检查再放行，回包前仍以上游实际 `usage.credits` 扣费”。
 - 保持 `counts_business_quota` 语义不变，只调整 business quota 的计数单位。
 - 所有验证必须走本地 mock upstream，避免触达 Tavily 生产端点。
@@ -34,7 +34,7 @@
   - `/search` `/extract` `/crawl` `/map` 自动注入 `include_usage=true`
   - 解析 `usage.credits`
   - quota 子系统支持按 credits 增量扣费
-  - Research `/usage` 差分计费
+  - Research 按模型估算价计费
 - `src/server/handlers/tavily.rs`
   - HTTP Tavily endpoints 的 mixed enforcement 与回包前扣费
 - `src/server/proxy.rs`
@@ -56,9 +56,10 @@
   - 先按保守预估 credits 做前置阻断；成功回包后仍仅按上游返回的 `usage.credits` 扣费。
   - 若上游未返回 `usage.credits`，只记 warning，不猜测补扣。
 - `/api/tavily/research`
-  - `model=mini/auto` 最小成本 4；`pro` 最小成本 15。
-  - 初始 `/usage` 探针失败时直接阻断，不触发上游 `/research`。
-  - 上游 `/research` 已成功返回后，若后续 `/usage` 差分不可得或计数回退，则继续把成功响应返回给客户端，记录 billing warning，并按 reserved minimum cost 兜底扣费（mini/auto=4，pro=15），避免静默漏扣。
+  - 成功发起 Research 后按请求模型固定估算扣费：`mini=40`、`auto=50`、`pro=100`。
+  - 缺省 `model` 按 Tavily `auto` 处理，扣 `50`。
+  - 前置 quota 检查使用同一估算价；若 `used + estimated > limit`，直接 429 且不上游。
+  - 不再用共享 upstream key 的 `/usage.research_usage` 差分反填本地用户账单；上游实扣只作为池级运营对账指标。
 - `/mcp`
   - 白名单非业务方法不计 business quota。
   - `tools/call` + `tavily-search|extract|crawl|map` 注入 `include_usage=true`。
@@ -71,7 +72,7 @@
 - HTTP Extract / Crawl / Map：请求体被注入 `include_usage=true`；reserved credits 超额时会先验 429，成功回包后按 `usage.credits` 扣费，`credits=0` 不扣费。
 - MCP 非工具调用继续保持 0 成本，`counts_business_quota=0`。
 - MCP `tavily-search`：支持嵌套 `usage.credits`、SSE/JSON-RPC 包装、expected cost fallback 与先验阻断。
-- Research：初始 `/usage` 探针失败会在打上游前阻断；若上游成功但 follow-up `/usage` 差分不可得或计数回退，则继续返回成功响应、记录 billing warning，并按 reserved minimum cost 兜底扣费。
+- Research：HTTP 与 MCP 成功发起时按模型估算价扣费（`mini=40`、缺省或 `auto=50`、`pro=100`）；前置 quota 检查使用同一估算值；上游失败、quota 拦截、validation error 与 invalid model error 不扣 business credits。
 - 绑定账户的 token 继续只写 account counters，不回退到 token counters。
 
 ## 质量门槛（Quality Gates）
@@ -91,7 +92,7 @@
 ## 风险 / 假设
 
 - 假设 Tavily `usage.credits` 为整数；若未来返回浮点/字符串浮点，下游统一向上取整，避免漏扣。
-- Research `/usage` 差分存在并发归因风险；实现需尽量锁定同一 upstream key 的 usage 探测窗口，减少串扰。
+- Research 使用共享 upstream key 时不能把 `/usage.research_usage` 差分安全归因到单个用户；本地账单使用模型估算价，上游实际消耗保留为池级对账指标。
 - 对 Extract / Crawl / Map 缺失 usage 时不猜测公式，避免下游与上游账单继续偏离。
 
 ## 变更记录
@@ -111,3 +112,4 @@
 - 2026-03-06: review fix：未知 `tavily-*` MCP 工具改为默认 billable safe-default，避免未来上游新增工具时绕过 quota；reserved precheck 的 429 也会回传投影后的 `window`。
 
 - 2026-03-07: fast-flow 复跑后补齐规格同步：Research follow-up `/usage` 失败/回退改为成功回包 + warning + reserved minimum cost 兜底扣费；PR #100 checks 绿灯，可直接合并。
+- 2026-04-29: Research 本地用户计费从共享 key `/usage.research_usage` 差分归因改为模型估算价（`mini=40`、`auto=50`、`pro=100`）；`/usage` 实扣仅保留为池级运营对账指标。

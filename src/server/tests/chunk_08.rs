@@ -2006,7 +2006,7 @@
         let db_path = temp_db_path("http-research-replace-key");
         let db_str = db_path.to_string_lossy().to_string();
 
-        // Avoid cross-test env var interference (research uses predicted min cost enforcement).
+        // Avoid cross-test env var interference (research uses model estimate enforcement).
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
         let expected_api_key = "tvly-http-research-key";
@@ -2053,14 +2053,14 @@
     }
 
     #[tokio::test]
-    async fn tavily_http_research_charges_credits_from_usage_diff() {
-        let db_path = temp_db_path("http-research-usage-diff-charge");
+    async fn tavily_http_research_charges_mini_estimate_without_usage_diff() {
+        let db_path = temp_db_path("http-research-mini-estimate-charge");
         let db_str = db_path.to_string_lossy().to_string();
 
         // Avoid cross-test env var interference.
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
-        let expected_api_key = "tvly-http-research-usage-diff-key";
+        let expected_api_key = "tvly-http-research-mini-estimate-key";
         let (upstream_addr, usage_calls, research_calls) =
             spawn_http_research_mock_with_usage_diff(expected_api_key.to_string(), 10, 7).await;
         let usage_base = format!("http://{}", upstream_addr);
@@ -2073,7 +2073,7 @@
         .await
         .expect("proxy created");
         let access_token = proxy
-            .create_access_token(Some("http-research-usage-diff-charge"))
+            .create_access_token(Some("http-research-mini-estimate-charge"))
             .await
             .expect("create token");
 
@@ -2097,21 +2097,21 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 7);
-        assert_eq!(usage_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(verdict.hourly_used, 40);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn tavily_http_research_charges_credits_from_usage_diff_when_usage_is_string_float() {
-        let db_path = temp_db_path("http-research-usage-diff-string-float");
+    async fn tavily_http_research_charges_pro_estimate_without_usage_diff() {
+        let db_path = temp_db_path("http-research-pro-estimate-charge");
         let db_str = db_path.to_string_lossy().to_string();
 
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
-        let expected_api_key = "tvly-http-research-usage-diff-string-float-key";
+        let expected_api_key = "tvly-http-research-pro-estimate-key";
         let (upstream_addr, usage_calls, research_calls) =
             spawn_http_research_mock_with_usage_diff_string_float(
                 expected_api_key.to_string(),
@@ -2129,7 +2129,7 @@
         .await
         .expect("proxy created");
         let access_token = proxy
-            .create_access_token(Some("http-research-usage-diff-string-float"))
+            .create_access_token(Some("http-research-pro-estimate-charge"))
             .await
             .expect("create token");
 
@@ -2141,8 +2141,8 @@
             .post(url)
             .json(&serde_json::json!({
                 "api_key": access_token.token,
-                "input": "usage-diff-string-float",
-                "model": "mini"
+                "input": "pro-estimate",
+                "model": "pro"
             }))
             .send()
             .await
@@ -2153,21 +2153,21 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 7);
-        assert_eq!(usage_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(verdict.hourly_used, 100);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn tavily_http_research_returns_bad_gateway_when_usage_probe_fails() {
-        let db_path = temp_db_path("http-research-usage-probe-fails");
+    async fn tavily_http_research_charges_auto_estimate_without_usage_probe() {
+        let db_path = temp_db_path("http-research-auto-estimate-charge");
         let db_str = db_path.to_string_lossy().to_string();
 
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
-        let expected_api_key = "tvly-http-research-usage-probe-fails-key";
+        let expected_api_key = "tvly-http-research-auto-estimate-key";
         let (upstream_addr, usage_calls, research_calls) =
             spawn_http_research_mock_with_usage_probe_failure(expected_api_key.to_string()).await;
         let usage_base = format!("http://{}", upstream_addr);
@@ -2180,7 +2180,7 @@
         .await
         .expect("proxy created");
         let access_token = proxy
-            .create_access_token(Some("http-research-usage-probe-fails"))
+            .create_access_token(Some("http-research-auto-estimate-charge"))
             .await
             .expect("create token");
 
@@ -2192,33 +2192,33 @@
             .post(url)
             .json(&serde_json::json!({
                 "api_key": access_token.token,
-                "input": "usage-probe-fails",
-                "model": "mini"
+                "input": "auto-estimate",
+                "model": "auto"
             }))
             .send()
             .await
             .expect("research request");
-        assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
         let verdict = proxy
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 0);
-        assert_eq!(usage_calls.load(Ordering::SeqCst), 3);
-        assert_eq!(research_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(verdict.hourly_used, 50);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn tavily_http_research_returns_success_with_warning_when_usage_counter_rolls_back() {
-        let db_path = temp_db_path("http-research-usage-rolls-back");
+    async fn tavily_http_research_charges_default_auto_estimate_when_model_missing() {
+        let db_path = temp_db_path("http-research-default-auto-estimate");
         let db_str = db_path.to_string_lossy().to_string();
 
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
-        let expected_api_key = "tvly-http-research-usage-rolls-back-key";
+        let expected_api_key = "tvly-http-research-default-auto-key";
         let (upstream_addr, usage_calls, research_calls) =
             spawn_http_research_mock_with_usage_diff(expected_api_key.to_string(), 10, -1).await;
         let usage_base = format!("http://{}", upstream_addr);
@@ -2231,7 +2231,7 @@
         .await
         .expect("proxy created");
         let access_token = proxy
-            .create_access_token(Some("http-research-usage-rolls-back"))
+            .create_access_token(Some("http-research-default-auto-estimate"))
             .await
             .expect("create token");
 
@@ -2243,8 +2243,7 @@
             .post(url)
             .json(&serde_json::json!({
                 "api_key": access_token.token,
-                "input": "usage-rolls-back",
-                "model": "mini"
+                "input": "default-auto-estimate"
             }))
             .send()
             .await
@@ -2255,8 +2254,8 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 4);
-        assert_eq!(usage_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(verdict.hourly_used, 50);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
         let latest_log = proxy
@@ -2267,18 +2266,190 @@
             .next()
             .expect("token log exists");
         assert_eq!(latest_log.result_status, "success");
-        assert!(
-            latest_log
-                .error_message
-                .unwrap_or_default()
-                .contains("charging reserved minimum 4 credit(s)")
-        );
+        assert_eq!(latest_log.error_message, None);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn tavily_http_research_returns_success_with_warning_when_follow_up_usage_probe_fails() {
+    async fn tavily_http_research_does_not_charge_failed_upstream_response() {
+        let db_path = temp_db_path("http-research-failed-upstream-no-charge");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+
+        let expected_api_key = "tvly-http-research-failed-upstream-key";
+        let usage_calls = Arc::new(AtomicUsize::new(0));
+        let research_calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/usage",
+                get({
+                    let usage_calls = usage_calls.clone();
+                    move || {
+                        let usage_calls = usage_calls.clone();
+                        async move {
+                            usage_calls.fetch_add(1, Ordering::SeqCst);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({
+                                    "error": "unexpected usage probe"
+                                })),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/research",
+                post({
+                    let research_calls = research_calls.clone();
+                    move || {
+                        let research_calls = research_calls.clone();
+                        async move {
+                            research_calls.fetch_add(1, Ordering::SeqCst);
+                            (
+                                StatusCode::BAD_GATEWAY,
+                                Json(serde_json::json!({
+                                    "error": "mock upstream failure"
+                                })),
+                            )
+                        }
+                    }
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("http-research-failed-upstream-no-charge"))
+            .await
+            .expect("create token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let client = Client::new();
+
+        let url = format!("http://{}/api/tavily/research", proxy_addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "failed-upstream",
+                "model": "pro"
+            }))
+            .send()
+            .await
+            .expect("research request");
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(research_calls.load(Ordering::SeqCst), 1);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_rejects_invalid_model_without_quota_or_upstream() {
+        let db_path = temp_db_path("http-research-invalid-model-no-charge");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "39");
+
+        let expected_api_key = "tvly-http-research-invalid-model-key";
+        let (upstream_addr, usage_calls, research_calls) =
+            spawn_http_research_mock_with_usage_diff(expected_api_key.to_string(), 10, 7).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                request_rate_limit: 1,
+                mcp_session_affinity_key_count:
+                    tavily_hikari::MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT,
+                rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
+                rebalance_mcp_session_percent:
+                    tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+            })
+            .await
+            .expect("set request-rate limit");
+        let access_token = proxy
+            .create_access_token(Some("http-research-invalid-model-no-charge"))
+            .await
+            .expect("create token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let client = Client::new();
+
+        let url = format!("http://{}/api/tavily/research", proxy_addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "invalid-model",
+                "model": "invalid-model"
+            }))
+            .send()
+            .await
+            .expect("research request");
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.expect("invalid model json");
+        assert_eq!(
+            body.get("error").and_then(|v| v.as_str()),
+            Some("invalid_request")
+        );
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(research_calls.load(Ordering::SeqCst), 0);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 0);
+
+        let blocked = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "valid-after-invalid",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("blocked follow-up request");
+        assert_eq!(blocked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(research_calls.load(Ordering::SeqCst), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_does_not_probe_follow_up_usage() {
         let db_path = temp_db_path("http-research-follow-up-usage-probe-fails");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -2325,8 +2496,8 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 4);
-        assert_eq!(usage_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(verdict.hourly_used, 40);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
         let latest_log = proxy
@@ -2337,25 +2508,20 @@
             .next()
             .expect("token log exists");
         assert_eq!(latest_log.result_status, "success");
-        assert!(
-            latest_log
-                .error_message
-                .unwrap_or_default()
-                .contains("charging reserved minimum 4 credit(s)")
-        );
+        assert_eq!(latest_log.error_message, None);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn tavily_http_research_blocks_when_min_cost_would_exceed_quota() {
-        let db_path = temp_db_path("http-research-usage-diff-block");
+    async fn tavily_http_research_blocks_when_estimate_would_exceed_quota() {
+        let db_path = temp_db_path("http-research-estimate-block");
         let db_str = db_path.to_string_lossy().to_string();
 
-        // Research mini minimum is 4 credits.
-        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "3");
+        // Research mini estimate is 40 credits.
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "39");
 
-        let expected_api_key = "tvly-http-research-usage-diff-block-key";
+        let expected_api_key = "tvly-http-research-estimate-block-key";
         let (upstream_addr, usage_calls, research_calls) =
             spawn_http_research_mock_with_usage_diff(expected_api_key.to_string(), 10, 7).await;
         let usage_base = format!("http://{}", upstream_addr);
@@ -2368,7 +2534,7 @@
         .await
         .expect("proxy created");
         let access_token = proxy
-            .create_access_token(Some("http-research-usage-diff-block"))
+            .create_access_token(Some("http-research-estimate-block"))
             .await
             .expect("create token");
 

@@ -341,7 +341,7 @@ async fn handle_rebalance_mcp_single_message(
                     .map_err(|_| StatusCode::BAD_GATEWAY),
                 "research" => state
                     .proxy
-                    .proxy_rebalance_mcp_http_research_with_usage_diff(
+                    .proxy_rebalance_mcp_http_research(
                         &state.usage_base,
                         token_id,
                         method,

@@ -1149,11 +1149,11 @@ async fn startup_request_value_backfill_preserves_existing_breakdown_for_pruned_
 }
 
 #[tokio::test]
-async fn research_usage_probe_401_quarantines_key() {
-    let db_path = temp_db_path("research-usage-quarantine");
+async fn research_request_does_not_probe_usage_before_forwarding() {
+    let db_path = temp_db_path("research-no-usage-probe");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let expected_api_key = "tvly-research-quarantine-key";
+    let expected_api_key = "tvly-research-no-usage-probe-key";
     let proxy = TavilyProxy::with_endpoint(
         vec![expected_api_key.to_string()],
         DEFAULT_UPSTREAM,
@@ -1162,17 +1162,52 @@ async fn research_usage_probe_401_quarantines_key() {
     .await
     .expect("proxy created");
 
-    let app = Router::new().route(
-        "/usage",
-        get(|| async {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": "invalid api key",
-                })),
-            )
-        }),
-    );
+    let usage_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let research_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/usage",
+            get({
+                let usage_calls = usage_calls.clone();
+                move || {
+                    let usage_calls = usage_calls.clone();
+                    async move {
+                        usage_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({
+                                "error": "invalid api key",
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/research",
+            post({
+                let research_calls = research_calls.clone();
+                move |body: bytes::Bytes| {
+                    let research_calls = research_calls.clone();
+                    async move {
+                        research_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let body: Value =
+                            serde_json::from_slice(&body).expect("research body is json");
+                        assert_eq!(
+                            body.get("api_key").and_then(|v| v.as_str()),
+                            Some(expected_api_key)
+                        );
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "request_id": "mock-research-request",
+                                "status": "success",
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1186,8 +1221,8 @@ async fn research_usage_probe_401_quarantines_key() {
     let headers = HeaderMap::new();
     let options = serde_json::json!({ "query": "test research" });
 
-    let err = proxy
-        .proxy_http_research_with_usage_diff(
+    let (resp, analysis, usage_delta) = proxy
+        .proxy_http_research(
             &usage_base,
             Some("tok1"),
             None,
@@ -1198,14 +1233,18 @@ async fn research_usage_probe_401_quarantines_key() {
             false,
         )
         .await
-        .expect_err("research should fail when usage probe is unauthorized");
-
-    match err {
-        ProxyError::UsageHttp { status, .. } => {
-            assert_eq!(status, StatusCode::UNAUTHORIZED);
-        }
-        other => panic!("expected usage http error, got {other:?}"),
-    }
+        .expect("research should forward without probing usage");
+    assert_eq!(resp.status, StatusCode::OK);
+    assert_eq!(analysis.status, "success");
+    assert_eq!(usage_delta, None);
+    assert_eq!(
+        usage_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(
+        research_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 
     let quarantine_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*) FROM api_key_quarantines
@@ -1215,7 +1254,7 @@ async fn research_usage_probe_401_quarantines_key() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("count quarantine rows");
-    assert_eq!(quarantine_count, 1);
+    assert_eq!(quarantine_count, 0);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -2396,4 +2435,3 @@ async fn oauth_login_state_payload_carries_bind_token_id() {
 
     let _ = std::fs::remove_file(db_path);
 }
-

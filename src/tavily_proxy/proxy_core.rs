@@ -370,7 +370,6 @@ impl TavilyProxy {
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
-            research_key_locks: Arc::new(Mutex::new(HashMap::new())),
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
         };
         proxy.initialize_forward_proxy_runtime().await?;

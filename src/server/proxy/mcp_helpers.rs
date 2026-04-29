@@ -859,6 +859,14 @@ fn validate_rebalance_mcp_tool_arguments(
             tool.advertised_name, tool.required_field
         ));
     }
+    if tool.upstream_tool == "research"
+        && let Some(message) = tavily_research_model_validation_message(arguments)
+    {
+        return Err(format!(
+            "Invalid arguments for {}: {message}",
+            tool.advertised_name
+        ));
+    }
     Ok(arguments.clone())
 }
 

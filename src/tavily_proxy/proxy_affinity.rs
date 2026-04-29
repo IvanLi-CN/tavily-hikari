@@ -108,42 +108,6 @@ impl TavilyProxy {
         })
     }
 
-    pub(crate) async fn lock_research_key_usage(
-        &self,
-        key_id: &str,
-    ) -> Result<TokenBillingGuard, ProxyError> {
-        let subject = format!("research-key:{key_id}");
-        let lock = {
-            let mut locks = self.research_key_locks.lock().await;
-            if locks.len() > 256 {
-                locks.retain(|_, lock| lock.strong_count() > 0);
-            }
-
-            if let Some(existing) = locks.get(&subject).and_then(|lock| lock.upgrade()) {
-                existing
-            } else {
-                let lock = Arc::new(Mutex::new(()));
-                locks.insert(subject.clone(), Arc::downgrade(&lock));
-                lock
-            }
-        };
-        let local_guard = lock.lock_owned().await;
-        let lease = self
-            .key_store
-            .acquire_quota_subject_lock(
-                &subject,
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
-            )
-            .await?;
-
-        Ok(TokenBillingGuard {
-            billing_subject: subject,
-            _local: local_guard,
-            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
-        })
-    }
-
     async fn rebind_user_primary_affinity(
         &self,
         user_id: &str,

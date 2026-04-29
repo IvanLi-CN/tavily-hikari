@@ -1703,45 +1703,6 @@ async fn token_billing_lock_serializes_across_proxy_instances() {
 }
 
 #[tokio::test]
-async fn research_usage_lock_serializes_across_proxy_instances() {
-    let db_path = temp_db_path("research-usage-cross-instance-lock");
-    let db_str = db_path.to_string_lossy().to_string();
-
-    let proxy_a = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy a created");
-    let proxy_b = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy b created");
-
-    let guard = proxy_a
-        .lock_research_key_usage("shared-upstream-key")
-        .await
-        .expect("acquire first research lock");
-
-    let waiter = tokio::spawn(async move {
-        let _guard = proxy_b
-            .lock_research_key_usage("shared-upstream-key")
-            .await
-            .expect("acquire second research lock");
-    });
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !waiter.is_finished(),
-        "second proxy instance should wait for the shared research lock"
-    );
-
-    drop(guard);
-    tokio::time::timeout(Duration::from_secs(2), waiter)
-        .await
-        .expect("second proxy acquires after release")
-        .expect("waiter joins");
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
 async fn bound_token_quota_checks_use_account_counters() {
     let db_path = temp_db_path("bound-token-account-quota");
     let db_str = db_path.to_string_lossy().to_string();

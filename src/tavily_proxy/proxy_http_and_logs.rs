@@ -266,7 +266,8 @@ impl TavilyProxy {
         }
 
         // Force Tavily to return usage for predictable endpoints so we can charge credits 1:1.
-        // Tavily does not document/support this on `/research` (we use /usage diff for that).
+        // Tavily does not document/support this on `/research`; local Research billing uses
+        // model-based estimates instead.
         if matches!(upstream_path, "/search" | "/extract" | "/crawl" | "/map")
             && let Value::Object(ref mut map) = upstream_options
         {
@@ -746,7 +747,7 @@ impl TavilyProxy {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn proxy_rebalance_mcp_http_research_with_usage_diff(
+    pub async fn proxy_rebalance_mcp_http_research(
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
@@ -761,24 +762,6 @@ impl TavilyProxy {
         upstream_operation: &str,
     ) -> Result<ProxyResponse, ProxyError> {
         let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
-        let _key_guard = self.lock_research_key_usage(&lease.id).await?;
-
-        let before_usage = match self
-            .fetch_research_usage_for_secret_with_retries(
-                &lease.secret,
-                usage_base,
-                Some(&lease.id),
-                "research_usage_before",
-            )
-            .await
-        {
-            Ok(usage) => usage,
-            Err(err) => {
-                self.maybe_quarantine_usage_error(&lease.id, "/mcp#research_usage", &err)
-                    .await?;
-                return Err(err);
-            }
-        };
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -858,36 +841,11 @@ impl TavilyProxy {
                     .maybe_arm_rebalance_mcp_http_backoff(&lease.id, &upstream_headers, &analysis)
                     .await?;
 
-                let after_usage = match self
-                    .fetch_research_usage_for_secret_with_retries(
-                        &lease.secret,
-                        usage_base,
-                        Some(&lease.id),
-                        "research_usage_after",
-                    )
-                    .await
-                {
-                    Ok(usage) => Some(usage),
-                    Err(err) => {
-                        self.maybe_quarantine_usage_error(
-                            &lease.id,
-                            "/mcp#research_usage_after",
-                            &err,
-                        )
-                        .await?;
-                        None
-                    }
-                };
-                let usage_delta = match after_usage {
-                    Some(after) if after >= before_usage => Some(after - before_usage),
-                    _ => None,
-                };
-
                 let response_body = Self::build_rebalance_mcp_tool_result_body(
                     response_id,
                     upstream_status,
                     &upstream_body,
-                    usage_delta,
+                    None,
                 );
                 let mcp_analysis = analyze_mcp_attempt(StatusCode::OK, &response_body);
                 let request_log_id = self
@@ -1016,14 +974,13 @@ impl TavilyProxy {
         }
     }
 
-    /// Proxy Tavily `/research` while charging credits via `/usage` (research_usage) diff.
+    /// Proxy Tavily `/research`.
     ///
-    /// Tavily research responses do not include `usage.credits`, so we probe
-    /// `GET {usage_base}/usage` before and after the call using the *same* upstream key.
-    ///
-    /// Returns the usage delta when both probes succeed; otherwise `None`.
+    /// Tavily research responses do not include per-request `usage.credits`, and shared upstream
+    /// keys make `/usage.research_usage` deltas unsafe to attribute to a single Hikari user. The
+    /// caller charges model-based estimated credits instead.
     #[allow(clippy::too_many_arguments)]
-    pub async fn proxy_http_research_with_usage_diff(
+    pub async fn proxy_http_research(
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
@@ -1053,27 +1010,6 @@ impl TavilyProxy {
         } else {
             self.acquire_key_for(auth_token_id).await?
         };
-        // Research billing uses /usage diff of a key-scoped counter; protect it from concurrent
-        // research calls sharing the same upstream key, otherwise deltas can be misattributed.
-        let _key_guard = self.lock_research_key_usage(&lease.id).await?;
-
-        let before_usage = match self
-            .fetch_research_usage_for_secret_with_retries(
-                &lease.secret,
-                usage_base,
-                Some(&lease.id),
-                "research_usage_before",
-            )
-            .await
-        {
-            Ok(usage) => usage,
-            Err(err) => {
-                self.maybe_quarantine_usage_error(&lease.id, "/api/tavily/research#usage", &err)
-                    .await?;
-                return Err(err);
-            }
-        };
-
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
             source,
@@ -1233,31 +1169,6 @@ impl TavilyProxy {
                 }
                 analysis.key_effect = primary_effect;
 
-                let after_usage = match self
-                    .fetch_research_usage_for_secret_with_retries(
-                        &lease.secret,
-                        usage_base,
-                        Some(&lease.id),
-                        "research_usage_after",
-                    )
-                    .await
-                {
-                    Ok(usage) => Some(usage),
-                    Err(err) => {
-                        self.maybe_quarantine_usage_error(
-                            &lease.id,
-                            "/api/tavily/research#usage_after",
-                            &err,
-                        )
-                        .await?;
-                        None
-                    }
-                };
-                let delta = match after_usage {
-                    Some(after) if after >= before_usage => Some(after - before_usage),
-                    _ => None,
-                };
-
                 Ok((
                     ProxyResponse {
                         status,
@@ -1273,7 +1184,7 @@ impl TavilyProxy {
                         selection_effect_summary: http_project_selection_effect.summary,
                     },
                     analysis,
-                    delta,
+                    None,
                 ))
             }
             Err(err) => {

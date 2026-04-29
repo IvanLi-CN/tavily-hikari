@@ -77,7 +77,7 @@
         let db_path = temp_db_path("http-research-result-key-affinity");
         let db_str = db_path.to_string_lossy().to_string();
 
-        // Avoid cross-test env var interference (research create uses predicted min cost enforcement).
+        // Avoid cross-test env var interference (research create uses model estimate enforcement).
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
         let proxy = TavilyProxy::with_endpoint(
@@ -277,9 +277,9 @@
         let db_path = temp_db_path("http-research-result-does-not-charge");
         let db_str = db_path.to_string_lossy().to_string();
 
-        // Research mini minimum is 4 credits. After create, quota is exhausted, but result retrieval
+        // Research mini estimate is 40 credits. After create, quota is exhausted, but result retrieval
         // must still succeed and must not consume more credits.
-        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "4");
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "40");
 
         let proxy = TavilyProxy::with_endpoint(
             vec!["tvly-http-research-result-no-charge-key".to_string()],
@@ -323,7 +323,7 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota before result query");
-        assert_eq!(quota_before.hourly_used, 4);
+        assert_eq!(quota_before.hourly_used, 40);
 
         let result_resp = client
             .get(format!(
@@ -361,7 +361,7 @@
         let db_path = temp_db_path("http-research-result-owner-check");
         let db_str = db_path.to_string_lossy().to_string();
 
-        // Avoid cross-test env var interference (research uses predicted min cost enforcement).
+        // Avoid cross-test env var interference (research uses model estimate enforcement).
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
         let proxy = TavilyProxy::with_endpoint(
@@ -628,7 +628,7 @@
             "tvly-http-research-key-restart-b".to_string(),
         ];
 
-        // Avoid cross-test env var interference (research create uses predicted min cost enforcement).
+        // Avoid cross-test env var interference (research create uses model estimate enforcement).
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
 
         let proxy = TavilyProxy::with_endpoint(keys.clone(), DEFAULT_UPSTREAM, &db_str)
@@ -2410,4 +2410,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

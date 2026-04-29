@@ -29,8 +29,8 @@
             proxy_addr, access_token.token
         );
 
-        // Search advanced expected=2; research pro reserved minimum=15. Without ids or
-        // usage.credits, the proxy must still bill the full reserved total of 17.
+        // Search advanced expected=2; research pro estimate=100. Without ids or
+        // usage.credits, the proxy must still bill the full reserved total of 102.
         let resp = client
             .post(&url)
             .json(&serde_json::json!([
@@ -59,7 +59,7 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 17);
+        assert_eq!(verdict.hourly_used, 102);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -506,7 +506,7 @@
     }
 
     #[tokio::test]
-    async fn mcp_legacy_underscore_research_charges_min_credits_without_usage() {
+    async fn mcp_legacy_underscore_research_charges_default_auto_estimate_without_usage() {
         let db_path = temp_db_path("mcp-legacy-underscore-research-credits");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -612,13 +612,13 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 4);
+        assert_eq!(verdict.hourly_used, 50);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
-    async fn mcp_tools_call_tavily_research_charges_min_credits_without_usage() {
+    async fn mcp_tools_call_tavily_research_charges_mini_estimate_without_usage() {
         let db_path = temp_db_path("mcp-tools-call-tavily-research-credits");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -711,7 +711,8 @@
                 "params": {
                     "name": "tavily-research",
                     "arguments": {
-                        "input": "health check"
+                        "input": "health check",
+                        "model": "mini"
                     }
                 }
             }))
@@ -725,7 +726,102 @@
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek quota");
-        assert_eq!(verdict.hourly_used, 4);
+        assert_eq!(verdict.hourly_used, 40);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_tavily_research_invalid_model_is_not_quota_reserved() {
+        let db_path = temp_db_path("mcp-tools-call-tavily-research-invalid-model");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "39");
+
+        let expected_api_key = "tvly-mcp-tools-call-tavily-research-invalid-model-key";
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let hits = hits.clone();
+                move |Query(params): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.to_string();
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(
+                            params.get("tavilyApiKey").map(String::as_str),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                "result": {
+                                    "isError": true,
+                                    "structuredContent": {
+                                        "status": 400,
+                                        "error": "invalid model"
+                                    }
+                                }
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-tools-call-tavily-research-invalid-model"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "method": "tools/call",
+                "id": "probe-tool-call:tavily-research-invalid-model",
+                "params": {
+                    "name": "tavily-research",
+                    "arguments": {
+                        "input": "health check",
+                        "model": "invalid-model"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 0);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2427,4 +2523,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

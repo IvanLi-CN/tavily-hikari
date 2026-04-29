@@ -1394,16 +1394,16 @@ async fn api_probe_requests_with_authorization_header_reach_upstream() {
     let upstream_calls = calls.lock().expect("api probe calls lock poisoned").clone();
     assert_eq!(
         upstream_calls.len(),
-        8,
-        "expected probe flow to hit every upstream endpoint once, with two usage probes"
+        6,
+        "expected probe flow to hit every upstream endpoint once without research usage probes"
     );
     assert_eq!(
         upstream_calls
             .iter()
             .filter(|call| call.as_str() == "usage")
             .count(),
-        2,
-        "research probe should perform pre/post usage reads"
+        0,
+        "research probe should not read /usage for local user billing"
     );
     assert!(upstream_calls.iter().any(|call| call == "search"));
     assert!(upstream_calls.iter().any(|call| call == "extract"));
@@ -1482,9 +1482,7 @@ async fn api_probe_requests_support_prefixed_usage_base_paths() {
         upstream_calls,
         vec![
             "search".to_string(),
-            "usage".to_string(),
             "research".to_string(),
-            "usage".to_string(),
             "research-result:probe-research-request".to_string(),
         ],
     );

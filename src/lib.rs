@@ -565,8 +565,6 @@ const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
 const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
-const USAGE_PROBE_RETRY_ATTEMPTS: usize = 3;
-const USAGE_PROBE_RETRY_DELAY_MS: u64 = 200;
 
 // Time-based retention for per-token access logs (auth_token_logs).
 // This is purely time-driven and must not depend on access token enable/disable/delete status,
