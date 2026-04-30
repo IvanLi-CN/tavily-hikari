@@ -54,42 +54,50 @@ fn add_summary_window_metrics(target: &mut SummaryWindowMetrics, delta: &Summary
     target.quota_charge.local_estimated_credits += delta.quota_charge.local_estimated_credits;
 }
 
+fn subtract_nonnegative(total: i64, subtract: i64) -> i64 {
+    total.saturating_sub(subtract).max(0)
+}
+
 fn subtract_summary_window_metrics(
     total: &SummaryWindowMetrics,
     subtract: &SummaryWindowMetrics,
 ) -> SummaryWindowMetrics {
     SummaryWindowMetrics {
-        total_requests: total.total_requests.saturating_sub(subtract.total_requests),
-        success_count: total.success_count.saturating_sub(subtract.success_count),
-        error_count: total.error_count.saturating_sub(subtract.error_count),
-        quota_exhausted_count: total
-            .quota_exhausted_count
-            .saturating_sub(subtract.quota_exhausted_count),
-        valuable_success_count: total
-            .valuable_success_count
-            .saturating_sub(subtract.valuable_success_count),
-        valuable_failure_count: total
-            .valuable_failure_count
-            .saturating_sub(subtract.valuable_failure_count),
-        other_success_count: total
-            .other_success_count
-            .saturating_sub(subtract.other_success_count),
-        other_failure_count: total
-            .other_failure_count
-            .saturating_sub(subtract.other_failure_count),
-        unknown_count: total.unknown_count.saturating_sub(subtract.unknown_count),
-        upstream_exhausted_key_count: total
-            .upstream_exhausted_key_count
-            .saturating_sub(subtract.upstream_exhausted_key_count),
-        new_keys: total.new_keys.saturating_sub(subtract.new_keys),
-        new_quarantines: total
-            .new_quarantines
-            .saturating_sub(subtract.new_quarantines),
+        total_requests: subtract_nonnegative(total.total_requests, subtract.total_requests),
+        success_count: subtract_nonnegative(total.success_count, subtract.success_count),
+        error_count: subtract_nonnegative(total.error_count, subtract.error_count),
+        quota_exhausted_count: subtract_nonnegative(
+            total.quota_exhausted_count,
+            subtract.quota_exhausted_count,
+        ),
+        valuable_success_count: subtract_nonnegative(
+            total.valuable_success_count,
+            subtract.valuable_success_count,
+        ),
+        valuable_failure_count: subtract_nonnegative(
+            total.valuable_failure_count,
+            subtract.valuable_failure_count,
+        ),
+        other_success_count: subtract_nonnegative(
+            total.other_success_count,
+            subtract.other_success_count,
+        ),
+        other_failure_count: subtract_nonnegative(
+            total.other_failure_count,
+            subtract.other_failure_count,
+        ),
+        unknown_count: subtract_nonnegative(total.unknown_count, subtract.unknown_count),
+        upstream_exhausted_key_count: subtract_nonnegative(
+            total.upstream_exhausted_key_count,
+            subtract.upstream_exhausted_key_count,
+        ),
+        new_keys: subtract_nonnegative(total.new_keys, subtract.new_keys),
+        new_quarantines: subtract_nonnegative(total.new_quarantines, subtract.new_quarantines),
         quota_charge: SummaryQuotaCharge {
-            local_estimated_credits: total
-                .quota_charge
-                .local_estimated_credits
-                .saturating_sub(subtract.quota_charge.local_estimated_credits),
+            local_estimated_credits: subtract_nonnegative(
+                total.quota_charge.local_estimated_credits,
+                subtract.quota_charge.local_estimated_credits,
+            ),
             ..SummaryQuotaCharge::default()
         },
     }

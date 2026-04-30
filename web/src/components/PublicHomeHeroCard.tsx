@@ -8,11 +8,14 @@ import { Button } from './ui/button'
 
 export interface PublicHomeHeroCardProps {
   publicStrings: Translations['public']
-  loading: boolean
+  metricsLoading: boolean
+  summaryLoading: boolean
   metrics: PublicMetrics | null
   availableKeys: number | null
   totalKeys: number | null
   error: string | null
+  showAuthStatusLoading?: boolean
+  showAuthStatusUnavailable?: boolean
   showLinuxDoLogin: boolean
   showRegistrationPausedNotice?: boolean
   showTokenAccessButton: boolean
@@ -30,11 +33,14 @@ const heroSecondaryButtonClassName =
 
 function PublicHomeHeroCard({
   publicStrings,
-  loading,
+  metricsLoading,
+  summaryLoading,
   metrics,
   availableKeys,
   totalKeys,
   error,
+  showAuthStatusLoading = false,
+  showAuthStatusUnavailable = false,
   showLinuxDoLogin,
   showRegistrationPausedNotice = false,
   showTokenAccessButton,
@@ -46,7 +52,15 @@ function PublicHomeHeroCard({
   onTokenAccessClick,
   onAdminActionClick,
 }: PublicHomeHeroCardProps): JSX.Element {
-  const shouldShowActions = showLinuxDoLogin || showTokenAccessButton || showAdminAction
+  const showAuthStatus = showAuthStatusLoading || showAuthStatusUnavailable
+  const shouldShowActions = showAuthStatus || showLinuxDoLogin || showTokenAccessButton || showAdminAction
+  const authStatusText = showAuthStatusUnavailable
+    ? publicStrings.authStatus.unavailable
+    : publicStrings.authStatus.checking
+  const authStatusActionText = showAuthStatusUnavailable
+    ? publicStrings.authStatus.unavailableAction
+    : publicStrings.authStatus.checkingAction
+  const authStatusIcon = showAuthStatusUnavailable ? 'mdi:alert-circle-outline' : 'mdi:loading'
   const linuxDoContent = (
     <>
       <img src="/linuxdo-logo.svg" alt={publicStrings.linuxDoLogin.logoAlt} width={20} height={20} />
@@ -84,31 +98,65 @@ function PublicHomeHeroCard({
           </div>
         </div>
       )}
+      {showAuthStatus && (
+        <div
+          className={`public-home-auth-status${showAuthStatusUnavailable ? ' public-home-auth-status-error' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          <Icon
+            icon={authStatusIcon}
+            width={18}
+            height={18}
+            className={showAuthStatusLoading ? 'icon-spin' : undefined}
+            aria-hidden="true"
+          />
+          <span>{authStatusText}</span>
+        </div>
+      )}
       <div className="metrics-grid hero-metrics">
         <div className="metric-card">
           <h3>{publicStrings.metrics.monthly.title}</h3>
           <div className="metric-value">
-            <RollingNumber value={loading ? null : metrics?.monthlySuccess ?? 0} />
+            <RollingNumber value={metricsLoading ? null : metrics?.monthlySuccess ?? 0} />
           </div>
           <div className="metric-subtitle">{publicStrings.metrics.monthly.subtitle}</div>
         </div>
         <div className="metric-card">
           <h3>{publicStrings.metrics.daily.title}</h3>
           <div className="metric-value">
-            <RollingNumber value={loading ? null : metrics?.dailySuccess ?? 0} />
+            <RollingNumber value={metricsLoading ? null : metrics?.dailySuccess ?? 0} />
           </div>
           <div className="metric-subtitle">{publicStrings.metrics.daily.subtitle}</div>
         </div>
         <div className="metric-card">
           <h3>{publicStrings.metrics.pool.title}</h3>
           <div className="metric-value">
-            {loading ? '—' : availableKeys != null && totalKeys != null ? `${availableKeys}/${totalKeys}` : '—'}
+            {summaryLoading ? '—' : availableKeys != null && totalKeys != null ? `${availableKeys}/${totalKeys}` : '—'}
           </div>
           <div className="metric-subtitle">{publicStrings.metrics.pool.subtitle}</div>
         </div>
       </div>
       {shouldShowActions && (
         <div className="public-home-actions">
+          {showAuthStatus && (
+            <Button
+              type="button"
+              variant="outline"
+              className={`auth-status-button ${heroSecondaryButtonClassName}`}
+              disabled
+              aria-label={authStatusActionText}
+            >
+              <Icon
+                icon={authStatusIcon}
+                width={20}
+                height={20}
+                className={showAuthStatusLoading ? 'icon-spin' : undefined}
+                aria-hidden="true"
+              />
+              <span>{authStatusActionText}</span>
+            </Button>
+          )}
           {showLinuxDoLogin && (
             onLinuxDoLogin
               ? (

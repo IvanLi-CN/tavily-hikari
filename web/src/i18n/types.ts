@@ -27,6 +27,12 @@ export interface PublicTranslations {
     button: string
     logoAlt: string
   }
+  authStatus: {
+    checking: string
+    checkingAction: string
+    unavailable: string
+    unavailableAction: string
+  }
   registrationPaused: {
     badge: string
     title: string
@@ -111,6 +117,7 @@ export interface PublicTranslations {
     version: string
   }
   errors: {
+    profile: string
     metrics: string
     summary: string
   }

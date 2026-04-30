@@ -64,7 +64,8 @@ function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
     <main className="app-shell public-home">
       <PublicHomeHeroCard
         publicStrings={strings}
-        loading={false}
+        metricsLoading={false}
+        summaryLoading={false}
         metrics={{ monthlySuccess: 1240, dailySuccess: 87 }}
         availableKeys={7}
         totalKeys={12}

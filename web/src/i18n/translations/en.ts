@@ -37,6 +37,12 @@ export const EN: TranslationShape = {
         button: 'Sign in with Linux DO',
         logoAlt: 'Linux DO logo',
       },
+      authStatus: {
+        checking: 'Checking sign-in and registration status…',
+        checkingAction: 'Checking sign-in…',
+        unavailable: 'Unable to confirm sign-in status right now. Try again shortly.',
+        unavailableAction: 'Sign-in status unavailable',
+      },
       registrationPaused: {
         badge: 'Registration paused',
         title: 'New registrations are temporarily paused',
@@ -131,6 +137,7 @@ export const EN: TranslationShape = {
         version: 'Current version: ',
       },
       errors: {
+        profile: 'Unable to check sign-in status right now',
         metrics: 'Unable to load metrics right now',
         summary: 'Unable to load summary data',
       },

@@ -49,6 +49,8 @@
 
 - 管理员进入 `/admin/users`，可立即切换“允许注册”开关；保存成功后刷新页面仍展示最新状态。
 - 匿名访客访问 `/` 时，首页继续显示 Linux DO 登录按钮；若 `allowRegistration=false`，同时显示“暂停新注册，仅限已注册用户继续登录”的提示。
+- 匿名访客访问 `/` 时，`/api/profile` 仍在检查期间，首页必须显示可见的认证状态说明与禁用 CTA，文案明确表达正在检查登录与注册状态。
+- 首页登录入口渲染不得依赖公开统计、summary 或 token 近期请求接口完成；慢统计接口只影响各自指标卡 loading/error，不得让认证状态与登录区域空白。
 - LinuxDo OAuth callback 在换 token / 拉 userinfo 成功后、写入本地账户之前，先检查当前 `allowRegistration` 与本地 `(provider, provider_user_id)` 绑定是否已存在。
 - 若 `allowRegistration=false` 且该用户为首次登录，则不创建用户、不创建/复用 token 绑定、不写 user session，清理临时 OAuth binding cookie 并 `307` 跳转 `/registration-paused`。
 - 若 `allowRegistration=false` 但该用户已存在本地 OAuth 绑定，则沿用当前登录成功路径，继续创建/刷新 user session 并跳转既有目标（通常 `/console`）。
@@ -98,6 +100,14 @@
   When `allowRegistration=false`
   Then 首页仍显示 Linux DO 登录按钮，并额外显示“暂停新注册，仅限已注册用户继续登录”的提示。
 
+- Given 匿名访客访问 `/`
+  When `/api/profile` 仍在加载且 `/api/public/metrics` 或 `/api/summary` 很慢
+  Then 首页操作区域显示禁用 CTA“正在检查登录状态…”，并显示“正在检查登录与注册状态…”状态文案。
+
+- Given 匿名访客访问 `/`
+  When `/api/profile` 返回 `userLoggedIn=false`
+  Then Linux DO 登录按钮出现，且不等待 `/api/public/metrics`、`/api/summary` 或近期请求接口完成。
+
 - Given `allowRegistration=false` 且 LinuxDo callback 对应用户本地不存在既有 `oauth_accounts` 记录
   When callback 成功拿到上游用户信息
   Then 返回 `307 /registration-paused`，同时不写入用户、OAuth 账户、token 绑定或 user session，并清理 OAuth binding cookie。
@@ -127,7 +137,7 @@
 - [x] M4: `/registration-paused` 独立页面与静态入口完成
 - [x] M5: 测试、浏览器验收、快车道 PR 与 review-loop 收敛完成
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - Admin 用户管理页中的注册开关（Storybook）
   ![Admin 用户管理页中的注册开关](./artifacts/admin-users-registration-switch-storybook.png)
@@ -135,6 +145,8 @@
   ![公开首页的暂停注册提示条](./artifacts/public-home-registration-paused-alert-dark.png)
 - 独立暂停注册页（暗色 Storybook）
   ![独立暂停注册页](./artifacts/registration-paused-page-dark.png)
+- 公开首页认证检查与慢统计隔离态（Storybook）
+  ![公开首页认证检查与慢统计隔离态](./assets/public-home-auth-checking-slow-stats.png)
 
 ## 风险 / 开放问题 / 假设
 
@@ -149,6 +161,7 @@
 - 2026-03-13: 已完成后端/前端实现、自动化测试、mock OAuth 浏览器验收与本地 review-loop；进入快车道 PR 收口阶段。
 - 2026-03-13: 补充 3 张 Storybook 视觉证据，覆盖 admin 注册开关、首页暂停注册提示条与独立暂停注册页。
 - 2026-03-13: 完成 UI 收口、review 修复、checks 收敛与 PR merge-ready 验证，规格状态切换为已完成（快车道）。
+- 2026-04-30: 补充公开首页认证检查态合同，要求登录/注册状态展示不被公开统计和 summary 慢接口阻塞。
 
 ## 参考（References）
 

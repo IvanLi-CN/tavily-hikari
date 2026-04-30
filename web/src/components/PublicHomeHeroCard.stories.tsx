@@ -39,7 +39,8 @@ function HeroStory(args: HeroStoryArgs): JSX.Element {
 }
 
 const baseArgs: HeroStoryArgs = {
-  loading: false,
+  metricsLoading: false,
+  summaryLoading: false,
   error: null,
   metrics: {
     monthlySuccess: 1240,
@@ -47,6 +48,8 @@ const baseArgs: HeroStoryArgs = {
   },
   availableKeys: 7,
   totalKeys: 12,
+  showAuthStatusLoading: false,
+  showAuthStatusUnavailable: false,
   showLinuxDoLogin: false,
   showRegistrationPausedNotice: false,
   showTokenAccessButton: false,
@@ -65,6 +68,29 @@ const meta = {
 export default meta
 
 type Story = StoryObj<typeof meta>
+
+export const AuthStatusCheckingSlowStats: Story = {
+  args: {
+    ...baseArgs,
+    metrics: null,
+    availableKeys: null,
+    totalKeys: null,
+    metricsLoading: true,
+    summaryLoading: true,
+    showAuthStatusLoading: true,
+    showTokenAccessButton: false,
+    showAdminAction: false,
+  },
+}
+
+export const AuthStatusUnavailable: Story = {
+  args: {
+    ...baseArgs,
+    showAuthStatusUnavailable: true,
+    showTokenAccessButton: true,
+    showAdminAction: false,
+  },
+}
 
 export const LoggedOutNoToken: Story = {
   args: {

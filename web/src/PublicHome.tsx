@@ -117,9 +117,12 @@ function PublicHome(): JSX.Element {
   const [publicLogsLoading, setPublicLogsLoading] = useState(false)
   const [invalidToken, setInvalidToken] = useState(false)
   const [summary, setSummary] = useState<Summary | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [metricsLoading, setMetricsLoading] = useState(true)
+  const [summaryLoading, setSummaryLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [profileUnavailable, setProfileUnavailable] = useState(false)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const [revealedGuideToken, setRevealedGuideToken] = useState<string | null>(null)
   const updateBanner = useUpdateAvailable()
@@ -140,6 +143,30 @@ function PublicHome(): JSX.Element {
   }, [todayWindow.todayEnd])
 
   useEffect(() => {
+    const controller = new AbortController()
+    setProfileLoading(true)
+    setProfileUnavailable(false)
+    fetchProfile(controller.signal)
+      .then((profileResult) => {
+        setProfile(profileResult)
+        setProfileUnavailable(false)
+      })
+      .catch((reason: Error & { name?: string }) => {
+        if (reason?.name !== 'AbortError') {
+          setProfile(null)
+          setProfileUnavailable(true)
+          setError((prev) => prev ?? publicStrings.errors.profile)
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setProfileLoading(false)
+        }
+      })
+    return () => controller.abort()
+  }, [publicStrings.errors.profile])
+
+  useEffect(() => {
     const tokenStore = loadTokenMap()
     const lastToken = loadLastToken()
 
@@ -155,63 +182,67 @@ function PublicHome(): JSX.Element {
     }
 
     const controller = new AbortController()
-    setLoading(true)
-    Promise.allSettled([
-      fetchPublicMetrics(todayWindow, controller.signal),
-      fetchProfile(controller.signal),
-      fetchSummary(controller.signal),
-      initialToken && isFullToken(initialToken)
-        ? fetchTokenMetrics(initialToken, todayWindow, controller.signal)
-        : Promise.resolve(null),
-    ])
-      .then(([metricsResult, profileResult, summaryResult, tokenMetricsResult]) => {
-        if (metricsResult.status === 'fulfilled') {
-          setMetrics(metricsResult.value)
-          setError(null)
-        } else {
-          const reason = metricsResult.reason as Error
-          if (reason?.name !== 'AbortError') {
-            setError(reason instanceof Error ? reason.message : publicStrings.errors.metrics)
-          }
-        }
+    setMetricsLoading(true)
+    setSummaryLoading(true)
 
-        if (profileResult.status === 'fulfilled') {
-          setProfile(profileResult.value)
-        }
-
-        if (summaryResult.status === 'fulfilled') {
-          setSummary(summaryResult.value)
-        } else {
-          const reason = summaryResult.reason as Error
-          if (reason?.name !== 'AbortError') {
-            setError((prev) => prev ?? (reason instanceof Error ? reason.message : publicStrings.errors.summary))
-          }
-        }
-        if (initialToken && isFullToken(initialToken)) {
-          setInvalidToken(false)
-          if (tokenMetricsResult && tokenMetricsResult.status === 'fulfilled') {
-            setTokenMetrics(tokenMetricsResult.value)
-            setRecentTokenUsage(tokenMetricsResult.value)
-          }
-          setPublicLogsLoading(true)
-          fetchPublicLogs(initialToken, 20, controller.signal)
-            .then((ls) => {
-              setPublicLogs(ls)
-              setInvalidToken(false)
-            })
-            .catch((err: any) => {
-              setPublicLogs([])
-              setInvalidToken(Boolean(err?.status) && err.status >= 400 && err.status < 500)
-            })
-            .finally(() => setPublicLogsLoading(false))
+    fetchPublicMetrics(todayWindow, controller.signal)
+      .then((metricsResult) => {
+        setMetrics(metricsResult)
+        setError(null)
+      })
+      .catch((reason: Error & { name?: string }) => {
+        if (reason?.name !== 'AbortError') {
+          setError(reason instanceof Error ? reason.message : publicStrings.errors.metrics)
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          setLoading(false)
+          setMetricsLoading(false)
         }
       })
-  return () => controller.abort()
+
+    fetchSummary(controller.signal)
+      .then((summaryResult) => {
+        setSummary(summaryResult)
+      })
+      .catch((reason: Error & { name?: string }) => {
+        if (reason?.name !== 'AbortError') {
+          setError((prev) => prev ?? (reason instanceof Error ? reason.message : publicStrings.errors.summary))
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setSummaryLoading(false)
+        }
+      })
+
+    if (initialToken && isFullToken(initialToken)) {
+      setInvalidToken(false)
+      fetchTokenMetrics(initialToken, todayWindow, controller.signal)
+        .then((tokenMetricsResult) => {
+          setTokenMetrics(tokenMetricsResult)
+          setRecentTokenUsage(tokenMetricsResult)
+          setError(null)
+        })
+        .catch((reason: Error & { name?: string }) => {
+          if (reason?.name !== 'AbortError') {
+            setTokenMetrics(null)
+            setRecentTokenUsage(null)
+          }
+        })
+      setPublicLogsLoading(true)
+      fetchPublicLogs(initialToken, 20, controller.signal)
+        .then((ls) => {
+          setPublicLogs(ls)
+          setInvalidToken(false)
+        })
+        .catch((err: any) => {
+          setPublicLogs([])
+          setInvalidToken(Boolean(err?.status) && err.status >= 400 && err.status < 500)
+        })
+        .finally(() => setPublicLogsLoading(false))
+    }
+    return () => controller.abort()
   }, [publicStrings.errors.metrics, publicStrings.errors.summary, todayWindow])
 
   // Realtime metrics via public SSE
@@ -277,13 +308,16 @@ function PublicHome(): JSX.Element {
   const isAdmin = profile?.isAdmin ?? false
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
   const isLoggedOut = profile?.userLoggedIn === false
+  const showAuthStatusLoading = profileLoading
+  const showAuthStatusUnavailable = !profileLoading && profileUnavailable
   const showLinuxDoLogin = isLoggedOut
   const showRegistrationPausedNotice = isLoggedOut && profile?.allowRegistration === false
   const hasTokenInfo = token.trim().length > 0
   const canRevealGuideToken = isFullToken(token)
   const guideTokenVisible = shouldRevealPublicGuideToken(token, revealedGuideToken)
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
-  const hideTokenPanels = !hasTokenInfo && (loading || isLoggedOut)
+  const tokenMetricsPending = hasValidTokenForLogs && tokenMetrics === null
+  const hideTokenPanels = !hasTokenInfo && (showAuthStatusLoading || isLoggedOut)
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
@@ -499,14 +533,13 @@ function PublicHome(): JSX.Element {
       )}
       <PublicHomeHeroCard
         publicStrings={publicStrings}
-        loading={loading}
         metrics={metrics}
         availableKeys={availableKeys}
         totalKeys={totalKeys}
         error={error}
         showLinuxDoLogin={showLinuxDoLogin}
         showRegistrationPausedNotice={showRegistrationPausedNotice}
-        showTokenAccessButton={hideTokenPanels}
+        showTokenAccessButton={hideTokenPanels && !showAuthStatusLoading && !showAuthStatusUnavailable}
         showAdminAction={isAdmin || builtinAuthEnabled}
         adminActionLabel={isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}
         topControls={(
@@ -515,6 +548,10 @@ function PublicHome(): JSX.Element {
             <LanguageSwitcher />
           </>
         )}
+        metricsLoading={metricsLoading}
+        summaryLoading={summaryLoading}
+        showAuthStatusLoading={showAuthStatusLoading}
+        showAuthStatusUnavailable={showAuthStatusUnavailable}
         onLinuxDoLogin={() => startLinuxDoLogin(token)}
         onTokenAccessClick={openTokenAccessDialog}
         onAdminActionClick={() => { window.location.href = isAdmin ? '/admin' : '/login' }}
@@ -530,15 +567,15 @@ function PublicHome(): JSX.Element {
                 {/* Group 1: usage counts */}
                 <div className="access-stat">
                   <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
-                  <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
+                  <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
                 </div>
                 <div className="access-stat">
                   <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
-                  <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
+                  <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
                 </div>
                 <div className="access-stat">
                   <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
-                  <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
+                  <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
                 </div>
               </div>
               <div className="access-stats">

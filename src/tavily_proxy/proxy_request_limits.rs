@@ -559,7 +559,7 @@ impl TavilyProxy {
         let resolved_daily_window =
             daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
         self.key_store
-            .fetch_success_breakdown(
+            .fetch_success_breakdown_from_dashboard_rollups(
                 month_start,
                 resolved_daily_window.start,
                 resolved_daily_window.end,

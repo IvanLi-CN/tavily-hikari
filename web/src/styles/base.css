@@ -1415,11 +1415,12 @@ body.not-found-page-body,
   margin-top: 24px;
 }
 
-.token-access-icon {
-  width: 20px;
-  height: 20px;
-  opacity: 0.85;
-}
+.public-home-auth-status { display: inline-flex; align-items: center; justify-content: center; gap: 8px; max-width: min(100%, 520px); margin: 18px auto 0; padding: 8px 13px; border: 1px solid hsl(var(--border) / 0.82); border-radius: 999px; background: hsl(var(--muted) / 0.58); color: hsl(var(--muted-foreground)); font-size: 0.92rem; font-weight: 600; line-height: 1.35; }
+.public-home-auth-status-error { border-color: hsl(var(--warning) / 0.4); background: hsl(var(--warning) / 0.13); color: hsl(var(--foreground)); }
+.auth-status-button { cursor: wait; opacity: 0.88; }
+.auth-status-button[disabled] { pointer-events: none; }
+
+.token-access-icon { width: 20px; height: 20px; opacity: 0.85; }
 
 .linuxdo-login-button img {
   width: 20px;
@@ -2195,4 +2196,3 @@ body.not-found-page-body,
   gap: clamp(14px, 2.4vw, 24px);
   padding: 16px 22px;
 }
-

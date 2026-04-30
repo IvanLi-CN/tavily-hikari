@@ -1995,6 +1995,171 @@ impl KeyStore {
         })
     }
 
+    async fn fetch_dashboard_rollup_success_count_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        bucket_secs: i64,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<i64, ProxyError> {
+        if bucket_start_at_least >= bucket_start_before {
+            return Ok(0);
+        }
+
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COALESCE(SUM(success_count), 0)
+            FROM dashboard_request_rollup_buckets
+            WHERE bucket_secs = ?
+              AND bucket_start >= ?
+              AND bucket_start < ?
+            "#,
+        )
+        .bind(bucket_secs)
+        .bind(bucket_start_at_least)
+        .bind(bucket_start_before)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    async fn fetch_dashboard_rollup_success_count_for_range_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        start: i64,
+        end: i64,
+    ) -> Result<i64, ProxyError> {
+        if start >= end {
+            return Ok(0);
+        }
+
+        let start_day = local_day_bucket_start_utc_ts(start);
+        let first_full_day_start = if start_day == start {
+            start
+        } else {
+            next_local_day_start_utc_ts(start_day)
+        };
+        let end_day = local_day_bucket_start_utc_ts(end);
+        let full_day_end = if end_day == end { end } else { end_day };
+
+        let mut cursor = start;
+        let mut success_count = 0;
+
+        let leading_minute_end = end.min(first_full_day_start);
+        if cursor < leading_minute_end {
+            success_count += Self::fetch_dashboard_rollup_success_count_tx(
+                tx,
+                SECS_PER_MINUTE,
+                cursor,
+                leading_minute_end,
+            )
+            .await?;
+            cursor = leading_minute_end;
+        }
+
+        if cursor < full_day_end {
+            success_count += Self::fetch_dashboard_rollup_success_count_tx(
+                tx,
+                SECS_PER_DAY,
+                cursor,
+                full_day_end,
+            )
+            .await?;
+            cursor = full_day_end;
+        }
+
+        if cursor < end {
+            success_count += Self::fetch_dashboard_rollup_success_count_tx(
+                tx,
+                SECS_PER_MINUTE,
+                cursor,
+                end,
+            )
+            .await?;
+        }
+
+        Ok(success_count)
+    }
+
+    async fn fetch_visible_request_log_success_count_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        start: i64,
+        end: i64,
+    ) -> Result<i64, ProxyError> {
+        if start >= end {
+            return Ok(0);
+        }
+
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0)
+            FROM request_logs
+            WHERE visibility = ?
+              AND created_at >= ?
+              AND created_at < ?
+            "#,
+        )
+        .bind(OUTCOME_SUCCESS)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(start)
+        .bind(end)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_success_breakdown_from_dashboard_rollups(
+        &self,
+        month_start: i64,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<SuccessBreakdown, ProxyError> {
+        let now = Utc::now().timestamp();
+        let month_request_log_floor = self
+            .fetch_visible_request_log_floor_since(month_start)
+            .await?;
+        let historical_month_success = self
+            .fetch_utc_month_gap_bucket_metrics(month_start, month_request_log_floor, now)
+            .await?
+            .success_count;
+        let mut tx = self.pool.begin().await?;
+        let (retained_partial_minute_success, dashboard_month_start) =
+            match month_request_log_floor {
+                Some(floor) if floor > month_start => {
+                    let minute_start = floor.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+                    if floor == minute_start {
+                        (0, floor)
+                    } else {
+                        let next_minute_start = minute_start.saturating_add(SECS_PER_MINUTE);
+                        let partial_minute_success = Self::fetch_visible_request_log_success_count_tx(
+                            &mut tx,
+                            floor,
+                            next_minute_start.min(now.saturating_add(1)),
+                        )
+                        .await?;
+                        (partial_minute_success, next_minute_start)
+                    }
+                }
+                Some(_) => (0, month_start),
+                None => (0, now.saturating_add(1)),
+            };
+        let dashboard_month_success = Self::fetch_dashboard_rollup_success_count_for_range_tx(
+            &mut tx,
+            dashboard_month_start,
+            now.saturating_add(1),
+        )
+        .await?;
+        let daily_success =
+            Self::fetch_dashboard_rollup_success_count_for_range_tx(&mut tx, day_start, day_end)
+                .await?;
+        tx.commit().await?;
+
+        Ok(SuccessBreakdown {
+            monthly_success: historical_month_success
+                + retained_partial_minute_success
+                + dashboard_month_success,
+            daily_success,
+        })
+    }
+
     async fn fetch_dashboard_rollup_month_metrics_tx(
         tx: &mut Transaction<'_, Sqlite>,
         month_start: i64,
@@ -2433,6 +2598,7 @@ impl KeyStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn fetch_success_breakdown(
         &self,
         month_since: i64,

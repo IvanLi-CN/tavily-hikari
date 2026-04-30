@@ -37,6 +37,12 @@ export const ZH: TranslationShape = {
         button: '使用 Linux DO 登录',
         logoAlt: 'Linux DO 标志',
       },
+      authStatus: {
+        checking: '正在检查登录与注册状态…',
+        checkingAction: '正在检查登录状态…',
+        unavailable: '暂时无法确认登录入口，请稍后重试。',
+        unavailableAction: '登录状态暂不可用',
+      },
       registrationPaused: {
         badge: '暂停注册',
         title: '新用户注册暂时关闭',
@@ -130,6 +136,7 @@ export const ZH: TranslationShape = {
         version: '当前版本：',
       },
       errors: {
+        profile: '暂时无法检查登录状态',
         metrics: '暂时无法加载指标',
         summary: '暂时无法加载摘要数据',
       },

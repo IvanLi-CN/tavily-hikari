@@ -298,9 +298,121 @@ async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_
         .fetch_success_breakdown(month_start, today_window.start, today_window.end)
         .await
         .expect("success breakdown");
+    let public_summary = proxy
+        .success_breakdown(Some(today_window))
+        .await
+        .expect("public success breakdown");
 
     assert_eq!(summary.monthly_success, 13);
     assert_eq!(summary.daily_success, 0);
+    assert_eq!(public_summary.monthly_success, 13);
+    assert_eq!(public_summary.daily_success, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn public_success_breakdown_uses_dashboard_rollups_without_scanning_request_logs() {
+    let db_path = temp_db_path("public-success-breakdown-dashboard-rollups");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-public-success-dashboard-rollups".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let now = Utc::now().timestamp();
+    let window = TimeRangeUtc {
+        start: now.saturating_sub(120),
+        end: now.saturating_add(120),
+    };
+
+    insert_summary_window_logs(&proxy, &key_id, now.saturating_sub(60), OUTCOME_SUCCESS, 2).await;
+    insert_summary_window_logs(&proxy, &key_id, now.saturating_sub(300), OUTCOME_SUCCESS, 3).await;
+    insert_summary_window_logs(&proxy, &key_id, now, OUTCOME_ERROR, 1).await;
+
+    let public = proxy
+        .success_breakdown(Some(window))
+        .await
+        .expect("public rollup success breakdown");
+
+    assert_eq!(public.monthly_success, 5);
+    assert_eq!(public.daily_success, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn public_success_breakdown_does_not_double_count_retained_partial_minute() {
+    let db_path = temp_db_path("public-success-breakdown-partial-minute");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-public-success-partial-minute".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let minute_start = Utc::now()
+        .timestamp()
+        .saturating_sub(300)
+        .div_euclid(60)
+        * 60;
+    let retained_floor = minute_start + 17;
+    let window = TimeRangeUtc {
+        start: minute_start.saturating_sub(60),
+        end: minute_start.saturating_add(3_600),
+    };
+
+    insert_summary_window_bucket(
+        &proxy,
+        &key_id,
+        local_day_bucket_start_utc_ts(minute_start),
+        4,
+        4,
+        0,
+        0,
+    )
+    .await;
+    insert_summary_window_logs(&proxy, &key_id, minute_start + 5, OUTCOME_SUCCESS, 1).await;
+    insert_summary_window_logs(&proxy, &key_id, retained_floor, OUTCOME_SUCCESS, 2).await;
+    insert_summary_window_logs(&proxy, &key_id, minute_start + 63, OUTCOME_SUCCESS, 1).await;
+    sqlx::query("DELETE FROM request_logs WHERE created_at = ?")
+        .bind(minute_start + 5)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("prune pre-floor request log");
+
+    let public = proxy
+        .success_breakdown(Some(window))
+        .await
+        .expect("public rollup success breakdown");
+
+    assert_eq!(public.monthly_success, 4);
+    assert_eq!(public.daily_success, 4);
 
     let _ = std::fs::remove_file(db_path);
 }
