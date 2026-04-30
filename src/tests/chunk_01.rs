@@ -1097,9 +1097,13 @@ async fn request_log_body_migration_compresses_legacy_rows_and_preserves_classif
     let _guard = env_lock.lock().await;
     let prev_enabled = std::env::var("REQUEST_LOG_BODY_COMPRESSION_ENABLED").ok();
     let prev_threshold = std::env::var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES").ok();
+    let prev_batch_rows = std::env::var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS").ok();
+    let prev_batch_bytes = std::env::var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES").ok();
     unsafe {
         std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED", "false");
         std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", "64");
+        std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS", "100");
+        std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES", "1048576");
     }
 
     let db_path = temp_db_path("request-log-body-migration");
@@ -1153,6 +1157,13 @@ async fn request_log_body_migration_compresses_legacy_rows_and_preserves_classif
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("insert legacy plain request log");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
+        .bind(META_KEY_REQUEST_LOG_BODY_COMPRESSION_CURSOR_V1)
+        .bind(META_KEY_REQUEST_LOG_BODY_COMPRESSION_DONE_V1)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-log body migration markers");
 
     let first = proxy
         .migrate_request_log_bodies_batch()
@@ -1265,6 +1276,16 @@ async fn request_log_body_migration_compresses_legacy_rows_and_preserves_classif
             std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", value);
         } else {
             std::env::remove_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES");
+        }
+        if let Some(value) = prev_batch_rows {
+            std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS");
+        }
+        if let Some(value) = prev_batch_bytes {
+            std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES");
         }
     }
 }
