@@ -334,6 +334,7 @@ const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
 pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
+pub const REQUEST_LOG_BODY_CODEC_ZSTD: &str = "zstd";
 pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
 const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
 const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
@@ -545,6 +546,10 @@ const QUOTA_SUBJECT_LOCK_REFRESH_SECS: u64 = 5;
 const QUOTA_SUBJECT_LOCK_REFRESH_RETRY_SECS: u64 = 1;
 
 const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 32;
+pub const REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_DEFAULT_BYTES: usize = 1024;
+pub const REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS_DEFAULT: i64 = 200;
+pub const REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES_DEFAULT: i64 = 32 * 1024 * 1024;
+pub const REQUEST_LOG_BODY_MIGRATION_SLEEP_SECS_DEFAULT: u64 = 2;
 
 const BILLING_STATE_NONE: &str = "none";
 const BILLING_STATE_PENDING: &str = "pending";
@@ -616,6 +621,9 @@ const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =
     "request_kind_canonical_backfill_request_logs_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1: &str =
     "request_kind_canonical_backfill_auth_token_logs_v1";
+const META_KEY_REQUEST_LOG_BODY_COMPRESSION_CURSOR_V1: &str =
+    "request_log_body_compression_cursor_v1";
+const META_KEY_REQUEST_LOG_BODY_COMPRESSION_DONE_V1: &str = "request_log_body_compression_done_v1";
 const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
@@ -658,6 +666,49 @@ fn token_limit_from_env(var: &str, default: i64) -> i64 {
     }
 }
 
+fn usize_from_env(var: &str, default: usize) -> usize {
+    match std::env::var(var) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return default;
+            }
+            match trimmed.parse::<usize>() {
+                Ok(v) if v > 0 => v,
+                _ => default,
+            }
+        }
+        Err(_) => default,
+    }
+}
+
+fn u64_from_env(var: &str, default: u64) -> u64 {
+    match std::env::var(var) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return default;
+            }
+            match trimmed.parse::<u64>() {
+                Ok(v) if v > 0 => v,
+                _ => default,
+            }
+        }
+        Err(_) => default,
+    }
+}
+
+fn bool_env_enabled(var: &str, default: bool) -> bool {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "no" | "off" => false,
+            "1" | "true" | "yes" | "on" => true,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
 fn parse_hhmm(raw: &str) -> Option<(u32, u32)> {
     let trimmed = raw.trim();
     let mut parts = trimmed.split(':');
@@ -696,6 +747,55 @@ pub fn effective_request_logs_retention_days() -> i64 {
         REQUEST_LOGS_MIN_RETENTION_DAYS,
     );
     days.max(REQUEST_LOGS_MIN_RETENTION_DAYS)
+}
+
+/// Whether newly written request log bodies should be compressed when they meet
+/// the size threshold.
+///
+/// Environment variable: `REQUEST_LOG_BODY_COMPRESSION_ENABLED` (default true).
+pub fn request_log_body_compression_enabled() -> bool {
+    bool_env_enabled("REQUEST_LOG_BODY_COMPRESSION_ENABLED", true)
+}
+
+/// Minimum body size before request log compression is attempted.
+///
+/// Environment variable: `REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES` (default 1024).
+pub fn request_log_body_compression_threshold_bytes() -> usize {
+    usize_from_env(
+        "REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES",
+        REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_DEFAULT_BYTES,
+    )
+}
+
+/// Whether the startup historical body compression migration should run.
+///
+/// Environment variable: `REQUEST_LOG_BODY_MIGRATION_ENABLED` (default true).
+pub fn request_log_body_migration_enabled() -> bool {
+    bool_env_enabled("REQUEST_LOG_BODY_MIGRATION_ENABLED", true)
+}
+
+/// Maximum rows processed by one historical body compression batch.
+pub fn request_log_body_migration_batch_rows() -> i64 {
+    token_limit_from_env(
+        "REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS",
+        REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS_DEFAULT,
+    )
+}
+
+/// Maximum raw body bytes processed by one historical body compression batch.
+pub fn request_log_body_migration_batch_bytes() -> i64 {
+    token_limit_from_env(
+        "REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES",
+        REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES_DEFAULT,
+    )
+}
+
+/// Sleep interval between non-empty historical body compression batches.
+pub fn request_log_body_migration_sleep_secs() -> u64 {
+    u64_from_env(
+        "REQUEST_LOG_BODY_MIGRATION_SLEEP_SECS",
+        REQUEST_LOG_BODY_MIGRATION_SLEEP_SECS_DEFAULT,
+    )
 }
 
 pub fn effective_auth_token_log_retention_days() -> i64 {

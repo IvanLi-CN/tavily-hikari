@@ -564,6 +564,19 @@ pub struct RequestLogBodiesRecord {
     pub response_body: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RequestLogBodyMigrationBatch {
+    pub scanned_rows: i64,
+    pub updated_rows: i64,
+    pub compressed_fields: i64,
+    pub raw_bytes: i64,
+    pub stored_bytes_before: i64,
+    pub stored_bytes_after: i64,
+    pub cursor_before: i64,
+    pub cursor_after: i64,
+    pub done: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogFacetOption {
     pub value: String,

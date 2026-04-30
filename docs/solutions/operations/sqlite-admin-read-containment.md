@@ -12,6 +12,7 @@ status: active
 related_specs:
   - docs/specs/ev4td-admin-recent-requests-performance-copy/SPEC.md
   - docs/specs/66t8u-admin-dashboard-overview-performance/SPEC.md
+  - docs/specs/lbzst-request-log-body-compression/SPEC.md
 ---
 
 # SQLite admin read containment
@@ -61,6 +62,9 @@ reads:
   before adding totals and facets.
 - If a list hides bodies, compute canonical request kind and operational metadata in SQL before
   mapping rows, otherwise legacy rows that need body inspection can be misclassified.
+- If request/response bodies are compressed, persist any dashboard/facet classifications that would
+  otherwise require body inspection before compression, and have hot SQL read those derived columns
+  first.
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
 

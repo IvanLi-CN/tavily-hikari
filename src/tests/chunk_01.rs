@@ -10,6 +10,7 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
+use chrono::Datelike;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row};
 use std::net::SocketAddr;
@@ -962,6 +963,331 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
     assert_eq!(row.1, None);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_large_bodies_are_zstd_compressed_and_read_transparently() {
+    let env_lock = env_lock();
+    let _guard = env_lock.lock().await;
+    let prev_enabled = std::env::var("REQUEST_LOG_BODY_COMPRESSION_ENABLED").ok();
+    let prev_threshold = std::env::var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES").ok();
+    unsafe {
+        std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED", "true");
+        std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", "128");
+    }
+
+    let db_path = temp_db_path("request-log-body-compression");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-log-compress".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+    let request_body = serde_json::to_vec(&serde_json::json!({
+        "query": "repeat ".repeat(512),
+        "search_depth": "advanced"
+    }))
+    .expect("request body json");
+    let response_body = serde_json::to_vec(&serde_json::json!({
+        "answer": "ok ".repeat(1024)
+    }))
+    .expect("response body json");
+
+    let log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: Some(&key_id),
+            auth_token_id: None,
+            method: &Method::POST,
+            path: "/api/tavily/search",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body: &request_body,
+            response_body: &response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+        })
+        .await
+        .expect("log compressed attempt");
+
+    let row: (Option<String>, i64, Option<i64>, Option<String>, i64, Option<i64>) =
+        sqlx::query_as(
+            r#"
+            SELECT
+                request_body_codec,
+                length(request_body),
+                request_body_uncompressed_bytes,
+                response_body_codec,
+                length(response_body),
+                response_body_uncompressed_bytes
+            FROM request_logs
+            WHERE id = ?
+            "#,
+        )
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch stored body metadata");
+    assert_eq!(row.0.as_deref(), Some(REQUEST_LOG_BODY_CODEC_ZSTD));
+    assert_eq!(row.2, Some(request_body.len() as i64));
+    assert!(row.1 < request_body.len() as i64);
+    assert_eq!(row.3.as_deref(), Some(REQUEST_LOG_BODY_CODEC_ZSTD));
+    assert_eq!(row.5, Some(response_body.len() as i64));
+    assert!(row.4 < response_body.len() as i64);
+
+    let bodies = proxy
+        .key_store
+        .fetch_request_log_bodies(log_id)
+        .await
+        .expect("fetch decoded bodies")
+        .expect("log bodies");
+    assert_eq!(bodies.request_body.as_deref(), Some(request_body.as_slice()));
+    assert_eq!(
+        bodies.response_body.as_deref(),
+        Some(response_body.as_slice())
+    );
+    let logs = proxy
+        .recent_request_logs(1)
+        .await
+        .expect("fetch recent logs");
+    assert_eq!(logs[0].request_body, request_body);
+    assert_eq!(logs[0].response_body, response_body);
+
+    proxy.key_store.pool.close().await;
+    let _ = std::fs::remove_file(db_path);
+    unsafe {
+        if let Some(value) = prev_enabled {
+            std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED");
+        }
+        if let Some(value) = prev_threshold {
+            std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES");
+        }
+    }
+}
+
+#[tokio::test]
+async fn request_log_body_migration_compresses_legacy_rows_and_preserves_classification() {
+    let env_lock = env_lock();
+    let _guard = env_lock.lock().await;
+    let prev_enabled = std::env::var("REQUEST_LOG_BODY_COMPRESSION_ENABLED").ok();
+    let prev_threshold = std::env::var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES").ok();
+    let prev_batch_rows = std::env::var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS").ok();
+    let prev_batch_bytes = std::env::var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES").ok();
+    unsafe {
+        std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED", "false");
+        std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", "64");
+        std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS", "100");
+        std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES", "1048576");
+    }
+
+    let db_path = temp_db_path("request-log-body-migration");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-log-migrate".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let request_body = serde_json::to_vec(&serde_json::json!([
+        {"jsonrpc":"2.0","id":"a","method":"initialize","params":{}},
+        {"jsonrpc":"2.0","id":"b","method":"ping","params":{}}
+    ]))
+    .expect("batch request body json");
+    let response_body = serde_json::to_vec(&serde_json::json!({
+        "result": "pong ".repeat(512)
+    }))
+    .expect("response body json");
+    let now = Utc::now().timestamp();
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            request_body,
+            response_body,
+            visibility,
+            created_at
+        ) VALUES ('POST', '/mcp', 200, 200, ?, 'mcp:batch', 'MCP | batch', ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(OUTCOME_SUCCESS)
+    .bind(KEY_EFFECT_NONE)
+    .bind(KEY_EFFECT_NONE)
+    .bind(KEY_EFFECT_NONE)
+    .bind(&request_body)
+    .bind(&response_body)
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert legacy plain request log");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
+        .bind(META_KEY_REQUEST_LOG_BODY_COMPRESSION_CURSOR_V1)
+        .bind(META_KEY_REQUEST_LOG_BODY_COMPRESSION_DONE_V1)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-log body migration markers");
+
+    let first = proxy
+        .migrate_request_log_bodies_batch()
+        .await
+        .expect("run first migration batch");
+    assert_eq!(first.updated_rows, 1);
+    assert!(first.compressed_fields >= 1);
+    let second = proxy
+        .migrate_request_log_bodies_batch()
+        .await
+        .expect("run completion migration batch");
+    assert!(second.done);
+
+    let row: (
+        Option<String>,
+        i64,
+        Option<String>,
+        i64,
+        Option<i64>,
+        Option<String>,
+    ) = sqlx::query_as(
+        r#"
+        SELECT
+            request_body_codec,
+            length(request_body),
+            response_body_codec,
+            length(response_body),
+            counts_business_quota,
+            request_value_bucket
+        FROM request_logs
+        WHERE id = ?
+        "#,
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch migrated row");
+    assert_eq!(row.0.as_deref(), Some(REQUEST_LOG_BODY_CODEC_ZSTD));
+    assert!(row.1 < request_body.len() as i64);
+    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CODEC_ZSTD));
+    assert!(row.3 < response_body.len() as i64);
+    assert_eq!(row.4, Some(0));
+    assert_eq!(row.5.as_deref(), Some("other"));
+
+    let bodies = proxy
+        .key_store
+        .fetch_request_log_bodies(log_id)
+        .await
+        .expect("fetch decoded migrated bodies")
+        .expect("migrated bodies");
+    assert_eq!(bodies.request_body.as_deref(), Some(request_body.as_slice()));
+    assert_eq!(
+        bodies.response_body.as_deref(),
+        Some(response_body.as_slice())
+    );
+
+    let page = proxy
+        .request_logs_list(
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            RequestLogsCursorDirection::Older,
+            10,
+        )
+        .await
+        .expect("fetch request log list");
+    let migrated = page
+        .items
+        .iter()
+        .find(|item| item.id == log_id)
+        .expect("migrated row in request logs list");
+    assert_eq!(migrated.request_kind_billing_group, "non_billable");
+    assert_eq!(migrated.operational_class, OPERATIONAL_CLASS_NEUTRAL);
+    assert!(migrated.request_body.is_empty());
+
+    let stored_length_after_first: i64 =
+        sqlx::query_scalar("SELECT length(request_body) + length(response_body) FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch stored length");
+    let third = proxy
+        .migrate_request_log_bodies_batch()
+        .await
+        .expect("run idempotent migration batch");
+    assert!(third.done);
+    let stored_length_after_third: i64 =
+        sqlx::query_scalar("SELECT length(request_body) + length(response_body) FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch stored length after idempotent run");
+    assert_eq!(stored_length_after_first, stored_length_after_third);
+
+    proxy.key_store.pool.close().await;
+    let _ = std::fs::remove_file(db_path);
+    unsafe {
+        if let Some(value) = prev_enabled {
+            std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_COMPRESSION_ENABLED");
+        }
+        if let Some(value) = prev_threshold {
+            std::env::set_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_COMPRESSION_THRESHOLD_BYTES");
+        }
+        if let Some(value) = prev_batch_rows {
+            std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_MIGRATION_BATCH_ROWS");
+        }
+        if let Some(value) = prev_batch_bytes {
+            std::env::set_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES", value);
+        } else {
+            std::env::remove_var("REQUEST_LOG_BODY_MIGRATION_BATCH_BYTES");
+        }
+    }
 }
 
 #[tokio::test]

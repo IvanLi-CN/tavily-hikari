@@ -395,6 +395,65 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
     });
 }
 
+fn spawn_request_log_body_migration_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        if !request_log_body_migration_enabled() {
+            return;
+        }
+
+        loop {
+            let job_id = match state
+                .proxy
+                .scheduled_job_start("request_log_body_compression_migration", None, 1)
+                .await
+            {
+                Ok(id) => id,
+                Err(err) => {
+                    eprintln!("request-log-body-migration: start job error: {err}");
+                    tokio::time::sleep(Duration::from_secs(300)).await;
+                    continue;
+                }
+            };
+
+            match state.proxy.migrate_request_log_bodies_batch().await {
+                Ok(report) => {
+                    let msg = format!(
+                        "scanned_rows={} updated_rows={} compressed_fields={} raw_bytes={} stored_bytes_before={} stored_bytes_after={} cursor_before={} cursor_after={} done={}",
+                        report.scanned_rows,
+                        report.updated_rows,
+                        report.compressed_fields,
+                        report.raw_bytes,
+                        report.stored_bytes_before,
+                        report.stored_bytes_after,
+                        report.cursor_before,
+                        report.cursor_after,
+                        report.done
+                    );
+                    let _ = state
+                        .proxy
+                        .scheduled_job_finish(job_id, "success", Some(&msg))
+                        .await;
+                    if report.done {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(
+                        request_log_body_migration_sleep_secs(),
+                    ))
+                    .await;
+                }
+                Err(err) => {
+                    let _ = state
+                        .proxy
+                        .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                        .await;
+                    eprintln!("request-log-body-migration: batch error: {err}");
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                }
+            }
+        }
+    });
+}
+
 async fn record_linuxdo_user_sync_failure(
     state: &AppState,
     provider_user_id: &str,

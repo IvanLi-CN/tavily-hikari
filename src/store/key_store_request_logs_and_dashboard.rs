@@ -330,8 +330,10 @@ impl KeyStore {
         let mut stored_query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT {stored_request_kind_sql} AS request_kind_key, {stored_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
         ));
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -441,8 +443,10 @@ impl KeyStore {
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -508,8 +512,10 @@ impl KeyStore {
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -700,8 +706,10 @@ impl KeyStore {
         );
         let effective_request_kind_label_sql =
             canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -779,7 +787,9 @@ impl KeyStore {
                 upstream_operation,
                 fallback_reason,
                 NULL AS request_body,
+                NULL AS request_body_codec,
                 NULL AS response_body,
+                NULL AS response_body_codec,
                 forwarded_headers,
                 dropped_headers,
                 {effective_operational_class_sql} AS operational_class,
@@ -937,8 +947,10 @@ impl KeyStore {
         );
         let effective_request_kind_label_sql =
             canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -1033,10 +1045,20 @@ impl KeyStore {
         } else {
             "NULL AS request_body"
         };
+        let request_body_codec_select = if include_bodies {
+            "request_body_codec"
+        } else {
+            "NULL AS request_body_codec"
+        };
         let response_body_select = if include_bodies {
             "response_body"
         } else {
             "NULL AS response_body"
+        };
+        let response_body_codec_select = if include_bodies {
+            "response_body_codec"
+        } else {
+            "NULL AS response_body_codec"
         };
         let mut items_query = QueryBuilder::<Sqlite>::new(format!(
             r#"
@@ -1069,7 +1091,9 @@ impl KeyStore {
                 upstream_operation,
                 fallback_reason,
                 {request_body_select},
+                {request_body_codec_select},
                 {response_body_select},
+                {response_body_codec_select},
                 forwarded_headers,
                 dropped_headers,
                 {effective_operational_class_sql} AS operational_class,
@@ -1798,7 +1822,10 @@ impl KeyStore {
         let request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
         let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
+            format!(
+                "COALESCE(request_value_bucket, {})",
+                request_value_bucket_sql(&request_kind_sql, "request_body")
+            );
         let query = format!(
             r#"
             WITH scoped_logs AS (

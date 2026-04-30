@@ -226,6 +226,8 @@ CREATE TABLE request_logs_new (
     request_kind_key TEXT,
     request_kind_label TEXT,
     request_kind_detail TEXT,
+    counts_business_quota INTEGER,
+    request_value_bucket TEXT,
     business_credits INTEGER,
     failure_kind TEXT,
     key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -241,7 +243,11 @@ CREATE TABLE request_logs_new (
     upstream_operation TEXT,
     fallback_reason TEXT,
     request_body BLOB,
+    request_body_codec TEXT,
+    request_body_uncompressed_bytes INTEGER,
     response_body BLOB,
+    response_body_codec TEXT,
+    response_body_uncompressed_bytes INTEGER,
     forwarded_headers TEXT,
     dropped_headers TEXT,
     visibility TEXT NOT NULL DEFAULT 'visible',
@@ -813,6 +819,7 @@ async fn backfill_request_log_request_kinds_with_pool(
                 id,
                 path,
                 request_body,
+                request_body_codec,
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail
@@ -834,17 +841,24 @@ async fn backfill_request_log_request_kinds_with_pool(
 
         let parsed_rows = rows
             .into_iter()
-            .map(|row| {
-                Ok(RequestKindBackfillRequestLogRow {
-                    id: row.try_get("id")?,
-                    path: row.try_get("path")?,
-                    request_body: row.try_get("request_body")?,
-                    request_kind_key: row.try_get("request_kind_key")?,
-                    request_kind_label: row.try_get("request_kind_label")?,
-                    request_kind_detail: row.try_get("request_kind_detail")?,
-                })
-            })
-            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+            .map(
+                |row| -> Result<RequestKindBackfillRequestLogRow, ProxyError> {
+                    let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                    let request_body_codec: Option<String> = row.try_get("request_body_codec")?;
+                    Ok(RequestKindBackfillRequestLogRow {
+                        id: row.try_get("id")?,
+                        path: row.try_get("path")?,
+                        request_body: decode_request_log_body_from_storage(
+                            request_body,
+                            request_body_codec.as_deref(),
+                        )?,
+                        request_kind_key: row.try_get("request_kind_key")?,
+                        request_kind_label: row.try_get("request_kind_label")?,
+                        request_kind_detail: row.try_get("request_kind_detail")?,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, ProxyError>>()?;
         let batch_max_id = parsed_rows.last().map(|row| row.id).unwrap_or(cursor_after);
         rows_scanned += parsed_rows.len() as i64;
 
@@ -1193,6 +1207,7 @@ include!("key_store_migrations_b.rs");
 include!("key_store_keys.rs");
 include!("key_store_sessions.rs");
 include!("key_store_users_and_oauth.rs");
+include!("key_store_request_log_body_codec.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alerts.rs");
 include!("key_store_request_logs_and_dashboard.rs");

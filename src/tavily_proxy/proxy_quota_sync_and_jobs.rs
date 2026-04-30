@@ -324,6 +324,17 @@ impl TavilyProxy {
         self.key_store.delete_old_request_logs(threshold).await
     }
 
+    pub async fn migrate_request_log_bodies_batch(
+        &self,
+    ) -> Result<RequestLogBodyMigrationBatch, ProxyError> {
+        self.key_store
+            .migrate_request_log_bodies_batch(
+                request_log_body_migration_batch_rows(),
+                request_log_body_migration_batch_bytes(),
+            )
+            .await
+    }
+
     pub async fn gc_mcp_sessions(&self) -> Result<i64, ProxyError> {
         let now = Utc::now().timestamp();
         self.key_store
