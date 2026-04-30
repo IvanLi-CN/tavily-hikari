@@ -95,7 +95,8 @@ impl KeyStore {
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       request_body, request_body_codec, response_body, response_body_codec,
+                       created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
                 ORDER BY created_at DESC
@@ -118,7 +119,8 @@ impl KeyStore {
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       request_body, request_body_codec, response_body, response_body_codec,
+                       created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
                 ORDER BY created_at DESC
@@ -132,10 +134,10 @@ impl KeyStore {
             .await?
         };
 
-        Ok(rows
+        rows
             .into_iter()
             .map(Self::map_request_log_row)
-            .collect::<Result<Vec<_>, _>>()?)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {

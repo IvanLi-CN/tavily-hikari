@@ -1750,6 +1750,11 @@ impl KeyStore {
             0,
         );
         let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+        let counts_business_quota =
+            request_log_counts_business_quota(&request_kind.key, Some(entry.request_body));
+        let request_value_bucket = request_value_bucket.as_str();
+        let stored_request_body = encode_request_log_body_for_storage(entry.request_body)?;
+        let stored_response_body = encode_request_log_body_for_storage(entry.response_body)?;
 
         let mut tx = self.pool.begin().await?;
 
@@ -1768,6 +1773,8 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
+                counts_business_quota,
+                request_value_bucket,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -1783,11 +1790,15 @@ impl KeyStore {
                 upstream_operation,
                 fallback_reason,
                 request_body,
+                request_body_codec,
+                request_body_uncompressed_bytes,
                 response_body,
+                response_body_codec,
+                response_body_uncompressed_bytes,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -1803,8 +1814,10 @@ impl KeyStore {
         .bind(&request_kind.key)
         .bind(&request_kind.label)
         .bind(request_kind.detail.as_deref())
+        .bind(if counts_business_quota { 1_i64 } else { 0_i64 })
+        .bind(request_value_bucket)
         .bind(None::<i64>)
-        .bind(failure_kind)
+        .bind(failure_kind.as_deref())
         .bind(entry.key_effect_code)
         .bind(key_effect_summary)
         .bind(entry.binding_effect_code)
@@ -1817,8 +1830,12 @@ impl KeyStore {
         .bind(entry.routing_subject_hash)
         .bind(entry.upstream_operation)
         .bind(entry.fallback_reason)
-        .bind(entry.request_body)
-        .bind(entry.response_body)
+        .bind(stored_request_body.body)
+        .bind(stored_request_body.codec)
+        .bind(stored_request_body.uncompressed_bytes)
+        .bind(stored_response_body.body)
+        .bind(stored_response_body.codec)
+        .bind(stored_response_body.uncompressed_bytes)
         .bind(forwarded_json)
         .bind(dropped_json)
         .bind(created_at)
@@ -2490,7 +2507,9 @@ impl KeyStore {
                 upstream_operation,
                 fallback_reason,
                 request_body,
+                request_body_codec,
                 response_body,
+                response_body_codec,
                 forwarded_headers,
                 dropped_headers,
                 created_at
@@ -2562,11 +2581,23 @@ impl KeyStore {
         Ok((result.items, result.total))
     }
 
-    fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, sqlx::Error> {
+    fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, ProxyError> {
         let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
         let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
         let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
+        let request_body_codec = row
+            .try_get::<Option<String>, _>("request_body_codec")
+            .ok()
+            .flatten();
+        let response_body_codec = row
+            .try_get::<Option<String>, _>("response_body_codec")
+            .ok()
+            .flatten();
+        let request_body =
+            decode_request_log_body_from_storage(request_body, request_body_codec.as_deref())?;
+        let response_body =
+            decode_request_log_body_from_storage(response_body, response_body_codec.as_deref())?;
         let method: String = row.try_get("method")?;
         let path: String = row.try_get("path")?;
         let query: Option<String> = row.try_get("query")?;
@@ -2648,10 +2679,20 @@ impl KeyStore {
 
     fn map_request_log_bodies_row(
         row: sqlx::sqlite::SqliteRow,
-    ) -> Result<RequestLogBodiesRecord, sqlx::Error> {
+    ) -> Result<RequestLogBodiesRecord, ProxyError> {
+        let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+        let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
+        let request_body_codec = row.try_get::<Option<String>, _>("request_body_codec")?;
+        let response_body_codec = row.try_get::<Option<String>, _>("response_body_codec")?;
         Ok(RequestLogBodiesRecord {
-            request_body: row.try_get("request_body")?,
-            response_body: row.try_get("response_body")?,
+            request_body: decode_request_log_body_from_storage(
+                request_body,
+                request_body_codec.as_deref(),
+            )?,
+            response_body: decode_request_log_body_from_storage(
+                response_body,
+                response_body_codec.as_deref(),
+            )?,
         })
     }
 
@@ -2661,7 +2702,7 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, request_body_codec, response_body, response_body_codec
             FROM request_logs
             WHERE id = ? AND visibility = ?
             LIMIT 1
@@ -2673,7 +2714,6 @@ impl KeyStore {
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
-        .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_key_request_log_bodies(
@@ -2683,7 +2723,7 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, request_body_codec, response_body, response_body_codec
             FROM request_logs
             WHERE id = ? AND api_key_id = ? AND visibility = ?
             LIMIT 1
@@ -2696,7 +2736,6 @@ impl KeyStore {
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
-        .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_token_log_bodies(
@@ -2706,7 +2745,7 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT rl.request_body, rl.response_body
+            SELECT rl.request_body, rl.request_body_codec, rl.response_body, rl.response_body_codec
             FROM auth_token_logs atl
             LEFT JOIN request_logs rl
               ON rl.id = atl.request_log_id
@@ -2722,7 +2761,6 @@ impl KeyStore {
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
-        .map_err(ProxyError::from)
     }
 
     fn request_logs_cursor(created_at: i64, id: i64) -> RequestLogsCursor {

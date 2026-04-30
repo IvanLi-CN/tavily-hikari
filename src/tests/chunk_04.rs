@@ -21,7 +21,17 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
         .id;
 
     let fallback_now = Local::now();
+    let summary_date = if fallback_now.day() == 1 {
+        fallback_now
+            .date_naive()
+            .succ_opt()
+            .expect("valid next local day")
+    } else {
+        fallback_now.date_naive()
+    };
     let now_naive = fallback_now
+        .with_day(summary_date.day())
+        .expect("valid summary day")
         .date_naive()
         .and_hms_opt(12, 0, 0)
         .expect("valid midday");

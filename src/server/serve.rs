@@ -309,6 +309,7 @@ pub async fn serve(
     spawn_mcp_sessions_gc_scheduler(state.clone());
     spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
+    spawn_request_log_body_migration_scheduler(state.clone());
     if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
         spawn_linuxdo_user_status_sync_scheduler(state.clone());
     }

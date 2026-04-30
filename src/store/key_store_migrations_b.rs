@@ -1221,6 +1221,37 @@ impl KeyStore {
                 .await?;
         }
 
+        for (column, sql) in [
+            (
+                "request_body_codec",
+                "ALTER TABLE request_logs ADD COLUMN request_body_codec TEXT",
+            ),
+            (
+                "request_body_uncompressed_bytes",
+                "ALTER TABLE request_logs ADD COLUMN request_body_uncompressed_bytes INTEGER",
+            ),
+            (
+                "response_body_codec",
+                "ALTER TABLE request_logs ADD COLUMN response_body_codec TEXT",
+            ),
+            (
+                "response_body_uncompressed_bytes",
+                "ALTER TABLE request_logs ADD COLUMN response_body_uncompressed_bytes INTEGER",
+            ),
+            (
+                "counts_business_quota",
+                "ALTER TABLE request_logs ADD COLUMN counts_business_quota INTEGER",
+            ),
+            (
+                "request_value_bucket",
+                "ALTER TABLE request_logs ADD COLUMN request_value_bucket TEXT",
+            ),
+        ] {
+            if !self.request_logs_column_exists(column).await? {
+                sqlx::query(sql).execute(&self.pool).await?;
+            }
+        }
+
         if !self.request_logs_column_exists("auth_token_id").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN auth_token_id TEXT")
                 .execute(&self.pool)

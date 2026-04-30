@@ -31,3 +31,4 @@ argon2 = { version = "0.5", features = ["std"] }
 libc = "0.2"
 httpdate = "1"
 ring = "0.17"
+zstd = "0.13"

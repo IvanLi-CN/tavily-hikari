@@ -264,7 +264,7 @@ impl KeyStore {
 
         let mut rows = sqlx::query(
             r#"
-            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path
+            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, request_body_codec, path
             FROM request_logs
             WHERE visibility = ?
               AND api_key_id IS NOT NULL
@@ -284,6 +284,9 @@ impl KeyStore {
             let status: String = row.try_get("result_status")?;
             let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+            let request_body_codec: Option<String> = row.try_get("request_body_codec")?;
+            let request_body =
+                decode_request_log_body_from_storage(request_body, request_body_codec.as_deref())?;
             let path: String = row.try_get("path")?;
 
             let bucket_start = local_day_bucket_start_utc_ts(created_at);
@@ -363,7 +366,7 @@ impl KeyStore {
 
         let mut rows = sqlx::query(
             r#"
-            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path
+            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, request_body_codec, path
             FROM request_logs
             WHERE visibility = ?
               AND api_key_id IS NOT NULL
@@ -442,6 +445,9 @@ impl KeyStore {
             let status: String = row.try_get("result_status")?;
             let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+            let request_body_codec: Option<String> = row.try_get("request_body_codec")?;
+            let request_body =
+                decode_request_log_body_from_storage(request_body, request_body_codec.as_deref())?;
             let path: String = row.try_get("path")?;
 
             let bucket_start = local_day_bucket_start_utc_ts(created_at);
@@ -670,7 +676,7 @@ impl KeyStore {
                     let mut read_conn = self.pool.acquire().await?;
                     let mut rows = sqlx::query(
                         r#"
-                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, request_body_codec, path, business_credits
                         FROM request_logs
                         WHERE visibility = ?
                           AND created_at >= ?
@@ -692,6 +698,12 @@ impl KeyStore {
                         let stored_request_kind_key: Option<String> =
                             row.try_get("request_kind_key")?;
                         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                        let request_body_codec: Option<String> =
+                            row.try_get("request_body_codec")?;
+                        let request_body = decode_request_log_body_from_storage(
+                            request_body,
+                            request_body_codec.as_deref(),
+                        )?;
                         let path: String = row.try_get("path")?;
                         let business_credits: Option<i64> = row.try_get("business_credits")?;
                         let bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
@@ -744,7 +756,7 @@ impl KeyStore {
                     let mut read_conn = self.pool.acquire().await?;
                     let mut rows = sqlx::query(
                         r#"
-                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, request_body_codec, path, business_credits
                         FROM request_logs
                         WHERE visibility = ?
                           AND created_at >= ?
@@ -766,6 +778,12 @@ impl KeyStore {
                         let stored_request_kind_key: Option<String> =
                             row.try_get("request_kind_key")?;
                         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                        let request_body_codec: Option<String> =
+                            row.try_get("request_body_codec")?;
+                        let request_body = decode_request_log_body_from_storage(
+                            request_body,
+                            request_body_codec.as_deref(),
+                        )?;
                         let path: String = row.try_get("path")?;
                         let business_credits: Option<i64> = row.try_get("business_credits")?;
                         let bucket_start = local_day_bucket_start_utc_ts(created_at);
@@ -822,7 +840,7 @@ impl KeyStore {
                 let mut read_conn = self.pool.acquire().await?;
                 let mut rows = sqlx::query(
                     r#"
-                    SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                    SELECT created_at, result_status, failure_kind, request_kind_key, request_body, request_body_codec, path, business_credits
                     FROM request_logs
                     WHERE visibility = ?
                     ORDER BY created_at ASC, id ASC
@@ -843,6 +861,9 @@ impl KeyStore {
                     let stored_request_kind_key: Option<String> =
                         row.try_get("request_kind_key")?;
                     let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                    let request_body_codec: Option<String> = row.try_get("request_body_codec")?;
+                    let request_body =
+                        decode_request_log_body_from_storage(request_body, request_body_codec.as_deref())?;
                     let path: String = row.try_get("path")?;
                     let business_credits: Option<i64> = row.try_get("business_credits")?;
                     let minute_bucket_start =

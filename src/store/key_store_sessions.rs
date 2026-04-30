@@ -243,8 +243,10 @@ impl KeyStore {
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let legacy_counts_business_quota_sql =
             request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
         let effective_counts_business_quota_sql = format!(
