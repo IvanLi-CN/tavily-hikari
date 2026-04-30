@@ -56,7 +56,7 @@ use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use url::form_urlencoded;
 
 pub type ForwardProxyProgressCallback = dyn Fn(ForwardProxyProgressEvent) + Send + Sync;
@@ -536,6 +536,7 @@ const TOKEN_BINDING_CACHE_MAX_ENTRIES: usize = 10_000;
 const ACCOUNT_QUOTA_RESOLUTION_CACHE_TTL_SECS: u64 = 5;
 const ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES: usize = 10_000;
 const ADMIN_REQUEST_LOGS_CATALOG_CACHE_TTL_SECS: i64 = 30;
+const ADMIN_HEAVY_READ_CONCURRENCY: usize = 1;
 // Keep the lease TTL below the acquisition wait so a crashed holder can be recovered
 // by the next in-flight request instead of blocking the subject for minutes.
 const QUOTA_SUBJECT_LOCK_TTL_SECS: u64 = 20;

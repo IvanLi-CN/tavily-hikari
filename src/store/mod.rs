@@ -1171,6 +1171,7 @@ pub(crate) struct KeyStore {
     pub(crate) account_quota_resolution_cache:
         RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
+    pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
     // Lightweight failpoint registry used by integration tests to simulate a lost quota

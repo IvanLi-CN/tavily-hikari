@@ -1051,6 +1051,11 @@ impl KeyStore {
     // Using ThreadRng for simplicity
 
     pub(crate) async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let rows = sqlx::query_as::<
             _,
             (
@@ -1097,6 +1102,11 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<AuthToken>, i64), ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
@@ -1586,6 +1596,11 @@ impl KeyStore {
         query: Option<&str>,
         tag_id: Option<&str>,
     ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1877,6 +1892,11 @@ impl KeyStore {
         query: Option<&str>,
         tag_id: Option<&str>,
     ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let search = query
             .map(str::trim)
             .filter(|value| !value.is_empty())

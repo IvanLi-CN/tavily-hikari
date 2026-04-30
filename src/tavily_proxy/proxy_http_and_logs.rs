@@ -1520,11 +1520,15 @@ impl TavilyProxy {
         operational_class: Option<&str>,
         page: i64,
         per_page: i64,
+        include_bodies: bool,
     ) -> Result<RequestLogsPage, ProxyError> {
+        let since = Some(request_logs_retention_threshold_utc_ts(
+            effective_request_logs_retention_days(),
+        ));
         self.key_store
             .fetch_request_logs_page(
                 None,
-                None,
+                since,
                 request_kinds,
                 result_status,
                 key_effect_code,
@@ -1537,6 +1541,7 @@ impl TavilyProxy {
                 per_page,
                 true,
                 true,
+                include_bodies,
             )
             .await
     }
@@ -1556,10 +1561,13 @@ impl TavilyProxy {
         direction: RequestLogsCursorDirection,
         page_size: i64,
     ) -> Result<RequestLogsCursorPage, ProxyError> {
+        let since = Some(request_logs_retention_threshold_utc_ts(
+            effective_request_logs_retention_days(),
+        ));
         self.key_store
             .fetch_request_logs_cursor_page(
                 None,
-                None,
+                since,
                 request_kinds,
                 result_status,
                 key_effect_code,
@@ -1587,10 +1595,13 @@ impl TavilyProxy {
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
+        let since = Some(request_logs_retention_threshold_utc_ts(
+            effective_request_logs_retention_days(),
+        ));
         self.key_store
             .fetch_request_logs_catalog(
                 None,
-                None,
+                since,
                 true,
                 true,
                 RequestLogsCatalogFilters {
@@ -1652,6 +1663,9 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<RequestLogsPage, ProxyError> {
+        let since = Some(since.unwrap_or_else(|| {
+            request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days())
+        }));
         self.key_store
             .fetch_request_logs_page(
                 Some(key_id),
@@ -1667,6 +1681,7 @@ impl TavilyProxy {
                 page,
                 per_page,
                 true,
+                false,
                 false,
             )
             .await
@@ -1688,6 +1703,9 @@ impl TavilyProxy {
         direction: RequestLogsCursorDirection,
         page_size: i64,
     ) -> Result<RequestLogsCursorPage, ProxyError> {
+        let since = Some(since.unwrap_or_else(|| {
+            request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days())
+        }));
         self.key_store
             .fetch_request_logs_cursor_page(
                 Some(key_id),
@@ -1720,6 +1738,9 @@ impl TavilyProxy {
         auth_token_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
+        let since = Some(since.unwrap_or_else(|| {
+            request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days())
+        }));
         self.key_store
             .fetch_request_logs_catalog(
                 Some(key_id),

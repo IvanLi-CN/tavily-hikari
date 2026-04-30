@@ -770,6 +770,7 @@ async fn list_logs(
             operational_class,
             page,
             per_page,
+            include_bodies,
         )
         .await
         .map(|logs| {
@@ -977,4 +978,3 @@ enum AdminUsersSortDirection {
     Asc,
     Desc,
 }
-

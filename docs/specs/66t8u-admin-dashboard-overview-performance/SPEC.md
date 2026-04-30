@@ -108,6 +108,8 @@
   - keys 分页 facets 聚合
   - dashboard 首屏全量 token 扫描
 - 首屏进入 dashboard 时，不应再出现两次 `/api/summary` 的并发拉取。
+- forward proxy overview / live stats 对 `forward_proxy_attempts` 的 1m / 15m / 1h / 1d / 7d 统计必须使用单次 7d bounded scan 派生所有窗口，避免同一请求重复扫描 attempts 表。
+- dashboard 与管理端列表共享 SQLite worker 时，重读接口必须使用有界并发保护，避免 dashboard overview 被其它 admin 慢查询拖入 worker 饱和。
 
 ## 验收标准
 
@@ -134,6 +136,7 @@
 - `2026-04-06`：`cd web && bun run build` 通过。
 - `2026-04-06`：`cd web && bun run build-storybook` 通过。
 - `2026-04-06`：使用当前 worktree 的 Storybook 静态预览端口 `127.0.0.1:30020` 打开 `Admin/Components/DashboardOverview/ZhDarkEvidence` iframe，确认 dashboard 总览结构、风险观察与快捷入口在轻量 overview 收敛后保持稳定。
+- `2026-04-30`：`cargo test admin_forward_proxy_settings_and_stats_endpoints_work -- --nocapture` 通过，覆盖 forward proxy stats 单次窗口集合查询后的响应结构。
 
 ## 实现里程碑
 
@@ -161,3 +164,4 @@
 - 2026-04-06: 初始化 spec，冻结 dashboard overview 轻量聚合接口、SSE payload 复用、`summary_windows` TTL 缓存与前端 dashboard bootstrap 去重的执行合同。
 - 2026-04-06: 完成 dashboard overview 聚合接口、SSE snapshot 复用、轻量风险区查询与前端 dashboard route 去重；随后将 SSE 签名轮询进一步收敛为最小触发查询，并补齐 Storybook 静态预览证据。
 - 2026-04-17: 将 `summary_windows` 与 dashboard 小时图切到 `dashboard_request_rollup_buckets`，移除 2 秒 freshness 缓存依赖，确保当前小时与本地估算额度可近实时出现在 overview / snapshot。
+- 2026-04-30: 将 forward proxy 窗口统计收敛为单次 bounded scan，并补充 admin heavy-read 并发保护，避免线上 SQLite worker 饱和时 dashboard overview 被重读拖慢。

@@ -277,6 +277,17 @@ impl KeyStore {
             return Ok(cached);
         }
 
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
+        if let Some(cache_key) = cache_key.as_deref()
+            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
+        {
+            return Ok(cached);
+        }
+
         let request_kind_options = self
             .fetch_token_log_request_kind_options(token_id, since, until, filters)
             .await?;
@@ -1882,7 +1893,6 @@ impl KeyStore {
         .await?;
 
         tx.commit().await?;
-        self.invalidate_request_logs_catalog_cache().await;
         Ok(request_log_id)
     }
 
@@ -2271,6 +2281,11 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let requested_page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let groups = Self::normalize_api_key_groups(groups);
@@ -2541,6 +2556,7 @@ impl KeyStore {
                 per_page,
                 true,
                 true,
+                false,
             )
             .await?;
         Ok((result.items, result.total))

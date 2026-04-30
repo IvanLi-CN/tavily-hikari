@@ -41,7 +41,7 @@
   - 新增 admin 全局 / key / token catalog 聚合查询。
 - `src/tavily_proxy/mod.rs`
   - 暴露 admin recent requests `list/catalog` 接口。
-  - 提供 30s scope 级 catalog cache，并在 request log 新写入和 `request_logs_gc` 后失效。
+  - 提供 30s scope 级 catalog cache；未过滤 catalog 以 TTL 为准，`request_logs_gc` 等结构性删除后失效，避免高流量写入持续击穿缓存。
 - `src/server/dto.rs`
   - 定义 admin list/catalog DTO 与 cursor 查询参数。
   - 新增 `/api/logs/list`、`/api/logs/catalog`、`/api/keys/:id/logs/list`、`/api/keys/:id/logs/catalog`、`/api/tokens/:id/logs/list`、`/api/tokens/:id/logs/catalog`。
@@ -119,13 +119,21 @@
   - global 带 tokens + keys
   - key scope 仅带 tokens
   - token scope 仅带 keys
-- catalog 采用 30 秒 TTL 的 scope 级缓存。
-- 新写入 request log 或执行完 `request_logs_gc` 后，cache 必须失效。
+- catalog 采用 30 秒 TTL 的 scope 级缓存；未过滤 catalog 允许最多一个 TTL 的新写入滞后。
+- 带筛选条件的 catalog 不复用未过滤 cache key，确保筛选后的 facets 可以反映当前查询条件。
+- `request_logs_gc` 等结构性日志删除执行完成后，cache 必须失效。
 
 ### Legacy compatibility
 
 - legacy `/api/logs`、`/api/keys/:id/logs/page`、`/api/tokens/:id/logs/page` 保留，避免 dashboard mini card 与非共享 consumer 在本轮受影响。
 - legacy 契约可继续返回 `total / page / facets`，但 admin 共享 recent requests 不再依赖它们。
+- legacy `/api/logs` 默认限制在 request log retention 窗口内，且默认不返回 `request_body` / `response_body`；需要 body 的管理端详情仍走 details endpoint，显式 `include_bodies=true` 仅用于兼容排障。
+
+### Slow-query containment
+
+- 日志 catalog 与 legacy page 查询共享有界 admin heavy-read semaphore，防止多个管理端重读同时占满主 SQLite worker。
+- `/api/logs/catalog`、`/api/keys/:id/logs/catalog`、`/api/tokens/:id/logs/catalog` 在获取 semaphore 后二次检查 cache，避免并发 cache miss 重复执行 facets 聚合。
+- legacy list rows 在 SQL 中投影 canonical request kind、billing group 与 operational class；即使不选择 request/response bodies，也保持筛选与视图元数据一致。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -145,9 +153,13 @@
   When 使用上一页 / 下一页导航
   Then 列表使用 cursor 语义稳定翻页，且不会因为新增日志造成明显重复或漏行。
 
-- Given request log 新写入或 `request_logs_gc` 执行完成
-  When 下一次获取同 scope catalog
-  Then 返回的 retention/facets 已反映最新状态，而不是继续使用旧缓存。
+- Given request log 新写入
+  When 下一次获取同 scope 未过滤 catalog 且 TTL 未过期
+  Then 可以继续使用旧缓存，避免高流量写入持续触发全量 facets 聚合。
+
+- Given request log 新写入后使用带筛选条件的 catalog，或 `request_logs_gc` 执行完成
+  When 下一次获取对应 catalog
+  Then 筛选结果或结构性删除已反映最新状态。
 
 - Given public home / user console 渲染最近请求
   When 本轮改动合入
@@ -156,7 +168,7 @@
 ## 测试与证据
 
 - `cargo test admin_logs_cursor_and_catalog_endpoints_expose_retention_without_blocking_page_counts -- --nocapture`
-- `cargo test key_and_token_logs_catalog_scope_and_cache_invalidation_work -- --nocapture`
+- `cargo test key_and_token_logs_catalog_scope_and_cache_ttl_work -- --nocapture`
 - `cargo test admin_and_key_log_details_return_scoped_bodies_while_list_pages_keep_null_payloads -- --nocapture`
 - `cargo test token_log_details_return_linked_bodies_and_page_results_keep_null_payloads -- --nocapture`
 - `cargo clippy -- -D warnings`
@@ -198,3 +210,4 @@
 
 - 2026-04-06：admin recent requests 的 retention-aware 文案、list/catalog 拆分、cursor 分页、路由懒加载与共享 Storybook 证据已完成，PR #219 已创建进入收敛阶段。
 - 2026-04-07：PR merge gate 跟进时发现 GitHub Actions `Docs Pages` 的 `build-storybook` hosted runner 在依赖安装后、进入构建步骤前异常卡死；已将 Storybook 的 install/build 合并为同一 CI step，补上 job timeout，并改用 Node CLI 执行静态构建以降低 runner 卡死面。该 follow-up 不改变本 spec 的产品范围与验收口径。
+- 2026-04-30：线上慢查询排查显示 `/api/logs` 与 catalog facets 可在高写入下重复触发 SQLite 长读；未过滤 catalog 改为 TTL 优先、legacy logs 默认 retention-bounded 且不选 body，并为日志重读增加有界并发保护。
