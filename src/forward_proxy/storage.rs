@@ -751,38 +751,115 @@ struct ForwardProxyWeightLastBeforeRangeRow {
     last_weight: f64,
 }
 
-async fn query_forward_proxy_window_stats(
+fn forward_proxy_attempt_window_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+    attempts_col: &str,
+    success_col: &str,
+    latency_col: &str,
+) -> Result<ForwardProxyAttemptWindowStats, sqlx::Error> {
+    Ok(ForwardProxyAttemptWindowStats {
+        attempts: row.try_get(attempts_col)?,
+        success_count: row.try_get(success_col)?,
+        avg_latency_ms: row.try_get(latency_col)?,
+    })
+}
+
+async fn query_forward_proxy_window_stats_set(
     pool: &SqlitePool,
-    since_epoch: i64,
-) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>, ProxyError> {
-    let rows = sqlx::query_as::<_, ForwardProxyAttemptStatsRow>(
+    now_epoch: i64,
+) -> Result<Vec<HashMap<String, ForwardProxyAttemptWindowStats>>, ProxyError> {
+    let one_minute = now_epoch - 60;
+    let fifteen_minutes = now_epoch - 15 * 60;
+    let one_hour = now_epoch - 3600;
+    let one_day = now_epoch - 24 * 3600;
+    let seven_days = now_epoch - 7 * 24 * 3600;
+    let rows = sqlx::query(
         r#"
         SELECT proxy_key,
-               COUNT(*) AS attempts,
-               SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
-               AVG(CASE WHEN is_success != 0 THEN latency_ms END) AS avg_latency_ms
+               COUNT(*) AS attempts_7d,
+               COALESCE(SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count_7d,
+               AVG(CASE WHEN is_success != 0 THEN latency_ms END) AS avg_latency_ms_7d,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?1 THEN 1 ELSE 0 END), 0) AS attempts_1m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?1 AND is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count_1m,
+               AVG(CASE WHEN occurred_at >= ?1 AND is_success != 0 THEN latency_ms END) AS avg_latency_ms_1m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?2 THEN 1 ELSE 0 END), 0) AS attempts_15m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?2 AND is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count_15m,
+               AVG(CASE WHEN occurred_at >= ?2 AND is_success != 0 THEN latency_ms END) AS avg_latency_ms_15m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?3 THEN 1 ELSE 0 END), 0) AS attempts_1h,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?3 AND is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count_1h,
+               AVG(CASE WHEN occurred_at >= ?3 AND is_success != 0 THEN latency_ms END) AS avg_latency_ms_1h,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?4 THEN 1 ELSE 0 END), 0) AS attempts_1d,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?4 AND is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count_1d,
+               AVG(CASE WHEN occurred_at >= ?4 AND is_success != 0 THEN latency_ms END) AS avg_latency_ms_1d
         FROM forward_proxy_attempts
-        WHERE occurred_at >= ?1
+        WHERE occurred_at >= ?5
         GROUP BY proxy_key
         "#,
     )
-    .bind(since_epoch)
+    .bind(one_minute)
+    .bind(fifteen_minutes)
+    .bind(one_hour)
+    .bind(one_day)
+    .bind(seven_days)
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.proxy_key,
-                ForwardProxyAttemptWindowStats {
-                    attempts: row.attempts,
-                    success_count: row.success_count,
-                    avg_latency_ms: row.avg_latency_ms,
-                },
-            )
-        })
-        .collect())
+    let mut windows = vec![
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    ];
+    for row in rows {
+        let proxy_key: String = row.try_get("proxy_key")?;
+        windows[0].insert(
+            proxy_key.clone(),
+            forward_proxy_attempt_window_from_row(
+                &row,
+                "attempts_1m",
+                "success_count_1m",
+                "avg_latency_ms_1m",
+            )?,
+        );
+        windows[1].insert(
+            proxy_key.clone(),
+            forward_proxy_attempt_window_from_row(
+                &row,
+                "attempts_15m",
+                "success_count_15m",
+                "avg_latency_ms_15m",
+            )?,
+        );
+        windows[2].insert(
+            proxy_key.clone(),
+            forward_proxy_attempt_window_from_row(
+                &row,
+                "attempts_1h",
+                "success_count_1h",
+                "avg_latency_ms_1h",
+            )?,
+        );
+        windows[3].insert(
+            proxy_key.clone(),
+            forward_proxy_attempt_window_from_row(
+                &row,
+                "attempts_1d",
+                "success_count_1d",
+                "avg_latency_ms_1d",
+            )?,
+        );
+        windows[4].insert(
+            proxy_key,
+            forward_proxy_attempt_window_from_row(
+                &row,
+                "attempts_7d",
+                "success_count_7d",
+                "avg_latency_ms_7d",
+            )?,
+        );
+    }
+    Ok(windows)
 }
 
 async fn query_forward_proxy_hourly_stats(
@@ -892,4 +969,3 @@ async fn query_forward_proxy_weight_last_before(
         .map(|row| (row.proxy_key, row.last_weight))
         .collect())
 }
-

@@ -1662,6 +1662,7 @@
             .id;
 
         let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = chrono::Utc::now().timestamp();
         sqlx::query(
             r#"
             INSERT INTO request_logs (
@@ -1690,15 +1691,15 @@
             "#,
         )
         .bind(&key_id)
-        .bind(100_i64)
+        .bind(now - 200)
         .bind(&key_id)
-        .bind(200_i64)
+        .bind(now - 150)
         .bind(&key_id)
         .bind(br#"{"jsonrpc":"2.0","id":"search-like-control-plane","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"how to initialize rust logging","search_depth":"basic"}}}"#.as_slice())
-        .bind(250_i64)
+        .bind(now - 100)
         .bind(&key_id)
         .bind(br#"[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":"mixed-batch-search","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"mixed batch should stay billable","search_depth":"basic"}}}]"#.as_slice())
-        .bind(275_i64)
+        .bind(now - 50)
         .execute(&pool)
         .await
         .expect("insert request logs");
@@ -1727,7 +1728,7 @@
         )
         .bind(&key_id)
         .bind(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.as_slice())
-        .bind(300_i64)
+        .bind(now - 25)
         .execute(&pool)
         .await
         .expect("insert neutral request log");
@@ -1762,7 +1763,7 @@
         .bind(
             br#"{"error":"Method Not Allowed","message":"Method Not Allowed: Session termination not supported"}"#.as_slice(),
         )
-        .bind(325_i64)
+        .bind(now)
         .execute(&pool)
         .await
         .expect("insert session delete neutral request log");
@@ -2129,6 +2130,7 @@
             .id;
 
         let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = chrono::Utc::now().timestamp();
         sqlx::query(
             r#"
             INSERT INTO request_logs (
@@ -2155,14 +2157,17 @@
                 visibility,
                 created_at
             ) VALUES
-                (?, 'token-a', 'POST', '/api/tavily/search', 'q=a', 200, 200, NULL, 'success', 'api:search', 'API | search', NULL, 2, NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', 'visible', 100),
-                (?, 'token-b', 'POST', '/api/tavily/search', 'q=b', 500, 500, 'boom', 'error', 'api:search', 'API | search', NULL, NULL, 'upstream_500', 'quarantined', 'The system automatically quarantined this key', X'7B7D', X'5B5D', '[]', '[]', 'visible', 200),
-                (?, 'token-c', 'POST', '/api/tavily/extract', 'q=c', 200, 200, NULL, 'success', 'api:extract', 'API | extract', NULL, 3, NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', 'visible', 300)
+                (?, 'token-a', 'POST', '/api/tavily/search', 'q=a', 200, 200, NULL, 'success', 'api:search', 'API | search', NULL, 2, NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', 'visible', ?),
+                (?, 'token-b', 'POST', '/api/tavily/search', 'q=b', 500, 500, 'boom', 'error', 'api:search', 'API | search', NULL, NULL, 'upstream_500', 'quarantined', 'The system automatically quarantined this key', X'7B7D', X'5B5D', '[]', '[]', 'visible', ?),
+                (?, 'token-c', 'POST', '/api/tavily/extract', 'q=c', 200, 200, NULL, 'success', 'api:extract', 'API | extract', NULL, 3, NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', 'visible', ?)
             "#,
         )
         .bind(&key_id)
+        .bind(now - 2)
         .bind(&key_id)
+        .bind(now - 1)
         .bind(&key_id)
+        .bind(now)
         .execute(&pool)
         .await
         .expect("insert request logs");
@@ -2418,4 +2423,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

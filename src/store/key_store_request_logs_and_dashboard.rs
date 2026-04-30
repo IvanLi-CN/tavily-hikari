@@ -589,6 +589,17 @@ impl KeyStore {
             return Ok(cached);
         }
 
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
+        if let Some(cache_key) = cache_key.as_deref()
+            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
+        {
+            return Ok(cached);
+        }
+
         let request_kind_options = self
             .fetch_request_log_request_kind_options(scoped_key_id, since, filters)
             .await?;
@@ -905,16 +916,27 @@ impl KeyStore {
         per_page: i64,
         include_token_facets: bool,
         include_key_facets: bool,
+        include_bodies: bool,
     ) -> Result<RequestLogsPage, ProxyError> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
         let stored_request_kind_sql = "request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
+        );
+        let effective_request_kind_label_sql =
+            canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql =
             request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
@@ -935,6 +957,33 @@ impl KeyStore {
             result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
         let legacy_result_bucket_sql =
             result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+        let effective_counts_business_quota_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
+        );
+        let effective_non_billable_mcp_sql =
+            token_request_kind_non_billable_mcp_sql(&effective_request_kind_sql);
+        let effective_request_kind_protocol_group_sql = format!(
+            "CASE WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
+        );
+        let effective_request_kind_billing_group_sql = format!(
+            "
+            CASE
+                WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) IN (
+                    'api:research-result',
+                    'api:usage',
+                    'api:unknown-path'
+                ) THEN 'non_billable'
+                WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) = 'mcp:batch'
+                    AND {effective_counts_business_quota_sql} = 0
+                    THEN 'non_billable'
+                WHEN {effective_non_billable_mcp_sql} THEN 'non_billable'
+                ELSE 'billable'
+            END
+            "
+        );
+        let effective_operational_class_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_operational_class_case_sql} ELSE {stored_operational_class_case_sql} END"
+        );
 
         let mut total_query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM request_logs");
         let has_where = Self::push_request_logs_scope(&mut total_query, scoped_key_id, since);
@@ -979,7 +1028,17 @@ impl KeyStore {
             .fetch_one(&self.pool)
             .await?;
 
-        let mut items_query = QueryBuilder::<Sqlite>::new(
+        let request_body_select = if include_bodies {
+            "request_body"
+        } else {
+            "NULL AS request_body"
+        };
+        let response_body_select = if include_bodies {
+            "response_body"
+        } else {
+            "NULL AS response_body"
+        };
+        let mut items_query = QueryBuilder::<Sqlite>::new(format!(
             r#"
             SELECT
                 id,
@@ -992,8 +1051,8 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
-                request_kind_key,
-                request_kind_label,
+                {effective_request_kind_sql} AS request_kind_key,
+                {effective_request_kind_label_sql} AS request_kind_label,
                 request_kind_detail,
                 business_credits,
                 failure_kind,
@@ -1009,15 +1068,17 @@ impl KeyStore {
                 routing_subject_hash,
                 upstream_operation,
                 fallback_reason,
-                request_body,
-                response_body,
+                {request_body_select},
+                {response_body_select},
                 forwarded_headers,
                 dropped_headers,
+                {effective_operational_class_sql} AS operational_class,
+                {effective_request_kind_protocol_group_sql} AS request_kind_protocol_group,
+                {effective_request_kind_billing_group_sql} AS request_kind_billing_group,
                 created_at
             FROM request_logs
             "#
-            .to_string(),
-        );
+        ));
         let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
         Self::push_request_logs_filters(
             &mut items_query,

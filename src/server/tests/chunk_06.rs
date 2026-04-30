@@ -1,5 +1,5 @@
     #[tokio::test]
-    async fn key_and_token_logs_catalog_scope_and_cache_invalidation_work() {
+    async fn key_and_token_logs_catalog_scope_and_cache_ttl_work() {
         let db_path = temp_db_path("key-token-logs-catalog");
         let db_str = db_path.to_string_lossy().to_string();
         let expected_api_key = "tvly-key-token-logs-catalog";
@@ -98,7 +98,7 @@
             .expect("search request");
         assert_eq!(search_resp.status(), reqwest::StatusCode::OK);
 
-        let key_catalog_resp = client
+        let cached_key_catalog_resp = client
             .get(format!(
                 "http://{}/api/keys/{}/logs/catalog?since=0",
                 admin_addr, key_id
@@ -106,21 +106,25 @@
             .header(reqwest::header::COOKIE, admin_cookie.clone())
             .send()
             .await
-            .expect("key catalog");
-        assert_eq!(key_catalog_resp.status(), reqwest::StatusCode::OK);
-        let key_catalog: serde_json::Value =
-            key_catalog_resp.json().await.expect("key catalog json");
+            .expect("cached key catalog");
+        assert_eq!(cached_key_catalog_resp.status(), reqwest::StatusCode::OK);
+        let cached_key_catalog: serde_json::Value = cached_key_catalog_resp
+            .json()
+            .await
+            .expect("cached key catalog json");
         assert_eq!(
-            key_catalog
+            cached_key_catalog
                 .get("retentionDays")
                 .and_then(|value| value.as_i64()),
             Some(effective_request_logs_retention_days())
         );
         assert_eq!(
-            key_catalog
-                .pointer("/facets/tokens/0/value")
-                .and_then(|value| value.as_str()),
-            Some(token.id.as_str())
+            cached_key_catalog
+                .pointer("/facets/tokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0),
+            "unfiltered key catalog should stay on its TTL cache after a hot write"
         );
         let filtered_key_catalog_resp = client
             .get(format!(
@@ -142,6 +146,12 @@
                 .and_then(|value| value.as_str()),
             Some("api:search")
         );
+        assert_eq!(
+            filtered_key_catalog
+                .pointer("/facets/tokens/0/value")
+                .and_then(|value| value.as_str()),
+            Some(token.id.as_str())
+        );
         let invalid_key_catalog_resp = client
             .get(format!(
                 "http://{}/api/keys/{}/logs/catalog?since=0&operational_class=totally-invalid",
@@ -156,7 +166,7 @@
             reqwest::StatusCode::BAD_REQUEST
         );
 
-        let token_catalog_resp = client
+        let cached_token_catalog_resp = client
             .get(format!(
                 "http://{}/api/tokens/{}/logs/catalog?since={}&until={}",
                 admin_addr,
@@ -167,22 +177,19 @@
             .header(reqwest::header::COOKIE, admin_cookie.clone())
             .send()
             .await
-            .expect("token catalog");
-        assert_eq!(token_catalog_resp.status(), reqwest::StatusCode::OK);
-        let token_catalog: serde_json::Value =
-            token_catalog_resp.json().await.expect("token catalog json");
+            .expect("cached token catalog");
+        assert_eq!(cached_token_catalog_resp.status(), reqwest::StatusCode::OK);
+        let cached_token_catalog: serde_json::Value = cached_token_catalog_resp
+            .json()
+            .await
+            .expect("cached token catalog json");
         assert_eq!(
-            token_catalog
-                .pointer("/facets/keys/0/value")
-                .and_then(|value| value.as_str()),
-            Some(key_id.as_str())
-        );
-        assert!(
-            token_catalog
-                .pointer("/requestKindOptions/0/key")
-                .and_then(|value| value.as_str())
-                .is_some(),
-            "token catalog should refresh after a new token log is written"
+            cached_token_catalog
+                .pointer("/facets/keys")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0),
+            "unfiltered token catalog should stay on its TTL cache after a hot write"
         );
         let filtered_token_catalog_resp = client
             .get(format!(
@@ -632,6 +639,7 @@
             .id;
 
         let pool = connect_sqlite_test_pool(&db_str).await;
+        let created_at = chrono::Utc::now().timestamp();
         let request_log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO request_logs (
@@ -664,7 +672,7 @@
         .bind(&key_id)
         .bind(br#"{"query":"incident review"}"#.to_vec())
         .bind(br#"{"answer":"stable"}"#.to_vec())
-        .bind(1_000_i64)
+        .bind(created_at)
         .fetch_one(&pool)
         .await
         .expect("insert request log");
@@ -862,6 +870,7 @@
             .id;
 
         let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = chrono::Utc::now().timestamp();
         sqlx::query(
             r#"
             INSERT INTO request_logs (
@@ -890,9 +899,9 @@
             "#,
         )
         .bind(&key_id)
-        .bind(100_i64)
+        .bind(now - 1)
         .bind(&key_id)
-        .bind(200_i64)
+        .bind(now)
         .execute(&pool)
         .await
         .expect("insert canonical request log rows");
@@ -2402,4 +2411,3 @@
         drop(events_resp);
         let _ = std::fs::remove_file(db_path);
     }
-

@@ -935,8 +935,6 @@ impl KeyStore {
         .await?;
         self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
             .await?;
-
-        self.invalidate_request_logs_catalog_cache().await;
         Ok(())
     }
 
@@ -1081,8 +1079,6 @@ impl KeyStore {
         .await?;
         self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
             .await?;
-
-        self.invalidate_request_logs_catalog_cache().await;
         Ok(log_id)
     }
 
