@@ -16,6 +16,7 @@ impl ForwardProxyManager {
             probe_in_flight: false,
             last_probe_at: Utc::now().timestamp() - FORWARD_PROXY_PROBE_INTERVAL_SECS,
             last_subscription_refresh_at: None,
+            window_stats_cache: Arc::new(RwLock::new(None)),
         };
         manager.rebuild_endpoints(Vec::new());
         manager
@@ -498,4 +499,3 @@ pub struct SelectedForwardProxy {
     uses_local_relay: bool,
     relay_handle: Option<Arc<SharedXrayRelayHandle>>,
 }
-

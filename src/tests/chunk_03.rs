@@ -2201,6 +2201,12 @@ async fn user_dashboard_summary_daily_metrics_follow_explicit_window() {
     insert_auth_token_metric_log(&proxy, &token.id, now_ts - 600, OUTCOME_SUCCESS).await;
     insert_auth_token_metric_log(&proxy, &token.id, now_ts - 300, OUTCOME_ERROR).await;
     insert_auth_token_metric_log(&proxy, &token.id, now_ts - 86_400, OUTCOME_SUCCESS).await;
+    let current_month_start = start_of_month(Utc::now()).timestamp();
+    let expected_monthly_success = if now_ts - 86_400 >= current_month_start {
+        2
+    } else {
+        1
+    };
 
     let summary = proxy
         .user_dashboard_summary(&user.user_id, Some(explicit_window))
@@ -2209,7 +2215,7 @@ async fn user_dashboard_summary_daily_metrics_follow_explicit_window() {
 
     assert_eq!(summary.daily_success, 1);
     assert_eq!(summary.daily_failure, 1);
-    assert_eq!(summary.monthly_success, 2);
+    assert_eq!(summary.monthly_success, expected_monthly_success);
 }
 
 #[tokio::test]
@@ -2527,4 +2533,3 @@ async fn summary_windows_count_distinct_upstream_exhausted_keys() {
 
     let _ = std::fs::remove_file(db_path);
 }
-

@@ -6,7 +6,8 @@ pub async fn build_forward_proxy_settings_response(
     let runtime_rows = manager.snapshot_runtime();
     let counts = load_forward_proxy_assignment_counts(pool).await?;
     let now = Utc::now().timestamp();
-    let window_maps = query_forward_proxy_window_stats_set(pool, now).await?;
+    let window_maps =
+        query_forward_proxy_window_stats_set_cached(pool, &manager.window_stats_cache, now).await?;
     let mut nodes =
         runtime_rows
             .into_iter()
@@ -72,7 +73,9 @@ pub async fn build_forward_proxy_live_stats_response(
         .collect::<Vec<_>>();
     let counts = load_forward_proxy_assignment_counts(pool).await?;
     let now_epoch = Utc::now().timestamp();
-    let window_maps = query_forward_proxy_window_stats_set(pool, now_epoch).await?;
+    let window_maps =
+        query_forward_proxy_window_stats_set_cached(pool, &manager.window_stats_cache, now_epoch)
+            .await?;
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
     let hourly_map =

@@ -978,6 +978,332 @@ async fn startup_migration_preserves_legacy_mcp_session_retry_key_effects() {
 }
 
 #[tokio::test]
+async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
+    let db_path = temp_db_path("request-log-catalog-rollup-feeds-page");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let now = Utc::now().timestamp();
+
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            auth_token_id,
+            method,
+            path,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            business_credits,
+            failure_kind,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            request_body,
+            visibility,
+            created_at
+        ) VALUES
+            ('rollup-token-batch', 'POST', '/mcp', 'success', 'mcp:batch', 'MCP | batch', NULL, NULL, 'none', 'none', 'none', ?, 'visible', ?),
+            ('rollup-token-legacy-search', 'POST', '/mcp', 'success', NULL, NULL, 1, NULL, 'none', 'none', 'none', ?, 'visible', ?),
+            ('rollup-token-legacy-tools-call', 'POST', '/mcp', 'success', 'mcp:tools/call', 'MCP | tools/call', 1, NULL, 'none', 'none', 'none', ?, 'visible', ?),
+            ('rollup-token-a', 'POST', '/api/tavily/search', 'success', 'api:search', 'API | search', 1, NULL, 'none', 'none', 'none', NULL, 'visible', ?),
+            ('rollup-token-b', 'POST', '/api/tavily/search', 'error', 'api:search', 'API | search', NULL, 'upstream_500', 'quarantined', 'none', 'none', NULL, 'visible', ?),
+            ('rollup-token-c', 'POST', '/api/tavily/extract', 'success', 'api:extract', 'API | extract', 2, NULL, 'none', 'none', 'none', NULL, 'visible', ?)
+        "#,
+    )
+    .bind(br#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#.as_slice())
+    .bind(now - 3)
+    .bind(br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tavily-search","arguments":{"query":"rollup"}}}"#.as_slice())
+    .bind(now - 2)
+    .bind(br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tavily-search","arguments":{"query":"legacy-key-rollup"}}}"#.as_slice())
+    .bind(now - 2)
+    .bind(now - 2)
+    .bind(now - 1)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert visible request logs");
+
+    let catalog = proxy
+        .request_logs_catalog(&[], None, None, None, None, None, None, None)
+        .await
+        .expect("load rollup-backed catalog");
+    let search_kind = catalog
+        .request_kind_options
+        .iter()
+        .find(|option| option.key == "api:search")
+        .expect("search request kind option");
+    assert_eq!(search_kind.count, 2);
+    let mcp_search_kind = catalog
+        .request_kind_options
+        .iter()
+        .find(|option| option.key == "mcp:search")
+        .expect("legacy MCP search request kind option");
+    assert_eq!(mcp_search_kind.count, 2);
+    let success_result = catalog
+        .facets
+        .results
+        .iter()
+        .find(|option| option.value == "success")
+        .expect("success result facet");
+    assert_eq!(success_result.count, 4);
+    let neutral_result = catalog
+        .facets
+        .results
+        .iter()
+        .find(|option| option.value == "neutral")
+        .expect("neutral result facet");
+    assert_eq!(neutral_result.count, 1);
+
+    let filtered_catalog = proxy
+        .request_logs_catalog(
+            &["api:extract".to_string()],
+            Some("success"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("load filtered catalog");
+    assert_eq!(filtered_catalog.request_kind_options.len(), 1);
+    assert_eq!(filtered_catalog.request_kind_options[0].key, "api:extract");
+    assert_eq!(filtered_catalog.request_kind_options[0].count, 1);
+
+    let legacy_page = proxy
+        .request_logs_page(
+            &["api:search".to_string()],
+            Some("success"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            10,
+            false,
+        )
+        .await
+        .expect("load legacy logs page");
+    assert_eq!(legacy_page.total, 1);
+    assert_eq!(legacy_page.items.len(), 1);
+    assert!(
+        legacy_page.items[0].request_body.is_empty()
+            && legacy_page.items[0].response_body.is_empty()
+    );
+
+    let legacy_mcp_search_page = proxy
+        .request_logs_page(
+            &["mcp:search".to_string()],
+            Some("success"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            10,
+            false,
+        )
+        .await
+        .expect("load legacy MCP search logs page");
+    assert_eq!(legacy_mcp_search_page.total, 2);
+    assert_eq!(legacy_mcp_search_page.items.len(), 2);
+
+    let neutral_batch_page = proxy
+        .request_logs_page(
+            &["mcp:batch".to_string()],
+            Some("neutral"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            10,
+            false,
+        )
+        .await
+        .expect("load neutral batch legacy logs page");
+    assert_eq!(neutral_batch_page.total, 1);
+
+    let since_page = proxy
+        .key_store
+        .fetch_request_logs_page(
+            None,
+            Some(now),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            10,
+            true,
+            true,
+            false,
+        )
+        .await
+        .expect("load exact since logs page");
+    assert_eq!(since_page.total, 1);
+    assert_eq!(since_page.items.len(), 1);
+    assert_eq!(since_page.items[0].auth_token_id.as_deref(), Some("rollup-token-c"));
+
+    sqlx::query(
+        "UPDATE request_logs SET key_effect_code = ? WHERE auth_token_id = 'rollup-token-a'",
+    )
+    .bind(KEY_EFFECT_MARKED_EXHAUSTED)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("update request log effect");
+    let updated_catalog = proxy
+        .request_logs_catalog(
+            &[],
+            None,
+            Some(KEY_EFFECT_MARKED_EXHAUSTED),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("load update-adjusted catalog");
+    let quarantined_effect = updated_catalog
+        .facets
+        .key_effects
+        .iter()
+        .find(|option| option.value == KEY_EFFECT_MARKED_EXHAUSTED)
+        .expect("marked exhausted key effect facet");
+    assert_eq!(quarantined_effect.count, 1);
+
+    let _permit = proxy
+        .key_store
+        .admin_heavy_read_semaphore
+        .acquire()
+        .await
+        .expect("heavy read semaphore open");
+    let catalog_result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        proxy.request_logs_catalog(&[], None, None, None, None, None, None, None),
+    )
+    .await;
+    assert!(
+        catalog_result.is_ok(),
+        "request log catalog should not queue behind the shared admin heavy-read semaphore"
+    );
+
+    let retention_since =
+        request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            auth_token_id,
+            method,
+            path,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            business_credits,
+            failure_kind,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            visibility,
+            created_at
+        ) VALUES (
+            'rollup-token-retention-old', 'POST', '/api/tavily/search', 'success',
+            'api:search', 'API | search', 1, NULL, 'none', 'none', 'none', 'visible', ?
+        )
+        "#,
+    )
+    .bind(retention_since - 60)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert older retained row outside rollup window");
+
+    sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_canonical_request_kind_update")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate database before legacy canonicalization trigger");
+    sqlx::query(
+        r#"
+        UPDATE request_logs
+        SET request_kind_key = 'mcp:tools/call',
+            request_kind_label = 'MCP | tools/call',
+            request_kind_detail = NULL
+        WHERE auth_token_id = 'rollup-token-legacy-tools-call'
+        "#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate retained legacy request kind before rollup rebuild");
+    sqlx::query("DELETE FROM request_log_catalog_rollups")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate stale missing catalog rollup after retention change");
+    proxy
+        .key_store
+        .set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
+        .await
+        .expect("mark rollup done");
+    proxy
+        .key_store
+        .set_meta_i64(
+            META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
+            effective_request_logs_retention_days() - 1,
+        )
+        .await
+        .expect("simulate previous retention window");
+    let rebuilt_proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy rebuilt rollup after retention metadata changed");
+    let rebuilt_catalog = rebuilt_proxy
+        .request_logs_catalog(&["mcp:search".to_string()], None, None, None, None, None, None, None)
+        .await
+        .expect("load rebuilt catalog after retention change");
+    assert_eq!(rebuilt_catalog.request_kind_options[0].count, 2);
+    let clamped_page = rebuilt_proxy
+        .key_store
+        .fetch_request_logs_page(
+            None,
+            Some(retention_since - 3600),
+            &["api:search".to_string()],
+            Some("success"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            10,
+            true,
+            true,
+            false,
+        )
+        .await
+        .expect("load custom-since logs page clamped to retention");
+    assert_eq!(clamped_page.total, 1);
+    assert_eq!(clamped_page.items.len(), 1);
+    assert_eq!(
+        clamped_page.items[0].auth_token_id.as_deref(),
+        Some("rollup-token-a")
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn pending_billing_for_previous_account_subject_stays_pending_after_token_becomes_unbound() {
     let db_path = temp_db_path("pending-billing-account-to-token-subject-flip");
     let db_str = db_path.to_string_lossy().to_string();

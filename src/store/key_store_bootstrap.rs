@@ -1285,6 +1285,7 @@ impl KeyStore {
         }
 
         self.ensure_request_kind_canonical_migration_v1().await?;
+        self.ensure_request_log_catalog_rollup_schema().await?;
 
         if self
             .get_meta_i64(META_KEY_API_KEY_CREATED_AT_BACKFILL_V1)
@@ -1336,6 +1337,26 @@ impl KeyStore {
             self.rebuild_dashboard_request_rollup_buckets().await?;
             self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 1)
                 .await?;
+        }
+
+        let request_log_catalog_rollup_retention_days = effective_request_logs_retention_days();
+        let request_log_catalog_rollup_needs_rebuild = self
+            .get_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
+            .await?
+            != Some(1)
+            || self
+                .get_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS)
+                .await?
+                != Some(request_log_catalog_rollup_retention_days);
+        if request_log_catalog_rollup_needs_rebuild {
+            self.rebuild_request_log_catalog_rollups().await?;
+            self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
+                .await?;
+            self.set_meta_i64(
+                META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
+                request_log_catalog_rollup_retention_days,
+            )
+            .await?;
         }
 
         // After ensuring schemas, run the data consistency migration at most once.

@@ -2642,9 +2642,9 @@ async fn request_kind_database_migration_uses_persisted_upper_bounds() {
             .bind(late_request_log_id)
             .fetch_one(&proxy.key_store.pool)
             .await
-            .expect("late request log untouched");
+            .expect("late request log canonicalized by write-path trigger");
     assert_eq!(canonical_request_kind, "mcp:unsupported-path");
-    assert_eq!(late_request_kind, "mcp:raw:/mcp/late");
+    assert_eq!(late_request_kind, "mcp:unsupported-path");
 
     let canonical_token_kind: String =
         sqlx::query_scalar("SELECT request_kind_key FROM auth_token_logs WHERE id = ?")

@@ -1990,6 +1990,15 @@ impl KeyStore {
                 break;
             }
         }
+        sqlx::query(
+            r#"
+            DELETE FROM request_log_catalog_rollups
+            WHERE bucket_start < ?
+            "#,
+        )
+        .bind(threshold)
+        .execute(&self.pool)
+        .await?;
         self.invalidate_request_logs_catalog_cache().await;
         Ok(total_deleted)
     }

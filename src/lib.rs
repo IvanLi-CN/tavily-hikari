@@ -581,6 +581,9 @@ const META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE: &str =
     "api_key_usage_buckets_request_value_v2_done";
 const META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE: &str =
     "dashboard_request_rollup_buckets_v1_done";
+const META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE: &str = "request_log_catalog_rollup_v1_done";
+const META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS: &str =
+    "request_log_catalog_rollup_v1_retention_days";
 const META_KEY_ACCOUNT_QUOTA_BACKFILL_V1: &str = "account_quota_backfill_v1";
 const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
     "account_quota_inherits_defaults_backfill_v1";

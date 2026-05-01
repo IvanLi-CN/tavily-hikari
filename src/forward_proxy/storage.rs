@@ -764,6 +764,41 @@ fn forward_proxy_attempt_window_from_row(
     })
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ForwardProxyWindowStatsSetCacheEntry {
+    value: Vec<HashMap<String, ForwardProxyAttemptWindowStats>>,
+    expires_at: Instant,
+}
+
+async fn query_forward_proxy_window_stats_set_cached(
+    pool: &SqlitePool,
+    cache: &RwLock<Option<ForwardProxyWindowStatsSetCacheEntry>>,
+    now_epoch: i64,
+) -> Result<Vec<HashMap<String, ForwardProxyAttemptWindowStats>>, ProxyError> {
+    let now = Instant::now();
+    if let Some(cached) = cache.read().await.as_ref()
+        && cached.expires_at > now
+    {
+        return Ok(cached.value.clone());
+    }
+
+    let mut cache = cache.write().await;
+    let now = Instant::now();
+    if let Some(cached) = cache.as_ref()
+        && cached.expires_at > now
+    {
+        return Ok(cached.value.clone());
+    }
+
+    let value = query_forward_proxy_window_stats_set(pool, now_epoch).await?;
+    *cache = Some(ForwardProxyWindowStatsSetCacheEntry {
+        value: value.clone(),
+        expires_at: Instant::now()
+            + Duration::from_secs(FORWARD_PROXY_WINDOW_STATS_CACHE_TTL_SECS),
+    });
+    Ok(value)
+}
+
 async fn query_forward_proxy_window_stats_set(
     pool: &SqlitePool,
     now_epoch: i64,

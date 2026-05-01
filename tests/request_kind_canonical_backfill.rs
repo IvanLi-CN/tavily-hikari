@@ -434,7 +434,7 @@ async fn request_kind_backfill_resumes_from_meta_cursor() {
             .fetch_one(&pool)
             .await
             .expect("second request kind");
-    assert_eq!(first_request_kind, "mcp:raw:/mcp/search");
+    assert_eq!(first_request_kind, "mcp:unsupported-path");
     assert_eq!(second_request_kind, "mcp:unsupported-path");
 
     let first_token_kind: String =

@@ -36,6 +36,7 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     let local_month_start = start_of_local_month_utc_ts(now);
     let utc_month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
     let now_ts = now.with_timezone(&Utc).timestamp();
+    let today_quota_sample_start = today_start.max(utc_month_start);
 
     sqlx::query("UPDATE api_keys SET last_used_at = ?, quota_synced_at = ? WHERE id = ?")
         .bind(now_ts - 30 * 60)
@@ -70,11 +71,11 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     .bind(&key_id)
     .bind(yesterday_start + 60)
     .bind(&key_id)
-    .bind(today_start + 60)
+    .bind(today_quota_sample_start + 60)
     .bind(&key_id)
-    .bind(today_start + 120)
+    .bind(today_quota_sample_start + 120)
     .bind(&key_id)
-    .bind(today_start + 180)
+    .bind(today_quota_sample_start + 180)
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert quota sync samples");
@@ -106,7 +107,7 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     assert_eq!(summary.today.quota_charge.stale_key_count, 1);
     assert_eq!(
         summary.today.quota_charge.latest_sync_at,
-        Some(today_start + 180)
+        Some(today_quota_sample_start + 180)
     );
 
     assert_eq!(summary.yesterday.quota_charge.local_estimated_credits, 5);
@@ -302,10 +303,16 @@ async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_
         .success_breakdown(Some(today_window))
         .await
         .expect("public success breakdown");
+    let current_month_start = start_of_month(Utc::now()).timestamp();
+    let expected_public_monthly_success = if month_start >= current_month_start {
+        13
+    } else {
+        0
+    };
 
     assert_eq!(summary.monthly_success, 13);
     assert_eq!(summary.daily_success, 0);
-    assert_eq!(public_summary.monthly_success, 13);
+    assert_eq!(public_summary.monthly_success, expected_public_monthly_success);
     assert_eq!(public_summary.daily_success, 0);
 
     let _ = std::fs::remove_file(db_path);
@@ -410,8 +417,14 @@ async fn public_success_breakdown_does_not_double_count_retained_partial_minute(
         .success_breakdown(Some(window))
         .await
         .expect("public rollup success breakdown");
+    let current_month_start = start_of_month(Utc::now()).timestamp();
+    let expected_monthly_success = if local_day_bucket_start_utc_ts(minute_start) >= current_month_start {
+        4
+    } else {
+        3
+    };
 
-    assert_eq!(public.monthly_success, 4);
+    assert_eq!(public.monthly_success, expected_monthly_success);
     assert_eq!(public.daily_success, 4);
 
     let _ = std::fs::remove_file(db_path);

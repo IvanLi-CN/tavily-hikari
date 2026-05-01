@@ -131,8 +131,11 @@
 
 ### Slow-query containment
 
-- 日志 catalog 与 legacy page 查询共享有界 admin heavy-read semaphore，防止多个管理端重读同时占满主 SQLite worker。
-- `/api/logs/catalog`、`/api/keys/:id/logs/catalog`、`/api/tokens/:id/logs/catalog` 在获取 semaphore 后二次检查 cache，避免并发 cache miss 重复执行 facets 聚合。
+- 全局 request-log catalog 使用 `request_log_catalog_rollups` 读取 request kind、result、effect、token、key 与 operational class facets；冷态和带筛选 catalog 不再对 `request_logs` 宽表重复执行多组 `COUNT/GROUP BY`。
+- rollup 覆盖 request log retention 窗口，按时间戳和 facets 维度聚合以保留精确 `since` 语义；启动时先完成 request kind canonical migration，再 bounded rebuild retained history，并记录 rebuild 使用的 retention 天数；后续 legacy write-path rows 先 canonicalize request kind，再由 visible request log insert/update/delete trigger 增量维护同一维度。
+- legacy `/api/logs` 保留响应 shape，但 `total` 与 facets 读取同一 rollup；列表 rows 继续 bounded page query，默认不返回 request/response bodies，`include_bodies=true` 仅作为兼容诊断入口。
+- 全局 `/api/logs/catalog` 不再占用 shared admin heavy-read semaphore，避免 catalog 冷态或过滤态把 `/api/users`、`/api/tokens`、`/api/keys` 排队到同一个闸门后面。
+- key/token scoped catalog 仍可使用既有 cache/semaphore 保护；如未来线上出现同类宽表聚合慢读，优先迁到 scope-specific rollup 或独立轻量查询路径。
 - legacy list rows 在 SQL 中投影 canonical request kind、billing group 与 operational class；即使不选择 request/response bodies，也保持筛选与视图元数据一致。
 
 ## 验收标准（Acceptance Criteria）
@@ -160,6 +163,14 @@
 - Given request log 新写入后使用带筛选条件的 catalog，或 `request_logs_gc` 执行完成
   When 下一次获取对应 catalog
   Then 筛选结果或结构性删除已反映最新状态。
+
+- Given 管理员请求全局 `/api/logs/catalog` 或 legacy `/api/logs`
+  When 数据库中 request log 宽表达到生产级体量
+  Then catalog facets 与 legacy total/facets 必须来自 retention-bounded rollup，不允许回退到全历史 `request_logs` 宽表聚合。
+
+- Given catalog 冷态或过滤 catalog 正在执行
+  When 同时请求 `/api/users?page=1&per_page=10`
+  Then users 列表不得等待全局 catalog 占用 shared admin heavy-read semaphore。
 
 - Given public home / user console 渲染最近请求
   When 本轮改动合入

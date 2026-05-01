@@ -584,5 +584,5 @@ pub struct ForwardProxyManager {
     pub probe_in_flight: bool,
     pub last_probe_at: i64,
     pub last_subscription_refresh_at: Option<i64>,
+    pub(crate) window_stats_cache: Arc<RwLock<Option<ForwardProxyWindowStatsSetCacheEntry>>>,
 }
-

@@ -189,60 +189,6 @@ impl KeyStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_request_logs_catalog_filters<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
-        scoped_key_id: Option<&'a str>,
-        since: Option<i64>,
-        filters: RequestLogsCatalogFilters<'a>,
-        stored_request_kind_sql: &'a str,
-        legacy_request_kind_predicate_sql: &'a str,
-        legacy_request_kind_sql: &'a str,
-        stored_operational_class_case_sql: &'a str,
-        legacy_operational_class_case_sql: &'a str,
-        stored_result_bucket_sql: &'a str,
-        legacy_result_bucket_sql: &'a str,
-    ) {
-        let normalized_request_kinds = Self::normalize_request_kind_filters(filters.request_kinds);
-        let has_where = Self::push_request_logs_scope(builder, scoped_key_id, since);
-        Self::push_request_logs_filters(
-            builder,
-            RequestLogFilterParams {
-                request_kinds: &normalized_request_kinds,
-                result_status: None,
-                key_effect_code: filters.key_effect_code,
-                binding_effect_code: filters.binding_effect_code,
-                selection_effect_code: filters.selection_effect_code,
-                auth_token_id: filters.auth_token_id,
-                key_id: filters.key_id,
-                stored_request_kind_sql,
-                legacy_request_kind_predicate_sql,
-                legacy_request_kind_sql,
-                has_where,
-            },
-        );
-        if let Some(result_status) = filters.result_status {
-            builder.push(" AND ");
-            Self::push_result_bucket_filter_clause(
-                builder,
-                result_status,
-                legacy_request_kind_predicate_sql,
-                stored_result_bucket_sql,
-                legacy_result_bucket_sql,
-            );
-        }
-        if let Some(operational_class) = filters.operational_class {
-            builder.push(" AND ");
-            Self::push_operational_class_filter_clause(
-                builder,
-                operational_class,
-                legacy_request_kind_predicate_sql,
-                stored_operational_class_case_sql,
-                legacy_operational_class_case_sql,
-            );
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn push_token_logs_catalog_filters<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         token_id: &'a str,
@@ -314,6 +260,165 @@ impl KeyStore {
         }
     }
 
+    fn request_log_catalog_bucket_start_sql(created_at_sql: &str) -> String {
+        created_at_sql.to_string()
+    }
+
+    fn clamp_request_logs_rollup_since(since: Option<i64>) -> Option<i64> {
+        let retention_since =
+            request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+        Some(since.unwrap_or(retention_since).max(retention_since))
+    }
+
+    fn request_log_catalog_rollup_exprs(prefix: &str) -> Vec<String> {
+        let col = |name: &str| -> String {
+            if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}{name}")
+            }
+        };
+        let stored_request_kind_sql = col("request_kind_key");
+        let effective_request_kind_sql = stored_request_kind_sql.clone();
+        let counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"));
+        let operational_class_sql = request_log_operational_class_case_sql(
+            &effective_request_kind_sql,
+            &counts_business_quota_sql,
+            &col("result_status"),
+            &format!("COALESCE({}, '')", col("failure_kind")),
+        );
+        let result_bucket_sql = result_bucket_case_sql(&operational_class_sql, &col("result_status"));
+        let request_kind_label_sql = format!(
+            "COALESCE(NULLIF(TRIM({}), ''), {})",
+            col("request_kind_label"),
+            canonical_request_kind_label_sql(&effective_request_kind_sql)
+        );
+
+        vec![
+            Self::request_log_catalog_bucket_start_sql(&col("created_at")),
+            format!("COALESCE(NULLIF(TRIM({effective_request_kind_sql}), ''), 'unknown')"),
+            format!("COALESCE(NULLIF(TRIM({request_kind_label_sql}), ''), 'Unknown')"),
+            format!("COALESCE(NULLIF(TRIM({result_bucket_sql}), ''), 'unknown')"),
+            format!(
+                "COALESCE(NULLIF(TRIM({}), ''), '{}')",
+                col("key_effect_code"),
+                KEY_EFFECT_NONE
+            ),
+            format!(
+                "COALESCE(NULLIF(TRIM({}), ''), '{}')",
+                col("binding_effect_code"),
+                KEY_EFFECT_NONE
+            ),
+            format!(
+                "COALESCE(NULLIF(TRIM({}), ''), '{}')",
+                col("selection_effect_code"),
+                KEY_EFFECT_NONE
+            ),
+            format!("COALESCE(NULLIF(TRIM({}), ''), '')", col("auth_token_id")),
+            format!("COALESCE(NULLIF(TRIM({}), ''), '')", col("api_key_id")),
+            format!("COALESCE(NULLIF(TRIM({operational_class_sql}), ''), 'other')"),
+        ]
+    }
+
+    fn request_log_catalog_rollup_columns() -> &'static str {
+        "bucket_start, request_kind_key, request_kind_label, result_bucket, key_effect_code, binding_effect_code, selection_effect_code, auth_token_id, api_key_id, operational_class"
+    }
+
+    fn request_log_catalog_rollup_has_canonical_kind(prefix: &str) -> String {
+        canonical_request_kind_stored_predicate_sql(&format!("{prefix}request_kind_key"))
+    }
+
+    fn request_log_catalog_rollup_pk_match(exprs: &[String]) -> String {
+        [
+            ("bucket_start", &exprs[0]),
+            ("request_kind_key", &exprs[1]),
+            ("request_kind_label", &exprs[2]),
+            ("result_bucket", &exprs[3]),
+            ("key_effect_code", &exprs[4]),
+            ("binding_effect_code", &exprs[5]),
+            ("selection_effect_code", &exprs[6]),
+            ("auth_token_id", &exprs[7]),
+            ("api_key_id", &exprs[8]),
+            ("operational_class", &exprs[9]),
+        ]
+        .into_iter()
+        .map(|(column, expr)| format!("{column} = {expr}"))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+    }
+
+    fn push_request_log_catalog_rollup_filters<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        scoped_key_id: Option<&'a str>,
+        since: Option<i64>,
+        filters: RequestLogsCatalogFilters<'a>,
+    ) {
+        let normalized_request_kinds = Self::normalize_request_kind_filters(filters.request_kinds);
+        builder.push(" WHERE 1 = 1");
+        if let Some(since) = since {
+            builder.push(" AND bucket_start >= ");
+            builder.push_bind(since);
+        }
+        if let Some(scoped_key_id) = scoped_key_id {
+            builder.push(" AND api_key_id = ");
+            builder.push_bind(scoped_key_id);
+        }
+        if let Some(result_status) = filters.result_status {
+            builder.push(" AND result_bucket = ");
+            builder.push_bind(result_status);
+        }
+        if let Some(key_effect_code) = filters.key_effect_code {
+            builder.push(" AND key_effect_code = ");
+            builder.push_bind(key_effect_code);
+        }
+        if let Some(binding_effect_code) = filters.binding_effect_code {
+            builder.push(" AND binding_effect_code = ");
+            builder.push_bind(binding_effect_code);
+        }
+        if let Some(selection_effect_code) = filters.selection_effect_code {
+            builder.push(" AND selection_effect_code = ");
+            builder.push_bind(selection_effect_code);
+        }
+        if let Some(auth_token_id) = filters.auth_token_id {
+            builder.push(" AND auth_token_id = ");
+            builder.push_bind(auth_token_id);
+        }
+        if let Some(key_id) = filters.key_id {
+            builder.push(" AND api_key_id = ");
+            builder.push_bind(key_id);
+        }
+        if let Some(operational_class) = filters.operational_class {
+            builder.push(" AND operational_class = ");
+            builder.push_bind(operational_class);
+        }
+        if !normalized_request_kinds.is_empty() {
+            builder.push(" AND request_kind_key IN (");
+            let mut separated = builder.separated(", ");
+            for request_kind in normalized_request_kinds {
+                separated.push_bind(request_kind);
+            }
+            builder.push(")");
+        }
+    }
+
+    async fn fetch_request_logs_rollup_total(
+        &self,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+        filters: RequestLogsCatalogFilters<'_>,
+    ) -> Result<i64, ProxyError> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT COALESCE(SUM(request_count), 0) FROM request_log_catalog_rollups",
+        );
+        Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
+        query
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ProxyError::from)
+    }
+
     async fn fetch_request_log_request_kind_options(
         &self,
         scoped_key_id: Option<&str>,
@@ -321,85 +426,23 @@ impl KeyStore {
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64);
-        let stored_request_kind_sql = "request_kind_key";
-        let canonical_request_kind_predicate_sql =
-            canonical_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_predicate_sql =
-            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let stored_label_sql = canonical_request_kind_label_sql(stored_request_kind_sql);
-        let mut stored_query = QueryBuilder::<Sqlite>::new(format!(
-            "SELECT {stored_request_kind_sql} AS request_kind_key, {stored_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
-        ));
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
-        let stored_operational_class_case_sql = request_log_operational_class_case_sql(
-            stored_request_kind_sql,
-            &stored_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(
+            "SELECT request_kind_key, request_kind_label, SUM(request_count) AS request_count FROM request_log_catalog_rollups",
         );
-        let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
-        let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
-            &legacy_request_kind_sql,
-            &legacy_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
-        );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
-        Self::push_request_logs_catalog_filters(
-            &mut stored_query,
-            scoped_key_id,
-            since,
-            filters,
-            stored_request_kind_sql,
-            &legacy_request_kind_predicate_sql,
-            &legacy_request_kind_sql,
-            &stored_operational_class_case_sql,
-            &legacy_operational_class_case_sql,
-            &stored_result_bucket_sql,
-            &legacy_result_bucket_sql,
-        );
-        stored_query.push(" AND ");
-        stored_query.push(canonical_request_kind_predicate_sql);
-        stored_query.push(" GROUP BY 1, 2");
-
-        let stored_rows = stored_query
-            .build_query_as::<RequestKindOptionRow>()
-            .fetch_all(&self.pool)
-            .await?;
-        let legacy_label_sql = canonical_request_kind_label_sql(&legacy_request_kind_sql);
-        let mut legacy_query = QueryBuilder::<Sqlite>::new(format!(
-            "SELECT {legacy_request_kind_sql} AS request_kind_key, {legacy_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
-        ));
-        Self::push_request_logs_catalog_filters(
+        Self::push_request_log_catalog_rollup_filters(
             &mut legacy_query,
             scoped_key_id,
             since,
             filters,
-            stored_request_kind_sql,
-            &legacy_request_kind_predicate_sql,
-            &legacy_request_kind_sql,
-            &stored_operational_class_case_sql,
-            &legacy_operational_class_case_sql,
-            &stored_result_bucket_sql,
-            &legacy_result_bucket_sql,
         );
-        legacy_query.push(" AND ");
-        legacy_query.push(legacy_request_kind_predicate_sql.as_str());
         legacy_query.push(" GROUP BY 1, 2");
 
-        let legacy_rows = legacy_query
+        let rows = legacy_query
             .build_query_as::<RequestKindOptionRow>()
             .fetch_all(&self.pool)
             .await?;
         let mut options_by_key = BTreeMap::<String, (String, i64)>::new();
-        for (key, label, count) in stored_rows.into_iter().chain(legacy_rows) {
+        for (key, label, count) in rows {
             match options_by_key.get_mut(&key) {
                 Some((current_label, current_count))
                     if prefer_request_kind_label(current_label, &label) =>
@@ -436,52 +479,22 @@ impl KeyStore {
         require_non_empty: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
-        let stored_request_kind_sql = "request_kind_key";
-        let legacy_request_kind_predicate_sql =
-            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
-        let stored_operational_class_case_sql = request_log_operational_class_case_sql(
-            stored_request_kind_sql,
-            &stored_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
-        );
-        let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
-        let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
-            &legacy_request_kind_sql,
-            &legacy_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
-        );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+        let column_expr = match column_expr {
+            "key_effect_code" => "key_effect_code",
+            "binding_effect_code" => "binding_effect_code",
+            "selection_effect_code" => "selection_effect_code",
+            "auth_token_id" => "auth_token_id",
+            "api_key_id" => "api_key_id",
+            _ => unreachable!("unsupported request log rollup facet column"),
+        };
         let mut query = QueryBuilder::<Sqlite>::new(format!(
-            "SELECT {column_expr} AS value, COUNT(*) AS count FROM request_logs"
+            "SELECT {column_expr} AS value, SUM(request_count) AS count FROM request_log_catalog_rollups"
         ));
-        Self::push_request_logs_catalog_filters(
-            &mut query,
-            scoped_key_id,
-            since,
-            filters,
-            stored_request_kind_sql,
-            &legacy_request_kind_predicate_sql,
-            &legacy_request_kind_sql,
-            &stored_operational_class_case_sql,
-            &legacy_operational_class_case_sql,
-            &stored_result_bucket_sql,
-            &legacy_result_bucket_sql,
-        );
+        Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         if require_non_empty {
-            query.push(" AND ");
-            query.push(format!(
-                "{column_expr} IS NOT NULL AND TRIM({column_expr}) <> ''"
-            ));
+            query.push(" AND TRIM(");
+            query.push(column_expr);
+            query.push(") <> ''");
         }
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
@@ -503,56 +516,15 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
-        let stored_request_kind_sql = "request_kind_key";
-        let legacy_request_kind_predicate_sql =
-            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
-        let stored_operational_class_case_sql = request_log_operational_class_case_sql(
-            stored_request_kind_sql,
-            &stored_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
-        );
-        let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
-        let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
-            &legacy_request_kind_sql,
-            &legacy_counts_business_quota_sql,
-            "result_status",
-            "COALESCE(failure_kind, '')",
-        );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
-
-        let mut query = QueryBuilder::<Sqlite>::new(format!(
+        let mut query = QueryBuilder::<Sqlite>::new(
             "
             SELECT
-                CASE
-                    WHEN {legacy_request_kind_predicate_sql} THEN {legacy_result_bucket_sql}
-                    ELSE {stored_result_bucket_sql}
-                END AS value,
-                COUNT(*) AS count
-            FROM request_logs
-            "
-        ));
-        Self::push_request_logs_catalog_filters(
-            &mut query,
-            scoped_key_id,
-            since,
-            filters,
-            stored_request_kind_sql,
-            &legacy_request_kind_predicate_sql,
-            &legacy_request_kind_sql,
-            &stored_operational_class_case_sql,
-            &legacy_operational_class_case_sql,
-            &stored_result_bucket_sql,
-            &legacy_result_bucket_sql,
+                result_bucket AS value,
+                SUM(request_count) AS count
+            FROM request_log_catalog_rollups
+            ",
         );
+        Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
         let rows = query.build().fetch_all(&self.pool).await?;
@@ -575,6 +547,7 @@ impl KeyStore {
         include_key_facets: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
+        let since = Self::clamp_request_logs_rollup_since(since);
         let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
             Self::request_logs_catalog_cache_key(
                 scoped_key_id,
@@ -583,17 +556,6 @@ impl KeyStore {
                 include_key_facets,
             )
         });
-        if let Some(cache_key) = cache_key.as_deref()
-            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
-        {
-            return Ok(cached);
-        }
-
-        let _permit = self
-            .admin_heavy_read_semaphore
-            .acquire()
-            .await
-            .expect("admin heavy read semaphore is never closed");
         if let Some(cache_key) = cache_key.as_deref()
             && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
         {
@@ -918,6 +880,7 @@ impl KeyStore {
         include_key_facets: bool,
         include_bodies: bool,
     ) -> Result<RequestLogsPage, ProxyError> {
+        let since = Self::clamp_request_logs_rollup_since(since);
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
@@ -985,47 +948,18 @@ impl KeyStore {
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_operational_class_case_sql} ELSE {stored_operational_class_case_sql} END"
         );
 
-        let mut total_query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM request_logs");
-        let has_where = Self::push_request_logs_scope(&mut total_query, scoped_key_id, since);
-        Self::push_request_logs_filters(
-            &mut total_query,
-            RequestLogFilterParams {
-                request_kinds: &normalized_request_kinds,
-                result_status: None,
-                key_effect_code,
-                binding_effect_code,
-                selection_effect_code,
-                auth_token_id,
-                key_id,
-                stored_request_kind_sql,
-                legacy_request_kind_predicate_sql: &legacy_request_kind_predicate_sql,
-                legacy_request_kind_sql: &legacy_request_kind_sql,
-                has_where,
-            },
-        );
-        if let Some(result_status) = result_status {
-            total_query.push(" AND ");
-            Self::push_result_bucket_filter_clause(
-                &mut total_query,
-                result_status,
-                &legacy_request_kind_predicate_sql,
-                &stored_result_bucket_sql,
-                &legacy_result_bucket_sql,
-            );
-        }
-        if let Some(operational_class) = operational_class {
-            total_query.push(" AND ");
-            Self::push_operational_class_filter_clause(
-                &mut total_query,
-                operational_class,
-                &legacy_request_kind_predicate_sql,
-                &stored_operational_class_case_sql,
-                &legacy_operational_class_case_sql,
-            );
-        }
-        let total: i64 = total_query
-            .build_query_scalar()
-            .fetch_one(&self.pool)
+        let total_filters = RequestLogsCatalogFilters {
+            request_kinds,
+            result_status,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            auth_token_id,
+            key_id,
+            operational_class,
+        };
+        let total = self
+            .fetch_request_logs_rollup_total(scoped_key_id, since, total_filters)
             .await?;
 
         let request_body_select = if include_bodies {
@@ -1207,6 +1141,284 @@ impl KeyStore {
                 keys,
             },
         })
+    }
+
+    pub(crate) async fn ensure_request_log_catalog_rollup_schema(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS request_log_catalog_rollups (
+                bucket_start INTEGER NOT NULL,
+                request_kind_key TEXT NOT NULL,
+                request_kind_label TEXT NOT NULL,
+                result_bucket TEXT NOT NULL,
+                key_effect_code TEXT NOT NULL,
+                binding_effect_code TEXT NOT NULL,
+                selection_effect_code TEXT NOT NULL,
+                auth_token_id TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
+                operational_class TEXT NOT NULL,
+                request_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (
+                    bucket_start,
+                    request_kind_key,
+                    request_kind_label,
+                    result_bucket,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    auth_token_id,
+                    api_key_id,
+                    operational_class
+                )
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        for sql in [
+            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_kind_time
+               ON request_log_catalog_rollups(request_kind_key, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_result_time
+               ON request_log_catalog_rollups(result_bucket, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_token_time
+               ON request_log_catalog_rollups(auth_token_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_key_time
+               ON request_log_catalog_rollups(api_key_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_operational_time
+               ON request_log_catalog_rollups(operational_class, bucket_start DESC)"#,
+        ] {
+            sqlx::query(sql).execute(&self.pool).await?;
+        }
+
+        let canonical_new_request_kind_sql =
+            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key");
+        let canonical_new_request_kind_label_sql =
+            canonical_request_kind_label_sql(&canonical_new_request_kind_sql);
+        let canonical_new_request_kind_detail_sql = format!(
+            "
+            CASE
+                WHEN LOWER(COALESCE(NEW.path, '')) LIKE '/mcp/%' THEN NEW.path
+                WHEN LOWER(TRIM(COALESCE(NEW.request_kind_key, ''))) LIKE 'mcp:tool:%'
+                    THEN SUBSTR(TRIM(NEW.request_kind_key), 10)
+                WHEN {canonical_new_request_kind_sql} = 'mcp:unknown-payload' THEN NEW.path
+                ELSE NULL
+            END
+            "
+        );
+        let legacy_new_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql("NEW.request_kind_key");
+        let legacy_row_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql("request_kind_key");
+        let canonical_insert_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_canonical_request_kind_insert
+            AFTER INSERT ON request_logs
+            WHEN {legacy_new_request_kind_predicate_sql}
+            BEGIN
+                UPDATE request_logs
+                SET request_kind_key = COALESCE(NULLIF(TRIM({canonical_new_request_kind_sql}), ''), 'api:unknown-path'),
+                    request_kind_label = COALESCE(NULLIF(TRIM({canonical_new_request_kind_label_sql}), ''), 'Unknown'),
+                    request_kind_detail = COALESCE(NULLIF(TRIM(NEW.request_kind_detail), ''), {canonical_new_request_kind_detail_sql})
+                WHERE id = NEW.id
+                  AND {legacy_row_request_kind_predicate_sql};
+            END
+            "#
+        );
+        sqlx::query(&canonical_insert_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        let canonical_update_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_canonical_request_kind_update
+            AFTER UPDATE OF path, request_body, request_kind_key ON request_logs
+            WHEN {legacy_new_request_kind_predicate_sql}
+            BEGIN
+                UPDATE request_logs
+                SET request_kind_key = COALESCE(NULLIF(TRIM({canonical_new_request_kind_sql}), ''), 'api:unknown-path'),
+                    request_kind_label = COALESCE(NULLIF(TRIM({canonical_new_request_kind_label_sql}), ''), 'Unknown'),
+                    request_kind_detail = COALESCE(NULLIF(TRIM(NEW.request_kind_detail), ''), {canonical_new_request_kind_detail_sql})
+                WHERE id = NEW.id
+                  AND {legacy_row_request_kind_predicate_sql};
+            END
+            "#
+        );
+        sqlx::query(&canonical_update_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        let insert_exprs = Self::request_log_catalog_rollup_exprs("NEW.");
+        let insert_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_insert
+            AFTER INSERT ON request_logs
+            WHEN NEW.visibility = 'visible' AND {}
+            BEGIN
+                INSERT INTO request_log_catalog_rollups (
+                    {},
+                    request_count,
+                    updated_at
+                )
+                VALUES (
+                    {},
+                    1,
+                    CAST(strftime('%s', 'now') AS INTEGER)
+                )
+                ON CONFLICT({}) DO UPDATE SET
+                    request_count = request_count + 1,
+                    updated_at = excluded.updated_at;
+            END
+            "#,
+            Self::request_log_catalog_rollup_has_canonical_kind("NEW."),
+            Self::request_log_catalog_rollup_columns(),
+            insert_exprs.join(", "),
+            Self::request_log_catalog_rollup_columns(),
+        );
+        sqlx::query(&insert_trigger).execute(&self.pool).await?;
+
+        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
+        let delete_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_delete
+            AFTER DELETE ON request_logs
+            WHEN OLD.visibility = 'visible' AND {}
+            BEGIN
+                UPDATE request_log_catalog_rollups
+                SET request_count = request_count - 1,
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE {};
+                DELETE FROM request_log_catalog_rollups
+                WHERE request_count <= 0;
+            END
+            "#,
+            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
+            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
+        );
+        sqlx::query(&delete_trigger).execute(&self.pool).await?;
+
+        let update_columns = "
+            visibility,
+            created_at,
+            request_kind_key,
+            request_kind_label,
+            result_status,
+            business_credits,
+            failure_kind,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            auth_token_id,
+            api_key_id,
+            path,
+            request_body
+        ";
+        let update_delete_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_update_old
+            AFTER UPDATE OF {update_columns} ON request_logs
+            WHEN OLD.visibility = 'visible' AND {}
+            BEGIN
+                UPDATE request_log_catalog_rollups
+                SET request_count = request_count - 1,
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE {};
+                DELETE FROM request_log_catalog_rollups
+                WHERE request_count <= 0;
+            END
+            "#,
+            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
+            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
+        );
+        sqlx::query(&update_delete_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        let update_insert_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_update_new
+            AFTER UPDATE OF {update_columns} ON request_logs
+            WHEN NEW.visibility = 'visible' AND {}
+            BEGIN
+                INSERT INTO request_log_catalog_rollups (
+                    {},
+                    request_count,
+                    updated_at
+                )
+                VALUES (
+                    {},
+                    1,
+                    CAST(strftime('%s', 'now') AS INTEGER)
+                )
+                ON CONFLICT({}) DO UPDATE SET
+                    request_count = request_count + 1,
+                    updated_at = excluded.updated_at;
+            END
+            "#,
+            Self::request_log_catalog_rollup_has_canonical_kind("NEW."),
+            Self::request_log_catalog_rollup_columns(),
+            insert_exprs.join(", "),
+            Self::request_log_catalog_rollup_columns(),
+        );
+        sqlx::query(&update_insert_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn rebuild_request_log_catalog_rollups(&self) -> Result<(), ProxyError> {
+        let since = request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+        let exprs = Self::request_log_catalog_rollup_exprs("");
+        let canonical_request_kind_predicate_sql =
+            canonical_request_kind_stored_predicate_sql("request_kind_key");
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql("request_kind_key");
+        let canonicalize_legacy_rows_sql = format!(
+            r#"
+            UPDATE request_logs
+            SET request_kind_key = request_kind_key
+            WHERE visibility = 'visible'
+              AND created_at >= ?
+              AND {legacy_request_kind_predicate_sql}
+            "#
+        );
+        sqlx::query(&canonicalize_legacy_rows_sql)
+            .bind(since)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM request_log_catalog_rollups")
+            .execute(&self.pool)
+            .await?;
+        let rebuild_sql = format!(
+            r#"
+            INSERT INTO request_log_catalog_rollups (
+                {},
+                request_count,
+                updated_at
+            )
+            SELECT
+                {},
+                COUNT(*) AS request_count,
+                CAST(strftime('%s', 'now') AS INTEGER) AS updated_at
+            FROM request_logs
+            WHERE visibility = 'visible'
+              AND created_at >= ?
+              AND {canonical_request_kind_predicate_sql}
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+            "#,
+            Self::request_log_catalog_rollup_columns(),
+            exprs.join(", "),
+        );
+        sqlx::query(&rebuild_sql)
+            .bind(since)
+            .execute(&self.pool)
+            .await?;
+        self.invalidate_request_logs_catalog_cache().await;
+        Ok(())
     }
 
     pub(crate) async fn fetch_api_key_secret(
