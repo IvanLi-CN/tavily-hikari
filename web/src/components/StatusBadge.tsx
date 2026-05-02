@@ -20,8 +20,10 @@ export interface StatusBadgeProps {
 }
 
 export function StatusBadge({ tone, children, className = '', title }: StatusBadgeProps): JSX.Element {
+  const toneClassName = `status-pill-${tone}`
+
   return (
-    <Badge variant={toneVariantMap[tone]} className={`status-badge status-pill ${className}`} title={title}>
+    <Badge variant={toneVariantMap[tone]} className={`status-badge status-pill ${toneClassName} ${className}`} title={title}>
       {children}
     </Badge>
   )

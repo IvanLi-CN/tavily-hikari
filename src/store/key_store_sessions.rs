@@ -157,7 +157,11 @@ impl KeyStore {
                         THEN excluded.retry_after_secs
                     ELSE api_key_transient_backoffs.retry_after_secs
                 END,
-                reason_code = COALESCE(excluded.reason_code, api_key_transient_backoffs.reason_code),
+                reason_code = CASE
+                    WHEN excluded.cooldown_until >= api_key_transient_backoffs.cooldown_until
+                        THEN COALESCE(excluded.reason_code, api_key_transient_backoffs.reason_code)
+                    ELSE api_key_transient_backoffs.reason_code
+                END,
                 source_request_log_id = COALESCE(
                     excluded.source_request_log_id,
                     api_key_transient_backoffs.source_request_log_id
@@ -221,6 +225,69 @@ impl KeyStore {
         .bind(now)
         .bind(key_id)
         .bind(scope)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_api_key_transient_backoffs(
+        &self,
+        key_id: &str,
+        scopes: &[&str],
+        reason_code: &str,
+        now: i64,
+    ) -> Result<i64, ProxyError> {
+        if scopes.is_empty() {
+            return Ok(0);
+        }
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "DELETE FROM api_key_transient_backoffs WHERE key_id = ",
+        );
+        builder.push_bind(key_id);
+        builder.push(" AND cooldown_until > ");
+        builder.push_bind(now);
+        builder.push(" AND reason_code = ");
+        builder.push_bind(reason_code);
+        builder.push(" AND scope IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for scope in scopes {
+                separated.push_bind(*scope);
+            }
+        }
+        builder.push(")");
+
+        let result = builder.build().execute(&self.pool).await?;
+        Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
+    }
+
+    pub(crate) async fn link_latest_transient_backoff_clear_record(
+        &self,
+        key_id: &str,
+        request_log_id: i64,
+        now: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE api_key_maintenance_records
+            SET request_log_id = ?
+            WHERE id = (
+                SELECT id
+                FROM api_key_maintenance_records
+                WHERE key_id = ?
+                  AND operation_code = ?
+                  AND request_log_id IS NULL
+                  AND created_at <= ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            "#,
+        )
+        .bind(request_log_id)
+        .bind(key_id)
+        .bind(MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF)
+        .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(())

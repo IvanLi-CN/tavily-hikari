@@ -19,13 +19,15 @@
 - 为管理员全局调用日志与管理员 Token 详情日志新增持久化的 `failure_kind`、`key_effect_code`、`key_effect_summary` 展示，避免纯前端猜测。
 - 为 `request_logs` 与 `auth_token_logs` 同步落盘错误分类与 Key 影响字段，保证两处管理员日志入口看到一致语义。
 - 新增 `api_key_maintenance_records` 作为 append-only 审计历史，覆盖系统自动维护与人工健康维护动作。
+- 对未知含义的上游 `403` 采用临时降级：先写入 transient backoff 降低调度概率，不自动隔离；后续成功请求或额度同步成功解除降级并留下可观察记录。
 - 用户侧维持现有字段集合不变，仅允许在现有错误详情/错误文案中增加脱敏后的解决建议。
 - 对 `1-5` 号错误在管理员与用户现有详情里补固定解决建议；`6-13` 号错误保持现有响应透传，只展示脱敏后的原始或归一化错误信息。
 
 ### Non-goals
 
 - 不为用户日志接口新增字段、列或管理员专用信息。
-- 不引入新的自动冷却、重试、熔断、代理切换策略；本次只做分类、持久化、展示与审计。
+- 不把未知含义的 `403` 直接永久隔离；只有明确 invalid/revoked/deactivated 的 `401/403` 才进入自动隔离。
+- 不引入新的重试、熔断或代理切换策略；临时降级仅复用现有 transient backoff 调度信号。
 - 不把非健康类管理员动作（启用/禁用、分组、删除/恢复等）纳入新维护记录表。
 - 不替换 `api_key_quarantines`；该表继续作为“当前隔离状态表”。
 
@@ -94,7 +96,10 @@
 - Given 系统自动隔离、自动标记耗尽、自动恢复 active、手动解除隔离或手动标记耗尽发生
   When 对应动作执行成功
   Then `api_key_maintenance_records` 追加一条审计记录，并保存动作前后状态、来源与关联日志 id（若存在）。
-- Given 错误为 `429`、`502/504`、`transport error`、`406` 或 `6-13` 中的协议/参数错误
+- Given Tavily 返回普通 `403` 且响应正文不包含 invalid/revoked/deactivated 等明确坏 Key 语义
+  When 请求被记录
+  Then Key 不进入 quarantine/exhausted，而是写入临时降级效果；后续业务成功或额度同步成功会解除该降级。
+- Given 错误为 `502/504`、`transport error`、`406` 或 `6-13` 中的协议/参数错误
   When 调用被记录
   Then `key_effect_code = none`，且不会误写维护记录。
 
@@ -144,6 +149,9 @@
 
 - 管理员全局日志：展示 `Key 影响` 列以及 `1-5` 号错误的详情建议。
 - 管理员 Token 详情日志：展示 `Key 影响` 列与详情建议，验证两处入口一致。
+- 管理员请求日志：展示未知 `403` 被标记为临时降级，而不是“无变更”。
+
+![未知 403 临时降级](./assets/unknown-403-temporary-cooling.png)
 
 ## 资产晋升（Asset promotion）
 

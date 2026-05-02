@@ -1235,6 +1235,8 @@ export interface AdminTranslationsShape {
       markedExhausted: string
       restoredActive: string
       clearedQuarantine: string
+      transientBackoffSet: string
+      transientBackoffCleared: string
       mcpSessionInitBackoffSet: string
       mcpSessionRetryWaited: string
       mcpSessionRetryScheduled: string

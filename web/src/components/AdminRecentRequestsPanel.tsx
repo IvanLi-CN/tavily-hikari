@@ -146,6 +146,10 @@ function keyEffectTone(code: string | null | undefined): StatusTone {
     case 'restored_active':
     case 'cleared_quarantine':
       return 'success'
+    case 'transient_backoff_set':
+      return 'warning'
+    case 'transient_backoff_cleared':
+      return 'success'
     case 'mcp_session_init_backoff_set':
     case 'mcp_session_retry_waited':
     case 'mcp_session_retry_scheduled':
@@ -165,6 +169,10 @@ function keyEffectLabel(code: string | null | undefined, strings: AdminTranslati
       return strings.logs.keyEffects.restoredActive
     case 'cleared_quarantine':
       return strings.logs.keyEffects.clearedQuarantine
+    case 'transient_backoff_set':
+      return strings.logs.keyEffects.transientBackoffSet
+    case 'transient_backoff_cleared':
+      return strings.logs.keyEffects.transientBackoffCleared
     case 'mcp_session_init_backoff_set':
       return strings.logs.keyEffects.mcpSessionInitBackoffSet
     case 'mcp_session_retry_waited':

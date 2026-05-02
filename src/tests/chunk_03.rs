@@ -2052,7 +2052,7 @@ async fn summary_windows_split_today_yesterday_and_month() {
         expected_month.success_count += 3;
         expected_month.valuable_success_count += 3;
     }
-    if local_month_start < today_start {
+    if local_month_start < yesterday_start {
         expected_month.total_requests += 3;
         expected_month.success_count += 2;
         expected_month.error_count += 1;
@@ -2427,7 +2427,7 @@ async fn summary_windows_count_distinct_upstream_exhausted_keys() {
     let today_start = start_of_local_day_utc_ts(now);
     let yesterday_start = previous_local_day_start_utc_ts(now);
     let yesterday_same_time = previous_local_same_time_utc_ts(now);
-    let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
+    let month_start = start_of_local_month_utc_ts(now);
 
     insert_summary_window_logs(
         &proxy,

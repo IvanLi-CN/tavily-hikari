@@ -264,6 +264,20 @@ impl TavilyProxy {
         )
     }
 
+    fn transient_backoff_set_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_TRANSIENT_BACKOFF_SET,
+            "The system temporarily cooled this key after a transient upstream response",
+        )
+    }
+
+    fn transient_backoff_cleared_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_TRANSIENT_BACKOFF_CLEARED,
+            "The system cleared this key's temporary cooldown after a successful check",
+        )
+    }
+
     pub async fn new<I, S>(keys: I, database_path: &str) -> Result<Self, ProxyError>
     where
         I: IntoIterator<Item = S>,

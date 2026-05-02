@@ -113,7 +113,14 @@ impl TavilyProxy {
         user_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let lease = match self.key_store.acquire_active_key_excluding(old_key_id).await {
+        let lease = match self
+            .key_store
+            .acquire_key_avoiding_transient_backoff_excluding(
+                HTTP_GLOBAL_BACKOFF_SCOPE,
+                old_key_id,
+            )
+            .await
+        {
             Ok(lease) => lease,
             Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
             Err(err) => return Err(err),
@@ -136,7 +143,14 @@ impl TavilyProxy {
         token_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let lease = match self.key_store.acquire_active_key_excluding(old_key_id).await {
+        let lease = match self
+            .key_store
+            .acquire_key_avoiding_transient_backoff_excluding(
+                HTTP_GLOBAL_BACKOFF_SCOPE,
+                old_key_id,
+            )
+            .await
+        {
             Ok(lease) => lease,
             Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
             Err(err) => return Err(err),
@@ -231,18 +245,45 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
+    fn transient_backoff_reason_code(analysis: &AttemptAnalysis) -> Option<&'static str> {
+        match analysis.failure_kind.as_deref() {
+            Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) => {
+                Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+            }
+            Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403) => Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+            _ => None,
+        }
+    }
+
+    fn transient_backoff_retry_after_secs(
+        headers: &HeaderMap,
+        now: i64,
+        reason_code: &str,
+    ) -> i64 {
+        if reason_code == FAILURE_KIND_UPSTREAM_UNKNOWN_403 {
+            return Self::parse_retry_after_secs(headers, now)
+                .unwrap_or(UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS)
+                .clamp(
+                    MCP_SESSION_INIT_BACKOFF_MIN_SECS,
+                    MCP_SESSION_INIT_BACKOFF_MAX_SECS,
+                );
+        }
+        Self::mcp_session_init_retry_after_secs(headers, now)
+    }
+
     async fn maybe_arm_mcp_session_init_backoff(
         &self,
         key_id: &str,
         headers: &HeaderMap,
         analysis: &AttemptAnalysis,
     ) -> Result<bool, ProxyError> {
-        if analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) {
+        let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
             return Ok(false);
-        }
+        };
 
         let now = Utc::now().timestamp();
-        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let retry_after_secs =
+            Self::transient_backoff_retry_after_secs(headers, now, reason_code);
         let cooldown_until = now + retry_after_secs;
 
         Ok(self
@@ -252,7 +293,7 @@ impl TavilyProxy {
                 scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
                 cooldown_until,
                 retry_after_secs,
-                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                reason_code: Some(reason_code),
                 source_request_log_id: None,
                 now,
             })
@@ -355,13 +396,17 @@ impl TavilyProxy {
         ranked: &[String],
         now: i64,
     ) -> Result<Vec<HttpProjectAffinityCandidate>, ProxyError> {
-        let cooldowns = self
+        let project_cooldowns = self
             .key_store
             .list_active_api_key_transient_backoffs(
                 ranked,
                 HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                 now,
             )
+            .await?;
+        let global_cooldowns = self
+            .key_store
+            .list_active_api_key_transient_backoffs(ranked, HTTP_GLOBAL_BACKOFF_SCOPE, now)
             .await?;
         let recent_rate_limited_counts = self
             .key_store
@@ -385,7 +430,12 @@ impl TavilyProxy {
             .map(|(stable_rank_index, key_id)| HttpProjectAffinityCandidate {
                 key_id: key_id.clone(),
                 stable_rank_index,
-                cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                cooldown_until: project_cooldowns
+                    .get(key_id)
+                    .map(|state| state.cooldown_until)
+                    .into_iter()
+                    .chain(global_cooldowns.get(key_id).map(|state| state.cooldown_until))
+                    .max(),
                 recent_rate_limited_count: recent_rate_limited_counts
                     .get(key_id)
                     .copied()
@@ -408,14 +458,16 @@ impl TavilyProxy {
         analysis: &AttemptAnalysis,
         project_affinity: Option<&HttpProjectAffinityContext>,
     ) -> Result<bool, ProxyError> {
-        if project_affinity.is_none()
-            || analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
-        {
+        let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
+            return Ok(false);
+        };
+        if project_affinity.is_none() {
             return Ok(false);
         }
 
         let now = Utc::now().timestamp();
-        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let retry_after_secs =
+            Self::transient_backoff_retry_after_secs(headers, now, reason_code);
         let cooldown_until = now + retry_after_secs;
 
         Ok(self
@@ -425,12 +477,54 @@ impl TavilyProxy {
                 scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                 cooldown_until,
                 retry_after_secs,
-                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                reason_code: Some(reason_code),
                 source_request_log_id: None,
                 now,
             })
             .await?
             .is_some())
+    }
+
+    async fn maybe_arm_http_global_backoff(
+        &self,
+        key_id: &str,
+        headers: &HeaderMap,
+        analysis: &AttemptAnalysis,
+    ) -> Result<bool, ProxyError> {
+        let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
+            return Ok(false);
+        };
+
+        let now = Utc::now().timestamp();
+        let retry_after_secs =
+            Self::transient_backoff_retry_after_secs(headers, now, reason_code);
+        let cooldown_until = now + retry_after_secs;
+
+        Ok(self
+            .key_store
+            .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+                key_id,
+                scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs,
+                reason_code: Some(reason_code),
+                source_request_log_id: None,
+                now,
+            })
+            .await?
+            .is_some())
+    }
+
+    async fn has_http_global_backoff(&self, key_id: &str) -> Result<bool, ProxyError> {
+        Ok(self
+            .key_store
+            .list_active_api_key_transient_backoffs(
+                &[key_id.to_string()],
+                HTTP_GLOBAL_BACKOFF_SCOPE,
+                Utc::now().timestamp(),
+            )
+            .await?
+            .contains_key(key_id))
     }
 
     pub(crate) async fn acquire_key_for_http_project(
@@ -455,7 +549,7 @@ impl TavilyProxy {
         let now = Utc::now().timestamp();
 
         if let Some(existing_key_id) = existing_key_id.as_deref() {
-            let backoff = self
+            let project_backoff = self
                 .key_store
                 .list_active_api_key_transient_backoffs(
                     &[existing_key_id.to_string()],
@@ -463,7 +557,16 @@ impl TavilyProxy {
                     now,
                 )
                 .await?;
-            let is_cooled = backoff.contains_key(existing_key_id);
+            let global_backoff = self
+                .key_store
+                .list_active_api_key_transient_backoffs(
+                    &[existing_key_id.to_string()],
+                    HTTP_GLOBAL_BACKOFF_SCOPE,
+                    now,
+                )
+                .await?;
+            let is_cooled = project_backoff.contains_key(existing_key_id)
+                || global_backoff.contains_key(existing_key_id);
             if !is_cooled
                 && let Some(lease) = self
                     .key_store
@@ -632,12 +735,13 @@ impl TavilyProxy {
         headers: &HeaderMap,
         analysis: &AttemptAnalysis,
     ) -> Result<bool, ProxyError> {
-        if analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) {
+        let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
             return Ok(false);
-        }
+        };
 
         let now = Utc::now().timestamp();
-        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let retry_after_secs =
+            Self::transient_backoff_retry_after_secs(headers, now, reason_code);
         let cooldown_until = now + retry_after_secs;
 
         Ok(self
@@ -647,7 +751,7 @@ impl TavilyProxy {
                 scope: REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
                 cooldown_until,
                 retry_after_secs,
-                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                reason_code: Some(reason_code),
                 source_request_log_id: None,
                 now,
             })
@@ -661,7 +765,10 @@ impl TavilyProxy {
     ) -> Result<ApiKeyLease, ProxyError> {
         let Some(token_id) = auth_token_id else {
             // No token id (e.g. certain internal or dev flows) → plain global scheduling.
-            return self.key_store.acquire_key().await;
+            return self
+                .key_store
+                .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+                .await;
         };
 
         if let Some(user_id) = self.key_store.find_user_id_by_token(token_id).await? {
@@ -702,6 +809,9 @@ impl TavilyProxy {
             }
 
             for (key_id, sync_on_acquire) in candidates {
+                if self.has_http_global_backoff(&key_id).await? {
+                    continue;
+                }
                 if let Some(lease) = self
                     .key_store
                     .try_acquire_affinity_specific_key(&key_id)
@@ -722,7 +832,10 @@ impl TavilyProxy {
                     .await;
             }
 
-            let lease = self.key_store.acquire_key().await?;
+            let lease = self
+                .key_store
+                .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+                .await?;
             self.key_store
                 .sync_user_primary_api_key_affinity(&user_id, &lease.id)
                 .await?;
@@ -734,10 +847,13 @@ impl TavilyProxy {
             .get_token_primary_api_key_affinity(token_id)
             .await?
         {
-            if let Some(lease) = self
-                .key_store
-                .try_acquire_affinity_specific_key(&token_primary.api_key_id)
+            if !self
+                .has_http_global_backoff(&token_primary.api_key_id)
                 .await?
+                && let Some(lease) = self
+                    .key_store
+                    .try_acquire_affinity_specific_key(&token_primary.api_key_id)
+                    .await?
             {
                 return Ok(lease);
             }
@@ -747,7 +863,10 @@ impl TavilyProxy {
                 .await;
         }
 
-        let lease = self.key_store.acquire_key().await?;
+        let lease = self
+            .key_store
+            .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+            .await?;
         self.key_store
             .set_token_primary_api_key_affinity(token_id, None, &lease.id)
             .await?;
@@ -1008,6 +1127,75 @@ impl TavilyProxy {
                 ))
             }
         }
+    }
+
+    pub(crate) async fn clear_transient_backoffs_after_success(
+        &self,
+        key_id: &str,
+        source: &str,
+        auth_token_id: Option<&str>,
+    ) -> Result<KeyEffect, ProxyError> {
+        let now = Utc::now().timestamp();
+        let before = self.key_store.fetch_key_state_snapshot(key_id).await?;
+        let cleared = self
+            .key_store
+            .clear_api_key_transient_backoffs(
+                key_id,
+                &[
+                    MCP_SESSION_INIT_BACKOFF_SCOPE,
+                    HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                    HTTP_GLOBAL_BACKOFF_SCOPE,
+                    REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
+                ],
+                FAILURE_KIND_UPSTREAM_UNKNOWN_403,
+                now,
+            )
+            .await?;
+        if cleared <= 0 {
+            return Ok(KeyEffect::none());
+        }
+        let after = self.key_store.fetch_key_state_snapshot(key_id).await?;
+        self.key_store
+            .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                id: nanoid!(12),
+                key_id: key_id.to_string(),
+                source: MAINTENANCE_SOURCE_SYSTEM.to_string(),
+                operation_code: MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF.to_string(),
+                operation_summary: "自动解除临时降级".to_string(),
+                reason_code: Some("transient_success_recovery".to_string()),
+                reason_summary: Some("后续成功请求或额度同步确认 Key 可用".to_string()),
+                reason_detail: Some(format!("source={source}; cleared_backoffs={cleared}")),
+                request_log_id: None,
+                auth_token_log_id: None,
+                auth_token_id: auth_token_id.map(str::to_string),
+                actor_user_id: None,
+                actor_display_name: None,
+                status_before: before.status,
+                status_after: after.status,
+                quarantine_before: before.quarantined,
+                quarantine_after: after.quarantined,
+                created_at: now,
+            })
+            .await?;
+        Ok(Self::transient_backoff_cleared_effect())
+    }
+
+    pub(crate) async fn link_transient_backoff_clear_request_log(
+        &self,
+        key_effect: &KeyEffect,
+        key_id: &str,
+        request_log_id: i64,
+    ) -> Result<(), ProxyError> {
+        if key_effect.code != KEY_EFFECT_TRANSIENT_BACKOFF_CLEARED {
+            return Ok(());
+        }
+        self.key_store
+            .link_latest_transient_backoff_clear_record(
+                key_id,
+                request_log_id,
+                Utc::now().timestamp(),
+            )
+            .await
     }
 
     pub(crate) async fn maybe_quarantine_usage_error(

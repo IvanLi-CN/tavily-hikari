@@ -250,6 +250,10 @@ pub(crate) fn classify_failure_kind(
         return Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401.to_string());
     }
 
+    if effective_status == Some(403) {
+        return Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403.to_string());
+    }
+
     if http_status == Some(406)
         || normalized.contains("must accept both application/json and text/event-stream")
     {
@@ -314,6 +318,11 @@ pub fn failure_kind_solution_guidance(kind: &str, prefer_zh: bool) -> Option<&'s
             "建议：这是 Tavily 限流，请降低请求频率或切换其他 Key，稍后再试。"
         } else {
             "Suggested handling: Tavily is rate limiting this traffic. Reduce request rate, switch keys, or retry after cooldown."
+        }),
+        FAILURE_KIND_UPSTREAM_UNKNOWN_403 => Some(if prefer_zh {
+            "建议：Tavily 返回了未识别失效原因的 403。系统会临时降低该 Key 的使用概率，后续成功请求或额度同步会恢复。"
+        } else {
+            "Suggested handling: Tavily returned 403 without a recognized invalid-key reason. The system temporarily cools this key and restores it after a later success or quota sync."
         }),
         FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401 => Some(if prefer_zh {
             "建议：该 Key 可能已失效、被撤销或账户停用，请更换可用 Key 并检查 Tavily 后台状态。"
@@ -1661,6 +1670,7 @@ fn is_upstream_error_failure_kind(kind: &str) -> bool {
     matches!(
         kind.trim(),
         FAILURE_KIND_UPSTREAM_RATE_LIMITED_429
+            | FAILURE_KIND_UPSTREAM_UNKNOWN_403
             | FAILURE_KIND_UPSTREAM_GATEWAY_5XX
             | FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401
     )
@@ -1964,6 +1974,7 @@ pub(crate) fn token_log_operational_class_case_sql(
             ) THEN '{client_error}'
             WHEN {result_status_expr} = 'error' AND {failure_kind_expr} IN (
                 '{upstream_rate_limited_429}',
+                '{upstream_unknown_403}',
                 '{upstream_gateway_5xx}',
                 '{upstream_account_deactivated_401}'
             ) THEN '{upstream_error}'
@@ -1991,6 +2002,7 @@ pub(crate) fn token_log_operational_class_case_sql(
         mcp_method_405 = FAILURE_KIND_MCP_METHOD_405,
         mcp_path_404 = FAILURE_KIND_MCP_PATH_404,
         upstream_rate_limited_429 = FAILURE_KIND_UPSTREAM_RATE_LIMITED_429,
+        upstream_unknown_403 = FAILURE_KIND_UPSTREAM_UNKNOWN_403,
         upstream_gateway_5xx = FAILURE_KIND_UPSTREAM_GATEWAY_5XX,
         upstream_account_deactivated_401 = FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401,
     )
@@ -2546,5 +2558,33 @@ pub(crate) fn redact_api_key_bytes(bytes: &[u8]) -> Vec<u8> {
             serde_json::to_vec(&value).unwrap_or_else(|_| Vec::new())
         }
         Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_403_is_classified_without_quarantine_reason() {
+        let body = br#"{"error":"Forbidden"}"#;
+
+        assert_eq!(
+            classify_failure_kind("/mcp", Some(200), Some(403), None, body).as_deref(),
+            Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403)
+        );
+        assert!(classify_quarantine_reason(Some(403), body).is_none());
+    }
+
+    #[test]
+    fn explicit_invalid_403_still_classifies_for_quarantine() {
+        let body = br#"{"error":"API key is invalid"}"#;
+
+        assert_eq!(
+            classify_failure_kind("/mcp", Some(200), Some(403), None, body).as_deref(),
+            Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401)
+        );
+        let decision = classify_quarantine_reason(Some(403), body).expect("quarantine decision");
+        assert_eq!(decision.reason_code, BLOCKED_KEY_REASON_INVALID_API_KEY);
     }
 }

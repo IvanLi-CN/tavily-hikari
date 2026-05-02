@@ -51,6 +51,8 @@ impl TavilyProxy {
         self.key_store
             .record_quota_sync_sample(key_id, limit, remaining, now, source)
             .await?;
+        self.clear_transient_backoffs_after_success(key_id, source, None)
+            .await?;
         Ok((limit, remaining))
     }
 
