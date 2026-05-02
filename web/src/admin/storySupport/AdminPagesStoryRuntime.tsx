@@ -608,17 +608,17 @@ const MOCK_REQUESTS: RequestLog[] = [
     path: '/mcp',
     query: null,
     http_status: 200,
-    mcp_status: 429,
+    mcp_status: 403,
     business_credits: null,
     request_kind_key: 'mcp:crawl',
     request_kind_label: 'MCP | crawl',
     request_kind_detail: null,
     result_status: 'error',
     created_at: now - 74,
-    error_message: 'Your request has been blocked due to excessive requests.',
-    failure_kind: 'upstream_rate_limited_429',
-    key_effect_code: 'none',
-    key_effect_summary: 'No automatic key state change',
+    error_message: 'Forbidden',
+    failure_kind: 'upstream_unknown_403',
+    key_effect_code: 'transient_backoff_set',
+    key_effect_summary: 'The system temporarily cooled this key after an ambiguous upstream 403',
     request_body: '{"tool":"crawl"}',
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -3073,6 +3073,10 @@ function requestKeyEffectTone(code: string | null | undefined): StatusTone {
     case 'restored_active':
     case 'cleared_quarantine':
       return 'success'
+    case 'transient_backoff_set':
+      return 'warning'
+    case 'transient_backoff_cleared':
+      return 'success'
     default:
       return 'neutral'
   }
@@ -3088,6 +3092,10 @@ function requestKeyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations)
       return strings.logs.keyEffects.restoredActive
     case 'cleared_quarantine':
       return strings.logs.keyEffects.clearedQuarantine
+    case 'transient_backoff_set':
+      return strings.logs.keyEffects.transientBackoffSet
+    case 'transient_backoff_cleared':
+      return strings.logs.keyEffects.transientBackoffCleared
     case 'none':
     case '':
       return strings.logs.keyEffects.none

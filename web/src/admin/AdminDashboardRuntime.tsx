@@ -1429,6 +1429,14 @@ function formatKeyEffectSummary(
       return language === 'zh'
         ? '系统已自动将 exhausted Key 恢复为 active'
         : 'The system automatically restored this exhausted key to active'
+    case 'transient_backoff_set':
+      return language === 'zh'
+        ? '系统已临时降低该 Key 的使用概率'
+        : 'The system temporarily reduced this key selection priority'
+    case 'transient_backoff_cleared':
+      return language === 'zh'
+        ? '后续成功请求已解除该 Key 的临时降级'
+        : 'A later successful request cleared this key temporary cooldown'
     case 'cleared_quarantine':
       return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
     case 'none':
@@ -1453,8 +1461,11 @@ function keyEffectTone(code: string | null | undefined): StatusTone {
     case 'marked_exhausted':
       return 'warning'
     case 'restored_active':
+    case 'transient_backoff_cleared':
     case 'cleared_quarantine':
       return 'success'
+    case 'transient_backoff_set':
+      return 'warning'
     default:
       return 'neutral'
   }
@@ -1468,6 +1479,10 @@ function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): strin
       return strings.logs.keyEffects.markedExhausted
     case 'restored_active':
       return strings.logs.keyEffects.restoredActive
+    case 'transient_backoff_set':
+      return strings.logs.keyEffects.transientBackoffSet
+    case 'transient_backoff_cleared':
+      return strings.logs.keyEffects.transientBackoffCleared
     case 'cleared_quarantine':
       return strings.logs.keyEffects.clearedQuarantine
     case 'none':

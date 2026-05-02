@@ -1764,11 +1764,13 @@ tbody tr:hover {
   outline-offset: 2px;
   border-radius: 999px;
 }
-
-.log-result-button .status-badge {
-  margin: 0;
-}
-
+.log-result-button .status-badge { margin: 0; }
+.log-result-button .status-pill { --log-result-pill-tone: var(--muted-foreground); --log-result-pill-border-alpha: 0.34; --log-result-pill-fill-alpha: 0.12; min-height: 1.82rem; padding-inline: 0.78rem; border-color: hsl(var(--log-result-pill-tone) / var(--log-result-pill-border-alpha)); background: hsl(var(--log-result-pill-tone) / var(--log-result-pill-fill-alpha)); color: hsl(var(--log-result-pill-tone)); }
+.log-result-button .status-pill-success { --log-result-pill-tone: var(--success); }
+.log-result-button .status-pill-warning { --log-result-pill-tone: var(--warning); --log-result-pill-border-alpha: 0.44; --log-result-pill-fill-alpha: 0.14; }
+.log-result-button .status-pill-error { --log-result-pill-tone: var(--destructive); --log-result-pill-border-alpha: 0.42; --log-result-pill-fill-alpha: 0.14; }
+.log-result-button .status-pill-info { --log-result-pill-tone: var(--info); }
+.log-result-button .status-pill-neutral { --log-result-pill-tone: var(--muted-foreground); --log-result-pill-border-alpha: 0.32; --log-result-pill-fill-alpha: 0.08; }
 .log-result-button-active .status-badge {
   box-shadow: 0 0 0 2px hsl(var(--primary) / 0.28);
 }
@@ -2196,4 +2198,3 @@ tbody tr:hover {
   text-overflow: clip;
   white-space: nowrap;
 }
-

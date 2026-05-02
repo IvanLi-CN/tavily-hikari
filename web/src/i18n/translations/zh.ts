@@ -1227,6 +1227,8 @@ export const ZH: TranslationShape = {
           markedExhausted: '已耗尽',
           restoredActive: '已恢复',
           clearedQuarantine: '已清除',
+          transientBackoffSet: '临时降级',
+          transientBackoffCleared: '降级已解除',
           mcpSessionInitBackoffSet: '已设置 MCP 回退',
           mcpSessionRetryWaited: 'MCP 已等待重试',
           mcpSessionRetryScheduled: 'MCP 已安排重试',

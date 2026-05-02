@@ -339,6 +339,7 @@ const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
 const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
+const FAILURE_KIND_UPSTREAM_UNKNOWN_403: &str = "upstream_unknown_403";
 const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
 const FAILURE_KIND_TRANSPORT_SEND_ERROR: &str = "transport_send_error";
 const FAILURE_KIND_MCP_ACCEPT_406: &str = "mcp_accept_406";
@@ -355,6 +356,8 @@ const KEY_EFFECT_NONE: &str = "none";
 const KEY_EFFECT_QUARANTINED: &str = "quarantined";
 const KEY_EFFECT_MARKED_EXHAUSTED: &str = "marked_exhausted";
 const KEY_EFFECT_RESTORED_ACTIVE: &str = "restored_active";
+const KEY_EFFECT_TRANSIENT_BACKOFF_SET: &str = "transient_backoff_set";
+const KEY_EFFECT_TRANSIENT_BACKOFF_CLEARED: &str = "transient_backoff_cleared";
 const KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET: &str = "mcp_session_init_backoff_set";
 const KEY_EFFECT_MCP_SESSION_RETRY_WAITED: &str = "mcp_session_retry_waited";
 const KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED: &str = "mcp_session_retry_scheduled";
@@ -375,6 +378,7 @@ const MAINTENANCE_SOURCE_ADMIN: &str = "admin";
 const MAINTENANCE_OP_AUTO_QUARANTINE: &str = "auto_quarantine";
 const MAINTENANCE_OP_AUTO_MARK_EXHAUSTED: &str = "auto_mark_exhausted";
 const MAINTENANCE_OP_AUTO_RESTORE_ACTIVE: &str = "auto_restore_active";
+const MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF: &str = "auto_clear_transient_backoff";
 const MAINTENANCE_OP_MANUAL_CLEAR_QUARANTINE: &str = "manual_clear_quarantine";
 const MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED: &str = "manual_mark_exhausted";
 const API_KEY_IP_GEO_BATCH_FIELDS: &str = "?fields=city,subdivision,asn";
@@ -396,9 +400,11 @@ const BLOCKED_KEY_REASON_KEY_REVOKED: &str = "key_revoked";
 const BLOCKED_KEY_REASON_INVALID_API_KEY: &str = "invalid_api_key";
 const MCP_SESSION_INIT_BACKOFF_SCOPE: &str = "mcp_session_init";
 const HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE: &str = "http_project_affinity";
+const HTTP_GLOBAL_BACKOFF_SCOPE: &str = "http_global";
 const MCP_SESSION_INIT_BACKOFF_DEFAULT_SECS: i64 = 60;
 const MCP_SESSION_INIT_BACKOFF_MIN_SECS: i64 = 30;
 const MCP_SESSION_INIT_BACKOFF_MAX_SECS: i64 = 300;
+const UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS: i64 = 120;
 const MCP_SESSION_INIT_RECENT_PRESSURE_WINDOW_SECS: i64 = 60;
 const HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS: i64 = 60;
 const BROKEN_KEY_SUBJECT_USER: &str = "user";
@@ -464,6 +470,8 @@ pub(crate) fn is_key_effect_code(code: &str) -> bool {
             | KEY_EFFECT_QUARANTINED
             | KEY_EFFECT_MARKED_EXHAUSTED
             | KEY_EFFECT_RESTORED_ACTIVE
+            | KEY_EFFECT_TRANSIENT_BACKOFF_SET
+            | KEY_EFFECT_TRANSIENT_BACKOFF_CLEARED
             | "cleared_quarantine"
             | KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET
             | KEY_EFFECT_MCP_SESSION_RETRY_WAITED

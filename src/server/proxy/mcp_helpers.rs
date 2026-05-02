@@ -243,19 +243,6 @@ async fn proxy_mcp_follow_up_with_retry(
     tokio::time::sleep(Duration::from_secs(retry_after_secs.max(0) as u64)).await;
 
     let mut retry_response = state.proxy.proxy_request(proxy_request).await?;
-    annotate_request_log_key_effect_if_none(
-        state,
-        retry_response.request_log_id,
-        KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
-        Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
-    )
-    .await;
-    set_proxy_response_key_effect_if_none(
-        &mut retry_response,
-        KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
-        Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
-    );
-
     let retry_analysis = analyze_mcp_attempt(retry_response.status, &retry_response.body);
     if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE) {
         let now = Utc::now().timestamp();
@@ -270,6 +257,18 @@ async fn proxy_mcp_follow_up_with_retry(
             )
             .await?;
     } else {
+        annotate_request_log_key_effect_if_none(
+            state,
+            retry_response.request_log_id,
+            KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+            Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
+        )
+        .await;
+        set_proxy_response_key_effect_if_none(
+            &mut retry_response,
+            KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+            Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
+        );
         let _ = state
             .proxy
             .clear_mcp_session_rate_limit(proxy_session_id)

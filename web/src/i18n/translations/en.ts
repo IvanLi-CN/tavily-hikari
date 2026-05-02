@@ -1228,6 +1228,8 @@ export const EN: TranslationShape = {
           markedExhausted: 'Exhausted',
           restoredActive: 'Restored',
           clearedQuarantine: 'Cleared',
+          transientBackoffSet: 'Temporarily Cooled',
+          transientBackoffCleared: 'Cooldown Cleared',
           mcpSessionInitBackoffSet: 'MCP Backoff Set',
           mcpSessionRetryWaited: 'MCP Retry Waited',
           mcpSessionRetryScheduled: 'MCP Retry Scheduled',

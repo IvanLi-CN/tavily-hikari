@@ -82,7 +82,7 @@ impl TavilyProxy {
                     status,
                 );
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(
                         &lease,
                         request.path.as_str(),
@@ -90,12 +90,26 @@ impl TavilyProxy {
                         request.auth_token_id.as_deref(),
                     )
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && outcome.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(
+                            &lease.id,
+                            request.path.as_str(),
+                            request.auth_token_id.as_deref(),
+                        )
+                        .await?;
+                }
                 let armed_mcp_init_backoff = self
                     .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &outcome)
                     .await?;
-                let mut key_effect = key_effect;
                 if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
-                    key_effect = Self::mcp_session_init_backoff_effect();
+                    key_effect =
+                        if outcome.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403)
+                        {
+                            Self::transient_backoff_set_effect()
+                        } else {
+                            Self::mcp_session_init_backoff_effect()
+                        };
                 }
                 let selection_effect = mcp_session_init_effect.clone();
 
@@ -130,6 +144,12 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
                 if armed_mcp_init_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
@@ -325,9 +345,14 @@ impl TavilyProxy {
                         .await?;
                 }
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && analysis.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
+                        .await?;
+                }
                 let armed_http_project_backoff = self
                     .maybe_arm_http_project_affinity_backoff(
                         &lease.id,
@@ -336,15 +361,27 @@ impl TavilyProxy {
                         http_project_affinity.as_ref(),
                     )
                     .await?;
-                let armed_mcp_init_backoff = if http_project_affinity.is_none() {
+                let armed_http_global_backoff = if http_project_affinity.is_none() {
+                    self.maybe_arm_http_global_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
+                let armed_mcp_init_backoff = if http_project_affinity.is_none()
+                    && analysis.failure_kind.as_deref()
+                        == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+                {
                     self.maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
                         .await?
                 } else {
                     false
                 };
-                let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                if key_effect.code == KEY_EFFECT_NONE && armed_http_project_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
+                } else if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
                     key_effect = Self::mcp_session_init_backoff_effect();
+                } else if key_effect.code == KEY_EFFECT_NONE && armed_http_global_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
                 }
                 let primary_effect = Self::primary_request_effect(
                     &key_effect,
@@ -383,11 +420,27 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
                 if armed_http_project_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+                if armed_http_global_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -607,12 +660,20 @@ impl TavilyProxy {
                     );
                 }
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && analysis.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
+                        .await?;
+                }
                 let armed_backoff = self
                     .maybe_arm_rebalance_mcp_http_backoff(&lease.id, &upstream_headers, &analysis)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && armed_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
+                }
                 let response_body = Self::build_rebalance_mcp_tool_result_body(
                     response_id,
                     upstream_status,
@@ -651,6 +712,12 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
                 if armed_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
@@ -834,12 +901,20 @@ impl TavilyProxy {
                         .await?;
                 }
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && analysis.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
+                        .await?;
+                }
                 let armed_backoff = self
                     .maybe_arm_rebalance_mcp_http_backoff(&lease.id, &upstream_headers, &analysis)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && armed_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
+                }
 
                 let response_body = Self::build_rebalance_mcp_tool_result_body(
                     response_id,
@@ -879,6 +954,12 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
                 if armed_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
@@ -1089,9 +1170,14 @@ impl TavilyProxy {
                         .await?;
                 }
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                if key_effect.code == KEY_EFFECT_NONE && analysis.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
+                        .await?;
+                }
                 let armed_http_project_backoff = self
                     .maybe_arm_http_project_affinity_backoff(
                         &lease.id,
@@ -1100,15 +1186,27 @@ impl TavilyProxy {
                         http_project_affinity.as_ref(),
                     )
                     .await?;
-                let armed_mcp_init_backoff = if http_project_affinity.is_none() {
+                let armed_http_global_backoff = if http_project_affinity.is_none() {
+                    self.maybe_arm_http_global_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
+                let armed_mcp_init_backoff = if http_project_affinity.is_none()
+                    && analysis.failure_kind.as_deref()
+                        == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+                {
                     self.maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
                         .await?
                 } else {
                     false
                 };
-                let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                if key_effect.code == KEY_EFFECT_NONE && armed_http_project_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
+                } else if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
                     key_effect = Self::mcp_session_init_backoff_effect();
+                } else if key_effect.code == KEY_EFFECT_NONE && armed_http_global_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
                 }
                 let primary_effect = Self::primary_request_effect(
                     &key_effect,
@@ -1147,11 +1245,27 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
                 if armed_http_project_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+                if armed_http_global_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -1300,15 +1414,29 @@ impl TavilyProxy {
                         .await?;
                 }
 
-                let key_effect = self
+                let mut key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
-                let armed_mcp_init_backoff = self
-                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                if key_effect.code == KEY_EFFECT_NONE && analysis.status == OUTCOME_SUCCESS {
+                    key_effect = self
+                        .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
+                        .await?;
+                }
+                let armed_http_global_backoff = self
+                    .maybe_arm_http_global_backoff(&lease.id, &headers, &analysis)
                     .await?;
-                let mut key_effect = key_effect;
+                let armed_mcp_init_backoff = if analysis.failure_kind.as_deref()
+                    == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+                {
+                    self.maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
                 if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
                     key_effect = Self::mcp_session_init_backoff_effect();
+                } else if key_effect.code == KEY_EFFECT_NONE && armed_http_global_backoff {
+                    key_effect = Self::transient_backoff_set_effect();
                 }
 
                 let request_log_id = self
@@ -1342,6 +1470,22 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                self.link_transient_backoff_clear_request_log(
+                    &key_effect,
+                    &lease.id,
+                    request_log_id,
+                )
+                .await?;
+                if armed_http_global_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_GLOBAL_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
                 if armed_mcp_init_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(

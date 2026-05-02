@@ -1314,6 +1314,535 @@ async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_re
 }
 
 #[tokio::test]
+async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears_it() {
+    let db_path = temp_db_path("unknown-403-transient-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-unknown-403-backoff-a".to_string(),
+            "tvly-unknown-403-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(2)
+        .await
+        .expect("set stable pool size");
+    let token = proxy
+        .create_access_token(Some("unknown-403-backoff"))
+        .await
+        .expect("create token");
+    let project_id = "unknown-403-project";
+    let project_hash = sha256_hex(project_id);
+    let subject = format!("token:{}:project:{}", token.id, project_hash);
+    let ranked = rank_mcp_affinity_key_ids(
+        &subject,
+        fetch_all_api_key_ids(&proxy.key_store.pool).await,
+        2,
+    );
+    let hotter_key_id = ranked[0].clone();
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let hotter_secret = key_rows
+        .iter()
+        .find(|(id, _)| id == &hotter_key_id)
+        .map(|(_, secret)| secret.clone())
+        .expect("hotter key secret");
+
+    proxy
+        .key_store
+        .set_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &project_hash,
+            &hotter_key_id,
+        )
+        .await
+        .expect("seed project binding");
+
+    let app = Router::new()
+        .route(
+            "/search",
+            post(move |Json(body): Json<Value>| {
+                let hotter_secret = hotter_secret.clone();
+                async move {
+                    let api_key = body
+                        .get("api_key")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if api_key == hotter_secret {
+                        (
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({ "error": "Forbidden" })),
+                        )
+                            .into_response()
+                    } else {
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                            })),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/usage",
+            get(move || async move {
+                Json(serde_json::json!({
+                    "key": { "limit": 1000, "usage": 1 },
+                    "account": { "plan_limit": 1000, "usage": 1 },
+                }))
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    headers.insert("x-project-id", HeaderValue::from_static(project_id));
+    let options = serde_json::json!({ "query": "ambiguous 403" });
+
+    let (first_resp, first_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            Some(project_id),
+            &Method::POST,
+            "/api/tavily/search",
+            options.clone(),
+            &headers,
+            true,
+        )
+        .await
+        .expect("first project request should complete");
+    assert_eq!(first_resp.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        first_analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+    );
+    assert_eq!(first_resp.key_effect_code, KEY_EFFECT_TRANSIENT_BACKOFF_SET);
+
+    let quarantine_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_quarantines WHERE key_id = ? AND cleared_at IS NULL",
+    )
+    .bind(&hotter_key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count quarantine rows");
+    assert_eq!(quarantine_count, 0);
+
+    let cooldown = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&hotter_key_id),
+            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("load project cooldowns");
+    assert_eq!(
+        cooldown.get(&hotter_key_id).map(|state| state.retry_after_secs),
+        Some(UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS),
+    );
+
+    let (limit, remaining) = proxy
+        .sync_key_quota(&hotter_key_id, &usage_base, "test-quota-sync")
+        .await
+        .expect("quota sync should clear the ambiguous 403 cooldown");
+    assert_eq!((limit, remaining), (1000, 999));
+
+    let cleared = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&hotter_key_id),
+            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("reload project cooldowns");
+    assert!(cleared.is_empty());
+
+    let maintenance_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_maintenance_records WHERE key_id = ? AND operation_code = ?",
+    )
+    .bind(&hotter_key_id)
+    .bind(MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count maintenance records");
+    assert_eq!(maintenance_count, 1);
+
+    let (second_resp, _second_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            Some(project_id),
+            &Method::POST,
+            "/api/tavily/search",
+            options,
+            &headers,
+            true,
+        )
+        .await
+        .expect("second project request should complete");
+    assert_eq!(second_resp.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        second_resp.api_key_id.as_deref(),
+        Some(hotter_key_id.as_str())
+    );
+
+    proxy
+        .sync_key_quota(&hotter_key_id, &usage_base, "test-quota-sync")
+        .await
+        .expect("quota sync should clear the second ambiguous 403 cooldown");
+
+    let now = Utc::now().timestamp();
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &hotter_key_id,
+            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            cooldown_until: now + 90,
+            retry_after_secs: 90,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("seed 429 cooldown");
+
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &hotter_key_id,
+            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            cooldown_until: now + 30,
+            retry_after_secs: 30,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("shorter unknown 403 cooldown should not relabel longer 429 row");
+
+    proxy
+        .sync_key_quota(&hotter_key_id, &usage_base, "test-quota-sync")
+        .await
+        .expect("quota sync should not clear 429 cooldown");
+    let retained_429 = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&hotter_key_id),
+            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("reload 429 cooldowns");
+    assert_eq!(
+        retained_429
+            .get(&hotter_key_id)
+            .map(|state| state.retry_after_secs),
+        Some(90),
+    );
+    let retained_reason: String = sqlx::query_scalar(
+        "SELECT reason_code FROM api_key_transient_backoffs WHERE key_id = ? AND scope = ?",
+    )
+    .bind(&hotter_key_id)
+    .bind(HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load retained reason");
+    assert_eq!(retained_reason, FAILURE_KIND_UPSTREAM_RATE_LIMITED_429);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
+    let db_path = temp_db_path("unknown-403-global-http-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-unknown-403-global-a".to_string(),
+            "tvly-unknown-403-global-b".to_string(),
+            "tvly-unknown-403-global-c".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(3)
+        .await
+        .expect("set project pool size");
+    let token = proxy
+        .create_access_token(Some("unknown-403-global"))
+        .await
+        .expect("create token");
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let cooled_key_id = key_rows[0].0.clone();
+    let cooled_secret = key_rows[0].1.clone();
+    let already_cooled_key_id = key_rows[1].0.clone();
+    let healthy_key_id = key_rows[2].0.clone();
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &cooled_key_id)
+        .await
+        .expect("seed token primary binding");
+    let now = Utc::now().timestamp();
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &already_cooled_key_id,
+            scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+            cooldown_until: now + UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
+            retry_after_secs: UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("seed second global cooldown");
+
+    let app = Router::new().route(
+        "/search",
+        post(move |Json(body): Json<Value>| {
+            let cooled_secret = cooled_secret.clone();
+            async move {
+                let api_key = body
+                    .get("api_key")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                if api_key == cooled_secret {
+                    (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({ "detail": "Forbidden" })),
+                    )
+                        .into_response()
+                } else {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": 200,
+                            "results": [],
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let upstream_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let options = serde_json::json!({ "query": "global ambiguous 403" });
+
+    let (first_resp, first_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &upstream_base,
+            "/search",
+            Some(&token.id),
+            None,
+            &Method::POST,
+            "/api/tavily/search",
+            options.clone(),
+            &headers,
+            true,
+        )
+        .await
+        .expect("first global HTTP request should complete");
+    assert_eq!(first_resp.status, StatusCode::FORBIDDEN);
+    assert_eq!(first_resp.api_key_id.as_deref(), Some(cooled_key_id.as_str()));
+    assert_eq!(
+        first_analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+    );
+    assert_eq!(first_resp.key_effect_code, KEY_EFFECT_TRANSIENT_BACKOFF_SET);
+
+    let cooldown = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&cooled_key_id),
+            HTTP_GLOBAL_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("load global cooldowns");
+    assert!(cooldown.contains_key(&cooled_key_id));
+
+    let (second_resp, _second_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &upstream_base,
+            "/search",
+            Some(&token.id),
+            None,
+            &Method::POST,
+            "/api/tavily/search",
+            options,
+            &headers,
+            true,
+        )
+        .await
+        .expect("second global HTTP request should complete");
+    assert_eq!(second_resp.status, StatusCode::OK);
+    assert_eq!(
+        second_resp.api_key_id.as_deref(),
+        Some(healthy_key_id.as_str())
+    );
+
+    let project_id = "unknown-403-global-project";
+    let project_hash = sha256_hex(project_id);
+    proxy
+        .key_store
+        .set_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &project_hash,
+            &cooled_key_id,
+        )
+        .await
+        .expect("seed project binding to globally cooled key");
+    let mut project_headers = headers.clone();
+    project_headers.insert("x-project-id", HeaderValue::from_static(project_id));
+    let (project_resp, _project_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &upstream_base,
+            "/search",
+            Some(&token.id),
+            Some(project_id),
+            &Method::POST,
+            "/api/tavily/search",
+            serde_json::json!({ "query": "project avoids global cooldown" }),
+            &project_headers,
+            true,
+        )
+        .await
+        .expect("project HTTP request should complete");
+    assert_eq!(project_resp.status, StatusCode::OK);
+    assert_eq!(
+        project_resp.api_key_id.as_deref(),
+        Some(healthy_key_id.as_str())
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn successful_request_clear_links_transient_backoff_maintenance_to_request_log() {
+    let db_path = temp_db_path("unknown-403-clear-request-link");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-unknown-403-clear-link".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("unknown-403-clear-link"))
+        .await
+        .expect("create token");
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+    let now = Utc::now().timestamp();
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &key_id,
+            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            cooldown_until: now + UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
+            retry_after_secs: UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("seed unknown 403 cooldown");
+
+    let app = Router::new().route(
+        "/search",
+        post(move || async move {
+            Json(serde_json::json!({
+                "status": 200,
+                "results": [],
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let (resp, _analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            None,
+            &Method::POST,
+            "/api/tavily/search",
+            serde_json::json!({ "query": "recovered" }),
+            &headers,
+            true,
+        )
+        .await
+        .expect("successful request should clear cooldown");
+    assert_eq!(resp.status, StatusCode::OK);
+    assert_eq!(resp.key_effect_code, KEY_EFFECT_TRANSIENT_BACKOFF_CLEARED);
+    let request_log_id = resp.request_log_id.expect("request log id");
+
+    let linked_request_log_id: Option<i64> = sqlx::query_scalar(
+        "SELECT request_log_id FROM api_key_maintenance_records WHERE key_id = ? AND operation_code = ?",
+    )
+    .bind(&key_id)
+    .bind(MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load maintenance request link");
+    assert_eq!(linked_request_log_id, Some(request_log_id));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn mcp_session_init_backoff_store_extends_without_shortening_and_gc_cleans_expired_rows() {
     let db_path = temp_db_path("mcp-init-backoff-store");
     let db_str = db_path.to_string_lossy().to_string();

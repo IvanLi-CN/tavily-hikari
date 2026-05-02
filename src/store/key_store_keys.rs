@@ -309,6 +309,87 @@ impl KeyStore {
         Err(ProxyError::NoAvailableKeys)
     }
 
+    pub(crate) async fn acquire_key_avoiding_transient_backoff(
+        &self,
+        scope: &str,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.acquire_key_avoiding_transient_backoff_excluding(scope, None)
+            .await
+    }
+
+    pub(crate) async fn acquire_key_avoiding_transient_backoff_excluding(
+        &self,
+        scope: &str,
+        excluded_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = Utc::now().timestamp();
+        let month_start = start_of_month(Utc::now()).timestamp();
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT id, api_key
+            FROM api_keys
+            WHERE status = "#,
+        );
+        builder.push_bind(STATUS_ACTIVE);
+        builder.push(" AND deleted_at IS NULL");
+        if let Some(excluded_key_id) = excluded_key_id {
+            builder.push(" AND id != ");
+            builder.push_bind(excluded_key_id);
+        }
+        builder.push(
+            r#"
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = "#,
+        );
+        builder.push_bind(month_start);
+        builder.push(
+            r#"
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_transient_backoffs b
+                  WHERE b.key_id = api_keys.id
+                    AND b.scope = "#,
+        );
+        builder.push_bind(scope);
+        builder.push(" AND b.cooldown_until > ");
+        builder.push_bind(now);
+        builder.push(
+            r#"
+              )
+            ORDER BY last_used_at ASC, id ASC
+            LIMIT 1
+            "#,
+        );
+
+        if let Some((id, api_key)) = builder
+            .build_query_as::<(String, String)>()
+            .fetch_optional(&self.pool)
+            .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        match excluded_key_id {
+            Some(key_id) => self.acquire_active_key_excluding(Some(key_id)).await,
+            None => self.acquire_key().await,
+        }
+    }
+
     pub(crate) async fn list_mcp_session_candidate_key_ids(
         &self,
     ) -> Result<Vec<String>, ProxyError> {
