@@ -1026,6 +1026,7 @@ export const ZH: TranslationShape = {
           statuses: {
             pending: '检测中',
             duplicate_in_input: '输入重复',
+            already_exists: '已存在',
             ok: '可用',
             ok_exhausted: '可用（已耗尽）',
             unauthorized: '未授权',

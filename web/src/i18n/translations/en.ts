@@ -1027,6 +1027,7 @@ export const EN: TranslationShape = {
           statuses: {
             pending: 'Pending',
             duplicate_in_input: 'Duplicate',
+            already_exists: 'Already exists',
             ok: 'Valid',
             ok_exhausted: 'Valid (exhausted)',
             unauthorized: 'Unauthorized',

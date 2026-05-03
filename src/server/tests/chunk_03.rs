@@ -1898,6 +1898,18 @@
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
             .await
             .expect("proxy created");
+        let _existing_id = proxy
+            .add_or_undelete_key("tvly-ok-active")
+            .await
+            .expect("existing active key created");
+        let deleted_id = proxy
+            .add_or_undelete_key("tvly-ok-disabled")
+            .await
+            .expect("deleted key created");
+        proxy
+            .soft_delete_key_by_id(&deleted_id)
+            .await
+            .expect("key soft deleted");
 
         let forward_auth = ForwardAuthConfig::new(
             Some(HeaderName::from_static("x-forward-user")),
@@ -1917,7 +1929,16 @@
             .post(url)
             .header("x-forward-user", "admin")
             .json(&serde_json::json!({
-                "api_keys": ["tvly-ok", "tvly-exhausted", "tvly-unauth", "tvly-rate-limited", "tvly-ok"]
+                "api_keys": [
+                    "tvly-ok",
+                    "tvly-exhausted",
+                    "tvly-unauth",
+                    "tvly-rate-limited",
+                    "tvly-ok-active",
+                    "tvly-ok-disabled",
+                    "tvly-ok-active",
+                    "tvly-ok"
+                ]
             }))
             .send()
             .await
@@ -1926,17 +1947,21 @@
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         let summary = body.get("summary").expect("summary");
-        assert_eq!(summary.get("input_lines").and_then(|v| v.as_u64()), Some(5));
-        assert_eq!(summary.get("valid_lines").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(summary.get("input_lines").and_then(|v| v.as_u64()), Some(8));
+        assert_eq!(summary.get("valid_lines").and_then(|v| v.as_u64()), Some(8));
         assert_eq!(
             summary.get("unique_in_input").and_then(|v| v.as_u64()),
-            Some(4)
+            Some(6)
         );
         assert_eq!(
             summary.get("duplicate_in_input").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            summary.get("already_exists").and_then(|v| v.as_u64()),
             Some(1)
         );
-        assert_eq!(summary.get("ok").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(summary.get("ok").and_then(|v| v.as_u64()), Some(2));
         assert_eq!(summary.get("exhausted").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(summary.get("invalid").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(summary.get("error").and_then(|v| v.as_u64()), Some(1));
@@ -1945,7 +1970,7 @@
             .get("results")
             .and_then(|v| v.as_array())
             .expect("results array");
-        assert_eq!(results.len(), 5);
+        assert_eq!(results.len(), 8);
         assert_eq!(
             results[0].get("status").and_then(|v| v.as_str()),
             Some("ok")
@@ -1964,6 +1989,18 @@
         );
         assert_eq!(
             results[4].get("status").and_then(|v| v.as_str()),
+            Some("already_exists")
+        );
+        assert_eq!(
+            results[5].get("status").and_then(|v| v.as_str()),
+            Some("ok")
+        );
+        assert_eq!(
+            results[6].get("status").and_then(|v| v.as_str()),
+            Some("duplicate_in_input")
+        );
+        assert_eq!(
+            results[7].get("status").and_then(|v| v.as_str()),
             Some("duplicate_in_input")
         );
 
@@ -2458,4 +2495,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

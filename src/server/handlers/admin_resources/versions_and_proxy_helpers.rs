@@ -605,6 +605,7 @@ struct ValidateKeysSummary {
     valid_lines: u64,
     unique_in_input: u64,
     duplicate_in_input: u64,
+    already_exists: u64,
     ok: u64,
     exhausted: u64,
     invalid: u64,

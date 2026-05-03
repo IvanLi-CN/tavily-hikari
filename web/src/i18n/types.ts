@@ -1004,6 +1004,7 @@ export interface AdminTranslationsShape {
       statuses: {
         pending: string
         duplicate_in_input: string
+        already_exists: string
         ok: string
         ok_exhausted: string
         unauthorized: string

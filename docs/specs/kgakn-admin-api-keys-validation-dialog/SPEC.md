@@ -68,6 +68,21 @@
 - [x] M3: Frontend 对话框与重试/导入交互落地
 - [x] M4: 回归验证（cargo test + web build）
 
+## Visual Evidence
+
+- Storybook canvas: `Admin/Components/ApiKeysValidationDialog/MixedResults`
+  - source_type: `storybook_canvas`
+  - target_program: `mock-only`
+  - capture_scope: `element`
+  - requested_viewport: `1440-device-desktop`
+  - viewport_strategy: `storybook-viewport`
+  - sensitive_exclusion: `N/A`
+  - submission_gate: `pending-owner-approval`
+  - state: mixed validation results with an already-existing key
+  - evidence_note: verifies the neutral Already exists chip appears next to Duplicate and that the import CTA excludes the existing key.
+
+![API keys validation dialog already-existing skip](./assets/api-keys-validation-existing-skip.png)
+
 ## 变更记录（Change log）
 
 - 2026-02-24: 由 `docs/plan/kgakn:admin-api-keys-validation-dialog/PLAN.md` 迁移为规格文档。

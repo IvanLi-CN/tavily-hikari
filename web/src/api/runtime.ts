@@ -2327,6 +2327,7 @@ export interface ValidateKeysSummary {
   valid_lines: number
   unique_in_input: number
   duplicate_in_input: number
+  already_exists: number
   ok: number
   exhausted: number
   invalid: number

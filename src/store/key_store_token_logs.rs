@@ -1369,6 +1369,30 @@ impl KeyStore {
         self.add_or_undelete_key_in_group(api_key, None).await
     }
 
+    pub(crate) async fn fetch_active_existing_api_keys(
+        &self,
+        api_keys: &[String],
+    ) -> Result<HashSet<String>, ProxyError> {
+        if api_keys.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            "SELECT api_key FROM api_keys WHERE deleted_at IS NULL AND api_key IN (",
+        );
+        let mut separated = builder.separated(", ");
+        for api_key in api_keys {
+            separated.push_bind(api_key);
+        }
+        separated.push_unseparated(")");
+
+        let rows = builder
+            .build_query_scalar::<String>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     // Admin ops: add/undelete key by secret and optionally assign a group.
     pub(crate) async fn add_or_undelete_key_in_group(
         &self,

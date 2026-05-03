@@ -232,6 +232,14 @@ impl TavilyProxy {
         self.key_store.add_or_undelete_key(api_key).await
     }
 
+    /// Admin: return the submitted API keys that already exist and are not soft-deleted.
+    pub async fn fetch_active_existing_api_keys(
+        &self,
+        api_keys: &[String],
+    ) -> Result<HashSet<String>, ProxyError> {
+        self.key_store.fetch_active_existing_api_keys(api_keys).await
+    }
+
     /// Admin: add or undelete an API key and optionally assign it to a group.
     pub async fn add_or_undelete_key_in_group(
         &self,

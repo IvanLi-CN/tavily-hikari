@@ -113,6 +113,7 @@ export const MixedResults: Story = {
       importing: false,
       rows: [
         { api_key: "tvly-OK-NEW", status: "ok", quota_limit: 1000, quota_remaining: 123, attempts: 1 },
+        { api_key: "tvly-OK-EXISTING", status: "already_exists", attempts: 0 },
         { api_key: "tvly-OK-EXHAUSTED", status: "ok_exhausted", quota_limit: 1000, quota_remaining: 0, attempts: 1 },
         {
           api_key: "tvly-UNAUTHORIZED",

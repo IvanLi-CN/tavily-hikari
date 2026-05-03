@@ -1760,6 +1760,7 @@ function AdminDashboard(): JSX.Element {
   type KeyValidationStatus =
     | 'pending'
     | 'duplicate_in_input'
+    | 'already_exists'
     | 'ok'
     | 'ok_exhausted'
     | 'unauthorized'
@@ -4832,6 +4833,7 @@ function AdminDashboard(): JSX.Element {
     const rows = keysValidationVisibleRows
     let pending = 0
     let duplicate = 0
+    let existing = 0
     let ok = 0
     let exhausted = 0
     let invalid = 0
@@ -4843,6 +4845,9 @@ function AdminDashboard(): JSX.Element {
           break
         case 'duplicate_in_input':
           duplicate += 1
+          break
+        case 'already_exists':
+          existing += 1
           break
         case 'ok':
           ok += 1
@@ -4860,13 +4865,13 @@ function AdminDashboard(): JSX.Element {
           break
       }
     }
-    const checked = ok + exhausted + invalid + errorCount
+    const checked = existing + ok + exhausted + invalid + errorCount
     const totalToCheck = new Set(
       rows
         .filter((row) => row.status !== 'duplicate_in_input')
         .map((row) => row.api_key),
     ).size
-    return { pending, duplicate, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
+    return { pending, duplicate, existing, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
   }, [keysValidationVisibleRows])
 
   const keysValidationValidKeys = useMemo(() => {
@@ -5057,6 +5062,8 @@ function AdminDashboard(): JSX.Element {
         return 'pending'
       case 'duplicate_in_input':
         return 'duplicate_in_input'
+      case 'already_exists':
+        return 'already_exists'
       case 'ok':
         return 'ok'
       case 'ok_exhausted':
@@ -5374,7 +5381,12 @@ function AdminDashboard(): JSX.Element {
 
       const imported = new Set(keysValidation.imported_api_keys)
       for (const apiKey of importedByResponse) imported.add(apiKey)
-      const shouldAutoClose = keysValidation.rows.every((row) => imported.has(row.api_key))
+      const shouldAutoClose = keysValidation.rows.every(
+        (row) =>
+          imported.has(row.api_key)
+          || row.status === 'already_exists'
+          || row.status === 'duplicate_in_input',
+      )
       setKeysValidation((prev) => {
         if (!prev) return prev
         if (importRunId !== keysValidateRunIdRef.current) return prev

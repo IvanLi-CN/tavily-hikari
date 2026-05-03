@@ -27,6 +27,7 @@ import type { AddApiKeysBatchResponse, ValidateAssignedProxyMatchKind } from "..
 export type KeyValidationStatus =
   | "pending"
   | "duplicate_in_input"
+  | "already_exists"
   | "ok"
   | "ok_exhausted"
   | "unauthorized"
@@ -65,6 +66,7 @@ export type KeysValidationState = {
 export type KeysValidationCounts = {
   pending: number;
   duplicate: number;
+  existing: number;
   ok: number;
   exhausted: number;
   invalid: number;
@@ -73,7 +75,7 @@ export type KeysValidationCounts = {
   totalToCheck: number;
 };
 
-type ValidationFilterKey = "pending" | "ok" | "exhausted" | "invalid" | "error" | "duplicate";
+type ValidationFilterKey = "pending" | "ok" | "exhausted" | "invalid" | "error" | "duplicate" | "existing";
 const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
 function formatNumber(value: number | null | undefined): string {
@@ -85,6 +87,7 @@ export function computeValidationCounts(state: KeysValidationState | null): Keys
   const rows = state?.rows ?? [];
   let pending = 0;
   let duplicate = 0;
+  let existing = 0;
   let ok = 0;
   let exhausted = 0;
   let invalid = 0;
@@ -97,6 +100,9 @@ export function computeValidationCounts(state: KeysValidationState | null): Keys
         break;
       case "duplicate_in_input":
         duplicate += 1;
+        break;
+      case "already_exists":
+        existing += 1;
         break;
       case "ok":
         ok += 1;
@@ -115,9 +121,9 @@ export function computeValidationCounts(state: KeysValidationState | null): Keys
     }
   }
 
-  const checked = ok + exhausted + invalid + error;
+  const checked = existing + ok + exhausted + invalid + error;
   const totalToCheck = state?.unique_in_input ?? 0;
-  return { pending, duplicate, ok, exhausted, invalid, error, checked, totalToCheck };
+  return { pending, duplicate, existing, ok, exhausted, invalid, error, checked, totalToCheck };
 }
 
 export function computeValidKeys(state: KeysValidationState | null): string[] {
@@ -145,6 +151,7 @@ function statusTone(status: KeyValidationStatus): StatusTone {
     case "pending":
       return "info";
     case "duplicate_in_input":
+    case "already_exists":
       return "neutral";
     case "unauthorized":
     case "forbidden":
@@ -165,6 +172,8 @@ function filterKeyForStatus(status: KeyValidationStatus): ValidationFilterKey {
       return "exhausted";
     case "duplicate_in_input":
       return "duplicate";
+    case "already_exists":
+      return "existing";
     case "unauthorized":
     case "forbidden":
     case "invalid":
@@ -509,6 +518,20 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 <span className="key-validation-segment-dot" />
                 {statuses.duplicate_in_input ?? "Duplicate"}:{" "}
                 <span className="font-mono tabular-nums">{formatNumber(props.counts.duplicate)}</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={`key-validation-segment-stat is-duplicate${
+                  activeFilter === "existing" ? " is-active" : ""
+                }${activeFilter && activeFilter !== "existing" ? " is-dimmed" : ""}`}
+                onClick={() => setActiveFilter((prev) => (prev === "existing" ? null : "existing"))}
+                aria-pressed={activeFilter === "existing"}
+              >
+                <span className="key-validation-segment-dot" />
+                {statuses.already_exists ?? "Already exists"}:{" "}
+                <span className="font-mono tabular-nums">{formatNumber(props.counts.existing)}</span>
               </Button>
             </div>
           </div>

@@ -100,9 +100,40 @@ async fn post_validate_api_keys(
     summary.unique_in_input = seen.len() as u64;
 
     let proxy = state.proxy.clone();
+    let unique_api_keys = seen.into_iter().collect::<Vec<_>>();
+    let existing_api_keys = match proxy.fetch_active_existing_api_keys(&unique_api_keys).await {
+        Ok(existing) => existing,
+        Err(err) => {
+            eprintln!("api keys validate existing-key lookup error: {err}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let mut pending_to_validate = Vec::<(usize, String, Option<String>, Option<String>)>::new();
+    for (pos, api_key, registration_ip, registration_region) in pending {
+        if existing_api_keys.contains(&api_key) {
+            summary.already_exists += 1;
+            if let Some(slot) = results.get_mut(pos) {
+                *slot = ValidateKeyResult {
+                    api_key,
+                    status: "already_exists".to_string(),
+                    registration_ip,
+                    registration_region,
+                    assigned_proxy_key: None,
+                    assigned_proxy_label: None,
+                    assigned_proxy_match_kind: None,
+                    quota_limit: None,
+                    quota_remaining: None,
+                    detail: None,
+                };
+            }
+        } else {
+            pending_to_validate.push((pos, api_key, registration_ip, registration_region));
+        }
+    }
+
     let usage_base = state.usage_base.clone();
     let geo_origin = state.api_key_ip_geo_origin.clone();
-    let checked = futures_stream::iter(pending.into_iter())
+    let checked = futures_stream::iter(pending_to_validate.into_iter())
         .map(|(pos, api_key, registration_ip, registration_region)| {
             let proxy = proxy.clone();
             let usage_base = usage_base.clone();
