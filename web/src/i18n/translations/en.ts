@@ -941,6 +941,7 @@ export const EN: TranslationShape = {
           newQuarantines: 'New Quarantines',
           keys: 'Active Keys',
           quarantined: 'Quarantined',
+          temporaryIsolated: 'Temporarily Isolated',
           exhausted: 'Exhausted',
           remaining: 'Remaining',
           proxyAvailable: 'Available Proxy Nodes',
@@ -950,6 +951,7 @@ export const EN: TranslationShape = {
           keysAll: 'All keys available',
           keysExhausted: '{count} exhausted',
           keysAvailability: '{active} active · {quarantined} quarantined · {exhausted} exhausted',
+          keysTemporaryIsolated: '{count} temporarily isolated',
         },
         loading: 'Loading latest metrics…',
       },
@@ -1298,6 +1300,7 @@ export const EN: TranslationShape = {
       statuses: {
         active: 'Active',
         quarantined: 'Quarantined',
+        temporary_isolated: 'Temporarily Isolated',
         exhausted: 'Exhausted',
         success: 'Success',
         running: 'Running',

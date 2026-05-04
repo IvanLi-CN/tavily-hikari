@@ -1253,6 +1253,113 @@ async fn quarantined_keys_are_excluded_until_admin_clears_them() {
 }
 
 #[tokio::test]
+async fn unknown_403_transient_backoff_is_reported_as_temporary_isolated_key() {
+    let db_path = temp_db_path("temporary-isolated-key-virtual-status");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-temp-isolated-a".to_string(),
+            "tvly-temp-isolated-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, api_key FROM api_keys ORDER BY api_key ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch keys");
+    let isolated_id = rows
+        .into_iter()
+        .find_map(|(id, secret)| (secret == "tvly-temp-isolated-a").then_some(id))
+        .expect("isolated key exists");
+    let now = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &isolated_id,
+            scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+            cooldown_until: now + 600,
+            retry_after_secs: 600,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm unknown 403 transient backoff");
+
+    let summary = proxy.summary().await.expect("summary");
+    assert_eq!(summary.active_keys, 1);
+    assert_eq!(summary.temporary_isolated_keys, 1);
+    assert_eq!(summary.quarantined_keys, 0);
+
+    let page = proxy
+        .list_api_key_metrics_paged(1, 20, &[], &[], None, &[])
+        .await
+        .expect("list key metrics");
+    assert_eq!(
+        page.facets
+            .statuses
+            .iter()
+            .find(|facet| facet.value == "temporary_isolated")
+            .map(|facet| facet.count)
+            .unwrap_or_default(),
+        1
+    );
+    assert_eq!(
+        page.facets
+            .statuses
+            .iter()
+            .find(|facet| facet.value == STATUS_ACTIVE)
+            .map(|facet| facet.count)
+            .unwrap_or_default(),
+        1
+    );
+
+    let temporary_statuses = vec!["temporary_isolated".to_string()];
+    let temporary = proxy
+        .list_api_key_metrics_paged(1, 20, &[], &temporary_statuses, None, &[])
+        .await
+        .expect("filter temporary isolated keys");
+    assert_eq!(temporary.items.len(), 1);
+    let temporary_item = temporary.items.first().expect("temporary item");
+    assert_eq!(temporary_item.id, isolated_id);
+    assert_eq!(temporary_item.status, STATUS_ACTIVE);
+    assert_eq!(
+        temporary_item
+            .transient_backoff
+            .as_ref()
+            .map(|backoff| backoff.reason_code.as_str()),
+        Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403)
+    );
+
+    let active_statuses = vec![STATUS_ACTIVE.to_string()];
+    let active = proxy
+        .list_api_key_metrics_paged(1, 20, &[], &active_statuses, None, &[])
+        .await
+        .expect("filter active keys");
+    assert!(
+        active.items.iter().all(|item| item.id != isolated_id),
+        "active filter should exclude virtual temporary isolation"
+    );
+
+    let detail = proxy
+        .get_api_key_metric(&isolated_id)
+        .await
+        .expect("fetch detail")
+        .expect("detail exists");
+    assert!(detail.transient_backoff.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn quarantine_key_by_id_is_safe_under_concurrent_calls() {
     let db_path = temp_db_path("quarantine-concurrent");
     let db_str = db_path.to_string_lossy().to_string();

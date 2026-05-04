@@ -940,6 +940,7 @@ export const ZH: TranslationShape = {
           newQuarantines: '新增隔离密钥',
           keys: '活跃密钥',
           quarantined: '隔离中',
+          temporaryIsolated: '临时隔离',
           exhausted: '已耗尽',
           remaining: '剩余可用',
           proxyAvailable: '可用代理节点',
@@ -949,6 +950,7 @@ export const ZH: TranslationShape = {
           keysAll: '全部可用',
           keysExhausted: '{count} 个耗尽',
           keysAvailability: '{active} 个可用 · {quarantined} 个隔离中 · {exhausted} 个耗尽',
+          keysTemporaryIsolated: '{count} 个临时隔离',
         },
         loading: '正在加载最新指标…',
       },
@@ -1297,6 +1299,7 @@ export const ZH: TranslationShape = {
       statuses: {
         active: '活跃',
         quarantined: '隔离中',
+        temporary_isolated: '临时隔离',
         exhausted: '耗尽',
         success: '成功',
         running: '运行中',

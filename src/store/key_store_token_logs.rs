@@ -1937,6 +1937,18 @@ impl KeyStore {
             ON stats.api_key_id = ak.id
             LEFT JOIN api_key_quarantines aq
             ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            LEFT JOIN (
+                SELECT
+                    key_id,
+                    MAX(cooldown_until) AS transient_backoff_cooldown_until,
+                    MAX(retry_after_secs) AS transient_backoff_retry_after_secs,
+                    GROUP_CONCAT(scope, ',') AS transient_backoff_scopes
+                FROM api_key_transient_backoffs
+                WHERE cooldown_until > strftime('%s', 'now')
+                  AND reason_code = 'upstream_unknown_403'
+                GROUP BY key_id
+            ) AS tb
+            ON tb.key_id = ak.id
             WHERE ak.deleted_at IS NULL
         "#
     }
@@ -1966,6 +1978,9 @@ impl KeyStore {
                 aq.reason_summary AS quarantine_reason_summary,
                 {quarantine_detail_sql}
                 aq.created_at AS quarantine_created_at,
+                tb.transient_backoff_cooldown_until,
+                tb.transient_backoff_retry_after_secs,
+                tb.transient_backoff_scopes,
                 COALESCE(stats.total_requests, 0) AS total_requests,
                 COALESCE(stats.success_count, 0) AS success_count,
                 COALESCE(stats.error_count, 0) AS error_count,
@@ -1999,6 +2014,14 @@ impl KeyStore {
         let quarantine_reason_summary: Option<String> = row.try_get("quarantine_reason_summary")?;
         let quarantine_reason_detail: Option<String> = row.try_get("quarantine_reason_detail")?;
         let quarantine_created_at: Option<i64> = row.try_get("quarantine_created_at")?;
+        let transient_backoff_cooldown_until: Option<i64> =
+            row.try_get("transient_backoff_cooldown_until")?;
+        let transient_backoff_retry_after_secs: Option<i64> =
+            row.try_get("transient_backoff_retry_after_secs")?;
+        let transient_backoff_scopes: Option<String> = row.try_get("transient_backoff_scopes")?;
+        let is_temporary_isolated = status == STATUS_ACTIVE
+            && quarantine_source.is_none()
+            && transient_backoff_cooldown_until.is_some();
 
         Ok(ApiKeyMetrics {
             id,
@@ -2022,6 +2045,18 @@ impl KeyStore {
                 reason_summary: quarantine_reason_summary.unwrap_or_default(),
                 reason_detail: quarantine_reason_detail.unwrap_or_default(),
                 created_at: quarantine_created_at.unwrap_or_default(),
+            }),
+            transient_backoff: is_temporary_isolated.then(|| ApiKeyTransientBackoff {
+                reason_code: FAILURE_KIND_UPSTREAM_UNKNOWN_403.to_string(),
+                cooldown_until: transient_backoff_cooldown_until.unwrap_or_default(),
+                retry_after_secs: transient_backoff_retry_after_secs.unwrap_or_default(),
+                scopes: transient_backoff_scopes
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|scope| !scope.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             }),
         })
     }
@@ -2105,6 +2140,15 @@ impl KeyStore {
             }
             if status == "quarantined" {
                 builder.push("(aq.key_id IS NOT NULL)");
+            } else if status == "temporary_isolated" {
+                builder.push(
+                    "(aq.key_id IS NULL AND ak.status = 'active' AND tb.key_id IS NOT NULL)",
+                );
+            } else if status == STATUS_ACTIVE {
+                builder
+                    .push("(aq.key_id IS NULL AND ak.status = ")
+                    .push_bind(status)
+                    .push(" AND tb.key_id IS NULL)");
             } else {
                 builder
                     .push("(aq.key_id IS NULL AND ak.status = ")
@@ -2186,7 +2230,13 @@ impl KeyStore {
         regions: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
         let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT CASE WHEN aq.key_id IS NOT NULL THEN 'quarantined' ELSE ak.status END AS value, COUNT(*) AS count",
+            r#"
+            SELECT CASE
+                WHEN aq.key_id IS NOT NULL THEN 'quarantined'
+                WHEN ak.status = 'active' AND tb.key_id IS NOT NULL THEN 'temporary_isolated'
+                ELSE ak.status
+            END AS value, COUNT(*) AS count
+            "#,
         );
         builder.push(Self::api_key_metrics_from_clause());
         Self::push_api_key_group_filters(&mut builder, groups);
@@ -2378,103 +2428,19 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                ak.id,
-                ak.status,
-                ak.group_name,
-                ak.registration_ip,
-                ak.registration_region,
-                ak.status_changed_at,
-                ak.last_used_at,
-                ak.deleted_at,
-                ak.quota_limit,
-                ak.quota_remaining,
-                ak.quota_synced_at,
-                aq.source AS quarantine_source,
-                aq.reason_code AS quarantine_reason_code,
-                aq.reason_summary AS quarantine_reason_summary,
-                aq.reason_detail AS quarantine_reason_detail,
-                aq.created_at AS quarantine_created_at,
-                COALESCE(stats.total_requests, 0) AS total_requests,
-                COALESCE(stats.success_count, 0) AS success_count,
-                COALESCE(stats.error_count, 0) AS error_count,
-                COALESCE(stats.quota_exhausted_count, 0) AS quota_exhausted_count
-            FROM api_keys ak
-            LEFT JOIN (
-                SELECT
-                    api_key_id,
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
-                FROM api_key_usage_buckets
-                WHERE bucket_secs = 86400
-                GROUP BY api_key_id
-            ) AS stats
-            ON stats.api_key_id = ak.id
-            LEFT JOIN api_key_quarantines aq
-            ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            WHERE ak.deleted_at IS NULL AND ak.id = ?
-            LIMIT 1
-            "#,
-        )
-        .bind(key_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let mut builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(true));
+        builder.push(" AND ak.id = ");
+        builder.push_bind(key_id);
+        builder.push(" LIMIT 1");
 
-        row.map(|row| -> Result<ApiKeyMetrics, sqlx::Error> {
-            let id: String = row.try_get("id")?;
-            let status: String = row.try_get("status")?;
-            let group_name: Option<String> = row.try_get("group_name")?;
-            let registration_ip: Option<String> = row.try_get("registration_ip")?;
-            let registration_region: Option<String> = row.try_get("registration_region")?;
-            let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
-            let last_used_at: i64 = row.try_get("last_used_at")?;
-            let deleted_at: Option<i64> = row.try_get("deleted_at")?;
-            let quota_limit: Option<i64> = row.try_get("quota_limit")?;
-            let quota_remaining: Option<i64> = row.try_get("quota_remaining")?;
-            let quota_synced_at: Option<i64> = row.try_get("quota_synced_at")?;
-            let total_requests: i64 = row.try_get("total_requests")?;
-            let success_count: i64 = row.try_get("success_count")?;
-            let error_count: i64 = row.try_get("error_count")?;
-            let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
-            let quarantine_source: Option<String> = row.try_get("quarantine_source")?;
-            let quarantine_reason_code: Option<String> = row.try_get("quarantine_reason_code")?;
-            let quarantine_reason_summary: Option<String> =
-                row.try_get("quarantine_reason_summary")?;
-            let quarantine_reason_detail: Option<String> =
-                row.try_get("quarantine_reason_detail")?;
-            let quarantine_created_at: Option<i64> = row.try_get("quarantine_created_at")?;
+        let row = builder
+            .build()
+            .fetch_optional(&self.pool)
+            .await?;
 
-            Ok(ApiKeyMetrics {
-                id,
-                status,
-                group_name: normalize_optional_api_key_field(group_name),
-                registration_ip: normalize_optional_api_key_field(registration_ip),
-                registration_region: normalize_optional_api_key_field(registration_region),
-                status_changed_at: status_changed_at.and_then(normalize_timestamp),
-                last_used_at: normalize_timestamp(last_used_at),
-                deleted_at: deleted_at.and_then(normalize_timestamp),
-                quota_limit,
-                quota_remaining,
-                quota_synced_at: quota_synced_at.and_then(normalize_timestamp),
-                total_requests,
-                success_count,
-                error_count,
-                quota_exhausted_count,
-                quarantine: quarantine_source.map(|source| ApiKeyQuarantine {
-                    source,
-                    reason_code: quarantine_reason_code.unwrap_or_default(),
-                    reason_summary: quarantine_reason_summary.unwrap_or_default(),
-                    reason_detail: quarantine_reason_detail.unwrap_or_default(),
-                    created_at: quarantine_created_at.unwrap_or_default(),
-                }),
-            })
-        })
-        .transpose()
-        .map_err(ProxyError::from)
+        row.map(Self::map_api_key_metrics_row)
+            .transpose()
+            .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_recent_logs(

@@ -27,6 +27,16 @@ struct ApiKeyView {
     error_count: i64,
     quota_exhausted_count: i64,
     quarantine: Option<ApiKeyQuarantineView>,
+    transient_backoff: Option<ApiKeyTransientBackoffView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyTransientBackoffView {
+    reason_code: String,
+    cooldown_until: i64,
+    retry_after_secs: i64,
+    scopes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,6 +278,7 @@ struct SummaryView {
     active_keys: i64,
     exhausted_keys: i64,
     quarantined_keys: i64,
+    temporary_isolated_keys: i64,
     last_activity: Option<i64>,
     total_quota_limit: i64,
     total_quota_remaining: i64,

@@ -51,6 +51,7 @@ export const KeysSelected = { ...RuntimeStories.KeysSelected }
 export const KeysSyncUsageInProgress = { ...RuntimeStories.KeysSyncUsageInProgress }
 export const KeysSelectionRetainedAfterSync = { ...RuntimeStories.KeysSelectionRetainedAfterSync }
 export const KeysRegistrationFilters = { ...RuntimeStories.KeysRegistrationFilters }
+export const KeysTemporaryIsolationFilter = { ...RuntimeStories.KeysTemporaryIsolationFilter }
 export const Requests = { ...RuntimeStories.Requests }
 export const RequestsResultFilterOpen = { ...RuntimeStories.RequestsResultFilterOpen }
 export const KeyDetailRecentRequests = { ...RuntimeStories.KeyDetailRecentRequests }

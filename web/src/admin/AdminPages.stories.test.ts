@@ -17,6 +17,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.KeysSelected).toMatchObject({})
     expect(adminPageStories.KeysSyncUsageInProgress).toMatchObject({})
     expect(adminPageStories.KeysSelectionRetainedAfterSync).toMatchObject({})
+    expect(adminPageStories.KeysTemporaryIsolationFilter).toMatchObject({})
     expect(adminPageStories.Requests).toMatchObject({})
     expect(adminPageStories.RequestsResultFilterOpen).toMatchObject({})
     expect(adminPageStories.KeyDetailRecentRequests).toMatchObject({})
@@ -55,6 +56,24 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(markup).toContain('同步额度完成：列表已刷新，仍在当前页中的 2 个密钥继续保持勾选。')
     expect(markup).toContain('已选 2 项')
+  })
+
+  it('renders the temporary isolation filter story with the filtered badge and count', () => {
+    const renderStory = adminPageStories.KeysTemporaryIsolationFilter.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('临时隔离')
+    expect(markup).toContain('状态: 临时隔离')
+    expect(markup).toContain('U2vK')
+    expect(markup).not.toContain('MZli')
   })
 
   it('renders the requests page story with retention-based copy instead of page-count copy', () => {

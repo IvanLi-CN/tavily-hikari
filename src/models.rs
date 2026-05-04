@@ -373,6 +373,7 @@ pub struct ApiKeyMetrics {
     pub error_count: i64,
     pub quota_exhausted_count: i64,
     pub quarantine: Option<ApiKeyQuarantine>,
+    pub transient_backoff: Option<ApiKeyTransientBackoff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,6 +405,14 @@ pub struct ApiKeyQuarantine {
     pub reason_summary: String,
     pub reason_detail: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyTransientBackoff {
+    pub reason_code: String,
+    pub cooldown_until: i64,
+    pub retry_after_secs: i64,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -793,6 +802,7 @@ pub struct ProxySummary {
     pub active_keys: i64,
     pub exhausted_keys: i64,
     pub quarantined_keys: i64,
+    pub temporary_isolated_keys: i64,
     pub last_activity: Option<i64>,
     pub total_quota_limit: i64,
     pub total_quota_remaining: i64,

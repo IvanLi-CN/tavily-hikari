@@ -145,6 +145,20 @@
 - PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
 - If an asset must be used in impl (runtime/test/official docs), list it in `资产晋升（Asset promotion）` and promote it to a stable project path during implementation.
 
+## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Admin/Pages / KeysTemporaryIsolationFilter
+  state: temporary isolation status filter
+  capture_scope: element
+  requested_viewport: 1440x1200
+  viewport_strategy: devtools-emulate
+  target_program: mock-only
+  sensitive_exclusion: N/A
+  evidence_note: verifies API Keys exposes the 临时隔离 status filter and renders only the active key with an unknown-403 transient backoff as 临时隔离.
+
+![API Keys 临时隔离筛选](./assets/api-keys-temporary-isolation-filter.png)
+
 ## Visual Evidence (PR)
 
 - 管理员全局日志：展示 `Key 影响` 列以及 `1-5` 号错误的详情建议。

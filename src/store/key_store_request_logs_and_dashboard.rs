@@ -1929,17 +1929,27 @@ impl KeyStore {
         let key_counts_row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0) AS active_keys,
+                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL AND tb.key_id IS NULL THEN 1 ELSE 0 END), 0) AS active_keys,
                 COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0) AS exhausted_keys,
-                COALESCE(SUM(CASE WHEN aq.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS quarantined_keys
+                COALESCE(SUM(CASE WHEN aq.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS quarantined_keys,
+                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL AND tb.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS temporary_isolated_keys
             FROM api_keys ak
             LEFT JOIN api_key_quarantines aq
               ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            LEFT JOIN (
+                SELECT key_id, MAX(cooldown_until) AS cooldown_until
+                FROM api_key_transient_backoffs
+                WHERE cooldown_until > strftime('%s', 'now')
+                  AND reason_code = 'upstream_unknown_403'
+                GROUP BY key_id
+            ) AS tb
+              ON tb.key_id = ak.id
             WHERE ak.deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
         .bind(STATUS_EXHAUSTED)
+        .bind(STATUS_ACTIVE)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1973,6 +1983,7 @@ impl KeyStore {
             active_keys: key_counts_row.try_get("active_keys")?,
             exhausted_keys: key_counts_row.try_get("exhausted_keys")?,
             quarantined_keys: key_counts_row.try_get("quarantined_keys")?,
+            temporary_isolated_keys: key_counts_row.try_get("temporary_isolated_keys")?,
             last_activity,
             total_quota_limit: quotas_row.try_get("total_quota_limit")?,
             total_quota_remaining: quotas_row.try_get("total_quota_remaining")?,

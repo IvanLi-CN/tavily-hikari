@@ -13,6 +13,7 @@ export interface Summary {
   active_keys: number
   exhausted_keys: number
   quarantined_keys: number
+  temporary_isolated_keys: number
   last_activity: number | null
   total_quota_limit: number
   total_quota_remaining: number
@@ -53,6 +54,7 @@ export interface DashboardSiteStatusSnapshot {
   totalQuotaLimit: number
   activeKeys: number
   quarantinedKeys: number
+  temporaryIsolatedKeys: number
   exhaustedKeys: number
   availableProxyNodes: number | null
   totalProxyNodes: number | null
@@ -318,6 +320,14 @@ export interface ApiKeyStats {
   error_count: number
   quota_exhausted_count: number
   quarantine: ApiKeyQuarantine | null
+  transient_backoff: ApiKeyTransientBackoff | null
+}
+
+export interface ApiKeyTransientBackoff {
+  reasonCode: string
+  cooldownUntil: number
+  retryAfterSecs: number
+  scopes: string[]
 }
 
 export interface RequestLog {

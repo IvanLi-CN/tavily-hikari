@@ -1273,7 +1273,7 @@ function AdminUsersSortableHeader<Field extends string>({
 function statusTone(status: string): StatusTone {
   const normalized = status.toLowerCase()
   if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
-  if (normalized === 'quarantined') return 'warning'
+  if (normalized === 'quarantined' || normalized === 'temporary_isolated') return 'warning'
   if (normalized === 'exhausted' || normalized === 'quota_exhausted' || normalized === 'retry_exhausted') return 'warning'
   if (normalized === 'running' || normalized === 'in_progress' || normalized === 'queued' || normalized === 'pending') {
     return 'info'
@@ -1309,8 +1309,10 @@ function requestLogLabel(
   return operationalClassLabel(log.operationalClass ?? log.result_status, language)
 }
 
-function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine'>): string {
-  return item.quarantine ? 'quarantined' : item.status
+function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine' | 'transient_backoff'>): string {
+  if (item.quarantine) return 'quarantined'
+  if (item.transient_backoff) return 'temporary_isolated'
+  return item.status
 }
 
 function jobTypeLabel(jobType: string, strings: AdminTranslations['jobs']): string {
@@ -4543,6 +4545,7 @@ function AdminDashboard(): JSX.Element {
 
     const allKeysAvailable =
       dashboardSiteStatusSnapshot.quarantinedKeys === 0 &&
+      dashboardSiteStatusSnapshot.temporaryIsolatedKeys === 0 &&
       dashboardSiteStatusSnapshot.exhaustedKeys === 0
 
     return [
@@ -4568,6 +4571,17 @@ function AdminDashboard(): JSX.Element {
         subtitle:
           dashboardSiteStatusSnapshot.quarantinedKeys > 0
             ? keyStrings.quarantine.badge
+            : allKeysAvailable
+              ? metricsStrings.subtitles.keysAll
+              : adminStrings.dashboard.currentSnapshot,
+      },
+      {
+        id: 'temporary-isolated',
+        label: metricsStrings.labels.temporaryIsolated,
+        value: formatNumber(dashboardSiteStatusSnapshot.temporaryIsolatedKeys),
+        subtitle:
+          dashboardSiteStatusSnapshot.temporaryIsolatedKeys > 0
+            ? metricsStrings.subtitles.keysTemporaryIsolated.replace('{count}', formatNumber(dashboardSiteStatusSnapshot.temporaryIsolatedKeys))
             : allKeysAvailable
               ? metricsStrings.subtitles.keysAll
               : adminStrings.dashboard.currentSnapshot,

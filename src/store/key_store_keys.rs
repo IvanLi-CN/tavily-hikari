@@ -72,6 +72,7 @@ impl KeyStore {
             active_keys,
             exhausted_keys,
             quarantined_keys,
+            temporary_isolated_keys: 0,
             last_activity,
             total_quota_limit: 0,
             total_quota_remaining: 0,

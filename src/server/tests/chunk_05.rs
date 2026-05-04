@@ -727,24 +727,28 @@
     }
 
     #[tokio::test]
-    async fn public_summary_hides_quarantined_key_count_without_admin_auth() {
-        let db_path = temp_db_path("public-summary-quarantine");
+    async fn public_summary_hides_quarantined_and_temporary_isolated_counts_without_admin_auth() {
+        let db_path = temp_db_path("public-summary-quarantine-temp-isolated");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(
-            vec!["tvly-summary-public".to_string()],
+            vec![
+                "tvly-summary-public-quarantine".to_string(),
+                "tvly-summary-public-temp-isolated".to_string(),
+            ],
             DEFAULT_UPSTREAM,
             &db_str,
         )
         .await
         .expect("proxy created");
-        let key_id = proxy
+        let rows = proxy
             .list_api_key_metrics()
             .await
             .expect("list api key metrics")
             .into_iter()
-            .next()
-            .expect("seeded key")
-            .id;
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2, "test fixture should seed two API keys");
+        let quarantined_key_id = rows[0].id.clone();
+        let temporary_isolated_key_id = rows[1].id.clone();
 
         let options = SqliteConnectOptions::new()
             .filename(&db_str)
@@ -762,7 +766,7 @@
                (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
                VALUES (?, ?, ?, ?, ?, ?, NULL)"#,
         )
-        .bind(&key_id)
+        .bind(&quarantined_key_id)
         .bind("/api/tavily/search")
         .bind("account_deactivated")
         .bind("Tavily account deactivated (HTTP 401)")
@@ -771,6 +775,22 @@
         .execute(&pool)
         .await
         .expect("insert quarantine");
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"INSERT INTO api_key_transient_backoffs
+               (key_id, scope, cooldown_until, retry_after_secs, reason_code, source_request_log_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, NULL, ?, ?)"#,
+        )
+        .bind(&temporary_isolated_key_id)
+        .bind("http_global")
+        .bind(now + 600)
+        .bind(600)
+        .bind("upstream_unknown_403")
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert transient backoff");
 
         let admin_password = "summary-admin-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
@@ -788,6 +808,12 @@
         let public_body: serde_json::Value = public_resp.json().await.expect("public summary json");
         assert_eq!(
             public_body.get("quarantined_keys").and_then(|v| v.as_i64()),
+            Some(0)
+        );
+        assert_eq!(
+            public_body
+                .get("temporary_isolated_keys")
+                .and_then(|v| v.as_i64()),
             Some(0)
         );
 
@@ -811,6 +837,12 @@
         let admin_body: serde_json::Value = admin_resp.json().await.expect("admin summary json");
         assert_eq!(
             admin_body.get("quarantined_keys").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            admin_body
+                .get("temporary_isolated_keys")
+                .and_then(|v| v.as_i64()),
             Some(1)
         );
 

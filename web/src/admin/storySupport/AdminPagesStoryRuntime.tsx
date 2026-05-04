@@ -434,6 +434,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     error_count: 631,
     quota_exhausted_count: 107,
     quarantine: null,
+    transient_backoff: null,
   },
   {
     id: 'asR8',
@@ -452,6 +453,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     error_count: 1_142,
     quota_exhausted_count: 672,
     quarantine: null,
+    transient_backoff: null,
   },
   {
     id: 'U2vK',
@@ -470,6 +472,12 @@ const MOCK_KEYS: ApiKeyStats[] = [
     error_count: 541,
     quota_exhausted_count: 149,
     quarantine: null,
+    transient_backoff: {
+      reasonCode: 'upstream_unknown_403',
+      cooldownUntil: now + 540,
+      retryAfterSecs: 600,
+      scopes: ['http_global'],
+    },
   },
   {
     id: 'c7Pk',
@@ -488,6 +496,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     error_count: 29,
     quota_exhausted_count: 0,
     quarantine: null,
+    transient_backoff: null,
   },
   {
     id: 'J1nW',
@@ -506,6 +515,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     error_count: 419,
     quota_exhausted_count: 129,
     quarantine: null,
+    transient_backoff: null,
   },
 ]
 
@@ -533,6 +543,7 @@ const MOCK_KEYS_WITH_QUARANTINE: ApiKeyStats[] = [
       reasonDetail: 'The account associated with this API key has been deactivated.',
       createdAt: now - 196,
     },
+    transient_backoff: null,
   },
 ]
 
@@ -2897,12 +2908,19 @@ function StoryUserTagCatalogCard({
 function keyStatusTone(status: string): StatusTone {
   const normalized = status.trim().toLowerCase()
   if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
+  if (normalized === 'temporary_isolated') return 'warning'
   if (normalized === 'exhausted' || normalized === 'quota_exhausted' || normalized === 'retry_exhausted') return 'warning'
   if (normalized === 'running' || normalized === 'queued' || normalized === 'pending') return 'info'
   if (normalized === 'error' || normalized === 'failed' || normalized === 'timeout' || normalized === 'cancelled') {
     return 'error'
   }
   return 'neutral'
+}
+
+function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine' | 'transient_backoff'>): string {
+  if (item.quarantine) return 'quarantined'
+  if (item.transient_backoff) return 'temporary_isolated'
+  return item.status
 }
 
 function tokenQuotaTone(state: AuthToken['quota_state']): StatusTone {
@@ -3297,7 +3315,8 @@ function DashboardPageCanvas(): JSX.Element {
   const totalQuotaLimit = MOCK_KEYS.reduce((sum, item) => sum + (item.quota_limit ?? 0), 0)
   const totalQuotaRemaining = MOCK_KEYS.reduce((sum, item) => sum + (item.quota_remaining ?? 0), 0)
   const exhaustedKeys = MOCK_KEYS.filter((item) => item.status === 'exhausted').length
-  const activeKeys = MOCK_KEYS.filter((item) => item.status === 'active').length
+  const temporaryIsolatedKeys = MOCK_KEYS.filter((item) => item.transient_backoff && !item.quarantine).length
+  const activeKeys = MOCK_KEYS.filter((item) => item.status === 'active' && !item.quarantine && !item.transient_backoff).length
 
   const todayMetrics: DashboardMetricCard[] = createDashboardTodayMetrics({
     today: {
@@ -3410,7 +3429,13 @@ function DashboardPageCanvas(): JSX.Element {
       id: 'quarantined',
       label: admin.metrics.labels.quarantined,
       value: '0',
-      subtitle: admin.metrics.subtitles.keysAll,
+      subtitle: admin.dashboard.currentSnapshot,
+    },
+    {
+      id: 'temporary-isolated',
+      label: admin.metrics.labels.temporaryIsolated,
+      value: formatNumber(temporaryIsolatedKeys),
+      subtitle: admin.metrics.subtitles.keysTemporaryIsolated.replace('{count}', formatNumber(temporaryIsolatedKeys)),
     },
     {
       id: 'exhausted',
@@ -3606,6 +3631,7 @@ function TokensPageCanvas(): JSX.Element {
 function KeysPageCanvas({
   initialRegistrationIp = '',
   initialRegions = [],
+  initialStatuses = [],
   initialSelectedIds = [],
   bulkActionInFlight = null,
   bulkSyncProgress = null,
@@ -3613,6 +3639,7 @@ function KeysPageCanvas({
 }: {
   initialRegistrationIp?: string
   initialRegions?: string[]
+  initialStatuses?: string[]
   initialSelectedIds?: string[]
   bulkActionInFlight?: ApiKeyBulkAction | null
   bulkSyncProgress?: ApiKeyBulkSyncProgressState | null
@@ -3621,7 +3648,7 @@ function KeysPageCanvas({
   const admin = useTranslate().admin
   const keyStrings = admin.keys
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(initialStatuses)
   const [selectedRegistrationIp, setSelectedRegistrationIp] = useState(initialRegistrationIp)
   const [selectedRegions, setSelectedRegions] = useState<string[]>(initialRegions)
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>(initialSelectedIds)
@@ -3641,7 +3668,7 @@ function KeysPageCanvas({
   ).map(([, value]) => value)
   const statusOptions = Array.from(
     keys.reduce((map, item) => {
-      const value = item.quarantine ? 'quarantined' : item.status
+      const value = keyBadgeStatus(item)
       map.set(value, {
         value,
         label: admin.statuses[value] ?? value,
@@ -3668,7 +3695,7 @@ function KeysPageCanvas({
     .sort((left, right) => left.label.localeCompare(right.label))
   const filteredKeys = keys.filter((item) => {
     const groupKey = (item.group ?? '').trim()
-    const statusKey = item.quarantine ? 'quarantined' : item.status
+    const statusKey = keyBadgeStatus(item)
     const registrationIp = item.registration_ip?.trim() ?? ''
     const regionKey = item.registration_region?.trim() ?? ''
     const groupMatched = selectedGroups.length === 0 || selectedGroups.includes(groupKey)
@@ -4062,8 +4089,8 @@ function KeysPageCanvas({
                   <td>
                     <div style={tableStackStyle}>
                       <span style={tableFieldStyle}>
-                        <StatusBadge tone={keyStatusTone(item.quarantine ? 'quarantined' : item.status)}>
-                          {admin.statuses[item.quarantine ? 'quarantined' : item.status] ?? item.status}
+                        <StatusBadge tone={keyStatusTone(keyBadgeStatus(item))}>
+                          {admin.statuses[keyBadgeStatus(item)] ?? keyBadgeStatus(item)}
                         </StatusBadge>
                       </span>
                     </div>
@@ -6179,6 +6206,13 @@ export const KeysRegistrationFilters: Story = {
       initialRegions={['US']}
     />
   ),
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const KeysTemporaryIsolationFilter: Story = {
+  render: () => <KeysPageCanvas initialStatuses={['temporary_isolated']} />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

@@ -162,6 +162,7 @@ describe('admin user tag api helpers', () => {
               active_keys: 1,
               exhausted_keys: 0,
               quarantined_keys: 0,
+              temporary_isolated_keys: 0,
               last_activity: null,
               total_quota_limit: 10,
               total_quota_remaining: 9,
@@ -176,6 +177,7 @@ describe('admin user tag api helpers', () => {
               totalQuotaLimit: 10,
               activeKeys: 1,
               quarantinedKeys: 0,
+              temporaryIsolatedKeys: 0,
               exhaustedKeys: 0,
               availableProxyNodes: 1,
               totalProxyNodes: 1,
@@ -692,7 +694,7 @@ describe('admin user tag api helpers', () => {
             perPage: 50,
             facets: {
               groups: [{ value: 'ops', count: 3 }],
-              statuses: [{ value: 'quarantined', count: 2 }],
+              statuses: [{ value: 'quarantined', count: 2 }, { value: 'temporary_isolated', count: 1 }],
               regions: [{ value: 'US', count: 1 }],
             },
           }),
@@ -704,7 +706,7 @@ describe('admin user tag api helpers', () => {
 
     const result = await fetchApiKeys(2, 50, {
       groups: ['ops', ''],
-      statuses: ['Quarantined', 'disabled'],
+      statuses: ['Quarantined', 'disabled', 'Temporary_Isolated'],
       registrationIp: '8.8.8.8',
       regions: ['US', 'US Westfield (MA)'],
     })
@@ -712,7 +714,7 @@ describe('admin user tag api helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(input).toBe(
-      '/api/keys?page=2&per_page=50&group=ops&group=&status=quarantined&status=disabled&registration_ip=8.8.8.8&region=US&region=US+Westfield+%28MA%29',
+      '/api/keys?page=2&per_page=50&group=ops&group=&status=quarantined&status=disabled&status=temporary_isolated&registration_ip=8.8.8.8&region=US&region=US+Westfield+%28MA%29',
     )
     expect(result.page).toBe(2)
     expect(result.perPage).toBe(50)

@@ -38,6 +38,7 @@ const keyDetailMock: ApiKeyStats = {
   error_count: 624,
   quota_exhausted_count: 0,
   quarantine: null,
+  transient_backoff: null,
 }
 
 const quarantinedKeyDetailMock: ApiKeyStats = {
@@ -51,6 +52,7 @@ const quarantinedKeyDetailMock: ApiKeyStats = {
     reasonDetail: 'The account associated with this API key has been deactivated.',
     createdAt: Math.floor((REVIEW_AT - 11 * 60 * 1000) / 1000),
   },
+  transient_backoff: null,
 }
 
 const keyMetricsMock: KeySummary = {

@@ -9,6 +9,7 @@ async fn fetch_summary(
         .map(|mut summary| {
             if !is_admin_request(state.as_ref(), &headers) {
                 summary.quarantined_keys = 0;
+                summary.temporary_isolated_keys = 0;
             }
             Json(summary.into())
         })
@@ -680,6 +681,7 @@ struct DashboardSiteStatusView {
     total_quota_limit: i64,
     active_keys: i64,
     quarantined_keys: i64,
+    temporary_isolated_keys: i64,
     exhausted_keys: i64,
     available_proxy_nodes: Option<i64>,
     total_proxy_nodes: Option<i64>,
@@ -960,6 +962,7 @@ async fn build_dashboard_overview_payload(
             total_quota_limit: summary.total_quota_limit,
             active_keys: summary.active_keys,
             quarantined_keys: summary.quarantined_keys,
+            temporary_isolated_keys: summary.temporary_isolated_keys,
             exhausted_keys: summary.exhausted_keys,
             available_proxy_nodes: Some(forward_proxy.available_nodes),
             total_proxy_nodes: Some(forward_proxy.total_nodes),
@@ -1058,6 +1061,7 @@ async fn compute_signatures(
             summary.active_keys,
             summary.exhausted_keys,
             summary.quarantined_keys,
+            summary.temporary_isolated_keys,
             summary.total_quota_limit,
             summary.total_quota_remaining,
         ],

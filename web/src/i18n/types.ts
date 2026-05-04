@@ -918,6 +918,7 @@ export interface AdminTranslationsShape {
         newQuarantines: string
         keys: string
         quarantined: string
+        temporaryIsolated: string
         exhausted: string
         remaining: string
         proxyAvailable: string
@@ -927,6 +928,7 @@ export interface AdminTranslationsShape {
         keysAll: string
         keysExhausted: string
         keysAvailability: string
+        keysTemporaryIsolated: string
       }
     loading: string
   }

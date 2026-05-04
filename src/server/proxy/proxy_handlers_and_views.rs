@@ -1766,6 +1766,14 @@ impl ApiKeyView {
                 reason_detail: include_quarantine_detail.then_some(quarantine.reason_detail),
                 created_at: quarantine.created_at,
             }),
+            transient_backoff: metrics.transient_backoff.map(|transient_backoff| {
+                ApiKeyTransientBackoffView {
+                    reason_code: transient_backoff.reason_code,
+                    cooldown_until: transient_backoff.cooldown_until,
+                    retry_after_secs: transient_backoff.retry_after_secs,
+                    scopes: transient_backoff.scopes,
+                }
+            }),
         }
     }
 }
@@ -1919,6 +1927,7 @@ impl From<ProxySummary> for SummaryView {
             active_keys: summary.active_keys,
             exhausted_keys: summary.exhausted_keys,
             quarantined_keys: summary.quarantined_keys,
+            temporary_isolated_keys: summary.temporary_isolated_keys,
             last_activity: summary.last_activity,
             total_quota_limit: summary.total_quota_limit,
             total_quota_remaining: summary.total_quota_remaining,
