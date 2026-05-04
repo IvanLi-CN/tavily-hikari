@@ -1354,7 +1354,7 @@
     }
 
     #[tokio::test]
-    async fn tavily_http_search_forwards_raw_x_project_id_and_logs_project_affinity_effect() {
+    async fn tavily_http_search_forwards_raw_x_project_id_and_logs_api_route_affinity_effect() {
         let db_path = temp_db_path("http-search-project-header-forward");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -1417,7 +1417,7 @@
             effect_row
                 .try_get::<String, _>("binding_effect_code")
                 .unwrap(),
-            "http_project_affinity_bound"
+            "api_rebalance_route_bound"
         );
         assert_eq!(
             effect_row
@@ -1442,7 +1442,7 @@
             token_effect_row
                 .try_get::<String, _>("binding_effect_code")
                 .unwrap(),
-            "http_project_affinity_bound"
+            "api_rebalance_route_bound"
         );
         assert_eq!(
             token_effect_row

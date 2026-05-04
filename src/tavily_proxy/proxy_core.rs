@@ -28,10 +28,16 @@ impl TavilyProxy {
         Self::affinity_subject_score(subject, key_id)
     }
 
+    #[allow(dead_code)]
     fn http_project_affinity_subject(owner_subject: &str, project_id_hash: &str) -> String {
         format!("{owner_subject}:project:{project_id_hash}")
     }
 
+    fn api_route_affinity_subject(owner_subject: &str, route_key_hash: &str) -> String {
+        format!("{owner_subject}:route:{route_key_hash}")
+    }
+
+    #[allow(dead_code)]
     fn http_project_affinity_reused_effect() -> KeyEffect {
         KeyEffect::new(
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
@@ -39,6 +45,7 @@ impl TavilyProxy {
         )
     }
 
+    #[allow(dead_code)]
     fn http_project_affinity_bound_effect() -> KeyEffect {
         KeyEffect::new(
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
@@ -46,10 +53,32 @@ impl TavilyProxy {
         )
     }
 
+    #[allow(dead_code)]
     fn http_project_affinity_rebound_effect() -> KeyEffect {
         KeyEffect::new(
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
             "HTTP project affinity rebound the project onto a different upstream key",
+        )
+    }
+
+    fn api_route_affinity_reused_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_API_REBALANCE_ROUTE_REUSED,
+            "API rebalance reused the existing route key binding",
+        )
+    }
+
+    fn api_route_affinity_bound_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_API_REBALANCE_ROUTE_BOUND,
+            "API rebalance created a new route key binding",
+        )
+    }
+
+    fn api_route_affinity_rebound_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_API_REBALANCE_ROUTE_REBOUND,
+            "API rebalance rebound the route onto a different upstream key",
         )
     }
 
@@ -212,6 +241,7 @@ impl TavilyProxy {
         });
     }
 
+    #[allow(dead_code)]
     pub(crate) fn http_project_affinity_selection_effect(
         ordered: &[HttpProjectAffinityCandidate],
     ) -> KeyEffect {
@@ -251,6 +281,51 @@ impl TavilyProxy {
             return KeyEffect::new(
                 KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED,
                 "HTTP project affinity skipped a hotter key inside the project pool",
+            );
+        }
+
+        KeyEffect::none()
+    }
+
+    pub(crate) fn api_rebalance_selection_effect(
+        ordered: &[HttpProjectAffinityCandidate],
+    ) -> KeyEffect {
+        let Some(selected) = ordered.first() else {
+            return KeyEffect::none();
+        };
+        if selected.stable_rank_index == 0 {
+            return KeyEffect::none();
+        }
+        let Some(stable_front) = ordered
+            .iter()
+            .find(|candidate| candidate.stable_rank_index == 0)
+        else {
+            return KeyEffect::none();
+        };
+
+        if stable_front.cooldown_until.is_some()
+            && (selected.cooldown_until.is_none()
+                || selected.cooldown_until < stable_front.cooldown_until)
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED,
+                "API rebalance skipped a cooled key",
+            );
+        }
+
+        if selected.recent_rate_limited_count < stable_front.recent_rate_limited_count {
+            return KeyEffect::new(
+                KEY_EFFECT_API_REBALANCE_RATE_LIMIT_AVOIDED,
+                "API rebalance skipped a recently rate-limited key",
+            );
+        }
+
+        if selected.recent_billable_request_count < stable_front.recent_billable_request_count
+            || selected.last_used_at < stable_front.last_used_at
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_API_REBALANCE_PRESSURE_AVOIDED,
+                "API rebalance skipped a hotter key",
             );
         }
 

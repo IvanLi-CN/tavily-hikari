@@ -1132,8 +1132,8 @@ async fn http_project_affinity_rebinds_after_cooldown() {
 }
 
 #[tokio::test]
-async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_request() {
-    let db_path = temp_db_path("http-project-affinity-arm-backoff");
+async fn api_rebalance_route_arms_backoff_on_429_and_avoids_hot_key_on_next_request() {
+    let db_path = temp_db_path("api-rebalance-route-arm-backoff");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
         vec![
@@ -1155,7 +1155,7 @@ async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_re
         .expect("create token");
     let project_id = "project-arm-backoff";
     let project_hash = sha256_hex(project_id);
-    let subject = format!("token:{}:project:{}", token.id, project_hash);
+    let subject = format!("token:{}:route:{}", token.id, project_hash);
     let ranked = rank_mcp_affinity_key_ids(
         &subject,
         fetch_all_api_key_ids(&proxy.key_store.pool).await,
@@ -1181,7 +1181,7 @@ async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_re
 
     proxy
         .key_store
-        .set_http_project_api_key_affinity(
+        .set_api_route_api_key_affinity(
             &format!("token:{}", token.id),
             &project_hash,
             &hotter_key_id,
@@ -1271,11 +1271,11 @@ async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_re
         .key_store
         .list_active_api_key_transient_backoffs(
             std::slice::from_ref(&hotter_key_id),
-            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
-        .expect("load project cooldowns");
+        .expect("load API rebalance cooldowns");
     assert!(cooldown.contains_key(&hotter_key_id));
 
     let (second_resp, second_analysis) = proxy
@@ -1299,16 +1299,84 @@ async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_re
     );
     assert_eq!(
         second_analysis.key_effect.code,
-        KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+        KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED,
     );
 
     let rebound = proxy
         .key_store
-        .get_http_project_api_key_affinity(&format!("token:{}", token.id), &project_hash)
+        .get_api_route_api_key_affinity(&format!("token:{}", token.id), &project_hash)
         .await
         .expect("load rebound binding")
         .expect("binding should exist");
     assert_eq!(rebound.api_key_id, cooler_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn api_rebalance_without_routing_key_ignores_token_primary_and_uses_full_pool_backoff() {
+    let db_path = temp_db_path("api-rebalance-no-route-full-pool");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-api-rebalance-no-route-a".to_string(),
+            "tvly-api-rebalance-no-route-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("api-rebalance-no-route"))
+        .await
+        .expect("create token");
+    let ranked = rank_mcp_affinity_key_ids(
+        &format!("token:{}:api", token.id),
+        fetch_all_api_key_ids(&proxy.key_store.pool).await,
+        2,
+    );
+    let selector_primary = ranked[0].clone();
+    let token_primary = ranked[1].clone();
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &token_primary)
+        .await
+        .expect("seed token primary affinity");
+
+    let first = proxy
+        .acquire_key_for_api_route(Some(&token.id), None)
+        .await
+        .expect("acquire API key without route");
+    assert_eq!(first.lease.id, selector_primary);
+    assert_ne!(
+        first.lease.id, token_primary,
+        "no-route API rebalance should not default to token primary affinity"
+    );
+
+    let now = Utc::now().timestamp();
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &selector_primary,
+            scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
+            cooldown_until: now + 60,
+            retry_after_secs: 60,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm API rebalance cooldown");
+    let second = proxy
+        .acquire_key_for_api_route(Some(&token.id), None)
+        .await
+        .expect("acquire API key while first selector key is cooled");
+    assert_eq!(second.lease.id, token_primary);
+    assert_eq!(
+        second.selection_effect.code,
+        KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1337,7 +1405,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .expect("create token");
     let project_id = "unknown-403-project";
     let project_hash = sha256_hex(project_id);
-    let subject = format!("token:{}:project:{}", token.id, project_hash);
+    let subject = format!("token:{}:route:{}", token.id, project_hash);
     let ranked = rank_mcp_affinity_key_ids(
         &subject,
         fetch_all_api_key_ids(&proxy.key_store.pool).await,
@@ -1357,7 +1425,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
 
     proxy
         .key_store
-        .set_http_project_api_key_affinity(
+        .set_api_route_api_key_affinity(
             &format!("token:{}", token.id),
             &project_hash,
             &hotter_key_id,
@@ -1452,11 +1520,11 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .key_store
         .list_active_api_key_transient_backoffs(
             std::slice::from_ref(&hotter_key_id),
-            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
-        .expect("load project cooldowns");
+        .expect("load API rebalance cooldowns");
     assert_eq!(
         cooldown.get(&hotter_key_id).map(|state| state.retry_after_secs),
         Some(UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS),
@@ -1472,11 +1540,11 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .key_store
         .list_active_api_key_transient_backoffs(
             std::slice::from_ref(&hotter_key_id),
-            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
-        .expect("reload project cooldowns");
+        .expect("reload API rebalance cooldowns");
     assert!(cleared.is_empty());
 
     let maintenance_count: i64 = sqlx::query_scalar(
@@ -1519,7 +1587,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .key_store
         .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
             key_id: &hotter_key_id,
-            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
             cooldown_until: now + 90,
             retry_after_secs: 90,
             reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
@@ -1533,7 +1601,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .key_store
         .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
             key_id: &hotter_key_id,
-            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
             cooldown_until: now + 30,
             retry_after_secs: 30,
             reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
@@ -1551,7 +1619,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .key_store
         .list_active_api_key_transient_backoffs(
             std::slice::from_ref(&hotter_key_id),
-            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
@@ -1566,7 +1634,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         "SELECT reason_code FROM api_key_transient_backoffs WHERE key_id = ? AND scope = ?",
     )
     .bind(&hotter_key_id)
-    .bind(HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE)
+    .bind(API_REBALANCE_HTTP_BACKOFF_SCOPE)
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("load retained reason");
@@ -1576,8 +1644,8 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
 }
 
 #[tokio::test]
-async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
-    let db_path = temp_db_path("unknown-403-global-http-backoff");
+async fn unknown_403_api_rebalance_cools_key_and_next_request_avoids_it() {
+    let db_path = temp_db_path("unknown-403-api-rebalance-backoff");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
         vec![
@@ -1598,26 +1666,30 @@ async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
         .create_access_token(Some("unknown-403-global"))
         .await
         .expect("create token");
+    let ranked = rank_mcp_affinity_key_ids(
+        &format!("token:{}:api", token.id),
+        fetch_all_api_key_ids(&proxy.key_store.pool).await,
+        3,
+    );
+    let cooled_key_id = ranked[0].clone();
+    let already_cooled_key_id = ranked[1].clone();
+    let healthy_key_id = ranked[2].clone();
     let key_rows =
         sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
             .fetch_all(&proxy.key_store.pool)
             .await
             .expect("fetch key rows");
-    let cooled_key_id = key_rows[0].0.clone();
-    let cooled_secret = key_rows[0].1.clone();
-    let already_cooled_key_id = key_rows[1].0.clone();
-    let healthy_key_id = key_rows[2].0.clone();
-    proxy
-        .key_store
-        .set_token_primary_api_key_affinity(&token.id, None, &cooled_key_id)
-        .await
-        .expect("seed token primary binding");
+    let cooled_secret = key_rows
+        .iter()
+        .find(|(id, _)| id == &cooled_key_id)
+        .map(|(_, secret)| secret.clone())
+        .expect("cooled key secret");
     let now = Utc::now().timestamp();
     proxy
         .key_store
         .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
             key_id: &already_cooled_key_id,
-            scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+            scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
             cooldown_until: now + UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
             retry_after_secs: UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
             reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
@@ -1694,11 +1766,11 @@ async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
         .key_store
         .list_active_api_key_transient_backoffs(
             std::slice::from_ref(&cooled_key_id),
-            HTTP_GLOBAL_BACKOFF_SCOPE,
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
-        .expect("load global cooldowns");
+        .expect("load API rebalance cooldowns");
     assert!(cooldown.contains_key(&cooled_key_id));
 
     let (second_resp, _second_analysis) = proxy
@@ -1725,13 +1797,13 @@ async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
     let project_hash = sha256_hex(project_id);
     proxy
         .key_store
-        .set_http_project_api_key_affinity(
+        .set_api_route_api_key_affinity(
             &format!("token:{}", token.id),
             &project_hash,
             &cooled_key_id,
         )
         .await
-        .expect("seed project binding to globally cooled key");
+        .expect("seed route binding to cooled key");
     let mut project_headers = headers.clone();
     project_headers.insert("x-project-id", HeaderValue::from_static(project_id));
     let (project_resp, _project_analysis) = proxy
@@ -1742,12 +1814,12 @@ async fn unknown_403_global_http_cools_key_and_next_request_avoids_it() {
             Some(project_id),
             &Method::POST,
             "/api/tavily/search",
-            serde_json::json!({ "query": "project avoids global cooldown" }),
+            serde_json::json!({ "query": "project avoids API rebalance cooldown" }),
             &project_headers,
             true,
         )
         .await
-        .expect("project HTTP request should complete");
+        .expect("project-routed HTTP request should complete");
     assert_eq!(project_resp.status, StatusCode::OK);
     assert_eq!(
         project_resp.api_key_id.as_deref(),
@@ -1781,7 +1853,7 @@ async fn successful_request_clear_links_transient_backoff_maintenance_to_request
         .key_store
         .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
             key_id: &key_id,
-            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
             cooldown_until: now + UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
             retry_after_secs: UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS,
             reason_code: Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
@@ -2001,8 +2073,8 @@ async fn http_key_selection_ignores_mcp_session_init_backoff() {
 }
 
 #[tokio::test]
-async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff() {
-    let db_path = temp_db_path("http-no-project-arms-mcp-init-backoff");
+async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
+    let db_path = temp_db_path("http-no-route-arms-api-rebalance-backoff");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
         vec![
@@ -2018,24 +2090,9 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
         .create_access_token(Some("http-no-project-backoff"))
         .await
         .expect("create token");
-    let key_rows =
-        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
-            .fetch_all(&proxy.key_store.pool)
-            .await
-            .expect("fetch key rows");
-    let primary_key_id = key_rows[0].0.clone();
-    let primary_secret = key_rows[0].1.clone();
-    proxy
-        .key_store
-        .set_token_primary_api_key_affinity(&token.id, None, &primary_key_id)
-        .await
-        .expect("set token primary affinity");
-
     let app = Router::new().route(
         "/search",
-        post(move |headers: HeaderMap, Json(body): Json<Value>| {
-            let primary_secret = primary_secret.clone();
-            async move {
+        post(move |headers: HeaderMap, Json(body): Json<Value>| async move {
                 let api_key = body
                     .get("api_key")
                     .and_then(|value| value.as_str())
@@ -2048,7 +2105,6 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
                     .unwrap_or("")
                     .to_string();
                 assert_eq!(api_key, auth);
-                assert_eq!(api_key, primary_secret);
 
                 let mut response_headers = HeaderMap::new();
                 response_headers.insert("retry-after", HeaderValue::from_static("45"));
@@ -2060,7 +2116,6 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
                     })),
                 )
                     .into_response()
-            }
         }),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2074,7 +2129,7 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
     let usage_base = format!("http://{}", addr);
     let mut headers = HeaderMap::new();
     headers.insert("content-type", HeaderValue::from_static("application/json"));
-    let options = serde_json::json!({ "query": "legacy mcp init backoff" });
+    let options = serde_json::json!({ "query": "api rebalance backoff" });
 
     let (resp, analysis) = proxy
         .proxy_http_json_endpoint(
@@ -2097,19 +2152,23 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
     );
     assert_eq!(
         analysis.key_effect.code,
-        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+        KEY_EFFECT_TRANSIENT_BACKOFF_SET,
     );
+    let selected_key_id = resp
+        .api_key_id
+        .as_deref()
+        .expect("response should include selected API key id");
 
     let cooldown = proxy
         .key_store
         .list_active_api_key_transient_backoffs(
-            std::slice::from_ref(&primary_key_id),
-            MCP_SESSION_INIT_BACKOFF_SCOPE,
+            &[selected_key_id.to_string()],
+            API_REBALANCE_HTTP_BACKOFF_SCOPE,
             Utc::now().timestamp(),
         )
         .await
-        .expect("load legacy mcp-init cooldowns");
-    assert!(cooldown.contains_key(&primary_key_id));
+        .expect("load API rebalance cooldowns");
+    assert!(cooldown.contains_key(selected_key_id));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -2201,7 +2260,7 @@ async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
     );
     assert_eq!(
         analysis.key_effect.code,
-        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+        KEY_EFFECT_TRANSIENT_BACKOFF_SET,
     );
 
     let backoff_row = sqlx::query_as::<_, (Option<i64>,)>(
