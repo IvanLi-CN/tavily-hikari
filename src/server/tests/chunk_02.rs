@@ -1254,6 +1254,10 @@ async fn spawn_http_research_result_mock_asserting_bearer_at_path(
                         &expected_api_key,
                         "/research/:request_id",
                     );
+                    assert!(
+                        headers.get("x-hikari-routing-key").is_none(),
+                        "internal Hikari routing key must not be forwarded upstream"
+                    );
                     (
                         StatusCode::OK,
                         Json(serde_json::json!({

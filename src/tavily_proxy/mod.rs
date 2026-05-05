@@ -471,7 +471,15 @@ pub(crate) struct HttpProjectAffinityCandidate {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct HttpProjectAffinitySelection {
+    pub(crate) lease: ApiKeyLease,
+    pub(crate) binding_effect: KeyEffect,
+    pub(crate) selection_effect: KeyEffect,
+}
+
+#[derive(Debug)]
+pub(crate) struct ApiRouteAffinitySelection {
     pub(crate) lease: ApiKeyLease,
     pub(crate) binding_effect: KeyEffect,
     pub(crate) selection_effect: KeyEffect,

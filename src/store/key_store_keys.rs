@@ -2412,6 +2412,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn get_http_project_api_key_affinity(
         &self,
         owner_subject: &str,
@@ -2467,6 +2468,41 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub(crate) async fn get_api_route_api_key_affinity(
+        &self,
+        owner_subject: &str,
+        route_key_hash: &str,
+    ) -> Result<Option<ApiRouteAffinityBinding>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT owner_subject, project_id_hash, api_key_id
+               FROM http_project_api_key_affinity
+               WHERE owner_subject = ? AND project_id_hash = ?
+               LIMIT 1"#,
+        )
+        .bind(owner_subject)
+        .bind(route_key_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(owner_subject, route_key_hash, api_key_id)| ApiRouteAffinityBinding {
+                owner_subject,
+                route_key_hash,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn set_api_route_api_key_affinity(
+        &self,
+        owner_subject: &str,
+        route_key_hash: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.set_http_project_api_key_affinity(owner_subject, route_key_hash, api_key_id)
+            .await
     }
 
     pub(crate) async fn create_or_replace_mcp_session(

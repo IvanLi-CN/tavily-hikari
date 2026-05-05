@@ -4,6 +4,8 @@ enum TavilyUpstreamMode {
     Json,
 }
 
+const HIKARI_ROUTING_KEY_HEADER: &str = "x-hikari-routing-key";
+
 #[derive(Clone, Copy)]
 struct TavilyEndpointConfig {
     upstream_path: &'static str,
@@ -98,6 +100,15 @@ fn non_empty_str(value: &Value) -> Option<&str> {
 fn extract_http_project_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-project-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_hikari_routing_key(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(HIKARI_ROUTING_KEY_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -460,6 +471,7 @@ async fn tavily_http_research_result(
 
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
+    headers.remove(HIKARI_ROUTING_KEY_HEADER);
     let upstream_path = format!("/research/{}", urlencoding::encode(&request_id));
     let token_id_for_logs = auth_token_id.clone();
 
@@ -642,8 +654,11 @@ async fn proxy_tavily_http_endpoint(
     }
 
     let token_id_for_logs = auth_token_id.clone();
-    let http_project_id =
-        (!using_dev_open_admin_fallback).then(|| extract_http_project_id(&parts.headers)).flatten();
+    let api_routing_key = if using_dev_open_admin_fallback {
+        None
+    } else {
+        extract_hikari_routing_key(&parts.headers).or_else(|| extract_http_project_id(&parts.headers))
+    };
     let expected_search_credits = (config.upstream_path == "/search").then(|| {
         // Search billing is predictable based on `search_depth`.
         tavily_search_expected_credits(&options)
@@ -825,6 +840,7 @@ async fn proxy_tavily_http_endpoint(
 
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
+    headers.remove(HIKARI_ROUTING_KEY_HEADER);
 
     if config.upstream_path == "/research" {
         let result = state
@@ -832,7 +848,7 @@ async fn proxy_tavily_http_endpoint(
             .proxy_http_research(
                 &state.usage_base,
                 auth_token_id.as_deref(),
-                http_project_id.as_deref(),
+                api_routing_key.as_deref(),
                 &method,
                 &path,
                 options,
@@ -1048,7 +1064,7 @@ async fn proxy_tavily_http_endpoint(
                 .proxy_http_search(
                     &state.usage_base,
                     auth_token_id.as_deref(),
-                    http_project_id.as_deref(),
+                    api_routing_key.as_deref(),
                     &method,
                     &path,
                     options,
@@ -1063,7 +1079,7 @@ async fn proxy_tavily_http_endpoint(
                     &state.usage_base,
                     config.upstream_path,
                     auth_token_id.as_deref(),
-                    http_project_id.as_deref(),
+                    api_routing_key.as_deref(),
                     &method,
                     &path,
                     options,

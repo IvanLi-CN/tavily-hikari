@@ -373,6 +373,12 @@ const KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED: &str =
     "http_project_affinity_rate_limit_avoided";
 const KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED: &str =
     "http_project_affinity_pressure_avoided";
+const KEY_EFFECT_API_REBALANCE_ROUTE_REUSED: &str = "api_rebalance_route_reused";
+const KEY_EFFECT_API_REBALANCE_ROUTE_BOUND: &str = "api_rebalance_route_bound";
+const KEY_EFFECT_API_REBALANCE_ROUTE_REBOUND: &str = "api_rebalance_route_rebound";
+const KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED: &str = "api_rebalance_cooldown_avoided";
+const KEY_EFFECT_API_REBALANCE_RATE_LIMIT_AVOIDED: &str = "api_rebalance_rate_limit_avoided";
+const KEY_EFFECT_API_REBALANCE_PRESSURE_AVOIDED: &str = "api_rebalance_pressure_avoided";
 const MAINTENANCE_SOURCE_SYSTEM: &str = "system";
 const MAINTENANCE_SOURCE_ADMIN: &str = "admin";
 const MAINTENANCE_OP_AUTO_QUARANTINE: &str = "auto_quarantine";
@@ -401,6 +407,7 @@ const BLOCKED_KEY_REASON_INVALID_API_KEY: &str = "invalid_api_key";
 const MCP_SESSION_INIT_BACKOFF_SCOPE: &str = "mcp_session_init";
 const HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE: &str = "http_project_affinity";
 const HTTP_GLOBAL_BACKOFF_SCOPE: &str = "http_global";
+const API_REBALANCE_HTTP_BACKOFF_SCOPE: &str = "api_rebalance_http";
 const MCP_SESSION_INIT_BACKOFF_DEFAULT_SECS: i64 = 60;
 const MCP_SESSION_INIT_BACKOFF_MIN_SECS: i64 = 30;
 const MCP_SESSION_INIT_BACKOFF_MAX_SECS: i64 = 300;
@@ -447,6 +454,9 @@ pub(crate) fn is_binding_effect_code(code: &str) -> bool {
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND
+            | KEY_EFFECT_API_REBALANCE_ROUTE_BOUND
+            | KEY_EFFECT_API_REBALANCE_ROUTE_REUSED
+            | KEY_EFFECT_API_REBALANCE_ROUTE_REBOUND
     )
 }
 
@@ -460,6 +470,9 @@ pub(crate) fn is_selection_effect_code(code: &str) -> bool {
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED
             | KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED
+            | KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED
+            | KEY_EFFECT_API_REBALANCE_RATE_LIMIT_AVOIDED
+            | KEY_EFFECT_API_REBALANCE_PRESSURE_AVOIDED
     )
 }
 

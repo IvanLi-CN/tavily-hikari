@@ -1005,7 +1005,7 @@
     }
 
     #[tokio::test]
-    async fn tavily_http_search_dev_open_admin_fallback_ignores_project_affinity_binding() {
+    async fn tavily_http_search_dev_open_admin_fallback_keeps_project_header_without_primary_pin() {
         let db_path = temp_db_path("http-search-dev-open-admin-project-disabled");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -1103,8 +1103,117 @@
 
         let seen = seen.lock().expect("seen lock should not be poisoned");
         assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].0, primary_key.1);
+        assert!(
+            key_rows.iter().any(|(_, secret)| secret == &seen[0].0),
+            "dev-open-admin fallback should use an available upstream pool key"
+        );
         assert_eq!(seen[0].1.as_deref(), Some(project_id));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_hikari_routing_key_is_internal_and_takes_affinity_precedence() {
+        let db_path = temp_db_path("http-search-hikari-routing-key");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let seen = Arc::new(Mutex::new(Vec::<(Option<String>, Option<String>)>::new()));
+        let upstream_seen = seen.clone();
+        let app = Router::new().route(
+            "/search",
+            post(move |headers: HeaderMap, Json(_body): Json<Value>| {
+                let upstream_seen = upstream_seen.clone();
+                async move {
+                    let project_id = headers
+                        .get("x-project-id")
+                        .and_then(|value| value.to_str().ok())
+                        .map(|value| value.to_string());
+                    let hikari_routing_key = headers
+                        .get("x-hikari-routing-key")
+                        .and_then(|value| value.to_str().ok())
+                        .map(|value| value.to_string());
+                    upstream_seen
+                        .lock()
+                        .expect("upstream seen lock should not be poisoned")
+                        .push((project_id, hikari_routing_key));
+
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": 200,
+                            "results": [],
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-http-search-hikari-routing".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("http-search-hikari-routing"))
+            .await
+            .expect("create token");
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let resp = client
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .header("Authorization", format!("Bearer {}", token.token))
+            .header("X-Hikari-Routing-Key", "hikari-route-alpha")
+            .header("X-Project-ID", "legacy-project-alpha")
+            .json(&serde_json::json!({ "query": "hikari routing key" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        {
+            let seen = seen.lock().expect("seen lock should not be poisoned");
+            assert_eq!(
+                seen.as_slice(),
+                &[(Some("legacy-project-alpha".to_string()), None)]
+            );
+        }
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let hikari_binding_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM http_project_api_key_affinity WHERE owner_subject = ? AND project_id_hash = ?",
+        )
+        .bind(format!("token:{}", token.id))
+        .bind(sha256_hex("hikari-route-alpha"))
+        .fetch_one(&pool)
+        .await
+        .expect("count hikari route bindings");
+        assert_eq!(
+            hikari_binding_count, 1,
+            "Hikari routing key should create the generic API route binding"
+        );
+        let legacy_project_binding_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM http_project_api_key_affinity WHERE owner_subject = ? AND project_id_hash = ?",
+        )
+        .bind(format!("token:{}", token.id))
+        .bind(sha256_hex("legacy-project-alpha"))
+        .fetch_one(&pool)
+        .await
+        .expect("count legacy project route bindings");
+        assert_eq!(
+            legacy_project_binding_count, 0,
+            "X-Hikari-Routing-Key should take precedence over X-Project-ID affinity input"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

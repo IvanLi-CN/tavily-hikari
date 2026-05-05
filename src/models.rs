@@ -480,6 +480,7 @@ pub(crate) struct TokenPrimaryApiKeyAffinity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct HttpProjectAffinityBinding {
     pub owner_subject: String,
     pub project_id_hash: String,
@@ -487,9 +488,24 @@ pub(crate) struct HttpProjectAffinityBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct HttpProjectAffinityContext {
     pub owner_subject: String,
     pub project_id_hash: String,
+    pub affinity_subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApiRouteAffinityBinding {
+    pub owner_subject: String,
+    pub route_key_hash: String,
+    pub api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApiRouteAffinityContext {
+    pub owner_subject: String,
+    pub route_key_hash: String,
     pub affinity_subject: String,
 }
 

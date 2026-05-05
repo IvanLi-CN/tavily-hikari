@@ -4,6 +4,9 @@ impl KeyStore {
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
+            KEY_EFFECT_API_REBALANCE_ROUTE_BOUND,
+            KEY_EFFECT_API_REBALANCE_ROUTE_REUSED,
+            KEY_EFFECT_API_REBALANCE_ROUTE_REBOUND,
         ];
         let selection_codes = [
             KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
@@ -12,6 +15,9 @@ impl KeyStore {
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED,
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED,
+            KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED,
+            KEY_EFFECT_API_REBALANCE_RATE_LIMIT_AVOIDED,
+            KEY_EFFECT_API_REBALANCE_PRESSURE_AVOIDED,
         ];
         debug_assert!(
             binding_codes
@@ -45,7 +51,7 @@ impl KeyStore {
                      binding_effect_summary = key_effect_summary,
                      key_effect_code = 'none',
                      key_effect_summary = NULL
-                 WHERE key_effect_code IN (?, ?, ?)
+                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?)
                    AND (binding_effect_code IS NULL OR TRIM(binding_effect_code) = '' OR binding_effect_code = 'none')
                    AND (selection_effect_code IS NULL OR TRIM(selection_effect_code) = '' OR selection_effect_code = 'none')"
             );
@@ -53,6 +59,9 @@ impl KeyStore {
                 .bind(binding_codes[0])
                 .bind(binding_codes[1])
                 .bind(binding_codes[2])
+                .bind(binding_codes[3])
+                .bind(binding_codes[4])
+                .bind(binding_codes[5])
                 .execute(&self.pool)
                 .await?;
 
@@ -62,7 +71,7 @@ impl KeyStore {
                      selection_effect_summary = key_effect_summary,
                      key_effect_code = 'none',
                      key_effect_summary = NULL
-                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?)
+                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    AND (binding_effect_code IS NULL OR TRIM(binding_effect_code) = '' OR binding_effect_code = 'none')
                    AND (selection_effect_code IS NULL OR TRIM(selection_effect_code) = '' OR selection_effect_code = 'none')"
             );
@@ -73,6 +82,9 @@ impl KeyStore {
                 .bind(selection_codes[3])
                 .bind(selection_codes[4])
                 .bind(selection_codes[5])
+                .bind(selection_codes[6])
+                .bind(selection_codes[7])
+                .bind(selection_codes[8])
                 .execute(&self.pool)
                 .await?;
         }

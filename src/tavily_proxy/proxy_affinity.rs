@@ -347,6 +347,7 @@ impl TavilyProxy {
         Err(ProxyError::NoAvailableKeys)
     }
 
+    #[allow(dead_code)]
     async fn resolve_http_project_affinity_context(
         &self,
         auth_token_id: Option<&str>,
@@ -372,6 +373,32 @@ impl TavilyProxy {
         }))
     }
 
+    async fn resolve_api_route_affinity_context(
+        &self,
+        auth_token_id: Option<&str>,
+        route_key: Option<&str>,
+    ) -> Result<Option<ApiRouteAffinityContext>, ProxyError> {
+        let Some(route_key) = route_key.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(token_id) = auth_token_id else {
+            return Ok(None);
+        };
+
+        let user_id = self.key_store.find_user_id_by_token(token_id).await?;
+        let owner_subject = match user_id.as_deref() {
+            Some(user_id) => format!("user:{user_id}"),
+            None => format!("token:{token_id}"),
+        };
+        let route_key_hash = Self::sha256_hex(route_key);
+        Ok(Some(ApiRouteAffinityContext {
+            affinity_subject: Self::api_route_affinity_subject(&owner_subject, &route_key_hash),
+            owner_subject,
+            route_key_hash,
+        }))
+    }
+
+    #[allow(dead_code)]
     async fn rank_http_project_affinity_candidate_keys(
         &self,
         affinity_subject: &str,
@@ -391,6 +418,28 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
+    async fn rank_api_route_affinity_candidate_keys(
+        &self,
+        affinity_subject: &str,
+        desired_count: Option<i64>,
+    ) -> Result<Vec<String>, ProxyError> {
+        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        if candidates.is_empty() {
+            return Err(ProxyError::NoAvailableKeys);
+        }
+
+        candidates.sort_by(|left, right| {
+            Self::affinity_subject_score(affinity_subject, right)
+                .cmp(&Self::affinity_subject_score(affinity_subject, left))
+                .then_with(|| left.cmp(right))
+        });
+        if let Some(desired_count) = desired_count {
+            candidates.truncate(desired_count.clamp(1, candidates.len() as i64).max(1) as usize);
+        }
+        Ok(candidates)
+    }
+
+    #[allow(dead_code)]
     async fn build_http_project_affinity_candidates(
         &self,
         ranked: &[String],
@@ -451,6 +500,54 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
+    async fn build_api_rebalance_candidates(
+        &self,
+        ranked: &[String],
+        now: i64,
+    ) -> Result<Vec<HttpProjectAffinityCandidate>, ProxyError> {
+        let cooldowns = self
+            .key_store
+            .list_active_api_key_transient_backoffs(ranked, API_REBALANCE_HTTP_BACKOFF_SCOPE, now)
+            .await?;
+        let recent_rate_limited_counts = self
+            .key_store
+            .list_recent_rate_limited_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let recent_billable_counts = self
+            .key_store
+            .list_recent_billable_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let last_used_at = self.key_store.list_api_key_last_used_at(ranked).await?;
+
+        let mut candidates = ranked
+            .iter()
+            .enumerate()
+            .map(|(stable_rank_index, key_id)| HttpProjectAffinityCandidate {
+                key_id: key_id.clone(),
+                stable_rank_index,
+                cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                recent_rate_limited_count: recent_rate_limited_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                recent_billable_request_count: recent_billable_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                last_used_at: last_used_at.get(key_id).copied().unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        Self::order_http_project_affinity_candidates(&mut candidates);
+        Ok(candidates)
+    }
+
+    #[allow(dead_code)]
     async fn maybe_arm_http_project_affinity_backoff(
         &self,
         key_id: &str,
@@ -515,6 +612,36 @@ impl TavilyProxy {
             .is_some())
     }
 
+    async fn maybe_arm_api_rebalance_backoff(
+        &self,
+        key_id: &str,
+        headers: &HeaderMap,
+        analysis: &AttemptAnalysis,
+    ) -> Result<bool, ProxyError> {
+        let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
+            return Ok(false);
+        };
+
+        let now = Utc::now().timestamp();
+        let retry_after_secs =
+            Self::transient_backoff_retry_after_secs(headers, now, reason_code);
+        let cooldown_until = now + retry_after_secs;
+
+        Ok(self
+            .key_store
+            .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+                key_id,
+                scope: API_REBALANCE_HTTP_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs,
+                reason_code: Some(reason_code),
+                source_request_log_id: None,
+                now,
+            })
+            .await?
+            .is_some())
+    }
+
     async fn has_http_global_backoff(&self, key_id: &str) -> Result<bool, ProxyError> {
         Ok(self
             .key_store
@@ -527,6 +654,7 @@ impl TavilyProxy {
             .contains_key(key_id))
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn acquire_key_for_http_project(
         &self,
         auth_token_id: Option<&str>,
@@ -651,6 +779,165 @@ impl TavilyProxy {
                     binding_effect,
                     selection_effect,
                 }));
+            }
+        }
+
+        Err(ProxyError::NoAvailableKeys)
+    }
+
+    pub(crate) async fn acquire_key_for_api_route(
+        &self,
+        auth_token_id: Option<&str>,
+        route_key: Option<&str>,
+    ) -> Result<ApiRouteAffinitySelection, ProxyError> {
+        let context = self
+            .resolve_api_route_affinity_context(auth_token_id, route_key)
+            .await?;
+        let now = Utc::now().timestamp();
+
+        if let Some(context) = context.as_ref() {
+            let existing_binding = self
+                .key_store
+                .get_api_route_api_key_affinity(&context.owner_subject, &context.route_key_hash)
+                .await?;
+            let existing_key_id = existing_binding
+                .as_ref()
+                .map(|binding| binding.api_key_id.clone());
+
+            if let Some(existing_key_id) = existing_key_id.as_deref() {
+                let backoff = self
+                    .key_store
+                    .list_active_api_key_transient_backoffs(
+                        &[existing_key_id.to_string()],
+                        API_REBALANCE_HTTP_BACKOFF_SCOPE,
+                        now,
+                    )
+                    .await?;
+                if !backoff.contains_key(existing_key_id)
+                    && let Some(lease) = self
+                        .key_store
+                        .try_acquire_affinity_specific_key(existing_key_id)
+                        .await?
+                {
+                    return Ok(ApiRouteAffinitySelection {
+                        lease,
+                        binding_effect: Self::api_route_affinity_reused_effect(),
+                        selection_effect: KeyEffect::none(),
+                    });
+                }
+            }
+
+            let desired_count = self
+                .key_store
+                .get_system_settings()
+                .await?
+                .mcp_session_affinity_key_count;
+            let ranked = self
+                .rank_api_route_affinity_candidate_keys(
+                    &context.affinity_subject,
+                    Some(desired_count),
+                )
+                .await?;
+            let ordered = self.build_api_rebalance_candidates(&ranked, now).await?;
+            let selection_effect = Self::api_rebalance_selection_effect(&ordered);
+            let existing_key_cooled = existing_key_id.as_ref().is_some_and(|key_id| {
+                ordered
+                    .iter()
+                    .find(|candidate| candidate.key_id == *key_id)
+                    .and_then(|candidate| candidate.cooldown_until)
+                    .is_some()
+            });
+
+            for candidate in ordered {
+                let key_id = candidate.key_id.clone();
+                if let Some(lease) = self
+                    .key_store
+                    .try_acquire_affinity_specific_key(&key_id)
+                    .await?
+                {
+                    self.key_store
+                        .set_api_route_api_key_affinity(
+                            &context.owner_subject,
+                            &context.route_key_hash,
+                            &lease.id,
+                        )
+                        .await?;
+
+                    let (binding_effect, selection_effect) = match existing_key_id.as_deref() {
+                        None => (
+                            Self::api_route_affinity_bound_effect(),
+                            selection_effect.clone(),
+                        ),
+                        Some(existing_key_id) if existing_key_id == lease.id => (
+                            Self::api_route_affinity_reused_effect(),
+                            if existing_key_cooled {
+                                selection_effect.clone()
+                            } else {
+                                KeyEffect::none()
+                            },
+                        ),
+                        Some(_) if existing_key_cooled => (
+                            Self::api_route_affinity_rebound_effect(),
+                            if selection_effect.code != KEY_EFFECT_NONE {
+                                selection_effect.clone()
+                            } else {
+                                KeyEffect::new(
+                                    KEY_EFFECT_API_REBALANCE_COOLDOWN_AVOIDED,
+                                    "API rebalance skipped a cooled bound key",
+                                )
+                            },
+                        ),
+                        Some(_) => (
+                            Self::api_route_affinity_rebound_effect(),
+                            selection_effect.clone(),
+                        ),
+                    };
+
+                    return Ok(ApiRouteAffinitySelection {
+                        lease,
+                        binding_effect,
+                        selection_effect,
+                    });
+                }
+            }
+
+            return Err(ProxyError::NoAvailableKeys);
+        }
+
+        let affinity_subject = match auth_token_id {
+            Some(token_id) => {
+                let user_id = self.key_store.find_user_id_by_token(token_id).await?;
+                match user_id {
+                    Some(user_id) => format!("user:{user_id}:api"),
+                    None => format!("token:{token_id}:api"),
+                }
+            }
+            None => "anonymous:api".to_string(),
+        };
+        let ranked = self
+            .rank_api_route_affinity_candidate_keys(&affinity_subject, None)
+            .await?;
+        let ordered = self.build_api_rebalance_candidates(&ranked, now).await?;
+        let selection_effect = Self::api_rebalance_selection_effect(&ordered);
+        let preferred_key_id = ordered.first().map(|candidate| candidate.key_id.clone());
+
+        for candidate in ordered {
+            let key_id = candidate.key_id.clone();
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_affinity_specific_key(&key_id)
+                .await?
+            {
+                let selection_effect = if preferred_key_id.as_deref() == Some(key_id.as_str()) {
+                    selection_effect.clone()
+                } else {
+                    KeyEffect::none()
+                };
+                return Ok(ApiRouteAffinitySelection {
+                    lease,
+                    binding_effect: KeyEffect::none(),
+                    selection_effect,
+                });
             }
         }
 
@@ -1145,6 +1432,7 @@ impl TavilyProxy {
                     MCP_SESSION_INIT_BACKOFF_SCOPE,
                     HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                     HTTP_GLOBAL_BACKOFF_SCOPE,
+                    API_REBALANCE_HTTP_BACKOFF_SCOPE,
                     REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
                 ],
                 FAILURE_KIND_UPSTREAM_UNKNOWN_403,
