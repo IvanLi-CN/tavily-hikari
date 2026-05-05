@@ -2619,6 +2619,7 @@
         let resp = client
             .get(url)
             .header("Authorization", format!("Bearer {}", access_token.token))
+            .header("X-Hikari-Routing-Key", "internal-result-route")
             .send()
             .await
             .expect("request to proxy succeeds");

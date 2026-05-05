@@ -471,6 +471,7 @@ async fn tavily_http_research_result(
 
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
+    headers.remove(HIKARI_ROUTING_KEY_HEADER);
     let upstream_path = format!("/research/{}", urlencoding::encode(&request_id));
     let token_id_for_logs = auth_token_id.clone();
 
