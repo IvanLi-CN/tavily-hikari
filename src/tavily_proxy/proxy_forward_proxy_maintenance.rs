@@ -86,10 +86,8 @@ impl TavilyProxy {
                     fetched_any_subscription = true;
                     fetched.insert(subscription_url.clone(), urls);
                 }
-                Err(err) => {
-                    eprintln!(
-                        "failed to refresh forward proxy subscription {subscription_url}: {err}"
-                    );
+                Err(_err) => {
+                    eprintln!("failed to refresh forward proxy subscription");
                 }
             }
         }

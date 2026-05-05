@@ -460,6 +460,7 @@ impl TavilyProxy {
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
+            health_readiness_grace_until: Instant::now() + options.health_readiness_grace_period,
         };
         proxy.initialize_forward_proxy_runtime().await?;
         Ok(proxy)
@@ -467,10 +468,62 @@ impl TavilyProxy {
 
     pub(crate) async fn initialize_forward_proxy_runtime(&mut self) -> Result<(), ProxyError> {
         if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
-            eprintln!("forward-proxy startup subscription refresh error: {err}");
+            eprintln!("forward-proxy startup subscription refresh failed: {err}");
+            let restored = {
+                let mut manager = self.forward_proxy.lock().await;
+                manager.restore_persisted_subscription_endpoints()
+            };
+            if restored > 0 {
+                eprintln!(
+                    "forward-proxy restored {restored} persisted subscription nodes after startup refresh failure"
+                );
+            }
+        }
+        {
+            let mut manager = self.forward_proxy.lock().await;
+            let egress_socks5_url = manager.settings.effective_egress_socks5_url();
+            {
+                let mut xray = self.xray_supervisor.lock().await;
+                if let Err(_err) = xray
+                    .sync_endpoints(&mut manager.endpoints, egress_socks5_url.as_ref())
+                    .await
+                {
+                    eprintln!("forward-proxy startup xray prewarm failed");
+                }
+            }
+            self.sync_forward_proxy_runtime_state(&mut manager).await?;
         }
         let manager = self.forward_proxy.lock().await;
         forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await
+    }
+
+    pub async fn is_forward_proxy_xray_ready(&self) -> bool {
+        if Instant::now() < self.health_readiness_grace_until {
+            return true;
+        }
+        let (requires_xray, endpoints_ready) = {
+            let manager = self.forward_proxy.lock().await;
+            let egress_socks5_url = manager.settings.effective_egress_socks5_url();
+            let mut requires_xray = false;
+            let mut endpoints_ready = true;
+            for endpoint in &manager.endpoints {
+                if !endpoint.needs_local_relay(egress_socks5_url.as_ref()) {
+                    continue;
+                }
+                requires_xray = true;
+                endpoints_ready &= endpoint.uses_local_relay && endpoint.has_ready_local_relay();
+            }
+            (requires_xray, endpoints_ready)
+        };
+        if !requires_xray {
+            return true;
+        }
+        if !endpoints_ready {
+            return false;
+        }
+        let mut xray = self.xray_supervisor.lock().await;
+        let snapshot = xray.readiness_snapshot();
+        snapshot.shared_process_running && snapshot.active_endpoint_handles > 0
     }
 
     pub async fn get_forward_proxy_settings(

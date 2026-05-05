@@ -1441,6 +1441,7 @@ async fn spawn_proxy_server_with_dev(
     });
 
     let app = Router::new()
+        .route("/health", get(health_check))
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(mcp_subpath_reject_handler))
         .route("/api/tavily/search", post(tavily_http_search))

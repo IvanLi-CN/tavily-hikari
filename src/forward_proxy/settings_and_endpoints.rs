@@ -364,6 +364,13 @@ impl ForwardProxyEndpoint {
         self.relay_handle.as_ref().and_then(Weak::upgrade)
     }
 
+    pub(crate) fn has_ready_local_relay(&self) -> bool {
+        self.endpoint_url.is_some()
+            && self
+                .relay_handle()
+                .is_some_and(|handle| !handle.is_invalidated())
+    }
+
     fn set_relay_handle(&mut self, relay_handle: Option<&Arc<SharedXrayRelayHandle>>) {
         self.relay_handle = relay_handle.map(Arc::downgrade);
     }

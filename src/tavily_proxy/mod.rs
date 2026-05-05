@@ -215,6 +215,7 @@ pub struct TavilyProxy {
     pub(crate) mcp_session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) mcp_session_request_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) low_quota_depletion_threshold: i64,
+    health_readiness_grace_until: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +224,7 @@ pub struct TavilyProxyOptions {
     pub xray_runtime_dir: std::path::PathBuf,
     pub forward_proxy_trace_url: Url,
     pub low_quota_depletion_threshold: i64,
+    pub health_readiness_grace_period: Duration,
 }
 
 impl TavilyProxyOptions {
@@ -232,6 +234,7 @@ impl TavilyProxyOptions {
             xray_runtime_dir: forward_proxy::default_xray_runtime_dir(database_path),
             forward_proxy_trace_url: default_forward_proxy_trace_url(),
             low_quota_depletion_threshold: low_quota_depletion_threshold_from_env(),
+            health_readiness_grace_period: Duration::from_secs(90),
         }
     }
 }

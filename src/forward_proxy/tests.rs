@@ -486,6 +486,27 @@ if __name__ == "__main__":
         )
     }
 
+    async fn spawn_single_response_subscription_server(body: String) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind fake subscription server");
+        let addr = listener.local_addr().expect("subscription server addr");
+        let handle = tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        (format!("http://{addr}/subscription.txt"), handle)
+    }
+
     fn subscription_vless_endpoint(key: &str, host: &str, label: &str) -> ForwardProxyEndpoint {
         ForwardProxyEndpoint::new_subscription(
             key.to_string(),
@@ -807,6 +828,7 @@ if __name__ == "__main__":
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
             },
         )
         .await
@@ -940,6 +962,7 @@ if __name__ == "__main__":
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
             },
         )
         .await
@@ -985,6 +1008,7 @@ if __name__ == "__main__":
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
             },
         )
         .await
@@ -1074,6 +1098,7 @@ if __name__ == "__main__":
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
             },
         )
         .await
@@ -1132,6 +1157,107 @@ if __name__ == "__main__":
         );
 
         proxy.xray_supervisor.lock().await.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn startup_restores_persisted_subscription_nodes_and_prewarms_xray_when_subscription_down()
+    {
+        let root_dir = temp_runtime_dir("proxy-startup-restore-xray");
+        let db_path = root_dir.join("proxy.db");
+        let share_link = sample_vless_share_link("restore-sub.example.com", "Restore Sub");
+        let (subscription_url, subscription_handle) =
+            spawn_single_response_subscription_server(share_link.clone()).await;
+
+        let first_proxy = TavilyProxy::with_options(
+            Vec::<String>::new(),
+            "http://127.0.0.1:9/mcp",
+            db_path
+                .to_str()
+                .expect("database path should be valid utf-8"),
+            TavilyProxyOptions {
+                xray_binary: write_fake_xray_binary("proxy-startup-restore-xray-first"),
+                xray_runtime_dir: root_dir.join("xray-runtime-first"),
+                forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
+                    .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(0),
+            },
+        )
+        .await
+        .expect("create initial proxy with fake xray");
+
+        first_proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: Vec::new(),
+                    subscription_urls: vec![subscription_url],
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                true,
+            )
+            .await
+            .expect("save subscription settings");
+        subscription_handle
+            .await
+            .expect("fake subscription server should exit after one response");
+        first_proxy
+            .xray_supervisor
+            .lock()
+            .await
+            .shutdown_all()
+            .await;
+        drop(first_proxy);
+
+        let restarted_proxy = TavilyProxy::with_options(
+            Vec::<String>::new(),
+            "http://127.0.0.1:9/mcp",
+            db_path
+                .to_str()
+                .expect("database path should be valid utf-8"),
+            TavilyProxyOptions {
+                xray_binary: write_fake_xray_binary("proxy-startup-restore-xray-restarted"),
+                xray_runtime_dir: root_dir.join("xray-runtime-restarted"),
+                forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
+                    .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(0),
+            },
+        )
+        .await
+        .expect("restart proxy while subscription server is down");
+
+        let settings = restarted_proxy
+            .get_forward_proxy_settings()
+            .await
+            .expect("load forward proxy settings");
+        let restored = settings
+            .nodes
+            .iter()
+            .find(|node| node.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .expect("persisted subscription node should be restored");
+        assert_eq!(restored.key, share_link);
+        assert!(
+            restarted_proxy.is_forward_proxy_xray_ready().await,
+            "restored subscription node should be prewarmed into shared xray"
+        );
+        let snapshot = restarted_proxy
+            .xray_supervisor
+            .lock()
+            .await
+            .debug_snapshot()
+            .await;
+        assert!(snapshot.shared_pid.is_some());
+        assert_eq!(snapshot.active_endpoint_handles, 1);
+
+        restarted_proxy
+            .xray_supervisor
+            .lock()
+            .await
+            .shutdown_all()
+            .await;
     }
 
     #[tokio::test]
@@ -1262,6 +1388,7 @@ if __name__ == "__main__":
                 forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
             },
         )
         .await
@@ -1342,6 +1469,7 @@ if __name__ == "__main__":
                     forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
                         .expect("valid trace url"),
                     low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
                 },
             )
             .await

@@ -131,7 +131,7 @@ If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or reviv
 
 | Method   | Path                   | Description                                                       | Auth         |
 | -------- | ---------------------- | ----------------------------------------------------------------- | ------------ |
-| `GET`    | `/health`              | Liveness probe.                                                   | none         |
+| `GET`    | `/health`              | Liveness plus xray readiness after startup grace.                 | none         |
 | `GET`    | `/api/summary`         | High-level success/failure stats and last activity.               | none         |
 | `GET`    | `/api/keys`            | Lists short IDs, status, and counters.                            | Admin        |
 | `GET`    | `/api/logs?page=1`     | Recent proxy logs (paginated, default 20 per page).               | Admin        |

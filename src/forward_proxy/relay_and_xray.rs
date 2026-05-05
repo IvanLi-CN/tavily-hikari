@@ -443,6 +443,12 @@ pub struct XraySupervisorDebugSnapshot {
     pub runtime_files: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XraySupervisorReadinessSnapshot {
+    pub shared_process_running: bool,
+    pub active_endpoint_handles: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct XraySupervisor {
     pub binary: String,
@@ -578,6 +584,14 @@ impl XraySupervisor {
         self.retiring_handles.clear();
         self.handle_by_url.clear();
         self.shutdown_shared_process().await;
+    }
+
+    pub fn readiness_snapshot(&mut self) -> XraySupervisorReadinessSnapshot {
+        self.reset_if_shared_process_exited();
+        XraySupervisorReadinessSnapshot {
+            shared_process_running: self.shared.is_some(),
+            active_endpoint_handles: self.active_endpoint_handles.len(),
+        }
     }
 
     pub async fn resolve_validation_endpoint(
@@ -1121,4 +1135,3 @@ impl XraySupervisor {
         )
     }
 }
-

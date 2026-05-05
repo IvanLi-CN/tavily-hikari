@@ -46,6 +46,24 @@ impl ForwardProxyManager {
         self.last_subscription_refresh_at = Some(Utc::now().timestamp());
     }
 
+    pub fn restore_persisted_subscription_endpoints(&mut self) -> usize {
+        let proxy_urls = self
+            .runtime
+            .values()
+            .filter(|entry| entry.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .filter(|entry| entry.proxy_key != FORWARD_PROXY_DIRECT_KEY)
+            .filter(|entry| parse_forward_proxy_entry(&entry.proxy_key).is_some())
+            .map(|entry| entry.proxy_key.clone())
+            .collect::<Vec<_>>();
+        let subscription_endpoints =
+            normalize_subscription_endpoints_from_urls(&proxy_urls, FORWARD_PROXY_SOURCE_SUBSCRIPTION);
+        let restored = subscription_endpoints.len();
+        if restored > 0 {
+            self.rebuild_endpoints(subscription_endpoints);
+        }
+        restored
+    }
+
     pub fn rebuild_endpoints(&mut self, subscription_endpoints: Vec<ForwardProxyEndpoint>) {
         let manual = normalize_proxy_endpoints_from_urls(&self.settings.proxy_urls);
         let mut merged: Vec<ForwardProxyEndpoint> = Vec::new();

@@ -32,6 +32,98 @@
     }
 
     #[tokio::test]
+    async fn health_keeps_startup_grace_then_fails_when_xray_relay_is_not_ready() {
+        let share_link =
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@health-xray.example.com:443?encryption=none#Health";
+
+        let grace_db_path = temp_db_path("health-xray-grace");
+        let grace_db_str = grace_db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let mut grace_options = tavily_hikari::TavilyProxyOptions::from_database_path(&grace_db_str);
+        grace_options.xray_binary = "/tmp/tavily-hikari-missing-xray".to_string();
+        grace_options.health_readiness_grace_period = Duration::from_secs(90);
+        let grace_proxy =
+            TavilyProxy::with_options::<Vec<String>, String>(
+                Vec::new(),
+                &upstream,
+                &grace_db_str,
+                grace_options,
+            )
+            .await
+            .expect("create grace proxy");
+        grace_proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![share_link.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                true,
+            )
+            .await
+            .expect("save xray relay settings");
+        let grace_addr =
+            spawn_proxy_server(grace_proxy, format!("http://{}", upstream_addr)).await;
+        let client = Client::new();
+        let grace_response = client
+            .get(format!("http://{grace_addr}/health"))
+            .send()
+            .await
+            .expect("call grace health");
+        assert_eq!(grace_response.status(), StatusCode::OK);
+        assert_eq!(grace_response.text().await.expect("grace body"), "ok");
+
+        let expired_db_path = temp_db_path("health-xray-expired");
+        let expired_db_str = expired_db_path.to_string_lossy().to_string();
+        let mut expired_options =
+            tavily_hikari::TavilyProxyOptions::from_database_path(&expired_db_str);
+        expired_options.xray_binary = "/tmp/tavily-hikari-missing-xray".to_string();
+        expired_options.health_readiness_grace_period = Duration::from_secs(0);
+        let expired_proxy =
+            TavilyProxy::with_options::<Vec<String>, String>(
+                Vec::new(),
+                &upstream,
+                &expired_db_str,
+                expired_options,
+            )
+            .await
+            .expect("create expired proxy");
+        expired_proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![share_link.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                true,
+            )
+            .await
+            .expect("save expired xray relay settings");
+        let expired_addr =
+            spawn_proxy_server(expired_proxy, format!("http://{}", upstream_addr)).await;
+        let expired_response = client
+            .get(format!("http://{expired_addr}/health"))
+            .send()
+            .await
+            .expect("call expired health");
+        assert_eq!(expired_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let expired_body = expired_response.text().await.expect("expired body");
+        assert_eq!(expired_body, "xray not ready");
+        assert!(!expired_body.contains("vless://"));
+        assert!(!expired_body.contains("health-xray.example.com"));
+
+        let _ = std::fs::remove_file(grace_db_path);
+        let _ = std::fs::remove_file(expired_db_path);
+    }
+
+    #[tokio::test]
     async fn admin_system_settings_reject_invalid_rebalance_percent() {
         let db_path = temp_db_path("admin-system-settings-invalid-rebalance-percent");
         let db_str = db_path.to_string_lossy().to_string();

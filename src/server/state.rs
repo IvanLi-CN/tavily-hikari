@@ -594,6 +594,10 @@ async fn debug_is_admin(
     }))
 }
 
-async fn health_check() -> &'static str {
-    "ok"
+async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.proxy.is_forward_proxy_xray_ready().await {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "xray not ready")
+    }
 }

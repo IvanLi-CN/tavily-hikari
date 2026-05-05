@@ -206,6 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(&cli.low_quota_depletion_threshold),
             "LOW_QUOTA_DEPLETION_THRESHOLD",
         ),
+        health_readiness_grace_period: std::time::Duration::from_secs(90),
     };
     let proxy =
         TavilyProxy::with_options(cli.keys, &cli.upstream, &cli.db_path, proxy_options).await?;
