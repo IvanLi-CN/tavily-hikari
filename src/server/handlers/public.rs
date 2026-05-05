@@ -8,6 +8,7 @@ async fn fetch_summary(
         .await
         .map(|mut summary| {
             if !is_admin_request(state.as_ref(), &headers) {
+                summary.active_keys += summary.temporary_isolated_keys;
                 summary.quarantined_keys = 0;
                 summary.temporary_isolated_keys = 0;
             }

@@ -807,6 +807,10 @@
         assert_eq!(public_resp.status(), reqwest::StatusCode::OK);
         let public_body: serde_json::Value = public_resp.json().await.expect("public summary json");
         assert_eq!(
+            public_body.get("active_keys").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
             public_body.get("quarantined_keys").and_then(|v| v.as_i64()),
             Some(0)
         );
@@ -838,6 +842,10 @@
         assert_eq!(
             admin_body.get("quarantined_keys").and_then(|v| v.as_i64()),
             Some(1)
+        );
+        assert_eq!(
+            admin_body.get("active_keys").and_then(|v| v.as_i64()),
+            Some(0)
         );
         assert_eq!(
             admin_body
