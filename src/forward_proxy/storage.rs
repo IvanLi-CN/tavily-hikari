@@ -63,6 +63,18 @@ pub async fn ensure_forward_proxy_schema(pool: &SqlitePool) -> Result<(), ProxyE
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_node_overrides (
+            proxy_key TEXT PRIMARY KEY,
+            disabled_at INTEGER,
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             proxy_key TEXT NOT NULL,
@@ -239,6 +251,74 @@ pub async fn load_forward_proxy_runtime_states(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(Into::into).collect())
+}
+
+pub async fn load_forward_proxy_disabled_node_keys(
+    pool: &SqlitePool,
+) -> Result<HashMap<String, i64>, ProxyError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT proxy_key, disabled_at
+        FROM forward_proxy_node_overrides
+        WHERE disabled_at IS NOT NULL
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut disabled = HashMap::new();
+    for row in rows {
+        let proxy_key: String = row.try_get("proxy_key")?;
+        let disabled_at: i64 = row.try_get("disabled_at")?;
+        disabled.insert(proxy_key, disabled_at);
+    }
+    Ok(disabled)
+}
+
+pub async fn set_forward_proxy_nodes_disabled(
+    pool: &SqlitePool,
+    proxy_keys: &[String],
+    disabled: bool,
+) -> Result<HashMap<String, Option<i64>>, ProxyError> {
+    let mut results = HashMap::new();
+    if proxy_keys.is_empty() {
+        return Ok(results);
+    }
+    let mut tx = pool.begin().await?;
+    for proxy_key in proxy_keys {
+        if disabled {
+            let disabled_at = Utc::now().timestamp();
+            sqlx::query(
+                r#"
+                INSERT INTO forward_proxy_node_overrides (proxy_key, disabled_at, updated_at)
+                VALUES (?1, ?2, strftime('%s', 'now'))
+                ON CONFLICT(proxy_key) DO UPDATE SET
+                    disabled_at = excluded.disabled_at,
+                    updated_at = strftime('%s', 'now')
+                "#,
+            )
+            .bind(proxy_key)
+            .bind(disabled_at)
+            .execute(&mut *tx)
+            .await?;
+            results.insert(proxy_key.clone(), Some(disabled_at));
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO forward_proxy_node_overrides (proxy_key, disabled_at, updated_at)
+                VALUES (?1, NULL, strftime('%s', 'now'))
+                ON CONFLICT(proxy_key) DO UPDATE SET
+                    disabled_at = NULL,
+                    updated_at = strftime('%s', 'now')
+                "#,
+            )
+            .bind(proxy_key)
+            .execute(&mut *tx)
+            .await?;
+            results.insert(proxy_key.clone(), None);
+        }
+    }
+    tx.commit().await?;
+    Ok(results)
 }
 
 pub async fn persist_forward_proxy_runtime_snapshot(
@@ -726,6 +806,41 @@ struct ForwardProxyAttemptStatsRow {
     avg_latency_ms: Option<f64>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ForwardProxyErrorWindowStats {
+    pub total_count: i64,
+    pub error_count: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ForwardProxyErrorHourlyStatsPoint {
+    pub total_count: i64,
+    pub success_count: i64,
+    pub error_counts: HashMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ForwardProxyErrorStatsBundle {
+    pub window_maps: Vec<HashMap<String, ForwardProxyErrorWindowStats>>,
+    pub hourly_map: HashMap<String, HashMap<i64, ForwardProxyErrorHourlyStatsPoint>>,
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyErrorHourlyTotalsRow {
+    proxy_key: String,
+    bucket_start_epoch: i64,
+    total_count: i64,
+    success_count: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyErrorHourlyKindRow {
+    proxy_key: String,
+    bucket_start_epoch: i64,
+    failure_kind: Option<String>,
+    error_count: i64,
+}
+
 #[derive(Debug, FromRow)]
 struct ForwardProxyHourlyStatsRow {
     proxy_key: String,
@@ -895,6 +1010,156 @@ async fn query_forward_proxy_window_stats_set(
         );
     }
     Ok(windows)
+}
+
+pub(crate) fn normalize_forward_proxy_error_kind(failure_kind: Option<&str>) -> String {
+    match failure_kind.unwrap_or_default().trim() {
+        "proxy_unreachable" => "proxy_unreachable",
+        FORWARD_PROXY_FAILURE_SEND_ERROR => "send_error",
+        "validation_failed" => "validation_failed",
+        "upstream_unknown_403" | "upstream_http_403" => "upstream_unknown_403",
+        "upstream_rate_limited_429" | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429 => {
+            "upstream_rate_limited_429"
+        }
+        "upstream_usage_limit_432" | "upstream_http_432" => "upstream_usage_limit_432",
+        "upstream_gateway_5xx" | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX => "upstream_gateway_5xx",
+        "transport_send_error" => "transport_send_error",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+pub(crate) async fn query_forward_proxy_error_stats_bundle(
+    pool: &SqlitePool,
+    now_epoch: i64,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<ForwardProxyErrorStatsBundle, ProxyError> {
+    let one_minute = now_epoch - 60;
+    let fifteen_minutes = now_epoch - 15 * 60;
+    let one_hour = now_epoch - 3600;
+    let one_day = now_epoch - 24 * 3600;
+    let seven_days = now_epoch - 7 * 24 * 3600;
+    let rows = sqlx::query(
+        r#"
+        SELECT proxy_key,
+               COUNT(*) AS total_7d,
+               COALESCE(SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END), 0) AS error_7d,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?1 THEN 1 ELSE 0 END), 0) AS total_1m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?1 AND is_success = 0 THEN 1 ELSE 0 END), 0) AS error_1m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?2 THEN 1 ELSE 0 END), 0) AS total_15m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?2 AND is_success = 0 THEN 1 ELSE 0 END), 0) AS error_15m,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?3 THEN 1 ELSE 0 END), 0) AS total_1h,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?3 AND is_success = 0 THEN 1 ELSE 0 END), 0) AS error_1h,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?4 THEN 1 ELSE 0 END), 0) AS total_1d,
+               COALESCE(SUM(CASE WHEN occurred_at >= ?4 AND is_success = 0 THEN 1 ELSE 0 END), 0) AS error_1d
+        FROM forward_proxy_attempts
+        WHERE occurred_at >= ?5 AND is_probe = 0
+        GROUP BY proxy_key
+        "#,
+    )
+    .bind(one_minute)
+    .bind(fifteen_minutes)
+    .bind(one_hour)
+    .bind(one_day)
+    .bind(seven_days)
+    .fetch_all(pool)
+    .await?;
+
+    let mut window_maps = vec![
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    ];
+    for row in rows {
+        let proxy_key: String = row.try_get("proxy_key")?;
+        let mut insert_window = |index: usize,
+                                 total_col: &str,
+                                 error_col: &str|
+         -> Result<(), sqlx::Error> {
+            window_maps[index].insert(
+                proxy_key.clone(),
+                ForwardProxyErrorWindowStats {
+                    total_count: row.try_get(total_col)?,
+                    error_count: row.try_get(error_col)?,
+                },
+            );
+            Ok(())
+        };
+        insert_window(0, "total_1m", "error_1m")?;
+        insert_window(1, "total_15m", "error_15m")?;
+        insert_window(2, "total_1h", "error_1h")?;
+        insert_window(3, "total_1d", "error_1d")?;
+        insert_window(4, "total_7d", "error_7d")?;
+    }
+
+    let total_rows = sqlx::query_as::<_, ForwardProxyErrorHourlyTotalsRow>(
+        r#"
+        SELECT proxy_key,
+               (occurred_at / 3600) * 3600 AS bucket_start_epoch,
+               COUNT(*) AS total_count,
+               COALESCE(SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END), 0) AS success_count
+        FROM forward_proxy_attempts
+        WHERE occurred_at >= ?1 AND occurred_at < ?2 AND is_probe = 0
+        GROUP BY proxy_key, bucket_start_epoch
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .fetch_all(pool)
+    .await?;
+
+    let mut hourly_map: HashMap<String, HashMap<i64, ForwardProxyErrorHourlyStatsPoint>> =
+        HashMap::new();
+    for row in total_rows {
+        hourly_map
+            .entry(row.proxy_key)
+            .or_default()
+            .insert(
+                row.bucket_start_epoch,
+                ForwardProxyErrorHourlyStatsPoint {
+                    total_count: row.total_count,
+                    success_count: row.success_count,
+                    error_counts: HashMap::new(),
+                },
+            );
+    }
+
+    let kind_rows = sqlx::query_as::<_, ForwardProxyErrorHourlyKindRow>(
+        r#"
+        SELECT proxy_key,
+               (occurred_at / 3600) * 3600 AS bucket_start_epoch,
+               failure_kind,
+               COUNT(*) AS error_count
+        FROM forward_proxy_attempts
+        WHERE occurred_at >= ?1
+          AND occurred_at < ?2
+          AND is_probe = 0
+          AND is_success = 0
+        GROUP BY proxy_key, bucket_start_epoch, failure_kind
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .fetch_all(pool)
+    .await?;
+
+    for row in kind_rows {
+        let kind = normalize_forward_proxy_error_kind(row.failure_kind.as_deref());
+        let point = hourly_map
+            .entry(row.proxy_key)
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_default();
+        *point.error_counts.entry(kind).or_insert(0) += row.error_count;
+    }
+
+    Ok(ForwardProxyErrorStatsBundle {
+        window_maps,
+        hourly_map,
+    })
 }
 
 async fn query_forward_proxy_hourly_stats(

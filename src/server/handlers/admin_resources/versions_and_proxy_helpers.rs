@@ -668,6 +668,14 @@ struct ForwardProxySettingsUpdatePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ForwardProxyNodeStateUpdatePayload {
+    #[serde(default)]
+    proxy_keys: Vec<String>,
+    disabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SystemSettingsUpdatePayload {
     request_rate_limit: Option<i64>,
     mcp_session_affinity_key_count: i64,

@@ -11,7 +11,12 @@ import {
 } from './ForwardProxySettingsModule'
 import { translations } from '../i18n'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
-import { forwardProxyStorySavedAt, forwardProxyStorySettings, forwardProxyStoryStats } from './forwardProxyStoryData'
+import {
+  forwardProxyStoryErrorStats,
+  forwardProxyStorySavedAt,
+  forwardProxyStorySettings,
+  forwardProxyStoryStats,
+} from './forwardProxyStoryData'
 
 const strings = translations.zh.admin.proxySettings
 
@@ -187,10 +192,13 @@ describe('ForwardProxySettingsModule dialog helpers', () => {
         strings,
         settings: forwardProxyStorySettings,
         stats: forwardProxyStoryStats,
+        errorStats: forwardProxyStoryErrorStats,
         settingsLoadState: 'ready',
         statsLoadState: 'ready',
+        errorStatsLoadState: 'ready',
         settingsError: null,
         statsError: null,
+        errorStatsError: null,
         saveError: null,
         revalidateError: null,
         saving: false,
@@ -202,6 +210,7 @@ describe('ForwardProxySettingsModule dialog helpers', () => {
         onValidateCandidates: async () => [],
         onRefresh: () => {},
         onRevalidate: () => {},
+        onSetNodesDisabled: async () => {},
         dialogPreview: null,
         onDialogPreviewClose: () => {},
       }),

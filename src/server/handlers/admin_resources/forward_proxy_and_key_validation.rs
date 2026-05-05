@@ -428,6 +428,49 @@ async fn get_forward_proxy_live_stats(
         })
 }
 
+async fn get_forward_proxy_error_stats(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<tavily_hikari::ForwardProxyErrorStatsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    state
+        .proxy
+        .get_forward_proxy_error_stats()
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("get forward proxy error stats error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
+async fn post_forward_proxy_node_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ForwardProxyNodeStateUpdatePayload>,
+) -> Result<Json<tavily_hikari::ForwardProxyNodeStateUpdateResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    if payload.proxy_keys.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "proxyKeys must not be empty".to_string(),
+        ));
+    }
+    state
+        .proxy
+        .set_forward_proxy_nodes_disabled(payload.proxy_keys, payload.disabled)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("update forward proxy node state error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ForwardProxyDashboardSummaryView {

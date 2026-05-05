@@ -4,6 +4,8 @@ pub async fn build_forward_proxy_settings_response(
 ) -> Result<ForwardProxySettingsResponse, ProxyError> {
     let settings = manager.settings.clone();
     let runtime_rows = manager.snapshot_runtime();
+    let disabled_keys = manager.disabled_keys();
+    let disabled_overrides = load_forward_proxy_disabled_node_keys(pool).await?;
     let counts = load_forward_proxy_assignment_counts(pool).await?;
     let now = Utc::now().timestamp();
     let window_maps =
@@ -33,7 +35,9 @@ pub async fn build_forward_proxy_settings_response(
                     resolved_ips: runtime.resolved_ips.clone(),
                     resolved_regions: runtime.resolved_regions.clone(),
                     weight: runtime.weight,
-                    available: runtime.available,
+                    available: runtime.available && !disabled_keys.contains(&runtime.proxy_key),
+                    disabled: disabled_keys.contains(&runtime.proxy_key),
+                    disabled_at: disabled_overrides.get(&runtime.proxy_key).copied(),
                     last_error: runtime.last_error.clone(),
                     penalized: runtime.is_penalized(),
                     primary_assignment_count: assignment.primary,
@@ -67,6 +71,8 @@ pub async fn build_forward_proxy_live_stats_response(
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
     let runtime_rows = manager.snapshot_runtime();
+    let disabled_keys = manager.disabled_keys();
+    let disabled_overrides = load_forward_proxy_disabled_node_keys(pool).await?;
     let runtime_proxy_keys = runtime_rows
         .iter()
         .map(|runtime| runtime.proxy_key.clone())
@@ -164,14 +170,16 @@ pub async fn build_forward_proxy_live_stats_response(
             })
             .collect::<Result<Vec<_>, ProxyError>>()?;
         nodes.push(ForwardProxyLiveNodeResponse {
-            key,
+            key: key.clone(),
             source: runtime.source,
             display_name: runtime.display_name,
             endpoint_url: runtime.endpoint_url,
             resolved_ips: runtime.resolved_ips,
             resolved_regions: runtime.resolved_regions,
             weight: runtime.weight,
-            available: runtime.available,
+            available: runtime.available && !disabled_keys.contains(&key),
+            disabled: disabled_keys.contains(&key),
+            disabled_at: disabled_overrides.get(&key).copied(),
             last_error: runtime.last_error,
             penalized,
             primary_assignment_count: assignment.primary,
@@ -188,6 +196,141 @@ pub async fn build_forward_proxy_live_stats_response(
         bucket_seconds: BUCKET_SECONDS,
         nodes,
     })
+}
+
+pub async fn build_forward_proxy_error_stats_response(
+    pool: &SqlitePool,
+    manager: &ForwardProxyManager,
+) -> Result<ForwardProxyErrorStatsResponse, ProxyError> {
+    const BUCKET_SECONDS: i64 = 3600;
+    const BUCKET_COUNT: i64 = 24;
+    let runtime_rows = manager.snapshot_runtime();
+    let disabled_keys = manager.disabled_keys();
+    let disabled_overrides = load_forward_proxy_disabled_node_keys(pool).await?;
+    let now_epoch = Utc::now().timestamp();
+    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    let stats_bundle =
+        query_forward_proxy_error_stats_bundle(pool, now_epoch, range_start_epoch, range_end_epoch)
+            .await?;
+
+    let mut nodes = Vec::new();
+    for runtime in runtime_rows {
+        let key = runtime.proxy_key.clone();
+        let window_for = |index: usize| {
+            stats_bundle.window_maps[index]
+                .get(&key)
+                .cloned()
+                .map(ForwardProxyErrorWindowStatsResponse::from)
+                .unwrap_or_default()
+        };
+        let hourly = stats_bundle.hourly_map.get(&key);
+        let mut distribution_map: HashMap<String, i64> = HashMap::new();
+        let mut total24h = 0;
+        let mut error24h = 0;
+        let last24h = (0..BUCKET_COUNT)
+            .map(|index| {
+                let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
+                let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
+                let point = hourly
+                    .and_then(|items| items.get(&bucket_start_epoch))
+                    .cloned()
+                    .unwrap_or_default();
+                let mut errors = point
+                    .error_counts
+                    .into_iter()
+                    .map(|(kind, count)| {
+                        *distribution_map.entry(kind.clone()).or_insert(0) += count;
+                        ForwardProxyErrorKindCountResponse { kind, count }
+                    })
+                    .collect::<Vec<_>>();
+                errors.sort_by(|lhs, rhs| {
+                    rhs.count
+                        .cmp(&lhs.count)
+                        .then_with(|| lhs.kind.cmp(&rhs.kind))
+                });
+                let bucket_error_count = errors.iter().map(|item| item.count).sum::<i64>();
+                total24h += point.total_count;
+                error24h += bucket_error_count;
+                Ok(ForwardProxyErrorActivityBucketResponse {
+                    bucket_start: format_utc_iso(bucket_start_epoch)?,
+                    bucket_end: format_utc_iso(bucket_end_epoch)?,
+                    total_count: point.total_count,
+                    success_count: point.success_count,
+                    error_count: bucket_error_count,
+                    errors,
+                })
+            })
+            .collect::<Result<Vec<_>, ProxyError>>()?;
+        let mut distribution24h = distribution_map
+            .into_iter()
+            .map(|(kind, count)| ForwardProxyErrorKindCountResponse { kind, count })
+            .collect::<Vec<_>>();
+        distribution24h.sort_by(|lhs, rhs| {
+            rhs.count
+                .cmp(&lhs.count)
+                .then_with(|| lhs.kind.cmp(&rhs.kind))
+        });
+        let error_rate24h = if total24h > 0 {
+            Some(error24h as f64 / total24h as f64)
+        } else {
+            None
+        };
+        nodes.push(ForwardProxyNodeErrorStatsResponse {
+            key: key.clone(),
+            source: runtime.source,
+            display_name: runtime.display_name,
+            endpoint_url: runtime.endpoint_url,
+            resolved_ips: runtime.resolved_ips,
+            resolved_regions: runtime.resolved_regions,
+            available: runtime.available && !disabled_keys.contains(&key),
+            disabled: disabled_keys.contains(&key),
+            disabled_at: disabled_overrides.get(&key).copied(),
+            windows: ForwardProxyErrorWindowsResponse {
+                one_minute: window_for(0),
+                fifteen_minutes: window_for(1),
+                one_hour: window_for(2),
+                one_day: window_for(3),
+                seven_days: window_for(4),
+            },
+            last24h,
+            distribution24h,
+            total24h,
+            error24h,
+            error_rate24h,
+        });
+    }
+    nodes.sort_by(|lhs, rhs| {
+        match (lhs.error_rate24h, rhs.error_rate24h) {
+            (Some(lhs_rate), Some(rhs_rate)) => rhs_rate
+                .total_cmp(&lhs_rate)
+                .then_with(|| rhs.error24h.cmp(&lhs.error24h))
+                .then_with(|| lhs.display_name.cmp(&rhs.display_name)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => lhs.display_name.cmp(&rhs.display_name),
+        }
+    });
+    Ok(ForwardProxyErrorStatsResponse {
+        range_start: format_utc_iso(range_start_epoch)?,
+        range_end: format_utc_iso(range_end_epoch)?,
+        bucket_seconds: BUCKET_SECONDS,
+        nodes,
+    })
+}
+
+impl From<ForwardProxyErrorWindowStats> for ForwardProxyErrorWindowStatsResponse {
+    fn from(value: ForwardProxyErrorWindowStats) -> Self {
+        Self {
+            total_count: value.total_count,
+            error_count: value.error_count,
+            error_rate: if value.total_count > 0 {
+                Some(value.error_count as f64 / value.total_count as f64)
+            } else {
+                None
+            },
+        }
+    }
 }
 
 fn default_forward_proxy_subscription_interval_secs() -> u64 {

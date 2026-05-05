@@ -473,6 +473,11 @@ export interface AdminTranslationsShape {
       description: string
       loading: string
       empty: string
+      viewSwitcherLabel: string
+      views: {
+        pool: string
+        errors: string
+      }
       table: {
         node: string
         source: string
@@ -493,6 +498,25 @@ export interface AdminTranslationsShape {
       lastWeightLabel: string
       avgWeightLabel: string
       minMaxWeightLabel: string
+      errorStats: {
+        loading: string
+        empty: string
+        activity24h: string
+        distribution24h: string
+        total24h: string
+        error24h: string
+      }
+    }
+    bulk: {
+      selection: string
+      selectRow: string
+      selected: string
+      visibleSelected: string
+      selectAll: string
+      invert: string
+      disable: string
+      enable: string
+      updateFailed: string
     }
     states: {
       ready: string
@@ -508,6 +532,8 @@ export interface AdminTranslationsShape {
       unavailableHint: string
       xrayMissing: string
       xrayMissingHint: string
+      disabled: string
+      disabledHint: string
     }
     sources: {
       manual: string

@@ -491,6 +491,11 @@ export const EN: TranslationShape = {
           description: 'Observe current node state, window metrics, 24-hour activity, and key affinity spread.',
           loading: 'Loading forward proxy stats…',
           empty: 'No forward proxy nodes are available yet.',
+          viewSwitcherLabel: 'Node content view',
+          views: {
+            pool: 'Node pool',
+            errors: 'Error stats',
+          },
           table: {
             node: 'Node',
             source: 'Source',
@@ -511,6 +516,25 @@ export const EN: TranslationShape = {
           lastWeightLabel: 'Last',
           avgWeightLabel: 'Average',
           minMaxWeightLabel: 'Min / max',
+          errorStats: {
+            loading: 'Loading error stats…',
+            empty: 'No real-request error stats are available yet.',
+            activity24h: '24h activity',
+            distribution24h: '24h error distribution',
+            total24h: '24h requests',
+            error24h: '24h errors',
+          },
+        },
+        bulk: {
+          selection: 'Selection',
+          selectRow: 'Select node',
+          selected: '{count} nodes selected',
+          visibleSelected: '{count} selected in this view',
+          selectAll: 'Select all',
+          invert: 'Invert',
+          disable: 'Disable',
+          enable: 'Enable',
+          updateFailed: 'Bulk update failed.',
         },
         states: {
           ready: 'Ready',
@@ -526,6 +550,8 @@ export const EN: TranslationShape = {
           unavailableHint: 'The node is not selectable right now.',
           xrayMissing: 'Xray missing',
           xrayMissingHint: 'Share-link parsing succeeded, but the local Xray runtime is unavailable.',
+          disabled: 'Disabled',
+          disabledHint: 'Excluded from real request routing candidates.',
         },
         sources: {
           manual: 'Manual',

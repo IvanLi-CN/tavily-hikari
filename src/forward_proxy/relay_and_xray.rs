@@ -211,6 +211,7 @@ pub struct ForwardProxyAttemptWindowStats {
 #[serde(rename_all = "camelCase")]
 pub struct ForwardProxyWindowStatsResponse {
     pub attempts: i64,
+    pub failure_count: i64,
     pub success_rate: Option<f64>,
     pub avg_latency_ms: Option<f64>,
 }
@@ -224,6 +225,7 @@ impl From<ForwardProxyAttemptWindowStats> for ForwardProxyWindowStatsResponse {
         };
         Self {
             attempts: value.attempts,
+            failure_count: (value.attempts - value.success_count).max(0),
             success_rate,
             avg_latency_ms: value.avg_latency_ms,
         }
@@ -251,6 +253,8 @@ pub struct ForwardProxyNodeResponse {
     pub resolved_regions: Vec<String>,
     pub weight: f64,
     pub available: bool,
+    pub disabled: bool,
+    pub disabled_at: Option<i64>,
     pub last_error: Option<String>,
     pub penalized: bool,
     pub primary_assignment_count: i64,
@@ -317,6 +321,8 @@ pub struct ForwardProxyLiveNodeResponse {
     pub resolved_regions: Vec<String>,
     pub weight: f64,
     pub available: bool,
+    pub disabled: bool,
+    pub disabled_at: Option<i64>,
     pub last_error: Option<String>,
     pub penalized: bool,
     pub primary_assignment_count: i64,
@@ -333,6 +339,85 @@ pub struct ForwardProxyLiveStatsResponse {
     pub range_end: String,
     pub bucket_seconds: i64,
     pub nodes: Vec<ForwardProxyLiveNodeResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyErrorWindowStatsResponse {
+    pub total_count: i64,
+    pub error_count: i64,
+    pub error_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyErrorWindowsResponse {
+    pub one_minute: ForwardProxyErrorWindowStatsResponse,
+    pub fifteen_minutes: ForwardProxyErrorWindowStatsResponse,
+    pub one_hour: ForwardProxyErrorWindowStatsResponse,
+    pub one_day: ForwardProxyErrorWindowStatsResponse,
+    pub seven_days: ForwardProxyErrorWindowStatsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyErrorKindCountResponse {
+    pub kind: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyErrorActivityBucketResponse {
+    pub bucket_start: String,
+    pub bucket_end: String,
+    pub total_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub errors: Vec<ForwardProxyErrorKindCountResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyNodeErrorStatsResponse {
+    pub key: String,
+    pub source: String,
+    pub display_name: String,
+    pub endpoint_url: Option<String>,
+    pub resolved_ips: Vec<String>,
+    pub resolved_regions: Vec<String>,
+    pub available: bool,
+    pub disabled: bool,
+    pub disabled_at: Option<i64>,
+    pub windows: ForwardProxyErrorWindowsResponse,
+    pub last24h: Vec<ForwardProxyErrorActivityBucketResponse>,
+    pub distribution24h: Vec<ForwardProxyErrorKindCountResponse>,
+    pub total24h: i64,
+    pub error24h: i64,
+    pub error_rate24h: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyErrorStatsResponse {
+    pub range_start: String,
+    pub range_end: String,
+    pub bucket_seconds: i64,
+    pub nodes: Vec<ForwardProxyNodeErrorStatsResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyNodeStateUpdateResult {
+    pub proxy_key: String,
+    pub disabled: bool,
+    pub disabled_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyNodeStateUpdateResponse {
+    pub results: Vec<ForwardProxyNodeStateUpdateResult>,
 }
 
 #[derive(Debug)]

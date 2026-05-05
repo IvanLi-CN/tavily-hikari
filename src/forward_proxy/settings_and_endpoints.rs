@@ -586,6 +586,7 @@ pub struct ForwardProxyManager {
     pub settings: ForwardProxySettings,
     pub endpoints: Vec<ForwardProxyEndpoint>,
     pub runtime: HashMap<String, ForwardProxyRuntimeState>,
+    pub disabled_keys: HashSet<String>,
     pub selection_counter: u64,
     pub requests_since_probe: u64,
     pub probe_in_flight: bool,

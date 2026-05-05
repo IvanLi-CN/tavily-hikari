@@ -1,5 +1,7 @@
 import type {
   ForwardProxyActivityBucket,
+  ForwardProxyErrorActivityBucket,
+  ForwardProxyErrorStatsResponse,
   ForwardProxySettings,
   ForwardProxyStatsResponse,
   ForwardProxyWeightBucket,
@@ -45,6 +47,30 @@ function buildWeightBuckets(values: number[]): ForwardProxyWeightBucket[] {
       lastWeight,
     }
   })
+}
+
+function buildErrorBuckets(
+  series: Array<{ total: number; success: number; errors?: Array<[string, number]> }>,
+): ForwardProxyErrorActivityBucket[] {
+  return Array.from({ length: STORY_BUCKET_COUNT }, (_, index) => {
+    const item = series[index] ?? { total: 0, success: 0, errors: [] }
+    const errors = (item.errors ?? []).map(([kind, count]) => ({ kind, count }))
+    return {
+      ...createBucketTime(index),
+      totalCount: item.total,
+      successCount: item.success,
+      errorCount: errors.reduce((sum, entry) => sum + entry.count, 0),
+      errors,
+    }
+  })
+}
+
+function errorWindow(totalCount: number, errorCount: number) {
+  return {
+    totalCount,
+    errorCount,
+    errorRate: totalCount > 0 ? errorCount / totalCount : null,
+  }
 }
 
 const TOKYO_ACTIVITY = buildActivityBuckets([
@@ -287,6 +313,115 @@ export const forwardProxyStoryStats: ForwardProxyStatsResponse = {
       },
       last24h: DIRECT_ACTIVITY,
       weight24h: DIRECT_WEIGHTS,
+    },
+  ],
+}
+
+const TOKYO_ERRORS = buildErrorBuckets(TOKYO_ACTIVITY.map((bucket, index) => ({
+  total: bucket.successCount + bucket.failureCount,
+  success: bucket.successCount,
+  errors: bucket.failureCount > 0
+    ? [[index % 2 === 0 ? 'upstream_unknown_403' : 'send_error', bucket.failureCount]]
+    : [],
+})))
+
+const FRANKFURT_ERRORS = buildErrorBuckets(FRANKFURT_ACTIVITY.map((bucket, index) => ({
+  total: bucket.successCount + bucket.failureCount,
+  success: bucket.successCount,
+  errors: bucket.failureCount > 0
+    ? [
+        ['proxy_unreachable', Math.ceil(bucket.failureCount / 2)],
+        [index % 3 === 0 ? 'unknown' : 'upstream_gateway_5xx', Math.floor(bucket.failureCount / 2)],
+      ]
+    : [],
+})))
+
+const DIRECT_ERRORS = buildErrorBuckets(DIRECT_ACTIVITY.map((bucket) => ({
+  total: bucket.successCount + bucket.failureCount,
+  success: bucket.successCount,
+  errors: [],
+})))
+
+export const forwardProxyStoryErrorStats: ForwardProxyErrorStatsResponse = {
+  rangeStart: STORY_RANGE_START,
+  rangeEnd: STORY_RANGE_END,
+  bucketSeconds: STORY_BUCKET_SECONDS,
+  nodes: [
+    {
+      key: 'node-frankfurt-b',
+      source: 'manual',
+      displayName: 'Frankfurt-B long recovery candidate with unknown errors',
+      endpointUrl: 'http://127.0.0.1:8080',
+      resolvedIps: ['1.1.1.1'],
+      resolvedRegions: ['US Westfield (MA)'],
+      available: false,
+      disabled: true,
+      disabledAt: 1773300000,
+      windows: {
+        oneMinute: errorWindow(1, 1),
+        fifteenMinutes: errorWindow(8, 4),
+        oneHour: errorWindow(31, 13),
+        oneDay: errorWindow(202, 74),
+        sevenDays: errorWindow(1390, 458),
+      },
+      last24h: FRANKFURT_ERRORS,
+      distribution24h: [
+        { kind: 'proxy_unreachable', count: 45 },
+        { kind: 'upstream_gateway_5xx', count: 20 },
+        { kind: 'unknown', count: 9 },
+      ],
+      total24h: 202,
+      error24h: 74,
+      errorRate24h: 74 / 202,
+    },
+    {
+      key: 'node-tokyo-a',
+      source: 'subscription',
+      displayName: 'Tokyo-A',
+      endpointUrl: 'socks5h://127.0.0.1:30001',
+      resolvedIps: ['18.183.246.69'],
+      resolvedRegions: ['JP Tokyo (13)'],
+      available: true,
+      disabled: false,
+      disabledAt: null,
+      windows: {
+        oneMinute: errorWindow(5, 0),
+        fifteenMinutes: errorWindow(22, 1),
+        oneHour: errorWindow(96, 5),
+        oneDay: errorWindow(1180, 7),
+        sevenDays: errorWindow(7420, 92),
+      },
+      last24h: TOKYO_ERRORS,
+      distribution24h: [
+        { kind: 'upstream_unknown_403', count: 4 },
+        { kind: 'send_error', count: 3 },
+      ],
+      total24h: 1180,
+      error24h: 7,
+      errorRate24h: 7 / 1180,
+    },
+    {
+      key: 'direct',
+      source: 'direct',
+      displayName: 'Direct',
+      endpointUrl: null,
+      resolvedIps: [],
+      resolvedRegions: [],
+      available: true,
+      disabled: false,
+      disabledAt: null,
+      windows: {
+        oneMinute: errorWindow(0, 0),
+        fifteenMinutes: errorWindow(0, 0),
+        oneHour: errorWindow(4, 0),
+        oneDay: errorWindow(10, 0),
+        sevenDays: errorWindow(12, 0),
+      },
+      last24h: DIRECT_ERRORS,
+      distribution24h: [],
+      total24h: 10,
+      error24h: 0,
+      errorRate24h: 0,
     },
   ],
 }

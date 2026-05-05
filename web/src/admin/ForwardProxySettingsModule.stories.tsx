@@ -12,6 +12,7 @@ import type { ForwardProxySettings } from '../api'
 import { Dialog, DialogContent } from '../components/ui/dialog'
 import {
   forwardProxyStorySavedAt,
+  forwardProxyStoryErrorStats,
   forwardProxyStorySettings,
   forwardProxyStoryStats,
 } from './forwardProxyStoryData'
@@ -284,6 +285,7 @@ interface StoryCanvasProps {
   settings?: ForwardProxySettings
   saveError?: string | null
   saving?: boolean
+  initialNodeView?: 'pool' | 'errors'
 }
 
 function wait(ms: number): Promise<void> {
@@ -312,6 +314,7 @@ function StoryCanvas({
   settings = forwardProxyStorySettings,
   saveError = null,
   saving = false,
+  initialNodeView = 'pool',
 }: StoryCanvasProps): JSX.Element {
   const strings = useTranslate().admin.proxySettings
   const [previewOpen, setPreviewOpen] = useState(dialogPreview != null)
@@ -407,8 +410,10 @@ function StoryCanvas({
         strings={strings}
         settingsLoadState="ready"
         statsLoadState="ready"
+        errorStatsLoadState="ready"
         settingsError={null}
         statsError={null}
+        errorStatsError={null}
         saveError={saveError}
         revalidateError={storyRevalidateError}
         saving={saving}
@@ -418,10 +423,13 @@ function StoryCanvas({
         egressPreviewProgress={egressPreviewProgress}
         settings={settings}
         stats={forwardProxyStoryStats}
+        errorStats={forwardProxyStoryErrorStats}
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
         onRevalidate={handleRevalidate}
+        onSetNodesDisabled={async () => {}}
+        initialNodeView={initialNodeView}
         dialogPreview={previewOpen ? dialogPreview : null}
         onDialogPreviewClose={() => setPreviewOpen(false)}
       />
@@ -684,6 +692,12 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   args: {},
+}
+
+export const ErrorStatistics: Story = {
+  args: {
+    initialNodeView: 'errors',
+  },
 }
 
 export const GlobalSocks5DisabledEditable: Story = {

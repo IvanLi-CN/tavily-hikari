@@ -21,9 +21,10 @@ pub use analysis::{
     token_request_kind_billing_group_for_token_log, token_request_kind_protocol_group,
 };
 pub use forward_proxy::{
-    ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse, ForwardProxyLiveStatsResponse,
-    ForwardProxySettings, ForwardProxySettingsResponse, ForwardProxyStatsResponse,
-    ForwardProxyValidationError, ForwardProxyValidationNodeResult,
+    ForwardProxyErrorStatsResponse, ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse,
+    ForwardProxyLiveStatsResponse, ForwardProxyNodeStateUpdateResponse,
+    ForwardProxyNodeStateUpdateResult, ForwardProxySettings, ForwardProxySettingsResponse,
+    ForwardProxyStatsResponse, ForwardProxyValidationError, ForwardProxyValidationNodeResult,
     ForwardProxyValidationProbeResult, ForwardProxyValidationResponse,
     ForwardProxyWeightHourlyBucketResponse,
 };

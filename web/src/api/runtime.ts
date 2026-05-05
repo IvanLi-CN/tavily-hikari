@@ -2906,6 +2906,8 @@ export interface ForwardProxyNode {
   resolvedRegions: string[]
   weight: number
   available: boolean
+  disabled?: boolean
+  disabledAt?: number | null
   lastError?: string | null
   penalized: boolean
   primaryAssignmentCount: number
@@ -3018,6 +3020,67 @@ export interface ForwardProxyStatsResponse {
   rangeEnd: string
   bucketSeconds: number
   nodes: ForwardProxyStatsNode[]
+}
+
+export interface ForwardProxyErrorWindowStats {
+  totalCount: number
+  errorCount: number
+  errorRate: number | null
+}
+
+export interface ForwardProxyErrorWindows {
+  oneMinute: ForwardProxyErrorWindowStats
+  fifteenMinutes: ForwardProxyErrorWindowStats
+  oneHour: ForwardProxyErrorWindowStats
+  oneDay: ForwardProxyErrorWindowStats
+  sevenDays: ForwardProxyErrorWindowStats
+}
+
+export interface ForwardProxyErrorKindCount {
+  kind: string
+  count: number
+}
+
+export interface ForwardProxyErrorActivityBucket {
+  bucketStart: string
+  bucketEnd: string
+  totalCount: number
+  successCount: number
+  errorCount: number
+  errors: ForwardProxyErrorKindCount[]
+}
+
+export interface ForwardProxyErrorStatsNode {
+  key: string
+  source: string
+  displayName: string
+  endpointUrl: string | null
+  resolvedIps: string[]
+  resolvedRegions: string[]
+  available: boolean
+  disabled?: boolean
+  disabledAt?: number | null
+  windows: ForwardProxyErrorWindows
+  last24h: ForwardProxyErrorActivityBucket[]
+  distribution24h: ForwardProxyErrorKindCount[]
+  total24h: number
+  error24h: number
+  errorRate24h: number | null
+}
+
+export interface ForwardProxyErrorStatsResponse {
+  rangeStart: string
+  rangeEnd: string
+  bucketSeconds: number
+  nodes: ForwardProxyErrorStatsNode[]
+}
+
+export interface ForwardProxyNodeStateUpdateResponse {
+  results: Array<{
+    proxyKey: string
+    disabled: boolean
+    disabledAt: number | null
+  }>
 }
 
 function createEmptyForwardProxySettings(): ForwardProxySettings {
@@ -3135,6 +3198,25 @@ export function revalidateForwardProxyWithProgress(
 
 export function fetchForwardProxyStats(signal?: AbortSignal): Promise<ForwardProxyStatsResponse> {
   return requestJson('/api/stats/forward-proxy', { signal })
+}
+
+export function fetchForwardProxyErrorStats(
+  signal?: AbortSignal,
+): Promise<ForwardProxyErrorStatsResponse> {
+  return requestJson('/api/stats/forward-proxy/errors', { signal })
+}
+
+export function updateForwardProxyNodesDisabled(
+  proxyKeys: string[],
+  disabled: boolean,
+  signal?: AbortSignal,
+): Promise<ForwardProxyNodeStateUpdateResponse> {
+  return requestJson('/api/settings/forward-proxy/nodes/state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxyKeys, disabled }),
+    signal,
+  })
 }
 
 export function fetchForwardProxyDashboardSummary(

@@ -21,6 +21,11 @@ import { Icon } from '../lib/icons'
 import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
 import type {
   ForwardProxyActivityBucket,
+  ForwardProxyErrorActivityBucket,
+  ForwardProxyErrorKindCount,
+  ForwardProxyErrorStatsNode,
+  ForwardProxyErrorStatsResponse,
+  ForwardProxyErrorWindowStats,
   ForwardProxyProgressEvent,
   ForwardProxyProgressNodeState,
   ForwardProxySettings,
@@ -102,10 +107,13 @@ interface ForwardProxySettingsModuleProps {
   strings: AdminTranslations['proxySettings']
   settings: ForwardProxySettings | null
   stats: ForwardProxyStatsResponse | null
+  errorStats: ForwardProxyErrorStatsResponse | null
   settingsLoadState: QueryLoadState
   statsLoadState: QueryLoadState
+  errorStatsLoadState: QueryLoadState
   settingsError: string | null
   statsError: string | null
+  errorStatsError: string | null
   saveError: string | null
   revalidateError: string | null
   saving: boolean
@@ -126,6 +134,8 @@ interface ForwardProxySettingsModuleProps {
   ) => Promise<ForwardProxyValidationEntry[]>
   onRefresh: () => void
   onRevalidate: () => void
+  onSetNodesDisabled?: (proxyKeys: string[], disabled: boolean) => Promise<void>
+  initialNodeView?: 'pool' | 'errors'
   dialogPreview?: ForwardProxyDialogPreviewState | null
   onDialogPreviewClose?: () => void
 }
@@ -617,6 +627,111 @@ function RequestTrendCell({
           </div>
         )
       })}
+    </div>
+  )
+}
+
+const ERROR_KIND_COLORS: Record<string, string> = {
+  proxy_unreachable: 'hsl(var(--destructive))',
+  send_error: 'hsl(24 90% 58%)',
+  validation_failed: 'hsl(43 92% 56%)',
+  upstream_unknown_403: 'hsl(338 82% 62%)',
+  upstream_rate_limited_429: 'hsl(263 78% 68%)',
+  upstream_usage_limit_432: 'hsl(199 86% 56%)',
+  upstream_gateway_5xx: 'hsl(0 84% 60%)',
+  transport_send_error: 'hsl(172 66% 45%)',
+  unknown: 'hsl(var(--muted-foreground))',
+}
+
+function getErrorKindColor(kind: string): string {
+  return ERROR_KIND_COLORS[kind] ?? ERROR_KIND_COLORS.unknown
+}
+
+function formatErrorKind(kind: string): string {
+  return kind.replaceAll('_', ' ')
+}
+
+function formatErrorWindow(windowStats: ForwardProxyErrorWindowStats): JSX.Element {
+  if (windowStats.totalCount <= 0) {
+    return <span className="text-muted-foreground">—</span>
+  }
+  return (
+    <div className="flex flex-col items-center gap-0.5 py-1">
+      <span>{formatPercent(windowStats.errorRate)}</span>
+      <span className="text-[11px] text-muted-foreground">
+        {formatNumber(windowStats.errorCount)} / {formatNumber(windowStats.totalCount)}
+      </span>
+    </div>
+  )
+}
+
+function ErrorActivityCell({ buckets }: { buckets: ForwardProxyErrorActivityBucket[] }): JSX.Element {
+  if (buckets.length === 0) {
+    return <span className="text-[11px] text-muted-foreground">—</span>
+  }
+  const maxTotal = Math.max(...buckets.map((bucket) => bucket.totalCount), 1)
+  return (
+    <div className="flex h-10 items-end gap-px">
+      {buckets.map((bucket) => {
+        const total = Math.max(bucket.totalCount, 0)
+        const height = total > 0 ? Math.max(4, (total / maxTotal) * 40) : 40
+        const errorTotal = bucket.errors.reduce((sum, item) => sum + item.count, 0)
+        const titleParts = bucket.errors.map((item) => `${formatErrorKind(item.kind)}: ${item.count}`)
+        return (
+          <div
+            key={bucket.bucketStart}
+            className="relative flex min-w-0 flex-1 overflow-hidden rounded-[3px] border border-border/40 bg-muted/30"
+            style={{ height }}
+            title={`${formatTimeRange(bucket.bucketStart, bucket.bucketEnd)} · ${bucket.successCount}/${errorTotal}${titleParts.length ? ` · ${titleParts.join(' · ')}` : ''}`}
+          >
+            {total > errorTotal && (
+              <span
+                className="block h-full bg-muted-foreground/15"
+                style={{ width: `${((total - errorTotal) / Math.max(total, 1)) * 100}%` }}
+              />
+            )}
+            {bucket.errors.map((item) => (
+              <span
+                key={`${bucket.bucketStart}-${item.kind}`}
+                className="block h-full"
+                style={{
+                  width: `${(item.count / Math.max(total, 1)) * 100}%`,
+                  backgroundColor: getErrorKindColor(item.kind),
+                }}
+              />
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ErrorPieCell({ distribution }: { distribution: ForwardProxyErrorKindCount[] }): JSX.Element {
+  const total = distribution.reduce((sum, item) => sum + item.count, 0)
+  if (total <= 0) {
+    return <span className="text-[11px] text-muted-foreground">—</span>
+  }
+  let offset = 0
+  const gradient = distribution
+    .map((item) => {
+      const start = offset
+      offset += (item.count / total) * 100
+      return `${getErrorKindColor(item.kind)} ${start.toFixed(2)}% ${offset.toFixed(2)}%`
+    })
+    .join(', ')
+  const title = distribution.map((item) => `${formatErrorKind(item.kind)}: ${item.count}`).join(' · ')
+  return (
+    <div className="flex items-center gap-3" title={title}>
+      <span
+        className="block h-10 w-10 shrink-0 rounded-full border border-border/70"
+        style={{ backgroundImage: `conic-gradient(${gradient})` }}
+        aria-hidden="true"
+      />
+      <div className="min-w-0 text-[11px] text-muted-foreground">
+        <strong className="block text-foreground">{formatNumber(total)}</strong>
+        <span className="block truncate">{formatErrorKind(distribution[0]?.kind ?? 'unknown')}</span>
+      </div>
     </div>
   )
 }
@@ -1378,6 +1493,9 @@ function getNodeStateBadge(
   strings: AdminTranslations['proxySettings'],
   node: ForwardProxyStatsNode,
 ): { label: string; variant: StatusBadgeVariant } {
+  if (node.disabled) {
+    return { label: strings.states.disabled, variant: 'neutral' }
+  }
   if (node.source === 'direct') {
     return { label: strings.states.direct, variant: 'info' }
   }
@@ -1403,10 +1521,13 @@ export default function ForwardProxySettingsModule({
   strings,
   settings,
   stats,
+  errorStats,
   settingsLoadState,
   statsLoadState,
+  errorStatsLoadState,
   settingsError,
   statsError,
+  errorStatsError,
   saveError,
   revalidateError,
   saving,
@@ -1418,6 +1539,8 @@ export default function ForwardProxySettingsModule({
   onValidateCandidates,
   onRefresh,
   onRevalidate,
+  onSetNodesDisabled,
+  initialNodeView = 'pool',
   dialogPreview = null,
   onDialogPreviewClose,
 }: ForwardProxySettingsModuleProps): JSX.Element {
@@ -1428,6 +1551,69 @@ export default function ForwardProxySettingsModule({
     weight: summarizeWeight(node.weight24h),
     weightBuckets: resolveWeightBuckets(node),
   }))
+  const errorRows = [...(errorStats?.nodes ?? [])].sort((left, right) => {
+    const leftRate = left.errorRate24h
+    const rightRate = right.errorRate24h
+    if (leftRate == null && rightRate == null) return left.displayName.localeCompare(right.displayName)
+    if (leftRate == null) return 1
+    if (rightRate == null) return -1
+    return rightRate - leftRate || right.error24h - left.error24h || left.displayName.localeCompare(right.displayName)
+  })
+  const [nodeView, setNodeView] = useState<'pool' | 'errors'>(initialNodeView)
+  const [selectedNodeKeys, setSelectedNodeKeys] = useState<Set<string>>(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkError, setBulkError] = useState<string | null>(null)
+  const visibleNodeKeys = nodeView === 'errors'
+    ? errorRows.map((node) => node.key)
+    : nodeRows.map(({ node }) => node.key)
+  const selectedVisibleCount = visibleNodeKeys.filter((key) => selectedNodeKeys.has(key)).length
+  const selectedTotalCount = selectedNodeKeys.size
+  const toggleNodeSelection = (proxyKey: string) => {
+    setBulkError(null)
+    setSelectedNodeKeys((current) => {
+      const next = new Set(current)
+      if (next.has(proxyKey)) {
+        next.delete(proxyKey)
+      } else {
+        next.add(proxyKey)
+      }
+      return next
+    })
+  }
+  const selectVisibleNodes = () => {
+    setBulkError(null)
+    setSelectedNodeKeys((current) => {
+      const next = new Set(current)
+      for (const key of visibleNodeKeys) next.add(key)
+      return next
+    })
+  }
+  const invertVisibleNodes = () => {
+    setBulkError(null)
+    setSelectedNodeKeys((current) => {
+      const next = new Set(current)
+      for (const key of visibleNodeKeys) {
+        if (next.has(key)) {
+          next.delete(key)
+        } else {
+          next.add(key)
+        }
+      }
+      return next
+    })
+  }
+  const applyBulkDisabled = async (disabled: boolean) => {
+    if (!onSetNodesDisabled || selectedNodeKeys.size === 0) return
+    setBulkBusy(true)
+    setBulkError(null)
+    try {
+      await onSetNodesDisabled(Array.from(selectedNodeKeys), disabled)
+    } catch (error) {
+      setBulkError(error instanceof Error ? error.message : strings.bulk.updateFailed)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
   const requestBucketScaleMax = Math.max(
     ...nodeRows.flatMap(({ node }) => node.last24h.map((bucket) => bucket.successCount + bucket.failureCount)),
     0,
@@ -1500,6 +1686,16 @@ export default function ForwardProxySettingsModule({
     egressSocks5UrlDraft.trim() !== draft.egressSocks5Url.trim()
     || egressSocks5EnabledDraft !== draft.egressSocks5Enabled
   const egressApplyBusy = activeEgressProgress?.action === 'save'
+  useEffect(() => {
+    const knownKeys = new Set([
+      ...mergedNodes.map((node) => node.key),
+      ...errorRows.map((node) => node.key),
+    ])
+    setSelectedNodeKeys((current) => {
+      const next = new Set(Array.from(current).filter((key) => knownKeys.has(key)))
+      return next.size === current.size ? current : next
+    })
+  }, [mergedNodes, errorRows])
   const canAddSubscription = dialogSubscriptionCandidate != null
     && (!activeDialogValidating || dialogHasLiveImportableSubscription)
   const canAddManualBatch = dialogManualBatchValues.length > manualUrls.length
@@ -1928,6 +2124,24 @@ export default function ForwardProxySettingsModule({
             <CardTitle>{strings.nodes.title}</CardTitle>
             <CardDescription className="panel-description">{strings.nodes.description}</CardDescription>
           </div>
+          <div className="forward-proxy-view-switcher" role="tablist" aria-label={strings.nodes.viewSwitcherLabel}>
+            <Button
+              type="button"
+              size="sm"
+              variant={nodeView === 'pool' ? 'default' : 'outline'}
+              onClick={() => setNodeView('pool')}
+            >
+              {strings.nodes.views.pool}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={nodeView === 'errors' ? 'default' : 'outline'}
+              onClick={() => setNodeView('errors')}
+            >
+              {strings.nodes.views.errors}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="forward-proxy-panel-content">
           {statsError && (
@@ -1935,13 +2149,24 @@ export default function ForwardProxySettingsModule({
               {statsError}
             </div>
           )}
+          {nodeView === 'errors' && errorStatsError && (
+            <div className="alert alert-error" role="alert">
+              {errorStatsError}
+            </div>
+          )}
+          {bulkError && (
+            <div className="alert alert-error" role="alert">
+              {bulkError}
+            </div>
+          )}
 
-          <AdminLoadingRegion
-            loadState={statsLoadState}
-            loadingLabel={strings.nodes.loading}
-            errorLabel={statsError || undefined}
-            minHeight={240}
-          >
+          {nodeView === 'pool' ? (
+            <AdminLoadingRegion
+              loadState={statsLoadState}
+              loadingLabel={strings.nodes.loading}
+              errorLabel={statsError || undefined}
+              minHeight={240}
+            >
             {mergedNodes.length === 0 ? (
               <div className="empty-state alert">{strings.nodes.empty}</div>
             ) : (
@@ -1953,6 +2178,13 @@ export default function ForwardProxySettingsModule({
                       <Card className="forward-proxy-node-mobile-card" key={`mobile-${node.key}`}>
                         <CardHeader className="forward-proxy-node-mobile-header">
                           <div className="forward-proxy-node-mobile-title-row">
+                            <input
+                              aria-label={`${strings.bulk.selectRow} ${node.displayName}`}
+                              checked={selectedNodeKeys.has(node.key)}
+                              className="forward-proxy-row-checkbox"
+                              onChange={() => toggleNodeSelection(node.key)}
+                              type="checkbox"
+                            />
                             <CardTitle className="text-base">{node.displayName}</CardTitle>
                           </div>
                           <div className="forward-proxy-node-chip-row">
@@ -2017,6 +2249,9 @@ export default function ForwardProxySettingsModule({
                   <Table className="forward-proxy-table min-w-[980px] table-fixed text-xs xl:min-w-0">
                     <TableHeader className="bg-muted/40 uppercase tracking-[0.08em] text-[11px] text-muted-foreground">
                       <TableRow className="hover:bg-transparent">
+                        <TableHead className="w-10">
+                          <span className="sr-only">{strings.bulk.selection}</span>
+                        </TableHead>
                         <TableHead className="w-[30%]">{strings.nodes.table.node}</TableHead>
                         {WINDOW_KEYS.map((windowDefinition, index) => (
                           <TableHead
@@ -2039,6 +2274,15 @@ export default function ForwardProxySettingsModule({
                         const stateBadge = getNodeStateBadge(strings, node)
                         return (
                           <TableRow key={node.key} className="forward-proxy-table-row border-0 align-top">
+                            <TableCell className="py-3">
+                              <input
+                                aria-label={`${strings.bulk.selectRow} ${node.displayName}`}
+                                checked={selectedNodeKeys.has(node.key)}
+                                className="forward-proxy-row-checkbox"
+                                onChange={() => toggleNodeSelection(node.key)}
+                                type="checkbox"
+                              />
+                            </TableCell>
                             <TableCell className="forward-proxy-node-cell py-3">
                               <div className="forward-proxy-node-cell-main min-w-0">
                                 <div className="forward-proxy-node-cell-title-row">
@@ -2097,7 +2341,125 @@ export default function ForwardProxySettingsModule({
                 </div>
               </>
             )}
-          </AdminLoadingRegion>
+            </AdminLoadingRegion>
+          ) : (
+            <AdminLoadingRegion
+              loadState={errorStatsLoadState}
+              loadingLabel={strings.nodes.errorStats.loading}
+              errorLabel={errorStatsError || undefined}
+              minHeight={240}
+            >
+              {errorRows.length === 0 ? (
+                <div className="empty-state alert">{strings.nodes.errorStats.empty}</div>
+              ) : (
+                <div className="forward-proxy-table-wrapper rounded-2xl border border-border/75 bg-card/50">
+                  <Table className="forward-proxy-table min-w-[1080px] table-fixed text-xs xl:min-w-0">
+                    <TableHeader className="bg-muted/40 uppercase tracking-[0.08em] text-[11px] text-muted-foreground">
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="w-10">
+                          <span className="sr-only">{strings.bulk.selection}</span>
+                        </TableHead>
+                        <TableHead className="w-[34%]">{strings.nodes.table.node}</TableHead>
+                        {WINDOW_KEYS.map((windowDefinition, index) => (
+                          <TableHead
+                            className={`${getWindowColumnClassName(index)} forward-proxy-table-head-nowrap`}
+                            key={`error-head-${windowDefinition.key}`}
+                          >
+                            {strings.windows[windowDefinition.translationKey]}
+                          </TableHead>
+                        ))}
+                        <TableHead className="w-[20%] forward-proxy-table-head-nowrap">
+                          {strings.nodes.errorStats.activity24h}
+                        </TableHead>
+                        <TableHead className="w-[18%] forward-proxy-table-head-nowrap">
+                          {strings.nodes.errorStats.distribution24h}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody className="divide-y divide-border/65 [&_tr:last-child]:border-0">
+                      {errorRows.map((node) => (
+                        <TableRow key={node.key} className="forward-proxy-table-row border-0 align-top">
+                          <TableCell className="py-3">
+                            <input
+                              aria-label={`${strings.bulk.selectRow} ${node.displayName}`}
+                              checked={selectedNodeKeys.has(node.key)}
+                              className="forward-proxy-row-checkbox"
+                              onChange={() => toggleNodeSelection(node.key)}
+                              type="checkbox"
+                            />
+                          </TableCell>
+                          <TableCell className="forward-proxy-node-cell py-3">
+                            <div className="forward-proxy-node-cell-main min-w-0">
+                              <div className="forward-proxy-node-cell-title-row">
+                                <strong className="truncate text-sm">{node.displayName}</strong>
+                              </div>
+                              <div className="forward-proxy-node-chip-row">
+                                <Badge variant={node.source === 'subscription' ? 'info' : node.source === 'manual' ? 'outline' : 'neutral'}>
+                                  {getSourceLabel(strings, node.source)}
+                                </Badge>
+                                {node.disabled && <Badge variant="neutral">{strings.states.disabled}</Badge>}
+                                <span className="forward-proxy-node-chip-text">
+                                  {strings.nodes.errorStats.total24h}: <strong>{formatNumber(node.total24h)}</strong>
+                                </span>
+                                <span className="forward-proxy-node-chip-text">
+                                  {strings.nodes.errorStats.error24h}: <strong>{formatNumber(node.error24h)}</strong>
+                                </span>
+                              </div>
+                            </div>
+                          </TableCell>
+                          {WINDOW_KEYS.map((windowDefinition, index) => (
+                            <TableCell className={getWindowColumnClassName(index)} key={`${node.key}-error-${windowDefinition.key}`}>
+                              {formatErrorWindow(node.windows[windowDefinition.key])}
+                            </TableCell>
+                          ))}
+                          <TableCell className="py-3">
+                            <ErrorActivityCell buckets={node.last24h} />
+                          </TableCell>
+                          <TableCell className="py-3">
+                            <ErrorPieCell distribution={node.distribution24h} />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </AdminLoadingRegion>
+          )}
+          {visibleNodeKeys.length > 0 && (
+            <div className={`forward-proxy-bulk-bar ${selectedTotalCount > 0 ? 'is-visible' : ''}`} aria-live="polite">
+              <span className="forward-proxy-bulk-count">
+                {strings.bulk.selected.replace('{count}', formatNumber(selectedTotalCount))}
+              </span>
+              <Button type="button" size="sm" variant="outline" onClick={selectVisibleNodes} disabled={bulkBusy}>
+                {strings.bulk.selectAll}
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={invertVisibleNodes} disabled={bulkBusy}>
+                {strings.bulk.invert}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void applyBulkDisabled(true)}
+                disabled={bulkBusy || selectedTotalCount === 0 || !onSetNodesDisabled}
+              >
+                {strings.bulk.disable}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void applyBulkDisabled(false)}
+                disabled={bulkBusy || selectedTotalCount === 0 || !onSetNodesDisabled}
+              >
+                {strings.bulk.enable}
+              </Button>
+              <span className="forward-proxy-bulk-scope">
+                {strings.bulk.visibleSelected.replace('{count}', formatNumber(selectedVisibleCount))}
+              </span>
+            </div>
+          )}
         </CardContent>
       </Card>
 

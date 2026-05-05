@@ -222,6 +222,9 @@ impl TavilyProxy {
         let Some(current_endpoint) = manager.endpoint_by_key(proxy_key) else {
             return Ok(None);
         };
+        if manager.is_node_disabled(proxy_key) {
+            return Ok(None);
+        }
         if !current_endpoint.uses_local_relay {
             return Ok(current_endpoint
                 .is_selectable()
@@ -606,7 +609,9 @@ impl TavilyProxy {
                     if endpoint.is_direct() && !allow_direct_primary {
                         return false;
                     }
-                    endpoint.is_selectable() && manager.runtime(proxy_key).is_some()
+                    endpoint.is_selectable()
+                        && !manager.is_node_disabled(proxy_key)
+                        && manager.runtime(proxy_key).is_some()
                 };
             let is_available = |proxy_key: &str,
                                 manager: &forward_proxy::ForwardProxyManager,
@@ -1424,6 +1429,7 @@ impl TavilyProxy {
                 if seen.insert(key.clone())
                     && let Some(endpoint) = manager.endpoint(key)
                     && endpoint.is_selectable()
+                    && !manager.is_node_disabled(key)
                     && manager.runtime(key).is_some_and(|runtime| {
                         runtime.available && runtime.weight.is_finite() && runtime.weight > 0.0
                     })
@@ -1650,12 +1656,12 @@ impl TavilyProxy {
             }
 
             let direct = {
-                let manager = self.forward_proxy.lock().await;
-                manager
-                    .endpoint_by_key(forward_proxy::FORWARD_PROXY_DIRECT_KEY)
-                    .filter(|endpoint| endpoint.is_selectable())
-                    .map(|endpoint| forward_proxy::SelectedForwardProxy::from_endpoint(&endpoint))
-            };
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoint_by_key(forward_proxy::FORWARD_PROXY_DIRECT_KEY)
+                .filter(|endpoint| endpoint.is_selectable() && !manager.is_node_disabled(&endpoint.key))
+                .map(|endpoint| forward_proxy::SelectedForwardProxy::from_endpoint(&endpoint))
+        };
             let Some(direct) = direct else {
                 return Err(last_error.unwrap_or_else(|| {
                     ProxyError::Other("no selectable forward proxy endpoints available".to_string())

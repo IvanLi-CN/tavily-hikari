@@ -238,6 +238,7 @@ import {
   type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
   type SystemSettings,
+  type ForwardProxyErrorStatsResponse,
   type ForwardProxyStatsResponse,
   type ForwardProxyValidationKind,
   type SummaryWindowMetrics,
@@ -246,8 +247,10 @@ import {
   type ForwardProxyProgressEvent,
   fetchForwardProxySettings,
   fetchSystemSettings,
+  fetchForwardProxyErrorStats,
   fetchForwardProxyStats,
   revalidateForwardProxyWithProgress,
+  updateForwardProxyNodesDisabled,
   updateSystemSettings,
   updateForwardProxySettingsWithProgress,
   validateForwardProxyCandidateWithProgress,
@@ -1684,6 +1687,11 @@ function AdminDashboard(): JSX.Element {
   const [forwardProxyStatsLoadState, setForwardProxyStatsLoadState] =
     useState<QueryLoadState>('initial_loading')
   const [forwardProxyStatsError, setForwardProxyStatsError] = useState<string | null>(null)
+  const [forwardProxyErrorStats, setForwardProxyErrorStats] =
+    useState<ForwardProxyErrorStatsResponse | null>(null)
+  const [forwardProxyErrorStatsLoadState, setForwardProxyErrorStatsLoadState] =
+    useState<QueryLoadState>('initial_loading')
+  const [forwardProxyErrorStatsError, setForwardProxyErrorStatsError] = useState<string | null>(null)
   const [forwardProxySaving, setForwardProxySaving] = useState(false)
   const [forwardProxySaveError, setForwardProxySaveError] = useState<string | null>(null)
   const [forwardProxyRevalidating, setForwardProxyRevalidating] = useState(false)
@@ -1715,9 +1723,11 @@ function AdminDashboard(): JSX.Element {
   const forwardProxySettingsAbortRef = useRef<AbortController | null>(null)
   const systemSettingsAbortRef = useRef<AbortController | null>(null)
   const forwardProxyStatsAbortRef = useRef<AbortController | null>(null)
+  const forwardProxyErrorStatsAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsLoadedRef = useRef(false)
   const systemSettingsLoadedRef = useRef(false)
   const forwardProxyStatsLoadedRef = useRef(false)
+  const forwardProxyErrorStatsLoadedRef = useRef(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -2677,6 +2687,41 @@ function AdminDashboard(): JSX.Element {
     [beginManagedRequest, loadingStateStrings.error],
   )
 
+  const loadForwardProxyErrorStatsData = useCallback(
+    async ({
+      signal,
+      reason = 'refresh',
+    }: {
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
+    } = {}) => {
+      const request = beginManagedRequest(forwardProxyErrorStatsAbortRef, signal)
+      setForwardProxyErrorStatsLoadState(
+        reason === 'refresh'
+          ? getRefreshingLoadState(forwardProxyErrorStatsLoadedRef.current)
+          : getBlockingLoadState(forwardProxyErrorStatsLoadedRef.current),
+      )
+      setForwardProxyErrorStatsError(null)
+
+      try {
+        const nextStats = await fetchForwardProxyErrorStats(request.signal)
+        if (request.signal.aborted) return
+        setForwardProxyErrorStats(nextStats)
+        setForwardProxyErrorStatsLoadState('ready')
+        setLastUpdated(new Date())
+        forwardProxyErrorStatsLoadedRef.current = true
+      } catch (err) {
+        if (request.signal.aborted) return
+        console.error(err)
+        setForwardProxyErrorStatsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setForwardProxyErrorStatsLoadState('error')
+      } finally {
+        request.cleanup()
+      }
+    },
+    [beginManagedRequest, loadingStateStrings.error],
+  )
+
   const validateForwardProxyCandidates = useCallback(
     async (
       kind: ForwardProxyValidationKind,
@@ -2905,7 +2950,10 @@ function AdminDashboard(): JSX.Element {
         label: 'Refreshing settings and stats',
       })
       try {
-        await loadForwardProxyStatsData({ reason: 'refresh' })
+        await Promise.all([
+          loadForwardProxyStatsData({ reason: 'refresh' }),
+          loadForwardProxyErrorStatsData({ reason: 'refresh' }),
+        ])
       } catch (refreshErr) {
         console.error(refreshErr)
       } finally {
@@ -2925,6 +2973,7 @@ function AdminDashboard(): JSX.Element {
     }
   }, [
     loadForwardProxyStatsData,
+    loadForwardProxyErrorStatsData,
     proxySettingsStrings.config.invalidInterval,
     proxySettingsStrings.config.saveFailed,
   ])
@@ -2950,7 +2999,12 @@ function AdminDashboard(): JSX.Element {
       setLastUpdated(new Date())
       forwardProxySettingsLoadedRef.current = true
       await finalizeForwardProxyRevalidate(
-        loadForwardProxyStatsData,
+        async (options) => {
+          await Promise.all([
+            loadForwardProxyStatsData(options),
+            loadForwardProxyErrorStatsData(options),
+          ])
+        },
         () => {
           setForwardProxyRevalidateProgress((current) => {
             const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
@@ -2990,9 +3044,24 @@ function AdminDashboard(): JSX.Element {
     }
   }, [
     loadForwardProxyStatsData,
+    loadForwardProxyErrorStatsData,
     proxySettingsStrings.progress,
     proxySettingsStrings.validation.requestFailed,
   ])
+
+  const setForwardProxyNodesDisabled = useCallback(
+    async (proxyKeys: string[], disabled: boolean) => {
+      const uniqueProxyKeys = Array.from(new Set(proxyKeys.map((key) => key.trim()).filter(Boolean)))
+      if (uniqueProxyKeys.length === 0) return
+      await updateForwardProxyNodesDisabled(uniqueProxyKeys, disabled)
+      await Promise.all([
+        loadForwardProxySettingsData({ reason: 'refresh' }),
+        loadForwardProxyStatsData({ reason: 'refresh' }),
+        loadForwardProxyErrorStatsData({ reason: 'refresh' }),
+      ])
+    },
+    [loadForwardProxyErrorStatsData, loadForwardProxySettingsData, loadForwardProxyStatsData],
+  )
 
   useEffect(() => {
     const controller = new AbortController()
@@ -3089,10 +3158,14 @@ function AdminDashboard(): JSX.Element {
         signal: controller.signal,
         reason: forwardProxyStatsLoadedRef.current ? 'switch' : 'initial',
       }),
+      loadForwardProxyErrorStatsData({
+        signal: controller.signal,
+        reason: forwardProxyErrorStatsLoadedRef.current ? 'switch' : 'initial',
+      }),
     ])
 
     return () => controller.abort()
-  }, [route, loadForwardProxySettingsData, loadForwardProxyStatsData])
+  }, [route, loadForwardProxySettingsData, loadForwardProxyStatsData, loadForwardProxyErrorStatsData])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'proxy-settings')) {
@@ -3101,10 +3174,11 @@ function AdminDashboard(): JSX.Element {
 
     const timer = window.setInterval(() => {
       void loadForwardProxyStatsData({ reason: 'refresh' })
+      void loadForwardProxyErrorStatsData({ reason: 'refresh' })
     }, REFRESH_INTERVAL_MS)
 
     return () => window.clearInterval(timer)
-  }, [route, loadForwardProxyStatsData])
+  }, [route, loadForwardProxyStatsData, loadForwardProxyErrorStatsData])
 
   const requestLogQuickFilters = useMemo(
     () => ({
@@ -4339,6 +4413,7 @@ function AdminDashboard(): JSX.Element {
       tasks.push(
         loadForwardProxySettingsData({ signal: controller.signal, reason: 'refresh' }),
         loadForwardProxyStatsData({ signal: controller.signal, reason: 'refresh' }),
+        loadForwardProxyErrorStatsData({ signal: controller.signal, reason: 'refresh' }),
       )
     }
     if (route.name === 'module' && route.module === 'keys') {
@@ -5023,6 +5098,7 @@ function AdminDashboard(): JSX.Element {
   const systemSettingsBlocking = isBlockingLoadState(systemSettingsLoadState)
   const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
   const forwardProxyStatsBlocking = isBlockingLoadState(forwardProxyStatsLoadState)
+  const forwardProxyErrorStatsBlocking = isBlockingLoadState(forwardProxyErrorStatsLoadState)
   const activeModuleBlocking =
     (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
@@ -5030,7 +5106,7 @@ function AdminDashboard(): JSX.Element {
     || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
     || (route.name === 'module' && route.module === 'system-settings' && systemSettingsBlocking)
     || (route.name === 'module' && route.module === 'proxy-settings'
-      && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
+      && (forwardProxySettingsBlocking || forwardProxyStatsBlocking || forwardProxyErrorStatsBlocking))
     || (route.name === 'unbound-token-usage' && unboundTokenUsageBlocking)
 
   const displayName = profile?.displayName ?? null
@@ -10920,10 +10996,13 @@ function AdminDashboard(): JSX.Element {
             strings={proxySettingsStrings}
             settings={forwardProxySettings}
             stats={forwardProxyStats}
+            errorStats={forwardProxyErrorStats}
             settingsLoadState={forwardProxySettingsLoadState}
             statsLoadState={forwardProxyStatsLoadState}
+            errorStatsLoadState={forwardProxyErrorStatsLoadState}
             settingsError={forwardProxySettingsError}
             statsError={forwardProxyStatsError}
+            errorStatsError={forwardProxyErrorStatsError}
             saveError={forwardProxySaveError}
             revalidateError={forwardProxyRevalidateError}
             saving={forwardProxySaving}
@@ -10934,6 +11013,7 @@ function AdminDashboard(): JSX.Element {
             onValidateCandidates={validateForwardProxyCandidates}
             onRefresh={handleManualRefresh}
             onRevalidate={() => void revalidateForwardProxy()}
+            onSetNodesDisabled={setForwardProxyNodesDisabled}
           />
         </AdminLazyBoundary>
       )}

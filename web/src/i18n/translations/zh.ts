@@ -490,6 +490,11 @@ export const ZH: TranslationShape = {
           description: '查看当前节点状态、窗口统计、24 小时活动，以及主备绑定分布。',
           loading: '正在加载正向代理统计…',
           empty: '当前还没有可展示的正向代理节点。',
+          viewSwitcherLabel: '节点内容视图',
+          views: {
+            pool: '节点池',
+            errors: '错误统计',
+          },
           table: {
             node: '节点',
             source: '来源',
@@ -510,6 +515,25 @@ export const ZH: TranslationShape = {
           lastWeightLabel: '最新',
           avgWeightLabel: '平均',
           minMaxWeightLabel: '最小 / 最大',
+          errorStats: {
+            loading: '正在加载错误统计…',
+            empty: '当前还没有真实请求错误统计。',
+            activity24h: '24 小时活动',
+            distribution24h: '24 小时错误分布图',
+            total24h: '24 小时请求',
+            error24h: '24 小时错误',
+          },
+        },
+        bulk: {
+          selection: '选择',
+          selectRow: '选择节点',
+          selected: '已选择 {count} 个节点',
+          visibleSelected: '当前视图已选 {count} 个',
+          selectAll: '全选',
+          invert: '反选',
+          disable: '禁用',
+          enable: '启用',
+          updateFailed: '批量操作失败。',
         },
         states: {
           ready: '可用',
@@ -525,6 +549,8 @@ export const ZH: TranslationShape = {
           unavailableHint: '节点当前不在可选集合内。',
           xrayMissing: '缺少 Xray',
           xrayMissingHint: '分享链接解析成功，但本地 Xray 运行时不可用。',
+          disabled: '已禁用',
+          disabledHint: '已从真实请求路由候选中排除。',
         },
         sources: {
           manual: '手工',

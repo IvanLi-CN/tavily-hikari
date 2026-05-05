@@ -11,6 +11,7 @@ impl ForwardProxyManager {
             settings,
             endpoints: Vec::new(),
             runtime,
+            disabled_keys: HashSet::new(),
             selection_counter: 0,
             requests_since_probe: 0,
             probe_in_flight: false,
@@ -20,6 +21,28 @@ impl ForwardProxyManager {
         };
         manager.rebuild_endpoints(Vec::new());
         manager
+    }
+
+    pub fn set_disabled_keys(&mut self, disabled_keys: HashSet<String>) {
+        self.disabled_keys = disabled_keys;
+        self.ensure_non_zero_weight();
+    }
+
+    pub fn set_node_disabled(&mut self, proxy_key: String, disabled: bool) {
+        if disabled {
+            self.disabled_keys.insert(proxy_key);
+        } else {
+            self.disabled_keys.remove(&proxy_key);
+        }
+        self.ensure_non_zero_weight();
+    }
+
+    pub fn is_node_disabled(&self, proxy_key: &str) -> bool {
+        self.disabled_keys.contains(proxy_key)
+    }
+
+    pub fn disabled_keys(&self) -> HashSet<String> {
+        self.disabled_keys.clone()
     }
 
     pub fn apply_settings(&mut self, settings: ForwardProxySettings) {
@@ -269,10 +292,14 @@ impl ForwardProxyManager {
         }
     }
 
+    fn is_endpoint_routable(&self, endpoint: &ForwardProxyEndpoint) -> bool {
+        endpoint.is_selectable() && !self.disabled_keys.contains(&endpoint.key)
+    }
+
     fn selectable_endpoint_keys(&self) -> HashSet<&str> {
         self.endpoints
             .iter()
-            .filter(|endpoint| endpoint.is_selectable())
+            .filter(|endpoint| self.is_endpoint_routable(endpoint))
             .map(|endpoint| endpoint.key.as_str())
             .collect::<HashSet<_>>()
     }
@@ -299,7 +326,7 @@ impl ForwardProxyManager {
         self.runtime.get(key)
     }
 
-    pub fn select_proxy(&mut self) -> SelectedForwardProxy {
+    pub fn select_proxy(&mut self) -> Option<SelectedForwardProxy> {
         self.selection_counter = self.selection_counter.wrapping_add(1);
         self.note_request();
         self.ensure_non_zero_weight();
@@ -307,7 +334,7 @@ impl ForwardProxyManager {
         let mut candidates = Vec::new();
         let mut total_weight = 0.0f64;
         for endpoint in &self.endpoints {
-            if !endpoint.is_selectable() {
+            if !self.is_endpoint_routable(endpoint) {
                 continue;
             }
             if let Some(runtime) = self.runtime.get(&endpoint.key)
@@ -320,20 +347,7 @@ impl ForwardProxyManager {
         }
 
         if candidates.is_empty() {
-            let fallback = self
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.protocol == ForwardProxyProtocol::Direct)
-                .cloned()
-                .or_else(|| {
-                    self.endpoints
-                        .iter()
-                        .find(|endpoint| endpoint.is_selectable())
-                        .cloned()
-                })
-                .or_else(|| self.endpoints.first().cloned())
-                .unwrap_or_else(ForwardProxyEndpoint::direct);
-            return SelectedForwardProxy::from_endpoint(&fallback);
+            return None;
         }
 
         let random = deterministic_unit_f64(self.selection_counter);
@@ -342,11 +356,11 @@ impl ForwardProxyManager {
         for (endpoint, weight) in candidates {
             last_candidate = endpoint;
             if threshold <= weight {
-                return SelectedForwardProxy::from_endpoint(endpoint);
+                return Some(SelectedForwardProxy::from_endpoint(endpoint));
             }
             threshold -= weight;
         }
-        SelectedForwardProxy::from_endpoint(last_candidate)
+        Some(SelectedForwardProxy::from_endpoint(last_candidate))
     }
 
     pub fn note_request(&mut self) {
@@ -465,7 +479,7 @@ impl ForwardProxyManager {
         let mut candidates = self
             .endpoints
             .iter()
-            .filter(|endpoint| endpoint.is_selectable())
+            .filter(|endpoint| self.is_endpoint_routable(endpoint))
             .filter(|endpoint| allow_direct || !endpoint.is_direct())
             .filter(|endpoint| !exclude.contains(&endpoint.key))
             .filter_map(|endpoint| {

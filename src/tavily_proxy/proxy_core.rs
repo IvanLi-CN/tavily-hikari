@@ -414,10 +414,19 @@ impl TavilyProxy {
             forward_proxy::load_forward_proxy_settings(&key_store.pool).await?;
         let forward_proxy_runtime =
             forward_proxy::load_forward_proxy_runtime_states(&key_store.pool).await?;
-        let forward_proxy = Arc::new(Mutex::new(forward_proxy::ForwardProxyManager::new(
+        let forward_proxy_disabled_keys =
+            forward_proxy::load_forward_proxy_disabled_node_keys(&key_store.pool).await?;
+        let mut forward_proxy_manager = forward_proxy::ForwardProxyManager::new(
             forward_proxy_settings,
             forward_proxy_runtime,
-        )));
+        );
+        forward_proxy_manager.set_disabled_keys(
+            forward_proxy_disabled_keys
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>(),
+        );
+        let forward_proxy = Arc::new(Mutex::new(forward_proxy_manager));
         let key_store = Arc::new(key_store);
         let token_quota = TokenQuota::new(key_store.clone());
         let token_request_limit = TokenRequestLimit::new(key_store.clone());
@@ -540,15 +549,60 @@ impl TavilyProxy {
         forward_proxy::build_forward_proxy_live_stats_response(&self.key_store.pool, &manager).await
     }
 
+    pub async fn get_forward_proxy_error_stats(
+        &self,
+    ) -> Result<ForwardProxyErrorStatsResponse, ProxyError> {
+        let manager = self.forward_proxy.lock().await;
+        forward_proxy::build_forward_proxy_error_stats_response(&self.key_store.pool, &manager)
+            .await
+    }
+
+    pub async fn set_forward_proxy_nodes_disabled(
+        &self,
+        proxy_keys: Vec<String>,
+        disabled: bool,
+    ) -> Result<ForwardProxyNodeStateUpdateResponse, ProxyError> {
+        let normalized = proxy_keys
+            .into_iter()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>();
+        let updated = forward_proxy::set_forward_proxy_nodes_disabled(
+            &self.key_store.pool,
+            &normalized,
+            disabled,
+        )
+        .await?;
+        let mut manager = self.forward_proxy.lock().await;
+        for proxy_key in &normalized {
+            manager.set_node_disabled(proxy_key.clone(), disabled);
+        }
+        Ok(ForwardProxyNodeStateUpdateResponse {
+            results: normalized
+                .into_iter()
+                .map(|proxy_key| ForwardProxyNodeStateUpdateResult {
+                    disabled,
+                    disabled_at: updated.get(&proxy_key).copied().flatten(),
+                    proxy_key,
+                })
+                .collect(),
+        })
+    }
+
     pub async fn get_forward_proxy_dashboard_summary(
         &self,
     ) -> Result<ForwardProxyDashboardSummary, ProxyError> {
         let manager = self.forward_proxy.lock().await;
         let runtime_rows = manager.snapshot_runtime();
+        let disabled_keys = manager.disabled_keys();
         Ok(ForwardProxyDashboardSummary {
             available_nodes: runtime_rows
                 .iter()
-                .filter(|node| node.available && !node.is_penalized())
+                .filter(|node| {
+                    node.available
+                        && !node.is_penalized()
+                        && !disabled_keys.contains(&node.proxy_key)
+                })
                 .count() as i64,
             total_nodes: runtime_rows.len() as i64,
         })

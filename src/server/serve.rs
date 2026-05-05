@@ -130,8 +130,16 @@ pub async fn serve(
             post(post_forward_proxy_revalidate),
         )
         .route(
+            "/api/settings/forward-proxy/nodes/state",
+            post(post_forward_proxy_node_state),
+        )
+        .route(
             "/api/stats/forward-proxy/summary",
             get(get_forward_proxy_dashboard_summary),
+        )
+        .route(
+            "/api/stats/forward-proxy/errors",
+            get(get_forward_proxy_error_stats),
         )
         .route("/api/stats/forward-proxy", get(get_forward_proxy_live_stats))
         .route("/api/public/metrics", get(get_public_metrics))

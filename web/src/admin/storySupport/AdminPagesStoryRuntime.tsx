@@ -107,6 +107,7 @@ import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import {
   forwardProxyStorySavedAt,
+  forwardProxyStoryErrorStats,
   forwardProxyStorySettings,
   forwardProxyStoryStats,
 } from '../forwardProxyStoryData'
@@ -6035,10 +6036,13 @@ function ProxySettingsPageCanvas(): JSX.Element {
         strings={admin.proxySettings}
         settings={forwardProxyStorySettings}
         stats={forwardProxyStoryStats}
+        errorStats={forwardProxyStoryErrorStats}
         settingsLoadState="ready"
         statsLoadState="ready"
+        errorStatsLoadState="ready"
         settingsError={null}
         statsError={null}
+        errorStatsError={null}
         saveError={null}
         revalidateError={null}
         saving={false}
@@ -6049,6 +6053,7 @@ function ProxySettingsPageCanvas(): JSX.Element {
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
         onRevalidate={() => {}}
+        onSetNodesDisabled={async () => {}}
       />
     </AdminPageFrame>
   )
