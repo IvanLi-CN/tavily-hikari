@@ -1350,6 +1350,8 @@ async fn research_request_does_not_probe_usage_before_forwarding() {
         .proxy_http_research(
             &usage_base,
             Some("tok1"),
+            true,
+            None,
             None,
             &Method::POST,
             "/api/tavily/research",
@@ -1505,6 +1507,8 @@ async fn proxy_http_json_endpoint_does_not_inject_bearer_auth_when_disabled() {
             &usage_base,
             "/search",
             Some("tok1"),
+            true,
+            None,
             None,
             &Method::POST,
             "/api/tavily/search",

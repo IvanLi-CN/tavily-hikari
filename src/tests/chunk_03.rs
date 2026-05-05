@@ -776,6 +776,8 @@ async fn proxy_http_search_marks_key_exhausted_on_quota_status() {
         .proxy_http_search(
             &usage_base,
             Some("tok1"),
+            true,
+            None,
             None,
             &Method::POST,
             "/api/tavily/search",
@@ -867,6 +869,8 @@ async fn proxy_http_json_endpoint_injects_bearer_auth_when_enabled() {
             &usage_base,
             "/search",
             Some("tok1"),
+            true,
+            None,
             None,
             &Method::POST,
             "/api/tavily/search",
@@ -924,6 +928,8 @@ async fn proxy_http_json_endpoint_quarantines_key_on_401_deactivated() {
         .proxy_http_search(
             &usage_base,
             Some("tok1"),
+            true,
+            None,
             None,
             &Method::POST,
             "/api/tavily/search",

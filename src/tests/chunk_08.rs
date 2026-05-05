@@ -1,4 +1,20 @@
 #[tokio::test]
+async fn system_settings_default_api_rebalance_is_disabled_at_zero_percent() {
+    let db_path = temp_db_path("system-settings-api-rebalance-defaults");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let settings = proxy.get_system_settings().await.expect("get system settings");
+
+    assert!(!settings.api_rebalance_enabled);
+    assert_eq!(settings.api_rebalance_percent, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn account_usage_rollup_rebuild_backfills_full_month_chart_horizon() {
     let db_path = temp_db_path("account-usage-rollup-month-chart-horizon");
     let db_str = db_path.to_string_lossy().to_string();

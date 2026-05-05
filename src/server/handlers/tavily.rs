@@ -6,6 +6,18 @@ enum TavilyUpstreamMode {
 
 const HIKARI_ROUTING_KEY_HEADER: &str = "x-hikari-routing-key";
 
+fn should_use_api_rebalance(settings: &tavily_hikari::SystemSettings) -> bool {
+    if !settings.api_rebalance_enabled || settings.api_rebalance_percent <= 0 {
+        return false;
+    }
+    if settings.api_rebalance_percent >= 100 {
+        return true;
+    }
+
+    let mut rng = rand::thread_rng();
+    rng.gen_range(0..100) < settings.api_rebalance_percent
+}
+
 #[derive(Clone, Copy)]
 struct TavilyEndpointConfig {
     upstream_path: &'static str,
@@ -654,11 +666,28 @@ async fn proxy_tavily_http_endpoint(
     }
 
     let token_id_for_logs = auth_token_id.clone();
-    let api_routing_key = if using_dev_open_admin_fallback {
+    let hikari_routing_key = if using_dev_open_admin_fallback {
         None
     } else {
-        extract_hikari_routing_key(&parts.headers).or_else(|| extract_http_project_id(&parts.headers))
+        extract_hikari_routing_key(&parts.headers)
     };
+    let http_project_id = if using_dev_open_admin_fallback {
+        None
+    } else {
+        extract_http_project_id(&parts.headers)
+    };
+    let api_routing_key = hikari_routing_key
+        .clone()
+        .or_else(|| http_project_id.clone());
+    let system_settings = state
+        .proxy
+        .get_system_settings()
+        .await
+        .map_err(|err| {
+            eprintln!("get system settings failed for {path}: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let use_api_rebalance = should_use_api_rebalance(&system_settings);
     let expected_search_credits = (config.upstream_path == "/search").then(|| {
         // Search billing is predictable based on `search_depth`.
         tavily_search_expected_credits(&options)
@@ -848,7 +877,9 @@ async fn proxy_tavily_http_endpoint(
             .proxy_http_research(
                 &state.usage_base,
                 auth_token_id.as_deref(),
+                use_api_rebalance,
                 api_routing_key.as_deref(),
+                http_project_id.as_deref(),
                 &method,
                 &path,
                 options,
@@ -1064,7 +1095,9 @@ async fn proxy_tavily_http_endpoint(
                 .proxy_http_search(
                     &state.usage_base,
                     auth_token_id.as_deref(),
+                    use_api_rebalance,
                     api_routing_key.as_deref(),
+                    http_project_id.as_deref(),
                     &method,
                     &path,
                     options,
@@ -1079,7 +1112,9 @@ async fn proxy_tavily_http_endpoint(
                     &state.usage_base,
                     config.upstream_path,
                     auth_token_id.as_deref(),
+                    use_api_rebalance,
                     api_routing_key.as_deref(),
+                    http_project_id.as_deref(),
                     &method,
                     &path,
                     options,

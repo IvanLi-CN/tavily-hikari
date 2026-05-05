@@ -67,6 +67,42 @@
     }
 
     #[tokio::test]
+    async fn admin_system_settings_reject_invalid_api_rebalance_percent() {
+        let db_path = temp_db_path("admin-system-settings-invalid-api-rebalance-percent");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let response = Client::new()
+            .put(format!("http://{addr}/api/settings/system"))
+            .json(&serde_json::json!({
+                "mcpSessionAffinityKeyCount": 5,
+                "rebalanceMcpEnabled": false,
+                "rebalanceMcpSessionPercent": 100,
+                "apiRebalanceEnabled": true,
+                "apiRebalancePercent": 101,
+            }))
+            .send()
+            .await
+            .expect("update invalid API rebalance percent");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.expect("invalid body");
+        assert!(
+            body.contains("api_rebalance_percent"),
+            "expected API rebalance range validation error, got {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_system_settings_reject_invalid_request_rate_limit() {
         let db_path = temp_db_path("admin-system-settings-invalid-request-rate");
         let db_str = db_path.to_string_lossy().to_string();
@@ -1388,6 +1424,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
@@ -1660,6 +1698,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
@@ -1792,6 +1832,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await

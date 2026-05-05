@@ -1164,6 +1164,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -1450,6 +1452,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: false,
                 rebalance_mcp_session_percent: 0,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -1495,6 +1499,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -1579,6 +1585,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -1712,6 +1720,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -1945,6 +1955,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -2044,6 +2056,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -2113,6 +2127,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -2173,6 +2189,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: true,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -2796,6 +2814,8 @@
                 mcp_session_affinity_key_count: 5,
                 rebalance_mcp_enabled: false,
                 rebalance_mcp_session_percent: 100,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
             })
             .await
@@ -2823,6 +2843,8 @@
         assert_eq!(updated_body["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
         assert_eq!(updated_body["rebalanceMcpEnabled"].as_bool(), Some(true));
         assert_eq!(updated_body["rebalanceMcpSessionPercent"].as_i64(), Some(40));
+        assert_eq!(updated_body["apiRebalanceEnabled"].as_bool(), Some(false));
+        assert_eq!(updated_body["apiRebalancePercent"].as_i64(), Some(0));
         assert_eq!(updated_body["userBlockedKeyBaseLimit"].as_i64(), Some(7));
 
         let persisted = client
@@ -2842,6 +2864,14 @@
         assert_eq!(
             persisted_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
             Some(7)
+        );
+        assert_eq!(
+            persisted_body["systemSettings"]["apiRebalanceEnabled"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            persisted_body["systemSettings"]["apiRebalancePercent"].as_i64(),
+            Some(0)
         );
 
         let _ = std::fs::remove_file(db_path);

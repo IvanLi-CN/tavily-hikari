@@ -1,4 +1,92 @@
     #[tokio::test]
+    async fn tavily_http_research_result_returns_error_when_pinned_key_unavailable_without_fallback() {
+        let db_path = temp_db_path("http-research-result-pinned-key-unavailable");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let pinned_secret = "tvly-http-research-result-disabled-key";
+        let fallback_secret = "tvly-http-research-result-active-fallback";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![pinned_secret.to_string(), fallback_secret.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-result-pinned-unavailable"))
+            .await
+            .expect("create token");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let pinned_key_id: String = sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = ?")
+            .bind(pinned_secret)
+            .fetch_one(&pool)
+            .await
+            .expect("pinned key id");
+
+        let request_id = "req-pinned-unavailable";
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO research_requests (request_id, key_id, token_id, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(request_id)
+        .bind(&pinned_key_id)
+        .bind(&access_token.id)
+        .bind(now + 3600)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed research request owner");
+        sqlx::query("UPDATE api_keys SET status = 'disabled', status_changed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(&pinned_key_id)
+            .execute(&pool)
+            .await
+            .expect("disable pinned key");
+
+        let upstream_addr = spawn_http_research_result_mock_asserting_bearer(
+            fallback_secret.to_string(),
+            request_id.to_string(),
+        )
+        .await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let resp = Client::new()
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_GATEWAY,
+            "research result must not fall back to another key when the pinned key is unavailable",
+        );
+
+        let request_log_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE path = ?")
+                .bind(format!("/api/tavily/research/{request_id}"))
+                .fetch_one(&pool)
+                .await
+                .expect("count request logs");
+        assert_eq!(
+            request_log_count, 0,
+            "no upstream request should be logged when pinned-key acquisition fails",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn tavily_http_research_result_keeps_prefixed_usage_base_path() {
         let db_path = temp_db_path("http-research-result-prefixed-path");
         let db_str = db_path.to_string_lossy().to_string();

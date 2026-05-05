@@ -1795,12 +1795,24 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN,
                 REBALANCE_MCP_SESSION_PERCENT_MAX,
             );
+        let api_rebalance_enabled = self
+            .get_meta_i64(META_KEY_API_REBALANCE_ENABLED_V1)
+            .await?
+            .unwrap_or(i64::from(API_REBALANCE_ENABLED_DEFAULT))
+            != 0;
+        let api_rebalance_percent = self
+            .get_meta_i64(META_KEY_API_REBALANCE_PERCENT_V1)
+            .await?
+            .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
+            .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
         let user_blocked_key_base_limit = self.fetch_user_blocked_key_base_limit().await?;
         Ok(SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
             rebalance_mcp_session_percent,
+            api_rebalance_enabled,
+            api_rebalance_percent,
             user_blocked_key_base_limit,
         })
     }
@@ -1831,6 +1843,14 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN, REBALANCE_MCP_SESSION_PERCENT_MAX,
             )));
         }
+        if !(API_REBALANCE_PERCENT_MIN..=API_REBALANCE_PERCENT_MAX)
+            .contains(&settings.api_rebalance_percent)
+        {
+            return Err(ProxyError::Other(format!(
+                "api_rebalance_percent must be between {} and {}",
+                API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX,
+            )));
+        }
         if settings.user_blocked_key_base_limit < 0 {
             return Err(ProxyError::Other(
                 "user_blocked_key_base_limit must be a non-negative integer".to_string(),
@@ -1851,6 +1871,16 @@ impl KeyStore {
         self.set_meta_i64(
             META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
             settings.rebalance_mcp_session_percent,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_API_REBALANCE_ENABLED_V1,
+            i64::from(settings.api_rebalance_enabled),
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_API_REBALANCE_PERCENT_V1,
+            settings.api_rebalance_percent,
         )
         .await?;
         self.set_meta_i64(

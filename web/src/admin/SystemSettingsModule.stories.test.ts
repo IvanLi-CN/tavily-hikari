@@ -14,6 +14,8 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.RequestRateEdited).toMatchObject({})
     expect(systemSettingsStories.RebalanceEnabled).toMatchObject({})
     expect(systemSettingsStories.RebalanceDisabledSliderLocked).toMatchObject({})
+    expect(systemSettingsStories.ApiRebalanceEnabled).toMatchObject({})
+    expect(systemSettingsStories.ApiRebalanceDisabledSliderLocked).toMatchObject({})
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
@@ -53,5 +55,14 @@ describe('SystemSettingsModule Storybook proofs', () => {
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('封禁数基础值')
     expect(markup).toContain('当前基础值：8')
+  })
+
+  it('renders the API rebalance story with the configured rollout ratio', () => {
+    const renderStory = systemSettingsStories.ApiRebalanceEnabled.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup).toContain('启用 API Rebalance')
+    expect(markup).toContain('当前 API 比例：25%')
   })
 })

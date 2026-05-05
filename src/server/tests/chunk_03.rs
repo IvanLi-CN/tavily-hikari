@@ -1162,6 +1162,16 @@
         )
         .await
         .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.api_rebalance_enabled = true;
+        settings.api_rebalance_percent = 100;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable API rebalance rollout for Hikari routing assertion");
         let token = proxy
             .create_access_token(Some("http-search-hikari-routing"))
             .await

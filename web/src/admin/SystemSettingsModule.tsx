@@ -74,6 +74,8 @@ function SystemSettingsHelpBubble({
             <p>{strings.form.countHint}</p>
             <p>{strings.form.rebalanceHint}</p>
             <p>{strings.form.percentHint}</p>
+            <p>{strings.form.apiRebalanceHint}</p>
+            <p>{strings.form.apiRebalancePercentHint}</p>
             <p>{strings.form.blockedKeyBaseLimitHint}</p>
             <p>{strings.form.applyScopeHint}</p>
           </div>
@@ -104,6 +106,12 @@ export default function SystemSettingsModule({
   const [draftPercent, setDraftPercent] = useState(() =>
     settings ? String(settings.rebalanceMcpSessionPercent) : '100',
   )
+  const [draftApiRebalanceEnabled, setDraftApiRebalanceEnabled] = useState(
+    settings?.apiRebalanceEnabled ?? false,
+  )
+  const [draftApiRebalancePercent, setDraftApiRebalancePercent] = useState(() =>
+    settings ? String(settings.apiRebalancePercent) : '0',
+  )
   const [draftBlockedKeyBaseLimit, setDraftBlockedKeyBaseLimit] = useState(() =>
     settings ? String(settings.userBlockedKeyBaseLimit) : '5',
   )
@@ -113,18 +121,23 @@ export default function SystemSettingsModule({
     setDraftCount(settings ? String(settings.mcpSessionAffinityKeyCount) : '')
     setDraftRebalanceEnabled(settings?.rebalanceMcpEnabled ?? false)
     setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
+    setDraftApiRebalanceEnabled(settings?.apiRebalanceEnabled ?? false)
+    setDraftApiRebalancePercent(settings ? String(settings.apiRebalancePercent) : '0')
     setDraftBlockedKeyBaseLimit(settings ? String(settings.userBlockedKeyBaseLimit) : '5')
   }, [
     settings?.requestRateLimit,
     settings?.mcpSessionAffinityKeyCount,
     settings?.rebalanceMcpEnabled,
     settings?.rebalanceMcpSessionPercent,
+    settings?.apiRebalanceEnabled,
+    settings?.apiRebalancePercent,
     settings?.userBlockedKeyBaseLimit,
   ])
 
   const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
   const normalizedPercent = draftPercent.trim()
+  const normalizedApiRebalancePercent = draftApiRebalancePercent.trim()
   const normalizedBlockedKeyBaseLimit = draftBlockedKeyBaseLimit.trim()
   const parsedRequestRateLimit = isValidRequestRateLimitDraft(normalizedRequestRateLimit)
     ? Number.parseInt(normalizedRequestRateLimit, 10)
@@ -132,6 +145,9 @@ export default function SystemSettingsModule({
   const parsedCount = isValidCountDraft(normalizedCount) ? Number.parseInt(normalizedCount, 10) : null
   const parsedPercent = isValidPercentDraft(normalizedPercent)
     ? Number.parseInt(normalizedPercent, 10)
+    : null
+  const parsedApiRebalancePercent = isValidPercentDraft(normalizedApiRebalancePercent)
+    ? Number.parseInt(normalizedApiRebalancePercent, 10)
     : null
   const parsedBlockedKeyBaseLimit = isValidNonNegativeIntegerDraft(normalizedBlockedKeyBaseLimit)
     ? Number.parseInt(normalizedBlockedKeyBaseLimit, 10)
@@ -141,11 +157,14 @@ export default function SystemSettingsModule({
     parsedRequestRateLimit != null &&
     parsedCount != null &&
     parsedPercent != null &&
+    parsedApiRebalancePercent != null &&
     parsedBlockedKeyBaseLimit != null &&
     (parsedRequestRateLimit !== settings.requestRateLimit ||
       parsedCount !== settings.mcpSessionAffinityKeyCount ||
       draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
       parsedPercent !== settings.rebalanceMcpSessionPercent ||
+      draftApiRebalanceEnabled !== settings.apiRebalanceEnabled ||
+      parsedApiRebalancePercent !== settings.apiRebalancePercent ||
       parsedBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit)
   const inlineError =
     normalizedRequestRateLimit.length > 0 && parsedRequestRateLimit == null
@@ -154,9 +173,11 @@ export default function SystemSettingsModule({
       ? strings.form.invalidCount
       : normalizedPercent.length > 0 && parsedPercent == null
         ? strings.form.invalidPercent
-        : normalizedBlockedKeyBaseLimit.length > 0 && parsedBlockedKeyBaseLimit == null
-          ? strings.form.invalidBlockedKeyBaseLimit
-          : error
+        : normalizedApiRebalancePercent.length > 0 && parsedApiRebalancePercent == null
+          ? strings.form.invalidPercent
+          : normalizedBlockedKeyBaseLimit.length > 0 && parsedBlockedKeyBaseLimit == null
+            ? strings.form.invalidBlockedKeyBaseLimit
+            : error
 
   return (
     <section className="surface panel">
@@ -289,6 +310,66 @@ export default function SystemSettingsModule({
               </p>
             </div>
 
+            <div className="mt-2 flex items-start justify-between gap-4 rounded-2xl border border-border/60 bg-background/70 px-4 py-3">
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-switch">
+                  {strings.form.apiRebalanceLabel}
+                </label>
+                <p className="text-xs text-muted-foreground">{strings.form.apiRebalanceHint}</p>
+              </div>
+              <Switch
+                aria-label={strings.form.apiRebalanceLabel}
+                id="system-settings-api-rebalance-switch"
+                checked={draftApiRebalanceEnabled}
+                onCheckedChange={setDraftApiRebalanceEnabled}
+                disabled={saving}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-percent">
+                {strings.form.apiRebalancePercentLabel}
+              </label>
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
+                <input
+                  id="system-settings-api-rebalance-percent"
+                  className="range"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={parsedApiRebalancePercent ?? 0}
+                  disabled={saving || !draftApiRebalanceEnabled}
+                  onChange={(event) => setDraftApiRebalancePercent(event.target.value)}
+                  aria-label={strings.form.apiRebalancePercentLabel}
+                />
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={draftApiRebalancePercent}
+                  disabled={saving || !draftApiRebalanceEnabled}
+                  onChange={(event) => setDraftApiRebalancePercent(event.target.value)}
+                  aria-invalid={inlineError ? true : undefined}
+                />
+              </div>
+              {settings && (
+                <p className="text-xs text-muted-foreground">
+                  {strings.form.currentApiRebalancePercentValue.replace(
+                    '{percent}',
+                    String(settings.apiRebalancePercent),
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {draftApiRebalanceEnabled
+                  ? strings.form.apiRebalancePercentHint
+                  : strings.form.apiRebalancePercentDisabledHint}
+              </p>
+            </div>
+
             <div style={{ display: 'grid', gap: 8 }}>
               <label className="text-sm font-medium" htmlFor="system-settings-blocked-key-base-limit">
                 {strings.form.blockedKeyBaseLimitLabel}
@@ -335,6 +416,7 @@ export default function SystemSettingsModule({
                   parsedRequestRateLimit == null ||
                   parsedCount == null ||
                   parsedPercent == null ||
+                  parsedApiRebalancePercent == null ||
                   parsedBlockedKeyBaseLimit == null ||
                   saving ||
                   !changed
@@ -344,6 +426,8 @@ export default function SystemSettingsModule({
                   mcpSessionAffinityKeyCount: parsedCount,
                   rebalanceMcpEnabled: draftRebalanceEnabled,
                   rebalanceMcpSessionPercent: parsedPercent,
+                  apiRebalanceEnabled: draftApiRebalanceEnabled,
+                  apiRebalancePercent: parsedApiRebalancePercent,
                   userBlockedKeyBaseLimit: parsedBlockedKeyBaseLimit,
                 })
               }}
@@ -353,6 +437,7 @@ export default function SystemSettingsModule({
                 parsedRequestRateLimit == null ||
                 parsedCount == null ||
                 parsedPercent == null ||
+                parsedApiRebalancePercent == null ||
                 parsedBlockedKeyBaseLimit == null
               }
               data-testid="system-settings-apply"

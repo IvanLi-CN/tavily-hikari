@@ -542,6 +542,12 @@ export interface AdminTranslationsShape {
       percentHint: string
       percentDisabledHint: string
       currentPercentValue: string
+      apiRebalanceLabel: string
+      apiRebalanceHint: string
+      apiRebalancePercentLabel: string
+      apiRebalancePercentHint: string
+      apiRebalancePercentDisabledHint: string
+      currentApiRebalancePercentValue: string
       blockedKeyBaseLimitLabel: string
       blockedKeyBaseLimitHint: string
       currentBlockedKeyBaseLimitValue: string

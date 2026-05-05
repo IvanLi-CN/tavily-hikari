@@ -553,12 +553,12 @@ impl TavilyProxy {
         key_id: &str,
         headers: &HeaderMap,
         analysis: &AttemptAnalysis,
-        project_affinity: Option<&HttpProjectAffinityContext>,
+        project_affinity: bool,
     ) -> Result<bool, ProxyError> {
         let Some(reason_code) = Self::transient_backoff_reason_code(analysis) else {
             return Ok(false);
         };
-        if project_affinity.is_none() {
+        if !project_affinity {
             return Ok(false);
         }
 

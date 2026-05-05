@@ -1,4 +1,46 @@
 impl TavilyProxy {
+    async fn select_http_json_key(
+        &self,
+        auth_token_id: Option<&str>,
+        use_api_rebalance: bool,
+        api_routing_key: Option<&str>,
+        http_project_id: Option<&str>,
+    ) -> Result<(ApiKeyLease, KeyEffect, KeyEffect, bool, bool), ProxyError> {
+        if use_api_rebalance {
+            let selection = self
+                .acquire_key_for_api_route(auth_token_id, api_routing_key)
+                .await?;
+            return Ok((
+                selection.lease,
+                selection.binding_effect,
+                selection.selection_effect,
+                true,
+                false,
+            ));
+        }
+
+        if let Some(selection) = self
+            .acquire_key_for_http_project(auth_token_id, http_project_id)
+            .await?
+        {
+            return Ok((
+                selection.lease,
+                selection.binding_effect,
+                selection.selection_effect,
+                false,
+                true,
+            ));
+        }
+
+        Ok((
+            self.acquire_key_for(auth_token_id).await?,
+            KeyEffect::none(),
+            KeyEffect::none(),
+            false,
+            false,
+        ))
+    }
+
 
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
@@ -227,19 +269,29 @@ impl TavilyProxy {
         usage_base: &str,
         upstream_path: &str,
         auth_token_id: Option<&str>,
+        use_api_rebalance: bool,
         api_routing_key: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
-        let selection = self
-            .acquire_key_for_api_route(auth_token_id, api_routing_key)
+        let (
+            lease,
+            api_route_binding_effect,
+            api_route_selection_effect,
+            used_api_rebalance,
+            used_http_project_affinity,
+        ) = self
+            .select_http_json_key(
+                auth_token_id,
+                use_api_rebalance,
+                api_routing_key,
+                http_project_id,
+            )
             .await?;
-        let api_route_binding_effect = selection.binding_effect;
-        let api_route_selection_effect = selection.selection_effect;
-        let lease = selection.lease;
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -340,10 +392,34 @@ impl TavilyProxy {
                         .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
                         .await?;
                 }
-                let armed_api_rebalance_backoff = self
-                    .maybe_arm_api_rebalance_backoff(&lease.id, &headers, &analysis)
-                    .await?;
-                if key_effect.code == KEY_EFFECT_NONE && armed_api_rebalance_backoff {
+                let armed_api_rebalance_backoff = if used_api_rebalance {
+                    self.maybe_arm_api_rebalance_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
+                let armed_http_global_backoff = if used_api_rebalance {
+                    false
+                } else {
+                    self.maybe_arm_http_global_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                };
+                let armed_http_project_affinity_backoff = if used_http_project_affinity {
+                    self.maybe_arm_http_project_affinity_backoff(
+                        &lease.id,
+                        &headers,
+                        &analysis,
+                        true,
+                    )
+                    .await?
+                } else {
+                    false
+                };
+                if key_effect.code == KEY_EFFECT_NONE
+                    && (armed_api_rebalance_backoff
+                        || armed_http_project_affinity_backoff
+                        || armed_http_global_backoff)
+                {
                     key_effect = Self::transient_backoff_set_effect();
                 }
                 let primary_effect = Self::primary_request_effect(
@@ -394,6 +470,24 @@ impl TavilyProxy {
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             API_REBALANCE_HTTP_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                } else if armed_http_project_affinity_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                } else if armed_http_global_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -1008,19 +1102,29 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
+        use_api_rebalance: bool,
         api_routing_key: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis, Option<i64>), ProxyError> {
-        let selection = self
-            .acquire_key_for_api_route(auth_token_id, api_routing_key)
+        let (
+            lease,
+            api_route_binding_effect,
+            api_route_selection_effect,
+            used_api_rebalance,
+            used_http_project_affinity,
+        ) = self
+            .select_http_json_key(
+                auth_token_id,
+                use_api_rebalance,
+                api_routing_key,
+                http_project_id,
+            )
             .await?;
-        let api_route_binding_effect = selection.binding_effect;
-        let api_route_selection_effect = selection.selection_effect;
-        let lease = selection.lease;
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
             source,
@@ -1108,10 +1212,34 @@ impl TavilyProxy {
                         .clear_transient_backoffs_after_success(&lease.id, display_path, auth_token_id)
                         .await?;
                 }
-                let armed_api_rebalance_backoff = self
-                    .maybe_arm_api_rebalance_backoff(&lease.id, &headers, &analysis)
-                    .await?;
-                if key_effect.code == KEY_EFFECT_NONE && armed_api_rebalance_backoff {
+                let armed_api_rebalance_backoff = if used_api_rebalance {
+                    self.maybe_arm_api_rebalance_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
+                let armed_http_global_backoff = if used_api_rebalance {
+                    false
+                } else {
+                    self.maybe_arm_http_global_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                };
+                let armed_http_project_affinity_backoff = if used_http_project_affinity {
+                    self.maybe_arm_http_project_affinity_backoff(
+                        &lease.id,
+                        &headers,
+                        &analysis,
+                        true,
+                    )
+                    .await?
+                } else {
+                    false
+                };
+                if key_effect.code == KEY_EFFECT_NONE
+                    && (armed_api_rebalance_backoff
+                        || armed_http_project_affinity_backoff
+                        || armed_http_global_backoff)
+                {
                     key_effect = Self::transient_backoff_set_effect();
                 }
                 let primary_effect = Self::primary_request_effect(
@@ -1162,6 +1290,24 @@ impl TavilyProxy {
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             API_REBALANCE_HTTP_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                } else if armed_http_project_affinity_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                } else if armed_http_global_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -1461,7 +1607,9 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
+        use_api_rebalance: bool,
         api_routing_key: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
@@ -1471,7 +1619,9 @@ impl TavilyProxy {
             usage_base,
             "/search",
             auth_token_id,
+            use_api_rebalance,
             api_routing_key,
+            http_project_id,
             method,
             display_path,
             options,

@@ -9,6 +9,8 @@ function SystemSettingsCanvas(props: {
   blockedKeyBaseLimit?: number
   rebalanceEnabled?: boolean
   rebalancePercent?: number
+  apiRebalanceEnabled?: boolean
+  apiRebalancePercent?: number
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
   error?: string | null
   saving?: boolean
@@ -23,6 +25,8 @@ function SystemSettingsCanvas(props: {
           mcpSessionAffinityKeyCount: props.count ?? 5,
           rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
           rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
+          apiRebalanceEnabled: props.apiRebalanceEnabled ?? false,
+          apiRebalancePercent: props.apiRebalancePercent ?? 0,
           userBlockedKeyBaseLimit: props.blockedKeyBaseLimit ?? 5,
         }}
         loadState={props.loadState ?? 'ready'}
@@ -53,6 +57,8 @@ const meta = {
       mcpSessionAffinityKeyCount: 5,
       rebalanceMcpEnabled: false,
       rebalanceMcpSessionPercent: 100,
+      apiRebalanceEnabled: false,
+      apiRebalancePercent: 0,
       userBlockedKeyBaseLimit: 5,
     },
     loadState: 'ready',
@@ -78,8 +84,24 @@ export const RebalanceDisabledSliderLocked: Story = {
   render: () => <SystemSettingsCanvas rebalanceEnabled={false} rebalancePercent={35} />,
 }
 
+export const ApiRebalanceEnabled: Story = {
+  render: () => <SystemSettingsCanvas apiRebalanceEnabled apiRebalancePercent={25} />,
+}
+
+export const ApiRebalanceDisabledSliderLocked: Story = {
+  render: () => <SystemSettingsCanvas apiRebalanceEnabled={false} apiRebalancePercent={25} />,
+}
+
 export const Applying: Story = {
-  render: () => <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} saving />,
+  render: () => (
+    <SystemSettingsCanvas
+      rebalanceEnabled
+      rebalancePercent={35}
+      apiRebalanceEnabled
+      apiRebalancePercent={25}
+      saving
+    />
+  ),
 }
 
 export const ErrorState: Story = {
@@ -91,10 +113,26 @@ export const HelpBubbleOpen: Story = {
 }
 
 export const RequestRateEdited: Story = {
-  render: () => <SystemSettingsCanvas requestRateLimit={80} rebalanceEnabled rebalancePercent={35} />,
+  render: () => (
+    <SystemSettingsCanvas
+      requestRateLimit={80}
+      rebalanceEnabled
+      rebalancePercent={35}
+      apiRebalanceEnabled
+      apiRebalancePercent={25}
+    />
+  ),
 }
 
 
 export const BlockedKeyBaseConfigured: Story = {
-  render: () => <SystemSettingsCanvas blockedKeyBaseLimit={8} rebalanceEnabled rebalancePercent={35} />,
+  render: () => (
+    <SystemSettingsCanvas
+      blockedKeyBaseLimit={8}
+      rebalanceEnabled
+      rebalancePercent={35}
+      apiRebalanceEnabled
+      apiRebalancePercent={25}
+    />
+  ),
 }

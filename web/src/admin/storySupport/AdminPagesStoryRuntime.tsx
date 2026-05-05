@@ -6066,6 +6066,8 @@ function SystemSettingsPageCanvas(): JSX.Element {
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 100,
+          apiRebalanceEnabled: false,
+          apiRebalancePercent: 0,
           userBlockedKeyBaseLimit: 5,
         }}
         loadState="ready"

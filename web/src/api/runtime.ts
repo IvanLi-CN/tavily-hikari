@@ -2934,6 +2934,8 @@ export interface SystemSettings {
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
+  apiRebalanceEnabled: boolean
+  apiRebalancePercent: number
   userBlockedKeyBaseLimit: number
 }
 
@@ -2957,6 +2959,8 @@ export interface UpdateSystemSettingsPayload {
   mcpSessionAffinityKeyCount: number
   rebalanceMcpEnabled: boolean
   rebalanceMcpSessionPercent: number
+  apiRebalanceEnabled: boolean
+  apiRebalancePercent: number
   userBlockedKeyBaseLimit: number
 }
 
@@ -3034,6 +3038,8 @@ function createEmptySystemSettings(): SystemSettings {
     mcpSessionAffinityKeyCount: 5,
     rebalanceMcpEnabled: false,
     rebalanceMcpSessionPercent: 100,
+    apiRebalanceEnabled: false,
+    apiRebalancePercent: 0,
     userBlockedKeyBaseLimit: 5,
   }
 }

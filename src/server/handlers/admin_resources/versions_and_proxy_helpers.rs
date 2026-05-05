@@ -675,6 +675,8 @@ struct SystemSettingsUpdatePayload {
     rebalance_mcp_enabled: bool,
     #[serde(default = "default_rebalance_mcp_session_percent")]
     rebalance_mcp_session_percent: i64,
+    api_rebalance_enabled: Option<bool>,
+    api_rebalance_percent: Option<i64>,
     user_blocked_key_base_limit: Option<i64>,
 }
 

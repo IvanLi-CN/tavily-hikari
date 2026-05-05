@@ -886,6 +886,8 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
@@ -1099,6 +1101,8 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
@@ -1186,6 +1190,8 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await
@@ -1354,7 +1360,7 @@
     }
 
     #[tokio::test]
-    async fn tavily_http_search_forwards_raw_x_project_id_and_logs_api_route_affinity_effect() {
+    async fn tavily_http_search_default_rollout_uses_legacy_project_affinity_effect() {
         let db_path = temp_db_path("http-search-project-header-forward");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -1417,7 +1423,7 @@
             effect_row
                 .try_get::<String, _>("binding_effect_code")
                 .unwrap(),
-            "api_rebalance_route_bound"
+            "http_project_affinity_bound"
         );
         assert_eq!(
             effect_row
@@ -1442,12 +1448,178 @@
             token_effect_row
                 .try_get::<String, _>("binding_effect_code")
                 .unwrap(),
-            "api_rebalance_route_bound"
+            "http_project_affinity_bound"
         );
         assert_eq!(
             token_effect_row
                 .try_get::<String, _>("selection_effect_code")
                 .unwrap(),
+            "none"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_api_rebalance_percent_100_uses_generic_selector() {
+        let db_path = temp_db_path("http-search-api-rebalance-enabled");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let seen = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let upstream_addr = spawn_http_search_mock_recording_upstream_identity(seen.clone()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-http-api-rollout-a".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.api_rebalance_enabled = true;
+        settings.api_rebalance_percent = 100;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable API rebalance rollout");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let access_token = proxy
+            .create_access_token(Some("http-search-api-rebalance-enabled"))
+            .await
+            .expect("create token");
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let project_id = "project-api-rebalance-enabled";
+        let resp = Client::new()
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .header("X-Project-ID", project_id)
+            .json(&serde_json::json!({ "query": "api rebalance enabled" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let seen_snapshot = {
+            let seen = seen.lock().expect("seen lock should not be poisoned");
+            seen.clone()
+        };
+        assert_eq!(seen_snapshot.len(), 1);
+        assert_eq!(seen_snapshot[0].1.as_deref(), Some(project_id));
+
+        let effect_row = sqlx::query(
+            "SELECT binding_effect_code, selection_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load API rebalance effect row");
+        assert_eq!(
+            effect_row
+                .try_get::<String, _>("binding_effect_code")
+                .unwrap(),
+            "api_rebalance_route_bound"
+        );
+        assert_eq!(
+            effect_row
+                .try_get::<String, _>("selection_effect_code")
+                .unwrap(),
+            "none"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_api_rebalance_percent_zero_uses_legacy_primary() {
+        let db_path = temp_db_path("http-search-api-rebalance-zero");
+        let db_str = db_path.to_string_lossy().to_string();
+        let primary_secret = "tvly-http-api-rollout-zero-primary";
+        let other_secret = "tvly-http-api-rollout-zero-other";
+        let seen = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let upstream_addr = spawn_http_search_mock_recording_upstream_identity(seen.clone()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![primary_secret.to_string(), other_secret.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let token = proxy
+            .create_access_token(Some("http-search-api-rebalance-zero"))
+            .await
+            .expect("create token");
+        let primary_key_id: String = sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = ?")
+            .bind(primary_secret)
+            .fetch_one(&pool)
+            .await
+            .expect("load primary key id");
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id, user_id, api_key_id, created_at, updated_at
+            )
+            VALUES (?, NULL, ?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&token.id)
+        .bind(&primary_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed token primary affinity");
+
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.api_rebalance_enabled = true;
+        settings.api_rebalance_percent = 0;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("set API rebalance zero rollout");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let resp = Client::new()
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .header("Authorization", format!("Bearer {}", token.token))
+            .json(&serde_json::json!({ "query": "api rebalance disabled by percent" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let seen_snapshot = {
+            let seen = seen.lock().expect("seen lock should not be poisoned");
+            seen.clone()
+        };
+        assert_eq!(seen_snapshot.len(), 1);
+        assert_eq!(seen_snapshot[0].0, primary_secret);
+
+        let log_row = sqlx::query(
+            "SELECT binding_effect_code, selection_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load request log effect row");
+        assert_eq!(
+            log_row.try_get::<String, _>("binding_effect_code").unwrap(),
+            "none"
+        );
+        assert_eq!(
+            log_row.try_get::<String, _>("selection_effect_code").unwrap(),
             "none"
         );
 
@@ -2394,6 +2566,8 @@
                 rebalance_mcp_enabled: tavily_hikari::REBALANCE_MCP_ENABLED_DEFAULT,
                 rebalance_mcp_session_percent:
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
+                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
+                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
             })
             .await

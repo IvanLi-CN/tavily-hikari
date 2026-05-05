@@ -17,7 +17,9 @@ describe('SystemSettingsModule rendering', () => {
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 100,
-      userBlockedKeyBaseLimit: 5,
+          apiRebalanceEnabled: false,
+          apiRebalancePercent: 0,
+          userBlockedKeyBaseLimit: 5,
         },
         loadState: 'ready',
         error: null,
@@ -33,6 +35,8 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.form.requestRateLimitHint)
     expect(markup).toContain(strings.form.currentValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.currentPercentValue.replace('{percent}', '100'))
+    expect(markup).toContain(strings.form.currentApiRebalancePercentValue.replace('{percent}', '0'))
+    expect(markup).toContain(strings.form.apiRebalancePercentDisabledHint)
     expect(markup).toContain(strings.form.currentBlockedKeyBaseLimitValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.blockedKeyBaseLimitHint)
     expect(markup).not.toContain(strings.description)
@@ -51,6 +55,8 @@ describe('SystemSettingsModule rendering', () => {
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: true,
           rebalanceMcpSessionPercent: 35,
+          apiRebalanceEnabled: true,
+          apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
         },
         loadState: 'ready',
@@ -73,6 +79,8 @@ describe('SystemSettingsModule rendering', () => {
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
           rebalanceMcpSessionPercent: 35,
+          apiRebalanceEnabled: false,
+          apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
         },
         loadState: 'ready',
@@ -83,5 +91,6 @@ describe('SystemSettingsModule rendering', () => {
     )
 
     expect(markup).toContain(strings.form.percentDisabledHint)
+    expect(markup).toContain(strings.form.apiRebalancePercentDisabledHint)
   })
 })
