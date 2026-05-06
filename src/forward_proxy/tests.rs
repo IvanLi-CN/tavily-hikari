@@ -1169,6 +1169,61 @@ if __name__ == "__main__":
     }
 
     #[tokio::test]
+    async fn tavily_proxy_recorded_validation_attempts_are_probe_only() {
+        let root_dir = temp_runtime_dir("proxy-validation-attempts-are-probe");
+        let db_path = root_dir.join("proxy.db");
+        let db_path_str = db_path
+            .to_str()
+            .expect("database path should be valid utf-8")
+            .to_string();
+        let proxy = TavilyProxy::with_options(
+            Vec::<String>::new(),
+            "http://127.0.0.1:9/mcp",
+            &db_path_str,
+            TavilyProxyOptions {
+                xray_binary: write_fake_xray_binary("proxy-validation-attempts-are-probe"),
+                xray_runtime_dir: root_dir.join("xray-runtime"),
+                forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
+                    .expect("valid trace url"),
+                low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
+                health_readiness_grace_period: Duration::from_secs(90),
+            },
+        )
+        .await
+        .expect("create proxy");
+        let endpoint = ForwardProxyEndpoint::new_manual(
+            "http://127.0.0.1:9".to_string(),
+            "closed validation proxy".to_string(),
+            ForwardProxyProtocol::Http,
+            Some(Url::parse("http://127.0.0.1:9").expect("valid proxy url")),
+            None,
+        );
+
+        proxy
+            .probe_and_record_forward_proxy_endpoint(
+                &endpoint,
+                "revalidate",
+                None,
+                Duration::from_millis(100),
+                None,
+            )
+            .await
+            .expect_err("closed proxy probe should fail");
+
+        let pool = SqlitePool::connect(&db_path_str)
+            .await
+            .expect("connect sqlite");
+        let is_probe: i64 = sqlx::query_scalar(
+            "SELECT is_probe FROM forward_proxy_attempts WHERE proxy_key = ?1",
+        )
+        .bind(endpoint.key)
+        .fetch_one(&pool)
+        .await
+        .expect("recorded validation attempt");
+        assert_eq!(is_probe, 1);
+    }
+
+    #[tokio::test]
     async fn xray_supervisor_clears_cached_relay_urls_after_shared_process_exit() {
         let runtime_dir = temp_runtime_dir("shared-xray-dead-process");
         let mut supervisor = XraySupervisor::new(

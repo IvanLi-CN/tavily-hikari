@@ -352,8 +352,8 @@ impl TavilyProxy {
     pub(crate) async fn probe_and_record_forward_proxy_endpoint(
         &self,
         endpoint: &forward_proxy::ForwardProxyEndpoint,
-        request_kind: &str,
-        api_key_id: Option<&str>,
+        _request_kind: &str,
+        _api_key_id: Option<&str>,
         timeout: Duration,
         cancellation: Option<&ForwardProxyCancellation>,
     ) -> Result<f64, ProxyError> {
@@ -363,26 +363,24 @@ impl TavilyProxy {
             .await;
         match result {
             Ok(latency_ms) => {
-                self.record_forward_proxy_attempt(
+                self.record_forward_proxy_attempt_inner(
                     endpoint.key.as_str(),
-                    api_key_id,
-                    request_kind,
                     true,
                     Some(latency_ms),
                     None,
+                    true,
                 )
                 .await?;
                 Ok(latency_ms)
             }
             Err(err) => {
                 let error_code = map_forward_proxy_validation_error_code(&err);
-                self.record_forward_proxy_attempt(
+                self.record_forward_proxy_attempt_inner(
                     endpoint.key.as_str(),
-                    api_key_id,
-                    request_kind,
                     false,
                     None,
                     Some(error_code.as_str()),
+                    true,
                 )
                 .await?;
                 Err(err)
