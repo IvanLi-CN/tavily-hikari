@@ -1458,7 +1458,9 @@ impl TavilyProxy {
             )
             .await?
         {
-            if seen.insert(endpoint.key.clone()) {
+            if seen.insert(endpoint.key.clone())
+                && !self.forward_proxy.lock().await.is_node_disabled(&endpoint.key)
+            {
                 plan.push(forward_proxy::SelectedForwardProxy::from_endpoint(
                     &endpoint,
                 ));
