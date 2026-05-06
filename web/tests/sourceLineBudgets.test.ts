@@ -32,8 +32,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3200,
-      reason: 'API barrel now shields imports while the legacy runtime contract is preserved behind src/api/.',
+      max: 3250,
+      reason: 'API barrel still carries the forward proxy admin runtime contract until the proxy API surface is split out.',
     },
   ],
   [
@@ -46,8 +46,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/ForwardProxySettingsModule.tsx',
     {
-      max: 2400,
-      reason: 'Forward proxy settings stayed out of scope for this source-budget pass and remains on a documented follow-up allowance.',
+      max: 3050,
+      reason: 'Forward proxy settings now carries the node-pool and error-statistics surfaces; extraction remains a follow-up.',
     },
   ],
   [
