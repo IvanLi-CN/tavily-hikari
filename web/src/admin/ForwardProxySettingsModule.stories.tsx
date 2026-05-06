@@ -671,6 +671,55 @@ function StatusDetailBubbleProof(): JSX.Element {
   )
 }
 
+function ErrorStatisticsChartBubbleProof(): JSX.Element {
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    let timerId: number | null = null
+    let frameId: number | null = null
+    const openChartBubble = () => {
+      const trigger = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('button[aria-label*="success"]') ?? []).find(
+        (button) => {
+          const rect = button.getBoundingClientRect()
+          return rect.width < 24 && rect.height > 8
+        },
+      )
+
+      if (trigger) {
+        trigger.scrollIntoView({
+          block: 'center',
+          inline: 'nearest',
+        })
+        frameId = window.requestAnimationFrame(() => {
+          trigger.click()
+        })
+        return
+      }
+
+      timerId = window.setTimeout(openChartBubble, 50)
+    }
+
+    openChartBubble()
+
+    return () => {
+      if (timerId != null) {
+        window.clearTimeout(timerId)
+      }
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [])
+
+  return (
+    <div ref={rootRef}>
+      <StoryCanvas initialNodeView="errors" />
+    </div>
+  )
+}
+
 const meta = {
   title: 'Admin/ForwardProxySettingsModule',
   component: StoryCanvas,
@@ -698,6 +747,11 @@ export const ErrorStatistics: Story = {
   args: {
     initialNodeView: 'errors',
   },
+}
+
+export const ErrorStatisticsWithChartBubble: Story = {
+  name: 'Error Statistics Chart Bubble Proof',
+  render: () => <ErrorStatisticsChartBubbleProof />,
 }
 
 export const GlobalSocks5DisabledEditable: Story = {

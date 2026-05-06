@@ -665,24 +665,46 @@ function formatErrorWindow(windowStats: ForwardProxyErrorWindowStats): JSX.Eleme
   )
 }
 
-function ErrorActivityCell({ buckets }: { buckets: ForwardProxyErrorActivityBucket[] }): JSX.Element {
+function ErrorActivityCell({
+  buckets,
+  chartBubbleHandlers,
+}: {
+  buckets: ForwardProxyErrorActivityBucket[]
+  chartBubbleHandlers: ForwardProxyChartBubbleHandlers
+}): JSX.Element {
   if (buckets.length === 0) {
     return <span className="text-[11px] text-muted-foreground">—</span>
   }
   const maxTotal = Math.max(...buckets.map((bucket) => bucket.totalCount), 1)
+  const openBucket = (bucket: ForwardProxyErrorActivityBucket, anchorEl: HTMLElement, pinned: boolean) => {
+    chartBubbleHandlers.openChartBubble(
+      {
+        title: formatTimeRange(bucket.bucketStart, bucket.bucketEnd),
+        content: buildErrorActivityBubbleContent(bucket),
+      },
+      anchorEl,
+      pinned,
+    )
+  }
   return (
     <div className="flex h-10 items-end gap-px">
       {buckets.map((bucket) => {
         const total = Math.max(bucket.totalCount, 0)
         const height = total > 0 ? Math.max(4, (total / maxTotal) * 40) : 40
         const errorTotal = bucket.errors.reduce((sum, item) => sum + item.count, 0)
-        const titleParts = bucket.errors.map((item) => `${formatErrorKind(item.kind)}: ${item.count}`)
+        const accessibleLabel = `${formatTimeRange(bucket.bucketStart, bucket.bucketEnd)} · success ${bucket.successCount} · error ${errorTotal} · total ${total}`
         return (
-          <div
+          <button
+            type="button"
             key={bucket.bucketStart}
-            className="relative flex min-w-0 flex-1 flex-col justify-end overflow-hidden rounded-[3px] border border-border/40 bg-muted/30"
+            className="relative flex min-w-0 flex-1 flex-col justify-end overflow-hidden rounded-[3px] border border-border/40 bg-muted/30 transition-colors hover:border-border/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
             style={{ height }}
-            title={`${formatTimeRange(bucket.bucketStart, bucket.bucketEnd)} · ${bucket.successCount}/${errorTotal}${titleParts.length ? ` · ${titleParts.join(' · ')}` : ''}`}
+            aria-label={accessibleLabel}
+            onMouseEnter={(event) => openBucket(bucket, event.currentTarget, false)}
+            onMouseLeave={chartBubbleHandlers.scheduleChartBubbleClose}
+            onFocus={(event) => openBucket(bucket, event.currentTarget, false)}
+            onBlur={chartBubbleHandlers.scheduleChartBubbleClose}
+            onClick={(event) => openBucket(bucket, event.currentTarget, true)}
           >
             {total > errorTotal && (
               <span
@@ -700,14 +722,20 @@ function ErrorActivityCell({ buckets }: { buckets: ForwardProxyErrorActivityBuck
                 }}
               />
             ))}
-          </div>
+          </button>
         )
       })}
     </div>
   )
 }
 
-function ErrorPieCell({ distribution }: { distribution: ForwardProxyErrorKindCount[] }): JSX.Element {
+function ErrorPieCell({
+  distribution,
+  chartBubbleHandlers,
+}: {
+  distribution: ForwardProxyErrorKindCount[]
+  chartBubbleHandlers: ForwardProxyChartBubbleHandlers
+}): JSX.Element {
   const total = distribution.reduce((sum, item) => sum + item.count, 0)
   if (total <= 0) {
     return <span className="text-[11px] text-muted-foreground">—</span>
@@ -721,8 +749,27 @@ function ErrorPieCell({ distribution }: { distribution: ForwardProxyErrorKindCou
     })
     .join(', ')
   const title = distribution.map((item) => `${formatErrorKind(item.kind)}: ${item.count}`).join(' · ')
+  const openDistribution = (anchorEl: HTMLElement, pinned: boolean) => {
+    chartBubbleHandlers.openChartBubble(
+      {
+        title: '24h error distribution',
+        content: buildErrorDistributionBubbleContent(distribution),
+      },
+      anchorEl,
+      pinned,
+    )
+  }
   return (
-    <div className="flex items-center gap-3" title={title}>
+    <button
+      type="button"
+      className="flex max-w-full items-center gap-3 rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+      aria-label={title}
+      onMouseEnter={(event) => openDistribution(event.currentTarget, false)}
+      onMouseLeave={chartBubbleHandlers.scheduleChartBubbleClose}
+      onFocus={(event) => openDistribution(event.currentTarget, false)}
+      onBlur={chartBubbleHandlers.scheduleChartBubbleClose}
+      onClick={(event) => openDistribution(event.currentTarget, true)}
+    >
       <span
         className="block h-10 w-10 shrink-0 rounded-full border border-border/70"
         style={{ backgroundImage: `conic-gradient(${gradient})` }}
@@ -731,6 +778,59 @@ function ErrorPieCell({ distribution }: { distribution: ForwardProxyErrorKindCou
       <div className="min-w-0 text-[11px] text-muted-foreground">
         <strong className="block text-foreground">{formatNumber(total)}</strong>
         <span className="block truncate">{formatErrorKind(distribution[0]?.kind ?? 'unknown')}</span>
+      </div>
+    </button>
+  )
+}
+
+function buildErrorActivityBubbleContent(bucket: ForwardProxyErrorActivityBucket): JSX.Element {
+  const errorTotal = bucket.errors.reduce((sum, item) => sum + item.count, 0)
+  return (
+    <div className="forward-proxy-chart-bubble-stack">
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Success</span>
+        <strong>{formatNumber(bucket.successCount)}</strong>
+      </div>
+      {bucket.errors.length > 0 ? (
+        bucket.errors.map((item) => (
+          <div className="forward-proxy-chart-bubble-row" key={item.kind}>
+            <span>{formatErrorKind(item.kind)}</span>
+            <strong>{formatNumber(item.count)}</strong>
+          </div>
+        ))
+      ) : (
+        <div className="forward-proxy-chart-bubble-row">
+          <span>Errors</span>
+          <strong>0</strong>
+        </div>
+      )}
+      <div className="forward-proxy-chart-bubble-divider" />
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Total</span>
+        <strong>{formatNumber(bucket.totalCount)}</strong>
+      </div>
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Error rate</span>
+        <strong>{formatPercent(bucket.totalCount > 0 ? errorTotal / bucket.totalCount : null)}</strong>
+      </div>
+    </div>
+  )
+}
+
+function buildErrorDistributionBubbleContent(distribution: ForwardProxyErrorKindCount[]): JSX.Element {
+  const total = distribution.reduce((sum, item) => sum + item.count, 0)
+  return (
+    <div className="forward-proxy-chart-bubble-stack">
+      {distribution.map((item) => (
+        <div className="forward-proxy-chart-bubble-row" key={item.kind}>
+          <span>{formatErrorKind(item.kind)}</span>
+          <strong>{formatNumber(item.count)}</strong>
+        </div>
+      ))}
+      <div className="forward-proxy-chart-bubble-divider" />
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Total</span>
+        <strong>{formatNumber(total)}</strong>
       </div>
     </div>
   )
@@ -966,6 +1066,18 @@ interface ForwardProxyStatusBubbleState {
   pinned: boolean
 }
 
+interface ForwardProxyChartBubbleState {
+  anchorEl: HTMLElement
+  title: string
+  content: JSX.Element
+  pinned: boolean
+}
+
+interface ForwardProxyChartBubbleHandlers {
+  openChartBubble: (state: Omit<ForwardProxyChartBubbleState, 'anchorEl' | 'pinned'>, anchorEl: HTMLElement, pinned: boolean) => void
+  scheduleChartBubbleClose: () => void
+}
+
 function ForwardProxyStatusDetailBubble({
   strings,
   state,
@@ -1047,6 +1159,83 @@ function ForwardProxyStatusDetailBubble({
         </button>
       </div>
       <p className="forward-proxy-status-bubble-message">{state.row.message}</p>
+    </div>,
+    document.body,
+  )
+}
+
+function ForwardProxyChartDetailBubble({
+  state,
+  onClose,
+  onPointerEnter,
+  onPointerLeave,
+}: {
+  state: ForwardProxyChartBubbleState | null
+  onClose: () => void
+  onPointerEnter: () => void
+  onPointerLeave: () => void
+}): JSX.Element | null {
+  const { layerRef: bubbleRef, position } = useAnchoredFloatingLayer<HTMLDivElement>({
+    open: Boolean(state),
+    anchorEl: state?.anchorEl ?? null,
+    placement: 'top',
+    align: 'center',
+    offset: 10,
+    viewportMargin: 12,
+    arrowPadding: 18,
+  })
+
+  useEffect(() => {
+    if (!state) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (bubbleRef.current?.contains(target)) return
+      if (state.anchorEl.contains(target)) return
+      onClose()
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose, state])
+
+  if (!state || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      ref={bubbleRef}
+      className="forward-proxy-chart-bubble layer-popover"
+      role="dialog"
+      aria-label={state.title}
+      data-placement={position?.placement ?? 'top'}
+      style={{
+        top: `${position?.top ?? 0}px`,
+        left: `${position?.left ?? 0}px`,
+        visibility: position ? 'visible' : 'hidden',
+        pointerEvents: position ? 'auto' : 'none',
+        ['--forward-proxy-chart-bubble-arrow-offset' as string]: `${position?.arrowOffset ?? 24}px`,
+      }}
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
+    >
+      <div className="forward-proxy-chart-bubble-header">
+        <strong className="forward-proxy-chart-bubble-title">{state.title}</strong>
+        <button type="button" className="forward-proxy-chart-bubble-close" onClick={onClose} aria-label="Close">
+          <Icon icon="mdi:close" className="text-sm" />
+        </button>
+      </div>
+      <div className="forward-proxy-chart-bubble-content">{state.content}</div>
     </div>,
     document.body,
   )
@@ -1563,6 +1752,38 @@ export default function ForwardProxySettingsModule({
   const [selectedNodeKeys, setSelectedNodeKeys] = useState<Set<string>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkError, setBulkError] = useState<string | null>(null)
+  const [chartBubble, setChartBubble] = useState<ForwardProxyChartBubbleState | null>(null)
+  const chartBubbleCloseTimerRef = useRef<number | null>(null)
+  const clearChartBubbleCloseTimer = () => {
+    if (chartBubbleCloseTimerRef.current != null && typeof window !== 'undefined') {
+      window.clearTimeout(chartBubbleCloseTimerRef.current)
+      chartBubbleCloseTimerRef.current = null
+    }
+  }
+  const openChartBubble: ForwardProxyChartBubbleHandlers['openChartBubble'] = (state, anchorEl, pinned) => {
+    clearChartBubbleCloseTimer()
+    setChartBubble((current) => {
+      if (pinned && current?.pinned && current.anchorEl === anchorEl) return null
+      if (current?.pinned && !pinned && current.anchorEl !== anchorEl) return current
+      return {
+        ...state,
+        anchorEl,
+        pinned,
+      }
+    })
+  }
+  const scheduleChartBubbleClose = () => {
+    if (typeof window === 'undefined') return
+    clearChartBubbleCloseTimer()
+    chartBubbleCloseTimerRef.current = window.setTimeout(() => {
+      setChartBubble((current) => (current?.pinned ? current : null))
+      chartBubbleCloseTimerRef.current = null
+    }, 140)
+  }
+  const chartBubbleHandlers: ForwardProxyChartBubbleHandlers = {
+    openChartBubble,
+    scheduleChartBubbleClose,
+  }
   const visibleNodeKeys = nodeView === 'errors'
     ? errorRows.map((node) => node.key)
     : nodeRows.map(({ node }) => node.key)
@@ -2413,10 +2634,10 @@ export default function ForwardProxySettingsModule({
                             </TableCell>
                           ))}
                           <TableCell className="py-3">
-                            <ErrorActivityCell buckets={node.last24h} />
+                            <ErrorActivityCell buckets={node.last24h} chartBubbleHandlers={chartBubbleHandlers} />
                           </TableCell>
                           <TableCell className="py-3">
-                            <ErrorPieCell distribution={node.distribution24h} />
+                            <ErrorPieCell distribution={node.distribution24h} chartBubbleHandlers={chartBubbleHandlers} />
                           </TableCell>
                         </TableRow>
                       ))}
@@ -2459,6 +2680,17 @@ export default function ForwardProxySettingsModule({
                 {strings.bulk.visibleSelected.replace('{count}', formatNumber(selectedVisibleCount))}
               </span>
             </div>
+          )}
+          {chartBubble && (
+            <ForwardProxyChartDetailBubble
+              state={chartBubble}
+              onClose={() => {
+                clearChartBubbleCloseTimer()
+                setChartBubble(null)
+              }}
+              onPointerEnter={clearChartBubbleCloseTimer}
+              onPointerLeave={scheduleChartBubbleClose}
+            />
           )}
         </CardContent>
       </Card>

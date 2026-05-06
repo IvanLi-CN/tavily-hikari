@@ -17,6 +17,9 @@ describe('ForwardProxySettingsModule Storybook proofs', () => {
     expect(forwardProxyStories.StatusDetailBubble).toMatchObject({
       name: 'Status Detail Bubble Proof',
     })
+    expect(forwardProxyStories.ErrorStatisticsWithChartBubble).toMatchObject({
+      name: 'Error Statistics Chart Bubble Proof',
+    })
   })
 
   it('renders the status detail bubble proof without throwing outside Storybook runtime', () => {
