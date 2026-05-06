@@ -680,22 +680,22 @@ function ErrorActivityCell({ buckets }: { buckets: ForwardProxyErrorActivityBuck
         return (
           <div
             key={bucket.bucketStart}
-            className="relative flex min-w-0 flex-1 overflow-hidden rounded-[3px] border border-border/40 bg-muted/30"
+            className="relative flex min-w-0 flex-1 flex-col justify-end overflow-hidden rounded-[3px] border border-border/40 bg-muted/30"
             style={{ height }}
             title={`${formatTimeRange(bucket.bucketStart, bucket.bucketEnd)} · ${bucket.successCount}/${errorTotal}${titleParts.length ? ` · ${titleParts.join(' · ')}` : ''}`}
           >
             {total > errorTotal && (
               <span
-                className="block h-full bg-muted-foreground/15"
-                style={{ width: `${((total - errorTotal) / Math.max(total, 1)) * 100}%` }}
+                className="block w-full bg-muted-foreground/15"
+                style={{ height: `${((total - errorTotal) / Math.max(total, 1)) * 100}%` }}
               />
             )}
             {bucket.errors.map((item) => (
               <span
                 key={`${bucket.bucketStart}-${item.kind}`}
-                className="block h-full"
+                className="block w-full"
                 style={{
-                  width: `${(item.count / Math.max(total, 1)) * 100}%`,
+                  height: `${(item.count / Math.max(total, 1)) * 100}%`,
                   backgroundColor: getErrorKindColor(item.kind),
                 }}
               />
