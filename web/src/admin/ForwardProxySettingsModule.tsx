@@ -785,8 +785,8 @@ function ErrorPieCell({
     setActiveKind(item.kind)
     chartBubbleHandlers.openChartBubble(
       {
-        title: formatErrorKind(item.kind),
-        content: buildErrorDistributionBubbleContent(item, total),
+        title: '24h error distribution',
+        content: buildErrorDistributionBubbleContent(distribution, item.kind, total),
       },
       anchorEl,
       pinned,
@@ -861,17 +861,27 @@ function buildErrorActivityBubbleContent(bucket: ForwardProxyErrorActivityBucket
   )
 }
 
-function buildErrorDistributionBubbleContent(item: ForwardProxyErrorKindCount, total: number): JSX.Element {
+function buildErrorDistributionBubbleContent(
+  distribution: ForwardProxyErrorKindCount[],
+  activeKind: string,
+  total: number,
+): JSX.Element {
   return (
     <div className="forward-proxy-chart-bubble-stack">
-      <div className="forward-proxy-chart-bubble-row">
-        <span>Count</span>
-        <strong>{formatNumber(item.count)}</strong>
-      </div>
-      <div className="forward-proxy-chart-bubble-row">
-        <span>Share</span>
-        <strong>{formatPercent(total > 0 ? item.count / total : null)}</strong>
-      </div>
+      {distribution.map((item) => (
+        <div
+          className={`forward-proxy-chart-bubble-row forward-proxy-chart-bubble-distribution-row ${
+            item.kind === activeKind ? 'is-active' : ''
+          }`}
+          key={item.kind}
+        >
+          <span>{formatErrorKind(item.kind)}</span>
+          <strong>
+            {formatNumber(item.count)}
+            <small>{formatPercent(total > 0 ? item.count / total : null)}</small>
+          </strong>
+        </div>
+      ))}
       <div className="forward-proxy-chart-bubble-divider" />
       <div className="forward-proxy-chart-bubble-row">
         <span>Total</span>
