@@ -588,9 +588,9 @@ function buildWeightTrendGeometry(
 }
 
 function getWindowColumnClassName(index: number): string {
-  if (index === 1 || index === 2) return 'hidden text-center md:table-cell'
-  if (index === 3 || index === 4) return 'hidden text-center xl:table-cell'
-  return 'text-center'
+  if (index === 1 || index === 2) return 'hidden min-w-[5.5rem] text-center md:table-cell'
+  if (index === 3 || index === 4) return 'hidden min-w-[5.5rem] text-center xl:table-cell'
+  return 'min-w-[5.5rem] text-center'
 }
 
 function RequestTrendCell({
@@ -658,7 +658,7 @@ function formatErrorWindow(windowStats: ForwardProxyErrorWindowStats): JSX.Eleme
   return (
     <div className="flex flex-col items-center gap-0.5 py-1">
       <span>{formatPercent(windowStats.errorRate)}</span>
-      <span className="text-[11px] text-muted-foreground">
+      <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
         {formatNumber(windowStats.errorCount)} / {formatNumber(windowStats.totalCount)}
       </span>
     </div>
