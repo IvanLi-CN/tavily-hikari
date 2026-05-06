@@ -651,6 +651,28 @@ function formatErrorKind(kind: string): string {
   return kind.replaceAll('_', ' ')
 }
 
+function polarToCartesian(cx: number, cy: number, radius: number, angleDegrees: number): { x: number; y: number } {
+  const angleRadians = ((angleDegrees - 90) * Math.PI) / 180
+  return {
+    x: cx + radius * Math.cos(angleRadians),
+    y: cy + radius * Math.sin(angleRadians),
+  }
+}
+
+function buildPieSlicePath(cx: number, cy: number, radius: number, startPercent: number, endPercent: number): string {
+  const startAngle = startPercent * 3.6
+  const endAngle = endPercent * 3.6
+  const start = polarToCartesian(cx, cy, radius, endAngle)
+  const end = polarToCartesian(cx, cy, radius, startAngle)
+  const largeArcFlag = endAngle - startAngle > 180 ? 1 : 0
+  return [
+    `M ${cx} ${cy}`,
+    `L ${start.x.toFixed(3)} ${start.y.toFixed(3)}`,
+    `A ${radius} ${radius} 0 ${largeArcFlag} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`,
+    'Z',
+  ].join(' ')
+}
+
 function formatErrorWindow(windowStats: ForwardProxyErrorWindowStats): JSX.Element {
   if (windowStats.totalCount <= 0) {
     return <span className="text-muted-foreground">—</span>
@@ -736,50 +758,72 @@ function ErrorPieCell({
   distribution: ForwardProxyErrorKindCount[]
   chartBubbleHandlers: ForwardProxyChartBubbleHandlers
 }): JSX.Element {
+  const [activeKind, setActiveKind] = useState<string | null>(null)
   const total = distribution.reduce((sum, item) => sum + item.count, 0)
   if (total <= 0) {
     return <span className="text-[11px] text-muted-foreground">—</span>
   }
-  let offset = 0
-  const gradient = distribution
-    .map((item) => {
-      const start = offset
-      offset += (item.count / total) * 100
-      return `${getErrorKindColor(item.kind)} ${start.toFixed(2)}% ${offset.toFixed(2)}%`
+  let offsetPercent = 0
+  const slices = distribution
+    .map((item): ErrorPieSliceGeometry => {
+      const startPercent = offsetPercent
+      offsetPercent += (item.count / total) * 100
+      const endPercent = offsetPercent
+      const midAngle = ((startPercent + endPercent) / 2) * 3.6 - 90
+      const offsetRadius = item.kind === activeKind ? 2.2 : 0
+      return {
+        item,
+        startPercent,
+        endPercent,
+        path: buildPieSlicePath(20, 20, 19, startPercent, endPercent),
+        offsetX: Math.cos((midAngle * Math.PI) / 180) * offsetRadius,
+        offsetY: Math.sin((midAngle * Math.PI) / 180) * offsetRadius,
+      }
     })
-    .join(', ')
   const title = distribution.map((item) => `${formatErrorKind(item.kind)}: ${item.count}`).join(' · ')
-  const openDistribution = (anchorEl: HTMLElement, pinned: boolean) => {
+  const openSlice = (item: ForwardProxyErrorKindCount, anchorEl: HTMLElement, pinned: boolean) => {
+    setActiveKind(item.kind)
     chartBubbleHandlers.openChartBubble(
       {
-        title: '24h error distribution',
-        content: buildErrorDistributionBubbleContent(distribution),
+        title: formatErrorKind(item.kind),
+        content: buildErrorDistributionBubbleContent(item, total),
       },
       anchorEl,
       pinned,
     )
   }
+  const scheduleSliceClose = () => {
+    setActiveKind(null)
+    chartBubbleHandlers.scheduleChartBubbleClose()
+  }
   return (
-    <button
-      type="button"
-      className="flex max-w-full items-center gap-3 rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
-      aria-label={title}
-      onMouseEnter={(event) => openDistribution(event.currentTarget, false)}
-      onMouseLeave={chartBubbleHandlers.scheduleChartBubbleClose}
-      onFocus={(event) => openDistribution(event.currentTarget, false)}
-      onBlur={chartBubbleHandlers.scheduleChartBubbleClose}
-      onClick={(event) => openDistribution(event.currentTarget, true)}
-    >
-      <span
-        className="block h-10 w-10 shrink-0 rounded-full border border-border/70"
-        style={{ backgroundImage: `conic-gradient(${gradient})` }}
-        aria-hidden="true"
-      />
+    <div className="flex max-w-full items-center gap-3" aria-label={title}>
+      <svg className="block h-10 w-10 shrink-0 overflow-visible" viewBox="0 0 40 40" role="img" aria-label={title}>
+        {slices.map((slice) => (
+          <path
+            key={slice.item.kind}
+            d={slice.path}
+            className="forward-proxy-error-pie-slice"
+            fill={getErrorKindColor(slice.item.kind)}
+            stroke="hsl(var(--card))"
+            strokeWidth={slice.item.kind === activeKind ? 1.8 : 0.8}
+            transform={`translate(${slice.offsetX.toFixed(2)} ${slice.offsetY.toFixed(2)})`}
+            tabIndex={0}
+            role="button"
+            aria-label={`${formatErrorKind(slice.item.kind)} ${formatNumber(slice.item.count)} ${formatPercent(slice.item.count / total)}`}
+            onMouseEnter={(event) => openSlice(slice.item, event.currentTarget as unknown as HTMLElement, false)}
+            onMouseLeave={scheduleSliceClose}
+            onFocus={(event) => openSlice(slice.item, event.currentTarget as unknown as HTMLElement, false)}
+            onBlur={scheduleSliceClose}
+            onClick={(event) => openSlice(slice.item, event.currentTarget as unknown as HTMLElement, true)}
+          />
+        ))}
+      </svg>
       <div className="min-w-0 text-[11px] text-muted-foreground">
         <strong className="block text-foreground">{formatNumber(total)}</strong>
-        <span className="block truncate">{formatErrorKind(distribution[0]?.kind ?? 'unknown')}</span>
+        <span className="block truncate">{formatErrorKind(activeKind ?? distribution[0]?.kind ?? 'unknown')}</span>
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -817,16 +861,17 @@ function buildErrorActivityBubbleContent(bucket: ForwardProxyErrorActivityBucket
   )
 }
 
-function buildErrorDistributionBubbleContent(distribution: ForwardProxyErrorKindCount[]): JSX.Element {
-  const total = distribution.reduce((sum, item) => sum + item.count, 0)
+function buildErrorDistributionBubbleContent(item: ForwardProxyErrorKindCount, total: number): JSX.Element {
   return (
     <div className="forward-proxy-chart-bubble-stack">
-      {distribution.map((item) => (
-        <div className="forward-proxy-chart-bubble-row" key={item.kind}>
-          <span>{formatErrorKind(item.kind)}</span>
-          <strong>{formatNumber(item.count)}</strong>
-        </div>
-      ))}
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Count</span>
+        <strong>{formatNumber(item.count)}</strong>
+      </div>
+      <div className="forward-proxy-chart-bubble-row">
+        <span>Share</span>
+        <strong>{formatPercent(total > 0 ? item.count / total : null)}</strong>
+      </div>
       <div className="forward-proxy-chart-bubble-divider" />
       <div className="forward-proxy-chart-bubble-row">
         <span>Total</span>
@@ -1076,6 +1121,15 @@ interface ForwardProxyChartBubbleState {
 interface ForwardProxyChartBubbleHandlers {
   openChartBubble: (state: Omit<ForwardProxyChartBubbleState, 'anchorEl' | 'pinned'>, anchorEl: HTMLElement, pinned: boolean) => void
   scheduleChartBubbleClose: () => void
+}
+
+interface ErrorPieSliceGeometry {
+  item: ForwardProxyErrorKindCount
+  startPercent: number
+  endPercent: number
+  path: string
+  offsetX: number
+  offsetY: number
 }
 
 function ForwardProxyStatusDetailBubble({

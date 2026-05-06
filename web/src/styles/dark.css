@@ -1838,6 +1838,17 @@
   background: hsl(var(--border) / 0.72);
 }
 
+.forward-proxy-error-pie-slice {
+  cursor: pointer;
+  transition: opacity 0.16s ease, stroke-width 0.16s ease, transform 0.16s ease;
+}
+
+.forward-proxy-error-pie-slice:hover,
+.forward-proxy-error-pie-slice:focus-visible {
+  opacity: 0.94;
+  outline: none;
+}
+
 .forward-proxy-table-row {
   transition: background-color 0.16s ease;
 }
