@@ -660,6 +660,14 @@ function polarToCartesian(cx: number, cy: number, radius: number, angleDegrees: 
 }
 
 function buildPieSlicePath(cx: number, cy: number, radius: number, startPercent: number, endPercent: number): string {
+  if (endPercent - startPercent >= 99.999) {
+    return [
+      `M ${cx} ${(cy - radius).toFixed(3)}`,
+      `A ${radius} ${radius} 0 1 1 ${cx} ${(cy + radius).toFixed(3)}`,
+      `A ${radius} ${radius} 0 1 1 ${cx} ${(cy - radius).toFixed(3)}`,
+      'Z',
+    ].join(' ')
+  }
   const startAngle = startPercent * 3.6
   const endAngle = endPercent * 3.6
   const start = polarToCartesian(cx, cy, radius, endAngle)
