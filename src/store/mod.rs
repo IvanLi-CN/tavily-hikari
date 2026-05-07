@@ -29,6 +29,42 @@ pub(crate) fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
         || message.contains("database is busy")
 }
 
+pub(crate) fn sqlite_transient_write_retry_delay(attempt: usize) -> Duration {
+    const BACKOFF_MS: [u64; 5] = [20, 50, 100, 200, 500];
+    Duration::from_millis(
+        BACKOFF_MS
+            .get(attempt)
+            .copied()
+            .unwrap_or(*BACKOFF_MS.last().expect("backoff is non-empty")),
+    )
+}
+
+pub(crate) async fn sleep_before_sqlite_transient_write_retry(
+    operation: &str,
+    attempt: usize,
+    deadline: Instant,
+    err: &ProxyError,
+) -> bool {
+    if !is_transient_sqlite_write_error(err) {
+        return false;
+    }
+
+    let now = Instant::now();
+    if now >= deadline {
+        return false;
+    }
+
+    let remaining = deadline.saturating_duration_since(now);
+    let backoff = sqlite_transient_write_retry_delay(attempt).min(remaining);
+    eprintln!(
+        "{operation}: transient sqlite write error (attempt={}, backoff={}ms): {err}",
+        attempt + 1,
+        backoff.as_millis()
+    );
+    tokio::time::sleep(backoff).await;
+    true
+}
+
 pub(crate) fn is_invalid_current_month_billing_subject_error(err: &ProxyError) -> bool {
     match err {
         ProxyError::QuotaDataMissing { reason } => {
@@ -1196,5 +1232,6 @@ include!("key_store_users_and_oauth.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alerts.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");
 include!("key_store_account_usage_rollups.rs");
