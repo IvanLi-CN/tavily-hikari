@@ -2,12 +2,34 @@ import { describe, expect, it } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import SystemSettingsModule from './SystemSettingsModule'
+import SystemSettingsModule, {
+  parseTrustedClientIpHeaderDraft,
+  toggleOrderedHeaderDraft,
+} from './SystemSettingsModule'
 import { translations } from '../i18n'
 
 const strings = translations.zh.admin.systemSettings
 
 describe('SystemSettingsModule rendering', () => {
+  it('toggles trusted client IP header presets at the end of the ordered draft', () => {
+    expect(toggleOrderedHeaderDraft('cf-connecting-ip\nx-real-ip', 'x-forwarded-for')).toBe(
+      'cf-connecting-ip\nx-real-ip\nx-forwarded-for',
+    )
+    expect(toggleOrderedHeaderDraft('cf-connecting-ip\nx-real-ip\nx-forwarded-for', 'x-real-ip')).toBe(
+      'cf-connecting-ip\nx-forwarded-for',
+    )
+  })
+
+  it('reports duplicated trusted client IP headers with exact line numbers', () => {
+    expect(
+      parseTrustedClientIpHeaderDraft('cf-connecting-ip\nx-forwarded-for\nCF-Connecting-IP').duplicateError,
+    ).toBe('客户端 IP 请求头重复：cf-connecting-ip 出现在第 1、3 行')
+    expect(
+      parseTrustedClientIpHeaderDraft('cf-connecting-ip\nx-forwarded-for\nx-forwarded-for\ncf-connecting-ip')
+        .duplicateError,
+    ).toBe('客户端 IP 请求头重复：cf-connecting-ip 出现在第 1、4 行；x-forwarded-for 出现在第 2、3 行')
+  })
+
   it('renders the help trigger while keeping explanatory copy inside the tooltip bubble', () => {
     const markup = renderToStaticMarkup(
       createElement(SystemSettingsModule, {
@@ -20,6 +42,8 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
           userBlockedKeyBaseLimit: 5,
+          trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
+          trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },
         loadState: 'ready',
         error: null,
@@ -39,6 +63,7 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.form.apiRebalancePercentDisabledHint)
     expect(markup).toContain(strings.form.currentBlockedKeyBaseLimitValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.blockedKeyBaseLimitHint)
+    expect(markup).toContain('配置可信 IP')
     expect(markup).not.toContain(strings.description)
     expect(markup).not.toContain(strings.form.description)
     expect(markup).not.toContain(strings.form.countHint)
@@ -58,6 +83,8 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: true,
           apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
+          trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
+          trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },
         loadState: 'ready',
         error: null,
@@ -82,6 +109,8 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
+          trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
+          trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },
         loadState: 'ready',
         error: null,

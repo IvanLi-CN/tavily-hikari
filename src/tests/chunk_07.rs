@@ -1260,6 +1260,7 @@ async fn api_rebalance_route_arms_backoff_on_429_and_avoids_hot_key_on_next_requ
             options.clone(),
             &headers,
             true,
+            None,
         )
         .await
         .expect("first project request should complete");
@@ -1293,6 +1294,7 @@ async fn api_rebalance_route_arms_backoff_on_429_and_avoids_hot_key_on_next_requ
             options,
             &headers,
             true,
+            None,
         )
         .await
         .expect("second project request should complete");
@@ -1503,6 +1505,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
             options.clone(),
             &headers,
             true,
+            None,
         )
         .await
         .expect("first project request should complete");
@@ -1576,6 +1579,7 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
             options,
             &headers,
             true,
+            None,
         )
         .await
         .expect("second project request should complete");
@@ -1761,6 +1765,7 @@ async fn unknown_403_api_rebalance_cools_key_and_next_request_avoids_it() {
             options.clone(),
             &headers,
             true,
+            None,
         )
         .await
         .expect("first global HTTP request should complete");
@@ -1796,6 +1801,7 @@ async fn unknown_403_api_rebalance_cools_key_and_next_request_avoids_it() {
             options,
             &headers,
             true,
+            None,
         )
         .await
         .expect("second global HTTP request should complete");
@@ -1831,6 +1837,7 @@ async fn unknown_403_api_rebalance_cools_key_and_next_request_avoids_it() {
             serde_json::json!({ "query": "project avoids API rebalance cooldown" }),
             &project_headers,
             true,
+            None,
         )
         .await
         .expect("project-routed HTTP request should complete");
@@ -1910,6 +1917,7 @@ async fn successful_request_clear_links_transient_backoff_maintenance_to_request
             serde_json::json!({ "query": "recovered" }),
             &headers,
             true,
+            None,
         )
         .await
         .expect("successful request should clear cooldown");
@@ -2160,6 +2168,7 @@ async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
             options,
             &headers,
             true,
+            None,
         )
         .await
         .expect("http request should complete");
@@ -2268,6 +2277,7 @@ async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
             &format!("/api/tavily/research/{request_id}"),
             &headers,
             true,
+            None,
         )
         .await
         .expect("research result request should complete");

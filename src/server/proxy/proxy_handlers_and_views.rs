@@ -6,6 +6,10 @@ async fn proxy_handler(
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
     let (query, query_token) = extract_token_from_query(parts.uri.query());
+    let remote_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
 
     if method == Method::GET && accepts_event_stream(&parts.headers) {
         let response = Response::builder()
@@ -29,6 +33,19 @@ async fn proxy_handler(
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let system_settings = state
+        .proxy
+        .get_system_settings()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let client_ip = resolve_client_ip_info(
+        remote_addr,
+        &parts.headers,
+        &TrustedClientIpSettings {
+            trusted_proxy_cidrs: system_settings.trusted_proxy_cidrs.clone(),
+            trusted_client_ip_headers: system_settings.trusted_client_ip_headers.clone(),
+        },
+    );
     let is_mcp_request = path.starts_with("/mcp");
     let is_mcp_delete_root_request = is_mcp_session_delete_request(&method, &path);
     if is_mcp_request && using_dev_open_admin_fallback {
@@ -113,6 +130,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("parse_error"),
+                    Some(&client_ip),
                     early_mcp_rebalance_transport,
                 )
                 .await;
@@ -136,6 +154,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("empty_batch"),
+                    Some(&client_ip),
                     early_mcp_rebalance_transport,
                 )
                 .await;
@@ -162,6 +181,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("invalid_request"),
+                    Some(&client_ip),
                     early_mcp_rebalance_transport,
                 )
                 .await;
@@ -189,6 +209,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("missing_session_id"),
+                    Some(&client_ip),
                     false,
                 )
                 .await;
@@ -226,6 +247,7 @@ async fn proxy_handler(
                         None,
                         Some("mcp"),
                         Some("response_session_unavailable"),
+                        Some(&client_ip),
                         false,
                     )
                     .await;
@@ -247,6 +269,7 @@ async fn proxy_handler(
                     None,
                     Some("mcp"),
                     Some("response_accepted"),
+                    Some(&client_ip),
                     false,
                 )
                 .await;
@@ -286,6 +309,7 @@ async fn proxy_handler(
                         None,
                         Some("mcp"),
                         Some("missing_session_id"),
+                        Some(&client_ip),
                         false,
                     )
                     .await;
@@ -1016,6 +1040,7 @@ async fn proxy_handler(
         routing_subject_hash: control_routing_subject_hash,
         upstream_operation: control_upstream_operation,
         fallback_reason: None,
+        client_ip: Some(client_ip.clone()),
     };
 
     let proxy_result = if incoming_proxy_session_id.is_none()
@@ -1032,6 +1057,7 @@ async fn proxy_handler(
             planned_initialize_proxy_session_id.as_deref(),
             incoming_protocol_version.as_deref(),
             rebalance_routing_subject_hash.as_deref(),
+            Some(&client_ip),
         )
         .await
         {
@@ -1059,6 +1085,7 @@ async fn proxy_handler(
                 .or(stateless_rebalance_proxy_session_id.as_deref()),
             incoming_protocol_version.as_deref(),
             rebalance_routing_subject_hash.as_deref(),
+            Some(&client_ip),
         )
         .await
         {
@@ -1853,6 +1880,11 @@ impl RequestLogView {
                 .flatten(),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
+            remote_addr: record.remote_addr,
+            client_ip: record.client_ip,
+            client_ip_source: record.client_ip_source,
+            client_ip_trusted: record.client_ip_trusted,
+            ip_headers: record.ip_headers,
             operational_class: record.operational_class,
             request_kind_protocol_group: record.request_kind_protocol_group,
             request_kind_billing_group: record.request_kind_billing_group,
@@ -1910,6 +1942,11 @@ impl RequestLogView {
             response_body: None,
             forwarded_headers: Vec::new(),
             dropped_headers: Vec::new(),
+            remote_addr: None,
+            client_ip: None,
+            client_ip_source: None,
+            client_ip_trusted: false,
+            ip_headers: Vec::new(),
             operational_class,
             request_kind_protocol_group,
             request_kind_billing_group,

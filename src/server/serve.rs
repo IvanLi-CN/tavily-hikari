@@ -120,6 +120,10 @@ pub async fn serve(
         .route("/api/summary/windows", get(fetch_summary_windows))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
+        .route(
+            "/api/settings/client-ip/observed-headers",
+            get(get_observed_client_ip_requests),
+        )
         .route("/api/settings/forward-proxy", put(put_forward_proxy_settings))
         .route(
             "/api/settings/forward-proxy/validate",

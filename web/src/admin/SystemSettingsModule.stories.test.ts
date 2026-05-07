@@ -20,6 +20,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
     expect(systemSettingsStories.BlockedKeyBaseConfigured).toMatchObject({})
+    expect(systemSettingsStories.ClientIpDialogWithObservedValues).toMatchObject({})
   })
 
   it('renders the applying story without Storybook runtime helpers', () => {

@@ -184,6 +184,7 @@ impl TavilyProxy {
                         fallback_reason: request.fallback_reason.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip: request.client_ip.as_ref(),
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -253,6 +254,7 @@ impl TavilyProxy {
                         fallback_reason: request.fallback_reason.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip: request.client_ip.as_ref(),
                     })
                     .await?;
                 Err(err)
@@ -277,6 +279,7 @@ impl TavilyProxy {
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let (
             lease,
@@ -457,6 +460,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -543,6 +547,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 Err(err)
@@ -628,6 +633,7 @@ impl TavilyProxy {
         proxy_session_id: Option<&str>,
         routing_subject_hash: Option<&str>,
         upstream_operation: &str,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
         let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
 
@@ -747,6 +753,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -825,6 +832,7 @@ impl TavilyProxy {
                         fallback_reason: Some("upstream_http_error"),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip: None,
                     })
                     .await?;
                 let mut headers = HeaderMap::new();
@@ -864,6 +872,7 @@ impl TavilyProxy {
         proxy_session_id: Option<&str>,
         routing_subject_hash: Option<&str>,
         upstream_operation: &str,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
         let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
 
@@ -989,6 +998,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -1067,6 +1077,7 @@ impl TavilyProxy {
                         fallback_reason: Some("upstream_http_error"),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip: None,
                     })
                     .await?;
                 let mut headers = HeaderMap::new();
@@ -1110,6 +1121,7 @@ impl TavilyProxy {
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis, Option<i64>), ProxyError> {
         let (
             lease,
@@ -1277,6 +1289,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -1364,6 +1377,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 Err(err)
@@ -1383,6 +1397,7 @@ impl TavilyProxy {
         display_path: &str,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let research_request_id = extract_research_request_id_from_path(upstream_path);
         let lease = self
@@ -1505,6 +1520,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 self.link_transient_backoff_clear_request_log(
@@ -1593,6 +1609,7 @@ impl TavilyProxy {
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
+                        client_ip,
                     })
                     .await?;
                 Err(err)
@@ -1614,6 +1631,7 @@ impl TavilyProxy {
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         self.proxy_http_json_endpoint(
             usage_base,
@@ -1627,6 +1645,7 @@ impl TavilyProxy {
             options,
             original_headers,
             true,
+            client_ip,
         )
         .await
     }
@@ -1687,6 +1706,25 @@ impl TavilyProxy {
 
     pub async fn latest_visible_request_log_id(&self) -> Result<Option<i64>, ProxyError> {
         self.key_store.fetch_latest_visible_request_log_id().await
+    }
+
+    pub async fn recent_client_ip_counts_by_user(
+        &self,
+        user_ids: &[String],
+        since: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.key_store
+            .fetch_recent_client_ip_counts_by_user(user_ids, since)
+            .await
+    }
+
+    pub async fn recent_client_ip_requests(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ObservedClientIpRequest>, ProxyError> {
+        self.key_store
+            .fetch_recent_client_ip_requests(limit)
+            .await
     }
 
     /// Admin: recent request logs with simple pagination and optional result_status filter.

@@ -612,6 +612,11 @@ pub(crate) fn parse_header_list(raw: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub(crate) fn parse_client_ip_header_values(raw: Option<String>) -> Vec<ClientIpHeaderValue> {
+    raw.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 pub(crate) fn analyze_json_message(value: &Value) -> Option<(MessageOutcome, Option<i64>)> {
     if value.get("error").is_some_and(|v| !v.is_null()) {
         return Some((MessageOutcome::Error, None));

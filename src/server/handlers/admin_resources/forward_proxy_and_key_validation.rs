@@ -51,6 +51,12 @@ async fn put_system_settings(
             user_blocked_key_base_limit: payload
                 .user_blocked_key_base_limit
                 .unwrap_or(current_settings.user_blocked_key_base_limit),
+            trusted_proxy_cidrs: payload
+                .trusted_proxy_cidrs
+                .unwrap_or(current_settings.trusted_proxy_cidrs),
+            trusted_client_ip_headers: payload
+                .trusted_client_ip_headers
+                .unwrap_or(current_settings.trusted_client_ip_headers),
         })
         .await
         .map(Json)
@@ -62,12 +68,32 @@ async fn put_system_settings(
                 || message.contains("rebalance_mcp_session_percent must be between")
                 || message.contains("api_rebalance_percent must be between")
                 || message.contains("user_blocked_key_base_limit must be")
+                || message.contains("trusted_proxy_cidrs")
+                || message.contains("trusted_client_ip_headers")
             {
                 (StatusCode::BAD_REQUEST, message)
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
         })
+}
+
+async fn get_observed_client_ip_requests(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ObservedClientIpRequestsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let items = state
+        .proxy
+        .recent_client_ip_requests(50)
+        .await
+        .map_err(|err| {
+            eprintln!("get observed client ip requests error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })?;
+    Ok(Json(ObservedClientIpRequestsResponse { items }))
 }
 
 async fn put_forward_proxy_settings(

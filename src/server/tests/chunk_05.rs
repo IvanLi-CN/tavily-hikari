@@ -74,6 +74,11 @@
                 routing_subject_hash: None,
                 upstream_operation: None,
                 fallback_reason: None,
+                remote_addr: None,
+                client_ip: None,
+                client_ip_source: None,
+                client_ip_trusted: false,
+                ip_headers: Vec::new(),
             },
             false,
         );

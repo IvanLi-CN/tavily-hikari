@@ -363,6 +363,11 @@ export interface RequestLog {
   response_body: string | null
   forwarded_headers: string[]
   dropped_headers: string[]
+  remote_addr?: string | null
+  client_ip?: string | null
+  client_ip_source?: string | null
+  client_ip_trusted?: boolean
+  ip_headers?: ClientIpHeaderValue[]
   operationalClass:
     | 'success'
     | 'neutral'
@@ -373,6 +378,8 @@ export interface RequestLog {
   requestKindProtocolGroup: 'api' | 'mcp'
   requestKindBillingGroup: 'billable' | 'non_billable'
 }
+
+export interface ClientIpHeaderValue { name: string; value: string }
 
 export interface RequestLogBodies {
   request_body: string | null
@@ -1630,6 +1637,7 @@ export interface AdminUserSummary {
   monthlyFailure: number
   monthlyBrokenCount: number
   monthlyBrokenLimit: number
+  recentIpCount7d: number
   lastActivity: number | null
 }
 
@@ -2939,6 +2947,8 @@ export interface SystemSettings {
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
   userBlockedKeyBaseLimit: number
+  trustedProxyCidrs: string[]
+  trustedClientIpHeaders: string[]
 }
 
 export interface ForwardProxySettingsEnvelope {
@@ -2963,7 +2973,21 @@ export interface UpdateSystemSettingsPayload {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  trustedProxyCidrs: string[]
+  trustedClientIpHeaders: string[]
   userBlockedKeyBaseLimit: number
+}
+
+export interface ObservedClientIpHeaderValue extends ClientIpHeaderValue { count: number; lastSeenAt: number }
+
+export interface ObservedClientIpRequest {
+  id: number
+  createdAt: number
+  remoteAddr?: string | null
+  clientIp?: string | null
+  clientIpSource?: string | null
+  clientIpTrusted: boolean
+  ipHeaders: ClientIpHeaderValue[]
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -3104,6 +3128,8 @@ function createEmptySystemSettings(): SystemSettings {
     apiRebalanceEnabled: false,
     apiRebalancePercent: 0,
     userBlockedKeyBaseLimit: 5,
+    trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
+    trustedClientIpHeaders: ['cf-connecting-ip', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'forwarded'],
   }
 }
 
@@ -3151,6 +3177,12 @@ export function updateSystemSettings(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+export function fetchObservedClientIpRequests(signal?: AbortSignal): Promise<ObservedClientIpRequest[]> {
+  return requestJson<{ items: ObservedClientIpRequest[] }>('/api/settings/client-ip/observed-headers', {
+    signal,
+  }).then((response) => response.items ?? [])
 }
 
 export function validateForwardProxyCandidate(

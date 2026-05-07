@@ -10,6 +10,7 @@ async fn handle_rebalance_mcp_single_message(
     proxy_session_id: Option<&str>,
     incoming_protocol_version: Option<&str>,
     routing_subject_hash: Option<&str>,
+    client_ip: Option<&ClientIpInfo>,
 ) -> Result<ProxyResponse, StatusCode> {
     let response_id = message.get("id").filter(|value| !value.is_null());
     let method_name = message
@@ -282,6 +283,7 @@ async fn handle_rebalance_mcp_single_message(
                         proxy_session_id,
                         routing_subject_hash,
                         "http_search",
+                        client_ip,
                     )
                     .await
                     .map_err(|_| StatusCode::BAD_GATEWAY),
@@ -300,6 +302,7 @@ async fn handle_rebalance_mcp_single_message(
                         proxy_session_id,
                         routing_subject_hash,
                         "http_extract",
+                        client_ip,
                     )
                     .await
                     .map_err(|_| StatusCode::BAD_GATEWAY),
@@ -318,6 +321,7 @@ async fn handle_rebalance_mcp_single_message(
                         proxy_session_id,
                         routing_subject_hash,
                         "http_crawl",
+                        client_ip,
                     )
                     .await
                     .map_err(|_| StatusCode::BAD_GATEWAY),
@@ -336,6 +340,7 @@ async fn handle_rebalance_mcp_single_message(
                         proxy_session_id,
                         routing_subject_hash,
                         "http_map",
+                        client_ip,
                     )
                     .await
                     .map_err(|_| StatusCode::BAD_GATEWAY),
@@ -353,6 +358,7 @@ async fn handle_rebalance_mcp_single_message(
                         proxy_session_id,
                         routing_subject_hash,
                         "http_research",
+                        client_ip,
                     )
                     .await
                     .map_err(|_| StatusCode::BAD_GATEWAY),
@@ -415,6 +421,7 @@ async fn handle_rebalance_mcp_request_body(
     proxy_session_id: Option<&str>,
     incoming_protocol_version: Option<&str>,
     routing_subject_hash: Option<&str>,
+    client_ip: Option<&ClientIpInfo>,
 ) -> Result<ProxyResponse, StatusCode> {
     let parsed = serde_json::from_slice::<Value>(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
     let summary = summarize_mcp_jsonrpc_body(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -432,6 +439,7 @@ async fn handle_rebalance_mcp_request_body(
                 proxy_session_id,
                 incoming_protocol_version,
                 routing_subject_hash,
+                client_ip,
             )
             .await
         }
@@ -474,6 +482,7 @@ async fn handle_rebalance_mcp_request_body(
                     proxy_session_id,
                     incoming_protocol_version,
                     routing_subject_hash,
+                    client_ip,
                 )
                 .await?;
 
@@ -582,6 +591,7 @@ async fn mcp_subpath_reject_handler(
             Some("mcp_path_404"),
             &empty_headers,
             &empty_headers,
+            None,
         )
         .await
     {

@@ -20,7 +20,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     Router,
     body::{self, Body, Bytes},
-    extract::{Form, Path, Query, RawQuery, State},
+    extract::{ConnectInfo, Form, Path, Query, RawQuery, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post, put},
@@ -56,15 +56,16 @@ struct SummarySig {
 use std::time::{Duration, Instant};
 use tavily_hikari::{
     AdminUserIdentity, AdminUserUsageSeriesKind, ApiKeyMetrics, ApiKeyStickyNode, ApiKeyStickyUser,
-    ApiKeyUserUsageBucket, AuthToken, ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
-    ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption, OAuthAccountProfile,
-    PendingBillingSettleOutcome, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
-    RequestLogBodiesRecord, RequestLogRecord, RequestLogsCatalog, RequestLogsCursor,
+    ApiKeyUserUsageBucket, AuthToken, ClientIpInfo, ForwardProxyHourlyBucketResponse,
+    ForwardProxyStatsResponse, ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption,
+    OAuthAccountProfile, PendingBillingSettleOutcome, ProxyError, ProxyRequest, ProxyResponse,
+    ProxySummary, RequestLogBodiesRecord, RequestLogRecord, RequestLogsCatalog, RequestLogsCursor,
     RequestLogsCursorDirection, RequestLogsCursorPage, StickyCreditsWindow, TavilyProxy,
     TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogRecord, TokenLogsCursorPage,
     TokenQuotaVerdict, TokenRequestKindOption, TokenSummary, TokenUsageBucket,
-    UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT, USER_MONTHLY_BROKEN_LIMIT_DEFAULT, UserTokenLookup,
-    analyze_mcp_attempt, canonical_request_kind_key_for_filter, classify_token_request_kind,
+    TrustedClientIpSettings, UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT,
+    USER_MONTHLY_BROKEN_LIMIT_DEFAULT, UserTokenLookup, analyze_mcp_attempt,
+    canonical_request_kind_key_for_filter, classify_token_request_kind,
     display_result_status_for_request_kind, effective_request_logs_gc_at,
     effective_request_logs_retention_days, effective_token_daily_limit,
     effective_token_hourly_limit, effective_token_monthly_limit,
@@ -72,7 +73,8 @@ use tavily_hikari::{
     extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
     mcp_response_has_any_error, mcp_response_has_any_success, normalize_operational_class_filter,
     operational_class_for_token_log, request_rate_limit, request_rate_limit_window_minutes,
-    token_request_kind_billing_group_for_token_log, token_request_kind_protocol_group,
+    resolve_client_ip_info, token_request_kind_billing_group_for_token_log,
+    token_request_kind_protocol_group,
 };
 use tokio::signal;
 #[cfg(unix)]

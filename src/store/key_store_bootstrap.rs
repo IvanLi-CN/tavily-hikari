@@ -49,6 +49,7 @@ impl KeyStore {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 api_key_id TEXT,
                 auth_token_id TEXT,
+                request_user_id TEXT,
                 method TEXT NOT NULL,
                 path TEXT NOT NULL,
                 query TEXT,
@@ -77,6 +78,11 @@ impl KeyStore {
                 response_body BLOB,
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
+                remote_addr TEXT,
+                client_ip TEXT,
+                client_ip_source TEXT,
+                client_ip_trusted INTEGER NOT NULL DEFAULT 0,
+                ip_headers TEXT,
                 visibility TEXT NOT NULL DEFAULT 'visible',
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
@@ -133,6 +139,12 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_selection_effect_time
                ON request_logs(selection_effect_code, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_user_ip_time
+               ON request_logs(request_user_id, client_ip, created_at DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -908,6 +920,23 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
         }
+
+        sqlx::query(
+            r#"
+            UPDATE request_logs
+            SET request_user_id = (
+                SELECT atl.request_user_id
+                FROM auth_token_logs atl
+                WHERE atl.request_log_id = request_logs.id
+                  AND atl.request_user_id IS NOT NULL
+                ORDER BY atl.id DESC
+                LIMIT 1
+            )
+            WHERE request_user_id IS NULL
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         if self
             .auth_token_logs_have_legacy_request_kind_columns()

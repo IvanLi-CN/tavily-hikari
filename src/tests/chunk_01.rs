@@ -948,6 +948,7 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
             fallback_reason: None,
             forwarded_headers: &[],
             dropped_headers: &[],
+            client_ip: None,
         })
         .await
         .expect("log success attempt");
@@ -1044,6 +1045,7 @@ async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
         routing_subject_hash: None,
         upstream_operation: None,
         fallback_reason: None,
+        client_ip: None,
     };
 
     let first = proxy
@@ -1172,6 +1174,7 @@ async fn token_primary_rebind_falls_back_to_exhausted_key_when_no_other_active_k
         routing_subject_hash: None,
         upstream_operation: None,
         fallback_reason: None,
+        client_ip: None,
     };
 
     let first = proxy
@@ -1295,6 +1298,7 @@ async fn token_primary_rebind_prefers_active_key_over_existing_exhausted_primary
         routing_subject_hash: None,
         upstream_operation: None,
         fallback_reason: None,
+        client_ip: None,
     };
 
     let first = proxy
