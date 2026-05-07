@@ -18,6 +18,7 @@
 - `POST /api/tavily/research` 成功后记录 `request_id -> 实际 key_id`；`GET /api/tavily/research/:request_id` 不参与 rollout gating，只使用创建时记录的 key，记录 key 不可用时返回错误且不 fallback。
 - System Settings UI 提供 API Rebalance Switch、0-100 slider 与数字输入；关闭时比例控件禁用。
 - Request log / dashboard effect bucket 已接入 generic API binding 与 selection effect code。
+- Admin 近期请求列表会把 `api_rebalance_*` binding / selection effect 识别为 API Rebalance 路径，在 Key pill 复用 Rebalance 标记，并为 API Rebalance effect 显示专用标签与说明。
 
 ## Remaining Gaps
 

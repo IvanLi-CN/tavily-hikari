@@ -1002,11 +1002,8 @@ table {
   letter-spacing: 0;
 }
 
-.recent-requests-table .recent-requests-col--key,
-.recent-requests-table .recent-requests-col--token {
-  width: 10ch;
-}
-
+.recent-requests-table .recent-requests-col--key { width: 6.75rem; min-width: 6.75rem; }
+.recent-requests-table .recent-requests-col--token { width: 10ch; }
 .recent-requests-table .recent-requests-col--result .log-result-button,
 .recent-requests-table .recent-requests-col--key-effect .status-badge,
 .recent-requests-table .recent-requests-col--key .recent-requests-entity-link,
@@ -1027,6 +1024,7 @@ table {
   display: inline-flex;
   align-items: center;
   line-height: 1;
+  max-width: none; overflow: visible; text-overflow: clip;
 }
 
 /* token leaderboard styles consolidated near dedicated section below */

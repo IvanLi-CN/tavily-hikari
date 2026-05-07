@@ -19,6 +19,19 @@ import RequestKindBadge from './RequestKindBadge'
 import AdminLoadingRegion from './AdminLoadingRegion'
 import AdminTablePagination from './AdminTablePagination'
 import AdminTableShell from './AdminTableShell'
+import {
+  RebalanceGatewayMarker,
+  apiRebalanceBindingEffectBadgeLabel,
+  apiRebalanceBindingEffectLabel,
+  apiRebalanceBindingEffectSummary,
+  apiRebalanceBindingEffectTone,
+  apiRebalanceSelectionEffectBadgeLabel,
+  apiRebalanceSelectionEffectLabel,
+  apiRebalanceSelectionEffectSummary,
+  apiRebalanceSelectionEffectTone,
+  isRebalanceGatewayLog,
+  rebalanceMarkerLabel,
+} from './requestLogRebalance'
 import SearchableFacetSelect from './SearchableFacetSelect'
 import { StatusBadge, type StatusTone } from './StatusBadge'
 import { Button } from './ui/button'
@@ -191,23 +204,6 @@ function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): strin
   return keyEffectLabel(log.key_effect_code, strings)
 }
 
-function isRebalanceGatewayLog(log: RequestLog): boolean {
-  return (log.gateway_mode ?? '').trim() === 'rebalance_http'
-}
-
-function RebalanceGatewayMarker(): JSX.Element {
-  return (
-    <span className="log-key-pill__marker" aria-hidden="true">
-      <svg viewBox="0 0 16 16" focusable="false">
-        <path
-          d="M5 2.75a1.75 1.75 0 1 1-1 3.18V11a1 1 0 0 0 1 1h4.18a1.75 1.75 0 1 1 0 1.5H5A2.5 2.5 0 0 1 2.5 11V5.93A1.75 1.75 0 0 1 5 2.75m6 0a1.75 1.75 0 1 1-1 3.18V8a1 1 0 0 1-1 1H6.5v-1.5H8.5V5.93A1.75 1.75 0 0 1 11 2.75"
-          fill="currentColor"
-        />
-      </svg>
-    </span>
-  )
-}
-
 function keyEffectBadgeCompactLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
   switch ((log.key_effect_code ?? '').trim()) {
     case 'quarantined':
@@ -230,6 +226,8 @@ function keyEffectBadgeCompactLabel(log: RequestLog, strings: AdminTranslations,
 }
 
 function bindingEffectTone(code: string | null | undefined): StatusTone {
+  const apiRebalanceTone = apiRebalanceBindingEffectTone(code)
+  if (apiRebalanceTone) return apiRebalanceTone
   switch ((code ?? '').trim()) {
     case 'http_project_affinity_bound':
       return 'success'
@@ -243,6 +241,8 @@ function bindingEffectTone(code: string | null | undefined): StatusTone {
 }
 
 function bindingEffectLabel(code: string | null | undefined, strings: AdminTranslations): string {
+  const apiRebalanceLabel = apiRebalanceBindingEffectLabel(code, strings)
+  if (apiRebalanceLabel) return apiRebalanceLabel
   switch ((code ?? '').trim()) {
     case 'http_project_affinity_bound':
       return strings.logs.bindingEffects.bound
@@ -259,6 +259,8 @@ function bindingEffectLabel(code: string | null | undefined, strings: AdminTrans
 }
 
 function bindingEffectBadgeLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
+  const apiRebalanceLabel = apiRebalanceBindingEffectBadgeLabel(log.binding_effect_code, language)
+  if (apiRebalanceLabel) return apiRebalanceLabel
   switch ((log.binding_effect_code ?? '').trim()) {
     case 'http_project_affinity_bound':
       return language === 'zh' ? '绑定' : 'Bound'
@@ -272,6 +274,8 @@ function bindingEffectBadgeLabel(log: RequestLog, strings: AdminTranslations, la
 }
 
 function selectionEffectTone(code: string | null | undefined): StatusTone {
+  const apiRebalanceTone = apiRebalanceSelectionEffectTone(code)
+  if (apiRebalanceTone) return apiRebalanceTone
   switch ((code ?? '').trim()) {
     case 'mcp_session_init_cooldown_avoided':
     case 'http_project_affinity_cooldown_avoided':
@@ -288,6 +292,8 @@ function selectionEffectTone(code: string | null | undefined): StatusTone {
 }
 
 function selectionEffectLabel(code: string | null | undefined, strings: AdminTranslations): string {
+  const apiRebalanceLabel = apiRebalanceSelectionEffectLabel(code, strings)
+  if (apiRebalanceLabel) return apiRebalanceLabel
   switch ((code ?? '').trim()) {
     case 'mcp_session_init_cooldown_avoided':
       return strings.logs.selectionEffects.mcpSessionInitCooldownAvoided
@@ -310,6 +316,8 @@ function selectionEffectLabel(code: string | null | undefined, strings: AdminTra
 }
 
 function selectionEffectBadgeLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
+  const apiRebalanceLabel = apiRebalanceSelectionEffectBadgeLabel(log.selection_effect_code, language)
+  if (apiRebalanceLabel) return apiRebalanceLabel
   switch ((log.selection_effect_code ?? '').trim()) {
     case 'mcp_session_init_cooldown_avoided':
       return language === 'zh' ? 'MCP避冷却' : 'MCP cooldown'
@@ -369,6 +377,8 @@ function formatBindingEffectSummary(
   strings: AdminTranslations,
   language: Language,
 ): string {
+  const apiRebalanceSummary = apiRebalanceBindingEffectSummary(log.binding_effect_code, language)
+  if (apiRebalanceSummary) return apiRebalanceSummary
   const summary = log.binding_effect_summary?.trim()
   switch ((log.binding_effect_code ?? '').trim()) {
     case 'http_project_affinity_bound':
@@ -395,6 +405,8 @@ function formatSelectionEffectSummary(
   strings: AdminTranslations,
   language: Language,
 ): string {
+  const apiRebalanceSummary = apiRebalanceSelectionEffectSummary(log.selection_effect_code, language)
+  if (apiRebalanceSummary) return apiRebalanceSummary
   const summary = log.selection_effect_summary?.trim()
   switch ((log.selection_effect_code ?? '').trim()) {
     case 'mcp_session_init_cooldown_avoided':
@@ -1333,7 +1345,7 @@ export default function AdminRecentRequestsPanel({
                             {isRebalanceGateway ? (
                               <>
                                 <RebalanceGatewayMarker />
-                                <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+                                <span className="sr-only">{rebalanceMarkerLabel(log, strings)}</span>
                               </>
                             ) : null}
                             <code>{keyId}</code>
@@ -1472,7 +1484,7 @@ export default function AdminRecentRequestsPanel({
                         {isRebalanceGateway ? (
                           <>
                             <RebalanceGatewayMarker />
-                            <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+                            <span className="sr-only">{rebalanceMarkerLabel(log, strings)}</span>
                           </>
                         ) : null}
                         <strong><code>{keyId}</code></strong>
