@@ -174,7 +174,7 @@
 
 ## Visual Evidence
 
-None
+![API Rebalance recent request markers](./assets/api-rebalance-log-markers.png)
 
 ## Related PRs
 

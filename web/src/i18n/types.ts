@@ -1282,6 +1282,9 @@ export interface AdminTranslationsShape {
       bound: string
       reused: string
       rebound: string
+      apiRebalanceBound: string
+      apiRebalanceReused: string
+      apiRebalanceRebound: string
       unknown: string
     }
     selectionEffects: {
@@ -1292,6 +1295,9 @@ export interface AdminTranslationsShape {
       httpProjectAffinityCooldownAvoided: string
       httpProjectAffinityRateLimitAvoided: string
       httpProjectAffinityPressureAvoided: string
+      apiRebalanceCooldownAvoided: string
+      apiRebalanceRateLimitAvoided: string
+      apiRebalancePressureAvoided: string
       unknown: string
     }
   }
@@ -1304,6 +1310,7 @@ export interface AdminTranslationsShape {
     bindingEffect: string
     selectionEffect: string
     gatewayMode: string
+    apiRebalanceMode: string
     experimentVariant: string
     proxySessionId: string
     routingSubjectHash: string

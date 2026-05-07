@@ -34,4 +34,25 @@ describe('AdminRecentRequestsPanel Storybook proofs', () => {
     expect(markup).toContain('使用较新 / 较旧翻页浏览近期请求。')
     expect(markup).not.toContain('日志保留 32 天')
   })
+
+  it('renders API rebalance rows with explicit marker and effect labels', () => {
+    const renderStory = panelStories.RebalanceMarkers.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('LKoZ')
+    expect(markup).toContain('pK9x')
+    expect(markup).toContain('API绑定')
+    expect(markup).toContain('API避高压')
+    expect(markup).toContain('API Rebalance 路由')
+    expect(markup).not.toContain('绑定已更新')
+    expect(markup).not.toContain('选路已更新')
+  })
 })

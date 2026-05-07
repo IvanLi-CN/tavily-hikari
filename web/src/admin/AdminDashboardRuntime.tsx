@@ -1156,7 +1156,17 @@ function tokenOwnerSecondary(owner: AuthToken['owner']): string | null {
 }
 
 function isRebalanceGatewayLog(log: RequestLog): boolean {
-  return (log.gateway_mode ?? '').trim() === 'rebalance_http'
+  return (
+    (log.gateway_mode ?? '').trim() === 'rebalance_http'
+    || (log.binding_effect_code ?? '').trim().startsWith('api_rebalance_')
+    || (log.selection_effect_code ?? '').trim().startsWith('api_rebalance_')
+  )
+}
+
+function rebalanceMarkerLabel(log: RequestLog, strings: AdminTranslations): string {
+  const gatewayMode = log.gateway_mode?.trim()
+  if (gatewayMode) return `${strings.logDetails.gatewayMode}: ${gatewayMode}`
+  return strings.logDetails.apiRebalanceMode
 }
 
 function RebalanceGatewayMarker(): JSX.Element {
@@ -11078,7 +11088,7 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
             {isRebalanceGateway ? (
               <>
                 <RebalanceGatewayMarker />
-                <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+                <span className="sr-only">{rebalanceMarkerLabel(log, strings)}</span>
               </>
             ) : null}
             <code>{log.key_id}</code>

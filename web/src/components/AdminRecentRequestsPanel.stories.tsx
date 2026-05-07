@@ -9,7 +9,7 @@ import AdminRecentRequestsPanel from './AdminRecentRequestsPanel'
 const storyLogs: RequestLog[] = [
   {
     id: 7001,
-    key_id: 'K001',
+    key_id: 'LKoZ',
     auth_token_id: 'T001',
     method: 'POST',
     path: '/api/tavily/search',
@@ -25,10 +25,10 @@ const storyLogs: RequestLog[] = [
     error_message: null,
     key_effect_code: 'none',
     key_effect_summary: null,
-    binding_effect_code: 'http_project_affinity_bound',
-    binding_effect_summary: 'The system created a new upstream key binding for this project',
-    selection_effect_code: 'http_project_affinity_pressure_avoided',
-    selection_effect_summary: 'Project affinity routing avoided a key under higher recent pressure',
+    binding_effect_code: 'api_rebalance_route_bound',
+    binding_effect_summary: 'API rebalance created a new route key binding',
+    selection_effect_code: 'api_rebalance_pressure_avoided',
+    selection_effect_summary: 'API rebalance skipped a hotter key',
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
@@ -169,6 +169,21 @@ const storyLogs: RequestLog[] = [
     operationalClass: 'success',
     requestKindProtocolGroup: 'api',
     requestKindBillingGroup: 'billable',
+  },
+]
+
+const rebalanceMarkerStoryLogs: RequestLog[] = [
+  storyLogs[0],
+  storyLogs[1],
+  {
+    ...storyLogs[4],
+    id: 8203,
+    key_id: 'pK9x',
+    auth_token_id: 'plainT1',
+    binding_effect_code: 'none',
+    binding_effect_summary: null,
+    selection_effect_code: 'none',
+    selection_effect_summary: null,
   },
 ]
 
@@ -429,6 +444,69 @@ function IdentifierAlignmentShowcase(): JSX.Element {
   )
 }
 
+function RebalanceMarkerShowcase(): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+
+  const facets = useMemo(
+    () => ({
+      results: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.result_status)),
+      keyEffects: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.key_effect_code ?? 'none')),
+      bindingEffects: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.binding_effect_code ?? 'none')),
+      selectionEffects: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.selection_effect_code ?? 'none')),
+      tokens: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.auth_token_id)),
+      keys: buildFacetOptions(rebalanceMarkerStoryLogs.map((log) => log.key_id)),
+    }),
+    [],
+  )
+
+  return (
+    <div style={{ maxWidth: 1480, margin: '0 auto', padding: 24 }}>
+      <AdminRecentRequestsPanel
+        variant="admin"
+        language={language}
+        strings={admin}
+        title="Rebalance Markers"
+        description="API rebalance and MCP rebalance rows reuse the same key marker; ordinary API rows stay unmarked."
+        emptyLabel="No logs."
+        loadState="ready"
+        loadingLabel="Loading…"
+        logs={rebalanceMarkerStoryLogs}
+        requestKindOptions={requestKindOptions}
+        requestKindQuickBilling="all"
+        requestKindQuickProtocol="all"
+        selectedRequestKinds={[]}
+        onRequestKindQuickFiltersChange={() => undefined}
+        onToggleRequestKind={() => undefined}
+        onClearRequestKinds={() => undefined}
+        outcomeFilter={null}
+        resultOptions={facets.results}
+        keyEffectOptions={facets.keyEffects}
+        bindingEffectOptions={facets.bindingEffects}
+        selectionEffectOptions={facets.selectionEffects}
+        onOutcomeFilterChange={() => undefined}
+        keyOptions={facets.keys}
+        selectedKeyId={null}
+        onKeyFilterChange={() => undefined}
+        showKeyColumn
+        showTokenColumn
+        perPage={20}
+        hasOlder={false}
+        hasNewer={false}
+        paginationSummary={admin.logs.pagination.summary}
+        onNewerPage={() => undefined}
+        onOlderPage={() => undefined}
+        onPerPageChange={() => undefined}
+        formatTime={(ts) => new Date((ts ?? 0) * 1000).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US')}
+        formatTimeDetail={(ts) => new Date((ts ?? 0) * 1000).toISOString()}
+        onOpenKey={() => undefined}
+        onOpenToken={() => undefined}
+        loadLogBodies={() => Promise.resolve({ request_body: null, response_body: null })}
+      />
+    </div>
+  )
+}
+
 function CatalogLoadingShowcase(): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
@@ -641,6 +719,31 @@ export const IdentifierAlignment: Story = {
     for (const expected of ['bab3', 'cBtp', 'EGsl', 'ZjvC']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected identifier alignment canvas to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const RebalanceMarkers: Story = {
+  render: () => <RebalanceMarkerShowcase />,
+  globals: {
+    language: 'zh',
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story: '稳定验收 API Rebalance、MCP Rebalance 与普通 API 行的 Key 标记差异，并覆盖带图标 Key 不省略。',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 150))
+    const text = canvasElement.ownerDocument.body.textContent ?? ''
+    for (const expected of ['LKoZ', 'API绑定', 'API避高压', 'API Rebalance 路由', 'pK9x']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected rebalance marker canvas to contain: ${expected}`)
       }
     }
   },
