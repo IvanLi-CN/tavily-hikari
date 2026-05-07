@@ -1572,32 +1572,88 @@ impl KeyStore {
         );
         let deadline = Instant::now() + wait_timeout;
         let ttl_secs = ttl.as_secs().max(1) as i64;
+        let mut transient_retry_attempt = 0usize;
 
         loop {
             let now = Utc::now().timestamp();
             let expires_at = now + ttl_secs;
-            let mut tx = self.pool.begin().await?;
-            sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND expires_at <= ?")
+            let mut tx = match self.pool.begin().await {
+                Ok(tx) => tx,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        "quota subject lock acquire begin",
+                        transient_retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        transient_retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
+
+            let inserted_result: Result<sqlx::sqlite::SqliteQueryResult, ProxyError> = async {
+                sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND expires_at <= ?")
+                    .bind(subject)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+
+                let inserted = sqlx::query(
+                    r#"
+                    INSERT OR IGNORE INTO quota_subject_locks (subject, owner, expires_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    "#,
+                )
                 .bind(subject)
+                .bind(&owner)
+                .bind(expires_at)
                 .bind(now)
                 .execute(&mut *tx)
                 .await?;
+                Ok(inserted)
+            }
+            .await;
 
-            let inserted = sqlx::query(
-                r#"
-                INSERT OR IGNORE INTO quota_subject_locks (subject, owner, expires_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                "#,
-            )
-            .bind(subject)
-            .bind(&owner)
-            .bind(expires_at)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+            let inserted = match inserted_result {
+                Ok(inserted) => inserted,
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    if sleep_before_sqlite_transient_write_retry(
+                        "quota subject lock acquire write",
+                        transient_retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        transient_retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
 
             if inserted.rows_affected() == 1 {
-                tx.commit().await?;
+                if let Err(err) = tx.commit().await {
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        "quota subject lock acquire commit",
+                        transient_retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        transient_retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
                 return Ok(QuotaSubjectDbLease {
                     subject: subject.to_string(),
                     owner,
@@ -1606,6 +1662,7 @@ impl KeyStore {
             }
 
             tx.rollback().await.ok();
+            transient_retry_attempt = 0;
             if Instant::now() >= deadline {
                 return Err(ProxyError::Other(format!(
                     "timed out acquiring quota subject lock for {subject}",
@@ -1619,17 +1676,39 @@ impl KeyStore {
         &self,
         lease: &QuotaSubjectDbLease,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
-        let expires_at = now + lease.ttl.as_secs().max(1) as i64;
-        let rows = sqlx::query(
-            "UPDATE quota_subject_locks SET expires_at = ?, updated_at = ? WHERE subject = ? AND owner = ?",
-        )
-        .bind(expires_at)
-        .bind(now)
-        .bind(&lease.subject)
-        .bind(&lease.owner)
-        .execute(&self.pool)
-        .await?;
+        let deadline = Instant::now() + lease.ttl;
+        let mut attempt = 0usize;
+        let rows = loop {
+            let now = Utc::now().timestamp();
+            let expires_at = now + lease.ttl.as_secs().max(1) as i64;
+            match sqlx::query(
+                "UPDATE quota_subject_locks SET expires_at = ?, updated_at = ? WHERE subject = ? AND owner = ?",
+            )
+            .bind(expires_at)
+            .bind(now)
+            .bind(&lease.subject)
+            .bind(&lease.owner)
+            .execute(&self.pool)
+            .await
+            {
+                Ok(rows) => break rows,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        "quota subject lock refresh",
+                        attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        };
         if rows.rows_affected() == 0 {
             return Err(ProxyError::Other(format!(
                 "quota subject lock lost for {}",
@@ -1643,11 +1722,33 @@ impl KeyStore {
         &self,
         lease: &QuotaSubjectDbLease,
     ) -> Result<(), ProxyError> {
-        sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND owner = ?")
-            .bind(&lease.subject)
-            .bind(&lease.owner)
-            .execute(&self.pool)
-            .await?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut attempt = 0usize;
+        loop {
+            match sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND owner = ?")
+                .bind(&lease.subject)
+                .bind(&lease.owner)
+                .execute(&self.pool)
+                .await
+            {
+                Ok(_) => break,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        "quota subject lock release",
+                        attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
         Ok(())
     }
 

@@ -253,7 +253,27 @@ impl TavilyProxy {
         &self,
         profile: &OAuthAccountProfile,
     ) -> Result<UserIdentity, ProxyError> {
-        self.key_store.upsert_oauth_account(profile).await
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut attempt = 0usize;
+        loop {
+            match self.key_store.upsert_oauth_account(profile).await {
+                Ok(identity) => return Ok(identity),
+                Err(err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        "oauth account upsert",
+                        attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Refresh third-party OAuth profile without mutating the user's real last_login_at timestamp.
@@ -261,7 +281,27 @@ impl TavilyProxy {
         &self,
         profile: &OAuthAccountProfile,
     ) -> Result<UserIdentity, ProxyError> {
-        self.key_store.refresh_oauth_account_profile(profile).await
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut attempt = 0usize;
+        loop {
+            match self.key_store.refresh_oauth_account_profile(profile).await {
+                Ok(identity) => return Ok(identity),
+                Err(err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        "oauth account profile refresh",
+                        attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Refresh third-party OAuth profile and atomically rotate the persisted refresh token.
@@ -271,13 +311,35 @@ impl TavilyProxy {
         refresh_token_ciphertext: &str,
         refresh_token_nonce: &str,
     ) -> Result<UserIdentity, ProxyError> {
-        self.key_store
-            .refresh_oauth_account_profile_with_refresh_token(
-                profile,
-                refresh_token_ciphertext,
-                refresh_token_nonce,
-            )
-            .await
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut attempt = 0usize;
+        loop {
+            match self
+                .key_store
+                .refresh_oauth_account_profile_with_refresh_token(
+                    profile,
+                    refresh_token_ciphertext,
+                    refresh_token_nonce,
+                )
+                .await
+            {
+                Ok(identity) => return Ok(identity),
+                Err(err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        "oauth account profile refresh token update",
+                        attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Check whether a third-party account already exists locally.

@@ -1676,45 +1676,6 @@ impl KeyStore {
         Ok(rows)
     }
 
-    pub(crate) async fn scheduled_job_start(
-        &self,
-        job_type: &str,
-        key_id: Option<&str>,
-        attempt: i64,
-    ) -> Result<i64, ProxyError> {
-        let started_at = Utc::now().timestamp();
-        let res = sqlx::query(
-            r#"INSERT INTO scheduled_jobs (job_type, key_id, status, attempt, started_at)
-               VALUES (?, ?, 'running', ?, ?)"#,
-        )
-        .bind(job_type)
-        .bind(key_id)
-        .bind(attempt)
-        .bind(started_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(res.last_insert_rowid())
-    }
-
-    pub(crate) async fn scheduled_job_finish(
-        &self,
-        job_id: i64,
-        status: &str,
-        message: Option<&str>,
-    ) -> Result<(), ProxyError> {
-        let finished_at = Utc::now().timestamp();
-        sqlx::query(
-            r#"UPDATE scheduled_jobs SET status = ?, message = ?, finished_at = ? WHERE id = ?"#,
-        )
-        .bind(status)
-        .bind(message)
-        .bind(finished_at)
-        .bind(job_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     pub(crate) async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
