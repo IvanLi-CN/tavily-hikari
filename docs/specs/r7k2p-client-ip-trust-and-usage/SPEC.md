@@ -8,6 +8,7 @@
 
 - 可信代理 CIDR 与有序 IP 头配置持久化。
 - 仅在可信代理命中时解析 `clientIp`，并记录 `remoteAddr`、`clientIpSource`、可信状态与 IP 头快照。
+- IP 头快照保存已配置头与安全预设头的并集，便于管理员在启用 Cloudflare、EdgeOne 等头名前回看近期样本。
 - 默认仅信任 loopback 代理地址；私网或容器网段必须由管理员确认后显式加入。
 - 客户端 IP 头配置拒绝 `authorization`、`cookie`、API key 等敏感头名，避免误配置后落库秘密值。
 - 用户维度最近 7 天 `COUNT(DISTINCT clientIp)`。

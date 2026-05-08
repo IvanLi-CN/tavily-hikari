@@ -18,6 +18,16 @@ pub const DEFAULT_TRUSTED_CLIENT_IP_HEADERS: &[&str] = &[
     "forwarded",
 ];
 
+pub const AUDITED_CLIENT_IP_HEADERS: &[&str] = &[
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-real-ip",
+    "x-forwarded-for",
+    "forwarded",
+    "cf-connecting-ipv6",
+    "eo-connecting-ip",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientIpHeaderValue {
@@ -276,6 +286,24 @@ fn parse_header_ip_value(name: &str, value: &str) -> Option<IpAddr> {
     value.split(',').find_map(parse_ip_candidate)
 }
 
+fn audited_client_ip_header_names(configured: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for name in normalize_trusted_client_ip_headers(configured)
+        .into_iter()
+        .chain(
+            AUDITED_CLIENT_IP_HEADERS
+                .iter()
+                .filter_map(|value| normalize_client_ip_header_name(value)),
+        )
+    {
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 pub fn resolve_client_ip_info(
     remote_addr: Option<SocketAddr>,
     headers: &HeaderMap,
@@ -291,9 +319,10 @@ pub fn resolve_client_ip_info(
     let client_ip_trusted =
         remote_ip.is_some_and(|ip| trusted_cidrs.iter().copied().any(|cidr| cidr.contains(ip)));
 
-    let header_names = normalize_trusted_client_ip_headers(&settings.trusted_client_ip_headers);
+    let trusted_header_names =
+        normalize_trusted_client_ip_headers(&settings.trusted_client_ip_headers);
     let mut ip_headers = Vec::new();
-    for name in &header_names {
+    for name in audited_client_ip_header_names(&settings.trusted_client_ip_headers) {
         if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
             for value in headers.get_all(header_name).iter() {
                 if let Ok(raw) = value.to_str() {
@@ -310,8 +339,14 @@ pub fn resolve_client_ip_info(
     }
 
     if client_ip_trusted {
-        for observed in &ip_headers {
-            if let Some(ip) = parse_header_ip_value(&observed.name, &observed.value) {
+        for trusted_name in &trusted_header_names {
+            for observed in ip_headers
+                .iter()
+                .filter(|value| &value.name == trusted_name)
+            {
+                let Some(ip) = parse_header_ip_value(&observed.name, &observed.value) else {
+                    continue;
+                };
                 return ClientIpInfo {
                     remote_addr,
                     client_ip: Some(ip.to_string()),
@@ -403,6 +438,28 @@ mod client_ip_tests {
 
         assert_eq!(info.client_ip.as_deref(), Some("2001:db8::7"));
         assert_eq!(info.client_ip_source.as_deref(), Some("forwarded"));
+    }
+
+    #[test]
+    fn audits_safe_preset_headers_without_trusting_them() {
+        let mut headers = HeaderMap::new();
+        headers.insert("eo-connecting-ip", HeaderValue::from_static("203.0.113.20"));
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+        let settings = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec!["x-real-ip".to_string()],
+        };
+
+        let info =
+            resolve_client_ip_info(Some("127.0.0.1:4321".parse().unwrap()), &headers, &settings);
+
+        assert_eq!(info.client_ip.as_deref(), Some("198.51.100.7"));
+        assert_eq!(info.client_ip_source.as_deref(), Some("x-real-ip"));
+        assert!(
+            info.ip_headers
+                .iter()
+                .any(|value| value.name == "eo-connecting-ip" && value.value == "203.0.113.20")
+        );
     }
 
     #[test]
