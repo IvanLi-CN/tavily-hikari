@@ -16,6 +16,7 @@ import {
   type TokenLogRequestKindQuickProtocol,
 } from '../tokenLogRequestKinds'
 import RequestKindBadge from './RequestKindBadge'
+import RequestIpDiagnostics from './RequestIpDiagnostics'
 import AdminLoadingRegion from './AdminLoadingRegion'
 import AdminTablePagination from './AdminTablePagination'
 import AdminTableShell from './AdminTableShell'
@@ -772,6 +773,7 @@ function RecentRequestDetails({
           ) : null}
         </div>
       ) : null}
+      <RequestIpDiagnostics log={log} language={language} />
       {(forwarded.length > 0 || dropped.length > 0) && (
         <div className="log-details-headers">
           {forwarded.length > 0 ? (

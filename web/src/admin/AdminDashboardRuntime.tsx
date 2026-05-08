@@ -7811,6 +7811,10 @@ function AdminDashboard(): JSX.Element {
                   <span className="token-info-label">{usersStrings.table.tokenCount}</span>
                   <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
                 </div>
+                <div className="token-info-card">
+                  <span className="token-info-label">{language === 'zh' ? '7天IP' : '7d IPs'}</span>
+                  <span className="token-info-value">{formatNumber(detail.recentIpCount7d)}</span>
+                </div>
               </div>
             </section>
 
@@ -8261,6 +8265,7 @@ function AdminDashboard(): JSX.Element {
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
                     />
+                    <th>{language === 'zh' ? '7天IP' : '7d IPs'}</th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.dailySuccessRate}
                       displayLabel={usageDailyRateLabel}
@@ -8341,6 +8346,9 @@ function AdminDashboard(): JSX.Element {
                             </div>
                           )
                         })()}
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <strong>{formatNumber(item.recentIpCount7d)}</strong>
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
@@ -8424,6 +8432,10 @@ function AdminDashboard(): JSX.Element {
                     ) : (
                       <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
                     )}
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{language === 'zh' ? '7天IP' : '7d IPs'}</span>
+                    <strong>{formatNumber(item.recentIpCount7d)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.dailySuccessRate}</span>

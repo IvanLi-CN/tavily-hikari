@@ -328,9 +328,28 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
+    let recent_ip_counts_7d = if page_user_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        state
+            .proxy
+            .recent_client_ip_counts_by_user(
+                &page_user_ids,
+                Utc::now().timestamp() - 7 * 24 * 60 * 60,
+            )
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user recent ip counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     for row in paged_rows {
         let tags = user_tags.remove(&row.user.user_id).unwrap_or_default();
         let api_key_count = api_key_counts
+            .get(&row.user.user_id)
+            .copied()
+            .unwrap_or_default();
+        let recent_ip_count_7d = recent_ip_counts_7d
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
@@ -340,6 +359,7 @@ async fn list_users(
             api_key_count,
             row.monthly_broken_count,
             row.monthly_broken_limit,
+            recent_ip_count_7d,
             tags,
         ));
     }
@@ -548,6 +568,20 @@ async fn get_user_detail(
             eprintln!("get admin user monthly broken limit error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let recent_ip_count_7d = state
+        .proxy
+        .recent_client_ip_counts_by_user(
+            std::slice::from_ref(&user.user_id),
+            Utc::now().timestamp() - 7 * 24 * 60 * 60,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user recent ip count error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .get(&user.user_id)
+        .copied()
+        .unwrap_or_default();
     let tokens = state
         .proxy
         .list_user_tokens(&user.user_id)
@@ -602,6 +636,7 @@ async fn get_user_detail(
         monthly_failure: summary.monthly_failure,
         monthly_broken_count,
         monthly_broken_limit,
+        recent_ip_count_7d,
         last_activity: summary.last_activity,
         tags: quota_details
             .tags

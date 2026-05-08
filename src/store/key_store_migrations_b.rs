@@ -48,6 +48,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         auth_token_id,
+                        request_user_id,
                         method,
                         path,
                         query,
@@ -70,6 +71,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        remote_addr,
+                        client_ip,
+                        client_ip_source,
+                        client_ip_trusted,
+                        ip_headers,
                         visibility,
                         created_at
                     )
@@ -77,6 +83,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         NULL as auth_token_id,
+                        NULL AS request_user_id,
                         method,
                         path,
                         query,
@@ -99,6 +106,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        NULL AS remote_addr,
+                        NULL AS client_ip,
+                        NULL AS client_ip_source,
+                        0 AS client_ip_trusted,
+                        NULL AS ip_headers,
                         ? AS visibility,
                         created_at
                     FROM request_logs
@@ -115,6 +127,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         auth_token_id,
+                        request_user_id,
                         method,
                         path,
                         query,
@@ -137,6 +150,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        remote_addr,
+                        client_ip,
+                        client_ip_source,
+                        client_ip_trusted,
+                        ip_headers,
                         visibility,
                         created_at
                     )
@@ -144,6 +162,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         auth_token_id,
+                        request_user_id,
                         method,
                         path,
                         query,
@@ -166,6 +185,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        remote_addr,
+                        client_ip,
+                        client_ip_source,
+                        client_ip_trusted,
+                        ip_headers,
                         visibility,
                         created_at
                     FROM request_logs
@@ -181,6 +205,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         auth_token_id,
+                        request_user_id,
                         method,
                         path,
                         query,
@@ -199,6 +224,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        remote_addr,
+                        client_ip,
+                        client_ip_source,
+                        client_ip_trusted,
+                        ip_headers,
                         visibility,
                         created_at
                     )
@@ -206,6 +236,7 @@ impl KeyStore {
                         id,
                         api_key_id,
                         auth_token_id,
+                        request_user_id,
                         method,
                         path,
                         query,
@@ -224,6 +255,11 @@ impl KeyStore {
                         response_body,
                         forwarded_headers,
                         dropped_headers,
+                        remote_addr,
+                        client_ip,
+                        client_ip_source,
+                        client_ip_trusted,
+                        ip_headers,
                         visibility,
                         created_at
                     FROM request_logs
@@ -1166,10 +1202,38 @@ impl KeyStore {
                 "fallback_reason",
                 "ALTER TABLE request_logs ADD COLUMN fallback_reason TEXT",
             ),
+            (
+                "request_user_id",
+                "ALTER TABLE request_logs ADD COLUMN request_user_id TEXT",
+            ),
+            (
+                "remote_addr",
+                "ALTER TABLE request_logs ADD COLUMN remote_addr TEXT",
+            ),
+            (
+                "client_ip",
+                "ALTER TABLE request_logs ADD COLUMN client_ip TEXT",
+            ),
+            (
+                "client_ip_source",
+                "ALTER TABLE request_logs ADD COLUMN client_ip_source TEXT",
+            ),
+            (
+                "ip_headers",
+                "ALTER TABLE request_logs ADD COLUMN ip_headers TEXT",
+            ),
         ] {
             if !self.request_logs_column_exists(column).await? {
                 sqlx::query(sql).execute(&self.pool).await?;
             }
+        }
+
+        if !self.request_logs_column_exists("client_ip_trusted").await? {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN client_ip_trusted INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         let mut request_kind_schema_changed =

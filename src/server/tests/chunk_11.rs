@@ -1167,6 +1167,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1455,6 +1457,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("disable rebalance mcp");
@@ -1502,6 +1506,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1588,6 +1594,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1723,6 +1731,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -1958,6 +1968,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -2059,6 +2071,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -2130,6 +2144,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -2192,6 +2208,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("enable rebalance mcp");
@@ -2817,6 +2835,8 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: 7,
+                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
+                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
             .await
             .expect("seed system settings");

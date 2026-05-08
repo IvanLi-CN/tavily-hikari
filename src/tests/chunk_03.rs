@@ -783,6 +783,7 @@ async fn proxy_http_search_marks_key_exhausted_on_quota_status() {
             "/api/tavily/search",
             options,
             &headers,
+            None,
         )
         .await
         .expect("proxy search succeeded");
@@ -877,6 +878,7 @@ async fn proxy_http_json_endpoint_injects_bearer_auth_when_enabled() {
             options,
             &headers,
             true,
+            None,
         )
         .await
         .expect("proxy request succeeds");
@@ -935,6 +937,7 @@ async fn proxy_http_json_endpoint_quarantines_key_on_401_deactivated() {
             "/api/tavily/search",
             options,
             &headers,
+            None,
         )
         .await
         .expect("proxy search succeeded");
@@ -1023,6 +1026,7 @@ async fn proxy_request_quarantines_key_on_mcp_unauthorized() {
         routing_subject_hash: None,
         upstream_operation: None,
         fallback_reason: None,
+        client_ip: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");
@@ -1089,6 +1093,7 @@ async fn proxy_request_quarantines_key_on_mcp_error_body_without_http_status() {
         routing_subject_hash: None,
         upstream_operation: None,
         fallback_reason: None,
+        client_ip: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");

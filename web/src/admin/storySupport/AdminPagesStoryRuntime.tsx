@@ -1419,6 +1419,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 3_180,
     monthlyBrokenCount: 3,
     monthlyBrokenLimit: 5,
+    recentIpCount7d: 4,
     lastActivity: now - 25,
   },
   {
@@ -1445,6 +1446,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 8_614,
     monthlyBrokenCount: 5,
     monthlyBrokenLimit: 6,
+    recentIpCount7d: 11,
     lastActivity: now - 38,
   },
   {
@@ -1471,6 +1473,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 7,
     monthlyBrokenCount: 0,
     monthlyBrokenLimit: 5,
+    recentIpCount7d: 0,
     lastActivity: null,
   },
 ]
@@ -6074,6 +6077,8 @@ function SystemSettingsPageCanvas(): JSX.Element {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
           userBlockedKeyBaseLimit: 5,
+          trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
+          trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         }}
         loadState="ready"
         error={null}

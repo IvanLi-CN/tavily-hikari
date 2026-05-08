@@ -232,6 +232,11 @@ struct RequestLogView {
     response_body: Option<String>,
     forwarded_headers: Vec<String>,
     dropped_headers: Vec<String>,
+    remote_addr: Option<String>,
+    client_ip: Option<String>,
+    client_ip_source: Option<String>,
+    client_ip_trusted: bool,
+    ip_headers: Vec<tavily_hikari::ClientIpHeaderValue>,
     #[serde(rename = "operationalClass")]
     operational_class: String,
     #[serde(rename = "requestKindProtocolGroup")]

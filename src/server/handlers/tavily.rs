@@ -286,35 +286,35 @@ async fn tavily_http_search(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::search()).await
+    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::search(), None).await
 }
 
 async fn tavily_http_extract(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::extract()).await
+    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::extract(), None).await
 }
 
 async fn tavily_http_crawl(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::crawl()).await
+    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::crawl(), None).await
 }
 
 async fn tavily_http_map(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::map()).await
+    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::map(), None).await
 }
 
 async fn tavily_http_research(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::research()).await
+    proxy_tavily_http_endpoint(state, req, TavilyEndpointConfig::research(), None).await
 }
 
 async fn tavily_http_research_result(
@@ -325,6 +325,10 @@ async fn tavily_http_research_result(
     let (parts, _body) = req.into_parts();
     let method = parts.method.clone();
     let path = format!("/api/tavily/research/{request_id}");
+    let remote_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
 
     let auth_bearer = parts
         .headers
@@ -484,6 +488,22 @@ async fn tavily_http_research_result(
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
     headers.remove(HIKARI_ROUTING_KEY_HEADER);
+    let system_settings = state
+        .proxy
+        .get_system_settings()
+        .await
+        .map_err(|err| {
+            eprintln!("get system settings failed for {path}: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let client_ip = resolve_client_ip_info(
+        remote_addr,
+        &parts.headers,
+        &TrustedClientIpSettings {
+            trusted_proxy_cidrs: system_settings.trusted_proxy_cidrs.clone(),
+            trusted_client_ip_headers: system_settings.trusted_client_ip_headers.clone(),
+        },
+    );
     let upstream_path = format!("/research/{}", urlencoding::encode(&request_id));
     let token_id_for_logs = auth_token_id.clone();
 
@@ -497,6 +517,7 @@ async fn tavily_http_research_result(
             &path,
             &headers,
             true,
+            Some(&client_ip),
         )
         .await;
 
@@ -578,10 +599,17 @@ async fn proxy_tavily_http_endpoint(
     state: Arc<AppState>,
     req: Request<Body>,
     config: TavilyEndpointConfig,
+    remote_addr: Option<SocketAddr>,
 ) -> Result<Response<Body>, StatusCode> {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
+    let remote_addr = remote_addr.or_else(|| {
+        parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|connect_info| connect_info.0)
+    });
 
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
@@ -688,6 +716,14 @@ async fn proxy_tavily_http_endpoint(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     let use_api_rebalance = should_use_api_rebalance(&system_settings);
+    let client_ip = resolve_client_ip_info(
+        remote_addr,
+        &parts.headers,
+        &TrustedClientIpSettings {
+            trusted_proxy_cidrs: system_settings.trusted_proxy_cidrs.clone(),
+            trusted_client_ip_headers: system_settings.trusted_client_ip_headers.clone(),
+        },
+    );
     let expected_search_credits = (config.upstream_path == "/search").then(|| {
         // Search billing is predictable based on `search_depth`.
         tavily_search_expected_credits(&options)
@@ -885,6 +921,7 @@ async fn proxy_tavily_http_endpoint(
                 options,
                 &headers,
                 true,
+                Some(&client_ip),
             )
             .await;
 
@@ -1102,6 +1139,7 @@ async fn proxy_tavily_http_endpoint(
                     &path,
                     options,
                     &headers,
+                    Some(&client_ip),
                 )
                 .await
         }
@@ -1120,6 +1158,7 @@ async fn proxy_tavily_http_endpoint(
                     options,
                     &headers,
                     true,
+                    Some(&client_ip),
                 )
                 .await
         }

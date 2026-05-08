@@ -111,6 +111,7 @@ struct AdminUserSummaryView {
     monthly_failure: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_7d: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
 }
@@ -185,6 +186,7 @@ struct AdminUserDetailView {
     monthly_failure: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_7d: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
     quota_base: AdminQuotaView,
@@ -421,6 +423,7 @@ fn build_admin_user_summary_view(
     api_key_count: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_7d: i64,
     tags: Vec<tavily_hikari::AdminUserTagBinding>,
 ) -> AdminUserSummaryView {
     AdminUserSummaryView {
@@ -446,6 +449,7 @@ fn build_admin_user_summary_view(
         monthly_failure: summary.monthly_failure,
         monthly_broken_count,
         monthly_broken_limit,
+        recent_ip_count_7d,
         last_activity: summary.last_activity,
         tags: tags.iter().map(build_admin_user_tag_binding_view).collect(),
     }

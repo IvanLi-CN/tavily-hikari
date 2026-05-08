@@ -4,6 +4,7 @@ import {
   requestMcpProbeNotificationWithToken,
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
+import type { ClientIpHeaderValue } from './clientIp'
 
 export interface Summary {
   total_requests: number
@@ -363,6 +364,11 @@ export interface RequestLog {
   response_body: string | null
   forwarded_headers: string[]
   dropped_headers: string[]
+  remote_addr?: string | null
+  client_ip?: string | null
+  client_ip_source?: string | null
+  client_ip_trusted?: boolean
+  ip_headers?: ClientIpHeaderValue[]
   operationalClass:
     | 'success'
     | 'neutral'
@@ -958,7 +964,7 @@ export function buildPublicEventsUrl(token?: string, todayWindow?: TodayWindowRa
   return `/api/public/events${params.toString() ? `?${params.toString()}` : ''}`
 }
 
-async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
     const message = await response.text().catch(() => response.statusText)
@@ -1630,6 +1636,7 @@ export interface AdminUserSummary {
   monthlyFailure: number
   monthlyBrokenCount: number
   monthlyBrokenLimit: number
+  recentIpCount7d: number
   lastActivity: number | null
 }
 
@@ -2939,6 +2946,8 @@ export interface SystemSettings {
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
   userBlockedKeyBaseLimit: number
+  trustedProxyCidrs: string[]
+  trustedClientIpHeaders: string[]
 }
 
 export interface ForwardProxySettingsEnvelope {
@@ -2963,6 +2972,8 @@ export interface UpdateSystemSettingsPayload {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  trustedProxyCidrs: string[]
+  trustedClientIpHeaders: string[]
   userBlockedKeyBaseLimit: number
 }
 
@@ -3104,6 +3115,8 @@ function createEmptySystemSettings(): SystemSettings {
     apiRebalanceEnabled: false,
     apiRebalancePercent: 0,
     userBlockedKeyBaseLimit: 5,
+    trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
+    trustedClientIpHeaders: ['cf-connecting-ip', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'forwarded'],
   }
 }
 

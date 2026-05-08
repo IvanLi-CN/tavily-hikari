@@ -96,7 +96,8 @@ impl KeyStore {
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       request_body, response_body, created_at, forwarded_headers, dropped_headers,
+                       remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
                 ORDER BY created_at DESC
@@ -119,7 +120,8 @@ impl KeyStore {
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       request_body, response_body, created_at, forwarded_headers, dropped_headers,
+                       remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
                 ORDER BY created_at DESC

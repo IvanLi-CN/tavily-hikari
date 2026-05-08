@@ -15,6 +15,7 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         forwarded_headers: &[String],
         dropped_headers: &[String],
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<i64, ProxyError> {
         self.record_local_request_log_without_key_with_diagnostics(
             auth_token_id,
@@ -35,6 +36,7 @@ impl TavilyProxy {
             None,
             forwarded_headers,
             dropped_headers,
+            client_ip,
         )
         .await
     }
@@ -60,6 +62,7 @@ impl TavilyProxy {
         fallback_reason: Option<&str>,
         forwarded_headers: &[String],
         dropped_headers: &[String],
+        client_ip: Option<&ClientIpInfo>,
     ) -> Result<i64, ProxyError> {
         self.key_store
             .log_attempt(AttemptLog {
@@ -89,6 +92,7 @@ impl TavilyProxy {
                 fallback_reason,
                 forwarded_headers,
                 dropped_headers,
+                client_ip,
             })
             .await
     }

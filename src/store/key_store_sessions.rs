@@ -1806,6 +1806,19 @@ impl KeyStore {
             .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
             .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
         let user_blocked_key_base_limit = self.fetch_user_blocked_key_base_limit().await?;
+        let defaults = TrustedClientIpSettings::default();
+        let trusted_proxy_cidrs = self
+            .get_meta_string(META_KEY_TRUSTED_PROXY_CIDRS_V1)
+            .await?
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .map(|values| normalize_trusted_proxy_cidrs(&values))
+            .unwrap_or(defaults.trusted_proxy_cidrs);
+        let trusted_client_ip_headers = self
+            .get_meta_string(META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1)
+            .await?
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .map(|values| normalize_trusted_client_ip_headers(&values))
+            .unwrap_or(defaults.trusted_client_ip_headers);
         Ok(SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
@@ -1814,6 +1827,8 @@ impl KeyStore {
             api_rebalance_enabled,
             api_rebalance_percent,
             user_blocked_key_base_limit,
+            trusted_proxy_cidrs,
+            trusted_client_ip_headers,
         })
     }
 
@@ -1856,6 +1871,10 @@ impl KeyStore {
                 "user_blocked_key_base_limit must be a non-negative integer".to_string(),
             ));
         }
+        let trusted_client_ip = validate_trusted_client_ip_settings(&TrustedClientIpSettings {
+            trusted_proxy_cidrs: settings.trusted_proxy_cidrs.clone(),
+            trusted_client_ip_headers: settings.trusted_client_ip_headers.clone(),
+        })?;
         self.set_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1, settings.request_rate_limit)
             .await?;
         self.set_meta_i64(
@@ -1886,6 +1905,18 @@ impl KeyStore {
         self.set_meta_i64(
             META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1,
             settings.user_blocked_key_base_limit,
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_TRUSTED_PROXY_CIDRS_V1,
+            &serde_json::to_string(&trusted_client_ip.trusted_proxy_cidrs)
+                .unwrap_or_else(|_| "[]".to_string()),
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1,
+            &serde_json::to_string(&trusted_client_ip.trusted_client_ip_headers)
+                .unwrap_or_else(|_| "[]".to_string()),
         )
         .await?;
         self.record_request_rate_limit_snapshot_at(

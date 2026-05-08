@@ -1,7 +1,506 @@
 use crate::store::*;
 use crate::*;
+use axum::http::{HeaderMap, HeaderName};
 use chrono::Timelike;
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, SocketAddr},
+};
+
+pub const DEFAULT_TRUSTED_PROXY_CIDRS: &[&str] = &["127.0.0.0/8", "::1/128"];
+
+pub const DEFAULT_TRUSTED_CLIENT_IP_HEADERS: &[&str] = &[
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-real-ip",
+    "x-forwarded-for",
+    "forwarded",
+];
+
+pub const AUDITED_CLIENT_IP_HEADERS: &[&str] = &[
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-real-ip",
+    "x-forwarded-for",
+    "forwarded",
+    "cf-connecting-ipv6",
+    "eo-connecting-ip",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpHeaderValue {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpInfo {
+    pub remote_addr: Option<String>,
+    pub client_ip: Option<String>,
+    pub client_ip_source: Option<String>,
+    pub client_ip_trusted: bool,
+    pub ip_headers: Vec<ClientIpHeaderValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedClientIpSettings {
+    pub trusted_proxy_cidrs: Vec<String>,
+    pub trusted_client_ip_headers: Vec<String>,
+}
+
+impl Default for TrustedClientIpSettings {
+    fn default() -> Self {
+        Self {
+            trusted_proxy_cidrs: DEFAULT_TRUSTED_PROXY_CIDRS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            trusted_client_ip_headers: DEFAULT_TRUSTED_CLIENT_IP_HEADERS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedClientIpHeaderValue {
+    pub name: String,
+    pub value: String,
+    pub count: i64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedClientIpRequest {
+    pub id: i64,
+    pub created_at: i64,
+    pub remote_addr: Option<String>,
+    pub client_ip: Option<String>,
+    pub client_ip_source: Option<String>,
+    pub client_ip_trusted: bool,
+    pub ip_headers: Vec<ClientIpHeaderValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedIpCidr {
+    ip: IpAddr,
+    prefix: u8,
+}
+
+impl ParsedIpCidr {
+    fn parse(raw: &str) -> Option<Self> {
+        let value = raw.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let (ip_raw, prefix_raw) = value.split_once('/').unwrap_or((value, ""));
+        let ip = ip_raw.parse::<IpAddr>().ok()?;
+        let max_prefix = match ip {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        let prefix = if prefix_raw.is_empty() {
+            max_prefix
+        } else {
+            prefix_raw.parse::<u8>().ok()?
+        };
+        (prefix <= max_prefix).then_some(Self { ip, prefix })
+    }
+
+    fn contains(self, candidate: IpAddr) -> bool {
+        match (self.ip, candidate) {
+            (IpAddr::V4(network), IpAddr::V4(candidate)) => {
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - u32::from(self.prefix))
+                };
+                (u32::from(network) & mask) == (u32::from(candidate) & mask)
+            }
+            (IpAddr::V6(network), IpAddr::V6(candidate)) => {
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u128::MAX << (128 - u32::from(self.prefix))
+                };
+                (u128::from(network) & mask) == (u128::from(candidate) & mask)
+            }
+            _ => false,
+        }
+    }
+}
+
+pub fn normalize_client_ip_header_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return None;
+    }
+    HeaderName::from_bytes(trimmed.as_bytes())
+        .ok()
+        .map(|name| name.as_str().to_string())
+        .filter(|name| !is_sensitive_client_ip_header_name(name))
+}
+
+fn is_sensitive_client_ip_header_name(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "tavily-api-key"
+            | "x-tavily-api-key"
+            | "x-hikari-token"
+            | "x-hikari-api-key"
+    )
+}
+
+pub fn normalize_trusted_client_ip_headers(values: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        if let Some(name) = normalize_client_ip_header_name(value)
+            && seen.insert(name.clone())
+        {
+            out.push(name);
+        }
+    }
+    if out.is_empty() {
+        TrustedClientIpSettings::default().trusted_client_ip_headers
+    } else {
+        out
+    }
+}
+
+pub fn normalize_trusted_proxy_cidrs(values: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if ParsedIpCidr::parse(trimmed).is_some() && seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    if out.is_empty() {
+        TrustedClientIpSettings::default().trusted_proxy_cidrs
+    } else {
+        out
+    }
+}
+
+pub fn validate_trusted_client_ip_settings(
+    settings: &TrustedClientIpSettings,
+) -> Result<TrustedClientIpSettings, ProxyError> {
+    if settings.trusted_proxy_cidrs.is_empty() || settings.trusted_proxy_cidrs.len() > 64 {
+        return Err(ProxyError::Other(
+            "trusted_proxy_cidrs must contain between 1 and 64 CIDR entries".to_string(),
+        ));
+    }
+    if settings.trusted_client_ip_headers.is_empty()
+        || settings.trusted_client_ip_headers.len() > 32
+    {
+        return Err(ProxyError::Other(
+            "trusted_client_ip_headers must contain between 1 and 32 header names".to_string(),
+        ));
+    }
+    let mut cidr_seen = HashSet::new();
+    let mut cidrs = Vec::new();
+    for value in &settings.trusted_proxy_cidrs {
+        let trimmed = value.trim();
+        if ParsedIpCidr::parse(trimmed).is_none() || !cidr_seen.insert(trimmed.to_string()) {
+            return Err(ProxyError::Other(
+                "trusted_proxy_cidrs contains invalid CIDR entries".to_string(),
+            ));
+        }
+        cidrs.push(trimmed.to_string());
+    }
+
+    let mut header_seen = HashSet::new();
+    let mut headers = Vec::new();
+    for value in &settings.trusted_client_ip_headers {
+        let Some(name) = normalize_client_ip_header_name(value) else {
+            return Err(ProxyError::Other(
+                "trusted_client_ip_headers contains invalid header names".to_string(),
+            ));
+        };
+        if !header_seen.insert(name.clone()) {
+            return Err(ProxyError::Other(
+                "trusted_client_ip_headers contains invalid header names".to_string(),
+            ));
+        }
+        headers.push(name);
+    }
+    Ok(TrustedClientIpSettings {
+        trusted_proxy_cidrs: cidrs,
+        trusted_client_ip_headers: headers,
+    })
+}
+
+fn parse_ip_candidate(raw: &str) -> Option<IpAddr> {
+    let mut value = raw.trim().trim_matches('"').trim();
+    if value.eq_ignore_ascii_case("unknown") || value.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = value.strip_prefix('[')
+        && let Some((inside, _)) = stripped.split_once(']')
+    {
+        value = inside;
+    } else if let Some((host, port)) = value.rsplit_once(':')
+        && host.contains('.')
+        && port.chars().all(|ch| ch.is_ascii_digit())
+    {
+        value = host;
+    }
+    value.parse::<IpAddr>().ok()
+}
+
+fn parse_forwarded_for(value: &str) -> Option<IpAddr> {
+    for entry in value.split(',') {
+        for segment in entry.split(';') {
+            let Some((name, raw)) = segment.split_once('=') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("for")
+                && let Some(ip) = parse_ip_candidate(raw)
+            {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+fn parse_header_ip_value(name: &str, value: &str) -> Option<IpAddr> {
+    if name.eq_ignore_ascii_case("forwarded") {
+        return parse_forwarded_for(value);
+    }
+    value.split(',').find_map(parse_ip_candidate)
+}
+
+fn audited_client_ip_header_names(configured: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for name in normalize_trusted_client_ip_headers(configured)
+        .into_iter()
+        .chain(
+            AUDITED_CLIENT_IP_HEADERS
+                .iter()
+                .filter_map(|value| normalize_client_ip_header_name(value)),
+        )
+    {
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+pub fn resolve_client_ip_info(
+    remote_addr: Option<SocketAddr>,
+    headers: &HeaderMap,
+    settings: &TrustedClientIpSettings,
+) -> ClientIpInfo {
+    let remote_ip = remote_addr.map(|addr| addr.ip());
+    let remote_addr = remote_addr.map(|addr| addr.to_string());
+    let trusted_cidrs: Vec<ParsedIpCidr> = settings
+        .trusted_proxy_cidrs
+        .iter()
+        .filter_map(|value| ParsedIpCidr::parse(value))
+        .collect();
+    let client_ip_trusted =
+        remote_ip.is_some_and(|ip| trusted_cidrs.iter().copied().any(|cidr| cidr.contains(ip)));
+
+    let trusted_header_names =
+        normalize_trusted_client_ip_headers(&settings.trusted_client_ip_headers);
+    let mut ip_headers = Vec::new();
+    for name in audited_client_ip_header_names(&settings.trusted_client_ip_headers) {
+        if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
+            for value in headers.get_all(header_name).iter() {
+                if let Ok(raw) = value.to_str() {
+                    let value = raw.trim();
+                    if !value.is_empty() {
+                        ip_headers.push(ClientIpHeaderValue {
+                            name: name.clone(),
+                            value: value.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if client_ip_trusted {
+        for trusted_name in &trusted_header_names {
+            for observed in ip_headers
+                .iter()
+                .filter(|value| &value.name == trusted_name)
+            {
+                let Some(ip) = parse_header_ip_value(&observed.name, &observed.value) else {
+                    continue;
+                };
+                return ClientIpInfo {
+                    remote_addr,
+                    client_ip: Some(ip.to_string()),
+                    client_ip_source: Some(observed.name.clone()),
+                    client_ip_trusted: true,
+                    ip_headers,
+                };
+            }
+        }
+    }
+
+    ClientIpInfo {
+        remote_addr,
+        client_ip: remote_ip.map(|ip| ip.to_string()),
+        client_ip_source: Some("remote_addr".to_string()),
+        client_ip_trusted,
+        ip_headers,
+    }
+}
+
+#[cfg(test)]
+mod client_ip_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn settings() -> TrustedClientIpSettings {
+        TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec![
+                "x-real-ip".to_string(),
+                "x-forwarded-for".to_string(),
+                "forwarded".to_string(),
+            ],
+        }
+    }
+
+    #[test]
+    fn trusted_proxy_uses_configured_header_order() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.9, 10.0.0.2"),
+        );
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+
+        let info = resolve_client_ip_info(
+            Some("127.0.0.1:4321".parse().unwrap()),
+            &headers,
+            &settings(),
+        );
+
+        assert_eq!(info.remote_addr.as_deref(), Some("127.0.0.1:4321"));
+        assert_eq!(info.client_ip.as_deref(), Some("198.51.100.7"));
+        assert_eq!(info.client_ip_source.as_deref(), Some("x-real-ip"));
+        assert!(info.client_ip_trusted);
+        assert_eq!(info.ip_headers.len(), 2);
+    }
+
+    #[test]
+    fn untrusted_remote_addr_ignores_forwarded_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+
+        let info = resolve_client_ip_info(
+            Some("203.0.113.10:4321".parse().unwrap()),
+            &headers,
+            &settings(),
+        );
+
+        assert_eq!(info.client_ip.as_deref(), Some("203.0.113.10"));
+        assert_eq!(info.client_ip_source.as_deref(), Some("remote_addr"));
+        assert!(!info.client_ip_trusted);
+        assert_eq!(info.ip_headers[0].value, "198.51.100.7");
+    }
+
+    #[test]
+    fn trusted_proxy_parses_forwarded_for_parameter() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static(r#"for="[2001:db8::7]";proto=https"#),
+        );
+
+        let info = resolve_client_ip_info(
+            Some("127.0.0.1:4321".parse().unwrap()),
+            &headers,
+            &settings(),
+        );
+
+        assert_eq!(info.client_ip.as_deref(), Some("2001:db8::7"));
+        assert_eq!(info.client_ip_source.as_deref(), Some("forwarded"));
+    }
+
+    #[test]
+    fn audits_safe_preset_headers_without_trusting_them() {
+        let mut headers = HeaderMap::new();
+        headers.insert("eo-connecting-ip", HeaderValue::from_static("203.0.113.20"));
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.7"));
+        let settings = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec!["x-real-ip".to_string()],
+        };
+
+        let info =
+            resolve_client_ip_info(Some("127.0.0.1:4321".parse().unwrap()), &headers, &settings);
+
+        assert_eq!(info.client_ip.as_deref(), Some("198.51.100.7"));
+        assert_eq!(info.client_ip_source.as_deref(), Some("x-real-ip"));
+        assert!(
+            info.ip_headers
+                .iter()
+                .any(|value| value.name == "eo-connecting-ip" && value.value == "203.0.113.20")
+        );
+    }
+
+    #[test]
+    fn trusted_client_ip_settings_reject_invalid_entries() {
+        let invalid_cidr = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/not-a-prefix".to_string()],
+            trusted_client_ip_headers: vec!["x-real-ip".to_string()],
+        };
+        assert!(validate_trusted_client_ip_settings(&invalid_cidr).is_err());
+
+        let invalid_header = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec!["bad header".to_string()],
+        };
+        assert!(validate_trusted_client_ip_settings(&invalid_header).is_err());
+
+        let sensitive_header = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec!["authorization".to_string()],
+        };
+        assert!(validate_trusted_client_ip_settings(&sensitive_header).is_err());
+
+        let invalid_default_count_cidrs = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["bad-cidr-a".to_string(), "bad-cidr-b".to_string()],
+            trusted_client_ip_headers: vec!["x-real-ip".to_string()],
+        };
+        assert!(validate_trusted_client_ip_settings(&invalid_default_count_cidrs).is_err());
+
+        let invalid_default_count_headers = TrustedClientIpSettings {
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".to_string()],
+            trusted_client_ip_headers: vec![
+                "authorization".to_string(),
+                "cookie".to_string(),
+                "bad header".to_string(),
+                "x-api-key".to_string(),
+                "set-cookie".to_string(),
+            ],
+        };
+        assert!(validate_trusted_client_ip_settings(&invalid_default_count_headers).is_err());
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ApiKeyLease {
@@ -36,6 +535,7 @@ pub(crate) struct AttemptLog<'a> {
     pub(crate) fallback_reason: Option<&'a str>,
     pub(crate) forwarded_headers: &'a [String],
     pub(crate) dropped_headers: &'a [String],
+    pub(crate) client_ip: Option<&'a ClientIpInfo>,
 }
 
 /// 透传请求描述。
@@ -55,6 +555,7 @@ pub struct ProxyRequest {
     pub routing_subject_hash: Option<String>,
     pub upstream_operation: Option<String>,
     pub fallback_reason: Option<String>,
+    pub client_ip: Option<ClientIpInfo>,
 }
 
 /// 透传响应。
@@ -543,6 +1044,8 @@ pub struct SystemSettings {
     pub api_rebalance_enabled: bool,
     pub api_rebalance_percent: i64,
     pub user_blocked_key_base_limit: i64,
+    pub trusted_proxy_cidrs: Vec<String>,
+    pub trusted_client_ip_headers: Vec<String>,
 }
 
 /// 单条请求日志记录的关键信息。
@@ -583,6 +1086,11 @@ pub struct RequestLogRecord {
     pub created_at: i64,
     pub forwarded_headers: Vec<String>,
     pub dropped_headers: Vec<String>,
+    pub remote_addr: Option<String>,
+    pub client_ip: Option<String>,
+    pub client_ip_source: Option<String>,
+    pub client_ip_trusted: bool,
+    pub ip_headers: Vec<ClientIpHeaderValue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

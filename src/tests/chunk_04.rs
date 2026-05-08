@@ -1358,6 +1358,7 @@ async fn research_request_does_not_probe_usage_before_forwarding() {
             options,
             &headers,
             false,
+            None,
         )
         .await
         .expect("research should forward without probing usage");
@@ -1515,6 +1516,7 @@ async fn proxy_http_json_endpoint_does_not_inject_bearer_auth_when_disabled() {
             options,
             &headers,
             false,
+            None,
         )
         .await
         .expect("proxy request succeeds");

@@ -984,6 +984,7 @@ async fn build_and_log_local_mcp_protocol_response(
     routing_subject_hash: Option<&str>,
     upstream_operation: Option<&str>,
     fallback_reason: Option<&str>,
+    client_ip: Option<&ClientIpInfo>,
     sse_transport: bool,
 ) -> Result<Response<Body>, StatusCode> {
     let analysis = analyze_mcp_attempt(response_status, response_body);
@@ -1010,6 +1011,7 @@ async fn build_and_log_local_mcp_protocol_response(
             fallback_reason,
             &empty_headers,
             &empty_headers,
+            client_ip,
         )
         .await
     {
@@ -1249,6 +1251,7 @@ async fn log_rebalance_local_control_plane_response(
             fallback_reason,
             &empty_headers,
             &empty_headers,
+            None,
         )
         .await
     {

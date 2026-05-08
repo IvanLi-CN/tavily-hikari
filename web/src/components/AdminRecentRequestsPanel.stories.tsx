@@ -33,6 +33,14 @@ const storyLogs: RequestLog[] = [
     response_body: null,
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
     dropped_headers: ['authorization'],
+    remote_addr: '127.0.0.1:49321',
+    client_ip: '203.0.113.7',
+    client_ip_source: 'cf-connecting-ip',
+    client_ip_trusted: true,
+    ip_headers: [
+      { name: 'cf-connecting-ip', value: '203.0.113.7' },
+      { name: 'x-forwarded-for', value: '198.51.100.10, 10.0.0.4' },
+    ],
     operationalClass: 'success',
     requestKindProtocolGroup: 'api',
     requestKindBillingGroup: 'billable',
@@ -691,6 +699,8 @@ export const LazyDetailsGallery: Story = {
       '加载请求详情失败。',
       '重试',
       'site reliability',
+      'IP 诊断',
+      '203.0.113.7',
     ]) {
       if (!text.includes(expected)) {
         throw new Error(`Expected lazy detail gallery to contain: ${expected}`)

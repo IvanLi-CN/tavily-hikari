@@ -1737,6 +1737,25 @@ impl KeyStore {
             serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
         let dropped_json =
             serde_json::to_string(entry.dropped_headers).unwrap_or_else(|_| "[]".to_string());
+        let request_user_id = if let Some(token_id) = entry.auth_token_id {
+            self.resolve_request_rollup_user_id(token_id, None).await?
+        } else {
+            None
+        };
+        let remote_addr = entry.client_ip.and_then(|info| info.remote_addr.as_deref());
+        let client_ip = entry.client_ip.and_then(|info| info.client_ip.as_deref());
+        let client_ip_source = entry
+            .client_ip
+            .and_then(|info| info.client_ip_source.as_deref());
+        let client_ip_trusted = entry
+            .client_ip
+            .map(|info| i64::from(info.client_ip_trusted))
+            .unwrap_or(0);
+        let ip_headers_json = entry
+            .client_ip
+            .map(|info| serde_json::to_string(&info.ip_headers))
+            .transpose()
+            .unwrap_or_else(|_| Some("[]".to_string()));
 
         let bucket_start = local_day_bucket_start_utc_ts(created_at);
         let (bucket_success, bucket_error, bucket_quota_exhausted) = match entry.outcome {
@@ -1782,6 +1801,7 @@ impl KeyStore {
             INSERT INTO request_logs (
                 api_key_id,
                 auth_token_id,
+                request_user_id,
                 method,
                 path,
                 query,
@@ -1810,13 +1830,19 @@ impl KeyStore {
                 response_body,
                 forwarded_headers,
                 dropped_headers,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
         .bind(entry.key_id)
         .bind(entry.auth_token_id)
+        .bind(request_user_id)
         .bind(entry.method.as_str())
         .bind(entry.path)
         .bind(entry.query)
@@ -1845,6 +1871,11 @@ impl KeyStore {
         .bind(entry.response_body)
         .bind(forwarded_json)
         .bind(dropped_json)
+        .bind(remote_addr)
+        .bind(client_ip)
+        .bind(client_ip_source)
+        .bind(client_ip_trusted)
+        .bind(ip_headers_json)
         .bind(created_at)
         .fetch_one(&mut *tx)
         .await?;
@@ -2483,6 +2514,11 @@ impl KeyStore {
                 response_body,
                 forwarded_headers,
                 dropped_headers,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
                 created_at
             FROM request_logs
             WHERE visibility = ?
@@ -2522,6 +2558,87 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    pub(crate) async fn fetch_recent_client_ip_counts_by_user(
+        &self,
+        user_ids: &[String],
+        since: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count
+            FROM request_logs
+            WHERE request_user_id IN (
+            "#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push(
+            r#"
+              AND created_at >=
+            "#,
+        );
+        builder.push_bind(since);
+        builder.push(
+            r#"
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY request_user_id
+            "#,
+        );
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        let mut result = HashMap::new();
+        for row in rows {
+            let user_id: String = row.try_get("request_user_id")?;
+            let ip_count: i64 = row.try_get("ip_count")?;
+            result.insert(user_id, ip_count);
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn fetch_recent_client_ip_requests(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ObservedClientIpRequest>, ProxyError> {
+        let row_limit = limit.clamp(1, 100) as i64;
+        let rows = sqlx::query(
+            r#"
+            SELECT id, created_at, remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
+            FROM request_logs
+            WHERE visibility = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(row_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            items.push(ObservedClientIpRequest {
+                id: row.try_get("id")?,
+                created_at: row.try_get("created_at")?,
+                remote_addr: row.try_get("remote_addr")?,
+                client_ip: row.try_get("client_ip")?,
+                client_ip_source: row.try_get("client_ip_source")?,
+                client_ip_trusted: row.try_get::<i64, _>("client_ip_trusted")? != 0,
+                ip_headers: parse_client_ip_header_values(row.try_get::<Option<String>, _>("ip_headers")?),
+            });
+        }
+        Ok(items)
+    }
+
     pub(crate) async fn fetch_recent_logs_page(
         &self,
         result_status: Option<&str>,
@@ -2555,6 +2672,8 @@ impl KeyStore {
     fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, sqlx::Error> {
         let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
         let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
+        let ip_headers =
+            parse_client_ip_header_values(row.try_get::<Option<String>, _>("ip_headers")?);
         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
         let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
         let method: String = row.try_get("method")?;
@@ -2633,6 +2752,11 @@ impl KeyStore {
             created_at: row.try_get("created_at")?,
             forwarded_headers: forwarded,
             dropped_headers: dropped,
+            remote_addr: row.try_get("remote_addr")?,
+            client_ip: row.try_get("client_ip")?,
+            client_ip_source: row.try_get("client_ip_source")?,
+            client_ip_trusted: row.try_get::<i64, _>("client_ip_trusted")? != 0,
+            ip_headers,
         })
     }
 
