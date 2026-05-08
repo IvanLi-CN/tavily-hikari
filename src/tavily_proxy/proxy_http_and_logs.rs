@@ -832,7 +832,7 @@ impl TavilyProxy {
                         fallback_reason: Some("upstream_http_error"),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
-                        client_ip: None,
+                        client_ip,
                     })
                     .await?;
                 let mut headers = HeaderMap::new();
@@ -1077,7 +1077,7 @@ impl TavilyProxy {
                         fallback_reason: Some("upstream_http_error"),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
-                        client_ip: None,
+                        client_ip,
                     })
                     .await?;
                 let mut headers = HeaderMap::new();
