@@ -4,6 +4,7 @@ import {
   requestMcpProbeNotificationWithToken,
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
+import type { ClientIpHeaderValue } from './clientIp'
 
 export interface Summary {
   total_requests: number
@@ -378,8 +379,6 @@ export interface RequestLog {
   requestKindProtocolGroup: 'api' | 'mcp'
   requestKindBillingGroup: 'billable' | 'non_billable'
 }
-
-export interface ClientIpHeaderValue { name: string; value: string }
 
 export interface RequestLogBodies {
   request_body: string | null
@@ -965,7 +964,7 @@ export function buildPublicEventsUrl(token?: string, todayWindow?: TodayWindowRa
   return `/api/public/events${params.toString() ? `?${params.toString()}` : ''}`
 }
 
-async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
     const message = await response.text().catch(() => response.statusText)
@@ -2978,18 +2977,6 @@ export interface UpdateSystemSettingsPayload {
   userBlockedKeyBaseLimit: number
 }
 
-export interface ObservedClientIpHeaderValue extends ClientIpHeaderValue { count: number; lastSeenAt: number }
-
-export interface ObservedClientIpRequest {
-  id: number
-  createdAt: number
-  remoteAddr?: string | null
-  clientIp?: string | null
-  clientIpSource?: string | null
-  clientIpTrusted: boolean
-  ipHeaders: ClientIpHeaderValue[]
-}
-
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
 
 export interface ForwardProxyValidationRequest {
@@ -3177,12 +3164,6 @@ export function updateSystemSettings(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-}
-
-export function fetchObservedClientIpRequests(signal?: AbortSignal): Promise<ObservedClientIpRequest[]> {
-  return requestJson<{ items: ObservedClientIpRequest[] }>('/api/settings/client-ip/observed-headers', {
-    signal,
-  }).then((response) => response.items ?? [])
 }
 
 export function validateForwardProxyCandidate(
