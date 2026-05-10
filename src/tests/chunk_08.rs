@@ -818,3 +818,212 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
     assert_eq!(page.items[0].key_id, blocked_key_id);
     assert_eq!(page.items[0].reason_code.as_deref(), Some("account_deactivated"));
 }
+
+#[tokio::test]
+async fn startup_does_not_backfill_request_log_user_snapshots() {
+    let db_path = temp_db_path("startup-skips-request-user-id-backfill");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "startup-skips-request-user-backfill".to_string(),
+            username: Some("startup_skips_request_user_backfill".to_string()),
+            name: Some("Startup Skips Request User Backfill".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("startup-skips-request-user-backfill"))
+        .await
+        .expect("bind token");
+
+    let request_log_id = proxy
+        .record_local_request_log_without_key(
+            Some(&token.id),
+            &Method::GET,
+            "/search",
+            Some("q=startup-skips-request-user-backfill"),
+            StatusCode::OK,
+            Some(200),
+            b"{}",
+            b"{}",
+            OUTCOME_SUCCESS,
+            None,
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("record token attempt");
+    proxy
+        .record_token_attempt_request_log_metadata(
+            &token.id,
+            &Method::GET,
+            "/search",
+            Some("q=startup-skips-request-user-backfill"),
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(request_log_id),
+        )
+        .await
+        .expect("record linked token attempt");
+    sqlx::query("UPDATE request_logs SET request_user_id = NULL WHERE id = ?")
+        .bind(request_log_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request user id");
+    drop(proxy);
+
+    let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy reopened");
+    let request_user_id: Option<String> =
+        sqlx::query_scalar("SELECT request_user_id FROM request_logs WHERE id = ?")
+            .bind(request_log_id)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("reload request user id after startup");
+    assert_eq!(request_user_id, None);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_user_id_backfill_runs_in_resumable_batches() {
+    let db_path = temp_db_path("request-user-id-backfill-resumable");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-user-backfill-resumable".to_string(),
+            username: Some("request_user_backfill_resumable".to_string()),
+            name: Some("Request User Backfill Resumable".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("request-user-backfill-resumable"))
+        .await
+        .expect("bind token");
+
+    for index in 0..3 {
+        let request_log_id = proxy
+            .record_local_request_log_without_key(
+                Some(&token.id),
+                &Method::GET,
+                "/search",
+                Some(&format!("q=request-user-backfill-resumable-{index}")),
+                StatusCode::OK,
+                Some(200),
+                b"{}",
+                b"{}",
+                OUTCOME_SUCCESS,
+                None,
+                &[],
+                &[],
+                None,
+            )
+            .await
+            .expect("record token attempt");
+        proxy
+            .record_token_attempt_request_log_metadata(
+                &token.id,
+                &Method::GET,
+                "/search",
+                Some(&format!("q=request-user-backfill-resumable-{index}")),
+                Some(StatusCode::OK.as_u16() as i64),
+                Some(200),
+                true,
+                OUTCOME_SUCCESS,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(request_log_id),
+            )
+            .await
+            .expect("record linked token attempt");
+    }
+
+    sqlx::query("UPDATE request_logs SET created_at = ?")
+        .bind(Utc::now().timestamp() - 120)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("age request logs past backfill stability grace");
+    sqlx::query("UPDATE request_logs SET request_user_id = NULL")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request user snapshots");
+
+    let first = crate::store::run_request_user_id_backfill_with_pool(&proxy.key_store.pool, 2)
+        .await
+        .expect("run first request user id backfill batch");
+    assert_eq!(first.rows_scanned, 2);
+    assert_eq!(first.rows_updated, 2);
+    assert_eq!(first.cursor_after, 2);
+
+    let filled_after_first: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM request_logs
+        WHERE request_user_id = ?
+        "#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count filled request logs after first batch");
+    assert_eq!(filled_after_first, 2);
+
+    let second = crate::store::run_request_user_id_backfill_with_pool(&proxy.key_store.pool, 2)
+        .await
+        .expect("run second request user id backfill batch");
+    assert_eq!(second.cursor_before, 2);
+    assert_eq!(second.rows_scanned, 1);
+    assert_eq!(second.rows_updated, 1);
+
+    let filled_after_second: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM request_logs
+        WHERE request_user_id = ?
+        "#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count filled request logs after second batch");
+    assert_eq!(filled_after_second, 3);
+
+    let _ = std::fs::remove_file(db_path);
+}

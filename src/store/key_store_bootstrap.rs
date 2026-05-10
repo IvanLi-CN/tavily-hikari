@@ -921,23 +921,6 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"
-            UPDATE request_logs
-            SET request_user_id = (
-                SELECT atl.request_user_id
-                FROM auth_token_logs atl
-                WHERE atl.request_log_id = request_logs.id
-                  AND atl.request_user_id IS NOT NULL
-                ORDER BY atl.id DESC
-                LIMIT 1
-            )
-            WHERE request_user_id IS NULL
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
         if self
             .auth_token_logs_have_legacy_request_kind_columns()
             .await?

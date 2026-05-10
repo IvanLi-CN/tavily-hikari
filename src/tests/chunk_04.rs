@@ -304,8 +304,10 @@ async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_
         .await
         .expect("public success breakdown");
     let current_month_start = start_of_month(Utc::now()).timestamp();
-    let expected_public_monthly_success = if month_start >= current_month_start {
+    let expected_public_monthly_success = if first_full_bucket_start >= current_month_start {
         13
+    } else if partial_bucket_start >= current_month_start {
+        6
     } else {
         0
     };
