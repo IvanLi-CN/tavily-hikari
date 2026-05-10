@@ -172,6 +172,16 @@ pub struct RequestKindCanonicalBackfillReport {
     pub auth_token_logs: RequestKindCanonicalBackfillTableReport,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestUserIdBackfillReport {
+    pub batch_size: i64,
+    pub cursor_before: i64,
+    pub cursor_after: i64,
+    pub upper_bound: i64,
+    pub rows_scanned: i64,
+    pub rows_updated: i64,
+}
+
 impl ForwardProxyProgressEvent {
     pub fn phase(operation: &'static str, phase_key: &'static str, label: &'static str) -> Self {
         Self::Phase {
@@ -336,6 +346,8 @@ const OUTCOME_UNKNOWN: &str = "unknown";
 pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
 pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
+pub const REQUEST_USER_ID_BACKFILL_BATCH_SIZE: i64 = 1000;
+const REQUEST_USER_ID_BACKFILL_STABILITY_GRACE_SECS: i64 = 60;
 const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
 const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
@@ -649,6 +661,7 @@ const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =
     "request_kind_canonical_backfill_request_logs_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1: &str =
     "request_kind_canonical_backfill_auth_token_logs_v1";
+const META_KEY_REQUEST_USER_ID_BACKFILL_CURSOR_V1: &str = "request_user_id_backfill_cursor_v1";
 const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
@@ -673,6 +686,14 @@ pub async fn run_request_kind_canonical_backfill(
     let pool = store::open_sqlite_pool(database_path, true, false).await?;
     store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None, None)
         .await
+}
+
+pub async fn run_request_user_id_backfill(
+    database_path: &str,
+    batch_size: i64,
+) -> Result<RequestUserIdBackfillReport, ProxyError> {
+    let pool = store::open_sqlite_pool(database_path, true, false).await?;
+    store::run_request_user_id_backfill_with_pool(&pool, batch_size).await
 }
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {

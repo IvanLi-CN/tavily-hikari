@@ -1208,6 +1208,175 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
     })
 }
 
+pub(crate) async fn run_request_user_id_backfill_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+) -> Result<RequestUserIdBackfillReport, ProxyError> {
+    let batch_size = batch_size.max(1);
+    let cursor_before =
+        read_request_kind_backfill_meta_i64(pool, META_KEY_REQUEST_USER_ID_BACKFILL_CURSOR_V1)
+            .await?;
+    let upper_bound = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM request_logs")
+        .fetch_one(pool)
+        .await?;
+    let stable_before = Utc::now()
+        .timestamp()
+        .saturating_sub(REQUEST_USER_ID_BACKFILL_STABILITY_GRACE_SECS);
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_auth_token_logs_request_log_user_id
+        ON auth_token_logs(request_log_id, request_user_id, id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            request_logs.id AS id,
+            (
+                SELECT atl.request_user_id
+                FROM auth_token_logs atl
+                WHERE atl.request_log_id = request_logs.id
+                  AND atl.request_user_id IS NOT NULL
+                ORDER BY atl.id DESC
+                LIMIT 1
+            ) AS request_user_id
+        FROM request_logs
+        WHERE request_logs.id > ?
+          AND request_logs.id <= ?
+          AND request_logs.created_at <= ?
+          AND request_logs.request_user_id IS NULL
+        ORDER BY id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(cursor_before)
+    .bind(upper_bound)
+    .bind(stable_before)
+    .bind(batch_size)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(RequestUserIdBackfillReport {
+            batch_size,
+            cursor_before,
+            cursor_after: cursor_before,
+            upper_bound,
+            rows_scanned: 0,
+            rows_updated: 0,
+        });
+    }
+
+    let updates = rows
+        .into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get::<i64, _>("id")?,
+                row.try_get::<Option<String>, _>("request_user_id")?,
+            ))
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    let batch_max_id = updates
+        .last()
+        .map(|(id, _)| *id)
+        .unwrap_or(cursor_before)
+        .max(cursor_before);
+    let rows_scanned = updates.len() as i64;
+    let rows_updated: i64;
+
+    loop {
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(err) => {
+                let err = ProxyError::Database(err);
+                if is_transient_sqlite_write_error(&err) {
+                    tokio::time::sleep(Duration::from_millis(
+                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                    ))
+                    .await;
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        let batch_result: Result<u64, ProxyError> = async {
+            let mut updated = 0_u64;
+            for (id, request_user_id) in &updates {
+                let Some(request_user_id) = request_user_id else {
+                    continue;
+                };
+                let result = sqlx::query(
+                    r#"
+                    UPDATE request_logs
+                    SET request_user_id = ?
+                    WHERE id = ?
+                      AND request_user_id IS NULL
+                    "#,
+                )
+                .bind(request_user_id)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                updated += result.rows_affected();
+            }
+
+            write_request_kind_backfill_meta_i64(
+                &mut tx,
+                META_KEY_REQUEST_USER_ID_BACKFILL_CURSOR_V1,
+                batch_max_id,
+            )
+            .await?;
+            Ok(updated)
+        }
+        .await;
+
+        match batch_result {
+            Ok(updated) => match tx.commit().await {
+                Ok(()) => {
+                    rows_updated = updated as i64;
+                    break;
+                }
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    if is_transient_sqlite_write_error(&err) {
+                        tokio::time::sleep(Duration::from_millis(
+                            REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            },
+            Err(err) => {
+                let retry = is_transient_sqlite_write_error(&err);
+                let _ = tx.rollback().await;
+                if retry {
+                    tokio::time::sleep(Duration::from_millis(
+                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                    ))
+                    .await;
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(RequestUserIdBackfillReport {
+        batch_size,
+        cursor_before,
+        cursor_after: batch_max_id,
+        upper_bound,
+        rows_scanned,
+        rows_updated,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RequestLogsCatalogCacheEntry {
     value: RequestLogsCatalog,
