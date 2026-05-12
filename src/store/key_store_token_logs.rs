@@ -2615,11 +2615,26 @@ impl KeyStore {
             SELECT id, created_at, remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
             FROM request_logs
             WHERE visibility = ?
+              AND NOT (
+                gateway_mode IS NOT NULL
+                AND upstream_operation IS NOT NULL
+                AND gateway_mode = ?
+                AND upstream_operation = ?
+                AND remote_addr IS NULL
+                AND client_ip IS NULL
+                AND (
+                  ip_headers IS NULL
+                  OR TRIM(ip_headers) = ''
+                  OR TRIM(ip_headers) = '[]'
+                )
+              )
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(MCP_GATEWAY_MODE_REBALANCE)
+        .bind("mcp")
         .bind(row_limit)
         .fetch_all(&self.pool)
         .await?;
