@@ -1713,6 +1713,102 @@
     }
 
     #[tokio::test]
+    async fn observed_client_ip_requests_skip_empty_rebalance_control_plane_logs() {
+        let db_path = temp_db_path("observed-client-ip-skip-rebalance-control");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-observed-client-ip-filter".to_string()],
+            "http://127.0.0.1:1",
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                method,
+                path,
+                status_code,
+                tavily_status_code,
+                result_status,
+                request_kind_key,
+                gateway_mode,
+                upstream_operation,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
+                created_at
+            ) VALUES
+                (
+                    'POST', '/mcp', 200, 200, 'success', 'mcp:tools/list',
+                    ?, 'mcp', NULL, NULL, NULL, 0, NULL, 30
+                ),
+                (
+                    'POST', '/api/tavily/search', 200, 200, 'success', 'api:search',
+                    NULL, NULL, NULL, NULL, NULL, 0, NULL, 25
+                ),
+                (
+                    'POST', '/api/tavily/search', 200, 200, 'success', 'api:search',
+                    NULL, NULL, '172.24.0.176:51000', '203.0.113.10',
+                    'eo-connecting-ip', 1,
+                    '[{"name":"eo-connecting-ip","value":"203.0.113.10"}]', 20
+                ),
+                (
+                    'POST', '/mcp', 200, 200, 'success', 'mcp:search',
+                    ?, 'http_search', '172.24.0.176:51001', '172.24.0.176',
+                    'remote_addr', 0, '[]', 10
+                )
+            "#,
+        )
+        .bind(tavily_hikari::MCP_GATEWAY_MODE_REBALANCE)
+        .bind(tavily_hikari::MCP_GATEWAY_MODE_REBALANCE)
+        .execute(&pool)
+        .await
+        .expect("insert request logs");
+
+        let control_log_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM request_logs WHERE upstream_operation = 'mcp'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("fetch control log id");
+
+        let observed = proxy
+            .recent_client_ip_requests(50)
+            .await
+            .expect("fetch observed client ip requests");
+        let observed_ids: Vec<i64> = observed.iter().map(|item| item.id).collect();
+
+        assert_eq!(observed.len(), 3);
+        assert!(
+            !observed_ids.contains(&control_log_id),
+            "empty rebalance control-plane logs should not crowd out IP diagnostics"
+        );
+        assert!(
+            observed.iter().any(|item| item.client_ip.is_none()),
+            "legacy rows without gateway metadata should not be removed by the rebalance filter"
+        );
+        let edge_one = observed
+            .iter()
+            .find(|item| item.client_ip.as_deref() == Some("203.0.113.10"))
+            .expect("EdgeOne observed row should remain");
+        assert_eq!(edge_one.client_ip_source.as_deref(), Some("eo-connecting-ip"));
+        assert_eq!(edge_one.ip_headers.len(), 1);
+        assert!(
+            observed
+                .iter()
+                .any(|item| item.client_ip_source.as_deref() == Some("remote_addr")),
+            "MCP tool rows with remote_addr should remain"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn mcp_rebalance_tools_call_search_uses_http_upstream_and_strict_headers() {
         let db_path = temp_db_path("mcp-rebalance-search-http");
         let db_str = db_path.to_string_lossy().to_string();
