@@ -17,7 +17,12 @@ import {
 } from 'chart.js'
 import { Chart } from 'react-chartjs-2'
 
-import type { AdminUserUsageSeries, AdminUserUsageSeriesKey, AdminUserUsageSeriesPoint } from '../api'
+import type {
+  AdminUserIpTimelineEntry,
+  AdminUserUsageSeries,
+  AdminUserUsageSeriesKey,
+  AdminUserUsageSeriesPoint,
+} from '../api'
 import type { AdminTranslations } from '../i18n'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
@@ -25,13 +30,21 @@ import { useTheme } from '../theme'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineController, LineElement, PointElement, Tooltip, Legend)
 
-const USAGE_TAB_ORDER: readonly AdminUserUsageSeriesKey[] = ['rate5m', 'quota1h', 'quota24h', 'quotaMonth']
+const USAGE_TAB_ORDER: readonly AdminUserUsagePanelTab[] = ['rate5m', 'quota1h', 'quota24h', 'quotaMonth', 'ip']
+const USAGE_SERIES_KEYS = new Set<AdminUserUsageSeriesKey>(['rate5m', 'quota1h', 'quota24h', 'quotaMonth'])
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error'
 type TooltipVerticalPlacement = 'top' | 'bottom'
 type TooltipHorizontalPlacement = 'left' | 'right'
+type AdminUserUsagePanelTab = AdminUserUsageSeriesKey | 'ip'
+type IpGanttRange = [number, number]
+type TimelineBounds = { min: number; max: number }
 
 const HOVER_TOOLTIP_POSITION_STEP = 4
+const IP_GANTT_MIN_HEIGHT = 172
+const IP_GANTT_MAX_HEIGHT = 420
+const IP_GANTT_ROW_HEIGHT = 32
+const IP_GANTT_AXIS_HEIGHT = 46
 
 interface SharedUsageTooltipState {
   index: number
@@ -45,9 +58,18 @@ interface UserDetailSharedUsagePanelProps {
   usersStrings: AdminTranslations['users']
   language: string
   loadSeries: (series: AdminUserUsageSeriesKey, signal: AbortSignal) => Promise<AdminUserUsageSeries>
-  initialSeries?: AdminUserUsageSeriesKey
+  initialSeries?: AdminUserUsagePanelTab
+  ipTimeline?: AdminUserIpTimelineEntry[]
+  ipAddresses24h?: string[]
+  ipAddresses7d?: string[]
+  ipCount24h?: number
+  ipCount7d?: number
   title?: string
   description?: string
+}
+
+function isUsageSeriesKey(value: AdminUserUsagePanelTab): value is AdminUserUsageSeriesKey {
+  return USAGE_SERIES_KEYS.has(value as AdminUserUsageSeriesKey)
 }
 
 function readChartColorVar(name: string, fallback: string): string {
@@ -145,6 +167,31 @@ function formatBucketTooltipLabel(
   return `${dateLabel} ${timeLabel.format(start)} – ${timeLabel.format(end)}`
 }
 
+function formatIpTimelineAxisLabel(locale: string, timestamp: number): string {
+  return new Intl.DateTimeFormat(locale, {
+    month: '2-digit',
+    day: '2-digit',
+    timeZone: 'UTC',
+  }).format(new Date(timestamp * 1000))
+}
+
+function formatIpTimelineRangeLabel(locale: string, startTimestamp: number, endTimestamp: number): string {
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  return `${dateFormatter.format(new Date(startTimestamp * 1000))} – ${dateFormatter.format(new Date(endTimestamp * 1000))}`
+}
+
+function clipIpTimelineRange(item: AdminUserIpTimelineEntry, bounds: TimelineBounds): IpGanttRange {
+  const first = Math.min(bounds.max, Math.max(bounds.min, item.firstSeenAt))
+  const last = Math.min(bounds.max, Math.max(bounds.min, item.lastSeenAt))
+  return [Math.min(first, last), Math.max(first, last)]
+}
+
 function axisTickStride(series: AdminUserUsageSeriesKey): number {
   switch (series) {
     case 'rate5m':
@@ -221,11 +268,16 @@ export function UserDetailSharedUsagePanel({
   language,
   loadSeries,
   initialSeries = 'quota1h',
+  ipTimeline = [],
+  ipAddresses24h = [],
+  ipAddresses7d = [],
+  ipCount24h = ipAddresses24h.length,
+  ipCount7d = ipAddresses7d.length,
   title,
   description,
 }: UserDetailSharedUsagePanelProps): JSX.Element {
   const { resolvedTheme } = useTheme()
-  const [activeSeries, setActiveSeries] = useState<AdminUserUsageSeriesKey>(initialSeries)
+  const [activeSeries, setActiveSeries] = useState<AdminUserUsagePanelTab>(initialSeries)
   const [seriesCache, setSeriesCache] = useState<Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>>({})
   const [statusBySeries, setStatusBySeries] = useState<Partial<Record<AdminUserUsageSeriesKey, LoadStatus>>>({})
   const [hoverTooltip, setHoverTooltip] = useState<SharedUsageTooltipState | null>(null)
@@ -233,8 +285,8 @@ export function UserDetailSharedUsagePanel({
   const chartAreaRef = useRef<HTMLDivElement>(null)
   const loadSeriesRef = useRef(loadSeries)
   const inflightControllersRef = useRef<Partial<Record<AdminUserUsageSeriesKey, AbortController>>>({})
-  const currentSeries = seriesCache[activeSeries] ?? null
-  const activeStatus = statusBySeries[activeSeries] ?? 'idle'
+  const currentSeries = isUsageSeriesKey(activeSeries) ? seriesCache[activeSeries] ?? null : null
+  const activeStatus = isUsageSeriesKey(activeSeries) ? statusBySeries[activeSeries] ?? 'idle' : 'success'
 
   useEffect(() => {
     loadSeriesRef.current = loadSeries
@@ -266,6 +318,7 @@ export function UserDetailSharedUsagePanel({
   }, [hoverTooltip, pinnedTooltip])
 
   useEffect(() => {
+    if (!isUsageSeriesKey(activeSeries)) return
     if (currentSeries) return
     if (activeStatus !== 'idle') return
 
@@ -293,7 +346,7 @@ export function UserDetailSharedUsagePanel({
   }, [activeSeries, activeStatus, currentSeries])
 
   const loadedSeries = useMemo(
-    () => USAGE_TAB_ORDER.filter((key) => seriesCache[key] != null),
+    () => USAGE_TAB_ORDER.filter((key) => key === 'ip' || (isUsageSeriesKey(key) && seriesCache[key] != null)),
     [seriesCache],
   )
   const hasPartialHistory = currentSeries?.points.some((point) => point.value == null || point.limitValue == null) ?? false
@@ -314,6 +367,7 @@ export function UserDetailSharedUsagePanel({
   const tooltipHasGap = activeTooltipPoint ? activeTooltipPoint.value == null || activeTooltipPoint.limitValue == null : false
 
   const retryActiveSeries = () => {
+    if (!isUsageSeriesKey(activeSeries)) return
     inflightControllersRef.current[activeSeries]?.abort()
     delete inflightControllersRef.current[activeSeries]
     setStatusBySeries((current) => ({ ...current, [activeSeries]: 'idle' }))
@@ -322,6 +376,9 @@ export function UserDetailSharedUsagePanel({
   }
 
   const chartData = useMemo(() => {
+    if (!isUsageSeriesKey(activeSeries)) {
+      return { labels: [], datasets: [] } as unknown as ChartData<'bar', (number | null)[], string>
+    }
     const labels = currentSeries?.points.map((point) => formatBucketAxisLabel(language, activeSeries, point)) ?? []
     return {
       labels,
@@ -362,6 +419,9 @@ export function UserDetailSharedUsagePanel({
   ])
 
   const chartOptions = useMemo(() => {
+    if (!isUsageSeriesKey(activeSeries)) {
+      return {} as ChartOptions<'bar'>
+    }
     const points = currentSeries?.points ?? []
     const stride = axisTickStride(activeSeries)
     return {
@@ -455,6 +515,144 @@ export function UserDetailSharedUsagePanel({
     } as ChartOptions<'bar'>
   }, [activeSeries, chartData.labels, chartPalette.grid, chartPalette.tick, currentSeries?.points, language, pinnedTooltip])
 
+  const ipTimelineBounds = useMemo(() => {
+    const max = Math.floor(Date.now() / 1000)
+    const min = max - 7 * 24 * 60 * 60
+    return { min, max }
+  }, [])
+  const ipGanttData = useMemo(
+    () =>
+      ({
+        labels: ipTimeline.map((item) => item.ipAddress),
+        datasets: [
+          {
+            label: usersStrings.detail.ipUsageTitle,
+            data: ipTimeline.map((item) => clipIpTimelineRange(item, ipTimelineBounds)),
+            backgroundColor: chartPalette.bar,
+            borderColor: chartPalette.barBorder,
+            borderSkipped: false,
+            borderWidth: 1,
+            borderRadius: 4,
+            minBarLength: 6,
+            barPercentage: 0.68,
+            categoryPercentage: 0.82,
+          },
+        ],
+      }) as ChartData<'bar', IpGanttRange[], string>,
+    [
+      chartPalette.bar,
+      chartPalette.barBorder,
+      ipTimeline,
+      ipTimelineBounds.max,
+      ipTimelineBounds.min,
+      usersStrings.detail.ipUsageTitle,
+    ],
+  )
+  const ipGanttOptions = useMemo(
+    () =>
+      ({
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'nearest', intersect: true },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title(items) {
+                const index = items[0]?.dataIndex ?? 0
+                return ipTimeline[index]?.ipAddress ?? ''
+              },
+              label(item) {
+                const entry = ipTimeline[item.dataIndex]
+                if (!entry) return ''
+                return `${formatIpTimelineRangeLabel(language, entry.firstSeenAt, entry.lastSeenAt)} · ${formatNumber(language, entry.requestCount)}`
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            min: ipTimelineBounds.min,
+            max: ipTimelineBounds.max,
+            grid: { color: chartPalette.grid },
+            ticks: {
+              color: chartPalette.tick,
+              maxTicksLimit: 8,
+              callback(value) {
+                return formatIpTimelineAxisLabel(language, Number(value))
+              },
+            },
+          },
+          y: {
+            grid: { display: false },
+            ticks: {
+              color: chartPalette.tick,
+              font: { family: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' },
+              padding: 4,
+            },
+          },
+        },
+      }) as ChartOptions<'bar'>,
+    [
+      chartPalette.grid,
+      chartPalette.tick,
+      ipTimeline,
+      ipTimelineBounds.max,
+      ipTimelineBounds.min,
+      language,
+    ],
+  )
+
+  const renderIpList = (titleText: string, values: string[], total: number) => (
+    <div className="admin-user-ip-list">
+      <div className="admin-user-ip-list-header">
+        <h3>{titleText}</h3>
+        <span>{formatNumber(language, total)}</span>
+      </div>
+      {values.length === 0 ? (
+        <p className="panel-description">{usersStrings.detail.ipUsageListEmpty}</p>
+      ) : (
+        <div className="admin-user-ip-list-values">
+          {values.map((ip) => (
+            <code key={ip}>{ip}</code>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
+  const renderIpUsage = () => (
+    <div className="admin-user-ip-usage">
+      <div className="admin-user-ip-usage-copy">
+        <h3>{usersStrings.detail.ipUsageTitle}</h3>
+        <p className="panel-description">{usersStrings.detail.ipUsageDescription}</p>
+      </div>
+      {ipTimeline.length === 0 ? (
+        <div className="empty-state alert">{usersStrings.detail.ipUsageEmpty}</div>
+      ) : (
+        <div
+          className="admin-user-ip-gantt-chart"
+          role="img"
+          aria-label={usersStrings.detail.ipUsageTitle}
+          style={{
+            height: Math.min(
+              IP_GANTT_MAX_HEIGHT,
+              Math.max(IP_GANTT_MIN_HEIGHT, ipTimeline.length * IP_GANTT_ROW_HEIGHT + IP_GANTT_AXIS_HEIGHT),
+            ),
+          }}
+        >
+          <Chart type="bar" data={ipGanttData} options={ipGanttOptions} />
+        </div>
+      )}
+      <div className="admin-user-ip-lists">
+        {renderIpList(usersStrings.detail.ipUsage24hTitle, ipAddresses24h, ipCount24h)}
+        {renderIpList(usersStrings.detail.ipUsage7dTitle, ipAddresses7d, ipCount7d)}
+      </div>
+    </div>
+  )
+
   return (
     <div
       className="admin-user-shared-usage-panel"
@@ -470,7 +668,7 @@ export function UserDetailSharedUsagePanel({
             {title ? <h2>{title}</h2> : null}
             {description ? <p className="panel-description">{description}</p> : null}
           </div>
-          <SegmentedTabs<AdminUserUsageSeriesKey>
+          <SegmentedTabs<AdminUserUsagePanelTab>
             value={activeSeries}
             onChange={setActiveSeries}
             options={[
@@ -478,6 +676,7 @@ export function UserDetailSharedUsagePanel({
               { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
               { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
               { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
+              { value: 'ip', label: usersStrings.detail.sharedUsageTabs.ip },
             ]}
             ariaLabel={usersStrings.detail.sharedUsageTitle}
             className="admin-user-shared-usage-tabs"
@@ -485,7 +684,7 @@ export function UserDetailSharedUsagePanel({
         </div>
       ) : (
         <div className="admin-user-shared-usage-panel-header">
-          <SegmentedTabs<AdminUserUsageSeriesKey>
+          <SegmentedTabs<AdminUserUsagePanelTab>
             value={activeSeries}
             onChange={setActiveSeries}
             options={[
@@ -493,6 +692,7 @@ export function UserDetailSharedUsagePanel({
               { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
               { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
               { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
+              { value: 'ip', label: usersStrings.detail.sharedUsageTabs.ip },
             ]}
             ariaLabel={usersStrings.detail.sharedUsageTitle}
             className="admin-user-shared-usage-tabs"
@@ -500,23 +700,25 @@ export function UserDetailSharedUsagePanel({
         </div>
       )}
 
-      <div className="admin-user-shared-usage-meta">
-        <div className="admin-user-shared-usage-legend">
-          <span className="admin-user-shared-usage-legend-item">
-            <span className="admin-user-shared-usage-legend-chip admin-user-shared-usage-legend-chip-bar" />
-            {usersStrings.detail.sharedUsageLegendUsed}
-          </span>
-          <span className="admin-user-shared-usage-legend-item">
-            <span className="admin-user-shared-usage-legend-chip admin-user-shared-usage-legend-chip-line" />
-            {usersStrings.detail.sharedUsageLegendLimit}
-          </span>
+      {activeSeries === 'ip' ? null : (
+        <div className="admin-user-shared-usage-meta">
+          <div className="admin-user-shared-usage-legend">
+            <span className="admin-user-shared-usage-legend-item">
+              <span className="admin-user-shared-usage-legend-chip admin-user-shared-usage-legend-chip-bar" />
+              {usersStrings.detail.sharedUsageLegendUsed}
+            </span>
+            <span className="admin-user-shared-usage-legend-item">
+              <span className="admin-user-shared-usage-legend-chip admin-user-shared-usage-legend-chip-line" />
+              {usersStrings.detail.sharedUsageLegendLimit}
+            </span>
+          </div>
+          {hasPartialHistory ? (
+            <span className="panel-description admin-user-shared-usage-hint">
+              {usersStrings.detail.sharedUsagePartialHint}
+            </span>
+          ) : null}
         </div>
-        {hasPartialHistory ? (
-          <span className="panel-description admin-user-shared-usage-hint">
-            {usersStrings.detail.sharedUsagePartialHint}
-          </span>
-        ) : null}
-      </div>
+      )}
 
       <div
         ref={chartAreaRef}
@@ -526,7 +728,9 @@ export function UserDetailSharedUsagePanel({
           setHoverTooltip(null)
         }}
       >
-        {(statusBySeries[activeSeries] ?? 'idle') === 'loading' && !currentSeries ? (
+        {activeSeries === 'ip' ? (
+          renderIpUsage()
+        ) : (statusBySeries[activeSeries] ?? 'idle') === 'loading' && !currentSeries ? (
           <div className="empty-state alert">{usersStrings.detail.sharedUsageLoading}</div>
         ) : (statusBySeries[activeSeries] ?? 'idle') === 'error' && !currentSeries ? (
           <div className="empty-state alert">

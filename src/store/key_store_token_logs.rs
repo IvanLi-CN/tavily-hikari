@@ -2568,12 +2568,10 @@ impl KeyStore {
         }
 
         let mut builder = QueryBuilder::<Sqlite>::new(
-            r#"
-            SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count
-            FROM request_logs
-            WHERE request_user_id IN (
-            "#,
+            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs WHERE visibility = ",
         );
+        builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        builder.push(" AND request_user_id IN (");
         {
             let mut separated = builder.separated(", ");
             for user_id in user_ids {
@@ -2581,19 +2579,9 @@ impl KeyStore {
             }
             separated.push_unseparated(")");
         }
-        builder.push(
-            r#"
-              AND created_at >=
-            "#,
-        );
+        builder.push(" AND created_at >= ");
         builder.push_bind(since);
-        builder.push(
-            r#"
-              AND client_ip IS NOT NULL
-              AND TRIM(client_ip) != ''
-            GROUP BY request_user_id
-            "#,
-        );
+        builder.push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
         let mut result = HashMap::new();
@@ -2603,6 +2591,62 @@ impl KeyStore {
             result.insert(user_id, ip_count);
         }
         Ok(result)
+    }
+
+    pub(crate) async fn fetch_recent_client_ip_addresses_for_user(
+        &self,
+        user_id: &str,
+        since: i64,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        let row_limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query(
+            "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
+             AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
+             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(since)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(row_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| row.try_get("client_ip").map_err(ProxyError::from))
+            .collect()
+    }
+
+    pub(crate) async fn fetch_recent_client_ip_timeline_for_user(
+        &self,
+        user_id: &str,
+        since: i64,
+        limit: usize,
+    ) -> Result<Vec<AdminUserIpTimelineEntry>, ProxyError> {
+        let row_limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query(
+            "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
+             COUNT(*) AS request_count FROM request_logs \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
+             AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
+             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(since)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(row_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(AdminUserIpTimelineEntry {
+                ip_address: row.try_get("client_ip")?,
+                first_seen_at: row.try_get("first_seen_at")?,
+                last_seen_at: row.try_get("last_seen_at")?,
+                request_count: row.try_get("request_count")?,
+            }))
+            .collect()
     }
 
     pub(crate) async fn fetch_recent_client_ip_requests(

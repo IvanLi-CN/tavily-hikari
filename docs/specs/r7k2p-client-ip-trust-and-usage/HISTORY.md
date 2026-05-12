@@ -7,6 +7,9 @@
   the `v0.47.0` production rollout exceeded Dockrev's healthcheck window on a
   million-row `request_logs` database; repair now runs through a resumable batch
   CLI.
+- 2026-05-12: Extended the admin IP usage contract with 24-hour distinct counts,
+  a global UI-only IP warning threshold, and user-detail 7-day IP timeline/list
+  visibility.
 - 2026-05-12: Filtered empty rebalance local MCP control-plane rows out of the
   observed client IP diagnostic endpoint so downstream/API/tool samples remain
   visible.

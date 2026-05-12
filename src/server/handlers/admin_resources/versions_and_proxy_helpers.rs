@@ -686,6 +686,7 @@ struct SystemSettingsUpdatePayload {
     api_rebalance_enabled: Option<bool>,
     api_rebalance_percent: Option<i64>,
     user_blocked_key_base_limit: Option<i64>,
+    global_ip_limit: Option<i64>,
     trusted_proxy_cidrs: Option<Vec<String>>,
     trusted_client_ip_headers: Option<Vec<String>>,
 }

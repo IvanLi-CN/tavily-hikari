@@ -518,6 +518,10 @@ function monthlyBrokenPrimaryClassName(count: number, limit: number): string | n
   return null
 }
 
+function ipCountPrimaryClassName(count: number, limit: number): string | null {
+  return count > Math.max(0, limit) ? 'admin-table-value-primary-danger' : null
+}
+
 function formatMonthlyBrokenStackValue(count: number, limit: number): AdminTableStackedValue {
   return {
     primary: formatNumber(Math.max(0, count)),
@@ -3148,6 +3152,19 @@ function AdminDashboard(): JSX.Element {
     void loadSystemSettingsData({
       signal: controller.signal,
       reason: systemSettingsLoadedRef.current ? 'switch' : 'initial',
+    })
+
+    return () => controller.abort()
+  }, [route, loadSystemSettingsData])
+
+  useEffect(() => {
+    if (!(route.name === 'user' || route.name === 'user-usage')) return
+    if (systemSettingsLoadedRef.current) return
+
+    const controller = new AbortController()
+    void loadSystemSettingsData({
+      signal: controller.signal,
+      reason: 'initial',
     })
 
     return () => controller.abort()
@@ -7708,6 +7725,7 @@ function AdminDashboard(): JSX.Element {
     const tokenItems = detail?.tokens ?? []
     const boundTags = detail?.tags ?? []
     const hasBlockAllTag = boundTags.some((tag) => tag.effectKind === 'block_all')
+    const globalIpLimit = systemSettings?.globalIpLimit ?? 5
 
     return renderAdminPageWithGlobalOverlays(
       <AdminShell
@@ -7812,7 +7830,15 @@ function AdminDashboard(): JSX.Element {
                   <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">{language === 'zh' ? '7天IP' : '7d IPs'}</span>
+                  <span className="token-info-label">{usersStrings.usage.table.ipCount24h}</span>
+                  <span
+                    className={`token-info-value${ipCountPrimaryClassName(detail.recentIpCount24h, globalIpLimit) ? ' admin-table-value-primary-danger' : ''}`}
+                  >
+                    {formatNumber(detail.recentIpCount24h)}
+                  </span>
+                </div>
+                <div className="token-info-card">
+                  <span className="token-info-label">{usersStrings.usage.table.ipCount7d}</span>
                   <span className="token-info-value">{formatNumber(detail.recentIpCount7d)}</span>
                 </div>
               </div>
@@ -8042,6 +8068,11 @@ function AdminDashboard(): JSX.Element {
                   language={language}
                   title={usersStrings.detail.sharedUsageTitle}
                   description={usersStrings.detail.sharedUsageDescription}
+                  ipTimeline={detail.recentIpTimeline7d}
+                  ipAddresses24h={detail.recentIpAddresses24h}
+                  ipAddresses7d={detail.recentIpAddresses7d}
+                  ipCount24h={detail.recentIpCount24h}
+                  ipCount7d={detail.recentIpCount7d}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
                 />
               </AdminLazyBoundary>
@@ -8078,6 +8109,7 @@ function AdminDashboard(): JSX.Element {
     const usageDailyRateLabel = language === 'zh' ? usersStrings.usage.table.dailySuccessRate : 'Daily'
     const usageMonthlyRateLabel = language === 'zh' ? usersStrings.usage.table.monthlySuccessRate : 'Monthly'
     const userUsageUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
+    const globalIpLimit = systemSettings?.globalIpLimit ?? 5
     const userUsageDesktopUtility = (
       <AdminShellSidebarUtility>
         <AdminSidebarUtilityStack>
@@ -8219,7 +8251,7 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={10}>
+                  <td colSpan={12}>
                     <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
@@ -8265,7 +8297,8 @@ function AdminDashboard(): JSX.Element {
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
                     />
-                    <th>{language === 'zh' ? '7天IP' : '7d IPs'}</th>
+                    <th>{usersStrings.usage.table.ipCount24h}</th>
+                    <th>{usersStrings.usage.table.ipCount7d}</th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.dailySuccessRate}
                       displayLabel={usageDailyRateLabel}
@@ -8346,6 +8379,11 @@ function AdminDashboard(): JSX.Element {
                             </div>
                           )
                         })()}
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <strong className={ipCountPrimaryClassName(item.recentIpCount24h, globalIpLimit) ?? undefined}>
+                          {formatNumber(item.recentIpCount24h)}
+                        </strong>
                       </td>
                       <td className="admin-users-compact-cell">
                         <strong>{formatNumber(item.recentIpCount7d)}</strong>
@@ -8434,7 +8472,13 @@ function AdminDashboard(): JSX.Element {
                     )}
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{language === 'zh' ? '7天IP' : '7d IPs'}</span>
+                    <span>{usersStrings.usage.table.ipCount24h}</span>
+                    <strong className={ipCountPrimaryClassName(item.recentIpCount24h, globalIpLimit) ?? undefined}>
+                      {formatNumber(item.recentIpCount24h)}
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.ipCount7d}</span>
                     <strong>{formatNumber(item.recentIpCount7d)}</strong>
                   </div>
                   <div className="admin-mobile-kv">

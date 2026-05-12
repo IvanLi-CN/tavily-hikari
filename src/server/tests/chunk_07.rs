@@ -189,7 +189,7 @@
             .ensure_user_token_binding(&alice.user_id, Some("linuxdo:alice"))
             .await
             .expect("bind alice token");
-        let _bob_token = proxy
+        let bob_token = proxy
             .ensure_user_token_binding(&bob.user_id, Some("linuxdo:bob"))
             .await
             .expect("bind bob token");
@@ -247,6 +247,82 @@
             )
             .await
             .expect("record error");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = Utc::now().timestamp();
+        for (client_ip, created_at, visibility) in [
+            ("203.0.113.7", now - 300, "visible"),
+            ("198.51.100.10", now - 3_600, "visible"),
+            ("203.0.113.7", now - 7_200, "visible"),
+            ("192.0.2.44", now - 26 * 3_600, "visible"),
+            ("198.51.100.200", now - 8 * 86_400, "visible"),
+            ("", now - 600, "visible"),
+            (
+                "203.0.113.250",
+                now - 120,
+                tavily_hikari::REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    auth_token_id,
+                    request_user_id,
+                    method,
+                    path,
+                    status_code,
+                    tavily_status_code,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    client_ip,
+                    client_ip_source,
+                    client_ip_trusted,
+                    visibility,
+                    created_at
+                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, ?, ?)
+                "#,
+            )
+            .bind(&alice_token.id)
+            .bind(&alice.user_id)
+            .bind(client_ip)
+            .bind(visibility)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .expect("insert client ip request log");
+        }
+
+        for index in 0..120 {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    auth_token_id,
+                    request_user_id,
+                    method,
+                    path,
+                    status_code,
+                    tavily_status_code,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    client_ip,
+                    client_ip_source,
+                    client_ip_trusted,
+                    visibility,
+                    created_at
+                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, 'visible', ?)
+                "#,
+            )
+            .bind(&bob_token.id)
+            .bind(&bob.user_id)
+            .bind(format!("10.20.0.{index}"))
+            .bind(now - index)
+            .execute(&pool)
+            .await
+            .expect("insert high-cardinality client ip request log");
+        }
+
         for index in 0..4 {
             let api_key_id = proxy
                 .add_or_undelete_key(&format!("tvly-admin-users-associated-key-{index}"))
@@ -331,6 +407,18 @@
                 .unwrap_or_default()
                 >= 1
         );
+        assert_eq!(
+            alice_item
+                .get("recentIpCount24h")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            alice_item
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
         let list_tags = alice_item
             .get("tags")
             .and_then(|value| value.as_array())
@@ -406,6 +494,68 @@
                 .get("apiKeyCount")
                 .and_then(|value| value.as_i64()),
             Some(4)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpCount24h")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpAddresses24h")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpAddresses7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpTimeline7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(3)
+        );
+        let bob_detail_url = format!("http://{}/api/users/{}", addr, bob.user_id);
+        let bob_detail_resp = client
+            .get(&bob_detail_url)
+            .send()
+            .await
+            .expect("bob user detail request");
+        assert_eq!(bob_detail_resp.status(), reqwest::StatusCode::OK);
+        let bob_detail_body: serde_json::Value =
+            bob_detail_resp.json().await.expect("bob detail json");
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(120)
+        );
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpAddresses7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(100)
+        );
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpTimeline7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(40)
         );
         let tokens = detail_body
             .get("tokens")

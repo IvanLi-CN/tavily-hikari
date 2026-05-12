@@ -30,6 +30,7 @@ function SystemSettingsCanvas(props: {
           apiRebalanceEnabled: props.apiRebalanceEnabled ?? false,
           apiRebalancePercent: props.apiRebalancePercent ?? 0,
           userBlockedKeyBaseLimit: props.blockedKeyBaseLimit ?? 5,
+          globalIpLimit: 5,
           trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
           trustedClientIpHeaders: [
             'cf-connecting-ip',
@@ -157,6 +158,7 @@ const meta = {
       apiRebalanceEnabled: false,
       apiRebalancePercent: 0,
       userBlockedKeyBaseLimit: 5,
+      globalIpLimit: 5,
       trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
       trustedClientIpHeaders: ['cf-connecting-ip', 'x-forwarded-for'],
     },

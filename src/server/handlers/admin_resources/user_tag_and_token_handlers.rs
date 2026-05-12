@@ -328,15 +328,25 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
+    let now_ts = Utc::now().timestamp();
+    let recent_ip_counts_24h = if page_user_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        state
+            .proxy
+            .recent_client_ip_counts_by_user(&page_user_ids, now_ts - 24 * 60 * 60)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user recent 24h ip counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     let recent_ip_counts_7d = if page_user_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         state
             .proxy
-            .recent_client_ip_counts_by_user(
-                &page_user_ids,
-                Utc::now().timestamp() - 7 * 24 * 60 * 60,
-            )
+            .recent_client_ip_counts_by_user(&page_user_ids, now_ts - 7 * 24 * 60 * 60)
             .await
             .map_err(|err| {
                 eprintln!("list admin user recent ip counts error: {err}");
@@ -353,14 +363,21 @@ async fn list_users(
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
+        let recent_ip_count_24h = recent_ip_counts_24h
+            .get(&row.user.user_id)
+            .copied()
+            .unwrap_or_default();
         items.push(build_admin_user_summary_view(
             &row.user,
             &row.summary,
-            api_key_count,
-            row.monthly_broken_count,
-            row.monthly_broken_limit,
-            recent_ip_count_7d,
-            tags,
+            AdminUserSummaryViewInput {
+                api_key_count,
+                monthly_broken_count: row.monthly_broken_count,
+                monthly_broken_limit: row.monthly_broken_limit,
+                recent_ip_count_24h,
+                recent_ip_count_7d,
+                tags,
+            },
         ));
     }
     Ok(Json(ListUsersResponse {
@@ -568,11 +585,23 @@ async fn get_user_detail(
             eprintln!("get admin user monthly broken limit error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let now_ts = Utc::now().timestamp();
+    let recent_ip_counts_24h = state
+        .proxy
+        .recent_client_ip_counts_by_user(
+            std::slice::from_ref(&user.user_id),
+            now_ts - 24 * 60 * 60,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user recent 24h ip count error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     let recent_ip_count_7d = state
         .proxy
         .recent_client_ip_counts_by_user(
             std::slice::from_ref(&user.user_id),
-            Utc::now().timestamp() - 7 * 24 * 60 * 60,
+            now_ts - 7 * 24 * 60 * 60,
         )
         .await
         .map_err(|err| {
@@ -582,6 +611,18 @@ async fn get_user_detail(
         .get(&user.user_id)
         .copied()
         .unwrap_or_default();
+    let recent_ip_count_24h = recent_ip_counts_24h
+        .get(&user.user_id)
+        .copied()
+        .unwrap_or_default();
+    let ip_usage = state
+        .proxy
+        .admin_user_ip_usage(&user.user_id, now_ts)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user ip usage error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     let tokens = state
         .proxy
         .list_user_tokens(&user.user_id)
@@ -636,7 +677,15 @@ async fn get_user_detail(
         monthly_failure: summary.monthly_failure,
         monthly_broken_count,
         monthly_broken_limit,
+        recent_ip_count_24h,
         recent_ip_count_7d,
+        recent_ip_addresses_24h: ip_usage.recent_ip_addresses_24h,
+        recent_ip_addresses_7d: ip_usage.recent_ip_addresses_7d,
+        recent_ip_timeline_7d: ip_usage
+            .recent_ip_timeline_7d
+            .into_iter()
+            .map(build_admin_user_ip_timeline_entry_view)
+            .collect(),
         last_activity: summary.last_activity,
         tags: quota_details
             .tags

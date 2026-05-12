@@ -577,11 +577,15 @@ export interface AdminTranslationsShape {
       blockedKeyBaseLimitLabel: string
       blockedKeyBaseLimitHint: string
       currentBlockedKeyBaseLimitValue: string
+      globalIpLimitLabel: string
+      globalIpLimitHint: string
+      currentGlobalIpLimitValue: string
       applyScopeHint: string
       invalidRequestRateLimit: string
       invalidCount: string
       invalidPercent: string
       invalidBlockedKeyBaseLimit: string
+      invalidGlobalIpLimit: string
       saveFailed: string
     }
     actions: {
@@ -646,6 +650,8 @@ export interface AdminTranslationsShape {
         daily: string
         monthly: string
         monthlyBroken: string
+        ipCount24h: string
+        ipCount7d: string
         dailySuccessRate: string
         monthlySuccessRate: string
         lastUsed: string
@@ -678,7 +684,14 @@ export interface AdminTranslationsShape {
         fiveMinute: string
         daily: string
         monthly: string
+        ip: string
       }
+      ipUsageTitle: string
+      ipUsageDescription: string
+      ipUsageEmpty: string
+      ipUsage24hTitle: string
+      ipUsage7dTitle: string
+      ipUsageListEmpty: string
       tokensTitle: string
       tokensDescription: string
     }

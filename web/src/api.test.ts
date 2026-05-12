@@ -1100,6 +1100,7 @@ describe('admin user tag api helpers', () => {
               apiRebalanceEnabled: false,
               apiRebalancePercent: 0,
               userBlockedKeyBaseLimit: 8,
+              globalIpLimit: 5,
             },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1116,6 +1117,7 @@ describe('admin user tag api helpers', () => {
       apiRebalanceEnabled: false,
       apiRebalancePercent: 0,
       userBlockedKeyBaseLimit: 8,
+      globalIpLimit: 5,
     })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings')
   })
@@ -1132,6 +1134,7 @@ describe('admin user tag api helpers', () => {
             apiRebalanceEnabled: true,
             apiRebalancePercent: 25,
             userBlockedKeyBaseLimit: 5,
+            globalIpLimit: 6,
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -1148,6 +1151,7 @@ describe('admin user tag api helpers', () => {
         apiRebalanceEnabled: true,
         apiRebalancePercent: 25,
         userBlockedKeyBaseLimit: 5,
+        globalIpLimit: 6,
       }),
     ).resolves.toEqual({
       requestRateLimit: 75,
@@ -1157,6 +1161,7 @@ describe('admin user tag api helpers', () => {
       apiRebalanceEnabled: true,
       apiRebalancePercent: 25,
       userBlockedKeyBaseLimit: 5,
+      globalIpLimit: 6,
     })
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/system')
@@ -1171,6 +1176,7 @@ describe('admin user tag api helpers', () => {
         apiRebalanceEnabled: true,
         apiRebalancePercent: 25,
         userBlockedKeyBaseLimit: 5,
+        globalIpLimit: 6,
       }),
     })
   })

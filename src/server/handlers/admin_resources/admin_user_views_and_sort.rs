@@ -111,6 +111,7 @@ struct AdminUserSummaryView {
     monthly_failure: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_24h: i64,
     recent_ip_count_7d: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
@@ -163,6 +164,15 @@ struct AdminUserUsageSeriesView {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AdminUserIpTimelineEntryView {
+    ip_address: String,
+    first_seen_at: i64,
+    last_seen_at: i64,
+    request_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AdminUserDetailView {
     user_id: String,
     display_name: Option<String>,
@@ -186,7 +196,11 @@ struct AdminUserDetailView {
     monthly_failure: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_24h: i64,
     recent_ip_count_7d: i64,
+    recent_ip_addresses_24h: Vec<String>,
+    recent_ip_addresses_7d: Vec<String>,
+    recent_ip_timeline_7d: Vec<AdminUserIpTimelineEntryView>,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
     quota_base: AdminQuotaView,
@@ -417,14 +431,19 @@ fn default_request_rate_view(scope: tavily_hikari::RequestRateScope) -> tavily_h
     .request_rate()
 }
 
-fn build_admin_user_summary_view(
-    user: &tavily_hikari::AdminUserIdentity,
-    summary: &tavily_hikari::UserDashboardSummary,
+struct AdminUserSummaryViewInput {
     api_key_count: i64,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_24h: i64,
     recent_ip_count_7d: i64,
     tags: Vec<tavily_hikari::AdminUserTagBinding>,
+}
+
+fn build_admin_user_summary_view(
+    user: &tavily_hikari::AdminUserIdentity,
+    summary: &tavily_hikari::UserDashboardSummary,
+    input: AdminUserSummaryViewInput,
 ) -> AdminUserSummaryView {
     AdminUserSummaryView {
         user_id: user.user_id.clone(),
@@ -433,7 +452,7 @@ fn build_admin_user_summary_view(
         active: user.active,
         last_login_at: user.last_login_at,
         token_count: user.token_count,
-        api_key_count,
+        api_key_count: input.api_key_count,
         request_rate: summary.request_rate.clone(),
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
@@ -447,11 +466,27 @@ fn build_admin_user_summary_view(
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,
         monthly_failure: summary.monthly_failure,
-        monthly_broken_count,
-        monthly_broken_limit,
-        recent_ip_count_7d,
+        monthly_broken_count: input.monthly_broken_count,
+        monthly_broken_limit: input.monthly_broken_limit,
+        recent_ip_count_24h: input.recent_ip_count_24h,
+        recent_ip_count_7d: input.recent_ip_count_7d,
         last_activity: summary.last_activity,
-        tags: tags.iter().map(build_admin_user_tag_binding_view).collect(),
+        tags: input
+            .tags
+            .iter()
+            .map(build_admin_user_tag_binding_view)
+            .collect(),
+    }
+}
+
+fn build_admin_user_ip_timeline_entry_view(
+    entry: tavily_hikari::AdminUserIpTimelineEntry,
+) -> AdminUserIpTimelineEntryView {
+    AdminUserIpTimelineEntryView {
+        ip_address: entry.ip_address,
+        first_seen_at: entry.first_seen_at,
+        last_seen_at: entry.last_seen_at,
+        request_count: entry.request_count,
     }
 }
 

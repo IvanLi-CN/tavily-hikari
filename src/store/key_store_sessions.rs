@@ -1806,6 +1806,11 @@ impl KeyStore {
             .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
             .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
         let user_blocked_key_base_limit = self.fetch_user_blocked_key_base_limit().await?;
+        let global_ip_limit = self
+            .get_meta_i64(META_KEY_GLOBAL_IP_LIMIT_V1)
+            .await?
+            .unwrap_or(GLOBAL_IP_LIMIT_DEFAULT)
+            .max(0);
         let defaults = TrustedClientIpSettings::default();
         let trusted_proxy_cidrs = self
             .get_meta_string(META_KEY_TRUSTED_PROXY_CIDRS_V1)
@@ -1827,6 +1832,7 @@ impl KeyStore {
             api_rebalance_enabled,
             api_rebalance_percent,
             user_blocked_key_base_limit,
+            global_ip_limit,
             trusted_proxy_cidrs,
             trusted_client_ip_headers,
         })
@@ -1871,6 +1877,11 @@ impl KeyStore {
                 "user_blocked_key_base_limit must be a non-negative integer".to_string(),
             ));
         }
+        if settings.global_ip_limit < 0 {
+            return Err(ProxyError::Other(
+                "global_ip_limit must be a non-negative integer".to_string(),
+            ));
+        }
         let trusted_client_ip = validate_trusted_client_ip_settings(&TrustedClientIpSettings {
             trusted_proxy_cidrs: settings.trusted_proxy_cidrs.clone(),
             trusted_client_ip_headers: settings.trusted_client_ip_headers.clone(),
@@ -1907,6 +1918,8 @@ impl KeyStore {
             settings.user_blocked_key_base_limit,
         )
         .await?;
+        self.set_meta_i64(META_KEY_GLOBAL_IP_LIMIT_V1, settings.global_ip_limit)
+            .await?;
         self.set_meta_string(
             META_KEY_TRUSTED_PROXY_CIDRS_V1,
             &serde_json::to_string(&trusted_client_ip.trusted_proxy_cidrs)

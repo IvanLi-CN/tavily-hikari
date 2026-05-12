@@ -51,6 +51,9 @@ async fn put_system_settings(
             user_blocked_key_base_limit: payload
                 .user_blocked_key_base_limit
                 .unwrap_or(current_settings.user_blocked_key_base_limit),
+            global_ip_limit: payload
+                .global_ip_limit
+                .unwrap_or(current_settings.global_ip_limit),
             trusted_proxy_cidrs: payload
                 .trusted_proxy_cidrs
                 .unwrap_or(current_settings.trusted_proxy_cidrs),
@@ -68,6 +71,7 @@ async fn put_system_settings(
                 || message.contains("rebalance_mcp_session_percent must be between")
                 || message.contains("api_rebalance_percent must be between")
                 || message.contains("user_blocked_key_base_limit must be")
+                || message.contains("global_ip_limit must be")
                 || message.contains("trusted_proxy_cidrs")
                 || message.contains("trusted_client_ip_headers")
             {
