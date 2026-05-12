@@ -35,6 +35,7 @@
   - `recentIpAddresses24h: string[]`
   - `recentIpAddresses7d: string[]`
   - `recentIpTimeline7d: Array<{ ipAddress: string, firstSeenAt: number, lastSeenAt: number, requestCount: number }>`
+- 24 小时与 7 天 IP 数量必须保持精确；详情响应中的 IP 地址列表和时间线用于界面抽样展示，按最近活跃 IP 封顶返回，避免高基数用户拖慢详情接口。
 
 ## UI Contract
 
@@ -43,7 +44,7 @@
 - 用户详情身份区同时展示 24 小时 IP 数与 7 天 IP 数，24 小时值同样按全局阈值标红。
 - 用户详情共享额度趋势区的 tab 顺序为 `5m / 1h / 24h / 月 / IP`；`IP` tab 不调用 `usage-series`，使用详情响应中的 IP 时间线数据渲染。
 - IP 时间线按 IP 地址分行展示请求活跃区间；无数据时显示稳定空态。
-- IP 列表分成最近 24 小时和最近 7 天两组，每组展示唯一 IP 地址与总数。
+- IP 列表分成最近 24 小时和最近 7 天两组，每组展示最近活跃的唯一 IP 地址样本与精确总数。
 
 ## Acceptance
 

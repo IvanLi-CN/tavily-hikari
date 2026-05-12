@@ -189,7 +189,7 @@
             .ensure_user_token_binding(&alice.user_id, Some("linuxdo:alice"))
             .await
             .expect("bind alice token");
-        let _bob_token = proxy
+        let bob_token = proxy
             .ensure_user_token_binding(&bob.user_id, Some("linuxdo:bob"))
             .await
             .expect("bind bob token");
@@ -291,6 +291,36 @@
             .execute(&pool)
             .await
             .expect("insert client ip request log");
+        }
+
+        for index in 0..120 {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    auth_token_id,
+                    request_user_id,
+                    method,
+                    path,
+                    status_code,
+                    tavily_status_code,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    client_ip,
+                    client_ip_source,
+                    client_ip_trusted,
+                    visibility,
+                    created_at
+                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, 'visible', ?)
+                "#,
+            )
+            .bind(&bob_token.id)
+            .bind(&bob.user_id)
+            .bind(format!("10.20.0.{index}"))
+            .bind(now - index)
+            .execute(&pool)
+            .await
+            .expect("insert high-cardinality client ip request log");
         }
 
         for index in 0..4 {
@@ -497,6 +527,35 @@
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(3)
+        );
+        let bob_detail_url = format!("http://{}/api/users/{}", addr, bob.user_id);
+        let bob_detail_resp = client
+            .get(&bob_detail_url)
+            .send()
+            .await
+            .expect("bob user detail request");
+        assert_eq!(bob_detail_resp.status(), reqwest::StatusCode::OK);
+        let bob_detail_body: serde_json::Value =
+            bob_detail_resp.json().await.expect("bob detail json");
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(120)
+        );
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpAddresses7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(100)
+        );
+        assert_eq!(
+            bob_detail_body
+                .get("recentIpTimeline7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(40)
         );
         let tokens = detail_body
             .get("tokens")

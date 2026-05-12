@@ -62,6 +62,8 @@ interface UserDetailSharedUsagePanelProps {
   ipTimeline?: AdminUserIpTimelineEntry[]
   ipAddresses24h?: string[]
   ipAddresses7d?: string[]
+  ipCount24h?: number
+  ipCount7d?: number
   title?: string
   description?: string
 }
@@ -269,6 +271,8 @@ export function UserDetailSharedUsagePanel({
   ipTimeline = [],
   ipAddresses24h = [],
   ipAddresses7d = [],
+  ipCount24h = ipAddresses24h.length,
+  ipCount7d = ipAddresses7d.length,
   title,
   description,
 }: UserDetailSharedUsagePanelProps): JSX.Element {
@@ -601,11 +605,11 @@ export function UserDetailSharedUsagePanel({
     ],
   )
 
-  const renderIpList = (titleText: string, values: string[]) => (
+  const renderIpList = (titleText: string, values: string[], total: number) => (
     <div className="admin-user-ip-list">
       <div className="admin-user-ip-list-header">
         <h3>{titleText}</h3>
-        <span>{formatNumber(language, values.length)}</span>
+        <span>{formatNumber(language, total)}</span>
       </div>
       {values.length === 0 ? (
         <p className="panel-description">{usersStrings.detail.ipUsageListEmpty}</p>
@@ -643,8 +647,8 @@ export function UserDetailSharedUsagePanel({
         </div>
       )}
       <div className="admin-user-ip-lists">
-        {renderIpList(usersStrings.detail.ipUsage24hTitle, ipAddresses24h)}
-        {renderIpList(usersStrings.detail.ipUsage7dTitle, ipAddresses7d)}
+        {renderIpList(usersStrings.detail.ipUsage24hTitle, ipAddresses24h, ipCount24h)}
+        {renderIpList(usersStrings.detail.ipUsage7dTitle, ipAddresses7d, ipCount7d)}
       </div>
     </div>
   )

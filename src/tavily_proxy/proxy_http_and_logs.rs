@@ -1,3 +1,6 @@
+const ADMIN_USER_IP_ADDRESS_LIMIT: usize = 100;
+const ADMIN_USER_IP_TIMELINE_LIMIT: usize = 40;
+
 impl TavilyProxy {
     async fn select_http_json_key(
         &self,
@@ -1727,15 +1730,15 @@ impl TavilyProxy {
         let since_7d = now - 7 * SECS_PER_DAY;
         let recent_ip_addresses_24h = self
             .key_store
-            .fetch_recent_client_ip_addresses_for_user(user_id, since_24h)
+            .fetch_recent_client_ip_addresses_for_user(user_id, since_24h, ADMIN_USER_IP_ADDRESS_LIMIT)
             .await?;
         let recent_ip_addresses_7d = self
             .key_store
-            .fetch_recent_client_ip_addresses_for_user(user_id, since_7d)
+            .fetch_recent_client_ip_addresses_for_user(user_id, since_7d, ADMIN_USER_IP_ADDRESS_LIMIT)
             .await?;
         let recent_ip_timeline_7d = self
             .key_store
-            .fetch_recent_client_ip_timeline_for_user(user_id, since_7d)
+            .fetch_recent_client_ip_timeline_for_user(user_id, since_7d, ADMIN_USER_IP_TIMELINE_LIMIT)
             .await?;
         Ok(AdminUserIpUsage {
             recent_ip_addresses_24h,

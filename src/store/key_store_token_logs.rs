@@ -2597,16 +2597,19 @@ impl KeyStore {
         &self,
         user_id: &str,
         since: i64,
+        limit: usize,
     ) -> Result<Vec<String>, ProxyError> {
+        let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
              WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
-             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC",
+             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC LIMIT ?",
         )
         .bind(user_id)
         .bind(since)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(row_limit)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2619,17 +2622,20 @@ impl KeyStore {
         &self,
         user_id: &str,
         since: i64,
+        limit: usize,
     ) -> Result<Vec<AdminUserIpTimelineEntry>, ProxyError> {
+        let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
              COUNT(*) AS request_count FROM request_logs \
              WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
-             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC",
+             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC LIMIT ?",
         )
         .bind(user_id)
         .bind(since)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(row_limit)
         .fetch_all(&self.pool)
         .await?;
 

@@ -6038,6 +6038,8 @@ function UserDetailPageCanvas({
           ipTimeline={detail.recentIpTimeline7d}
           ipAddresses24h={detail.recentIpAddresses24h}
           ipAddresses7d={detail.recentIpAddresses7d}
+          ipCount24h={detail.recentIpCount24h}
+          ipCount7d={detail.recentIpCount7d}
           loadSeries={async (series) => {
             await new Promise((resolve) => window.setTimeout(resolve, 20))
             return MOCK_USER_USAGE_SERIES[series]

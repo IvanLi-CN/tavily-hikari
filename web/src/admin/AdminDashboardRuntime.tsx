@@ -8071,6 +8071,8 @@ function AdminDashboard(): JSX.Element {
                   ipTimeline={detail.recentIpTimeline7d}
                   ipAddresses24h={detail.recentIpAddresses24h}
                   ipAddresses7d={detail.recentIpAddresses7d}
+                  ipCount24h={detail.recentIpCount24h}
+                  ipCount7d={detail.recentIpCount7d}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
                 />
               </AdminLazyBoundary>
