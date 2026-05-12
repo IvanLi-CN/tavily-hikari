@@ -2571,7 +2571,13 @@ impl KeyStore {
             r#"
             SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count
             FROM request_logs
-            WHERE request_user_id IN (
+            WHERE visibility =
+            "#,
+        );
+        builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        builder.push(
+            r#"
+              AND request_user_id IN (
             "#,
         );
         {
@@ -2616,6 +2622,7 @@ impl KeyStore {
             FROM request_logs
             WHERE request_user_id = ?
               AND created_at >= ?
+              AND visibility = ?
               AND client_ip IS NOT NULL
               AND TRIM(client_ip) != ''
             GROUP BY client_ip
@@ -2624,6 +2631,7 @@ impl KeyStore {
         )
         .bind(user_id)
         .bind(since)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2647,6 +2655,7 @@ impl KeyStore {
             FROM request_logs
             WHERE request_user_id = ?
               AND created_at >= ?
+              AND visibility = ?
               AND client_ip IS NOT NULL
               AND TRIM(client_ip) != ''
             GROUP BY client_ip
@@ -2655,6 +2664,7 @@ impl KeyStore {
         )
         .bind(user_id)
         .bind(since)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .fetch_all(&self.pool)
         .await?;
 

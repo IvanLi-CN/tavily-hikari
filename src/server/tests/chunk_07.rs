@@ -250,13 +250,18 @@
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let now = Utc::now().timestamp();
-        for (client_ip, created_at) in [
-            ("203.0.113.7", now - 300),
-            ("198.51.100.10", now - 3_600),
-            ("203.0.113.7", now - 7_200),
-            ("192.0.2.44", now - 26 * 3_600),
-            ("198.51.100.200", now - 8 * 86_400),
-            ("", now - 600),
+        for (client_ip, created_at, visibility) in [
+            ("203.0.113.7", now - 300, "visible"),
+            ("198.51.100.10", now - 3_600, "visible"),
+            ("203.0.113.7", now - 7_200, "visible"),
+            ("192.0.2.44", now - 26 * 3_600, "visible"),
+            ("198.51.100.200", now - 8 * 86_400, "visible"),
+            ("", now - 600, "visible"),
+            (
+                "203.0.113.250",
+                now - 120,
+                tavily_hikari::REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW,
+            ),
         ] {
             sqlx::query(
                 r#"
@@ -275,12 +280,13 @@
                     client_ip_trusted,
                     visibility,
                     created_at
-                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, 'visible', ?)
+                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, ?, ?)
                 "#,
             )
             .bind(&alice_token.id)
             .bind(&alice.user_id)
             .bind(client_ip)
+            .bind(visibility)
             .bind(created_at)
             .execute(&pool)
             .await
