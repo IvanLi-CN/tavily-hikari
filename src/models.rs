@@ -1044,8 +1044,26 @@ pub struct SystemSettings {
     pub api_rebalance_enabled: bool,
     pub api_rebalance_percent: i64,
     pub user_blocked_key_base_limit: i64,
+    pub global_ip_limit: i64,
     pub trusted_proxy_cidrs: Vec<String>,
     pub trusted_client_ip_headers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserIpTimelineEntry {
+    pub ip_address: String,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+    pub request_count: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserIpUsage {
+    pub recent_ip_addresses_24h: Vec<String>,
+    pub recent_ip_addresses_7d: Vec<String>,
+    pub recent_ip_timeline_7d: Vec<AdminUserIpTimelineEntry>,
 }
 
 /// 单条请求日志记录的关键信息。

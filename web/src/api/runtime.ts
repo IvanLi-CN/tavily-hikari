@@ -1636,6 +1636,7 @@ export interface AdminUserSummary {
   monthlyFailure: number
   monthlyBrokenCount: number
   monthlyBrokenLimit: number
+  recentIpCount24h: number
   recentIpCount7d: number
   lastActivity: number | null
 }
@@ -1703,6 +1704,16 @@ export interface AdminUserDetail extends AdminUserSummary {
   quotaBase: AdminQuotaLimitSet
   effectiveQuota: AdminQuotaLimitSet
   quotaBreakdown: AdminUserQuotaBreakdownEntry[]
+  recentIpAddresses24h: string[]
+  recentIpAddresses7d: string[]
+  recentIpTimeline7d: AdminUserIpTimelineEntry[]
+}
+
+export interface AdminUserIpTimelineEntry {
+  ipAddress: string
+  firstSeenAt: number
+  lastSeenAt: number
+  requestCount: number
 }
 
 export type AdminUserUsageSeriesKey = 'rate5m' | 'quota1h' | 'quota24h' | 'quotaMonth'
@@ -2946,6 +2957,7 @@ export interface SystemSettings {
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
   userBlockedKeyBaseLimit: number
+  globalIpLimit: number
   trustedProxyCidrs: string[]
   trustedClientIpHeaders: string[]
 }
@@ -2975,6 +2987,7 @@ export interface UpdateSystemSettingsPayload {
   trustedProxyCidrs: string[]
   trustedClientIpHeaders: string[]
   userBlockedKeyBaseLimit: number
+  globalIpLimit: number
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -3115,6 +3128,7 @@ function createEmptySystemSettings(): SystemSettings {
     apiRebalanceEnabled: false,
     apiRebalancePercent: 0,
     userBlockedKeyBaseLimit: 5,
+    globalIpLimit: 5,
     trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
     trustedClientIpHeaders: ['cf-connecting-ip', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'forwarded'],
   }

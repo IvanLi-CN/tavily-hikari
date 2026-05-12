@@ -42,6 +42,7 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
           userBlockedKeyBaseLimit: 5,
+          globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
           trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },
@@ -63,6 +64,8 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.form.apiRebalancePercentDisabledHint)
     expect(markup).toContain(strings.form.currentBlockedKeyBaseLimitValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.blockedKeyBaseLimitHint)
+    expect(markup).toContain(strings.form.currentGlobalIpLimitValue.replace('{count}', '5'))
+    expect(markup).toContain(strings.form.globalIpLimitHint)
     expect(markup).toContain('配置可信 IP')
     expect(markup).not.toContain(strings.description)
     expect(markup).not.toContain(strings.form.description)
@@ -83,6 +86,7 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: true,
           apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
+          globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
           trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },
@@ -109,6 +113,7 @@ describe('SystemSettingsModule rendering', () => {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 25,
           userBlockedKeyBaseLimit: 5,
+          globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
           trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         },

@@ -247,6 +247,46 @@
             )
             .await
             .expect("record error");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = Utc::now().timestamp();
+        for (client_ip, created_at) in [
+            ("203.0.113.7", now - 300),
+            ("198.51.100.10", now - 3_600),
+            ("203.0.113.7", now - 7_200),
+            ("192.0.2.44", now - 26 * 3_600),
+            ("198.51.100.200", now - 8 * 86_400),
+            ("", now - 600),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    auth_token_id,
+                    request_user_id,
+                    method,
+                    path,
+                    status_code,
+                    tavily_status_code,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    client_ip,
+                    client_ip_source,
+                    client_ip_trusted,
+                    visibility,
+                    created_at
+                ) VALUES (?, ?, 'POST', '/mcp', 200, 200, 'success', 'mcp:search', 'MCP | search', ?, 'x-forwarded-for', 1, 'visible', ?)
+                "#,
+            )
+            .bind(&alice_token.id)
+            .bind(&alice.user_id)
+            .bind(client_ip)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .expect("insert client ip request log");
+        }
+
         for index in 0..4 {
             let api_key_id = proxy
                 .add_or_undelete_key(&format!("tvly-admin-users-associated-key-{index}"))
@@ -331,6 +371,18 @@
                 .unwrap_or_default()
                 >= 1
         );
+        assert_eq!(
+            alice_item
+                .get("recentIpCount24h")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            alice_item
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
         let list_tags = alice_item
             .get("tags")
             .and_then(|value| value.as_array())
@@ -406,6 +458,39 @@
                 .get("apiKeyCount")
                 .and_then(|value| value.as_i64()),
             Some(4)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpCount24h")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpCount7d")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpAddresses24h")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpAddresses7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            detail_body
+                .get("recentIpTimeline7d")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(3)
         );
         let tokens = detail_body
             .get("tokens")

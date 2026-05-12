@@ -314,6 +314,74 @@
   position: relative;
 }
 
+.admin-user-ip-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-user-ip-usage-copy h3,
+.admin-user-ip-list-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.admin-user-ip-gantt-chart {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid hsl(var(--border) / 0.78);
+  border-radius: 12px;
+  background: hsl(var(--muted) / 0.12);
+}
+
+.admin-user-ip-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-user-ip-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid hsl(var(--border) / 0.78);
+  border-radius: 10px;
+  background: hsl(var(--muted) / 0.12);
+}
+
+.admin-user-ip-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-user-ip-list-header span {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.admin-user-ip-list-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-user-ip-list-values code {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.28rem 0.42rem;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.72);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .admin-user-shared-usage-tooltip {
   pointer-events: none;
   position: absolute;
@@ -386,6 +454,18 @@
 }
 
 @media (max-width: 640px) {
+  .admin-user-ip-gantt-chart {
+    overflow-x: auto;
+  }
+
+  .admin-user-ip-gantt-chart canvas {
+    min-width: 30rem;
+  }
+
+  .admin-user-ip-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .admin-user-shared-usage-tooltip {
     width: min(15.5rem, calc(100% - 0.75rem));
     max-width: min(15.5rem, calc(100% - 0.75rem));

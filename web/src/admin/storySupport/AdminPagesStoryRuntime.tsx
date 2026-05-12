@@ -1419,6 +1419,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 3_180,
     monthlyBrokenCount: 3,
     monthlyBrokenLimit: 5,
+    recentIpCount24h: 4,
     recentIpCount7d: 4,
     lastActivity: now - 25,
   },
@@ -1446,6 +1447,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 8_614,
     monthlyBrokenCount: 5,
     monthlyBrokenLimit: 6,
+    recentIpCount24h: 8,
     recentIpCount7d: 11,
     lastActivity: now - 38,
   },
@@ -1473,6 +1475,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     monthlyFailure: 7,
     monthlyBrokenCount: 0,
     monthlyBrokenLimit: 5,
+    recentIpCount24h: 0,
     recentIpCount7d: 0,
     lastActivity: null,
   },
@@ -1687,6 +1690,34 @@ const MOCK_USER_DETAIL: AdminUserDetail = {
       hourlyDelta: 1_200,
       dailyDelta: 25_500,
       monthlyDelta: 5_000,
+    },
+  ],
+  recentIpAddresses24h: ['203.0.113.7', '198.51.100.10', '198.51.100.44', '2001:db8::42'],
+  recentIpAddresses7d: ['203.0.113.7', '198.51.100.10', '198.51.100.44', '2001:db8::42'],
+  recentIpTimeline7d: [
+    {
+      ipAddress: '203.0.113.7',
+      firstSeenAt: now - 6 * 86_400,
+      lastSeenAt: now - 14_400,
+      requestCount: 142,
+    },
+    {
+      ipAddress: '198.51.100.10',
+      firstSeenAt: now - 4 * 86_400,
+      lastSeenAt: now - 3_600,
+      requestCount: 88,
+    },
+    {
+      ipAddress: '198.51.100.44',
+      firstSeenAt: now - 28_800,
+      lastSeenAt: now - 1_800,
+      requestCount: 27,
+    },
+    {
+      ipAddress: '2001:db8::42',
+      firstSeenAt: now - 18_000,
+      lastSeenAt: now - 300,
+      requestCount: 19,
     },
   ],
 }
@@ -2024,6 +2055,10 @@ function monthlyBrokenPrimaryClassName(count: number, limit: number): string | n
   if (count >= limit) return 'admin-table-value-primary-danger'
   if (count > 0) return 'admin-table-value-primary-warning'
   return null
+}
+
+function ipCountPrimaryClassName(count: number, limit: number): string | null {
+  return count > Math.max(0, limit) ? 'admin-table-value-primary-danger' : null
 }
 
 function formatMonthlyBrokenStackValue(
@@ -5048,6 +5083,8 @@ function UsersUsagePageCanvas({
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
+                  <th>{users.usage.table.ipCount24h}</th>
+                  <th>{users.usage.table.ipCount7d}</th>
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.dailySuccessRate}
                     displayLabel={usageDailyRateLabel}
@@ -5084,6 +5121,7 @@ function UsersUsagePageCanvas({
                     item.monthlyBrokenCount,
                     item.monthlyBrokenLimit,
                   )
+                  const ipCount24hClassName = ipCountPrimaryClassName(item.recentIpCount24h, 5)
                   const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                   const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
@@ -5147,6 +5185,14 @@ function UsersUsagePageCanvas({
                           />
                           <span className="admin-table-value-secondary">{monthlyBrokenMetric.secondary}</span>
                         </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <span className={`admin-table-value-primary${ipCount24hClassName ? ` ${ipCount24hClassName}` : ''}`}>
+                          {formatNumber(item.recentIpCount24h)}
+                        </span>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <span className="admin-table-value-primary">{formatNumber(item.recentIpCount7d)}</span>
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
@@ -5742,7 +5788,7 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
 function UserDetailPageCanvas({
   initialUsageSeries = 'quota1h',
 }: {
-  initialUsageSeries?: AdminUserUsageSeriesKey
+  initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
 } = {}): JSX.Element {
   const users = useTranslate().admin.users
   const { language } = useLanguage()
@@ -5807,6 +5853,18 @@ function UserDetailPageCanvas({
           <div className="token-info-card">
             <span className="token-info-label">{users.table.tokenCount}</span>
             <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
+          </div>
+          <div className="token-info-card">
+            <span className="token-info-label">{users.usage.table.ipCount24h}</span>
+            <span
+              className={`token-info-value${ipCountPrimaryClassName(detail.recentIpCount24h, 5) ? ' admin-table-value-primary-danger' : ''}`}
+            >
+              {formatNumber(detail.recentIpCount24h)}
+            </span>
+          </div>
+          <div className="token-info-card">
+            <span className="token-info-label">{users.usage.table.ipCount7d}</span>
+            <span className="token-info-value">{formatNumber(detail.recentIpCount7d)}</span>
           </div>
         </div>
       </section>
@@ -5977,6 +6035,9 @@ function UserDetailPageCanvas({
           title={users.detail.sharedUsageTitle}
           description={users.detail.sharedUsageDescription}
           initialSeries={initialUsageSeries}
+          ipTimeline={detail.recentIpTimeline7d}
+          ipAddresses24h={detail.recentIpAddresses24h}
+          ipAddresses7d={detail.recentIpAddresses7d}
           loadSeries={async (series) => {
             await new Promise((resolve) => window.setTimeout(resolve, 20))
             return MOCK_USER_USAGE_SERIES[series]
@@ -6077,6 +6138,7 @@ function SystemSettingsPageCanvas(): JSX.Element {
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
           userBlockedKeyBaseLimit: 5,
+          globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
           trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
         }}
@@ -6713,7 +6775,7 @@ export const UserDetail: Story = {
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
       .map((item) => item.textContent?.trim())
-    const expectedTabLabels = ['5m', '1h', '24h', '月']
+    const expectedTabLabels = ['5m', '1h', '24h', '月', 'IP']
     if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
       throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
     }
@@ -6802,6 +6864,28 @@ export const UserDetailCompact: Story = {
 
 export const UserDetailMonthlyGap: Story = {
   render: () => <UserDetailPageCanvas initialUsageSeries="quotaMonth" />,
+}
+
+export const UserDetailIpUsage: Story = {
+  render: () => <UserDetailPageCanvas initialUsageSeries="ip" />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+
+    const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    if (usagePanel?.dataset.activeSeries !== 'ip') {
+      throw new Error('Expected the user detail IP story to open the IP usage tab.')
+    }
+
+    if (!canvasElement.querySelector('.admin-user-ip-gantt-chart canvas')) {
+      throw new Error('Expected the user detail IP story to render the Chart.js IP Gantt chart.')
+    }
+
+    for (const expected of ['203.0.113.7', '最近 24 小时', '最近 7 天']) {
+      if (!canvasElement.textContent?.includes(expected)) {
+        throw new Error(`Expected the user detail IP story to include ${expected}.`)
+      }
+    }
+  },
 }
 
 export const Alerts: Story = {

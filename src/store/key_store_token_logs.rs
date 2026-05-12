@@ -2605,6 +2605,71 @@ impl KeyStore {
         Ok(result)
     }
 
+    pub(crate) async fn fetch_recent_client_ip_addresses_for_user(
+        &self,
+        user_id: &str,
+        since: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT client_ip, MAX(created_at) AS latest_seen_at
+            FROM request_logs
+            WHERE request_user_id = ?
+              AND created_at >= ?
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY client_ip
+            ORDER BY latest_seen_at DESC, client_ip ASC
+            "#,
+        )
+        .bind(user_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| row.try_get("client_ip").map_err(ProxyError::from))
+            .collect()
+    }
+
+    pub(crate) async fn fetch_recent_client_ip_timeline_for_user(
+        &self,
+        user_id: &str,
+        since: i64,
+    ) -> Result<Vec<AdminUserIpTimelineEntry>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                client_ip,
+                MIN(created_at) AS first_seen_at,
+                MAX(created_at) AS last_seen_at,
+                COUNT(*) AS request_count
+            FROM request_logs
+            WHERE request_user_id = ?
+              AND created_at >= ?
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY client_ip
+            ORDER BY last_seen_at DESC, client_ip ASC
+            "#,
+        )
+        .bind(user_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(AdminUserIpTimelineEntry {
+                    ip_address: row.try_get("client_ip")?,
+                    first_seen_at: row.try_get("first_seen_at")?,
+                    last_seen_at: row.try_get("last_seen_at")?,
+                    request_count: row.try_get("request_count")?,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) async fn fetch_recent_client_ip_requests(
         &self,
         limit: usize,

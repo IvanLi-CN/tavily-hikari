@@ -1718,6 +1718,32 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn admin_user_ip_usage(
+        &self,
+        user_id: &str,
+        now: i64,
+    ) -> Result<AdminUserIpUsage, ProxyError> {
+        let since_24h = now - SECS_PER_DAY;
+        let since_7d = now - 7 * SECS_PER_DAY;
+        let recent_ip_addresses_24h = self
+            .key_store
+            .fetch_recent_client_ip_addresses_for_user(user_id, since_24h)
+            .await?;
+        let recent_ip_addresses_7d = self
+            .key_store
+            .fetch_recent_client_ip_addresses_for_user(user_id, since_7d)
+            .await?;
+        let recent_ip_timeline_7d = self
+            .key_store
+            .fetch_recent_client_ip_timeline_for_user(user_id, since_7d)
+            .await?;
+        Ok(AdminUserIpUsage {
+            recent_ip_addresses_24h,
+            recent_ip_addresses_7d,
+            recent_ip_timeline_7d,
+        })
+    }
+
     pub async fn recent_client_ip_requests(
         &self,
         limit: usize,

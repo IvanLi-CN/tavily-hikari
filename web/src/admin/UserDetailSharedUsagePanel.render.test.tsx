@@ -128,6 +128,7 @@ describe('UserDetailSharedUsagePanel tab presentation', () => {
       ZH.admin.users.detail.sharedUsageTabs.oneHour,
       ZH.admin.users.detail.sharedUsageTabs.daily,
       ZH.admin.users.detail.sharedUsageTabs.monthly,
+      ZH.admin.users.detail.sharedUsageTabs.ip,
     ])
     expect(container.querySelector<HTMLElement>('.admin-user-shared-usage-panel')?.dataset.activeSeries).toBe('quota1h')
 
@@ -138,6 +139,45 @@ describe('UserDetailSharedUsagePanel tab presentation', () => {
 })
 
 describe('UserDetailSharedUsagePanel loading behavior', () => {
+  it('renders the IP tab with timeline and 24h/7d unique address lists without loading a quota series', async () => {
+    let loadAttempts = 0
+    const { container, root } = await mountPanel({
+      ipTimeline: [
+        {
+          ipAddress: '203.0.113.7',
+          firstSeenAt: 1_700_000_000,
+          lastSeenAt: 1_700_003_600,
+          requestCount: 12,
+        },
+      ],
+      ipAddresses24h: ['203.0.113.7'],
+      ipAddresses7d: ['203.0.113.7', '198.51.100.10'],
+      loadSeries: (series, signal) => {
+        void series
+        void signal
+        loadAttempts += 1
+        return Promise.resolve(buildEmptySeries(100))
+      },
+    })
+
+    await act(async () => {
+      clickTab(container, ZH.admin.users.detail.sharedUsageTabs.ip)
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector<HTMLElement>('.admin-user-shared-usage-panel')?.dataset.activeSeries).toBe('ip')
+    expect(container.querySelector('.admin-user-ip-gantt-chart')).not.toBeNull()
+    expect(container.querySelector('.admin-user-ip-gantt-chart canvas')).not.toBeNull()
+    expect(container.textContent).toContain('203.0.113.7')
+    expect(container.textContent).toContain(ZH.admin.users.detail.ipUsage24hTitle)
+    expect(container.textContent).toContain(ZH.admin.users.detail.ipUsage7dTitle)
+    expect(loadAttempts).toBe(1)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
   it('keeps an in-flight tab request usable after switching away and back', async () => {
     const loader = createAbortableLoader()
     const { container, root } = await mountPanel({ loadSeries: loader.loadSeries })

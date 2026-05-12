@@ -889,6 +889,7 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+                global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
@@ -1106,6 +1107,7 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+                global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
@@ -1197,6 +1199,7 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+                global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })
@@ -2575,6 +2578,7 @@
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
                 user_blocked_key_base_limit: tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+                global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
             })

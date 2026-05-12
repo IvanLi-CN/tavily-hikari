@@ -177,6 +177,9 @@ export default function SystemSettingsModule({
   const [draftBlockedKeyBaseLimit, setDraftBlockedKeyBaseLimit] = useState(() =>
     settings ? String(settings.userBlockedKeyBaseLimit) : '5',
   )
+  const [draftGlobalIpLimit, setDraftGlobalIpLimit] = useState(() =>
+    settings ? String(settings.globalIpLimit) : '5',
+  )
   const [clientIpDialogOpen, setClientIpDialogOpen] = useState(false)
   const [draftTrustedProxyCidrs, setDraftTrustedProxyCidrs] = useState(() =>
     settings?.trustedProxyCidrs?.join('\n') ?? '',
@@ -195,6 +198,7 @@ export default function SystemSettingsModule({
     setDraftApiRebalanceEnabled(settings?.apiRebalanceEnabled ?? false)
     setDraftApiRebalancePercent(settings ? String(settings.apiRebalancePercent) : '0')
     setDraftBlockedKeyBaseLimit(settings ? String(settings.userBlockedKeyBaseLimit) : '5')
+    setDraftGlobalIpLimit(settings ? String(settings.globalIpLimit) : '5')
     setDraftTrustedProxyCidrs(settings?.trustedProxyCidrs?.join('\n') ?? '')
     setDraftTrustedClientIpHeaders(settings?.trustedClientIpHeaders?.join('\n') ?? '')
   }, [
@@ -205,6 +209,7 @@ export default function SystemSettingsModule({
     settings?.apiRebalanceEnabled,
     settings?.apiRebalancePercent,
     settings?.userBlockedKeyBaseLimit,
+    settings?.globalIpLimit,
     settings?.trustedProxyCidrs,
     settings?.trustedClientIpHeaders,
   ])
@@ -228,6 +233,7 @@ export default function SystemSettingsModule({
   const normalizedPercent = draftPercent.trim()
   const normalizedApiRebalancePercent = draftApiRebalancePercent.trim()
   const normalizedBlockedKeyBaseLimit = draftBlockedKeyBaseLimit.trim()
+  const normalizedGlobalIpLimit = draftGlobalIpLimit.trim()
   const normalizedTrustedProxyCidrs = draftTrustedProxyCidrs
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -251,6 +257,9 @@ export default function SystemSettingsModule({
   const parsedBlockedKeyBaseLimit = isValidNonNegativeIntegerDraft(normalizedBlockedKeyBaseLimit)
     ? Number.parseInt(normalizedBlockedKeyBaseLimit, 10)
     : null
+  const parsedGlobalIpLimit = isValidNonNegativeIntegerDraft(normalizedGlobalIpLimit)
+    ? Number.parseInt(normalizedGlobalIpLimit, 10)
+    : null
   const changed =
     settings != null &&
     parsedRequestRateLimit != null &&
@@ -258,6 +267,7 @@ export default function SystemSettingsModule({
     parsedPercent != null &&
     parsedApiRebalancePercent != null &&
     parsedBlockedKeyBaseLimit != null &&
+    parsedGlobalIpLimit != null &&
     (parsedRequestRateLimit !== settings.requestRateLimit ||
       parsedCount !== settings.mcpSessionAffinityKeyCount ||
       draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
@@ -265,6 +275,7 @@ export default function SystemSettingsModule({
       draftApiRebalanceEnabled !== settings.apiRebalanceEnabled ||
       parsedApiRebalancePercent !== settings.apiRebalancePercent ||
       parsedBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit ||
+      parsedGlobalIpLimit !== settings.globalIpLimit ||
       normalizedTrustedProxyCidrs.join('\n') !== settings.trustedProxyCidrs.join('\n') ||
       normalizedTrustedClientIpHeaders.join('\n') !== settings.trustedClientIpHeaders.join('\n'))
   const inlineError =
@@ -278,7 +289,9 @@ export default function SystemSettingsModule({
           ? strings.form.invalidPercent
           : normalizedBlockedKeyBaseLimit.length > 0 && parsedBlockedKeyBaseLimit == null
             ? strings.form.invalidBlockedKeyBaseLimit
-            : parsedTrustedClientIpHeaders.duplicateError ?? error
+            : normalizedGlobalIpLimit.length > 0 && parsedGlobalIpLimit == null
+              ? strings.form.invalidGlobalIpLimit
+              : parsedTrustedClientIpHeaders.duplicateError ?? error
   const observedClientIpRequestsSection = (
     <div className="grid gap-3 rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
       <div className="grid gap-1">
@@ -656,6 +669,32 @@ export default function SystemSettingsModule({
               )}
               <p className="text-xs text-muted-foreground">{strings.form.blockedKeyBaseLimitHint}</p>
             </div>
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-global-ip-limit">
+                {strings.form.globalIpLimitLabel}
+              </label>
+              <Input
+                id="system-settings-global-ip-limit"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                step={1}
+                value={draftGlobalIpLimit}
+                disabled={saving}
+                onChange={(event) => setDraftGlobalIpLimit(event.target.value)}
+                aria-invalid={inlineError ? true : undefined}
+              />
+              {settings && (
+                <p className="text-xs text-muted-foreground">
+                  {strings.form.currentGlobalIpLimitValue.replace(
+                    '{count}',
+                    String(settings.globalIpLimit),
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
+            </div>
           </div>
 
           {(inlineError || saving) && (
@@ -679,6 +718,7 @@ export default function SystemSettingsModule({
                   parsedPercent == null ||
                   parsedApiRebalancePercent == null ||
                   parsedBlockedKeyBaseLimit == null ||
+                  parsedGlobalIpLimit == null ||
                   parsedTrustedClientIpHeaders.duplicateError != null ||
                   saving ||
                   !changed
@@ -691,6 +731,7 @@ export default function SystemSettingsModule({
                   apiRebalanceEnabled: draftApiRebalanceEnabled,
                   apiRebalancePercent: parsedApiRebalancePercent,
                   userBlockedKeyBaseLimit: parsedBlockedKeyBaseLimit,
+                  globalIpLimit: parsedGlobalIpLimit,
                   trustedProxyCidrs: normalizedTrustedProxyCidrs,
                   trustedClientIpHeaders: normalizedTrustedClientIpHeaders,
                 })
@@ -703,6 +744,7 @@ export default function SystemSettingsModule({
                 parsedPercent == null ||
                 parsedApiRebalancePercent == null ||
                 parsedBlockedKeyBaseLimit == null ||
+                parsedGlobalIpLimit == null ||
                 parsedTrustedClientIpHeaders.duplicateError != null
               }
               data-testid="system-settings-apply"
