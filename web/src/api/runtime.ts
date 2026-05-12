@@ -1709,12 +1709,7 @@ export interface AdminUserDetail extends AdminUserSummary {
   recentIpTimeline7d: AdminUserIpTimelineEntry[]
 }
 
-export interface AdminUserIpTimelineEntry {
-  ipAddress: string
-  firstSeenAt: number
-  lastSeenAt: number
-  requestCount: number
-}
+export type AdminUserIpTimelineEntry = { ipAddress: string; firstSeenAt: number; lastSeenAt: number; requestCount: number }
 
 export type AdminUserUsageSeriesKey = 'rate5m' | 'quota1h' | 'quota24h' | 'quotaMonth'
 
