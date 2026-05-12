@@ -3158,6 +3158,19 @@ function AdminDashboard(): JSX.Element {
   }, [route, loadSystemSettingsData])
 
   useEffect(() => {
+    if (!(route.name === 'user' || route.name === 'user-usage')) return
+    if (systemSettingsLoadedRef.current) return
+
+    const controller = new AbortController()
+    void loadSystemSettingsData({
+      signal: controller.signal,
+      reason: 'initial',
+    })
+
+    return () => controller.abort()
+  }, [route, loadSystemSettingsData])
+
+  useEffect(() => {
     if (!(route.name === 'module' && route.module === 'proxy-settings')) {
       return
     }

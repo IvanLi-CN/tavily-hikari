@@ -38,6 +38,7 @@ type TooltipVerticalPlacement = 'top' | 'bottom'
 type TooltipHorizontalPlacement = 'left' | 'right'
 type AdminUserUsagePanelTab = AdminUserUsageSeriesKey | 'ip'
 type IpGanttRange = [number, number]
+type TimelineBounds = { min: number; max: number }
 
 const HOVER_TOOLTIP_POSITION_STEP = 4
 const IP_GANTT_MIN_HEIGHT = 172
@@ -181,6 +182,12 @@ function formatIpTimelineRangeLabel(locale: string, startTimestamp: number, endT
     hour12: false,
   })
   return `${dateFormatter.format(new Date(startTimestamp * 1000))} – ${dateFormatter.format(new Date(endTimestamp * 1000))}`
+}
+
+function clipIpTimelineRange(item: AdminUserIpTimelineEntry, bounds: TimelineBounds): IpGanttRange {
+  const first = Math.min(bounds.max, Math.max(bounds.min, item.firstSeenAt))
+  const last = Math.min(bounds.max, Math.max(bounds.min, item.lastSeenAt))
+  return [Math.min(first, last), Math.max(first, last)]
 }
 
 function axisTickStride(series: AdminUserUsageSeriesKey): number {
@@ -505,11 +512,10 @@ export function UserDetailSharedUsagePanel({
   }, [activeSeries, chartData.labels, chartPalette.grid, chartPalette.tick, currentSeries?.points, language, pinnedTooltip])
 
   const ipTimelineBounds = useMemo(() => {
-    const latest = ipTimeline.reduce((value, item) => Math.max(value, item.lastSeenAt), 0)
-    const max = latest > 0 ? latest : Math.floor(Date.now() / 1000)
+    const max = Math.floor(Date.now() / 1000)
     const min = max - 7 * 24 * 60 * 60
     return { min, max }
-  }, [ipTimeline])
+  }, [])
   const ipGanttData = useMemo(
     () =>
       ({
@@ -517,10 +523,7 @@ export function UserDetailSharedUsagePanel({
         datasets: [
           {
             label: usersStrings.detail.ipUsageTitle,
-            data: ipTimeline.map((item) => [
-              Math.max(ipTimelineBounds.min, item.firstSeenAt),
-              Math.min(ipTimelineBounds.max, item.lastSeenAt),
-            ]),
+            data: ipTimeline.map((item) => clipIpTimelineRange(item, ipTimelineBounds)),
             backgroundColor: chartPalette.bar,
             borderColor: chartPalette.barBorder,
             borderSkipped: false,
