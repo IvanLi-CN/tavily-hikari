@@ -2568,18 +2568,10 @@ impl KeyStore {
         }
 
         let mut builder = QueryBuilder::<Sqlite>::new(
-            r#"
-            SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count
-            FROM request_logs
-            WHERE visibility =
-            "#,
+            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs WHERE visibility = ",
         );
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
-        builder.push(
-            r#"
-              AND request_user_id IN (
-            "#,
-        );
+        builder.push(" AND request_user_id IN (");
         {
             let mut separated = builder.separated(", ");
             for user_id in user_ids {
@@ -2587,19 +2579,9 @@ impl KeyStore {
             }
             separated.push_unseparated(")");
         }
-        builder.push(
-            r#"
-              AND created_at >=
-            "#,
-        );
+        builder.push(" AND created_at >= ");
         builder.push_bind(since);
-        builder.push(
-            r#"
-              AND client_ip IS NOT NULL
-              AND TRIM(client_ip) != ''
-            GROUP BY request_user_id
-            "#,
-        );
+        builder.push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
         let mut result = HashMap::new();
@@ -2617,17 +2599,10 @@ impl KeyStore {
         since: i64,
     ) -> Result<Vec<String>, ProxyError> {
         let rows = sqlx::query(
-            r#"
-            SELECT client_ip, MAX(created_at) AS latest_seen_at
-            FROM request_logs
-            WHERE request_user_id = ?
-              AND created_at >= ?
-              AND visibility = ?
-              AND client_ip IS NOT NULL
-              AND TRIM(client_ip) != ''
-            GROUP BY client_ip
-            ORDER BY latest_seen_at DESC, client_ip ASC
-            "#,
+            "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
+             AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
+             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC",
         )
         .bind(user_id)
         .bind(since)
@@ -2646,21 +2621,11 @@ impl KeyStore {
         since: i64,
     ) -> Result<Vec<AdminUserIpTimelineEntry>, ProxyError> {
         let rows = sqlx::query(
-            r#"
-            SELECT
-                client_ip,
-                MIN(created_at) AS first_seen_at,
-                MAX(created_at) AS last_seen_at,
-                COUNT(*) AS request_count
-            FROM request_logs
-            WHERE request_user_id = ?
-              AND created_at >= ?
-              AND visibility = ?
-              AND client_ip IS NOT NULL
-              AND TRIM(client_ip) != ''
-            GROUP BY client_ip
-            ORDER BY last_seen_at DESC, client_ip ASC
-            "#,
+            "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
+             COUNT(*) AS request_count FROM request_logs \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
+             AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
+             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC",
         )
         .bind(user_id)
         .bind(since)
@@ -2669,14 +2634,12 @@ impl KeyStore {
         .await?;
 
         rows.into_iter()
-            .map(|row| {
-                Ok(AdminUserIpTimelineEntry {
-                    ip_address: row.try_get("client_ip")?,
-                    first_seen_at: row.try_get("first_seen_at")?,
-                    last_seen_at: row.try_get("last_seen_at")?,
-                    request_count: row.try_get("request_count")?,
-                })
-            })
+            .map(|row| Ok(AdminUserIpTimelineEntry {
+                ip_address: row.try_get("client_ip")?,
+                first_seen_at: row.try_get("first_seen_at")?,
+                last_seen_at: row.try_get("last_seen_at")?,
+                request_count: row.try_get("request_count")?,
+            }))
             .collect()
     }
 

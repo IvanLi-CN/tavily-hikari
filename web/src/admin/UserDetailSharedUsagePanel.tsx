@@ -526,6 +526,7 @@ export function UserDetailSharedUsagePanel({
             borderSkipped: false,
             borderWidth: 1,
             borderRadius: 4,
+            minBarLength: 6,
             barPercentage: 0.68,
             categoryPercentage: 0.82,
           },

@@ -2761,32 +2761,21 @@
             .json::<serde_json::Value>()
             .await
             .expect("decode settings");
+        let system_settings = &settings_body["systemSettings"];
         assert_eq!(
             settings_body["forwardProxy"]["insertDirect"].as_bool(),
             Some(true)
         );
+        assert_eq!(system_settings["mcpSessionAffinityKeyCount"].as_i64(), Some(5));
+        assert_eq!(system_settings["requestRateLimit"].as_i64(), Some(request_rate_limit()));
+        assert_eq!(system_settings["rebalanceMcpEnabled"].as_bool(), Some(false));
+        assert_eq!(system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(100));
         assert_eq!(
-            settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
-            Some(5)
-        );
-        assert_eq!(
-            settings_body["systemSettings"]["requestRateLimit"].as_i64(),
-            Some(request_rate_limit())
-        );
-        assert_eq!(
-            settings_body["systemSettings"]["rebalanceMcpEnabled"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
-            Some(100)
-        );
-        assert_eq!(
-            settings_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
+            system_settings["userBlockedKeyBaseLimit"].as_i64(),
             Some(tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
         );
         assert_eq!(
-            settings_body["systemSettings"]["globalIpLimit"].as_i64(),
+            system_settings["globalIpLimit"].as_i64(),
             Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT)
         );
 
@@ -2834,28 +2823,14 @@
             .json::<serde_json::Value>()
             .await
             .expect("decode persisted settings");
+        let persisted_system_settings = &persisted_settings_body["systemSettings"];
+        assert_eq!(persisted_system_settings["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
+        assert_eq!(persisted_system_settings["requestRateLimit"].as_i64(), Some(72));
+        assert_eq!(persisted_system_settings["globalIpLimit"].as_i64(), Some(6));
+        assert_eq!(persisted_system_settings["rebalanceMcpEnabled"].as_bool(), Some(true));
+        assert_eq!(persisted_system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(35));
         assert_eq!(
-            persisted_settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
-            Some(3)
-        );
-        assert_eq!(
-            persisted_settings_body["systemSettings"]["requestRateLimit"].as_i64(),
-            Some(72)
-        );
-        assert_eq!(
-            persisted_settings_body["systemSettings"]["globalIpLimit"].as_i64(),
-            Some(6)
-        );
-        assert_eq!(
-            persisted_settings_body["systemSettings"]["rebalanceMcpEnabled"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            persisted_settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
-            Some(35)
-        );
-        assert_eq!(
-            persisted_settings_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
+            persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(),
             Some(8)
         );
 
@@ -2982,10 +2957,7 @@
         assert_eq!(updated_body["apiRebalanceEnabled"].as_bool(), Some(false));
         assert_eq!(updated_body["apiRebalancePercent"].as_i64(), Some(0));
         assert_eq!(updated_body["userBlockedKeyBaseLimit"].as_i64(), Some(7));
-        assert_eq!(
-            updated_body["globalIpLimit"].as_i64(),
-            Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT)
-        );
+        assert_eq!(updated_body["globalIpLimit"].as_i64(), Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT));
 
         let persisted = client
             .get(format!("http://{addr}/api/settings"))
@@ -2997,26 +2969,15 @@
             .json::<serde_json::Value>()
             .await
             .expect("decode persisted settings");
+        let persisted_system_settings = &persisted_body["systemSettings"];
+        assert_eq!(persisted_system_settings["requestRateLimit"].as_i64(), Some(88));
+        assert_eq!(persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(), Some(7));
         assert_eq!(
-            persisted_body["systemSettings"]["requestRateLimit"].as_i64(),
-            Some(88)
-        );
-        assert_eq!(
-            persisted_body["systemSettings"]["userBlockedKeyBaseLimit"].as_i64(),
-            Some(7)
-        );
-        assert_eq!(
-            persisted_body["systemSettings"]["globalIpLimit"].as_i64(),
+            persisted_system_settings["globalIpLimit"].as_i64(),
             Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT)
         );
-        assert_eq!(
-            persisted_body["systemSettings"]["apiRebalanceEnabled"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            persisted_body["systemSettings"]["apiRebalancePercent"].as_i64(),
-            Some(0)
-        );
+        assert_eq!(persisted_system_settings["apiRebalanceEnabled"].as_bool(), Some(false));
+        assert_eq!(persisted_system_settings["apiRebalancePercent"].as_i64(), Some(0));
 
         let _ = std::fs::remove_file(db_path);
     }
