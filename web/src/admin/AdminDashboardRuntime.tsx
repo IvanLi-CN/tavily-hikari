@@ -8236,7 +8236,7 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={11}>
+                  <td colSpan={12}>
                     <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
