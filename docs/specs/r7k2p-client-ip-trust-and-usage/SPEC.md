@@ -15,6 +15,7 @@
 - 用户维度最近 24 小时与 7 天 `COUNT(DISTINCT clientIp)`。
 - 系统设置增加全局 IP 数提示阈值，默认 `5`；超过阈值只在管理端标红，不影响鉴权、转发、封禁或限流。
 - 系统设置对话框、近期请求 IP 诊断、用户列表/详情 IP 数展示。
+- 系统设置对话框中的可信客户端 IP 编辑区只能通过“应用/取消”关闭，不能通过遮罩、Escape 或默认关闭按钮绕过确认。
 - 用户详情共享额度趋势 tab 在 `月` 后新增 `IP`，展示最近 7 天 IP 使用情况图，纵轴为 IP 地址，横轴为时间。
 - 用户详情展示最近 24 小时与 7 天的唯一 IP 地址列表和数量。
 
@@ -51,6 +52,7 @@
 
 - 后端可安全解析并落盘 IP 审计字段。
 - 管理端可编辑可信代理 CIDR 与头顺序，可通过每个头名独立按钮快速追加通用反代、Cloudflare、EdgeOne 等常用头名，并查看近期观测值。
+- 管理端编辑可信代理 CIDR 与头顺序时，必须通过“应用/取消”关闭弹窗；取消会丢弃草稿，应用会保存并关闭。
 - 近期观测值列表不会被 rebalance 本地 `initialize`、`tools/list`、`ping` 等空 IP 控制面日志刷屏。
 - 用户管理列表和用户用量列表可展示最近 7 天去重 IP 数并支持排序；用户详情可展示最近 24 小时与 7 天去重 IP 数，24 小时数超过全局阈值时仅界面标红。
 - 用户详情可查看最近 7 天按 IP 分行的时间线，以及最近 24 小时/7 天唯一 IP 列表。
@@ -61,7 +63,7 @@
 - source_type: storybook_canvas
   story_id_or_title: Admin/SystemSettingsModule/ClientIpDialogWithObservedValues
   scenario: trusted client IP settings dialog with observed header values
-  evidence_note: verifies the dialog exposes trusted proxy CIDRs, ordered client IP headers, and recent observed header values.
+  evidence_note: verifies the dialog exposes trusted proxy CIDRs, ordered client IP headers, recent observed header values, and only closes via Apply/Cancel.
   image:
   ![Trusted client IP settings dialog](./assets/client-ip-settings-dialog.png)
 

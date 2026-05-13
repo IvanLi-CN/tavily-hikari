@@ -1,8 +1,9 @@
-import { useLayoutEffect } from 'react'
+import { useLayoutEffect, useState } from 'react'
 
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import SystemSettingsModule from './SystemSettingsModule'
+import type { SystemSettings } from '../api'
 import { translations } from '../i18n'
 
 function SystemSettingsCanvas(props: {
@@ -18,34 +19,37 @@ function SystemSettingsCanvas(props: {
   saving?: boolean
   helpBubbleOpen?: boolean
 }): JSX.Element {
+  const [currentSettings, setCurrentSettings] = useState<SystemSettings>({
+    requestRateLimit: props.requestRateLimit ?? 100,
+    mcpSessionAffinityKeyCount: props.count ?? 5,
+    rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
+    rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
+    apiRebalanceEnabled: props.apiRebalanceEnabled ?? false,
+    apiRebalancePercent: props.apiRebalancePercent ?? 0,
+    userBlockedKeyBaseLimit: props.blockedKeyBaseLimit ?? 5,
+    globalIpLimit: 5,
+    trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
+    trustedClientIpHeaders: [
+      'cf-connecting-ip',
+      'true-client-ip',
+      'x-real-ip',
+      'x-forwarded-for',
+      'cf-connecting-ipv6',
+      'eo-connecting-ip',
+    ],
+  })
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
       <SystemSettingsModule
         strings={translations.zh.admin.systemSettings}
-        settings={{
-          requestRateLimit: props.requestRateLimit ?? 100,
-          mcpSessionAffinityKeyCount: props.count ?? 5,
-          rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
-          rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
-          apiRebalanceEnabled: props.apiRebalanceEnabled ?? false,
-          apiRebalancePercent: props.apiRebalancePercent ?? 0,
-          userBlockedKeyBaseLimit: props.blockedKeyBaseLimit ?? 5,
-          globalIpLimit: 5,
-          trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
-          trustedClientIpHeaders: [
-            'cf-connecting-ip',
-            'true-client-ip',
-            'x-real-ip',
-            'x-forwarded-for',
-            'cf-connecting-ipv6',
-            'eo-connecting-ip',
-          ],
-        }}
+        settings={currentSettings}
         loadState={props.loadState ?? 'ready'}
         error={props.error ?? null}
         saving={props.saving ?? false}
         helpBubbleOpen={props.helpBubbleOpen}
-        onApply={() => {}}
+        onApply={(nextSettings) => {
+          setCurrentSettings(nextSettings)
+        }}
       />
     </div>
   )
@@ -56,7 +60,10 @@ function ObservedClientIpRequestsMock(): null {
     const originalFetch = window.fetch.bind(window)
 
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const request = input instanceof Request ? input : new Request(input, init)
+      const request =
+        input instanceof Request
+          ? input
+          : new Request(typeof input === 'string' && input.startsWith('/') ? `http://localhost${input}` : input, init)
       const url = new URL(request.url, window.location.origin)
 
       if (url.pathname === '/api/settings/client-ip/observed-headers') {
@@ -137,6 +144,12 @@ function ObservedClientIpRequestsMock(): null {
   return null
 }
 
+function setNativeValue<T extends HTMLInputElement | HTMLTextAreaElement>(element: T, value: string): void {
+  const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')
+  descriptor?.set?.call(element, value)
+  element.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 const meta = {
   title: 'Admin/SystemSettingsModule',
   component: SystemSettingsModule,
@@ -144,7 +157,8 @@ const meta = {
     layout: 'padded',
     docs: {
       description: {
-        component: 'Admin-only MCP session affinity and Rebalance MCP controls with immediate apply feedback.',
+        component:
+          'Admin-only MCP session affinity and Rebalance MCP controls with direct-save drafts and a confirmed trusted IP dialog.',
       },
     },
   },
@@ -195,13 +209,7 @@ export const ApiRebalanceDisabledSliderLocked: Story = {
 
 export const Applying: Story = {
   render: () => (
-    <SystemSettingsCanvas
-      rebalanceEnabled
-      rebalancePercent={35}
-      apiRebalanceEnabled
-      apiRebalancePercent={25}
-      saving
-    />
+    <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} apiRebalanceEnabled apiRebalancePercent={25} saving />
   ),
 }
 
@@ -223,6 +231,21 @@ export const RequestRateEdited: Story = {
       apiRebalancePercent={25}
     />
   ),
+}
+
+export const AutosaveOnBlur: Story = {
+  render: () => <SystemSettingsCanvas />,
+  play: async ({ canvasElement }) => {
+    const input = canvasElement.querySelector<HTMLInputElement>('#system-settings-request-rate-limit')
+    if (!input) throw new Error('Expected request-rate input to exist')
+    setNativeValue(input, '72')
+    input.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
+    await new Promise((resolve) => window.setTimeout(resolve, 100))
+    const text = canvasElement.textContent ?? ''
+    if (!text.includes('当前阈值：72')) {
+      throw new Error('Expected blur autosave to update the current request-rate value')
+    }
+  },
 }
 
 export const BlockedKeyBaseConfigured: Story = {
@@ -260,6 +283,8 @@ export const ClientIpDialogWithObservedValues: Story = {
     const text = canvasElement.ownerDocument.body.textContent ?? ''
     for (const expected of [
       '可信客户端 IP',
+      '取消',
+      '应用',
       '请求',
       'cf-connecting-ip',
       'true-client-ip',
@@ -273,6 +298,9 @@ export const ClientIpDialogWithObservedValues: Story = {
       if (!text.includes(expected)) {
         throw new Error(`Expected client IP dialog canvas to contain: ${expected}`)
       }
+    }
+    if (text.includes('Close')) {
+      throw new Error('Expected client IP dialog to hide the default close button')
     }
   },
 }

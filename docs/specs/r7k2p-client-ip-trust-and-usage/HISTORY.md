@@ -13,3 +13,6 @@
 - 2026-05-12: Filtered empty rebalance local MCP control-plane rows out of the
   observed client IP diagnostic endpoint so downstream/API/tool samples remain
   visible.
+- 2026-05-13: Changed the trusted client IP settings dialog to use explicit
+  Apply/Cancel closure only, with the default close affordance hidden to keep
+  the draft state isolated until confirmation.

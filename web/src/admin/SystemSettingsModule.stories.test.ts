@@ -20,6 +20,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
     expect(systemSettingsStories.BlockedKeyBaseConfigured).toMatchObject({})
+    expect(systemSettingsStories.AutosaveOnBlur).toMatchObject({})
     expect(systemSettingsStories.ClientIpDialogWithObservedValues).toMatchObject({})
   })
 

@@ -2,7 +2,7 @@
 
 - Backend: request log schema, IP resolution, observed header values, recent 24h/7d IP count query, capped per-user IP address lists, and capped 7-day IP timeline query.
 - API: system settings payload/response extension and admin-only observed header endpoint.
-- UI: system settings dialog, global IP limit input, user IP count badges, user detail IP chart/list, recent request diagnostics.
+- UI: system settings dialog, global IP limit input, trusted client IP Apply/Cancel-confirmed draft editor, user IP count badges, user detail IP chart/list, recent request diagnostics.
 - Operations: historical `request_user_id` repair is an explicit resumable
   `request_user_id_backfill` CLI batch job, not part of service startup.
 
