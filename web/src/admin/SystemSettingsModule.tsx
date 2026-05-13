@@ -376,7 +376,6 @@ export default function SystemSettingsModule({
   const handleCommitKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== 'Enter') return
     event.preventDefault()
-    void commitNormalSettings()
     event.currentTarget.blur()
   }
 
