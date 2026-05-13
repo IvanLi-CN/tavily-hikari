@@ -573,8 +573,7 @@ export const ZH: TranslationShape = {
         form: {
           title: 'MCP 网关控制',
           description: '这里统一管理全局 request-rate 阈值、MCP session 亲和池、Rebalance MCP 灰度比例与封禁数基础值。',
-          limitsTitle: '全局限制与提示',
-          gatewayTitle: 'MCP 网关控制',
+          limitsTitle: '全局限制与提示', gatewayTitle: 'MCP 网关控制',
           apiRebalanceTitle: 'Tavily API Rebalance',
           requestRateLimitLabel: '5 分钟最大请求数',
           requestRateLimitHint: '作用于全局 request-rate limiter；保存后对下一次已鉴权请求立即生效，但不会清空当前 5 分钟窗口中的已有计数。',
@@ -610,8 +609,7 @@ export const ZH: TranslationShape = {
           saveFailed: '保存系统设置失败。',
         },
         actions: {
-          apply: '应用',
-          applying: '应用中…',
+          apply: '应用', applying: '应用中…',
           cancel: '取消',
         },
       },
