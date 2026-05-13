@@ -288,6 +288,7 @@ struct AdminUserSummaryRow {
     summary: tavily_hikari::UserDashboardSummary,
     monthly_broken_count: i64,
     monthly_broken_limit: i64,
+    recent_ip_count_7d: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -704,6 +705,9 @@ fn compare_admin_user_rows(
             } else {
                 direction.apply(left.monthly_broken_limit.cmp(&right.monthly_broken_limit))
             }
+        }
+        AdminUsersSortField::RecentIpCount7d => {
+            direction.apply(left.recent_ip_count_7d.cmp(&right.recent_ip_count_7d))
         }
         AdminUsersSortField::LastActivity => compare_optional_timestamp(
             left.summary.last_activity,

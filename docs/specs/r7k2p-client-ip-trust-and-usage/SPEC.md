@@ -31,6 +31,7 @@
 - `GET /api/users` 和 `GET /api/users/:id` 返回：
   - `recentIpCount24h`
   - `recentIpCount7d`
+- `GET /api/users` 支持按 `sort=recentIpCount7d` 排序，供管理端 `IP 数` 列使用。
 - `GET /api/users/:id` 额外返回：
   - `recentIpAddresses24h: string[]`
   - `recentIpAddresses7d: string[]`
@@ -39,8 +40,8 @@
 
 ## UI Contract
 
-- 用户管理列表新增 24 小时列，列名中文为 `IP 数`；现有 7 天 IP 展示保留。
-- 当 `recentIpCount24h > systemSettings.globalIpLimit` 时，仅 24 小时 IP 数值使用红色/危险色提示。
+- 用户管理列表和用户用量列表新增单列，列名中文为 `IP 数`，展示最近 7 天去重 IP 总数 `recentIpCount7d`，并支持排序。
+- 当 24 小时 IP 数用于详情身份区展示且 `recentIpCount24h > systemSettings.globalIpLimit` 时，仅 24 小时 IP 数值使用红色/危险色提示。
 - 用户详情身份区同时展示 24 小时 IP 数与 7 天 IP 数，24 小时值同样按全局阈值标红。
 - 用户详情共享额度趋势区的 tab 顺序为 `5m / 1h / 24h / 月 / IP`；`IP` tab 不调用 `usage-series`，使用详情响应中的 IP 时间线数据渲染。
 - IP 时间线按 IP 地址分行展示请求活跃区间；无数据时显示稳定空态。
@@ -51,7 +52,7 @@
 - 后端可安全解析并落盘 IP 审计字段。
 - 管理端可编辑可信代理 CIDR 与头顺序，可通过每个头名独立按钮快速追加通用反代、Cloudflare、EdgeOne 等常用头名，并查看近期观测值。
 - 近期观测值列表不会被 rebalance 本地 `initialize`、`tools/list`、`ping` 等空 IP 控制面日志刷屏。
-- 用户列表/详情可展示最近 24 小时与 7 天去重 IP 数；24 小时数超过全局阈值时仅界面标红。
+- 用户管理列表和用户用量列表可展示最近 7 天去重 IP 数并支持排序；用户详情可展示最近 24 小时与 7 天去重 IP 数，24 小时数超过全局阈值时仅界面标红。
 - 用户详情可查看最近 7 天按 IP 分行的时间线，以及最近 24 小时/7 天唯一 IP 列表。
 - Recent Requests 可展示 IP 诊断信息与头值快照。
 
@@ -72,11 +73,20 @@
   ![Recent request IP diagnostics](./assets/recent-requests-ip-diagnostics.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: Admin/Pages/UsersUsage
-  scenario: 24-hour IP count column with over-limit visual state
-  evidence_note: verifies the user usage table adds the 24-hour IP count column and highlights only the count value when it exceeds the global limit.
+  story_id_or_title: Admin/Pages/Users
+  scenario: sortable 7-day IP count column
+  evidence_note: verifies the user management table exposes one IP count column backed by the 7-day unique IP total.
   image:
+  PR: include
   ![Admin users IP count column](./assets/admin-users-ip-count-column.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Admin/Pages/UsersUsage
+  scenario: sortable 7-day IP count column
+  evidence_note: verifies the user usage table exposes one IP count column backed by the 7-day unique IP total.
+  image:
+  PR: include
+  ![Admin users usage IP count column](./assets/admin-users-usage-ip-count-column.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Admin/Pages/UserDetailIpUsage

@@ -95,6 +95,31 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).not.toContain('10 页')
   })
 
+  it('renders user tables with one sortable 7-day IP count column', () => {
+    const renderUsersStory = adminPageStories.Users.render as (() => JSX.Element) | undefined
+    const renderUsageStory = adminPageStories.UsersUsage.render as (() => JSX.Element) | undefined
+    expect(renderUsersStory).toBeDefined()
+    expect(renderUsageStory).toBeDefined()
+
+    const renderMarkup = (renderStory: () => JSX.Element) =>
+      renderToStaticMarkup(
+        createElement(
+          LanguageProvider,
+          { initialLanguage: 'zh' },
+          createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory))),
+        ),
+      )
+
+    const usersMarkup = renderMarkup(renderUsersStory!)
+    const usageMarkup = renderMarkup(renderUsageStory!)
+
+    expect(usersMarkup).toContain('IP 数')
+    expect(usersMarkup).toContain('data-sort-field="recentIpCount7d"')
+    expect(usersMarkup).not.toContain('7天IP')
+    expect(usageMarkup).toContain('IP 数')
+    expect(usageMarkup).toContain('data-sort-field="recentIpCount7d"')
+  })
+
   it('renders the system settings page story with a bundled navigation icon', () => {
     const renderStory = adminPageStories.SystemSettings.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()

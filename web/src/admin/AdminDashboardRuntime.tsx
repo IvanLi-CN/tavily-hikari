@@ -346,12 +346,14 @@ const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
   'dailySuccessRate',
   'monthlySuccessRate',
   'monthlyBrokenCount',
+  'recentIpCount7d',
   'lastActivity',
   'lastLoginAt',
 ]
 const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'quotaDailyUsed',
   'quotaMonthlyUsed',
+  'recentIpCount7d',
   'lastActivity',
   'lastLoginAt',
 ])
@@ -8251,7 +8253,7 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={12}>
+                  <td colSpan={11}>
                     <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
@@ -8297,8 +8299,13 @@ function AdminDashboard(): JSX.Element {
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
                     />
-                    <th>{usersStrings.usage.table.ipCount24h}</th>
-                    <th>{usersStrings.usage.table.ipCount7d}</th>
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.ipCount}
+                      field="recentIpCount7d"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.dailySuccessRate}
                       displayLabel={usageDailyRateLabel}
@@ -8379,11 +8386,6 @@ function AdminDashboard(): JSX.Element {
                             </div>
                           )
                         })()}
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <strong className={ipCountPrimaryClassName(item.recentIpCount24h, globalIpLimit) ?? undefined}>
-                          {formatNumber(item.recentIpCount24h)}
-                        </strong>
                       </td>
                       <td className="admin-users-compact-cell">
                         <strong>{formatNumber(item.recentIpCount7d)}</strong>
@@ -8472,13 +8474,7 @@ function AdminDashboard(): JSX.Element {
                     )}
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{usersStrings.usage.table.ipCount24h}</span>
-                    <strong className={ipCountPrimaryClassName(item.recentIpCount24h, globalIpLimit) ?? undefined}>
-                      {formatNumber(item.recentIpCount24h)}
-                    </strong>
-                  </div>
-                  <div className="admin-mobile-kv">
-                    <span>{usersStrings.usage.table.ipCount7d}</span>
+                    <span>{usersStrings.usage.table.ipCount}</span>
                     <strong>{formatNumber(item.recentIpCount7d)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
@@ -10857,7 +10853,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={8}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -10879,6 +10875,13 @@ function AdminDashboard(): JSX.Element {
                       <AdminUsersSortableHeader
                         label={usersStrings.table.monthly}
                         field="quotaMonthlyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.ipCount}
+                        field="recentIpCount7d"
                         activeField={effectiveUsersSort}
                         activeOrder={effectiveUsersSortOrder}
                         onToggle={toggleUsersSort}
@@ -10933,6 +10936,9 @@ function AdminDashboard(): JSX.Element {
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <strong>{formatNumber(item.recentIpCount7d)}</strong>
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
@@ -10990,6 +10996,10 @@ function AdminDashboard(): JSX.Element {
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.monthly}</span>
                       <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.ipCount}</span>
+                      <strong>{formatNumber(item.recentIpCount7d)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastActivity}</span>

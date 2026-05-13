@@ -621,6 +621,7 @@ export interface AdminTranslationsShape {
       hourly: string
       daily: string
       monthly: string
+      ipCount: string
       successDaily: string
       successMonthly: string
       lastActivity: string
@@ -650,6 +651,7 @@ export interface AdminTranslationsShape {
         daily: string
         monthly: string
         monthlyBroken: string
+        ipCount: string
         ipCount24h: string
         ipCount7d: string
         dailySuccessRate: string

@@ -2484,6 +2484,8 @@ function compareAdminUserSummaryRows(
           right.monthlyBrokenLimit,
           direction,
         )
+      case 'recentIpCount7d':
+        return applySortDirection(compareScalar(left.recentIpCount7d, right.recentIpCount7d), direction)
       case 'dailySuccessRate':
         return compareSuccessRate(
           left.dailySuccess,
@@ -4792,6 +4794,13 @@ function UsersPageCanvas(): JSX.Element {
                     onToggle={toggleSort}
                   />
                   <StoryAdminUsersSortableHeader
+                    label={users.table.ipCount}
+                    field="recentIpCount7d"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
                     label={users.table.lastActivity}
                     field="lastActivity"
                     activeField={effectiveSortField}
@@ -4848,6 +4857,9 @@ function UsersPageCanvas(): JSX.Element {
                         <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
                       </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <span className="admin-table-value-primary">{formatNumber(item.recentIpCount7d)}</span>
                     </td>
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
@@ -5083,8 +5095,13 @@ function UsersUsagePageCanvas({
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
-                  <th>{users.usage.table.ipCount24h}</th>
-                  <th>{users.usage.table.ipCount7d}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.ipCount}
+                    field="recentIpCount7d"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.dailySuccessRate}
                     displayLabel={usageDailyRateLabel}
@@ -5121,7 +5138,6 @@ function UsersUsagePageCanvas({
                     item.monthlyBrokenCount,
                     item.monthlyBrokenLimit,
                   )
-                  const ipCount24hClassName = ipCountPrimaryClassName(item.recentIpCount24h, 5)
                   const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                   const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
@@ -5185,11 +5201,6 @@ function UsersUsagePageCanvas({
                           />
                           <span className="admin-table-value-secondary">{monthlyBrokenMetric.secondary}</span>
                         </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <span className={`admin-table-value-primary${ipCount24hClassName ? ` ${ipCount24hClassName}` : ''}`}>
-                          {formatNumber(item.recentIpCount24h)}
-                        </span>
                       </td>
                       <td className="admin-users-compact-cell">
                         <span className="admin-table-value-primary">{formatNumber(item.recentIpCount7d)}</span>
