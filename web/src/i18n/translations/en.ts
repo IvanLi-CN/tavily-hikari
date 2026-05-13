@@ -574,6 +574,9 @@ export const EN: TranslationShape = {
         form: {
           title: 'MCP gateway controls',
           description: 'Manage the global request-rate threshold, the MCP session affinity pool, the Rebalance MCP rollout ratio, and the blocked-key base limit in one place.',
+          limitsTitle: 'Global limits and warnings',
+          gatewayTitle: 'MCP gateway controls',
+          apiRebalanceTitle: 'Tavily API Rebalance',
           requestRateLimitLabel: 'Max requests per 5 minutes',
           requestRateLimitHint: 'Applies to the global request-rate limiter. Saving takes effect on the next authenticated request, but keeps the current rolling-window counters intact.',
           currentRequestRateLimitValue: 'Current limit: {count}',
@@ -599,6 +602,7 @@ export const EN: TranslationShape = {
           globalIpLimitHint: 'Only highlights 24-hour IP counts in admin UI. It does not block requests.',
           currentGlobalIpLimitValue: 'Current limit: {count}',
           applyScopeHint: 'Applies immediately to newly created MCP sessions only. Existing sessions keep their current upstream key.',
+          autosaveHint: 'Changes save automatically on blur or when you press Enter.',
           invalidRequestRateLimit: 'Enter a safe integer greater than or equal to 1.',
           invalidCount: 'Enter an integer between 1 and 1000.',
           invalidPercent: 'Enter an integer between 0 and 100.',
@@ -607,8 +611,9 @@ export const EN: TranslationShape = {
           saveFailed: 'Failed to save system settings.',
         },
         actions: {
-          apply: 'Apply settings',
+          apply: 'Apply',
           applying: 'Applying…',
+          cancel: 'Cancel',
         },
       },
       users: {

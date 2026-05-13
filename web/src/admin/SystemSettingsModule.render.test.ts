@@ -67,6 +67,7 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.form.currentGlobalIpLimitValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.globalIpLimitHint)
     expect(markup).toContain('配置可信 IP')
+    expect(markup).not.toContain('system-settings-apply')
     expect(markup).not.toContain(strings.description)
     expect(markup).not.toContain(strings.form.description)
     expect(markup).not.toContain(strings.form.countHint)
@@ -98,7 +99,6 @@ describe('SystemSettingsModule rendering', () => {
     )
 
     expect(markup).toContain(strings.actions.applying)
-    expect(markup).toContain('icon-spin')
   })
 
   it('shows the locked hint when rebalance is disabled', () => {

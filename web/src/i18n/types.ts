@@ -556,6 +556,9 @@ export interface AdminTranslationsShape {
     form: {
       title: string
       description: string
+      limitsTitle: string
+      gatewayTitle: string
+      apiRebalanceTitle: string
       requestRateLimitLabel: string
       requestRateLimitHint: string
       currentRequestRateLimitValue: string
@@ -581,6 +584,7 @@ export interface AdminTranslationsShape {
       globalIpLimitHint: string
       currentGlobalIpLimitValue: string
       applyScopeHint: string
+      autosaveHint: string
       invalidRequestRateLimit: string
       invalidCount: string
       invalidPercent: string
@@ -591,6 +595,7 @@ export interface AdminTranslationsShape {
     actions: {
       apply: string
       applying: string
+      cancel: string
     }
   }
   users: {

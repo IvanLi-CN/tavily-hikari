@@ -35,6 +35,7 @@
 - `GET /api/settings` 与 `PUT /api/settings/system` 读写新字段，并兼容旧 payload 缺省该字段。
 - 内存 request-rate limiter 支持运行时热更新阈值，且不清空当前窗口计数。
 - Admin `System Settings` 表单、文案、Storybook、render/browser 回归、spec 视觉证据。
+- 系统设置页采用控件级直接生效：开关立即保存，数字输入在失焦或按 Enter 且合法时保存，不再依赖页面底部统一“应用设置”按钮。
 
 ### Out of scope
 
@@ -48,6 +49,7 @@
 
 - `requestRateLimit` 必须是正整数；前端限定为 JS safe integer，后端限定 `>= 1`。
 - 旧客户端 `PUT /api/settings/system` 未携带 `requestRateLimit` 时，服务端必须保留现值。
+- 系统设置页普通字段不得再依赖页面底部统一“应用设置”作为必经路径；开关立即保存，数字输入仅在失焦或 Enter 时提交合法值。
 - request-rate 429 payload、默认视图、snapshot fallback 必须反映当前生效阈值，而不是硬编码 `100` 之外的旧默认值。
 - 保存设置后不得清空现有内存窗口计数；仅切换阈值。
 
