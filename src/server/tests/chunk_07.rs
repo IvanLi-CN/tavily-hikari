@@ -477,6 +477,37 @@
             .collect();
         assert_eq!(order_only_user_ids, default_ordered_user_ids);
 
+        let ip_sort_desc_url = format!(
+            "http://{}/api/users?page=1&per_page=20&sort=recentIpCount7d&order=desc",
+            addr
+        );
+        let ip_sort_desc_resp = client
+            .get(&ip_sort_desc_url)
+            .send()
+            .await
+            .expect("recent ip count desc sort request");
+        assert_eq!(ip_sort_desc_resp.status(), reqwest::StatusCode::OK);
+        let ip_sort_desc_body: serde_json::Value =
+            ip_sort_desc_resp.json().await.expect("recent ip count desc sort json");
+        let ip_sort_desc_items = ip_sort_desc_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("recent ip count desc sort items array");
+        assert_eq!(
+            ip_sort_desc_items
+                .first()
+                .and_then(|item| item.get("userId"))
+                .and_then(|value| value.as_str()),
+            Some(bob.user_id.as_str())
+        );
+        assert_eq!(
+            ip_sort_desc_items
+                .first()
+                .and_then(|item| item.get("recentIpCount7d"))
+                .and_then(|value| value.as_i64()),
+            Some(120)
+        );
+
         let detail_url = format!("http://{}/api/users/{}", addr, alice.user_id);
         let detail_resp = client
             .get(&detail_url)

@@ -1649,6 +1649,7 @@ export type AdminUsersSortField =
   | 'dailySuccessRate'
   | 'monthlySuccessRate'
   | 'monthlyBrokenCount'
+  | 'recentIpCount7d'
   | 'lastActivity'
   | 'lastLoginAt'
 

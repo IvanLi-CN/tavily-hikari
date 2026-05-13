@@ -226,6 +226,7 @@ async fn list_users(
                     .get(&user.user_id)
                     .copied()
                     .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
+                recent_ip_count_7d: 0,
                 user,
             })
             .collect();
@@ -264,6 +265,19 @@ async fn list_users(
                 eprintln!("list admin users monthly broken limits error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+        let now_ts = Utc::now().timestamp();
+        let recent_ip_counts_7d = if user_ids.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            state
+                .proxy
+                .recent_client_ip_counts_by_user(&user_ids, now_ts - 7 * 24 * 60 * 60)
+                .await
+                .map_err(|err| {
+                    eprintln!("list admin users sort recent ip counts error: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+        };
         let mut rows: Vec<AdminUserSummaryRow> = users
             .into_iter()
             .map(|user| AdminUserSummaryRow {
@@ -279,6 +293,10 @@ async fn list_users(
                     .get(&user.user_id)
                     .copied()
                     .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
+                recent_ip_count_7d: recent_ip_counts_7d
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or_default(),
                 user,
             })
             .collect();

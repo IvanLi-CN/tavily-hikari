@@ -999,6 +999,7 @@ enum AdminUsersSortField {
     DailySuccessRate,
     MonthlySuccessRate,
     MonthlyBrokenCount,
+    RecentIpCount7d,
     LastActivity,
     LastLoginAt,
 }

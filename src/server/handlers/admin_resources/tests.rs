@@ -44,6 +44,7 @@ mod admin_resources_tests {
             summary,
             monthly_broken_count: 0,
             monthly_broken_limit: USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
+            recent_ip_count_7d: 0,
         }
     }
 
