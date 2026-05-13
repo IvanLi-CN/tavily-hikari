@@ -73,11 +73,20 @@
   ![Recent request IP diagnostics](./assets/recent-requests-ip-diagnostics.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: Admin/Pages/Users
+  scenario: sortable 7-day IP count column
+  evidence_note: verifies the user management table exposes one IP count column backed by the 7-day unique IP total.
+  image:
+  PR: include
+  ![Admin users IP count column](./assets/admin-users-ip-count-column.png)
+
+- source_type: storybook_canvas
   story_id_or_title: Admin/Pages/UsersUsage
   scenario: sortable 7-day IP count column
   evidence_note: verifies the user usage table exposes one IP count column backed by the 7-day unique IP total.
   image:
-  ![Admin users IP count column](./assets/admin-users-ip-count-column.png)
+  PR: include
+  ![Admin users usage IP count column](./assets/admin-users-usage-ip-count-column.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Admin/Pages/UserDetailIpUsage
