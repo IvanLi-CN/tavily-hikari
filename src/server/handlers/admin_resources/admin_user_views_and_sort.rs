@@ -5,6 +5,34 @@ impl AdminUsersSortDirection {
             Self::Desc => ordering.reverse(),
         }
     }
+
+    fn to_admin_list_sort_direction(self) -> tavily_hikari::AdminListSortDirection {
+        match self {
+            Self::Asc => tavily_hikari::AdminListSortDirection::Asc,
+            Self::Desc => tavily_hikari::AdminListSortDirection::Desc,
+        }
+    }
+}
+
+impl AdminUsersSortField {
+    fn to_paged_admin_user_sort_field(self) -> Option<tavily_hikari::AdminUserListSortField> {
+        match self {
+            Self::HourlyAnyUsed => None,
+            Self::QuotaHourlyUsed => Some(tavily_hikari::AdminUserListSortField::QuotaHourlyUsed),
+            Self::QuotaDailyUsed => Some(tavily_hikari::AdminUserListSortField::QuotaDailyUsed),
+            Self::QuotaMonthlyUsed => Some(tavily_hikari::AdminUserListSortField::QuotaMonthlyUsed),
+            Self::DailySuccessRate => Some(tavily_hikari::AdminUserListSortField::DailySuccessRate),
+            Self::MonthlySuccessRate => {
+                Some(tavily_hikari::AdminUserListSortField::MonthlySuccessRate)
+            }
+            Self::MonthlyBrokenCount => {
+                Some(tavily_hikari::AdminUserListSortField::MonthlyBrokenCount)
+            }
+            Self::RecentIpCount7d => Some(tavily_hikari::AdminUserListSortField::RecentIpCount7d),
+            Self::LastActivity => Some(tavily_hikari::AdminUserListSortField::LastActivity),
+            Self::LastLoginAt => Some(tavily_hikari::AdminUserListSortField::LastLoginAt),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

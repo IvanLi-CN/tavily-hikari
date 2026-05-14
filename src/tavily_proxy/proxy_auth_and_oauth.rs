@@ -755,6 +755,37 @@ impl TavilyProxy {
             .await
     }
 
+    /// Admin: list users with pagination pushed below expensive usage hydration.
+    pub async fn list_admin_users_sorted_paged(
+        &self,
+        page: i64,
+        per_page: i64,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+        sort: AdminUserListSortField,
+        direction: AdminListSortDirection,
+    ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        let server_daily_window = server_local_day_window_utc(now.with_timezone(&Local));
+        let minute_bucket = now.timestamp() - (now.timestamp() % SECS_PER_MINUTE);
+        self.key_store
+            .list_admin_users_sorted_paged(
+                page,
+                per_page,
+                query,
+                tag_id,
+                sort,
+                direction,
+                minute_bucket - 59 * SECS_PER_MINUTE,
+                server_daily_window.start,
+                server_daily_window.end,
+                month_start,
+                now.timestamp() - 7 * SECS_PER_DAY,
+            )
+            .await
+    }
+
     /// Admin: list the full filtered user set prior to sorting and pagination.
     pub async fn list_admin_users_filtered(
         &self,

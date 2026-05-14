@@ -2568,7 +2568,7 @@ impl KeyStore {
         }
 
         let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs WHERE visibility = ",
+            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs INDEXED BY idx_request_logs_user_ip_time WHERE visibility = ",
         );
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
         builder.push(" AND request_user_id IN (");

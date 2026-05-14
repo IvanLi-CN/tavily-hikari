@@ -177,6 +177,7 @@ async fn list_users(
             || (effective_sort_field == AdminUsersSortField::LastLoginAt
                 && effective_sort_order == AdminUsersSortDirection::Desc);
 
+    let paged_sort_field = effective_sort_field.to_paged_admin_user_sort_field();
     let (paged_rows, total) = if use_default_paged_query {
         let (users, total) = state
             .proxy
@@ -227,6 +228,83 @@ async fn list_users(
                     .copied()
                     .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
                 recent_ip_count_7d: 0,
+                user,
+            })
+            .collect();
+        (rows, total)
+    } else if let Some(paged_sort_field) = paged_sort_field {
+        let (users, total) = state
+            .proxy
+            .list_admin_users_sorted_paged(
+                page,
+                per_page,
+                q.q.as_deref(),
+                q.tag_id.as_deref(),
+                paged_sort_field,
+                effective_sort_order.to_admin_list_sort_direction(),
+            )
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users sorted page error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
+        let summaries = state
+            .proxy
+            .user_dashboard_summaries_for_users(&user_ids, None)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users sorted page dashboard summaries error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let monthly_broken_counts = state
+            .proxy
+            .fetch_monthly_broken_counts_for_users(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users sorted page monthly broken counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let monthly_broken_limits = state
+            .proxy
+            .fetch_account_monthly_broken_limits_bulk(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users sorted page monthly broken limits error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let now_ts = Utc::now().timestamp();
+        let recent_ip_counts_7d = if user_ids.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            state
+                .proxy
+                .recent_client_ip_counts_by_user(&user_ids, now_ts - 7 * 24 * 60 * 60)
+                .await
+                .map_err(|err| {
+                    eprintln!("list admin users sorted page recent ip counts error: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+        };
+        let rows: Vec<AdminUserSummaryRow> = users
+            .into_iter()
+            .map(|user| AdminUserSummaryRow {
+                summary: summaries
+                    .get(&user.user_id)
+                    .cloned()
+                    .unwrap_or_else(empty_user_dashboard_summary),
+                monthly_broken_count: monthly_broken_counts
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or_default(),
+                monthly_broken_limit: monthly_broken_limits
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
+                recent_ip_count_7d: recent_ip_counts_7d
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or_default(),
                 user,
             })
             .collect();

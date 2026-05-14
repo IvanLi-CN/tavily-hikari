@@ -62,6 +62,10 @@ reads:
 - Replace repeated window scans with a single bounded scan that derives all needed windows, then add
   a short manager-scoped TTL cache when settings and live stats can request the same window set in
   one admin refresh cycle.
+- For list pages that need per-user request-log facts, page the user set before hydrating secondary
+  details. If a query is bounded by a small user set but SQLite chooses a broad time/visibility
+  index, reshape it or use `INDEXED BY` so it seeks by user first instead of scanning the full
+  retained window.
 
 ## Guardrails / Reuse Notes
 
@@ -75,6 +79,9 @@ reads:
   embedded in rollup triggers; prefer canonicalizing retained legacy rows before rollup rebuild,
   using a focused canonicalization trigger for legacy write-path rows, then keeping rollup triggers
   on stored canonical columns only.
+- `COUNT(DISTINCT ...)` over request logs is especially prone to temp B-trees; keep its input
+  cardinality small with user-first filtering and avoid running it over all visible rows in a recent
+  time window for every admin refresh.
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
 
