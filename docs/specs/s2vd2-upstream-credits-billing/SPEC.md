@@ -58,7 +58,7 @@
 - `/api/tavily/research`
   - 成功发起 Research 后按请求模型固定估算扣费：`mini=40`、`auto=50`、`pro=100`。
   - 缺省 `model` 按 Tavily `auto` 处理，扣 `50`。
-  - 前置 quota 检查使用同一估算价；若 `used + estimated > limit`，直接 429 且不上游。
+  - 前置 quota 检查使用同一估算价；若 `used + estimated > limit`，直接 429 且不上游；若刚好等于 `limit`，请求必须放行并扣减到窗口上限。
   - 不再用共享 upstream key 的 `/usage.research_usage` 差分反填本地用户账单；上游实扣只作为池级运营对账指标。
 - `/mcp`
   - 白名单非业务方法不计 business quota。
@@ -72,7 +72,7 @@
 - HTTP Extract / Crawl / Map：请求体被注入 `include_usage=true`；reserved credits 超额时会先验 429，成功回包后按 `usage.credits` 扣费，`credits=0` 不扣费。
 - MCP 非工具调用继续保持 0 成本，`counts_business_quota=0`。
 - MCP `tavily-search`：支持嵌套 `usage.credits`、SSE/JSON-RPC 包装、expected cost fallback 与先验阻断。
-- Research：HTTP 与 MCP 成功发起时按模型估算价扣费（`mini=40`、缺省或 `auto=50`、`pro=100`）；前置 quota 检查使用同一估算值；上游失败、quota 拦截、validation error 与 invalid model error 不扣 business credits。
+- Research：HTTP 与 MCP 成功发起时按模型估算价扣费（`mini=40`、缺省或 `auto=50`、`pro=100`）；前置 quota 检查使用同一估算值，剩余额度刚好等于估算值时放行，低于估算值时 429；上游失败、quota 拦截、validation error 与 invalid model error 不扣 business credits。
 - 绑定账户的 token 继续只写 account counters，不回退到 token counters。
 
 ## 质量门槛（Quality Gates）
@@ -113,3 +113,4 @@
 
 - 2026-03-07: fast-flow 复跑后补齐规格同步：Research follow-up `/usage` 失败/回退改为成功回包 + warning + reserved minimum cost 兜底扣费；PR #100 checks 绿灯，可直接合并。
 - 2026-04-29: Research 本地用户计费从共享 key `/usage.research_usage` 差分归因改为模型估算价（`mini=40`、`auto=50`、`pro=100`）；`/usage` 实扣仅保留为池级运营对账指标。
+- 2026-05-17: 明确 Research 前置 quota 边界按剩余额度判断；剩余额度等于本次估算扣减时放行并扣到窗口上限。
