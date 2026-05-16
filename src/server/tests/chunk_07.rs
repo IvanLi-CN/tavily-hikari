@@ -1,3 +1,25 @@
+    async fn explain_query_plan_details(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        sqlx::query(sql)
+            .fetch_all(pool)
+            .await
+            .expect("explain query plan")
+            .into_iter()
+            .map(|row| row.try_get::<String, _>("detail").expect("plan detail"))
+            .collect()
+    }
+
+    fn assert_request_logs_user_ip_index_plan(details: &[String]) {
+        let joined = details.join("\n");
+        assert!(
+            joined.contains("idx_request_logs_user_ip_time"),
+            "expected request user/ip index in query plan, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("idx_request_logs_visibility_time"),
+            "expected query plan not to use visibility/time index, got:\n{joined}"
+        );
+    }
+
     #[tokio::test]
     async fn admin_dashboard_sse_snapshot_refreshes_when_disabled_token_feed_breaks() {
         let db_path = temp_db_path("admin-dashboard-snapshot-disabled-token-feed-error");
@@ -322,6 +344,62 @@
             .await
             .expect("insert high-cardinality client ip request log");
         }
+
+        let ip_count_plan = explain_query_plan_details(
+            &pool,
+            r#"
+            EXPLAIN QUERY PLAN
+            SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count
+            FROM request_logs INDEXED BY idx_request_logs_user_ip_time
+            WHERE visibility = 'visible'
+              AND request_user_id IN ('alice-user', 'bob-user')
+              AND created_at >= 0
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY request_user_id
+            "#,
+        )
+        .await;
+        assert_request_logs_user_ip_index_plan(&ip_count_plan);
+
+        let ip_addresses_plan = explain_query_plan_details(
+            &pool,
+            r#"
+            EXPLAIN QUERY PLAN
+            SELECT client_ip, MAX(created_at) AS latest_seen_at
+            FROM request_logs INDEXED BY idx_request_logs_user_ip_time
+            WHERE request_user_id = 'alice-user'
+              AND created_at >= 0
+              AND visibility = 'visible'
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY client_ip
+            ORDER BY latest_seen_at DESC, client_ip ASC
+            LIMIT 100
+            "#,
+        )
+        .await;
+        assert_request_logs_user_ip_index_plan(&ip_addresses_plan);
+
+        let ip_timeline_plan = explain_query_plan_details(
+            &pool,
+            r#"
+            EXPLAIN QUERY PLAN
+            SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at,
+                   COUNT(*) AS request_count
+            FROM request_logs INDEXED BY idx_request_logs_user_ip_time
+            WHERE request_user_id = 'alice-user'
+              AND created_at >= 0
+              AND visibility = 'visible'
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY client_ip
+            ORDER BY last_seen_at DESC, client_ip ASC
+            LIMIT 40
+            "#,
+        )
+        .await;
+        assert_request_logs_user_ip_index_plan(&ip_timeline_plan);
 
         for index in 0..4 {
             let api_key_id = proxy

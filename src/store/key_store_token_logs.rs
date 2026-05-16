@@ -2568,7 +2568,7 @@ impl KeyStore {
         }
 
         let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs WHERE visibility = ",
+            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs INDEXED BY idx_request_logs_user_ip_time WHERE visibility = ",
         );
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
         builder.push(" AND request_user_id IN (");
@@ -2602,6 +2602,7 @@ impl KeyStore {
         let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
+             INDEXED BY idx_request_logs_user_ip_time \
              WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
              GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC LIMIT ?",
@@ -2628,6 +2629,7 @@ impl KeyStore {
         let rows = sqlx::query(
             "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
              COUNT(*) AS request_count FROM request_logs \
+             INDEXED BY idx_request_logs_user_ip_time \
              WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
              GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC LIMIT ?",

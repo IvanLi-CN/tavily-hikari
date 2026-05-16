@@ -16,3 +16,7 @@
 - 2026-05-13: Changed the trusted client IP settings dialog to use explicit
   Apply/Cancel closure only, with the default close affordance hidden to keep
   the draft state isolated until confirmation.
+- 2026-05-17: Fixed admin user IP statistics reads after production showed
+  SQLite choosing the visibility/time index for recent 7-day IP aggregation on
+  a large `request_logs` table. Count, address sample, and timeline queries now
+  force the existing user/IP/time index and carry query-plan regression tests.
