@@ -1617,6 +1617,25 @@ pub struct TimeRangeUtc {
     pub end: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminUserListSortField {
+    QuotaHourlyUsed,
+    QuotaDailyUsed,
+    QuotaMonthlyUsed,
+    DailySuccessRate,
+    MonthlySuccessRate,
+    MonthlyBrokenCount,
+    RecentIpCount7d,
+    LastActivity,
+    LastLoginAt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminListSortDirection {
+    Asc,
+    Desc,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdminUserIdentity {
     pub user_id: String,

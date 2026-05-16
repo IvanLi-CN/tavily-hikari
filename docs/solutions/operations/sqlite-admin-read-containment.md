@@ -67,6 +67,10 @@ reads:
   `visibility + created_at` predicates and then build temporary B-trees for `GROUP BY`,
   `COUNT(DISTINCT)`, and ordering, which turns `/api/users?sort=recentIpCount7d` and
   `/api/users/:id` into multi-second reads.
+- For list pages that need per-user request-log facts, page the user set before hydrating secondary
+  details. If a query is bounded by a small user set but SQLite chooses a broad time/visibility
+  index, reshape it or use `INDEXED BY` so it seeks by user first instead of scanning the full
+  retained window.
 
 ## Guardrails / Reuse Notes
 
@@ -83,6 +87,9 @@ reads:
 - Add query-plan regression tests for admin read hot paths when the fix depends on SQLite choosing a
   specific index. Local small databases may return quickly even when the planner would be disastrous
   on production data volume.
+- `COUNT(DISTINCT ...)` over request logs is especially prone to temp B-trees; keep its input
+  cardinality small with user-first filtering and avoid running it over all visible rows in a recent
+  time window for every admin refresh.
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
 

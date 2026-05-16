@@ -1,4 +1,42 @@
 impl KeyStore {
+    fn push_admin_user_filters<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        tag_id: Option<&'a str>,
+        search: Option<&'a str>,
+    ) {
+        builder.push("(");
+        builder.push_bind(tag_id);
+        builder.push(" IS NULL OR EXISTS (SELECT 1 FROM user_tag_bindings utb_filter WHERE utb_filter.user_id = u.id AND utb_filter.tag_id = ");
+        builder.push_bind(tag_id);
+        builder.push(")) AND (");
+        builder.push_bind(search);
+        builder.push(" IS NULL OR u.id LIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(u.display_name, '') LIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(u.username, '') LIKE ");
+        builder.push_bind(search);
+        builder.push(" OR EXISTS (SELECT 1 FROM user_tag_bindings utb_search JOIN user_tags ut_search ON ut_search.id = utb_search.tag_id WHERE utb_search.user_id = u.id AND (ut_search.name LIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(ut_search.display_name, '') LIKE ");
+        builder.push_bind(search);
+        builder.push(")))");
+    }
+
+    fn admin_user_sort_direction_sql(direction: AdminListSortDirection) -> &'static str {
+        match direction {
+            AdminListSortDirection::Asc => "ASC",
+            AdminListSortDirection::Desc => "DESC",
+        }
+    }
+
+    fn admin_user_timestamp_null_order_sql(direction: AdminListSortDirection) -> &'static str {
+        match direction {
+            AdminListSortDirection::Asc => "DESC",
+            AdminListSortDirection::Desc => "ASC",
+        }
+    }
+
     pub async fn fetch_key_summary_since(
         &self,
         key_id: &str,

@@ -1401,6 +1401,7 @@ pub(crate) struct KeyStore {
 include!("key_store_bootstrap.rs");
 include!("key_store_migrations_a.rs");
 include!("key_store_migrations_b.rs");
+include!("key_store_admin_user_listing.rs");
 include!("key_store_keys.rs");
 include!("key_store_sessions.rs");
 include!("key_store_users_and_oauth.rs");
