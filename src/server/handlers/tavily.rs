@@ -276,9 +276,12 @@ fn quota_would_exceed(verdict: &TokenQuotaVerdict, delta: i64) -> bool {
     if delta <= 0 {
         return false;
     }
-    verdict.hourly_used.saturating_add(delta) > verdict.hourly_limit
-        || verdict.daily_used.saturating_add(delta) > verdict.daily_limit
-        || verdict.monthly_used.saturating_add(delta) > verdict.monthly_limit
+
+    let hourly_remaining = verdict.hourly_limit.saturating_sub(verdict.hourly_used);
+    let daily_remaining = verdict.daily_limit.saturating_sub(verdict.daily_used);
+    let monthly_remaining = verdict.monthly_limit.saturating_sub(verdict.monthly_used);
+
+    hourly_remaining < delta || daily_remaining < delta || monthly_remaining < delta
 }
 
 #[axum::debug_handler]
