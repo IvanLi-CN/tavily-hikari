@@ -349,7 +349,6 @@ export function UserDetailSharedUsagePanel({
     () => USAGE_TAB_ORDER.filter((key) => key === 'ip' || (isUsageSeriesKey(key) && seriesCache[key] != null)),
     [seriesCache],
   )
-  const hasPartialHistory = currentSeries?.points.some((point) => point.value == null || point.limitValue == null) ?? false
   const hasRenderablePoints = currentSeries?.points.some((point) => point.value != null || point.limitValue != null) ?? false
   const chartPalette = useMemo(
     () => ({
@@ -712,11 +711,6 @@ export function UserDetailSharedUsagePanel({
               {usersStrings.detail.sharedUsageLegendLimit}
             </span>
           </div>
-          {hasPartialHistory ? (
-            <span className="panel-description admin-user-shared-usage-hint">
-              {usersStrings.detail.sharedUsagePartialHint}
-            </span>
-          ) : null}
         </div>
       )}
 
