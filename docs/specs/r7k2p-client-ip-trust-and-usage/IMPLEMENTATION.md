@@ -1,6 +1,9 @@
 # Implementation
 
 - Backend: request log schema, IP resolution, observed header values, recent 24h/7d IP count query, capped per-user IP address lists, and capped 7-day IP timeline query.
+- Backend performance: admin user IP count, address sample, and timeline reads explicitly use the
+  `(request_user_id, client_ip, created_at)` request-log index so large production databases do not
+  fall back to visibility/time scans for 7-day IP aggregation.
 - API: system settings payload/response extension and admin-only observed header endpoint.
 - UI: system settings dialog, global IP limit input, trusted client IP Apply/Cancel-confirmed draft editor, user IP count badges, user detail IP chart/list, recent request diagnostics.
 - Operations: historical `request_user_id` repair is an explicit resumable
