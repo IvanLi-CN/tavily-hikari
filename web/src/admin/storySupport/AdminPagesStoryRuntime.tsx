@@ -6785,6 +6785,12 @@ export const UserDetail: Story = {
     if (canvasElement.textContent?.includes('封禁数限额')) {
       throw new Error('Expected user detail story to hide the per-user blocked-key limit card.')
     }
+    if (canvasElement.textContent?.includes('更早的历史超出可追溯范围')) {
+      throw new Error('Expected the shared usage partial-history hint to stay out of the always-visible panel copy.')
+    }
+    if (!canvasElement.textContent?.includes('账户共享请求频率、业务额度消耗与 IP 活跃趋势。')) {
+      throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
+    }
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
       .map((item) => item.textContent?.trim())

@@ -691,7 +691,7 @@ export const ZH: TranslationShape = {
           identityTitle: '身份信息',
           identityDescription: '查看该账户的稳定标识、登录状态与基础归属。',
           sharedUsageTitle: '共享额度趋势',
-          sharedUsageDescription: '账户级共享请求频率（5m）与业务额度消耗（1h / 24h / 月），按时间窗口切换查看。',
+          sharedUsageDescription: '账户共享请求频率、业务额度消耗与 IP 活跃趋势。',
           sharedUsageLoading: '正在加载共享额度趋势…',
           sharedUsageLoadFailed: '加载共享额度趋势失败，请稍后重试。',
           sharedUsageRetryAction: '重试',

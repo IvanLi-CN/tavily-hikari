@@ -210,7 +210,7 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     })
   })
 
-  it('treats missing historical limit snapshots as partial history', async () => {
+  it('keeps missing historical limit snapshots out of the always-visible copy', async () => {
     const { container, root } = await mountPanel({
       loadSeries: async () => ({
         limit: 120,
@@ -218,7 +218,7 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
       }),
     })
 
-    expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsagePartialHint)
+    expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsagePartialHint)
     expect(container.textContent).not.toContain('· 120')
     expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageEmpty)
 

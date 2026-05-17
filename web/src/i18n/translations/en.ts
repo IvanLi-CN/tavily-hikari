@@ -691,7 +691,7 @@ export const EN: TranslationShape = {
           identityTitle: 'Identity',
           identityDescription: 'Stable account identifiers and login status.',
           sharedUsageTitle: 'Shared Usage Trends',
-          sharedUsageDescription: 'Account-shared request rate (5m) and business credits (1h / 24h / month) across the main review windows.',
+          sharedUsageDescription: 'Account-shared request rate, business credits, and IP activity trends.',
           sharedUsageLoading: 'Loading shared usage trends…',
           sharedUsageLoadFailed: 'Failed to load shared usage trends.',
           sharedUsageRetryAction: 'Retry',

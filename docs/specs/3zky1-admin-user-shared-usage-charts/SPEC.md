@@ -170,6 +170,20 @@
 
 ## Visual Evidence
 
+### 共享额度趋势说明文案收敛
+
+- asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-shared-usage-copy-refined.png`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--user-detail`
+- target_program: `mock-only`
+- capture_scope: `browser-viewport`
+- requested_viewport: `none`
+- viewport_strategy: `storybook-viewport`
+- submission_gate: `approved`
+- evidence_note: 共享额度趋势说明文案已收敛为业务指标摘要 `账户共享请求频率、业务额度消耗与 IP 活跃趋势。`；常驻面板不再展示历史缺口提示，也不再包含 `按时间窗口切换查看` 这类交互说明。
+
+![共享额度趋势说明文案收敛](./assets/user-detail-shared-usage-copy-refined.png)
+
 ### 共享额度趋势时间窗口顺序
 
 - asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-shared-usage-tabs-order.png`
