@@ -2286,6 +2286,62 @@
     }
 
     #[tokio::test]
+    async fn tavily_http_research_allows_when_remaining_equals_estimate() {
+        let db_path = temp_db_path("http-research-exact-remaining-estimate");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "200");
+
+        let expected_api_key = "tvly-http-research-exact-remaining-key";
+        let (upstream_addr, usage_calls, research_calls) =
+            spawn_http_research_mock_with_usage_diff(expected_api_key.to_string(), 10, 7).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("http-research-exact-remaining-estimate"))
+            .await
+            .expect("create token");
+
+        proxy
+            .charge_token_quota(&access_token.id, 150)
+            .await
+            .expect("seed prior quota usage");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let client = Client::new();
+
+        let url = format!("http://{}/api/tavily/research", proxy_addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "exact remaining",
+                "model": "auto"
+            }))
+            .send()
+            .await
+            .expect("research request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(research_calls.load(Ordering::SeqCst), 1);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 200);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn tavily_http_research_charges_pro_estimate_without_usage_diff() {
         let db_path = temp_db_path("http-research-pro-estimate-charge");
         let db_str = db_path.to_string_lossy().to_string();
