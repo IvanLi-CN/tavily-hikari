@@ -106,3 +106,8 @@ export function normalizeUserTokenSummary(value: unknown): UserTokenSummary {
     ),
   }
 }
+
+export function normalizeUserTokenSummaryList(value: unknown): UserTokenSummary[] {
+  const rawItems = Array.isArray(value) ? value : isRecordLike(value) && Array.isArray(value.items) ? value.items : []
+  return rawItems.map(normalizeUserTokenSummary)
+}

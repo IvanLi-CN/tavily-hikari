@@ -197,7 +197,46 @@ function createDemoState() {
     jobs: createDemoJobs(),
     forwardProxy: createDemoForwardProxy(),
     systemSettings: createDemoSystemSettings(),
+    userTags: [createDemoUserTag('tag-demo', {
+      name: 'demo',
+      displayName: 'Demo',
+      icon: 'sparkles',
+      effectKind: 'quota_delta',
+      hourlyAnyDelta: 20,
+      hourlyDelta: 20,
+      dailyDelta: 200,
+      monthlyDelta: 2000,
+    }, 3)],
     registration: { allowRegistration: false },
+  }
+}
+
+function createDemoUserTag(
+  id: string,
+  payload: {
+    name: string
+    displayName: string
+    icon: string | null
+    effectKind: string
+    hourlyAnyDelta: number
+    hourlyDelta: number
+    dailyDelta: number
+    monthlyDelta: number
+  },
+  userCount = 0,
+) {
+  return {
+    id,
+    name: payload.name,
+    displayName: payload.displayName,
+    icon: payload.icon,
+    systemKey: payload.name === 'demo' ? 'demo' : null,
+    effectKind: payload.effectKind,
+    hourlyAnyDelta: payload.hourlyAnyDelta,
+    hourlyDelta: payload.hourlyDelta,
+    dailyDelta: payload.dailyDelta,
+    monthlyDelta: payload.monthlyDelta,
+    userCount,
   }
 }
 
@@ -550,8 +589,8 @@ function serverJobToView(job: ReturnType<typeof createDemoJobs>[number]) {
   }
 }
 
-function publicTokenLogs() {
-  return demoState.logs.slice(0, 18).map((log) => ({
+function publicTokenLogs(items = demoState.logs) {
+  return items.slice(0, 18).map((log) => ({
     id: log.id,
     method: log.method,
     path: log.path,
@@ -562,6 +601,13 @@ function publicTokenLogs() {
     errorMessage: log.error_message,
     createdAt: log.created_at,
   }))
+}
+
+function demoLogDetailForPath(path: string, fallbackItems = demoState.logs) {
+  const match = path.match(/\/logs\/(\d+)\/details$/)
+  const logId = match ? Number(match[1]) : NaN
+  const log = fallbackItems.find((item) => item.id === logId) ?? fallbackItems[0] ?? demoState.logs[0]
+  return { request_body: log?.request_body ?? null, response_body: log?.response_body ?? null }
 }
 
 function tokenSummary(tokenId = DEMO_TOKEN_ID) {
@@ -857,13 +903,13 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/logs/list') return jsonResponse(buildCursorListPage(demoState.logs, url))
   if (path === '/api/logs/catalog') return jsonResponse(requestLogsCatalog())
   if (path === '/api/logs') return jsonResponse(requestLogsPage(url))
-  if (/^\/api\/logs\/\d+\/details$/.test(path)) return jsonResponse({ request_body: demoState.logs[0]?.request_body ?? null, response_body: demoState.logs[0]?.response_body ?? null })
+  if (/^\/api\/logs\/\d+\/details$/.test(path)) return jsonResponse(demoLogDetailForPath(path))
   if (path === '/api/jobs') return jsonResponse({ ...buildListPage(demoState.jobs, url, 10), groupCounts: { all: demoState.jobs.length, quota: 4, usage: 4, logs: 2, geo: 2, linuxdo: 0 } })
 
   if (path === '/api/users') return jsonResponse(buildListPage(demoState.users, url))
   if (path.startsWith('/api/users/')) return handleUserRoute(path, url, method, init)
-  if (path === '/api/user-tags') return handleUserTags(method, init)
-  if (path.startsWith('/api/user-tags/')) return handleUserTags(method, init)
+  if (path === '/api/user-tags') return handleUserTags(path, method, init)
+  if (path.startsWith('/api/user-tags/')) return handleUserTags(path, method, init)
 
   if (path === '/api/tokens/groups') return jsonResponse([{ name: 'demo', tokenCount: 1, latestCreatedAt: nowSeconds(-86400) }, { name: 'internal', tokenCount: 1, latestCreatedAt: nowSeconds(-86400 * 2) }])
   if (path === '/api/tokens/unbound-usage') return jsonResponse({ items: [], total: 0, page: 1, perPage: 20 })
@@ -895,7 +941,7 @@ function handleUserTokenRoute(path: string, url: URL): Response {
   const id = decodeURIComponent(parts[4] ?? DEMO_TOKEN_ID)
   const token = demoState.tokens.find((item) => item.id === id) ?? demoState.tokens[0]
   if (path.endsWith('/secret')) return jsonResponse({ token: demoState.tokenSecrets.get(token.id) ?? DEMO_TOKEN })
-  if (path.endsWith('/logs')) return jsonResponse(publicTokenLogs())
+  if (path.endsWith('/logs')) return jsonResponse(publicTokenLogs(demoState.logs.filter((log) => log.auth_token_id === token.id)))
   if (path.endsWith('/events')) return textResponse('demo event stream is provided by the browser demo runtime\n')
   return jsonResponse(token)
 }
@@ -919,7 +965,7 @@ function handleKeyRoute(path: string, url: URL, method: string): Response {
   if (path.endsWith('/logs/list')) return jsonResponse(buildCursorListPage(demoState.logs.filter((log) => log.key_id === id), url))
   if (path.endsWith('/logs/catalog')) return jsonResponse(requestLogsCatalog())
   if (path.endsWith('/logs/page')) return jsonResponse(requestLogsPage(url, demoState.logs.filter((log) => log.key_id === id)))
-  if (path.includes('/logs/') && path.endsWith('/details')) return jsonResponse({ request_body: demoState.logs[0]?.request_body ?? null, response_body: demoState.logs[0]?.response_body ?? null })
+  if (path.includes('/logs/') && path.endsWith('/details')) return jsonResponse(demoLogDetailForPath(path, demoState.logs.filter((log) => log.key_id === id)))
   if (path.endsWith('/logs')) return jsonResponse(demoState.logs.filter((log) => log.key_id === id))
   if (path.endsWith('/sticky-users')) return jsonResponse({ ...buildListPage(demoState.users.map((user) => ({
     user: { userId: user.userId, displayName: user.displayName, username: user.username, active: user.active, lastLoginAt: user.lastLoginAt, tokenCount: user.tokenCount },
@@ -950,11 +996,41 @@ function handleUserRoute(path: string, url: URL, method: string, init?: RequestI
   })
 }
 
-async function handleUserTags(method: string, init?: RequestInit): Promise<Response> {
-  const tag = { id: 'tag-demo', name: 'demo', displayName: 'Demo', icon: 'sparkles', systemKey: 'demo', effectKind: 'quota_delta', hourlyAnyDelta: 20, hourlyDelta: 20, dailyDelta: 200, monthlyDelta: 2000, userCount: 3 }
-  if (method === 'GET') return jsonResponse({ items: [tag] })
-  if (method === 'DELETE') return noContentResponse()
-  return jsonResponse(tag)
+async function handleUserTags(path: string, method: string, init?: RequestInit): Promise<Response> {
+  const id = decodeURIComponent(path.match(/^\/api\/user-tags\/([^/]+)/)?.[1] ?? '')
+  if (method === 'GET') return jsonResponse({ items: demoState.userTags })
+  if (method === 'DELETE') {
+    demoState.userTags = demoState.userTags.filter((tag) => tag.id !== id)
+    return noContentResponse()
+  }
+
+  const body = await readJsonBody(init)
+  const payload = {
+    name: typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'demo',
+    displayName: typeof body.displayName === 'string' && body.displayName.trim() ? body.displayName.trim() : 'Demo',
+    icon: typeof body.icon === 'string' ? body.icon : null,
+    effectKind: typeof body.effectKind === 'string' ? body.effectKind : 'quota_delta',
+    hourlyAnyDelta: typeof body.hourlyAnyDelta === 'number' ? body.hourlyAnyDelta : 0,
+    hourlyDelta: typeof body.hourlyDelta === 'number' ? body.hourlyDelta : 0,
+    dailyDelta: typeof body.dailyDelta === 'number' ? body.dailyDelta : 0,
+    monthlyDelta: typeof body.monthlyDelta === 'number' ? body.monthlyDelta : 0,
+  }
+
+  if (method === 'PATCH') {
+    const index = demoState.userTags.findIndex((tag) => tag.id === id)
+    const nextTag = createDemoUserTag(id || `tag-${payload.name}`, payload, index >= 0 ? demoState.userTags[index].userCount : 0)
+    if (index >= 0) {
+      demoState.userTags[index] = nextTag
+    } else {
+      demoState.userTags.push(nextTag)
+    }
+    return jsonResponse(nextTag)
+  }
+
+  const nextId = `tag-${payload.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || Date.now()}`
+  const nextTag = createDemoUserTag(nextId, payload)
+  demoState.userTags.push(nextTag)
+  return jsonResponse(nextTag)
 }
 
 function handleTokenRoute(path: string, url: URL, method: string): Response {
@@ -969,7 +1045,7 @@ function handleTokenRoute(path: string, url: URL, method: string): Response {
   if (path.endsWith('/logs/list')) return jsonResponse(buildCursorListPage(demoState.logs.filter((log) => log.auth_token_id === id), url))
   if (path.endsWith('/logs/catalog')) return jsonResponse(requestLogsCatalog())
   if (path.endsWith('/logs/page')) return jsonResponse(requestLogsPage(url, demoState.logs.filter((log) => log.auth_token_id === id)))
-  if (path.includes('/logs/') && path.endsWith('/details')) return jsonResponse({ request_body: demoState.logs[0]?.request_body ?? null, response_body: demoState.logs[0]?.response_body ?? null })
+  if (path.includes('/logs/') && path.endsWith('/details')) return jsonResponse(demoLogDetailForPath(path, demoState.logs.filter((log) => log.auth_token_id === id)))
   if (path.endsWith('/broken-keys')) return jsonResponse({ ...buildListPage([{ keyId: DEMO_QUOTA_KEY_ID, currentStatus: 'exhausted', reasonCode: 'upstream_usage_limit_432', reasonSummary: 'Demo quota exhausted', latestBreakAt: nowSeconds(-4200), source: 'request_log', breakerTokenId: id, breakerUserId: 'user-demo-admin', breakerUserDisplayName: 'Hikari Demo Admin', manualActorDisplayName: null, relatedUsers: [] }], url) })
   if (path.endsWith('/events')) return textResponse('demo event stream is provided by the browser demo runtime\n')
   return jsonResponse(token)

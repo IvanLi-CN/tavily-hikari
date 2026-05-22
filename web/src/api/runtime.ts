@@ -5,7 +5,7 @@ import {
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
-import { normalizeUserDashboard, normalizeUserTokenSummary } from './userConsoleNormalization'
+import { normalizeUserDashboard, normalizeUserTokenSummary, normalizeUserTokenSummaryList } from './userConsoleNormalization'
 
 export interface Summary {
   total_requests: number
@@ -1841,7 +1841,7 @@ export function fetchUserTokens(todayWindow?: TodayWindowRange, signal?: AbortSi
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/tokens${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson<unknown[]>(url, { signal }).then((items) => items.map(normalizeUserTokenSummary))
+  return requestJson<unknown>(url, { signal }).then(normalizeUserTokenSummaryList)
 }
 
 export function fetchUserTokenDetail(
