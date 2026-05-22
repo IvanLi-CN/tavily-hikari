@@ -1113,25 +1113,6 @@ table {
   text-align: left;
 }
 
-.recent-requests-mobile-list--admin .admin-mobile-card,
-.recent-requests-mobile-list--token .user-console-mobile-card {
-  width: 100%; min-width: 0; max-width: 100%;
-}
-
-.recent-requests-mobile-list--admin .admin-mobile-kv,
-.recent-requests-mobile-list--token .user-console-mobile-kv { min-width: 0; }
-
-.recent-requests-mobile-list--admin .admin-mobile-kv > *,
-.recent-requests-mobile-list--token .user-console-mobile-kv > * { min-width: 0; overflow-wrap: anywhere; }
-
-.recent-requests-mobile-list--admin .admin-mobile-request-entity-button,
-.recent-requests-mobile-list--token .admin-mobile-request-entity-button { min-width: 44px; min-height: 44px; justify-content: flex-end; }
-
-.recent-requests-mobile-list--admin .request-kind-badge,
-.recent-requests-mobile-list--token .request-kind-badge,
-.recent-requests-mobile-list--admin .recent-requests-effect-badges,
-.recent-requests-mobile-list--token .recent-requests-effect-badges { max-width: 100%; flex-wrap: wrap; white-space: normal; }
-
 .request-entity-button:focus-visible {
   outline: 2px solid hsl(var(--ring) / 0.5);
   outline-offset: 3px;
