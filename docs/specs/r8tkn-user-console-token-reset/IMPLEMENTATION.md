@@ -13,6 +13,7 @@
 - 后端新增用户侧 `POST /api/user/tokens/:id/secret/rotate`，复用既有 Token secret rotate 存储能力，并校验 OAuth 配置、用户 session 与 Token 归属。
 - rotate 前复用用户侧 secret 可见性语义，禁用或不可见的绑定 Token 不能由用户重新生成 secret。
 - 前端在 Token 列表桌面/移动操作区加入重置按钮、确认对话框与新 Token 结果对话框。
+- 前端将 Token list 操作组与重置对话框拆为独立组件，保持 UserConsole runtime 预算门禁可通过。
 - Storybook mock 覆盖用户侧 reset 成功响应，视觉证据已写入 `SPEC.md`。
 
 ## Remaining Gaps

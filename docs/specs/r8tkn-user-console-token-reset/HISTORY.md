@@ -7,6 +7,7 @@
 - 用户侧 Token 重置独立成新规范，因为 `2m7yv` 只覆盖用户控制台 Token 明文显示，且明确排除了轮换能力。
 - PR #284 创建后与 `origin/main` 同步，保留 main 上 clay redesign 相关规范索引，同时追加 `r8tkn` 条目。
 - PR-stage review 指出禁用但仍绑定的 Token 不应由用户侧 rotate 重新披露 secret，因此 rotate 改为先通过用户侧 secret 可见性检查。
+- PR Frontend Checks 暴露 source budget 超限，重置对话框和 Token list 操作组已拆出 runtime。
 
 ## Key Reasons / Replacements
 
