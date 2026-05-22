@@ -688,12 +688,13 @@ export default function DashboardOverview({
     })
     .slice(0, 5)
 
-  const riskItems: Array<{ id: string; label: string; action?: () => void }> = []
+  const riskItems: Array<{ id: string; label: string; action?: () => void; actionLabel?: string }> = []
   if (tokenCoverage === 'truncated') {
     riskItems.push({
       id: 'token-coverage-truncated',
       label: strings.tokenCoverageTruncated,
       action: () => onOpenModule('tokens'),
+      actionLabel: strings.openModule,
     })
   }
   if (tokenCoverage === 'error') {
@@ -701,6 +702,7 @@ export default function DashboardOverview({
       id: 'token-coverage-error',
       label: strings.tokenCoverageError,
       action: () => onOpenModule('tokens'),
+      actionLabel: strings.openModule,
     })
   }
   for (const token of disabledTokens) {
@@ -708,6 +710,7 @@ export default function DashboardOverview({
       id: `token-${token.id}`,
       label: strings.disabledTokenRisk.replace('{id}', token.id),
       action: () => onOpenToken(token.id),
+      actionLabel: strings.openToken,
     })
   }
   for (const key of exhaustedKeys) {
@@ -715,6 +718,7 @@ export default function DashboardOverview({
       id: `key-${key.id}`,
       label: strings.exhaustedKeyRisk.replace('{id}', key.id),
       action: () => onOpenKey(key.id),
+      actionLabel: strings.openKey,
     })
   }
   for (const job of failingJobs) {
@@ -722,6 +726,7 @@ export default function DashboardOverview({
       id: `job-${job.id}`,
       label: strings.failedJobRisk.replace('{id}', String(job.id)).replace('{status}', job.status),
       action: () => onOpenModule('jobs'),
+      actionLabel: strings.recentJobs,
     })
   }
 
@@ -732,6 +737,9 @@ export default function DashboardOverview({
   const todayDetailMetrics = todayMetrics.filter((metric) => metric.id !== 'today-total')
   const monthTotalMetric = monthMetrics.find((metric) => metric.id === 'month-total') ?? null
   const monthDetailMetrics = monthMetrics.filter((metric) => metric.id !== 'month-total')
+  const alertGroupCount = overviewReady && recentAlerts.totalEvents > 0 ? 1 : 0
+  const priorityCount = riskItems.length + alertGroupCount
+  const focusMetric = todayTotalMetric ?? monthTotalMetric ?? statusMetrics[0] ?? null
 
   return (
     <div className="dashboard-overview-stack">
@@ -744,6 +752,42 @@ export default function DashboardOverview({
           <button type="button" className="btn btn-outline" onClick={() => onOpenModule('tokens')}>
             {strings.openModule}
           </button>
+        </div>
+      </section>
+
+      <section className="surface panel dashboard-priority-panel" aria-label={strings.riskTitle}>
+        <div className="dashboard-priority-copy">
+          <span className={`dashboard-priority-kicker${priorityCount > 0 ? ' dashboard-priority-kicker-warn' : ''}`}>
+            {priorityCount > 0 ? strings.riskTitle : strings.riskEmpty}
+          </span>
+          <div className="dashboard-priority-count" aria-label={`${strings.riskTitle}: ${overviewReady ? priorityCount : 0}`}>
+            {overviewReady
+              ? priorityCount > 0
+                ? String(priorityCount)
+                : '0'
+              : '—'}
+          </div>
+          <p className="panel-description">
+            {priorityCount > 0
+              ? `${strings.riskDescription} · ${strings.recentAlertsEvents}: ${recentAlerts.totalEvents}`
+              : strings.currentStatusDescription}
+          </p>
+        </div>
+        <div className="dashboard-priority-strip">
+          {focusMetric ? (
+            <div className="dashboard-priority-metric">
+              <span>{focusMetric.label}</span>
+              <strong>{focusMetric.value}</strong>
+            </div>
+          ) : null}
+          <div className="dashboard-priority-actions">
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => onOpenModule('alerts')}>
+              {strings.recentAlertsOpen}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onOpenModule('tokens')}>
+              {strings.openModule}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -858,7 +902,7 @@ export default function DashboardOverview({
                 <span>{item.label}</span>
                 {item.action && (
                   <button type="button" className="btn btn-ghost btn-sm" onClick={item.action}>
-                    {strings.openModule}
+                    {item.actionLabel ?? strings.openModule}
                   </button>
                 )}
               </li>

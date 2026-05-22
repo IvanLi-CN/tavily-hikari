@@ -105,6 +105,7 @@ export default function TokenSecretField({
             value={displayValue}
             onChange={(event) => onValueChange(event.target.value)}
             onBlur={onBlur}
+            aria-label={inputProps['aria-label'] ?? label}
           />
           <Button
             type="button"

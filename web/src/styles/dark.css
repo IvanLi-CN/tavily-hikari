@@ -89,6 +89,61 @@
   text-overflow: clip;
 }
 
+.user-console-log-card {
+  gap: 10px;
+}
+
+.user-console-log-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.user-console-log-card-request {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.user-console-log-card-request strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.user-console-log-card-request span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.82rem;
+}
+
+.user-console-log-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  color: hsl(var(--muted-foreground));
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+}
+
+.user-console-log-card-meta time {
+  color: hsl(var(--foreground) / 0.82);
+}
+
+.user-console-log-card-error {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .user-console-mobile-status {
   margin-left: auto;
 }
@@ -118,7 +173,8 @@
   flex: 1 1 160px;
 }
 
-.access-stat h4 {
+.access-stat h4,
+.access-stat-title {
   margin: 0;
   font-size: 0.85rem;
   color: hsl(var(--muted-foreground));
@@ -137,6 +193,10 @@
   display: inline-flex;
   align-items: flex-end;
   line-height: 1;
+}
+.rolling-number .rn-visual {
+  display: inline-flex;
+  align-items: flex-end;
 }
 .rolling-number .rn-probe {
   position: absolute;
@@ -442,7 +502,7 @@
 
 .dark .user-badge-admin {
   background: hsl(var(--warning) / 0.18);
-  color: hsl(var(--warning));
+  color: hsl(var(--warning-readable));
 }
 
 .dark .user-console-header {
@@ -566,9 +626,11 @@
 }
 
 .dark .hero-title {
-  background: linear-gradient(105deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 38%, hsl(var(--secondary)) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  background: none;
+  color: hsl(var(--foreground));
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  -webkit-text-fill-color: currentcolor;
 }
 
 .dark thead {
@@ -663,9 +725,11 @@
 
   .hero-title,
   .auth-title {
-    background: linear-gradient(104deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 50%, hsl(var(--secondary)) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    background: none;
+    color: hsl(var(--foreground));
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    -webkit-text-fill-color: currentcolor;
   }
 
   .public-home-description,
@@ -730,7 +794,9 @@
   }
 
   .metric-card h3,
+  .metric-card-title,
   .access-stat h4,
+  .access-stat-title,
   .token-stat .stat-title,
   .token-info-label,
   .quota-stat-label {
@@ -1866,7 +1932,7 @@
 
 .forward-proxy-error-pie-slice {
   cursor: pointer;
-  transition: opacity 0.16s ease, stroke-width 0.16s ease, transform 0.16s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
 .forward-proxy-error-pie-slice:hover,
@@ -2133,6 +2199,9 @@
 }
 
 @media (max-width: 767px) {
+  .admin-skip-link { min-height: 44px; display: inline-flex; align-items: center; }
+  .admin-sidebar.is-stacked .admin-menu-toggle { width: 44px; min-width: 44px; min-height: 44px; height: 44px; padding: 0; border-radius: 14px; }
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link, .app-header .admin-return-link, .panel-header .admin-return-link { min-width: 44px; min-height: 44px; height: 44px; }
   .manual-copy-bubble {
     width: min(360px, calc(100vw - 20px));
     padding: 12px;

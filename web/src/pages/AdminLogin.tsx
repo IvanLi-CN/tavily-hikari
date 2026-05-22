@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { fetchProfile } from '../api'
+import { isDemoMode } from '../api/demo'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 import ThemeToggle from '../components/ThemeToggle'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
 import { useTranslate } from '../i18n'
 
@@ -25,7 +26,7 @@ function AdminLogin(): JSX.Element {
       .then((profile) => {
         if (!alive) return
         setBuiltinEnabled(profile.builtinAuthEnabled ?? false)
-        if (profile.isAdmin) {
+        if (profile.isAdmin && !isDemoMode()) {
           window.location.href = '/admin'
           return
         }
@@ -95,8 +96,7 @@ function AdminLogin(): JSX.Element {
 
         <Card className="auth-card border-border/80 bg-card/90 backdrop-blur">
           <CardHeader>
-            <CardTitle>{ui.title}</CardTitle>
-            <CardDescription>{ui.description}</CardDescription>
+            <CardTitle>{ui.credentialsTitle}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
             {builtinEnabled === false ? (
@@ -114,6 +114,7 @@ function AdminLogin(): JSX.Element {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={ui.password.placeholder}
+                  aria-label={ui.password.label}
                   autoComplete="current-password"
                   disabled={state !== 'ready'}
                 />
@@ -126,7 +127,7 @@ function AdminLogin(): JSX.Element {
               ) : null}
 
               <div className="flex items-center justify-between gap-3">
-                <a href="/" className="text-sm text-primary underline-offset-4 hover:underline">
+                <a href="/" className="auth-back-link text-sm text-primary underline-offset-4 hover:underline">
                   {ui.backHome}
                 </a>
                 <Button type="submit" disabled={!canSubmit}>

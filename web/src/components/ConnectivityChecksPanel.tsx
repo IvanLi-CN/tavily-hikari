@@ -215,7 +215,9 @@ export default function ConnectivityChecksPanel({
               className="user-console-probe-hint-trigger"
               aria-label={costHintAria}
             >
-              <Icon icon="mdi:help-circle-outline" />
+              <span className="user-console-probe-hint-visual" aria-hidden="true">
+                <Icon icon="mdi:help-circle-outline" />
+              </span>
             </button>
           </TooltipTrigger>
           <TooltipContent className="max-w-[min(20rem,calc(100vw-2rem))]" side="top">

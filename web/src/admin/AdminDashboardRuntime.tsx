@@ -24,6 +24,7 @@ import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
 import AdminPanelHeader from '../components/AdminPanelHeader'
 import AdminCompactIntro from '../components/AdminCompactIntro'
 import LanguageSwitcher from '../components/LanguageSwitcher'
+import NotFoundFallbackPreview from '../components/NotFoundFallbackPreview'
 import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components/AdminSidebarUtility'
 import { Button } from '../components/ui/button'
 import {
@@ -53,11 +54,11 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
-import { Switch } from '../components/ui/switch'
 import { Table } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import { AnchoredInfoDisclosure } from '../components/ui/anchored-info-disclosure'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
+import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
@@ -72,6 +73,12 @@ import {
   emptyAdminJobGroupCounts,
   summarizeAdminJobFilter,
 } from './jobFilters'
+import {
+  applyAdminDisplayDensity,
+  persistAdminDisplayDensity,
+  readStoredAdminDisplayDensity,
+  type AdminDisplayDensity,
+} from './displayDensity'
 import { fetchAllMonthlyBrokenKeyItems } from './fetchAllMonthlyBrokenKeyItems'
 import type {
   ForwardProxyDraft,
@@ -115,8 +122,10 @@ import {
   type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
+  type AlertsCenterView,
   alertsPath,
   buildAdminKeysPath,
+  getAlertsViewFromSearch,
   isSameAdminRoute,
   keyDetailPath,
   modulePath,
@@ -324,6 +333,7 @@ const LOGS_PER_PAGE = 20
 const DASHBOARD_RECENT_LOGS_PER_PAGE = 64
 const DASHBOARD_RECENT_JOBS_PER_PAGE = 20
 const DASHBOARD_HOURLY_CHART_PERSISTENCE_KEY = 'admin.dashboard.hourly-request-charts.v1'
+const REQUESTS_HEADER_FILTERS_ID = 'admin-requests-header-filters'
 const DEFAULT_KEYS_PER_PAGE = 20
 const USERS_PER_PAGE = 20
 // Auto-collapse behavior for the API keys batch overlay (empty textarea only):
@@ -567,6 +577,21 @@ function formatMonthlyBrokenRelatedUsers(
   return users.map((user) => user.displayName || user.username || user.userId).join(', ')
 }
 
+function formatAdminUserListPrimary(user: {
+  displayName?: string | null
+  username?: string | null
+  userId: string
+}): string {
+  return user.displayName || user.username || user.userId
+}
+
+function formatAdminUserListMeta(user: {
+  displayName?: string | null
+  username?: string | null
+}): string | null {
+  return user.displayName && user.username ? `@${user.username}` : null
+}
+
 function formatMonthlyBrokenBreaker(
   item: MonthlyBrokenKeyDetail,
   strings: {
@@ -681,13 +706,14 @@ function summarizeFilterSelection(
 const adminTableStackStyle = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
+  gap: 'var(--admin-table-stack-gap)',
   minWidth: 0,
 } as const
 
 const adminTableFieldStyle = {
   whiteSpace: 'nowrap',
-  lineHeight: 1.35,
+  fontSize: 'var(--admin-table-font-size)',
+  lineHeight: 'var(--admin-table-line-height)',
 } as const
 
 const adminTableEllipsisFieldStyle = {
@@ -700,7 +726,7 @@ const adminTableEllipsisFieldStyle = {
 
 const adminTableSecondaryFieldStyle = {
   ...adminTableFieldStyle,
-  fontSize: '0.92em',
+  fontSize: 'var(--admin-table-secondary-font-size)',
   opacity: 0.68,
 } as const
 
@@ -734,15 +760,15 @@ const keysUtilityRowStyle = {
   display: 'flex',
   alignItems: 'stretch',
   justifyContent: 'space-between',
-  gap: 16,
+  gap: 10,
   flexWrap: 'wrap',
-  marginBottom: 16,
+  marginBottom: 10,
 } as const
 
 const keysFilterClusterStyle = {
   display: 'flex',
   alignItems: 'center',
-  gap: 8,
+  gap: 6,
   flexWrap: 'wrap',
   flex: '1 1 360px',
   minWidth: 260,
@@ -752,26 +778,24 @@ const keysBulkToolbarStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  gap: 12,
+  gap: 8,
   flexWrap: 'wrap',
-  marginBottom: 16,
-  padding: 12,
-  borderRadius: 16,
-  border: '1px solid hsl(var(--border))',
-  background: 'hsl(var(--muted) / 0.35)',
+  marginBottom: 10,
+  padding: '4px 2px',
+  borderBottom: '1px solid hsl(var(--border) / 0.46)',
 } as const
 
 const keysBulkSelectionStyle = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 10,
+  gap: 8,
   flexWrap: 'wrap',
 } as const
 
 const keysBulkActionsStyle = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 8,
+  gap: 6,
   flexWrap: 'wrap',
 } as const
 
@@ -1028,6 +1052,11 @@ const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: false,
 })
 
+const monthDayFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: '2-digit',
+})
+
 const tooltipTimeFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
   month: 'short',
@@ -1046,6 +1075,11 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, {
 function formatClockTime(value: number | null): string {
   if (!value) return '—'
   return timeOnlyFormatter.format(new Date(value * 1000))
+}
+
+function formatMonthDay(value: number | null): string {
+  if (!value) return '—'
+  return monthDayFormatter.format(new Date(value * 1000))
 }
 
 function formatTimestampWithMs(value: number | null): string {
@@ -1545,6 +1579,7 @@ type ManualCopyDialogState = Omit<ManualCopyBubbleState, 'anchorEl'>
 
 function AdminDashboard(): JSX.Element {
   const [route, setRoute] = useState<AdminPathRoute>(() => parseAdminPath(window.location.pathname))
+  const [locationSearch, setLocationSearch] = useState(() => window.location.search)
   const { language } = useLanguage()
   const translations = useTranslate()
   const adminStrings = translations.admin
@@ -1699,6 +1734,9 @@ function AdminDashboard(): JSX.Element {
     useState<QueryLoadState>('initial_loading')
   const [systemSettingsError, setSystemSettingsError] = useState<string | null>(null)
   const [systemSettingsSaving, setSystemSettingsSaving] = useState(false)
+  const [adminDisplayDensity, setAdminDisplayDensity] = useState<AdminDisplayDensity>(() =>
+    readStoredAdminDisplayDensity(),
+  )
   const [forwardProxyStats, setForwardProxyStats] = useState<ForwardProxyStatsResponse | null>(null)
   const [forwardProxyStatsLoadState, setForwardProxyStatsLoadState] =
     useState<QueryLoadState>('initial_loading')
@@ -1779,6 +1817,12 @@ function AdminDashboard(): JSX.Element {
   const keysBatchAutoCollapseTimerRef = useRef<number | null>(null)
   const keysBatchCloseTimerRef = useRef<number | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
+  const attachVisibleKeysBatchAnchor = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    if (node.getClientRects().length > 0) {
+      keysBatchAnchorRef.current = node
+    }
+  }, [])
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const keysBatchFooterRef = useRef<HTMLDivElement | null>(null)
@@ -1861,6 +1905,11 @@ function AdminDashboard(): JSX.Element {
   const [batchShareText, setBatchShareText] = useState<string | null>(null)
   const isAdmin = profile?.isAdmin ?? false
   const keysBatchVisible = keysBatchExpanded || keysBatchClosing
+
+  useEffect(() => {
+    applyAdminDisplayDensity(adminDisplayDensity)
+    persistAdminDisplayDensity(adminDisplayDensity)
+  }, [adminDisplayDensity])
   const manualCopyText = useMemo(
     () => (
       language === 'zh'
@@ -3642,12 +3691,8 @@ function AdminDashboard(): JSX.Element {
   }, [route, adminStrings.users.catalog.loadFailed])
 
   useEffect(() => {
-    const usersRouteActive =
-      isUsersCollectionRoute
-      || route.name === 'user'
-      || route.name === 'user-tags'
-      || route.name === 'user-tag-editor'
-    if (!usersRouteActive) return
+    const registrationRouteActive = route.name === 'module' && route.module === 'system-settings'
+    if (!registrationRouteActive) return
 
     const controller = new AbortController()
     setRegistrationSettingsLoading(true)
@@ -3673,7 +3718,7 @@ function AdminDashboard(): JSX.Element {
       })
 
     return () => controller.abort()
-  }, [adminStrings.users.registration.loadFailed, isUsersCollectionRoute, route])
+  }, [adminStrings.users.registration.loadFailed, route])
 
   useEffect(() => {
     if (!isUsersCollectionRoute) return
@@ -3975,6 +4020,7 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     const onPopState = () => {
       setRoute(parseAdminPath(window.location.pathname))
+      setLocationSearch(window.location.search)
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -3988,6 +4034,7 @@ function AdminDashboard(): JSX.Element {
     if (currentLocation !== nextLocation) {
       window.history.pushState(null, '', nextLocation)
     }
+    setLocationSearch(nextUrl.search)
     setRoute((previous) => (isSameAdminRoute(previous, nextRoute) ? previous : nextRoute))
   }, [])
 
@@ -6661,7 +6708,9 @@ function AdminDashboard(): JSX.Element {
               || route.name === 'user-tags'
               || route.name === 'user-tag-editor'
             ? 'users'
-            : 'tokens'
+            : route.name === 'not-found'
+              ? 'dashboard'
+              : 'tokens'
   const activeModule: AdminModuleId =
     route.name === 'module'
       ? route.module
@@ -6672,7 +6721,9 @@ function AdminDashboard(): JSX.Element {
             || route.name === 'user-tags'
             || route.name === 'user-tag-editor'
           ? 'users'
-          : 'tokens'
+          : route.name === 'not-found'
+            ? 'dashboard'
+            : 'tokens'
   const usersStrings = adminStrings.users
   const registrationStatusText = registrationSettingsLoading && !registrationSettingsLoaded
     ? usersStrings.registration.description
@@ -6684,7 +6735,6 @@ function AdminDashboard(): JSX.Element {
         ? usersStrings.registration.enabled
         : usersStrings.registration.disabled
 
-  const registrationInlineStatus = registrationSettingsError ?? (registrationSettingsSaving ? registrationStatusText : null)
   const sortedTagCatalog = useMemo(
     () => [...tagCatalog].sort((left, right) => right.userCount - left.userCount || left.displayName.localeCompare(right.displayName)),
     [tagCatalog],
@@ -7003,7 +7053,43 @@ function AdminDashboard(): JSX.Element {
       skipToContentLabel={adminStrings.accessibility.skipToContent}
       onSelectItem={navigateModule}
     >
-      <section className="surface panel">
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title={usersStrings.catalog.title}
+          description={usersStrings.catalog.description}
+          actions={
+            <div className="user-tag-page-actions">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() =>
+                  navigateToPath(
+                    buildUsersCollectionPath(
+                      getAdminUsersQueryFromLocation(),
+                      getAdminUsersTagFilterFromLocation(),
+                      getAdminUsersPageFromLocation(),
+                      getAdminUsersSortFromLocation(),
+                      getAdminUsersSortDirectionFromLocation(),
+                    ),
+                  )
+                }
+              >
+                {usersStrings.catalog.backToUsers}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={beginCreateUserTag}
+                disabled={activeUserTagEditorId === NEW_USER_TAG_CARD_ID}
+              >
+                {usersStrings.catalog.actions.create}
+              </button>
+            </div>
+          }
+        />
+      </div>
+
+      <section className="surface panel admin-stacked-only">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
             <h2>{usersStrings.catalog.title}</h2>
@@ -7087,11 +7173,12 @@ function AdminDashboard(): JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {appFooter}
     </AdminShell>
   )
 
   const appFooter = (
-      <div className="app-footer">
+      <footer className="app-footer">
         <span>{footerStrings.title}</span>
         <span className="footer-meta">
           {/* GitHub repository link with Iconify icon */}
@@ -7126,7 +7213,7 @@ function AdminDashboard(): JSX.Element {
             footerStrings.loadingVersion
           )}
         </span>
-      </div>
+      </footer>
   )
 
   const renderAdminGlobalOverlayHost = (): JSX.Element => (
@@ -7695,6 +7782,7 @@ function AdminDashboard(): JSX.Element {
             )
           }
         />
+        {appFooter}
       </AdminShell>
     )
   }
@@ -7716,6 +7804,7 @@ function AdminDashboard(): JSX.Element {
             onSecretRotated={handleTokenSecretRotated}
           />
         </AdminLazyBoundary>
+        {appFooter}
       </AdminShell>
     )
   }
@@ -8101,6 +8190,7 @@ function AdminDashboard(): JSX.Element {
             </section>
           </>
         )}
+        {appFooter}
       </AdminShell>
     )
   }
@@ -8199,18 +8289,19 @@ function AdminDashboard(): JSX.Element {
         </div>
 
         <section className="surface panel">
-          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div className="panel-header admin-list-toolbar" style={{ gap: 12, flexWrap: 'wrap' }}>
             <div className="admin-stacked-only" style={{ flex: '1 1 340px', minWidth: 260 }}>
               <h2>{usersStrings.usage.title}</h2>
               <p className="panel-description">{usersStrings.usage.description}</p>
             </div>
             <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <div className="admin-stacked-only">
+              <div className="admin-desktop-only">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
                 >
+                  <Icon icon="mdi:arrow-left" width={16} height={16} aria-hidden="true" />
                   {usersStrings.usage.back}
                 </Button>
               </div>
@@ -8243,7 +8334,7 @@ function AdminDashboard(): JSX.Element {
           </div>
 
           <AdminTableShell
-            className="jobs-table-wrapper admin-users-usage-table-wrapper"
+            className="jobs-table-wrapper admin-users-usage-table-wrapper admin-responsive-up"
             tableClassName="jobs-table admin-users-table admin-users-usage-table"
             loadState={usersLoadState}
             loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
@@ -8343,12 +8434,13 @@ function AdminDashboard(): JSX.Element {
                           aria-label={usersStrings.actions.view}
                           onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                         >
-                          <strong>{item.displayName || item.username || item.userId}</strong>
+                          <strong>{formatAdminUserListPrimary(item)}</strong>
                         </button>
-                        <div className="panel-description admin-users-identity-meta">
-                          <code>{item.userId}</code>
-                          {item.username ? ` · @${item.username}` : ''}
-                        </div>
+                        {formatAdminUserListMeta(item) && (
+                          <div className="panel-description admin-users-identity-meta">
+                            {formatAdminUserListMeta(item)}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <StatusBadge tone={item.active ? 'success' : 'neutral'}>
@@ -8428,7 +8520,7 @@ function AdminDashboard(): JSX.Element {
                       aria-label={usersStrings.actions.view}
                       onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                     >
-                      <strong>{item.displayName || item.username || item.userId}</strong>
+                      <strong>{formatAdminUserListPrimary(item)}</strong>
                     </button>
                   </div>
                   <div className="admin-mobile-kv">
@@ -8515,6 +8607,7 @@ function AdminDashboard(): JSX.Element {
             />
           )}
         </section>
+        {appFooter}
       </AdminShell>
     )
   }
@@ -8615,7 +8708,7 @@ function AdminDashboard(): JSX.Element {
           </div>
 
           <AdminTableShell
-            className="jobs-table-wrapper admin-users-usage-table-wrapper"
+            className="jobs-table-wrapper admin-users-usage-table-wrapper admin-responsive-up"
             tableClassName="jobs-table admin-users-table admin-users-usage-table"
             loadState={unboundTokenUsageLoadState}
             loadingLabel={
@@ -8884,10 +8977,13 @@ function AdminDashboard(): JSX.Element {
             />
           )}
         </section>
+        {appFooter}
       </AdminShell>
     )
   }
-  const showDashboard = activeModule === 'dashboard'
+  const showNotFound = route.name === 'not-found'
+  const notFoundPath = route.name === 'not-found' ? route.path : ''
+  const showDashboard = activeModule === 'dashboard' && !showNotFound
   const showTokens = activeModule === 'tokens'
   const showKeys = activeModule === 'keys'
   const showRequests = activeModule === 'requests'
@@ -8953,6 +9049,12 @@ function AdminDashboard(): JSX.Element {
     </AdminShellSidebarUtility>
   )
   const moduleDesktopIntro = (() => {
+    if (showNotFound) {
+      return {
+        title: 'Page not found',
+        description: notFoundPath,
+      }
+    }
     switch (activeModule) {
       case 'dashboard':
         return {
@@ -9001,11 +9103,209 @@ function AdminDashboard(): JSX.Element {
         }
       default:
         return {
-          title: headerStrings.title,
-          description: headerStrings.subtitle,
-        }
+          title: showNotFound ? 'Page not found' : headerStrings.title,
+          description: showNotFound ? notFoundPath : headerStrings.subtitle,
+      }
     }
   })()
+  const alertsView = showAlerts ? getAlertsViewFromSearch(locationSearch) : 'events'
+  const alertTabsCopy = language === 'zh'
+    ? { events: '事件记录', groups: '聚合告警' }
+    : { events: 'Events', groups: 'Groups' }
+  const renderAlertsViewTabs = () => (
+    <SegmentedTabs<AlertsCenterView>
+      className="alerts-center-tabs alerts-center-tabs--header"
+      value={alertsView}
+      onChange={(nextView) => {
+        const params = new URLSearchParams(locationSearch)
+        navigateToPath(alertsPath({
+          view: nextView,
+          type: params.get('type'),
+          since: params.get('since'),
+          until: params.get('until'),
+          userId: params.get('userId'),
+          tokenId: params.get('tokenId'),
+          keyId: params.get('keyId'),
+          requestKinds: params.getAll('requestKinds'),
+        }))
+      }}
+      options={[
+        { value: 'events', label: alertTabsCopy.events },
+        { value: 'groups', label: alertTabsCopy.groups },
+      ]}
+      ariaLabel={moduleDesktopIntro.title}
+    />
+  )
+  const renderUsersSearchControls = (className?: string) => (
+    <div className={['users-search-controls', className].filter(Boolean).join(' ')}>
+      <Input
+        type="text"
+        name="users-search"
+        className="users-search-input"
+        placeholder={usersStrings.searchPlaceholder}
+        value={usersQueryInput}
+        disabled={usersBlocking}
+        onChange={(event) => setUsersQueryInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            applyUserSearch()
+          }
+        }}
+      />
+      <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
+        {usersStrings.search}
+      </Button>
+      {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+        <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
+          {usersStrings.clear}
+        </Button>
+      )}
+    </div>
+  )
+  const renderJobFilterToolbar = (className?: string) => (
+    <div className={['admin-module-toolbar admin-module-toolbar--end', className].filter(Boolean).join(' ')}>
+      <div className="panel-actions">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label={jobFilterSummary}
+              disabled={jobsBlocking}
+            >
+              <Icon icon="mdi:filter-outline" width={16} height={16} aria-hidden="true" />
+              <span style={{ whiteSpace: 'nowrap' }}>{jobFilterSummary}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-80">
+            <DropdownMenuLabel>{jobsStrings.table.type}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={jobFilter}
+              onValueChange={(value) => handleJobFilterChange(value as JobGroup)}
+            >
+              {jobFilterOptions.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value} className="cursor-pointer gap-3 pr-3">
+                  <span>{option.label}</span>
+                  <span className="ml-auto text-xs font-mono tabular-nums opacity-70">
+                    {formatNumber(option.count)}
+                  </span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  )
+  const renderTokenToolbar = () => (
+    <div className="admin-module-toolbar admin-module-toolbar--tokens">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            className="admin-token-toolbar-secondary-action"
+            aria-label={tokenStrings.actions.viewLeaderboard}
+            onClick={navigateUnboundTokenUsage}
+          >
+            <Icon icon="mdi:chart-timeline-variant" width={16} height={16} />
+            <span>{tokenStrings.actions.viewLeaderboard}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{tokenStrings.actions.viewLeaderboard}</TooltipContent>
+      </Tooltip>
+      {isAdmin && (
+        <div className="admin-module-toolbar-actions admin-module-toolbar-actions--tokens">
+          <Input
+            type="text"
+            name="new-token-note"
+            placeholder={tokenStrings.notePlaceholder}
+            value={newTokenNote}
+            onChange={(e) => setNewTokenNote(e.target.value)}
+            aria-label={tokenStrings.notePlaceholder}
+          />
+          <Button
+            type="button"
+            onClick={(event) => void handleAddToken(event.currentTarget)}
+            disabled={submitting}
+          >
+            {submitting ? tokenStrings.creating : tokenStrings.newToken}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={openBatchDialog}
+            disabled={submitting}
+          >
+            {tokenStrings.batchCreate}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+  const renderKeyQuickAddToolbar = () => (
+    <div className="admin-module-toolbar admin-module-toolbar--keys">
+      <div
+        ref={attachVisibleKeysBatchAnchor}
+        onMouseEnter={(event) => {
+          keysBatchAnchorRef.current = event.currentTarget
+          clearKeysBatchAutoCollapseTimer()
+          clearKeysBatchCloseTimer()
+          setKeysBatchClosing(false)
+          if (keysBatchSuppressNextHoverRef.current) {
+            keysBatchSuppressNextHoverRef.current = false
+            return
+          }
+          keysBatchOpenReasonRef.current = 'hover'
+          setKeysBatchExpanded(true)
+        }}
+        onMouseLeave={() => {
+          keysBatchSuppressNextHoverRef.current = false
+          scheduleKeysBatchAutoCollapse('hover')
+        }}
+        onFocusCapture={(event) => {
+          keysBatchAnchorRef.current = event.currentTarget
+          clearKeysBatchAutoCollapseTimer()
+          clearKeysBatchCloseTimer()
+          setKeysBatchClosing(false)
+          keysBatchOpenReasonRef.current = 'focus'
+          setKeysBatchExpanded(true)
+        }}
+        style={{ ...keysQuickAddCardStyle, position: 'relative' }}
+      >
+        <div
+          className={`keys-batch-collapsed${keysBatchVisible ? ' is-hidden' : ''}`}
+          aria-hidden={keysBatchVisible}
+          style={keysQuickAddActionsStyle}
+        >
+          <Input
+            ref={keysBatchCollapsedInputRef}
+            type="text"
+            name="collapsed-key-input"
+            placeholder={keyStrings.placeholder}
+            aria-label={keyStrings.placeholder}
+            value={keysBatchFirstLine}
+            onChange={(e) => setNewKeysText(e.target.value)}
+            disabled={keysBatchVisible}
+          />
+          <Button
+            type="button"
+            onClick={() => void handleAddKey()}
+            disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
+          >
+            {submitting ? keyStrings.adding : keyStrings.addButton}
+          </Button>
+        </div>
+        <datalist id="api-key-group-datalist">
+          {namedKeyGroups.map((group) => (
+            <option key={group.name} value={group.name} />
+          ))}
+        </datalist>
+      </div>
+    </div>
+  )
 
   return (
     <>
@@ -9121,30 +9421,53 @@ function AdminDashboard(): JSX.Element {
         >
           {moduleDesktopUtility}
 
-      <div className="admin-stacked-only">
-        <AdminPanelHeader
-          title={headerStrings.title}
-          subtitle={headerStrings.subtitle}
-          displayName={displayName}
-          isAdmin={isAdmin}
-          updatedPrefix={headerStrings.updatedPrefix}
-          updatedTime={headerUpdatedTime}
-          isRefreshing={loading}
-          refreshDisabled={activeModuleBlocking}
-          refreshLabel={headerStrings.refreshNow}
-          refreshingLabel={headerStrings.refreshing}
-          userConsoleLabel={headerStrings.returnToConsole}
-          userConsoleHref={userConsoleHref}
-          onRefresh={handleManualRefresh}
-        />
-      </div>
+      {!showNotFound && (
+        <div className="admin-stacked-only">
+          <AdminPanelHeader
+            title={headerStrings.title}
+            subtitle={headerStrings.subtitle}
+            displayName={displayName}
+            isAdmin={isAdmin}
+            updatedPrefix={headerStrings.updatedPrefix}
+            updatedTime={headerUpdatedTime}
+            isRefreshing={loading}
+            refreshDisabled={activeModuleBlocking}
+            refreshLabel={headerStrings.refreshNow}
+            refreshingLabel={headerStrings.refreshing}
+            userConsoleLabel={headerStrings.returnToConsole}
+            userConsoleHref={userConsoleHref}
+            onRefresh={handleManualRefresh}
+          />
+        </div>
+      )}
 
-      <div className="admin-desktop-only">
-        <AdminCompactIntro
-          title={moduleDesktopIntro.title}
-          description={moduleDesktopIntro.description}
-        />
-      </div>
+      {!showNotFound && (
+        <div className="admin-desktop-only">
+          <AdminCompactIntro
+            title={moduleDesktopIntro.title}
+            description={moduleDesktopIntro.description}
+            actions={
+              showTokens
+                ? renderTokenToolbar()
+                : showKeys && isAdmin
+                    ? renderKeyQuickAddToolbar()
+                    : showUsers
+                        ? renderUsersSearchControls('users-search-controls--header')
+                        : showRequests
+                          ? <div id={REQUESTS_HEADER_FILTERS_ID} className="admin-header-filter-slot" />
+                          : showJobs
+                            ? renderJobFilterToolbar('admin-module-toolbar--header-filter')
+                            : showAlerts
+                              ? renderAlertsViewTabs()
+                              : undefined
+            }
+          />
+        </div>
+      )}
+
+      {showNotFound && (
+        <NotFoundFallbackPreview originalPath={notFoundPath} returnHref="/admin" />
+      )}
 
       {showDashboard && (
         <DashboardOverview
@@ -9172,68 +9495,8 @@ function AdminDashboard(): JSX.Element {
 
       {showTokens && (
       <section className="surface panel">
-        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
-          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-full p-0 shadow-none"
-                    aria-label={tokenStrings.actions.viewLeaderboard}
-                    onClick={navigateUnboundTokenUsage}
-                  >
-                    <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">{tokenStrings.actions.viewLeaderboard}</TooltipContent>
-              </Tooltip>
-            </div>
-            <p className="panel-description">{tokenStrings.description}</p>
-          </div>
-          {isAdmin && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                flexWrap: 'wrap',
-                justifyContent: 'flex-end',
-                flex: '0 1 auto',
-                minWidth: 0,
-                maxWidth: '100%',
-                marginLeft: 'auto',
-              }}
-            >
-<Input
-  type="text"
-  name="new-token-note"
-  placeholder={tokenStrings.notePlaceholder}
-  value={newTokenNote}
-  onChange={(e) => setNewTokenNote(e.target.value)}
-  style={{ minWidth: 0, flex: '1 1 240px' }}
-  aria-label={tokenStrings.notePlaceholder}
-/>
-<Button
-  type="button"
-  onClick={(event) => void handleAddToken(event.currentTarget)}
-  disabled={submitting}
->
-  {submitting ? tokenStrings.creating : tokenStrings.newToken}
-</Button>
-<Button
-  type="button"
-  variant="outline"
-  onClick={openBatchDialog}
-  disabled={submitting}
->
-  {tokenStrings.batchCreate}
-</Button>
-            </div>
-          )}
+        <div className="admin-stacked-only">
+          {renderTokenToolbar()}
         </div>
         {hasTokenGroups && (
           <div className="token-groups-container">
@@ -9614,72 +9877,11 @@ function AdminDashboard(): JSX.Element {
 
       {showKeys && (
       <section className="surface panel" style={keysBatchVisible ? { position: 'relative', zIndex: 40 } : undefined}>
-	        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
-	          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
-	            <h2>{keyStrings.title}</h2>
-	            <p className="panel-description">{keyStrings.description}</p>
-	          </div>
             {isAdmin && (
-              <div
-                ref={keysBatchAnchorRef}
-                onMouseEnter={() => {
-                  clearKeysBatchAutoCollapseTimer()
-                  clearKeysBatchCloseTimer()
-                  setKeysBatchClosing(false)
-                  if (keysBatchSuppressNextHoverRef.current) {
-                    keysBatchSuppressNextHoverRef.current = false
-                    return
-                  }
-                  keysBatchOpenReasonRef.current = 'hover'
-                  setKeysBatchExpanded(true)
-                }}
-                onMouseLeave={() => {
-                  keysBatchSuppressNextHoverRef.current = false
-                  scheduleKeysBatchAutoCollapse('hover')
-                }}
-                onFocusCapture={() => {
-                  clearKeysBatchAutoCollapseTimer()
-                  clearKeysBatchCloseTimer()
-                  setKeysBatchClosing(false)
-                  keysBatchOpenReasonRef.current = 'focus'
-                  setKeysBatchExpanded(true)
-                }}
-                style={{ ...keysQuickAddCardStyle, position: 'relative', marginLeft: 'auto' }}
-              >
-                <div
-                  className={`keys-batch-collapsed${keysBatchVisible ? ' is-hidden' : ''}`}
-                  aria-hidden={keysBatchVisible}
-                  style={keysQuickAddActionsStyle}
-                >
-                  <Input
-                    ref={keysBatchCollapsedInputRef}
-                    type="text"
-                    name="collapsed-key-input"
-                    placeholder={keyStrings.placeholder}
-                    aria-label={keyStrings.placeholder}
-                    value={keysBatchFirstLine}
-                    onChange={(e) => setNewKeysText(e.target.value)}
-                    disabled={keysBatchVisible}
-                    style={{ flex: '1 1 260px', minWidth: 260, maxWidth: '100%' }}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void handleAddKey()}
-                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
-                    style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
-                  >
-                    {submitting ? keyStrings.adding : keyStrings.addButton}
-                  </Button>
-                </div>
-                <datalist id="api-key-group-datalist">
-                  {namedKeyGroups.map((group) => (
-                    <option key={group.name} value={group.name} />
-                  ))}
-                </datalist>
+              <div className="admin-stacked-only">
+                {renderKeyQuickAddToolbar()}
               </div>
             )}
-	        </div>
           <div style={keysUtilityRowStyle}>
             <div style={keysFilterClusterStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -10377,6 +10579,8 @@ function AdminDashboard(): JSX.Element {
           loadState={requestsLoadState}
           loadingLabel={requestsRefreshing ? loadingStateStrings.refreshing : logStrings.empty.loading}
           errorLabel={requestsError ?? loadingStateStrings.error}
+          showHeaderCopy={false}
+          headerFiltersTargetId={REQUESTS_HEADER_FILTERS_ID}
           logs={logs}
           requestKindOptions={requestLogRequestKindOptions}
           requestKindQuickBilling={requestLogQuickBilling}
@@ -10415,43 +10619,8 @@ function AdminDashboard(): JSX.Element {
 
       {showJobs && (
       <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{jobsStrings.title}</h2>
-            <p className="panel-description">{jobsStrings.description}</p>
-          </div>
-          <div className="panel-actions">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label={jobFilterSummary}
-                  disabled={jobsBlocking}
-                >
-                  <Icon icon="mdi:filter-outline" width={16} height={16} aria-hidden="true" />
-                  <span style={{ whiteSpace: 'nowrap' }}>{jobFilterSummary}</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-80">
-                <DropdownMenuLabel>{jobsStrings.table.type}</DropdownMenuLabel>
-                <DropdownMenuRadioGroup
-                  value={jobFilter}
-                  onValueChange={(value) => handleJobFilterChange(value as JobGroup)}
-                >
-                  {jobFilterOptions.map((option) => (
-                    <DropdownMenuRadioItem key={option.value} value={option.value} className="cursor-pointer gap-3 pr-3">
-                      <span>{option.label}</span>
-                      <span className="ml-auto text-xs font-mono tabular-nums opacity-70">
-                        {formatNumber(option.count)}
-                      </span>
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+        <div className="admin-stacked-only">
+          {renderJobFilterToolbar()}
         </div>
         <AdminTableShell
           className="jobs-table-wrapper admin-responsive-up"
@@ -10741,107 +10910,18 @@ function AdminDashboard(): JSX.Element {
 
       {showUsers && (
         <>
-          {renderUserTagSummaryPanel()}
-
           <section className="surface panel">
-            <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ flex: '1 1 340px', minWidth: 260 }}>
-                <h2>{usersStrings.title}</h2>
-                <p className="panel-description">{usersStrings.description}</p>
-              </div>
-              <div style={{ display: 'flex', flex: '1 1 520px', flexWrap: 'wrap', gap: 12, justifyContent: 'flex-end' }}>
-                <div
-                  className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
-                  style={{
-                    display: 'flex',
-                    minWidth: 260,
-                    maxWidth: 380,
-                    flex: '1 1 300px',
-                    alignItems: 'flex-start',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                  }}
-                >
-                  <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        flexWrap: 'wrap',
-                      }}
-                    >
-                      <div className="text-sm font-semibold">{usersStrings.registration.title}</div>
-                      <Badge
-                        variant={
-                          registrationSettingsError
-                            ? 'destructive'
-                            : allowRegistration === null
-                              ? 'secondary'
-                              : allowRegistration
-                                ? 'success'
-                                : 'warning'
-                        }
-                      >
-                        {allowRegistration === null
-                          ? usersStrings.status.unknown
-                          : allowRegistration
-                            ? usersStrings.status.enabled
-                            : usersStrings.status.disabled}
-                      </Badge>
-                    </div>
-                    {registrationInlineStatus && (
-                      <p
-                        className="text-xs font-medium"
-                        role="status"
-                        aria-live="polite"
-                        style={{ margin: '6px 0 0', color: registrationSettingsError ? 'hsl(var(--destructive))' : undefined }}
-                      >
-                        {registrationInlineStatus}
-                      </p>
-                    )}
-                  </div>
-                  <Switch
-                    disabled={registrationSettingsLoading || registrationSettingsSaving || allowRegistration === null}
-                    checked={allowRegistration ?? false}
-                    aria-label={usersStrings.registration.title}
-                    onCheckedChange={() => void toggleAllowRegistration()}
-                    style={{ flex: '0 0 auto' }}
-                  />
+            <div className="admin-stacked-only">
+              <div className="panel-header admin-list-toolbar" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+                  <h2>{usersStrings.title}</h2>
+                  <p className="panel-description">{usersStrings.description}</p>
                 </div>
-                <div className="users-search-controls">
-                  <Input
-                    type="text"
-                    name="users-search"
-                    className="users-search-input"
-                    placeholder={usersStrings.searchPlaceholder}
-                    value={usersQueryInput}
-                    disabled={usersBlocking}
-                    onChange={(event) => setUsersQueryInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        applyUserSearch()
-                      }
-                    }}
-                  />
-                  <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
-                    {usersStrings.search}
-                  </Button>
-                  {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
-                    <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
-                      {usersStrings.clear}
-                    </Button>
-                  )}
+                <div style={{ flex: '1 1 520px', minWidth: 0 }}>
+                  {renderUsersSearchControls()}
                 </div>
               </div>
             </div>
-            {registrationSettingsError && (
-              <div className="surface error-banner" style={{ marginBottom: 12 }}>
-                {registrationSettingsError}
-              </div>
-            )}
-
             <AdminTableShell
               className="jobs-table-wrapper"
               tableClassName="jobs-table admin-users-table admin-users-list-table"
@@ -10912,12 +10992,13 @@ function AdminDashboard(): JSX.Element {
                             aria-label={usersStrings.actions.view}
                             onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
-                            <strong>{item.displayName || item.username || item.userId}</strong>
+                            <strong>{formatAdminUserListPrimary(item)}</strong>
                           </button>
-                          <div className="panel-description admin-users-identity-meta">
-                            <code>{item.userId}</code>
-                            {item.username ? ` · @${item.username}` : ''}
-                          </div>
+                          {formatAdminUserListMeta(item) && (
+                            <div className="panel-description admin-users-identity-meta">
+                              {formatAdminUserListMeta(item)}
+                            </div>
+                          )}
                         </td>
                         <td>
                           <StatusBadge tone={item.active ? 'success' : 'neutral'}>
@@ -10972,7 +11053,7 @@ function AdminDashboard(): JSX.Element {
                         aria-label={usersStrings.actions.view}
                         onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                       >
-                        <strong>{item.displayName || item.username || item.userId}</strong>
+                        <strong>{formatAdminUserListPrimary(item)}</strong>
                       </button>
                     </div>
                     <div className="admin-mobile-kv">
@@ -11035,20 +11116,23 @@ function AdminDashboard(): JSX.Element {
               />
             )}
           </section>
+
+          {renderUserTagSummaryPanel()}
         </>
       )}
       {showAlerts && (
         <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>
           <LazyAlertsCenter
             language={language}
-            search={window.location.search}
+            search={locationSearch}
             refreshToken={alertsRefreshToken}
             onNavigate={navigateToPath}
             onOpenUser={navigateUser}
             onOpenToken={navigateToken}
             onOpenKey={navigateKey}
-            formatTime={formatTimestamp}
-            formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
+            formatTime={formatClockTime}
+            formatTimeDetail={formatMonthDay}
+            inlineTabsVariant="mobile"
           />
         </AdminLazyBoundary>
       )}
@@ -11061,6 +11145,16 @@ function AdminDashboard(): JSX.Element {
             loadState={systemSettingsLoadState}
             error={systemSettingsError}
             saving={systemSettingsSaving}
+            displayDensity={adminDisplayDensity}
+            registrationPolicy={{
+              strings: usersStrings.registration,
+              checked: allowRegistration,
+              disabled: registrationSettingsLoading || registrationSettingsSaving,
+              statusText: registrationStatusText,
+              error: registrationSettingsError,
+              onToggle: toggleAllowRegistration,
+            }}
+            onDisplayDensityChange={setAdminDisplayDensity}
             onApply={saveSystemSettings}
           />
         </AdminLazyBoundary>

@@ -9,7 +9,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family: inherit;
 }
 
 .admin-users-tags-cell {
@@ -24,6 +24,23 @@
   flex-wrap: nowrap;
   margin-left: auto;
   max-width: min(100%, 640px);
+}
+
+.admin-compact-intro-actions .users-search-controls {
+  justify-content: flex-end;
+}
+
+.admin-header-filter-slot {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.users-search-controls--header {
+  width: min(100%, 520px);
+  max-width: 520px;
+  margin-left: 0;
 }
 
 .users-search-input {
@@ -81,6 +98,7 @@
 .user-tag-page-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -763,7 +781,7 @@
 
 .jobs-table:not(.tokens-table):not(.admin-users-table) th,
 .jobs-table:not(.tokens-table):not(.admin-users-table) td {
-  padding-inline: 12px;
+  padding-inline: var(--admin-table-cell-padding-x);
 }
 
 .jobs-table:not(.tokens-table):not(.admin-users-table) th:nth-child(1),
@@ -912,7 +930,7 @@
 
   .jobs-table:not(.tokens-table):not(.admin-users-table) th,
   .jobs-table:not(.tokens-table):not(.admin-users-table) td {
-    padding-inline: 10px;
+    padding-inline: var(--admin-table-cell-padding-x);
   }
 
   .jobs-table:not(.tokens-table):not(.admin-users-table) td:nth-child(4) .status-pill {
@@ -1334,25 +1352,25 @@ tbody .log-details-row:hover {
 .status-pill-success {
   /* align with normal quota pill (teal) */
   background: hsl(var(--success) / 0.16);
-  color: hsl(var(--success));
+  color: hsl(var(--success-readable));
 }
 
 .status-pill-warning {
   /* align with hourly quota pill */
   background: hsl(var(--warning) / 0.2);
-  color: hsl(var(--warning));
+  color: hsl(var(--warning-readable));
 }
 
 .status-pill-error {
   /* align with daily quota pill */
   background: hsl(var(--destructive) / 0.18);
-  color: hsl(var(--destructive));
+  color: hsl(var(--destructive-readable));
 }
 
 .status-pill-info {
   /* align with monthly quota pill */
   background: hsl(var(--secondary) / 0.18);
-  color: hsl(var(--secondary));
+  color: hsl(var(--info-readable));
 }
 
 .status-pill-neutral {
@@ -1447,6 +1465,34 @@ tbody .log-details-row:hover {
 .link-button code {
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.admin-layout {
+  --admin-layout-block-padding: 36px;
+}
+
+.admin-main-content {
+  display: flex;
+  min-height: calc(100vh - var(--admin-layout-block-padding));
+  min-height: calc(100dvh - var(--admin-layout-block-padding));
+  flex-direction: column;
+}
+
+.admin-main-content .admin-shell-content {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 100%;
+  padding-bottom: 0;
+}
+
+.admin-main-content .app-footer {
+  margin-top: auto;
+}
+
+@media (max-width: 1100px) {
+  .admin-layout {
+    --admin-layout-block-padding: 28px;
+  }
 }
 
 .app-footer {
@@ -1857,22 +1903,45 @@ tbody .log-details-row:hover {
 }
 
 .user-console-probe-hint-trigger {
-  width: 20px;
-  height: 20px;
+  width: 44px;
+  height: 44px;
+  margin: -12px;
   border-radius: 999px;
-  border: 1px solid hsl(var(--border) / 0.82);
-  background: hsl(var(--card) / 0.92);
+  border: 0;
+  background: transparent;
   color: hsl(var(--foreground) / 0.66);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 0.82rem;
+  touch-action: manipulation;
+  transition: color 0.16s ease;
+}
+
+.user-console-probe-hint-visual {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.82);
+  background: hsl(var(--card) / 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.user-console-probe-hint-trigger svg {
+  width: 16px;
+  height: 16px;
 }
 
 .user-console-probe-hint-trigger:hover,
 .user-console-probe-hint-trigger:focus-visible {
   color: #2563eb;
+}
+
+.user-console-probe-hint-trigger:hover .user-console-probe-hint-visual,
+.user-console-probe-hint-trigger:focus-visible .user-console-probe-hint-visual {
   border-color: rgba(37, 99, 235, 0.46);
   background: rgba(37, 99, 235, 0.08);
 }

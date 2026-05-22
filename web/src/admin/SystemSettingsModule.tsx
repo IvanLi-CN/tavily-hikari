@@ -3,6 +3,7 @@ import { useEffect, useState, type KeyboardEvent } from 'react'
 import { fetchObservedClientIpRequests, type ObservedClientIpRequest, type SystemSettings } from '../api'
 import type { QueryLoadState } from './queryLoadState'
 import type { AdminTranslations } from '../i18n'
+import type { AdminDisplayDensity } from './displayDensity'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { Icon } from '../lib/icons'
 import { Button } from '../components/ui/button'
@@ -25,6 +26,16 @@ interface SystemSettingsModuleProps {
   error: string | null
   saving: boolean
   helpBubbleOpen?: boolean
+  displayDensity?: AdminDisplayDensity
+  registrationPolicy?: {
+    strings: AdminTranslations['users']['registration']
+    checked: boolean | null
+    disabled: boolean
+    statusText: string
+    error: string | null
+    onToggle: () => Promise<void> | void
+  }
+  onDisplayDensityChange?: (density: AdminDisplayDensity) => void
   onApply: (settings: SystemSettings) => Promise<void> | void
 }
 
@@ -174,6 +185,9 @@ export default function SystemSettingsModule({
   error,
   saving,
   helpBubbleOpen,
+  displayDensity = 'comfortable',
+  registrationPolicy,
+  onDisplayDensityChange = () => {},
   onApply,
 }: SystemSettingsModuleProps): JSX.Element {
   const [draftRequestRateLimit, setDraftRequestRateLimit] = useState(() =>
@@ -465,10 +479,10 @@ export default function SystemSettingsModule({
     </div>
   )
   const trustedClientIpPanel = (
-    <section className="grid gap-3 border-t border-border/60 pt-5">
-      <div>
-        <h4 className="text-sm font-semibold">可信客户端 IP</h4>
-        <p className="text-xs text-muted-foreground">
+    <section className="system-settings-trusted-panel">
+      <div className="system-settings-trusted-copy">
+        <h4>可信客户端 IP</h4>
+        <p>
           {settings?.trustedClientIpHeaders?.join(' -> ') ||
             'cf-connecting-ip -> true-client-ip -> x-real-ip -> x-forwarded-for -> forwarded'}
         </p>
@@ -620,28 +634,75 @@ export default function SystemSettingsModule({
   )
 
   return (
-    <section className="surface panel">
-      <div className="panel-header">
-        <div>
-          <h2>{strings.title}</h2>
-        </div>
-      </div>
-
+    <section className="surface panel system-settings-shell">
       <AdminLoadingRegion
         loadState={loadState}
         loadingLabel={strings.description}
         errorLabel={error ?? undefined}
         minHeight={260}
       >
-        <div className="grid gap-6">
-          <div>
-            <h3 className="text-base font-semibold">{strings.form.title}</h3>
-          </div>
+        <div className="system-settings-form-layout" aria-label={strings.form.title}>
+          <section className="system-settings-config-section">
+            <h4>{strings.form.accessDisplayTitle}</h4>
+            <div className="system-settings-field-grid">
+              {registrationPolicy && (
+                <div className="system-settings-action-row" aria-labelledby="system-settings-registration-title">
+                  <div className="system-settings-toggle-copy">
+                    <span className="system-settings-setting-title" id="system-settings-registration-title">
+                      {registrationPolicy.strings.title}
+                    </span>
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      style={{ color: registrationPolicy.error ? 'hsl(var(--destructive))' : undefined }}
+                    >
+                      {registrationPolicy.error ?? registrationPolicy.statusText}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={registrationPolicy.checked ?? false}
+                    disabled={registrationPolicy.disabled || registrationPolicy.checked === null}
+                    aria-label={registrationPolicy.strings.title}
+                    onCheckedChange={() => void registrationPolicy.onToggle()}
+                  />
+                </div>
+              )}
 
-          <section className="grid gap-4">
-            <h4 className="text-sm font-semibold">{strings.form.limitsTitle}</h4>
-            <div className="grid gap-4 md:grid-cols-[minmax(220px,420px)]">
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div className="system-settings-action-row" aria-labelledby="system-settings-density-title">
+                <div className="system-settings-toggle-copy">
+                  <span className="system-settings-setting-title" id="system-settings-density-title">
+                    {strings.form.displayDensityTitle}
+                  </span>
+                  <p>{strings.form.displayDensityStoredHint}</p>
+                </div>
+                <div className="system-settings-density-actions" role="group" aria-label={strings.form.displayDensityTitle}>
+                  <Button
+                    type="button"
+                    variant={displayDensity === 'comfortable' ? 'default' : 'outline'}
+                    size="sm"
+                    aria-pressed={displayDensity === 'comfortable'}
+                    onClick={() => onDisplayDensityChange('comfortable')}
+                  >
+                    {strings.form.displayDensityComfortable}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={displayDensity === 'compact' ? 'default' : 'outline'}
+                    size="sm"
+                    aria-pressed={displayDensity === 'compact'}
+                    onClick={() => onDisplayDensityChange('compact')}
+                  >
+                    {strings.form.displayDensityCompact}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="system-settings-config-section">
+            <h4>{strings.form.limitsTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--limits">
+              <div className="system-settings-field">
                 <label className="text-sm font-medium" htmlFor="system-settings-request-rate-limit">
                   {strings.form.requestRateLimitLabel}
                 </label>
@@ -662,18 +723,20 @@ export default function SystemSettingsModule({
                   aria-describedby={fieldErrors.requestRateLimit ? requestRateLimitErrorId : undefined}
                 />
                 {fieldErrors.requestRateLimit && (
-                  <p id={requestRateLimitErrorId} className="text-xs font-medium text-destructive">
+                  <p id={requestRateLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.requestRateLimit}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentRequestRateLimitValue.replace('{count}', String(settings.requestRateLimit))}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">{strings.form.requestRateLimitHint}</p>
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
+                  {strings.form.requestRateLimitHint}
+                </p>
               </div>
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div className="system-settings-field">
                 <label className="text-sm font-medium" htmlFor="system-settings-blocked-key-base-limit">
                   {strings.form.blockedKeyBaseLimitLabel}
                 </label>
@@ -694,22 +757,24 @@ export default function SystemSettingsModule({
                   aria-describedby={fieldErrors.blockedKeyBaseLimit ? blockedKeyBaseLimitErrorId : undefined}
                 />
                 {fieldErrors.blockedKeyBaseLimit && (
-                  <p id={blockedKeyBaseLimitErrorId} className="text-xs font-medium text-destructive">
+                  <p id={blockedKeyBaseLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.blockedKeyBaseLimit}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentBlockedKeyBaseLimitValue.replace(
                       '{count}',
                       String(settings.userBlockedKeyBaseLimit),
                     )}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">{strings.form.blockedKeyBaseLimitHint}</p>
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
+                  {strings.form.blockedKeyBaseLimitHint}
+                </p>
               </div>
 
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div className="system-settings-field">
                 <label className="text-sm font-medium" htmlFor="system-settings-global-ip-limit">
                   {strings.form.globalIpLimitLabel}
                 </label>
@@ -730,25 +795,25 @@ export default function SystemSettingsModule({
                   aria-describedby={fieldErrors.globalIpLimit ? globalIpLimitErrorId : undefined}
                 />
                 {fieldErrors.globalIpLimit && (
-                  <p id={globalIpLimitErrorId} className="text-xs font-medium text-destructive">
+                  <p id={globalIpLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.globalIpLimit}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentGlobalIpLimitValue.replace('{count}', String(settings.globalIpLimit))}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
+                <p className="system-settings-field-hint text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
               </div>
             </div>
           </section>
 
-          <section className="grid gap-4 border-t border-border/60 pt-5">
-            <h4 className="text-sm font-semibold">{strings.form.gatewayTitle}</h4>
-            <div className="grid gap-4 md:grid-cols-[minmax(220px,420px)]">
-              <div style={{ display: 'grid', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <section className="system-settings-config-section">
+            <h4>{strings.form.gatewaySectionTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--gateway">
+              <div className="system-settings-field">
+                <div className="system-settings-field-label-row">
                   <label className="text-sm font-medium" htmlFor="system-settings-affinity-count">
                     {strings.form.countLabel}
                   </label>
@@ -772,19 +837,19 @@ export default function SystemSettingsModule({
                   aria-describedby={fieldErrors.count ? affinityCountErrorId : undefined}
                 />
                 {fieldErrors.count && (
-                  <p id={affinityCountErrorId} className="text-xs font-medium text-destructive">
+                  <p id={affinityCountErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.count}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentValue.replace('{count}', String(settings.mcpSessionAffinityKeyCount))}
                   </p>
                 )}
               </div>
 
-              <div className="mt-2 flex items-start justify-between gap-4 rounded-2xl border border-border/60 bg-background/70 px-4 py-3">
-                <div style={{ display: 'grid', gap: 4 }}>
+              <div className="system-settings-toggle-row">
+                <div className="system-settings-toggle-copy">
                   <label className="text-sm font-medium" htmlFor="system-settings-rebalance-switch">
                     {strings.form.rebalanceLabel}
                   </label>
@@ -806,11 +871,11 @@ export default function SystemSettingsModule({
                 />
               </div>
 
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div className="system-settings-field">
                 <label className="text-sm font-medium" htmlFor="system-settings-rebalance-percent">
                   {strings.form.percentLabel}
                 </label>
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
+                <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
                   <input
                     id="system-settings-rebalance-percent"
                     className="range"
@@ -846,27 +911,27 @@ export default function SystemSettingsModule({
                   />
                 </div>
                 {fieldErrors.percent && (
-                  <p id={rebalancePercentErrorId} className="text-xs font-medium text-destructive">
+                  <p id={rebalancePercentErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.percent}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentPercentValue.replace('{percent}', String(settings.rebalanceMcpSessionPercent))}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {draftRebalanceEnabled ? strings.form.percentHint : strings.form.percentDisabledHint}
                 </p>
               </div>
             </div>
           </section>
 
-          <section className="grid gap-4 border-t border-border/60 pt-5">
-            <h4 className="text-sm font-semibold">{strings.form.apiRebalanceTitle}</h4>
-            <div className="grid gap-4 md:grid-cols-[minmax(220px,420px)]">
-              <div className="mt-2 flex items-start justify-between gap-4 rounded-2xl border border-border/60 bg-background/70 px-4 py-3">
-                <div style={{ display: 'grid', gap: 4 }}>
+          <section className="system-settings-config-section">
+            <h4>{strings.form.apiRebalanceTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--api">
+              <div className="system-settings-toggle-row">
+                <div className="system-settings-toggle-copy">
                   <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-switch">
                     {strings.form.apiRebalanceLabel}
                   </label>
@@ -888,11 +953,11 @@ export default function SystemSettingsModule({
                 />
               </div>
 
-              <div style={{ display: 'grid', gap: 8 }}>
+              <div className="system-settings-field">
                 <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-percent">
                   {strings.form.apiRebalancePercentLabel}
                 </label>
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
+                <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
                   <input
                     id="system-settings-api-rebalance-percent"
                     className="range"
@@ -928,19 +993,19 @@ export default function SystemSettingsModule({
                   />
                 </div>
                 {fieldErrors.apiRebalancePercent && (
-                  <p id={apiRebalancePercentErrorId} className="text-xs font-medium text-destructive">
+                  <p id={apiRebalancePercentErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.apiRebalancePercent}
                   </p>
                 )}
                 {settings && (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="system-settings-field-current text-xs text-muted-foreground">
                     {strings.form.currentApiRebalancePercentValue.replace(
                       '{percent}',
                       String(settings.apiRebalancePercent),
                     )}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {draftApiRebalanceEnabled
                     ? strings.form.apiRebalancePercentHint
                     : strings.form.apiRebalancePercentDisabledHint}
@@ -949,9 +1014,11 @@ export default function SystemSettingsModule({
             </div>
           </section>
 
+          {trustedClientIpPanel}
+
           {(error || saving) && (
             <p
-              className="text-sm font-medium"
+              className="system-settings-inline-status text-sm font-medium"
               role="status"
               aria-live="polite"
               style={{ color: error ? 'hsl(var(--destructive))' : undefined }}
@@ -961,11 +1028,9 @@ export default function SystemSettingsModule({
           )}
 
           {changed && !inlineError && !saving && (
-            <p className="text-xs text-muted-foreground">{strings.form.autosaveHint}</p>
+            <p className="system-settings-inline-status text-xs text-muted-foreground">{strings.form.autosaveHint}</p>
           )}
         </div>
-
-        {trustedClientIpPanel}
       </AdminLoadingRegion>
     </section>
   )

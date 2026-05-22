@@ -6,6 +6,36 @@ import {
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
 
+type RecordLike = Record<string, unknown>
+
+function isRecordLike(value: unknown): value is RecordLike {
+  return typeof value === 'object' && value !== null
+}
+
+function readString(value: RecordLike, camelKey: string, snakeKey = camelKey): string {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return typeof candidate === 'string' ? candidate : ''
+}
+
+function readNullableString(value: RecordLike, camelKey: string, snakeKey = camelKey): string | null {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return typeof candidate === 'string' ? candidate : null
+}
+
+function readBoolean(value: RecordLike, camelKey: string, snakeKey = camelKey): boolean {
+  return Boolean(value[camelKey] ?? value[snakeKey])
+}
+
+function readNumber(value: RecordLike, camelKey: string, snakeKey = camelKey, fallback = 0): number {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : fallback
+}
+
+function readNullableNumber(value: RecordLike, camelKey: string, snakeKey = camelKey): number | null {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null
+}
+
 export interface Summary {
   total_requests: number
   success_count: number
@@ -1829,18 +1859,95 @@ export interface UserTokenSummary {
   monthlySuccess: number
 }
 
+function normalizeRequestRate(value: unknown, fallback: RequestRate): RequestRate {
+  if (!isRecordLike(value)) return fallback
+  const scope = value.scope === 'user' || value.scope === 'token' ? value.scope : fallback.scope
+  return {
+    used: readNumber(value, 'used', 'used', fallback.used),
+    limit: readNumber(value, 'limit', 'limit', fallback.limit),
+    windowMinutes: readNumber(value, 'windowMinutes', 'window_minutes', fallback.windowMinutes),
+    scope,
+  }
+}
+
+function normalizeUserDashboard(value: unknown): UserDashboard {
+  const source = isRecordLike(value) ? value : {}
+  const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
+  const hourlyAnyLimit = readNumber(source, 'hourlyAnyLimit', 'hourly_any_limit', 60)
+  return {
+    requestRate: normalizeRequestRate(source.requestRate ?? source.request_rate, {
+      used: hourlyAnyUsed,
+      limit: hourlyAnyLimit,
+      windowMinutes: 5,
+      scope: 'user',
+    }),
+    hourlyAnyUsed,
+    hourlyAnyLimit,
+    quotaHourlyUsed: readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
+    quotaHourlyLimit: readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
+    quotaDailyUsed: readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+    quotaDailyLimit: readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
+    quotaMonthlyUsed: readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+    quotaMonthlyLimit: readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    dailySuccess: readNumber(source, 'dailySuccess', 'daily_success'),
+    dailyFailure: readNumber(source, 'dailyFailure', 'daily_failure'),
+    monthlySuccess: readNumber(source, 'monthlySuccess', 'monthly_success'),
+    lastActivity: readNullableNumber(source, 'lastActivity', 'last_activity'),
+  }
+}
+
+function normalizeUserTokenSummary(value: unknown): UserTokenSummary {
+  const source = isRecordLike(value) ? value : {}
+  const tokenId = readString(source, 'tokenId', 'id') || readString(source, 'tokenId', 'token_id')
+  const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
+  const hourlyAnyLimit = readNumber(source, 'hourlyAnyLimit', 'hourly_any_limit', 60)
+  return {
+    tokenId,
+    enabled: readBoolean(source, 'enabled', 'enabled'),
+    note: readNullableString(source, 'note', 'note'),
+    lastUsedAt: readNullableNumber(source, 'lastUsedAt', 'last_used_at'),
+    requestRate: normalizeRequestRate(source.requestRate ?? source.request_rate, {
+      used: hourlyAnyUsed,
+      limit: hourlyAnyLimit,
+      windowMinutes: 5,
+      scope: 'token',
+    }),
+    hourlyAnyUsed,
+    hourlyAnyLimit,
+    quotaHourlyUsed: readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
+    quotaHourlyLimit: readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
+    quotaDailyUsed: readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+    quotaDailyLimit: readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
+    quotaMonthlyUsed: readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+    quotaMonthlyLimit: readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    dailySuccess: readNumber(
+      source,
+      'dailySuccess',
+      'daily_success',
+      readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+    ),
+    dailyFailure: readNumber(source, 'dailyFailure', 'daily_failure'),
+    monthlySuccess: readNumber(
+      source,
+      'monthlySuccess',
+      'monthly_success',
+      readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+    ),
+  }
+}
+
 export function fetchUserDashboard(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserDashboard> {
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/dashboard${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown>(url, { signal }).then(normalizeUserDashboard)
 }
 
 export function fetchUserTokens(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserTokenSummary[]> {
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/tokens${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown[]>(url, { signal }).then((items) => items.map(normalizeUserTokenSummary))
 }
 
 export function fetchUserTokenDetail(
@@ -1852,7 +1959,7 @@ export function fetchUserTokenDetail(
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/tokens/${encoded}${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown>(url, { signal }).then(normalizeUserTokenSummary)
 }
 
 export function fetchUserTokenSecret(id: string, signal?: AbortSignal): Promise<UserTokenResponse> {
@@ -1889,7 +1996,7 @@ export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortS
 export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot {
   const snapshot = JSON.parse(raw) as ServerUserTokenEventSnapshot
   return {
-    token: snapshot.token,
+    token: normalizeUserTokenSummary(snapshot.token),
     logs: snapshot.logs.map((it) => ({
       id: it.id,
       method: it.method,

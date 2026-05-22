@@ -136,6 +136,7 @@ function defaultCopy(language: Language) {
           allKeys: '全部 Key',
           requestKindsAll: '全部请求类型',
           requestKindsEmpty: '没有可选请求类型',
+          more: '更多筛选',
           searchPlaceholder: '搜索…',
           applyTime: '应用时间',
           clear: '清空筛选',
@@ -203,6 +204,7 @@ function defaultCopy(language: Language) {
           allKeys: 'All keys',
           requestKindsAll: 'All request kinds',
           requestKindsEmpty: 'No request kinds',
+          more: 'More filters',
           searchPlaceholder: 'Search…',
           applyTime: 'Apply time',
           clear: 'Clear filters',
@@ -304,6 +306,7 @@ interface AlertsCenterProps {
   initialEventsPage?: AlertsPage<AlertEvent> | null
   initialGroupsPage?: AlertsPage<AlertGroup> | null
   disableAutoLoad?: boolean
+  inlineTabsVariant?: 'all' | 'mobile'
 }
 
 export default function AlertsCenter({
@@ -324,6 +327,7 @@ export default function AlertsCenter({
   initialEventsPage = null,
   initialGroupsPage = null,
   disableAutoLoad = false,
+  inlineTabsVariant = 'all',
 }: AlertsCenterProps): JSX.Element {
   const copy = useMemo(() => defaultCopy(language), [language])
   const searchState = useMemo<AlertsSearchState>(
@@ -359,6 +363,7 @@ export default function AlertsCenter({
   const [requestBodies, setRequestBodies] = useState<RequestLogBodies | null>(null)
   const [requestLoadState, setRequestLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestLoadError, setRequestLoadError] = useState<string | null>(null)
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(() => Boolean(userId || tokenId || keyId))
   const hasLoadedCatalogRef = useRef(Boolean(initialCatalog))
   const currentPerPage = view === 'events' ? eventsPage.perPage : groupsPage.perPage
   const currentListQuery = useMemo<AlertsQuery>(
@@ -386,6 +391,10 @@ export default function AlertsCenter({
     setDraftSince(isoToDateTimeLocal(since))
     setDraftUntil(isoToDateTimeLocal(until))
   }, [since, until])
+
+  useEffect(() => {
+    if (userId || tokenId || keyId) setAdvancedFiltersOpen(true)
+  }, [keyId, tokenId, userId])
 
   const navigateWith = useCallback(
     (patch: Partial<Parameters<typeof alertsPath>[0]>) => {
@@ -520,35 +529,28 @@ export default function AlertsCenter({
         : language === 'zh'
           ? `已选 ${requestKinds.length} 项`
           : `${requestKinds.length} selected`
+  const advancedFilterCount = [userId, tokenId, keyId].filter(Boolean).length
+  const advancedFiltersLabel =
+    advancedFilterCount > 0 ? `${copy.filters.more} (${advancedFilterCount})` : copy.filters.more
 
   return (
     <div className="alerts-center-stack">
-      <section className="surface panel alerts-center-hero">
-        <div className="panel-header">
-          <div>
-            <h2>{copy.title}</h2>
-            <p className="panel-description">{copy.description}</p>
-          </div>
-          <Button type="button" variant="outline" onClick={() => onNavigate(alertsPath({ view }))}>
-            {copy.filters.clear}
-          </Button>
-        </div>
-      </section>
-
       <section className="surface panel alerts-center-panel">
         <div className="alerts-center-toolbar">
-          <SegmentedTabs<AlertsCenterView>
-            className="alerts-center-tabs"
-            value={view}
-            onChange={(nextView) => onNavigate(alertsPath({ view: nextView, type, since, until, userId, tokenId, keyId, requestKinds }))}
-            options={[
-              { value: 'events', label: copy.tabs.events },
-              { value: 'groups', label: copy.tabs.groups },
-            ]}
-            ariaLabel={copy.title}
-          />
+          <div className={`alerts-center-tabs-mobile${inlineTabsVariant === 'mobile' ? ' admin-stacked-only' : ''}`}>
+            <SegmentedTabs<AlertsCenterView>
+              className="alerts-center-tabs"
+              value={view}
+              onChange={(nextView) => onNavigate(alertsPath({ view: nextView, type, since, until, userId, tokenId, keyId, requestKinds }))}
+              options={[
+                { value: 'events', label: copy.tabs.events },
+                { value: 'groups', label: copy.tabs.groups },
+              ]}
+              ariaLabel={copy.title}
+            />
+          </div>
 
-          <div className="alerts-center-filters">
+          <div className="alerts-center-filters alerts-center-filters--primary">
             <div className="alerts-center-filter-field">
               <span className="alerts-center-filter-label">{copy.filters.type}</span>
               <SearchableFacetSelect
@@ -562,56 +564,6 @@ export default function AlertsCenter({
                 triggerAriaLabel={copy.filters.type}
                 listAriaLabel={copy.filters.type}
                 onChange={(nextType) => navigateWith({ type: nextType, page: 1 })}
-              />
-            </div>
-
-            <div className="alerts-center-filter-field">
-              <span className="alerts-center-filter-label">{copy.filters.user}</span>
-              <SearchableFacetSelect
-                value={userId}
-                options={catalog?.users ?? []}
-                summary={catalog?.users.find((option) => option.value === userId)?.label ?? copy.filters.allUsers}
-                allLabel={copy.filters.allUsers}
-                emptyLabel={copy.filters.allUsers}
-                searchPlaceholder={copy.filters.searchPlaceholder}
-                searchAriaLabel={copy.filters.user}
-                triggerAriaLabel={copy.filters.user}
-                listAriaLabel={copy.filters.user}
-                onChange={(nextUserId) => navigateWith({ userId: nextUserId, page: 1 })}
-              />
-            </div>
-
-            <div className="alerts-center-filter-field">
-              <span className="alerts-center-filter-label">{copy.filters.token}</span>
-              <SearchableFacetSelect
-                value={tokenId}
-                options={catalog?.tokens ?? []}
-                summary={catalog?.tokens.find((option) => option.value === tokenId)?.label ?? copy.filters.allTokens}
-                allLabel={copy.filters.allTokens}
-                emptyLabel={copy.filters.allTokens}
-                searchPlaceholder={copy.filters.searchPlaceholder}
-                searchAriaLabel={copy.filters.token}
-                triggerAriaLabel={copy.filters.token}
-                listAriaLabel={copy.filters.token}
-                onChange={(nextTokenId) => navigateWith({ tokenId: nextTokenId, page: 1 })}
-                labelVariant="mono"
-              />
-            </div>
-
-            <div className="alerts-center-filter-field">
-              <span className="alerts-center-filter-label">{copy.filters.key}</span>
-              <SearchableFacetSelect
-                value={keyId}
-                options={catalog?.keys ?? []}
-                summary={catalog?.keys.find((option) => option.value === keyId)?.label ?? copy.filters.allKeys}
-                allLabel={copy.filters.allKeys}
-                emptyLabel={copy.filters.allKeys}
-                searchPlaceholder={copy.filters.searchPlaceholder}
-                searchAriaLabel={copy.filters.key}
-                triggerAriaLabel={copy.filters.key}
-                listAriaLabel={copy.filters.key}
-                onChange={(nextKeyId) => navigateWith({ keyId: nextKeyId, page: 1 })}
-                labelVariant="mono"
               />
             </div>
 
@@ -674,7 +626,73 @@ export default function AlertsCenter({
               >
                 {copy.filters.applyTime}
               </Button>
+              <Button type="button" variant="outline" className="alerts-center-clear-button" onClick={() => onNavigate(alertsPath({ view }))}>
+                {copy.filters.clear}
+              </Button>
             </div>
+          </div>
+
+          <div className="alerts-center-more-filters">
+            <Button
+              type="button"
+              variant="ghost"
+              className="alerts-center-more-toggle"
+              aria-expanded={advancedFiltersOpen}
+              onClick={() => setAdvancedFiltersOpen((current) => !current)}
+            >
+              {advancedFiltersLabel}
+            </Button>
+            {advancedFiltersOpen ? (
+              <div className="alerts-center-filters alerts-center-filters--advanced">
+                <div className="alerts-center-filter-field">
+                  <span className="alerts-center-filter-label">{copy.filters.user}</span>
+                  <SearchableFacetSelect
+                    value={userId}
+                    options={catalog?.users ?? []}
+                    summary={catalog?.users.find((option) => option.value === userId)?.label ?? copy.filters.allUsers}
+                    allLabel={copy.filters.allUsers}
+                    emptyLabel={copy.filters.allUsers}
+                    searchPlaceholder={copy.filters.searchPlaceholder}
+                    searchAriaLabel={copy.filters.user}
+                    triggerAriaLabel={copy.filters.user}
+                    listAriaLabel={copy.filters.user}
+                    onChange={(nextUserId) => navigateWith({ userId: nextUserId, page: 1 })}
+                  />
+                </div>
+                <div className="alerts-center-filter-field">
+                  <span className="alerts-center-filter-label">{copy.filters.token}</span>
+                  <SearchableFacetSelect
+                    value={tokenId}
+                    options={catalog?.tokens ?? []}
+                    summary={catalog?.tokens.find((option) => option.value === tokenId)?.label ?? copy.filters.allTokens}
+                    allLabel={copy.filters.allTokens}
+                    emptyLabel={copy.filters.allTokens}
+                    searchPlaceholder={copy.filters.searchPlaceholder}
+                    searchAriaLabel={copy.filters.token}
+                    triggerAriaLabel={copy.filters.token}
+                    listAriaLabel={copy.filters.token}
+                    onChange={(nextTokenId) => navigateWith({ tokenId: nextTokenId, page: 1 })}
+                    labelVariant="mono"
+                  />
+                </div>
+                <div className="alerts-center-filter-field">
+                  <span className="alerts-center-filter-label">{copy.filters.key}</span>
+                  <SearchableFacetSelect
+                    value={keyId}
+                    options={catalog?.keys ?? []}
+                    summary={catalog?.keys.find((option) => option.value === keyId)?.label ?? copy.filters.allKeys}
+                    allLabel={copy.filters.allKeys}
+                    emptyLabel={copy.filters.allKeys}
+                    searchPlaceholder={copy.filters.searchPlaceholder}
+                    searchAriaLabel={copy.filters.key}
+                    triggerAriaLabel={copy.filters.key}
+                    listAriaLabel={copy.filters.key}
+                    onChange={(nextKeyId) => navigateWith({ keyId: nextKeyId, page: 1 })}
+                    labelVariant="mono"
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -682,19 +700,20 @@ export default function AlertsCenter({
           {view === 'events' ? (
             <AdminTableShell
               className="alerts-center-table-shell"
+              tableClassName="alerts-center-table alerts-center-table--events"
               loadState={listLoadState}
               loadingLabel={copy.title}
               errorLabel={listError}
             >
               <TableHeader>
                 <TableRow>
-                  <TableHead>{copy.table.events.time}</TableHead>
-                  <TableHead>{copy.table.events.type}</TableHead>
-                  <TableHead>{copy.table.events.subject}</TableHead>
-                  <TableHead>{copy.table.events.requestKind}</TableHead>
-                  <TableHead>{copy.table.events.related}</TableHead>
-                  <TableHead>{copy.table.events.request}</TableHead>
-                  <TableHead>{copy.table.events.summary}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--time">{copy.table.events.time}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--type">{copy.table.events.type}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--subject">{copy.table.events.subject}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--request-kind">{copy.table.events.requestKind}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--related">{copy.table.events.related}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--request">{copy.table.events.request}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--summary">{copy.table.events.summary}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -707,55 +726,55 @@ export default function AlertsCenter({
                 ) : (
                   eventsPage.items.map((event) => (
                     <TableRow key={event.id}>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--time">
                         <div className="alerts-center-time-cell">
                           <strong>{formatTime(event.occurredAt)}</strong>
                           <span>{formatTimeDetail(event.occurredAt)}</span>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--type">
                         <StatusBadge tone={alertTypeTone(event.type)}>{copy.types[event.type]}</StatusBadge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--subject">
                         <div className="alerts-center-subject-cell">
                           <strong>{event.subjectLabel}</strong>
                           <span>{event.subjectKind}</span>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--request-kind">
                         {event.requestKind ? (
                           <RequestKindBadge requestKindKey={event.requestKind.key} requestKindLabel={event.requestKind.label} size="sm" />
                         ) : '—'}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--related">
                         <div className="alerts-center-related-actions">
                           {event.user ? (
-                            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenUser(event.user!.userId)}>
-                              {copy.openUser}
-                            </Button>
+                            <button type="button" className="alerts-center-related-link" onClick={() => onOpenUser(event.user!.userId)}>
+                              {event.user.displayName ?? event.user.username ?? event.user.userId}
+                            </button>
                           ) : null}
                           {event.token ? (
-                            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenToken(event.token!.id)}>
-                              {copy.openToken}
-                            </Button>
+                            <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenToken(event.token!.id)}>
+                              {event.token.label ?? event.token.id}
+                            </button>
                           ) : null}
                           {event.key ? (
-                            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenKey(event.key!.id)}>
-                              {copy.openKey}
-                            </Button>
+                            <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenKey(event.key!.id)}>
+                              {event.key.label ?? event.key.id}
+                            </button>
                           ) : null}
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--request">
                         {event.request ? (
-                          <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedRequest(event.request)}>
-                            {copy.requestOpen}
-                          </Button>
+                          <button type="button" className="alerts-center-request-link" onClick={() => setSelectedRequest(event.request)}>
+                            {requestSummary(event.request)}
+                          </button>
                         ) : (
                           '—'
                         )}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--summary">
                         <div className="alerts-center-summary-cell">
                           <strong>{event.title}</strong>
                           <span>{event.summary}</span>
@@ -769,19 +788,20 @@ export default function AlertsCenter({
           ) : (
             <AdminTableShell
               className="alerts-center-table-shell"
+              tableClassName="alerts-center-table alerts-center-table--groups"
               loadState={listLoadState}
               loadingLabel={copy.title}
               errorLabel={listError}
             >
               <TableHeader>
                 <TableRow>
-                  <TableHead>{copy.table.groups.time}</TableHead>
-                  <TableHead>{copy.table.groups.type}</TableHead>
-                  <TableHead>{copy.table.groups.subject}</TableHead>
-                  <TableHead>{copy.table.groups.requestKind}</TableHead>
-                  <TableHead>{copy.table.groups.count}</TableHead>
-                  <TableHead>{copy.table.groups.firstSeen}</TableHead>
-                  <TableHead>{copy.table.groups.latest}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--time">{copy.table.groups.time}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--type">{copy.table.groups.type}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--subject">{copy.table.groups.subject}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--request-kind">{copy.table.groups.requestKind}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--count">{copy.table.groups.count}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--first-seen">{copy.table.groups.firstSeen}</TableHead>
+                  <TableHead className="alerts-center-col alerts-center-col--summary">{copy.table.groups.latest}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -794,47 +814,52 @@ export default function AlertsCenter({
                 ) : (
                   groupsPage.items.map((group) => (
                     <TableRow key={group.id}>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--time">
                         <div className="alerts-center-time-cell">
                           <strong>{formatTime(group.lastSeen)}</strong>
                           <span>{formatTimeDetail(group.lastSeen)}</span>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--type">
                         <StatusBadge tone={alertTypeTone(group.type)}>{copy.types[group.type]}</StatusBadge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--subject">
                         <div className="alerts-center-subject-cell">
                           <strong>{group.subjectLabel}</strong>
                           <div className="alerts-center-related-actions">
                             {group.user ? (
-                              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenUser(group.user!.userId)}>
-                                {copy.openUser}
-                              </Button>
+                              <button type="button" className="alerts-center-related-link" onClick={() => onOpenUser(group.user!.userId)}>
+                                {group.user.displayName ?? group.user.username ?? group.user.userId}
+                              </button>
                             ) : null}
                             {group.token ? (
-                              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenToken(group.token!.id)}>
-                                {copy.openToken}
-                              </Button>
+                              <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenToken(group.token!.id)}>
+                                {group.token.label ?? group.token.id}
+                              </button>
                             ) : null}
                             {group.key ? (
-                              <Button type="button" variant="ghost" size="sm" onClick={() => onOpenKey(group.key!.id)}>
-                                {copy.openKey}
-                              </Button>
+                              <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenKey(group.key!.id)}>
+                                {group.key.label ?? group.key.id}
+                              </button>
                             ) : null}
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--request-kind">
                         {group.requestKind ? (
                           <RequestKindBadge requestKindKey={group.requestKind.key} requestKindLabel={group.requestKind.label} size="sm" />
                         ) : '—'}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--count">
                         <strong>{group.count}</strong>
                       </TableCell>
-                      <TableCell>{formatTime(group.firstSeen)}</TableCell>
-                      <TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--first-seen">
+                        <div className="alerts-center-time-cell">
+                          <strong>{formatTime(group.firstSeen)}</strong>
+                          <span>{formatTimeDetail(group.firstSeen)}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="alerts-center-col alerts-center-col--summary">
                         <div className="alerts-center-summary-cell">
                           <strong>{group.latestEvent.title}</strong>
                           <span>{group.latestEvent.summary}</span>

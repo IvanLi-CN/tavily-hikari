@@ -2,9 +2,22 @@ import * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(({ className, ...props }, ref) => (
-  <div className="relative w-full overflow-auto">
-    <table ref={ref} className={cn('w-full caption-bottom text-sm', className)} {...props} />
+type TableDensity = 'comfortable' | 'compact'
+
+interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
+  containerClassName?: string
+  density?: TableDensity
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(({ className, containerClassName, density = 'comfortable', ...props }, ref) => (
+  <div
+    className={cn(
+      'table-scroll-shell relative w-full overflow-auto rounded-[24px] bg-card/60 shadow-clayPressed',
+      containerClassName,
+    )}
+    data-table-density={density}
+  >
+    <table ref={ref} className={cn('w-full caption-bottom text-sm', className)} data-table-density={density} {...props} />
   </div>
 ))
 Table.displayName = 'Table'
@@ -41,7 +54,10 @@ const TableHead = React.forwardRef<HTMLTableCellElement, React.ThHTMLAttributes<
   ({ className, ...props }, ref) => (
     <th
       ref={ref}
-      className={cn('h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0', className)}
+      className={cn(
+        'h-10 whitespace-nowrap px-4 py-2 text-left align-middle text-[0.76rem] font-bold leading-tight text-muted-foreground [&:has([role=checkbox])]:pr-0',
+        className,
+      )}
       {...props}
     />
   ),
@@ -62,4 +78,4 @@ const TableCaption = React.forwardRef<HTMLTableCaptionElement, React.HTMLAttribu
 )
 TableCaption.displayName = 'TableCaption'
 
-export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption }
+export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption, type TableDensity }

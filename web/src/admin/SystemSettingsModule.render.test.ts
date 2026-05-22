@@ -55,6 +55,9 @@ describe('SystemSettingsModule rendering', () => {
 
     expect(markup).toContain(strings.title)
     expect(markup).toContain(strings.helpLabel)
+    expect(markup).toContain(strings.form.displayDensityTitle)
+    expect(markup).toContain(strings.form.displayDensityComfortable)
+    expect(markup).toContain(strings.form.displayDensityCompact)
     expect(markup.match(/system-settings-help-trigger/g)?.length).toBe(1)
     expect(markup).toContain(strings.form.currentRequestRateLimitValue.replace('{count}', '100'))
     expect(markup).toContain(strings.form.requestRateLimitHint)

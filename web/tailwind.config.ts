@@ -13,6 +13,16 @@ const config = {
     },
     extend: {
       colors: {
+        clay: {
+          canvas: 'hsl(var(--background) / <alpha-value>)',
+          foreground: 'hsl(var(--foreground) / <alpha-value>)',
+          muted: 'hsl(var(--muted-foreground) / <alpha-value>)',
+          violet: 'hsl(var(--primary) / <alpha-value>)',
+          pink: 'hsl(var(--secondary) / <alpha-value>)',
+          sky: 'hsl(var(--accent) / <alpha-value>)',
+          emerald: 'hsl(var(--success) / <alpha-value>)',
+          amber: 'hsl(var(--warning) / <alpha-value>)',
+        },
         border: 'hsl(var(--border) / <alpha-value>)',
         input: 'hsl(var(--input) / <alpha-value>)',
         ring: 'hsl(var(--ring) / <alpha-value>)',
@@ -69,6 +79,32 @@ const config = {
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
         box: 'var(--radius-xl)',
+      },
+      boxShadow: {
+        claySurface: 'var(--shadow-clay-surface)',
+        clayCard: 'var(--shadow-clay-card)',
+        clayButton: 'var(--shadow-clay-button)',
+        clayButtonHover: 'var(--shadow-clay-button-hover)',
+        clayPressed: 'var(--shadow-clay-pressed)',
+      },
+      fontFamily: {
+        display: ['Nunito', 'Noto Sans SC', 'sans-serif'],
+        sans: ['DM Sans', 'Noto Sans SC', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+      },
+      keyframes: {
+        'clay-float': {
+          '0%, 100%': { transform: 'translateY(0) rotate(0deg)' },
+          '50%': { transform: 'translateY(-18px) rotate(2deg)' },
+        },
+        'clay-breathe': {
+          '0%, 100%': { transform: 'scale(1)' },
+          '50%': { transform: 'scale(1.018)' },
+        },
+      },
+      animation: {
+        'clay-float': 'clay-float 12s ease-in-out infinite',
+        'clay-breathe': 'clay-breathe 6s ease-in-out infinite',
       },
     },
   },

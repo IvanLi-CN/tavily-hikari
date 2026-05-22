@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { QueryLoadState } from '../admin/queryLoadState'
 import type { LogFacetOption, RequestLog, RequestLogBodies } from '../api'
@@ -73,6 +74,8 @@ export interface AdminRecentRequestsPanelProps {
   strings: AdminTranslations
   title: string
   description: string
+  showHeaderCopy?: boolean
+  headerFiltersTargetId?: string
   emptyLabel: string
   loadState: QueryLoadState
   loadingLabel: string
@@ -512,6 +515,8 @@ function formatRequestStatusPair(httpStatus: number | null, mcpStatus: number | 
   return `${httpStatus ?? '—'} / ${mcpStatus ?? '—'}`
 }
 
+function requestStatusPairClassName(log: RequestLog): string { return `status-pair-trigger status-pair-trigger--${statusTone(log.result_status)}` }
+
 function formatRequestStatusTooltip(log: RequestLog, strings: AdminTranslations): string {
   return `${strings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${strings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`
 }
@@ -808,6 +813,8 @@ export default function AdminRecentRequestsPanel({
   strings,
   title,
   description,
+  showHeaderCopy = true,
+  headerFiltersTargetId,
   emptyLabel,
   loadState,
   loadingLabel,
@@ -847,7 +854,16 @@ export default function AdminRecentRequestsPanel({
 }: AdminRecentRequestsPanelProps): JSX.Element {
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [logBodiesById, setLogBodiesById] = useState<Record<number, LogBodiesLoadState>>({})
+  const [headerFiltersTarget, setHeaderFiltersTarget] = useState<HTMLElement | null>(null)
   const logBodyControllersRef = useRef<Map<number, AbortController>>(new Map())
+
+  useEffect(() => {
+    if (!headerFiltersTargetId) {
+      setHeaderFiltersTarget(null)
+      return
+    }
+    setHeaderFiltersTarget(document.getElementById(headerFiltersTargetId))
+  }, [headerFiltersTargetId])
 
   useEffect(() => {
     setExpandedLogs(new Set())
@@ -1018,234 +1034,244 @@ export default function AdminRecentRequestsPanel({
     variant === 'token'
       ? 'user-console-mobile-kv user-console-mobile-kv--stacked'
       : 'admin-mobile-kv admin-mobile-kv--stacked'
+  const headerCopyVisible = showHeaderCopy && (title.trim().length > 0 || description.trim().length > 0)
+  const renderFilters = (className?: string) => (
+    <div className={['panel-actions recent-requests-filters', className].filter(Boolean).join(' ')}>
+      <div className="recent-requests-filter-field recent-requests-filter-field--request-kind">
+        <span className="recent-requests-filter-label">{strings.logs.filters.requestType}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="recent-requests-filter-select-trigger recent-requests-filter-select-trigger--menu"
+              aria-label={`${strings.logs.filters.requestType}: ${requestKindTriggerSummary}`}
+            >
+              <span className="recent-requests-filter-select-text">{requestKindTriggerSummary}</span>
+              <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="token-request-kind-menu recent-requests-filter-menu recent-requests-filter-menu--request-kind"
+          >
+            <DropdownMenuLabel>{strings.logs.filters.requestType}</DropdownMenuLabel>
+            <div className="token-request-quick-filters">
+              <div className="token-request-quick-filter-row">
+                <span className="token-request-quick-filter-label">{strings.logs.filters.billingGroup}</span>
+                <SegmentedTabs<TokenLogRequestKindQuickBilling>
+                  value={requestKindQuickBilling}
+                  onChange={(next) => onRequestKindQuickFiltersChange(next, requestKindQuickProtocol)}
+                  options={requestKindBillingQuickFilterOptions}
+                  ariaLabel={strings.logs.filters.billingGroup}
+                  className="token-request-quick-segmented"
+                />
+              </div>
+              <div className="token-request-quick-filter-row">
+                <span className="token-request-quick-filter-label">{strings.logs.filters.protocolGroup}</span>
+                <SegmentedTabs<TokenLogRequestKindQuickProtocol>
+                  value={requestKindQuickProtocol}
+                  onChange={(next) => onRequestKindQuickFiltersChange(requestKindQuickBilling, next)}
+                  options={requestKindProtocolQuickFilterOptions}
+                  ariaLabel={strings.logs.filters.protocolGroup}
+                  className="token-request-quick-segmented"
+                />
+              </div>
+            </div>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="cursor-pointer"
+              disabled={effectiveSelectedRequestKinds.length === 0 && !hasActiveQuickRequestKindFilters}
+              onSelect={(event) => {
+                event.preventDefault()
+                onClearRequestKinds()
+              }}
+            >
+              {strings.logs.filters.requestTypeAll}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {visibleRequestKindOptions.length === 0 ? (
+              <DropdownMenuItem disabled>{strings.logs.filters.requestTypeEmpty}</DropdownMenuItem>
+            ) : (
+              visibleRequestKindOptions.map((option) => (
+                <DropdownMenuCheckboxItem
+                  key={option.key}
+                  className="cursor-pointer"
+                  checked={effectiveSelectedRequestKinds.includes(option.key)}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={() => onToggleRequestKind(option.key)}
+                >
+                  <span className="recent-requests-request-kind-option">
+                    <RequestKindBadge requestKindKey={option.key} requestKindLabel={option.label} size="sm" />
+                    <span className="recent-requests-request-kind-count">
+                      {`x${option.count ?? 0}`}
+                    </span>
+                  </span>
+                </DropdownMenuCheckboxItem>
+              ))
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <div className="recent-requests-filter-field">
+        <span className="recent-requests-filter-label">{strings.logs.filters.resultOrEffect}</span>
+        <Select
+          value={outcomeValue}
+          onValueChange={(value) => {
+            if (!value || value === recentRequestsAllFilterValue) {
+              onOutcomeFilterChange(null)
+              return
+            }
+            const [kind, nextValue] = value.split(':', 2)
+            if (
+              !nextValue ||
+              (kind !== 'result'
+                && kind !== 'keyEffect'
+                && kind !== 'bindingEffect'
+                && kind !== 'selectionEffect')
+            ) {
+              onOutcomeFilterChange(null)
+              return
+            }
+            onOutcomeFilterChange({
+              kind: kind as RecentRequestsOutcomeFilterKind,
+              value: nextValue,
+            })
+          }}
+        >
+          <SelectTrigger
+            className="recent-requests-filter-select-trigger"
+            aria-label={`${strings.logs.filters.resultOrEffect}: ${outcomeSummary}`}
+          >
+            <span className="recent-requests-filter-select-text">{outcomeSummary}</span>
+          </SelectTrigger>
+          <SelectContent className="recent-requests-filter-content">
+            <SelectItem value={recentRequestsAllFilterValue}>{strings.logs.filters.resultOrEffectAll}</SelectItem>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{strings.logs.filters.resultGroup}</SelectLabel>
+              {resultOptions.length === 0 ? (
+                <SelectItem value="__recent-requests-no-results__" disabled>
+                  {strings.logs.filters.noFacetOptions}
+                </SelectItem>
+              ) : (
+                resultOptions.map((option) => (
+                  <SelectItem key={`result-${option.value}`} value={`result:${option.value}`}>
+                    <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                      <span className="recent-requests-facet-option-main">
+                        {renderOutcomeFacetLabel('result', option.value, strings)}
+                      </span>
+                      <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                      <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectGroup>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{strings.logs.filters.keyEffectGroup}</SelectLabel>
+              {keyEffectOptions.length === 0 ? (
+                <SelectItem value="__recent-requests-no-effects__" disabled>
+                  {strings.logs.filters.noFacetOptions}
+                </SelectItem>
+              ) : (
+                keyEffectOptions.map((option) => (
+                  <SelectItem key={`effect-${option.value}`} value={`keyEffect:${option.value}`}>
+                    <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                      <span className="recent-requests-facet-option-main">
+                        {renderOutcomeFacetLabel('keyEffect', option.value, strings)}
+                      </span>
+                      <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                      <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectGroup>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{strings.logs.filters.bindingEffectGroup}</SelectLabel>
+              {bindingEffectOptions.length === 0 ? (
+                <SelectItem value="__recent-requests-no-binding-effects__" disabled>
+                  {strings.logs.filters.noFacetOptions}
+                </SelectItem>
+              ) : (
+                bindingEffectOptions.map((option) => (
+                  <SelectItem key={`binding-effect-${option.value}`} value={`bindingEffect:${option.value}`}>
+                    <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                      <span className="recent-requests-facet-option-main">
+                        {renderOutcomeFacetLabel('bindingEffect', option.value, strings)}
+                      </span>
+                      <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                      <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectGroup>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>{strings.logs.filters.selectionEffectGroup}</SelectLabel>
+              {selectionEffectOptions.length === 0 ? (
+                <SelectItem value="__recent-requests-no-selection-effects__" disabled>
+                  {strings.logs.filters.noFacetOptions}
+                </SelectItem>
+              ) : (
+                selectionEffectOptions.map((option) => (
+                  <SelectItem key={`selection-effect-${option.value}`} value={`selectionEffect:${option.value}`}>
+                    <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                      <span className="recent-requests-facet-option-main">
+                        {renderOutcomeFacetLabel('selectionEffect', option.value, strings)}
+                      </span>
+                      <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                      <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {showKeyColumn && onKeyFilterChange ? (
+        <div className="recent-requests-filter-field">
+          <span className="recent-requests-filter-label">{strings.logs.table.key}</span>
+          <SearchableFacetSelect
+            value={selectedKeyId ?? null}
+            options={keyOptions}
+            summary={keyFilterSummary}
+            allLabel={strings.logs.filters.keyAll}
+            emptyLabel={strings.logs.filters.noFacetOptions}
+            searchPlaceholder={language === 'zh' ? '输入 Key 片段筛选' : 'Filter keys'}
+            searchAriaLabel={language === 'zh' ? '筛选 Key' : 'Filter keys'}
+            triggerAriaLabel={`${strings.logs.table.key}: ${keyFilterSummary}`}
+            listAriaLabel={strings.logs.table.key}
+            onChange={onKeyFilterChange}
+            disabled={keyOptions.length === 0 && !selectedKeyId}
+            triggerClassName="recent-requests-filter-select-trigger recent-requests-filter-select-trigger--menu"
+            contentClassName="recent-requests-filter-menu"
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+  const headerFiltersPortal = headerFiltersTarget
+    ? createPortal(renderFilters('recent-requests-filters--header'), headerFiltersTarget)
+    : null
 
   return (
     <section className="surface panel">
-      <div className="panel-header recent-requests-header">
-        <div>
-          <h2>{title}</h2>
-          <p className="panel-description">{description}</p>
-        </div>
-        <div className="panel-actions recent-requests-filters">
-          <div className="recent-requests-filter-field recent-requests-filter-field--request-kind">
-            <span className="recent-requests-filter-label">{strings.logs.filters.requestType}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="recent-requests-filter-select-trigger recent-requests-filter-select-trigger--menu"
-                  aria-label={`${strings.logs.filters.requestType}: ${requestKindTriggerSummary}`}
-                >
-                  <span className="recent-requests-filter-select-text">{requestKindTriggerSummary}</span>
-                  <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="token-request-kind-menu recent-requests-filter-menu recent-requests-filter-menu--request-kind"
-              >
-                <DropdownMenuLabel>{strings.logs.filters.requestType}</DropdownMenuLabel>
-                <div className="token-request-quick-filters">
-                  <div className="token-request-quick-filter-row">
-                    <span className="token-request-quick-filter-label">{strings.logs.filters.billingGroup}</span>
-                    <SegmentedTabs<TokenLogRequestKindQuickBilling>
-                      value={requestKindQuickBilling}
-                      onChange={(next) => onRequestKindQuickFiltersChange(next, requestKindQuickProtocol)}
-                      options={requestKindBillingQuickFilterOptions}
-                      ariaLabel={strings.logs.filters.billingGroup}
-                      className="token-request-quick-segmented"
-                    />
-                  </div>
-                  <div className="token-request-quick-filter-row">
-                    <span className="token-request-quick-filter-label">{strings.logs.filters.protocolGroup}</span>
-                    <SegmentedTabs<TokenLogRequestKindQuickProtocol>
-                      value={requestKindQuickProtocol}
-                      onChange={(next) => onRequestKindQuickFiltersChange(requestKindQuickBilling, next)}
-                      options={requestKindProtocolQuickFilterOptions}
-                      ariaLabel={strings.logs.filters.protocolGroup}
-                      className="token-request-quick-segmented"
-                    />
-                  </div>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="cursor-pointer"
-                  disabled={effectiveSelectedRequestKinds.length === 0 && !hasActiveQuickRequestKindFilters}
-                  onSelect={(event) => {
-                    event.preventDefault()
-                    onClearRequestKinds()
-                  }}
-                >
-                  {strings.logs.filters.requestTypeAll}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {visibleRequestKindOptions.length === 0 ? (
-                  <DropdownMenuItem disabled>{strings.logs.filters.requestTypeEmpty}</DropdownMenuItem>
-                ) : (
-                  visibleRequestKindOptions.map((option) => (
-                    <DropdownMenuCheckboxItem
-                      key={option.key}
-                      className="cursor-pointer"
-                      checked={effectiveSelectedRequestKinds.includes(option.key)}
-                      onSelect={(event) => event.preventDefault()}
-                      onCheckedChange={() => onToggleRequestKind(option.key)}
-                    >
-                      <span className="recent-requests-request-kind-option">
-                        <RequestKindBadge requestKindKey={option.key} requestKindLabel={option.label} size="sm" />
-                        <span className="recent-requests-request-kind-count">
-                          {`x${option.count ?? 0}`}
-                        </span>
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+      {headerFiltersPortal}
+      <div className={`panel-header recent-requests-header${headerCopyVisible ? '' : ' recent-requests-header--filters-only'}${headerFiltersTarget ? ' recent-requests-header--portal' : ''}`}>
+        {headerCopyVisible ? (
+          <div>
+            <h2>{title}</h2>
+            <p className="panel-description">{description}</p>
           </div>
-
-          <div className="recent-requests-filter-field">
-            <span className="recent-requests-filter-label">{strings.logs.filters.resultOrEffect}</span>
-            <Select
-              value={outcomeValue}
-              onValueChange={(value) => {
-                if (!value || value === recentRequestsAllFilterValue) {
-                  onOutcomeFilterChange(null)
-                  return
-                }
-                const [kind, nextValue] = value.split(':', 2)
-                if (
-                  !nextValue ||
-                  (kind !== 'result'
-                    && kind !== 'keyEffect'
-                    && kind !== 'bindingEffect'
-                    && kind !== 'selectionEffect')
-                ) {
-                  onOutcomeFilterChange(null)
-                  return
-                }
-                onOutcomeFilterChange({
-                  kind: kind as RecentRequestsOutcomeFilterKind,
-                  value: nextValue,
-                })
-              }}
-            >
-              <SelectTrigger
-                className="recent-requests-filter-select-trigger"
-                aria-label={`${strings.logs.filters.resultOrEffect}: ${outcomeSummary}`}
-              >
-                <span className="recent-requests-filter-select-text">{outcomeSummary}</span>
-              </SelectTrigger>
-              <SelectContent className="recent-requests-filter-content">
-                <SelectItem value={recentRequestsAllFilterValue}>{strings.logs.filters.resultOrEffectAll}</SelectItem>
-                <SelectSeparator />
-                <SelectGroup>
-                  <SelectLabel>{strings.logs.filters.resultGroup}</SelectLabel>
-                  {resultOptions.length === 0 ? (
-                    <SelectItem value="__recent-requests-no-results__" disabled>
-                      {strings.logs.filters.noFacetOptions}
-                    </SelectItem>
-                  ) : (
-                    resultOptions.map((option) => (
-                      <SelectItem key={`result-${option.value}`} value={`result:${option.value}`}>
-                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          <span className="recent-requests-facet-option-main">
-                            {renderOutcomeFacetLabel('result', option.value, strings)}
-                          </span>
-                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
-                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectGroup>
-                <SelectSeparator />
-                <SelectGroup>
-                  <SelectLabel>{strings.logs.filters.keyEffectGroup}</SelectLabel>
-                  {keyEffectOptions.length === 0 ? (
-                    <SelectItem value="__recent-requests-no-effects__" disabled>
-                      {strings.logs.filters.noFacetOptions}
-                    </SelectItem>
-                  ) : (
-                    keyEffectOptions.map((option) => (
-                      <SelectItem key={`effect-${option.value}`} value={`keyEffect:${option.value}`}>
-                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          <span className="recent-requests-facet-option-main">
-                            {renderOutcomeFacetLabel('keyEffect', option.value, strings)}
-                          </span>
-                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
-                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectGroup>
-                <SelectSeparator />
-                <SelectGroup>
-                  <SelectLabel>{strings.logs.filters.bindingEffectGroup}</SelectLabel>
-                  {bindingEffectOptions.length === 0 ? (
-                    <SelectItem value="__recent-requests-no-binding-effects__" disabled>
-                      {strings.logs.filters.noFacetOptions}
-                    </SelectItem>
-                  ) : (
-                    bindingEffectOptions.map((option) => (
-                      <SelectItem key={`binding-effect-${option.value}`} value={`bindingEffect:${option.value}`}>
-                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          <span className="recent-requests-facet-option-main">
-                            {renderOutcomeFacetLabel('bindingEffect', option.value, strings)}
-                          </span>
-                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
-                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectGroup>
-                <SelectSeparator />
-                <SelectGroup>
-                  <SelectLabel>{strings.logs.filters.selectionEffectGroup}</SelectLabel>
-                  {selectionEffectOptions.length === 0 ? (
-                    <SelectItem value="__recent-requests-no-selection-effects__" disabled>
-                      {strings.logs.filters.noFacetOptions}
-                    </SelectItem>
-                  ) : (
-                    selectionEffectOptions.map((option) => (
-                      <SelectItem key={`selection-effect-${option.value}`} value={`selectionEffect:${option.value}`}>
-                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          <span className="recent-requests-facet-option-main">
-                            {renderOutcomeFacetLabel('selectionEffect', option.value, strings)}
-                          </span>
-                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
-                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {showKeyColumn && onKeyFilterChange ? (
-            <div className="recent-requests-filter-field">
-              <span className="recent-requests-filter-label">{strings.logs.table.key}</span>
-              <SearchableFacetSelect
-                value={selectedKeyId ?? null}
-                options={keyOptions}
-                summary={keyFilterSummary}
-                allLabel={strings.logs.filters.keyAll}
-                emptyLabel={strings.logs.filters.noFacetOptions}
-                searchPlaceholder={language === 'zh' ? '输入 Key 片段筛选' : 'Filter keys'}
-                searchAriaLabel={language === 'zh' ? '筛选 Key' : 'Filter keys'}
-                triggerAriaLabel={`${strings.logs.table.key}: ${keyFilterSummary}`}
-                listAriaLabel={strings.logs.table.key}
-                onChange={onKeyFilterChange}
-                disabled={keyOptions.length === 0 && !selectedKeyId}
-                triggerClassName="recent-requests-filter-select-trigger recent-requests-filter-select-trigger--menu"
-                contentClassName="recent-requests-filter-menu"
-              />
-            </div>
-          ) : null}
-        </div>
+        ) : null}
+        {renderFilters(headerFiltersTarget ? 'recent-requests-filters--mobile-only' : undefined)}
       </div>
 
       <AdminTableShell
@@ -1338,10 +1364,12 @@ export default function AdminRecentRequestsPanel({
                               'log-token-link',
                               'log-key-link',
                               'recent-requests-entity-link',
+                              'recent-requests-key-id-link',
                               'request-entity-button',
-                              'log-key-pill',
-                              isRebalanceGateway ? 'log-key-pill--rebalance' : '',
+                              isRebalanceGateway ? 'recent-requests-key-id-link--rebalance' : '',
                             ].filter(Boolean).join(' ')}
+                            aria-label={`${strings.logs.table.key}: ${keyId}`}
+                            title={keyId}
                             onClick={() => onOpenKey?.(keyId)}
                           >
                             {isRebalanceGateway ? (
@@ -1365,7 +1393,7 @@ export default function AdminRecentRequestsPanel({
                         <TooltipTrigger asChild>
                         <button
                           type="button"
-                          className="status-pair-trigger"
+                          className={requestStatusPairClassName(log)}
                           aria-label={formatRequestStatusTooltip(log, strings)}
                         >
                           {formatRequestStatusPair(log.http_status, log.mcp_status)}
@@ -1478,9 +1506,11 @@ export default function AdminRecentRequestsPanel({
                           'request-entity-button',
                           'admin-mobile-request-entity-button',
                           'log-key-link',
-                          'log-key-pill',
-                          isRebalanceGateway ? 'log-key-pill--rebalance' : '',
+                          'recent-requests-key-id-link',
+                          isRebalanceGateway ? 'recent-requests-key-id-link--rebalance' : '',
                         ].filter(Boolean).join(' ')}
+                        aria-label={`${strings.logs.table.key}: ${keyId}`}
+                        title={keyId}
                         onClick={() => onOpenKey?.(keyId)}
                       >
                         {isRebalanceGateway ? (
@@ -1513,7 +1543,7 @@ export default function AdminRecentRequestsPanel({
                   <span>{strings.logs.table.status}</span>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                    <button type="button" className="status-pair-trigger" aria-label={formatRequestStatusTooltip(log, strings)}>
+                    <button type="button" className={requestStatusPairClassName(log)} aria-label={formatRequestStatusTooltip(log, strings)}>
                       <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
                     </button>
                     </TooltipTrigger>

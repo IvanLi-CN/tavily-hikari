@@ -690,6 +690,9 @@ function UserConsoleStory(
   useEffect(() => {
     if (!ready || guideRevealMode === 'none') return
     const timer = window.setTimeout(() => {
+      if (guideRevealMode === 'detail-guide') {
+        document.querySelector<HTMLButtonElement>('.user-console-guide-disclosure-trigger')?.click()
+      }
       const button = document.querySelector<HTMLButtonElement>('.guide-token-toggle')
       button?.click()
     }, guideRevealMode === 'landing-guide' ? 200 : 120)
@@ -989,6 +992,22 @@ export const TokenDetailOverview: Story = {
     isAdmin: false,
     landingFocus: 'Overview Focus',
     tokenDetailPreview: 'Overview',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 160))
+
+    const guideTrigger = canvasElement.querySelector<HTMLButtonElement>('.user-console-guide-disclosure-trigger')
+    if (guideTrigger == null) {
+      throw new Error('Expected token detail to render a collapsed setup guide trigger.')
+    }
+
+    if (guideTrigger.getAttribute('aria-expanded') !== 'false') {
+      throw new Error('Expected setup guide to be collapsed by default.')
+    }
+
+    if (canvasElement.querySelector('.user-console-guide-disclosure-body') != null) {
+      throw new Error('Expected setup guide body to stay out of the initial detail layout.')
+    }
   },
 }
 

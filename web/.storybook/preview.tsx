@@ -295,7 +295,7 @@ const preview: Preview = {
     themeMode: {
       name: 'Theme',
       description: 'UI theme',
-      defaultValue: 'dark',
+      defaultValue: 'light',
       toolbar: {
         icon: 'mirror',
         items: [

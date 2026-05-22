@@ -51,7 +51,7 @@ function RegistrationPaused(): JSX.Element {
           }`}
         >
           <CardHeader>
-            <CardTitle className={isDark ? 'text-amber-50' : 'text-amber-950'}>{strings.title}</CardTitle>
+            <CardTitle className={isDark ? 'text-amber-50' : 'text-amber-950'}>{strings.badge}</CardTitle>
             <CardDescription className={isDark ? 'text-slate-300' : 'text-amber-900/70'}>
               {strings.description}
             </CardDescription>

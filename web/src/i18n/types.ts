@@ -47,6 +47,7 @@ export interface PublicTranslations {
   adminLogin: {
     title: string
     description: string
+    credentialsTitle: string
     password: {
       label: string
       placeholder: string
@@ -556,8 +557,15 @@ export interface AdminTranslationsShape {
     form: {
       title: string
       description: string
+      displayDensityTitle: string
+      displayDensityDescription: string
+      displayDensityComfortable: string
+      displayDensityCompact: string
+      displayDensityStoredHint: string
+      accessDisplayTitle: string
       limitsTitle: string
       gatewayTitle: string
+      gatewaySectionTitle: string
       apiRebalanceTitle: string
       requestRateLimitLabel: string
       requestRateLimitHint: string

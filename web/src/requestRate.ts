@@ -40,8 +40,5 @@ export function formatRequestRateScope(rate: RequestRate, language: 'zh' | 'en')
 }
 
 export function formatRequestRateSummary(rate: RequestRate, language: 'zh' | 'en'): string {
-  if (language === 'zh') {
-    return `${formatRequestRateLabel(rate, language)} · ${formatRequestRateScope(rate, language)}`
-  }
-  return `${formatRequestRateLabel(rate, language)} · ${formatRequestRateScope(rate, language)}`
+  return formatRequestRateLabel(rate, language)
 }

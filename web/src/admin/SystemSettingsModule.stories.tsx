@@ -4,6 +4,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import SystemSettingsModule from './SystemSettingsModule'
 import type { SystemSettings } from '../api'
+import type { AdminDisplayDensity } from './displayDensity'
 import { translations } from '../i18n'
 
 function SystemSettingsCanvas(props: {
@@ -18,7 +19,10 @@ function SystemSettingsCanvas(props: {
   error?: string | null
   saving?: boolean
   helpBubbleOpen?: boolean
+  displayDensity?: AdminDisplayDensity
 }): JSX.Element {
+  const [displayDensity, setDisplayDensity] = useState<AdminDisplayDensity>(props.displayDensity ?? 'comfortable')
+  const [allowRegistration, setAllowRegistration] = useState(false)
   const [currentSettings, setCurrentSettings] = useState<SystemSettings>({
     requestRateLimit: props.requestRateLimit ?? 100,
     mcpSessionAffinityKeyCount: props.count ?? 5,
@@ -47,6 +51,18 @@ function SystemSettingsCanvas(props: {
         error={props.error ?? null}
         saving={props.saving ?? false}
         helpBubbleOpen={props.helpBubbleOpen}
+        displayDensity={displayDensity}
+        registrationPolicy={{
+          strings: translations.zh.admin.users.registration,
+          checked: allowRegistration,
+          disabled: props.saving ?? false,
+          statusText: allowRegistration
+            ? translations.zh.admin.users.registration.enabled
+            : translations.zh.admin.users.registration.disabled,
+          error: null,
+          onToggle: () => setAllowRegistration((current) => !current),
+        }}
+        onDisplayDensityChange={setDisplayDensity}
         onApply={(nextSettings) => {
           setCurrentSettings(nextSettings)
         }}
@@ -158,7 +174,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Admin-only MCP session affinity and Rebalance MCP controls with direct-save drafts and a confirmed trusted IP dialog.',
+          'Admin-only MCP session affinity, Rebalance controls, and browser-local list density settings.',
       },
     },
   },
@@ -180,6 +196,9 @@ const meta = {
     error: null,
     saving: false,
     helpBubbleOpen: undefined,
+    displayDensity: 'comfortable',
+    registrationPolicy: undefined,
+    onDisplayDensityChange: () => {},
     onApply: () => {},
   },
   render: () => <SystemSettingsCanvas />,
@@ -190,6 +209,10 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
+
+export const CompactDensity: Story = {
+  render: () => <SystemSettingsCanvas displayDensity="compact" />,
+}
 
 export const RebalanceEnabled: Story = {
   render: () => <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} />,
