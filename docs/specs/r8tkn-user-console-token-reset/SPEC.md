@@ -49,6 +49,7 @@
 - 成功 rotate 返回 `{ token: "th-<id>-<new-secret>" }`，且 `<id>` 与原 Token ID 一致。
 - 用户确认前不得调用 rotate API；取消确认不改变任何 Token 状态。
 - rotate 成功后前端必须清理旧 secret 缓存，后续复制/详情页展示使用新完整 Token。
+- 禁用 Token 仍出现在列表时，前端不得展示可点击的重置入口。
 
 ### SHOULD
 

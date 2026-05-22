@@ -2704,6 +2704,7 @@ export default function UserConsole(): JSX.Element {
                               onDetail={goTokenDetail}
                               onReset={openResetTokenDialog}
                               isCopyIntentKey={isCopyIntentKey}
+                              canReset={item.enabled}
                             />
                           </td>
                         </tr>
@@ -2771,6 +2772,7 @@ export default function UserConsole(): JSX.Element {
                         onDetail={goTokenDetail}
                         onReset={openResetTokenDialog}
                         isCopyIntentKey={isCopyIntentKey}
+                        canReset={item.enabled}
                         className="user-console-mobile-actions"
                       />
                     </article>

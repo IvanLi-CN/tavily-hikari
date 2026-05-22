@@ -14,6 +14,7 @@ interface TokenListActionsProps {
   onDetail: (tokenId: string) => void
   onReset: (tokenId: string) => void
   isCopyIntentKey: (key: string) => boolean
+  canReset: boolean
   className?: string
 }
 
@@ -28,6 +29,7 @@ export default function TokenListActions({
   onDetail,
   onReset,
   isCopyIntentKey,
+  canReset,
   className = '',
 }: TokenListActionsProps): JSX.Element {
   const copyClass = `btn btn-outline btn-sm ${copyState === 'copied' ? 'btn-success' : copyState === 'error' ? 'btn-warning' : ''}`
@@ -53,9 +55,11 @@ export default function TokenListActions({
       <button type="button" className="btn btn-primary btn-sm" onClick={() => onDetail(tokenId)}>
         {text.detail}
       </button>
-      <button type="button" className="btn btn-warning btn-sm" onClick={() => onReset(tokenId)}>
-        {text.reset}
-      </button>
+      {canReset ? (
+        <button type="button" className="btn btn-warning btn-sm" onClick={() => onReset(tokenId)}>
+          {text.reset}
+        </button>
+      ) : null}
     </div>
   )
 }

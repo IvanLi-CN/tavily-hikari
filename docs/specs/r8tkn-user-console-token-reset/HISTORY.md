@@ -8,6 +8,7 @@
 - PR #284 创建后与 `origin/main` 同步，保留 main 上 clay redesign 相关规范索引，同时追加 `r8tkn` 条目。
 - PR-stage review 指出禁用但仍绑定的 Token 不应由用户侧 rotate 重新披露 secret，因此 rotate 改为先通过用户侧 secret 可见性检查。
 - PR Frontend Checks 暴露 source budget 超限，重置对话框和 Token list 操作组已拆出 runtime。
+- PR-stage review 指出禁用 Token 不应展示必然失败的 reset 操作，列表操作组改为仅 enabled Token 展示重置入口。
 
 ## Key Reasons / Replacements
 
