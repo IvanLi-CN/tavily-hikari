@@ -31,4 +31,15 @@ describe('AlertsCenter Storybook proofs', () => {
     expect(markup).toContain('上游用量限制 432')
     expect(markup).not.toContain('admin-loading-region-placeholder')
   })
+
+  it('keeps the default alerts view event-stream first with compact table actions', () => {
+    const markup = renderToString(<AlertsCenterStoryShell {...(EventsDefault.args ?? {})} />)
+
+    expect(markup).toContain('事件记录')
+    expect(markup).toContain('更多筛选')
+    expect(markup).toContain('POST /api/tavily/search')
+    expect(markup).toContain('alerts-center-table--events')
+    expect(markup).not.toContain('alerts-center-hero')
+    expect(markup).not.toContain('查看请求')
+  })
 })

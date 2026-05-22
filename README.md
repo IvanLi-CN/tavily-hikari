@@ -62,6 +62,19 @@ curl -X POST http://127.0.0.1:58087/api/keys \
 
 Visit `http://127.0.0.1:58087/health` for a health check or `http://127.0.0.1:55173` for the console. Keys should be managed via the admin API or SPA instead of environment variables.
 
+### Pure web demo
+
+Run the SPA with browser-local API and SSE mocks when you need to show the product without a
+backend, database, or real Tavily upstream:
+
+```bash
+scripts/start-web-demo.sh
+```
+
+The demo listens on `http://127.0.0.1:55174` by default. It serves the normal Public,
+User Console, Admin, Login, and Registration Paused pages while `VITE_DEMO_MODE=true`
+intercepts `/api/*` and `/mcp` inside the browser.
+
 ### Docker
 
 ```bash
@@ -300,7 +313,7 @@ codex mcp list | grep tavily_hikari
 
 - Rust toolchain pinned to 1.91.0 via `rust-toolchain.toml`.
 - Common commands: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --locked --all-features`, `cargo run -- --help`.
-- Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run build` (uses Bun-forced `tsc -b` + `vite build`; see `web/bunfig.toml`).
+- Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run demo`, `bun run build` (uses Bun-forced `tsc -b` + `vite build`; see `web/bunfig.toml`).
 - Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` on every commit.
 - No-node proof: run `bun run validate:no-node-runtime` to verify the repo build/hook paths still pass when a failing `node` shim is prepended to `PATH`.
 - CI: `.github/workflows/ci.yml` runs lint/tests/build.

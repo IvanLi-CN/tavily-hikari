@@ -1161,6 +1161,7 @@ export default function UserConsole(): JSX.Element {
   const [tokenSecretError, setTokenSecretError] = useState<string | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const [isMobileGuide, setIsMobileGuide] = useState(false)
+  const [detailGuideOpen, setDetailGuideOpen] = useState(false)
   const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_MCP_PROBE_STEP_COUNT))
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_API_PROBE_STEP_COUNT))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
@@ -2244,9 +2245,11 @@ export default function UserConsole(): JSX.Element {
   const renderGuideSection = useCallback((options?: {
     sectionTitle?: string
     sectionDescription?: string
+    showHeading?: boolean
+    embedded?: boolean
   }): JSX.Element => (
-    <section className="surface panel public-home-guide">
-      {options?.sectionTitle ? (
+    <section className={options?.embedded ? 'public-home-guide user-console-guide-embedded' : 'surface panel public-home-guide'}>
+      {options?.showHeading === false ? null : options?.sectionTitle ? (
         <div className="panel-header user-console-section-header">
           <div>
             <h2>{options.sectionTitle}</h2>
@@ -2461,15 +2464,15 @@ export default function UserConsole(): JSX.Element {
             </header>
             <div className="access-stats">
               <div className="access-stat">
-                <h4>{text.dashboard.dailySuccess}</h4>
+                <div className="access-stat-title">{text.dashboard.dailySuccess}</div>
                 <p><RollingNumber value={loading ? null : dashboard?.dailySuccess ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.dailyFailure}</h4>
+                <div className="access-stat-title">{text.dashboard.dailyFailure}</div>
                 <p><RollingNumber value={loading ? null : dashboard?.dailyFailure ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.monthlySuccessUtc}</h4>
+                <div className="access-stat-title">{text.dashboard.monthlySuccessUtc}</div>
                 <p><RollingNumber value={loading ? null : dashboard?.monthlySuccess ?? 0} /></p>
               </div>
             </div>
@@ -2695,25 +2698,31 @@ export default function UserConsole(): JSX.Element {
       {!consoleEmptyState && route.name === 'token' && (
         <>
           <section className="surface panel access-panel">
-            <header className="panel-header" style={{ marginBottom: 8 }}>
+            <header className="panel-header user-console-detail-header" style={{ marginBottom: 8 }}>
               <div>
                 <h2 ref={detailHeadingRef} tabIndex={-1}>{text.detail.title} <code>{route.id}</code></h2>
-                <p className="panel-description">{text.detail.subtitle}</p>
+                <p className="panel-description user-console-detail-description">
+                  <span className="user-console-detail-description-full">{text.detail.subtitle}</span>
+                  <span className="user-console-detail-description-short">{text.detail.subtitleShort}</span>
+                </p>
               </div>
-              <button type="button" className="btn btn-outline" onClick={() => goTokens()}>{text.detail.back}</button>
+              <button type="button" className="btn btn-outline user-console-detail-back" onClick={() => goTokens()}>
+                <span className="user-console-detail-back-full">{text.detail.back}</span>
+                <span className="user-console-detail-back-short">{text.detail.backShort}</span>
+              </button>
             </header>
 
             <div className="access-stats">
               <div className="access-stat">
-                <h4>{text.dashboard.dailySuccess}</h4>
+                <div className="access-stat-title">{text.dashboard.dailySuccess}</div>
                 <p><RollingNumber value={detailLoading ? null : detail?.dailySuccess ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.dailyFailure}</h4>
+                <div className="access-stat-title">{text.dashboard.dailyFailure}</div>
                 <p><RollingNumber value={detailLoading ? null : detail?.dailyFailure ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.monthlySuccessUtc}</h4>
+                <div className="access-stat-title">{text.dashboard.monthlySuccessUtc}</div>
                 <p><RollingNumber value={detailLoading ? null : detail?.monthlySuccess ?? 0} /></p>
               </div>
             </div>
@@ -2878,40 +2887,57 @@ export default function UserConsole(): JSX.Element {
                 <div className="empty-state alert">{text.detail.emptyLogs}</div>
               ) : (
                 detailLogs.map((log) => (
-                  <article key={log.id} className="user-console-mobile-card">
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.request}</span>
-                      <strong>{formatTimestamp(log.created_at)}</strong>
-                    </div>
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.path}</span>
-                      <strong>{log.method} {log.path}</strong>
-                    </div>
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.http}</span>
-                      <strong>{log.http_status ?? '—'}</strong>
-                    </div>
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.mcp}</span>
-                      <strong>{log.mcp_status ?? '—'}</strong>
-                    </div>
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.result}</span>
+                  <article key={log.id} className="user-console-mobile-card user-console-log-card">
+                    <header className="user-console-log-card-head">
+                      <div className="user-console-log-card-request">
+                        <strong>{log.method} {log.path}</strong>
+                        {log.query ? <span>{log.query}</span> : null}
+                      </div>
                       <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
                         {log.result_status}
                       </StatusBadge>
+                    </header>
+                    <div className="user-console-log-card-meta">
+                      <time dateTime={new Date(log.created_at * 1000).toISOString()}>{formatTimestamp(log.created_at)}</time>
+                      <span>H {log.http_status ?? '—'}</span>
+                      <span>T {log.mcp_status ?? '—'}</span>
                     </div>
-                    <div className="user-console-mobile-kv">
-                      <span>{text.detail.table.error}</span>
-                      <strong>{log.error_message ?? text.detail.noError}</strong>
-                    </div>
+                    <p className="user-console-log-card-error">
+                      {log.error_message ?? text.detail.noError}
+                    </p>
                   </article>
                 ))
               )}
             </div>
           </section>
 
-          {renderGuideSection()}
+          <section className="surface panel user-console-guide-disclosure">
+            <button
+              type="button"
+              className="user-console-guide-disclosure-trigger"
+              aria-expanded={detailGuideOpen}
+              onClick={() => setDetailGuideOpen((current) => !current)}
+            >
+              <span className="user-console-guide-disclosure-copy">
+                <strong>{text.detail.guideTitle}</strong>
+                <span>{text.detail.guideDescription}</span>
+              </span>
+              <span className="user-console-guide-disclosure-action">
+                {detailGuideOpen ? text.detail.guideToggleHide : text.detail.guideToggleShow}
+                <Icon
+                  icon={detailGuideOpen ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                  width={18}
+                  height={18}
+                  aria-hidden="true"
+                />
+              </span>
+            </button>
+            {detailGuideOpen ? (
+              <div className="user-console-guide-disclosure-body">
+                {renderGuideSection({ showHeading: false, embedded: true })}
+              </div>
+            ) : null}
+          </section>
 
         </>
       )}
@@ -2956,4 +2982,3 @@ export {
   shouldRenderLandingGuide,
   toLoggedOutConsoleProfile,
 }
-

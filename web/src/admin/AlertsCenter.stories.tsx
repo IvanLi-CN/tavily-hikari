@@ -155,10 +155,18 @@ const requestBodies: Record<number, RequestLogBodies> = {
 function formatTs(value: number | null): string {
   if (!value) return '—'
   return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000))
+}
+
+function formatMonthDayTs(value: number | null): string {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'short',
+    day: '2-digit',
   }).format(new Date(value * 1000))
 }
 
@@ -176,7 +184,7 @@ export function AlertsCenterStoryShell({ initialSearch = alertsPath() }: { initi
         onOpenToken={() => {}}
         onOpenKey={() => {}}
         formatTime={formatTs}
-        formatTimeDetail={formatTs}
+        formatTimeDetail={formatMonthDayTs}
         initialCatalog={catalog}
         initialEventsPage={{ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }}
         initialGroupsPage={groupsPage}
@@ -233,7 +241,7 @@ export function AlertsCenterRefreshingStoryShell({
         onOpenToken={() => {}}
         onOpenKey={() => {}}
         formatTime={formatTs}
-        formatTimeDetail={formatTs}
+        formatTimeDetail={formatMonthDayTs}
         initialCatalog={catalog}
         initialEventsPage={{ page: 1, perPage: 20, total: baseEvents.length, items: baseEvents }}
         initialGroupsPage={groupsPage}

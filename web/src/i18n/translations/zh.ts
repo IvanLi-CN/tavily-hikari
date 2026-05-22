@@ -55,8 +55,8 @@ export const ZH: TranslationShape = {
         description: '已注册用户仍可继续使用 Linux DO 登录；新的账户暂时无法创建。',
       },
       adminLogin: {
-        title: '管理员登录',
-        description: '登录后可管理 Tavily key 与访问令牌。',
+        title: '管理员登录', description: '登录后可管理 Tavily key 与访问令牌。',
+        credentialsTitle: '登录凭据',
         password: {
           label: '管理员口令',
           placeholder: '请输入管理员口令',
@@ -289,9 +289,9 @@ export const ZH: TranslationShape = {
         actionsDescription: '快速查看最近活动并跳转到对应模块。',
         recentRequests: '近期请求',
         recentJobs: '近期任务',
-        openModule: '查看',
-        openToken: '查看令牌',
-        openKey: '查看密钥',
+        openModule: '查看令牌',
+        openToken: '检查令牌',
+        openKey: '检查密钥',
         disabledTokenRisk: '令牌 {id} 已被禁用',
         exhaustedKeyRisk: 'API Key {id} 已耗尽',
         failedJobRisk: '任务 #{id} 状态：{status}',
@@ -302,7 +302,7 @@ export const ZH: TranslationShape = {
         recentAlertsEvents: '事件数',
         recentAlertsGroups: '分组数',
         recentAlertsEmpty: '最近 24 小时暂无告警活动。',
-        recentAlertsOpen: '打开告警中心',
+        recentAlertsOpen: '查看告警',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: '上游 429',
           upstream_usage_limit_432: '上游用量 432',
@@ -569,12 +569,12 @@ export const ZH: TranslationShape = {
       systemSettings: {
         title: '系统设置',
         description: '调整系统级 request-rate、MCP session 亲和、Rebalance 策略与封禁数基础值，并且无需重启即可生效。',
-        helpLabel: '显示系统设置说明',
-        form: {
-          title: 'MCP 网关控制',
-          description: '这里统一管理全局 request-rate 阈值、MCP session 亲和池、Rebalance MCP 灰度比例与封禁数基础值。',
-          limitsTitle: '全局限制与提示', gatewayTitle: 'MCP 网关控制', apiRebalanceTitle: 'Tavily API Rebalance',
-          requestRateLimitLabel: '5 分钟最大请求数',
+        helpLabel: '显示系统设置说明', form: {
+          title: 'MCP 网关控制', description: '这里统一管理全局 request-rate 阈值、MCP session 亲和池、Rebalance MCP 灰度比例与封禁数基础值。',
+          displayDensityTitle: '列表密度', displayDensityDescription: '统一管理端列表的行高、字号和单元格间距。',
+          displayDensityComfortable: '一般', displayDensityCompact: '紧凑', displayDensityStoredHint: '仅保存在当前浏览器，切换后立即应用。',
+          accessDisplayTitle: '访问与显示', limitsTitle: '全局限制与提示', gatewayTitle: 'MCP 网关控制',
+          gatewaySectionTitle: 'Session 亲和与 Rebalance', apiRebalanceTitle: 'Tavily API Rebalance', requestRateLimitLabel: '5 分钟最大请求数',
           requestRateLimitHint: '作用于全局 request-rate limiter；保存后对下一次已鉴权请求立即生效，但不会清空当前 5 分钟窗口中的已有计数。',
           currentRequestRateLimitValue: '当前阈值：{count}',
           countLabel: '亲和 key 数量',

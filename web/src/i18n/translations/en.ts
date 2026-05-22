@@ -56,8 +56,8 @@ export const EN: TranslationShape = {
         description: 'Existing users can still sign in with Linux DO. New accounts are temporarily blocked.',
       },
       adminLogin: {
-        title: 'Admin Login',
-        description: 'Sign in to manage Tavily keys and access tokens.',
+        title: 'Admin Login', description: 'Sign in to manage Tavily keys and access tokens.',
+        credentialsTitle: 'Login credentials',
         password: {
           label: 'Admin Password',
           placeholder: 'Enter admin password',
@@ -290,9 +290,9 @@ export const EN: TranslationShape = {
         actionsDescription: 'Recent events you can jump into quickly.',
         recentRequests: 'Recent requests',
         recentJobs: 'Recent jobs',
-        openModule: 'Open',
-        openToken: 'Open token',
-        openKey: 'Open key',
+        openModule: 'Review tokens',
+        openToken: 'Inspect token',
+        openKey: 'Inspect key',
         disabledTokenRisk: 'Token {id} is disabled',
         exhaustedKeyRisk: 'API key {id} is exhausted',
         failedJobRisk: 'Job #{id} status: {status}',
@@ -303,7 +303,7 @@ export const EN: TranslationShape = {
         recentAlertsEvents: 'Events',
         recentAlertsGroups: 'Groups',
         recentAlertsEmpty: 'No alert activity in the last 24 hours.',
-        recentAlertsOpen: 'Open alerts',
+        recentAlertsOpen: 'Review alerts',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: 'Upstream 429',
           upstream_usage_limit_432: 'Upstream usage limit 432',
@@ -569,12 +569,12 @@ export const EN: TranslationShape = {
       },
       systemSettings: {
         title: 'System Settings', description: 'Adjust the global request-rate threshold, MCP session affinity, Rebalance behavior, and blocked-key base limit without restarting.',
-        helpLabel: 'Show system settings help',
-        form: {
-          title: 'MCP gateway controls',
-          description: 'Manage the global request-rate threshold, the MCP session affinity pool, the Rebalance MCP rollout ratio, and the blocked-key base limit in one place.',
-          limitsTitle: 'Global limits and warnings', gatewayTitle: 'MCP gateway controls', apiRebalanceTitle: 'Tavily API Rebalance',
-          requestRateLimitLabel: 'Max requests per 5 minutes',
+        helpLabel: 'Show system settings help', form: {
+          title: 'MCP gateway controls', description: 'Manage the global request-rate threshold, the MCP session affinity pool, the Rebalance MCP rollout ratio, and the blocked-key base limit in one place.',
+          displayDensityTitle: 'List density', displayDensityDescription: 'Unifies admin list row height, type size, and cell spacing.',
+          displayDensityComfortable: 'Comfortable', displayDensityCompact: 'Compact', displayDensityStoredHint: 'Saved only in this browser and applied immediately.',
+          accessDisplayTitle: 'Access and display', limitsTitle: 'Global limits and warnings', gatewayTitle: 'MCP gateway controls',
+          gatewaySectionTitle: 'Session affinity and Rebalance', apiRebalanceTitle: 'Tavily API Rebalance', requestRateLimitLabel: 'Max requests per 5 minutes',
           requestRateLimitHint: 'Applies to the global request-rate limiter. Saving takes effect on the next authenticated request, but keeps the current rolling-window counters intact.',
           currentRequestRateLimitValue: 'Current limit: {count}',
           countLabel: 'Affinity key count',

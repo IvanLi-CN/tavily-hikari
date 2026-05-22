@@ -92,6 +92,7 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'cherryStudio',
   'other',
 ]
+const PRIMARY_GUIDE_KEYS = new Set<GuideKey>(['codex', 'claude', 'vscode'])
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -334,6 +335,8 @@ function PublicHome(): JSX.Element {
     () => GUIDE_KEY_ORDER.map((id) => ({ id, label: publicStrings.guide.tabs[id] ?? id })),
     [publicStrings.guide.tabs],
   )
+  const primaryGuideTabs = guideTabs.filter((tab) => PRIMARY_GUIDE_KEYS.has(tab.id))
+  const secondaryGuideTabs = guideTabs.filter((tab) => !PRIMARY_GUIDE_KEYS.has(tab.id))
 
   const versionTagUrl = updateBanner.currentVersion
     ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
@@ -566,15 +569,15 @@ function PublicHome(): JSX.Element {
               <div className="access-stats">
                 {/* Group 1: usage counts */}
                 <div className="access-stat">
-                  <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
+                  <div className="access-stat-title">{publicStrings.accessPanel.stats.dailySuccess}</div>
                   <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
                 </div>
                 <div className="access-stat">
-                  <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
+                  <div className="access-stat-title">{publicStrings.accessPanel.stats.dailyFailure}</div>
                   <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
                 </div>
                 <div className="access-stat">
-                  <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
+                  <div className="access-stat-title">{publicStrings.accessPanel.stats.monthlySuccess}</div>
                   <p><RollingNumber value={tokenMetricsPending ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
                 </div>
               </div>
@@ -789,18 +792,25 @@ function PublicHome(): JSX.Element {
           </div>
         )}
         {!isCompactLayout && (
-        <div className="guide-tabs">
-          {guideTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`guide-tab${activeGuide === tab.id ? ' active' : ''}`}
-              onClick={() => setActiveGuide(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+          <div className="guide-tabs">
+            {primaryGuideTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`guide-tab${activeGuide === tab.id ? ' active' : ''}`}
+                onClick={() => setActiveGuide(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+            <MobileGuideDropdown
+              active={secondaryGuideTabs.some((tab) => tab.id === activeGuide) ? activeGuide : secondaryGuideTabs[0]?.id ?? 'other'}
+              onChange={(id) => setActiveGuide(id)}
+              labels={secondaryGuideTabs}
+              triggerClassName="guide-more-trigger"
+              triggerLabel={secondaryGuideTabs.some((tab) => tab.id === activeGuide) ? undefined : language === 'zh' ? '更多客户端' : 'More clients'}
+            />
+          </div>
         )}
         <div className="guide-panel">
           <div className="guide-panel-header">
@@ -958,16 +968,20 @@ function MobileGuideDropdown({
   active,
   onChange,
   labels,
+  triggerClassName = 'w-full',
+  triggerLabel,
 }: {
   active: GuideKey
   onChange: (id: GuideKey) => void
   labels: { id: GuideKey, label: string }[]
+  triggerClassName?: string
+  triggerLabel?: string
 }): JSX.Element {
   const current = labels.find((l) => l.id === active)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10">
+        <Button type="button" variant="outline" size="sm" className={`${triggerClassName} justify-between md:h-10`}>
           <span className="inline-flex items-center gap-2">
             <Icon
               icon={getGuideClientIconName(active)}
@@ -976,7 +990,7 @@ function MobileGuideDropdown({
               aria-hidden="true"
               style={{ color: '#475569' }}
             />
-            {current?.label ?? active}
+            {triggerLabel ?? current?.label ?? active}
           </span>
           <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
         </Button>

@@ -66,7 +66,6 @@ import { Input } from '../../components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
-import { Switch } from '../../components/ui/switch'
 import { LanguageProvider, useLanguage, useTranslate, type AdminTranslations } from '../../i18n'
 import { KeyDetails } from '../../AdminDashboard'
 import { TokenDetailStoryCanvas } from '../../pages/TokenDetail.stories'
@@ -4633,7 +4632,6 @@ function UsersPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
   const users = admin.users
-  const [allowRegistration, setAllowRegistration] = useState(true)
   const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
   const {
@@ -4678,75 +4676,10 @@ function UsersPageCanvas(): JSX.Element {
   return (
     <AdminPageFrame activeModule="users">
       <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h2>{users.catalog.summaryTitle}</h2>
-            <p className="panel-description">{users.catalog.summaryDescription}</p>
-          </div>
-          <button type="button" className="btn btn-outline">
-            {users.userTags.manageCatalog}
-          </button>
-        </div>
-        <div className="user-tag-summary-grid">
-          {MOCK_TAG_CATALOG.map((tag) => {
-            const isSystem = tag.systemKey != null
-            const isBlockAll = tag.effectKind === 'block_all'
-            const cardClasses = ['user-tag-summary-card', isBlockAll ? 'user-tag-summary-card-block' : '']
-              .filter(Boolean)
-              .join(' ')
-            return (
-              <article className={cardClasses} key={tag.id}>
-                <div className="user-tag-summary-card-head">
-                  <StoryUserTagBadge tag={{ ...tag }} users={users} />
-                  <StatusBadge tone={isSystem ? 'info' : isBlockAll ? 'error' : 'neutral'}>
-                    {isSystem ? users.catalog.scopeSystem : users.catalog.scopeCustom}
-                  </StatusBadge>
-                </div>
-                <div className="user-tag-summary-count">
-                  <strong>{formatNumber(tag.userCount)}</strong>
-                  <span className="panel-description">{users.catalog.summaryAccounts}</span>
-                </div>
-              </article>
-            )
-          })}
-        </div>
-      </section>
-
-      <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
+        <div className="panel-header admin-list-toolbar" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div className="admin-stacked-only">
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
-          </div>
-          <div
-            className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
-            style={{
-              display: 'flex',
-              minWidth: 260,
-              maxWidth: 380,
-              flex: '1 1 300px',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: 12,
-            }}
-          >
-            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <div className="text-sm font-semibold">{users.registration.title}</div>
-                <Badge variant={allowRegistration ? 'success' : 'warning'}>
-                  {allowRegistration ? users.status.enabled : users.status.disabled}
-                </Badge>
-              </div>
-              <p className="text-xs font-medium" role="status" aria-live="polite" style={{ margin: '6px 0 0' }}>
-                {allowRegistration ? users.registration.enabled : users.registration.disabled}
-              </p>
-            </div>
-            <Switch
-              checked={allowRegistration}
-              aria-label={users.registration.title}
-              onCheckedChange={() => setAllowRegistration((current) => !current)}
-              style={{ flex: '0 0 auto' }}
-            />
           </div>
           <div className="users-search-controls">
             <Input
@@ -4882,6 +4815,41 @@ function UsersPageCanvas(): JSX.Element {
               </tbody>
             </table>
           )}
+        </div>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2>{users.catalog.summaryTitle}</h2>
+            <p className="panel-description">{users.catalog.summaryDescription}</p>
+          </div>
+          <button type="button" className="btn btn-outline">
+            {users.userTags.manageCatalog}
+          </button>
+        </div>
+        <div className="user-tag-summary-grid">
+          {MOCK_TAG_CATALOG.map((tag) => {
+            const isSystem = tag.systemKey != null
+            const isBlockAll = tag.effectKind === 'block_all'
+            const cardClasses = ['user-tag-summary-card', isBlockAll ? 'user-tag-summary-card-block' : '']
+              .filter(Boolean)
+              .join(' ')
+            return (
+              <article className={cardClasses} key={tag.id}>
+                <div className="user-tag-summary-card-head">
+                  <StoryUserTagBadge tag={{ ...tag }} users={users} />
+                  <StatusBadge tone={isSystem ? 'info' : isBlockAll ? 'error' : 'neutral'}>
+                    {isSystem ? users.catalog.scopeSystem : users.catalog.scopeCustom}
+                  </StatusBadge>
+                </div>
+                <div className="user-tag-summary-count">
+                  <strong>{formatNumber(tag.userCount)}</strong>
+                  <span className="panel-description">{users.catalog.summaryAccounts}</span>
+                </div>
+              </article>
+            )
+          })}
         </div>
       </section>
     </AdminPageFrame>
@@ -5758,7 +5726,21 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
 
   return (
     <AdminPageFrame activeModule="users">
-      <section className="surface panel">
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title={users.catalog.title}
+          description={users.catalog.description}
+          actions={
+            <div className="user-tag-page-actions">
+              <button type="button" className="btn btn-outline">{users.catalog.backToUsers}</button>
+              <button type="button" className="btn btn-primary" disabled={editorMode === 'new'}>
+                {users.catalog.actions.create}
+              </button>
+            </div>
+          }
+        />
+      </div>
+      <section className="surface panel admin-stacked-only">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
             <h2>{users.catalog.title}</h2>
@@ -6158,6 +6140,14 @@ function SystemSettingsPageCanvas(): JSX.Element {
         loadState="ready"
         error={null}
         saving={false}
+        registrationPolicy={{
+          strings: admin.users.registration,
+          checked: false,
+          disabled: false,
+          statusText: admin.users.registration.disabled,
+          error: null,
+          onToggle: () => {},
+        }}
         onApply={() => {}}
       />
     </AdminPageFrame>

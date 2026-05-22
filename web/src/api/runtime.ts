@@ -5,6 +5,7 @@ import {
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
+import { normalizeUserDashboard, normalizeUserTokenSummary, normalizeUserTokenSummaryList } from './userConsoleNormalization'
 
 export interface Summary {
   total_requests: number
@@ -1833,14 +1834,14 @@ export function fetchUserDashboard(todayWindow?: TodayWindowRange, signal?: Abor
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/dashboard${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown>(url, { signal }).then(normalizeUserDashboard)
 }
 
 export function fetchUserTokens(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserTokenSummary[]> {
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/tokens${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown>(url, { signal }).then(normalizeUserTokenSummaryList)
 }
 
 export function fetchUserTokenDetail(
@@ -1852,7 +1853,7 @@ export function fetchUserTokenDetail(
   const params = new URLSearchParams()
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/tokens/${encoded}${params.toString() ? `?${params.toString()}` : ''}`
-  return requestJson(url, { signal })
+  return requestJson<unknown>(url, { signal }).then(normalizeUserTokenSummary)
 }
 
 export function fetchUserTokenSecret(id: string, signal?: AbortSignal): Promise<UserTokenResponse> {
@@ -1889,7 +1890,7 @@ export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortS
 export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot {
   const snapshot = JSON.parse(raw) as ServerUserTokenEventSnapshot
   return {
-    token: snapshot.token,
+    token: normalizeUserTokenSummary(snapshot.token),
     logs: snapshot.logs.map((it) => ({
       id: it.id,
       method: it.method,

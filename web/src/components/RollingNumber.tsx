@@ -6,15 +6,17 @@ export interface RollingNumberProps {
   className?: string
 }
 
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
+
 // A lightweight rolling number that animates all digit columns up or down
 // based on the overall delta (increase => roll up; decrease => roll down).
 // Separators like commas are rendered as static glyphs.
 export default function RollingNumber({ value, loading, className }: RollingNumberProps): JSX.Element {
   const [prev, setPrev] = useState<number>(value ?? 0)
   const [digitHeight, setDigitHeight] = useState<number>(0)
-  const probeRef = useRef<HTMLDivElement | null>(null)
+  const probeRef = useRef<HTMLSpanElement | null>(null)
 
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (probeRef.current) {
       const h = probeRef.current.getBoundingClientRect().height
       if (h > 0) setDigitHeight(h)
@@ -50,43 +52,42 @@ export default function RollingNumber({ value, loading, className }: RollingNumb
   const cells = useMemo(() => formatted.split(''), [formatted])
 
   return (
-    <span className={`rolling-number${className ? ' ' + className : ''}`}>
+    <span className={`rolling-number${className ? ' ' + className : ''}`} aria-label={formatted} role="text">
       {/* probe cell to measure height (1em) */}
-      <div className="rn-probe" ref={probeRef} aria-hidden>
+      <span className="rn-probe" ref={probeRef} aria-hidden="true">
         0
-      </div>
-      {cells.map((ch, idx) => {
-        if (ch < '0' || ch > '9') {
+      </span>
+      <span aria-hidden="true" className="rn-visual">
+        {cells.map((ch, idx) => {
+          if (ch < '0' || ch > '9') {
+            return (
+              <span key={idx} className="rn-sep">
+                {ch}
+              </span>
+            )
+          }
+          const target = Number(ch)
+          // render strip 0..9 twice to allow wrap when direction changes across boundary
+          const digits = Array.from({ length: 20 }, (_, i) => i % 10)
+          // compute translate target index depending on direction
+          const baseIndex = direction === 'up' ? target + 10 : target
+          const translate = digitHeight * baseIndex
           return (
-            <span key={idx} className="rn-sep">
-              {ch}
+            <span key={idx} className={`rn-col rn-${direction}`} style={{ height: digitHeight || undefined }}>
+              <span
+                className="rn-strip"
+                style={{ transform: `translateY(${-translate}px)` }}
+              >
+                {digits.map((d, i) => (
+                  <span key={i} className="rn-digit">
+                    {d}
+                  </span>
+                ))}
+              </span>
             </span>
           )
-        }
-        const target = Number(ch)
-        // render strip 0..9 twice to allow wrap when direction changes across boundary
-        const digits = Array.from({ length: 20 }, (_, i) => i % 10)
-        // compute translate target index depending on direction
-        const baseIndex = direction === 'up' ? target + 10 : target
-        const translate = digitHeight * baseIndex
-        return (
-          <span key={idx} className={`rn-col rn-${direction}`} style={{ height: digitHeight || undefined }}>
-            <span
-              className="rn-strip"
-              style={{ transform: `translateY(${-translate}px)` }}
-              aria-hidden
-            >
-              {digits.map((d, i) => (
-                <span key={i} className="rn-digit">
-                  {d}
-                </span>
-              ))}
-            </span>
-            {/* accessibility: render current digit for screen readers */}
-            <span className="sr-only">{target}</span>
-          </span>
-        )
-      })}
+        })}
+      </span>
     </span>
   )
 }

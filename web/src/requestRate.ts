@@ -34,14 +34,11 @@ export function formatRequestRateLabel(rate: RequestRate, language: 'zh' | 'en')
 
 export function formatRequestRateScope(rate: RequestRate, language: 'zh' | 'en'): string {
   if (language === 'zh') {
-    return rate.scope === 'user' ? '用户共享' : 'Token 独立'
+    return rate.scope === 'user' ? '账号级' : '令牌级'
   }
-  return rate.scope === 'user' ? 'shared by user' : 'token-local'
+  return rate.scope === 'user' ? 'account-level' : 'token-level'
 }
 
 export function formatRequestRateSummary(rate: RequestRate, language: 'zh' | 'en'): string {
-  if (language === 'zh') {
-    return `${formatRequestRateLabel(rate, language)} · ${formatRequestRateScope(rate, language)}`
-  }
   return `${formatRequestRateLabel(rate, language)} · ${formatRequestRateScope(rate, language)}`
 }

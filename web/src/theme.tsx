@@ -51,8 +51,8 @@ function applyTheme(resolvedTheme: ResolvedTheme): void {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }): JSX.Element {
-  const [mode, setModeState] = useState<ThemeMode>(() => readStoredThemeMode() ?? 'system')
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readStoredThemeMode() ?? 'system'))
+  const [mode, setModeState] = useState<ThemeMode>(() => readStoredThemeMode() ?? 'light')
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(readStoredThemeMode() ?? 'light'))
 
   useEffect(() => {
     const next = resolveTheme(mode)

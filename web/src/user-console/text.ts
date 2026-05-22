@@ -34,7 +34,7 @@ export const EN = {
   },
   tokens: {
     title: 'Token List',
-    description: 'Copy any token or jump into its detail view from the same landing page.',
+    description: 'Copy tokens, review quota windows, and open recent request details.',
     loading: 'Loading token list…',
     empty: 'No token available for this account.',
     copy: 'Copy',
@@ -67,7 +67,7 @@ export const EN = {
   },
   loggedOut: {
     title: 'You have signed out',
-    description: 'This deployment keeps `/console` available, but dashboard and token data require signing in again.',
+    description: 'Sign in again to view your dashboard and token data.',
     action: 'Sign in with LinuxDo',
   },
   loginRequired: {
@@ -77,8 +77,10 @@ export const EN = {
   },
   detail: {
     title: 'Token Detail',
-    subtitle: 'Same token-level modules as home page (without global site card).',
+    subtitle: 'Review this token’s quota, secret, connectivity checks, and recent requests.',
+    subtitleShort: 'Quota, secret, checks, and requests.',
     back: 'Back to Token List',
+    backShort: 'Back',
     tokenLabel: 'Token',
     tokenSecret: {
       show: 'Show full token',
@@ -171,6 +173,8 @@ export const EN = {
     emptyLogs: 'No recent requests.',
     guideTitle: 'Client Setup',
     guideDescription: 'Use the same MCP configuration as the public homepage.',
+    guideToggleShow: 'Open setup guide',
+    guideToggleHide: 'Close setup guide',
     table: {
       request: 'Request',
       transport: 'HTTP / Tavily',
@@ -234,7 +238,7 @@ export const ZH = {
   },
   tokens: {
     title: 'Token 列表',
-    description: '在同一落地页里完成复制 Token 与进入详情，不再切换独立列表页。',
+    description: '复制 Token、查看配额窗口，并进入详情检查最近请求。',
     loading: 'Token 列表加载中…',
     empty: '当前账户暂无 Token。',
     copy: '复制',
@@ -267,7 +271,7 @@ export const ZH = {
   },
   loggedOut: {
     title: '你已退出登录',
-    description: '当前部署会保留 `/console` 入口，但账户仪表盘与 Token 数据需要重新登录后才能访问。',
+    description: '重新登录后即可查看账户仪表盘与 Token 数据。',
     action: '使用 LinuxDo 登录',
   },
   loginRequired: {
@@ -277,8 +281,10 @@ export const ZH = {
   },
   detail: {
     title: 'Token 详情',
-    subtitle: '保留首页 token 相关模块（不展示首个站点全局卡片）。',
+    subtitle: '查看当前 Token 的配额、密钥、连通性检测与最近请求。',
+    subtitleShort: '查看配额、密钥、检测与请求。',
     back: '返回 Token 列表',
+    backShort: '返回',
     tokenLabel: 'Token',
     tokenSecret: {
       show: '显示完整 Token',
@@ -369,6 +375,8 @@ export const ZH = {
     emptyLogs: '暂无请求记录。',
     guideTitle: '客户端接入',
     guideDescription: '沿用首页的 MCP 配置方式即可接入。',
+    guideToggleShow: '展开接入指南',
+    guideToggleHide: '收起接入指南',
     table: {
       request: '请求',
       transport: 'HTTP / Tavily',

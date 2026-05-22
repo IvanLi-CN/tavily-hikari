@@ -17,6 +17,7 @@ export type AdminModuleId =
 
 export type AdminPathRoute =
   | { name: 'module'; module: AdminModuleId }
+  | { name: 'not-found'; path: string }
   | { name: 'token'; id: string }
   | { name: 'unbound-token-usage' }
   | { name: 'user-usage' }
@@ -100,20 +101,23 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/alerts`) {
     return { name: 'module', module: 'alerts' }
   }
-  if (path === `${ADMIN_BASE}/system-settings`) {
+  if (path === `${ADMIN_BASE}/system-settings` || path === `${ADMIN_BASE}/settings`) {
     return { name: 'module', module: 'system-settings' }
   }
   if (path === `${ADMIN_BASE}/proxy-settings`) {
     return { name: 'module', module: 'proxy-settings' }
   }
 
-  return { name: 'module', module: 'dashboard' }
+  return { name: 'not-found', path }
 }
 
 export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): boolean {
   if (left.name !== right.name) return false
   if (left.name === 'module' && right.name === 'module') {
     return left.module === right.module
+  }
+  if (left.name === 'not-found' && right.name === 'not-found') {
+    return left.path === right.path
   }
   if (left.name === 'token' && right.name === 'token') {
     return left.id === right.id

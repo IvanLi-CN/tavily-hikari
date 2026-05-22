@@ -2362,9 +2362,11 @@ export default function ForwardProxySettingsModule({
     <div className="forward-proxy-stack">
       <Card className="surface panel forward-proxy-summary-panel">
         <CardHeader className="forward-proxy-panel-header forward-proxy-summary-header">
-          <div className="forward-proxy-panel-heading">
-            <CardTitle>{strings.title}</CardTitle>
-            <CardDescription className="panel-description">{strings.description}</CardDescription>
+          <div className="forward-proxy-panel-heading forward-proxy-panel-heading--compact">
+            <CardTitle>{strings.summary.range}</CardTitle>
+            <CardDescription className="panel-description">
+              {formatTimeRange(stats?.rangeStart, stats?.rangeEnd)}
+            </CardDescription>
           </div>
           <div className="forward-proxy-panel-meta">
             <div className="forward-proxy-toolbar">
@@ -2376,8 +2378,6 @@ export default function ForwardProxySettingsModule({
               </Button>
             </div>
             <div className="forward-proxy-range-row">
-              <Badge variant="outline">{strings.summary.range}</Badge>
-              <span className="panel-description">{formatTimeRange(stats?.rangeStart, stats?.rangeEnd)}</span>
               {savedAt != null && (
                 <span className="panel-description">
                   {strings.summary.savedAt.replace('{time}', dateTimeFormatter.format(new Date(savedAt)))}

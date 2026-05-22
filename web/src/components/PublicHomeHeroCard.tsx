@@ -114,27 +114,57 @@ function PublicHomeHeroCard({
           <span>{authStatusText}</span>
         </div>
       )}
-      <div className="metrics-grid hero-metrics">
-        <div className="metric-card">
-          <h3>{publicStrings.metrics.monthly.title}</h3>
-          <div className="metric-value">
-            <RollingNumber value={metricsLoading ? null : metrics?.monthlySuccess ?? 0} />
+      <div className="public-home-traffic-board" aria-label={publicStrings.metrics.pool.title}>
+        <div className="public-home-traffic-stage" aria-hidden="true">
+          <div className="traffic-node traffic-node-client">
+            <span className="traffic-node-icon">
+              <Icon icon="mdi:console-network-outline" width={24} height={24} />
+            </span>
+            <strong>Client</strong>
+            <small>{publicStrings.metrics.daily.subtitle}</small>
           </div>
-          <div className="metric-subtitle">{publicStrings.metrics.monthly.subtitle}</div>
+          <div className="traffic-pulse-track">
+            <span />
+            <span />
+          </div>
+          <div className="traffic-node traffic-node-core">
+            <span className="traffic-node-icon">
+              <Icon icon="mdi:shield-key-outline" width={25} height={25} />
+            </span>
+            <strong>Hikari</strong>
+            <small>{publicStrings.metrics.monthly.subtitle}</small>
+          </div>
+          <div className="traffic-pulse-track traffic-pulse-track-alt">
+            <span />
+            <span />
+          </div>
+          <div className="traffic-node traffic-node-upstream">
+            <span className="traffic-node-icon">
+              <Icon icon="mdi:cloud-check-outline" width={24} height={24} />
+            </span>
+            <strong>Upstream</strong>
+            <small>{publicStrings.metrics.pool.subtitle}</small>
+          </div>
         </div>
-        <div className="metric-card">
-          <h3>{publicStrings.metrics.daily.title}</h3>
-          <div className="metric-value">
-            <RollingNumber value={metricsLoading ? null : metrics?.dailySuccess ?? 0} />
+        <div className="public-home-metric-rail">
+          <div className="metric-card public-home-metric-pill">
+            <p className="metric-card-title">{publicStrings.metrics.monthly.title}</p>
+            <div className="metric-value">
+              <RollingNumber value={metricsLoading ? null : metrics?.monthlySuccess ?? 0} />
+            </div>
           </div>
-          <div className="metric-subtitle">{publicStrings.metrics.daily.subtitle}</div>
-        </div>
-        <div className="metric-card">
-          <h3>{publicStrings.metrics.pool.title}</h3>
-          <div className="metric-value">
-            {summaryLoading ? '—' : availableKeys != null && totalKeys != null ? `${availableKeys}/${totalKeys}` : '—'}
+          <div className="metric-card public-home-metric-pill">
+            <p className="metric-card-title">{publicStrings.metrics.daily.title}</p>
+            <div className="metric-value">
+              <RollingNumber value={metricsLoading ? null : metrics?.dailySuccess ?? 0} />
+            </div>
           </div>
-          <div className="metric-subtitle">{publicStrings.metrics.pool.subtitle}</div>
+          <div className="metric-card public-home-metric-pill">
+            <p className="metric-card-title">{publicStrings.metrics.pool.title}</p>
+            <div className="metric-value">
+              {summaryLoading ? '—' : availableKeys != null && totalKeys != null ? `${availableKeys}/${totalKeys}` : '—'}
+            </div>
+          </div>
         </div>
       </div>
       {shouldShowActions && (

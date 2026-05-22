@@ -3,11 +3,13 @@ import type { ReactNode } from 'react'
 import type { QueryLoadState } from '../admin/queryLoadState'
 import { cn } from '../lib/utils'
 import AdminLoadingRegion from './AdminLoadingRegion'
-import { Table } from './ui/table'
+import { Table, type TableDensity } from './ui/table'
 
 interface AdminTableShellProps {
   children: ReactNode
   className?: string
+  density?: TableDensity
+  tableContainerClassName?: string
   tableClassName?: string
   loadState?: QueryLoadState
   loadingLabel?: ReactNode
@@ -19,6 +21,8 @@ interface AdminTableShellProps {
 export default function AdminTableShell({
   children,
   className,
+  density = 'comfortable',
+  tableContainerClassName,
   tableClassName,
   loadState = 'ready',
   loadingLabel,
@@ -35,7 +39,9 @@ export default function AdminTableShell({
       minHeight={minHeight}
       skeletonRows={skeletonRows}
     >
-      <Table className={tableClassName}>{children}</Table>
+      <Table className={tableClassName} containerClassName={tableContainerClassName} density={density}>
+        {children}
+      </Table>
     </AdminLoadingRegion>
   )
 }

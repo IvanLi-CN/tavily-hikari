@@ -1,11 +1,12 @@
 import '../../test/happydom'
 
 import { afterEach, describe, expect, it } from 'bun:test'
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import type { SystemSettings } from '../api'
 import { translations } from '../i18n'
+import type { AdminDisplayDensity } from './displayDensity'
 import SystemSettingsModule from './SystemSettingsModule'
 
 const strings = translations.zh.admin.systemSettings
@@ -73,6 +74,51 @@ describe('SystemSettingsModule interactions', () => {
 
     expect(applied.at(-1)?.rebalanceMcpEnabled).toBe(true)
     expect(switchButton!.getAttribute('aria-checked')).toBe('false')
+
+    await act(async () => root.unmount())
+  })
+
+  it('switches the browser-local list density without saving system settings', async () => {
+    const applied: SystemSettings[] = []
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    function Harness(): JSX.Element {
+      const [displayDensity, setDisplayDensity] = useState<AdminDisplayDensity>('comfortable')
+      return (
+        <SystemSettingsModule
+          strings={strings}
+          settings={initialSettings}
+          loadState="ready"
+          error={null}
+          saving={false}
+          displayDensity={displayDensity}
+          onDisplayDensityChange={setDisplayDensity}
+          onApply={(nextSettings) => {
+            applied.push(nextSettings)
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      root.render(<Harness />)
+    })
+    await flushEffects()
+
+    const compactButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === strings.form.displayDensityCompact,
+    )
+    expect(compactButton).not.toBeNull()
+
+    await act(async () => {
+      compactButton!.click()
+    })
+    await flushEffects()
+
+    expect(compactButton!.getAttribute('aria-pressed')).toBe('true')
+    expect(applied).toHaveLength(0)
 
     await act(async () => root.unmount())
   })

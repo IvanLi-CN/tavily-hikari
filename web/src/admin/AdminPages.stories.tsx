@@ -22,16 +22,12 @@ const meta = {
     (Story) => (
       <LanguageProvider>
         <div
+          className="app-shell"
           style={{
             minHeight: '100vh',
             padding: 24,
             color: 'hsl(var(--foreground))',
-            background: [
-              'radial-gradient(1000px 520px at 6% -8%, hsl(var(--primary) / 0.14), transparent 62%)',
-              'radial-gradient(900px 460px at 95% -14%, hsl(var(--accent) / 0.12), transparent 64%)',
-              'linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 62%, hsl(var(--muted) / 0.58) 100%)',
-              'hsl(var(--background))',
-            ].join(', '),
+            background: 'var(--clay-canvas, hsl(var(--background)))',
           }}
         >
           <Story />
