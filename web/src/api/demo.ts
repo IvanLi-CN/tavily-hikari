@@ -575,6 +575,88 @@ function demoRecentAlerts() {
   }
 }
 
+function buildAlertsPage<T>(items: T[], url: URL, defaultPerPage = 20) {
+  const page = Math.max(1, Number(url.searchParams.get('page') ?? '1') || 1)
+  const perPage = Math.max(1, Number(url.searchParams.get('per_page') ?? defaultPerPage) || defaultPerPage)
+  const start = (page - 1) * perPage
+  return {
+    items: items.slice(start, start + perPage),
+    total: items.length,
+    page,
+    perPage,
+  }
+}
+
+function timestampMatchesAlertWindow(timestamp: number, url: URL): boolean {
+  const since = url.searchParams.get('since')
+  const until = url.searchParams.get('until')
+  if (since) {
+    const sinceSeconds = Date.parse(since) / 1000
+    if (Number.isFinite(sinceSeconds) && timestamp < sinceSeconds) return false
+  }
+  if (until) {
+    const untilSeconds = Date.parse(until) / 1000
+    if (Number.isFinite(untilSeconds) && timestamp > untilSeconds) return false
+  }
+  return true
+}
+
+function requestKindMatchesAlertFilter(requestKindKey: string | undefined, url: URL): boolean {
+  const filters = url.searchParams.getAll('request_kind').filter(Boolean)
+  if (filters.length === 0) return true
+  return Boolean(requestKindKey && filters.includes(requestKindKey))
+}
+
+function alertEventMatchesFilters(event: ReturnType<typeof demoRecentAlerts>['topGroups'][number]['latestEvent'], url: URL): boolean {
+  const type = url.searchParams.get('type')
+  const userId = url.searchParams.get('user_id')
+  const tokenId = url.searchParams.get('token_id')
+  const keyId = url.searchParams.get('key_id')
+  const eventUser = event.user as { userId?: string } | null
+  if (type && event.type !== type) return false
+  if (userId && eventUser?.userId !== userId) return false
+  if (tokenId && event.token?.id !== tokenId) return false
+  if (keyId && event.key?.id !== keyId) return false
+  if (!requestKindMatchesAlertFilter(event.requestKind?.key, url)) return false
+  return timestampMatchesAlertWindow(event.occurredAt, url)
+}
+
+function alertGroupMatchesFilters(group: ReturnType<typeof demoRecentAlerts>['topGroups'][number], url: URL): boolean {
+  const type = url.searchParams.get('type')
+  const userId = url.searchParams.get('user_id')
+  const tokenId = url.searchParams.get('token_id')
+  const keyId = url.searchParams.get('key_id')
+  const groupUser = group.user as { userId?: string } | null
+  if (type && group.type !== type) return false
+  if (userId && groupUser?.userId !== userId) return false
+  if (tokenId && group.token?.id !== tokenId) return false
+  if (keyId && group.key?.id !== keyId) return false
+  if (!requestKindMatchesAlertFilter(group.requestKind?.key, url)) return false
+  return timestampMatchesAlertWindow(group.lastSeen, url)
+}
+
+function demoAlertCatalogPayload() {
+  const alerts = demoRecentAlerts()
+  return {
+    retentionDays: 30,
+    types: alerts.countsByType.map((item) => ({ value: item.type, count: item.count })),
+    requestKindOptions,
+    users: demoState.users.map((user) => ({
+      id: user.userId,
+      label: user.displayName,
+      username: user.username,
+    })),
+    tokens: demoState.tokens.map((token) => ({
+      id: token.id,
+      label: token.note ?? token.id,
+    })),
+    keys: demoState.keys.map((key) => ({
+      id: key.id,
+      label: key.id,
+    })),
+  }
+}
+
 function serverJobToView(job: ReturnType<typeof createDemoJobs>[number]) {
   return {
     id: job.id,
@@ -928,9 +1010,15 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/stats/forward-proxy/errors') return jsonResponse(forwardProxyErrorStats())
   if (path === '/api/stats/forward-proxy/summary') return jsonResponse({ availableNodes: 2, totalNodes: 3 })
 
-  if (path === '/api/alerts/catalog') return jsonResponse({ retentionDays: 30, types: demoRecentAlerts().countsByType.map((item) => ({ value: item.type, count: item.count })), requestKindOptions, users: [], tokens: [], keys: [] })
-  if (path === '/api/alerts/events') return jsonResponse({ items: demoRecentAlerts().topGroups.map((group) => group.latestEvent), total: 1, page: 1, perPage: 20 })
-  if (path === '/api/alerts/groups') return jsonResponse({ items: demoRecentAlerts().topGroups, total: 1, page: 1, perPage: 20 })
+  if (path === '/api/alerts/catalog') return jsonResponse(demoAlertCatalogPayload())
+  if (path === '/api/alerts/events') {
+    const events = demoRecentAlerts().topGroups.map((group) => group.latestEvent).filter((event) => alertEventMatchesFilters(event, url))
+    return jsonResponse(buildAlertsPage(events, url))
+  }
+  if (path === '/api/alerts/groups') {
+    const groups = demoRecentAlerts().topGroups.filter((group) => alertGroupMatchesFilters(group, url))
+    return jsonResponse(buildAlertsPage(groups, url))
+  }
 
   if (path.startsWith('/api/tavily/')) return jsonResponse(handleTavilyProbe(path))
   return method === 'GET' ? jsonResponse({ demo: true, path }) : noContentResponse()
@@ -1166,11 +1254,16 @@ function emitInitialDemoEvent(source: DemoEventSource): void {
     return
   }
   if (path.startsWith('/api/user/tokens/')) {
-    source.emit('snapshot', { token: demoState.tokens[0], logs: publicTokenLogs() })
+    const tokenId = decodeURIComponent(path.split('/')[4] ?? DEMO_TOKEN_ID)
+    const token = demoState.tokens.find((item) => item.id === tokenId) ?? demoState.tokens[0]
+    const logs = demoState.logs.filter((log) => log.auth_token_id === token.id)
+    source.emit('snapshot', { token, logs: publicTokenLogs(logs) })
     return
   }
   if (path.startsWith('/api/tokens/')) {
-    source.emit('snapshot', { summary: tokenSummary(DEMO_TOKEN_ID), logs: demoState.logs.slice(0, 12) })
+    const tokenId = decodeURIComponent(path.split('/')[3] ?? DEMO_TOKEN_ID)
+    const logs = demoState.logs.filter((log) => log.auth_token_id === tokenId)
+    source.emit('snapshot', { summary: tokenSummary(tokenId), logs: logs.slice(0, 12) })
   }
 }
 
