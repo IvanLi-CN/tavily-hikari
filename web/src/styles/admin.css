@@ -466,15 +466,28 @@
   display: flex;
   justify-content: flex-end;
   align-items: flex-start;
+  min-width: 0;
 }
 
 .user-tag-binding-actions .user-tag-bind-controls {
+  display: flex;
   width: 100%;
   justify-content: flex-end;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
 }
 
 .user-tag-binding-actions .select {
-  min-width: min(100%, 19rem);
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.user-tag-binding-actions .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .user-tag-bind-controls {
