@@ -222,8 +222,8 @@ function withOpacity(color: string, opacity: number): string {
     : color
 }
 
-function buildCumulativeSeries(values: ReadonlyArray<number>): number[] {
-  let runningTotal = 0
+function buildCumulativeSeries(values: ReadonlyArray<number>, initialValue = 0): number[] {
+  let runningTotal = initialValue
   return values.map((value) => {
     runningTotal += Math.max(0, value)
     return runningTotal
@@ -347,6 +347,8 @@ function DashboardUsageBackdropChart({
   primaryColor,
   comparisonValues,
   comparisonColor,
+  primaryInitialValue = 0,
+  comparisonInitialValue = 0,
   className,
 }: {
   ariaLabel: string
@@ -354,6 +356,8 @@ function DashboardUsageBackdropChart({
   primaryColor: string
   comparisonValues?: ReadonlyArray<number>
   comparisonColor?: string
+  primaryInitialValue?: number
+  comparisonInitialValue?: number
   className?: string
 }): JSX.Element | null {
   const chartData = useMemo<ChartData<'line'>>(() => {
@@ -365,7 +369,7 @@ function DashboardUsageBackdropChart({
     const datasets: ChartData<'line'>['datasets'] = [
       {
         label: 'current',
-        data: buildCumulativeSeries(primaryValues),
+        data: buildCumulativeSeries(primaryValues, primaryInitialValue),
         borderColor: primaryColor,
         backgroundColor: withOpacity(primaryColor, 0.12),
         fill: true,
@@ -381,7 +385,7 @@ function DashboardUsageBackdropChart({
     if (comparisonValues && comparisonValues.length > 0) {
       datasets.push({
         label: 'comparison',
-        data: buildCumulativeSeries(comparisonValues),
+        data: buildCumulativeSeries(comparisonValues, comparisonInitialValue),
         borderColor: comparisonColor ?? primaryColor,
         backgroundColor: 'transparent',
         fill: false,
@@ -396,7 +400,7 @@ function DashboardUsageBackdropChart({
     }
 
     return { labels, datasets }
-  }, [comparisonColor, comparisonValues, primaryColor, primaryValues])
+  }, [comparisonColor, comparisonInitialValue, comparisonValues, primaryColor, primaryInitialValue, primaryValues])
 
   const chartOptions = useMemo<ChartOptions<'line'>>(() => ({
     responsive: true,
@@ -929,12 +933,14 @@ export default function DashboardOverview({
     () => buildHourlyBackdropSeries(hourlyRequestWindow),
     [hourlyRequestWindow],
   )
-  const monthBackdrop = useMemo(() => {
-    const monthTotal = Math.max(summaryWindowValues.month.total_requests, 1)
-    const todayTotal = Math.max(summaryWindowValues.today.total_requests, 1)
-    const scale = monthTotal / todayTotal
-    return buildHourlyBackdropSeries(hourlyRequestWindow, scale)
-  }, [hourlyRequestWindow, summaryWindowValues.month.total_requests, summaryWindowValues.today.total_requests])
+  const monthBackdrop = useMemo(
+    () => buildHourlyBackdropSeries(hourlyRequestWindow),
+    [hourlyRequestWindow],
+  )
+  const monthBackdropBaseline = Math.max(
+    summaryWindowValues.month.total_requests - summaryWindowValues.today.total_requests,
+    0,
+  )
   const backdropColors = {
     today: readChartColorVar('--primary', 'hsl(262 83% 58%)'),
     yesterday: readChartColorVar('--secondary', 'hsl(330 80% 51%)'),
@@ -1046,6 +1052,8 @@ export default function DashboardOverview({
                   comparisonValues={monthBackdrop.comparison}
                   primaryColor={backdropColors.month}
                   comparisonColor={backdropColors.today}
+                  primaryInitialValue={monthBackdropBaseline}
+                  comparisonInitialValue={monthBackdropBaseline}
                 />
                 <div className="dashboard-summary-block-content">
                   <header className="dashboard-summary-header">
