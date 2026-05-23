@@ -6769,6 +6769,14 @@ export const UserDetail: Story = {
     if (!usagePanel) {
       throw new Error('Expected user detail story to render the shared usage panel.')
     }
+    const usagePanelStyle = getComputedStyle(usagePanel)
+    if (
+      usagePanelStyle.borderTopWidth !== '0px' ||
+      usagePanelStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' ||
+      usagePanelStyle.boxShadow !== 'none'
+    ) {
+      throw new Error('Expected the shared usage panel content to avoid a nested card surface.')
+    }
     if (usagePanel.dataset.loadedSeries !== 'quota1h') {
       throw new Error(`Expected the default story to lazy-load only quota1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
     }

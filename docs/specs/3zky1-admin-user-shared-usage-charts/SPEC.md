@@ -170,6 +170,22 @@
 
 ## Visual Evidence
 
+### 共享额度趋势布局修复
+
+- asset:
+  `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-shared-usage-layout-repaired.png`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--user-detail`
+- target_program: `mock-only`
+- capture_scope: `element`
+- requested_viewport: `1600x1000`
+- viewport_strategy: `devtools-emulate`
+- submission_gate: `pending-owner-approval`
+- evidence_note:
+  共享额度趋势面板已去除内层卡片 surface，只保留外层 `surface panel` 作为唯一卡片边界；图表区高度与内侧留白已稳定，横轴末尾刻度改为末尾优先并让邻近刻度让位，避免右侧标签挤压。
+
+![共享额度趋势布局修复](./assets/user-detail-shared-usage-layout-repaired.png)
+
 ### 共享额度趋势说明文案收敛
 
 - asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-shared-usage-copy-refined.png`

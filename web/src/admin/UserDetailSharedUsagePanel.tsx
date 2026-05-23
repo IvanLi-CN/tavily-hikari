@@ -492,7 +492,9 @@ export function UserDetailSharedUsagePanel({
             minRotation: 0,
             color: chartPalette.tick,
             callback(_value, index) {
-              if (index === points.length - 1 || index % stride === 0) {
+              const finalIndex = points.length - 1
+              if (index !== finalIndex && finalIndex - index < stride) return ''
+              if (index === finalIndex || index % stride === 0) {
                 const label = chartData.labels?.[index]
                 return typeof label === 'string' ? label : ''
               }

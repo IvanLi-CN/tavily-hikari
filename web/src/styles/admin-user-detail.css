@@ -238,14 +238,18 @@
 .admin-user-shared-usage-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .admin-user-shared-usage-panel-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
+  gap: 18px 20px;
   flex-wrap: wrap;
   margin-bottom: 0;
 }
@@ -303,7 +307,7 @@
 }
 
 .admin-user-shared-usage-chart {
-  min-height: 260px;
+  min-height: 312px;
 }
 
 .admin-user-shared-usage-hint {
@@ -312,6 +316,8 @@
 
 .admin-user-shared-usage-chart {
   position: relative;
+  min-width: 0;
+  padding: 4px 6px 0 0;
 }
 
 .admin-user-ip-usage {
