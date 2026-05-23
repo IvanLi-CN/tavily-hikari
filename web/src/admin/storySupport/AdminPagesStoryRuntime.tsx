@@ -4,7 +4,6 @@ import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
-
 import type {
   AlertCatalog,
   AlertEvent,
@@ -63,8 +62,8 @@ import {
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu'
 import { Input } from '../../components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip'
+import { UserTagBindingControls } from '../UserTagBindingControls'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { LanguageProvider, useLanguage, useTranslate, type AdminTranslations } from '../../i18n'
@@ -5778,7 +5777,6 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
     </AdminPageFrame>
   )
 }
-
 function UserDetailPageCanvas({
   initialUsageSeries = 'quota1h',
 }: {
@@ -5799,7 +5797,6 @@ function UserDetailPageCanvas({
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
   const systemTagCount = detail.tags.filter((tag) => isSystemUserTag(tag)).length
   const manualTagCount = detail.tags.length - systemTagCount
-
   return (
     <AdminPageFrame
       activeModule="users"
@@ -5865,7 +5862,6 @@ function UserDetailPageCanvas({
           </div>
         </div>
       </section>
-
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
@@ -5900,17 +5896,15 @@ function UserDetailPageCanvas({
             </div>
           </div>
           <div className="user-tag-binding-actions">
-            <div className="user-tag-bind-controls">
-              <Select value={selectedBindableTagId} onValueChange={setSelectedBindableTagId}>
-                <SelectTrigger className="user-tag-bind-select" aria-label={users.userTags.bindPlaceholder}>
-                  <SelectValue placeholder={users.userTags.bindPlaceholder} />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  <SelectItem value="suspended_manual">Suspended</SelectItem>
-                </SelectContent>
-              </Select>
-              <button type="button" className="btn btn-primary">{users.userTags.bindAction}</button>
-            </div>
+            <UserTagBindingControls
+              bindableTags={[{ id: 'suspended_manual', displayName: 'Suspended' }]}
+              buttonLabel={users.userTags.bindAction}
+              emptyLabel="暂无可绑定标签"
+              onBind={() => undefined}
+              onSelectedTagIdChange={setSelectedBindableTagId}
+              placeholder={users.userTags.bindPlaceholder}
+              selectedTagId={selectedBindableTagId ?? ''}
+            />
           </div>
         </div>
         <div className="user-tag-binding-list">

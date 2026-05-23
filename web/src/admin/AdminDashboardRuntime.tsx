@@ -40,6 +40,7 @@ import {
   DrawerContent,
 } from '../components/ui/drawer'
 import { Input } from '../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -51,7 +52,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { Table } from '../components/ui/table'
@@ -60,6 +60,7 @@ import { AnchoredInfoDisclosure } from '../components/ui/anchored-info-disclosur
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
+import { UserTagBindingControls } from './UserTagBindingControls'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './DashboardOverview'
@@ -7976,41 +7977,17 @@ function AdminDashboard(): JSX.Element {
                   </div>
                 </div>
                 <div className="user-tag-binding-actions">
-                  <div className="user-tag-bind-controls">
-                    <Select
-                      value={selectedBindableTagId}
-                      onValueChange={setSelectedBindableTagId}
-                      disabled={savingUserTagBinding}
-                    >
-                      <SelectTrigger
-                        className="user-tag-bind-select"
-                        aria-label={usersStrings.userTags.bindPlaceholder}
-                      >
-                        <SelectValue placeholder={usersStrings.userTags.bindPlaceholder} />
-                      </SelectTrigger>
-                      <SelectContent align="start">
-                        {bindableCustomTags.length === 0 ? (
-                          <SelectItem value="__no_bindable_user_tags__" disabled>
-                            暂无可绑定标签
-                          </SelectItem>
-                        ) : (
-                          bindableCustomTags.map((tag) => (
-                            <SelectItem key={tag.id} value={tag.id}>
-                              {tag.displayName}
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      onClick={() => void bindSelectedUserTag()}
-                      disabled={savingUserTagBinding || !selectedBindableTagId}
-                    >
-                      {savingUserTagBinding ? usersStrings.userTags.binding : usersStrings.userTags.bindAction}
-                    </button>
-                  </div>
+                  <UserTagBindingControls
+                    bindableTags={bindableCustomTags}
+                    buttonLabel={usersStrings.userTags.bindAction}
+                    buttonBusyLabel={usersStrings.userTags.binding}
+                    disabled={savingUserTagBinding}
+                    emptyLabel="暂无可绑定标签"
+                    onBind={() => void bindSelectedUserTag()}
+                    onSelectedTagIdChange={setSelectedBindableTagId}
+                    placeholder={usersStrings.userTags.bindPlaceholder}
+                    selectedTagId={selectedBindableTagId}
+                  />
                 </div>
               </div>
 
