@@ -709,6 +709,8 @@ export interface AdminTranslationsShape {
       ipUsageListEmpty: string
       tokensTitle: string
       tokensDescription: string
+      addToken: string
+      addingToken: string
     }
     brokenKeys: {
       limitTitle: string
@@ -862,6 +864,8 @@ export interface AdminTranslationsShape {
       }
       actions: {
         view: string
+        delete: string
+        deleteDisabled: string
       }
     }
   }

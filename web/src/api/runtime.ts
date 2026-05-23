@@ -2689,6 +2689,17 @@ export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<
   return requestJson(`/api/users/${encoded}`, { signal })
 }
 
+export async function createAdminUserToken(id: string): Promise<AuthTokenSecret> {
+  const encoded = encodeURIComponent(id)
+  return await requestJson(`/api/users/${encoded}/tokens`, { method: 'POST' })
+}
+
+export async function deleteAdminUserToken(id: string, tokenId: string): Promise<void> {
+  const encodedUserId = encodeURIComponent(id)
+  const encodedTokenId = encodeURIComponent(tokenId)
+  await requestNoContent(`/api/users/${encodedUserId}/tokens/${encodedTokenId}`, { method: 'DELETE' })
+}
+
 export function fetchAdminUserUsageSeries(
   id: string,
   series: AdminUserUsageSeriesKey,

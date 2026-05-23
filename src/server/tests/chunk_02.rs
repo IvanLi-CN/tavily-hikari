@@ -1993,6 +1993,8 @@ async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin: bool) -> S
         .route("/api/user-tags/:tag_id", delete(delete_user_tag))
         .route("/api/users", get(list_users))
         .route("/api/users/:id", get(get_user_detail))
+        .route("/api/users/:id/tokens", post(create_user_token))
+        .route("/api/users/:id/tokens/:token_id", delete(delete_user_token))
         .route("/api/users/:id/quota", patch(update_user_quota))
         .route("/api/users/:id/tags", post(bind_user_tag))
         .route("/api/users/:id/tags/:tag_id", delete(unbind_user_tag))

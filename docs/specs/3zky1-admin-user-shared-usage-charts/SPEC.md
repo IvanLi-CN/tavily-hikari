@@ -4,7 +4,7 @@
 
 - Status: 进行中（快车道）
 - Created: 2026-04-23
-- Last: 2026-04-23
+- Last: 2026-05-23
 
 ## 背景
 
@@ -21,6 +21,7 @@
 - 新增持久化 rollup 表 `account_usage_rollup_buckets`，分别承载账户共享请求频率与业务 credits 聚合。
 - 新增额度历史快照表，按时间回放请求限流与账户有效额度。
 - 用户详情 token 列表只展示 token 自有字段，移除账户共享额度字段，新增 `累计请求` 与 `创建时间`。
+- 管理员可在用户详情 token 列表区直接添加 token，并对非最后一个 token 执行删除；最后一个 token 的删除必须被前后端共同阻止。
 
 ## Non-goals
 
@@ -149,6 +150,7 @@
   - limit 使用独立虚线 dataset，数据源为 `points[].limitValue`
 - 月度历史缺口显示为无数据提示，不伪装成 `0`。
 - token 列表说明文案需明确：这里只展示 token 自己的状态、时间与成功统计，共享额度请看上方趋势图。
+- token 列表右上角提供“添加令牌”按钮；每行操作区提供删除按钮，但当用户仅剩 1 个 token 时必须禁用删除。
 
 ## 验收标准
 
@@ -156,6 +158,7 @@
 - 切换到 `5m / 24h / 月` 时才触发对应接口请求，二次切回不重复请求。
 - 四张图都带明显的上限虚线；虚线必须按 bucket 对应的历史 `limitValue` 绘制，不能整图平铺当前 limit。
 - token 列表不再出现任何账户共享额度字段或易误导文案。
+- 用户详情 token 列表包含添加入口；多 token 时可删除指定 token，单 token 时删除按钮禁用且后端拒绝删除最后一个 token。
 - `quotaMonth` 对不可追溯月份返回 `null`，前端显示缺口/提示，而不是伪造 `0`。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook` 全部通过。
 - Storybook 与真实 `/admin/users/:id` 浏览器复核完成，并在本 spec 记录最终视觉证据。

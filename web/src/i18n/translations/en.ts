@@ -714,6 +714,8 @@ export const EN: TranslationShape = {
           ipUsageListEmpty: 'No IP addresses.',
           tokensTitle: 'Tokens',
           tokensDescription: 'This table only shows token-owned status, timestamps, and success stats. Shared quota is charted above.',
+          addToken: 'Add token',
+          addingToken: 'Adding…',
         },
         brokenKeys: {
           limitTitle: 'Blocked-key limit',
@@ -867,6 +869,8 @@ export const EN: TranslationShape = {
           },
           actions: {
             view: 'Open token detail',
+            delete: 'Delete token',
+            deleteDisabled: 'Keep at least one token',
           },
         },
       },

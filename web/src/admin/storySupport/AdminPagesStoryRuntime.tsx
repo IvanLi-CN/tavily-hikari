@@ -5780,12 +5780,14 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
 
 function UserDetailPageCanvas({
   initialUsageSeries = 'quota1h',
+  detail: detailOverride,
 }: {
   initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
+  detail?: AdminUserDetail
 } = {}): JSX.Element {
   const users = useTranslate().admin.users
   const { language } = useLanguage()
-  const detail = MOCK_USER_DETAIL
+  const detail = detailOverride ?? MOCK_USER_DETAIL
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
   const [quotaDraft, setQuotaDraft] = useState<Record<QuotaSliderField, string>>({
     hourlyAnyLimit: String(detail.quotaBase.hourlyAnyLimit),
@@ -6046,6 +6048,10 @@ function UserDetailPageCanvas({
             <h2>{users.detail.tokensTitle}</h2>
             <p className="panel-description">{users.detail.tokensDescription}</p>
           </div>
+          <Button type="button" variant="secondary" size="sm">
+            <Icon icon="mdi:key-plus" width={16} height={16} />
+            <span>{users.detail.addToken}</span>
+          </Button>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
           <UserDetailTokenTable
@@ -6054,6 +6060,7 @@ function UserDetailPageCanvas({
             formatNumber={formatNumber}
             formatTimestamp={(value) => formatTimestamp(value ?? null)}
             onViewToken={() => {}}
+            onDeleteToken={() => {}}
           />
         </div>
       </section>
@@ -6867,6 +6874,32 @@ export const UserDetailCompact: Story = {
       if (cards.some((card) => card.scrollWidth > card.clientWidth + 1)) {
         throw new Error(`Expected compact ${label} cards to avoid horizontal overflow.`)
       }
+    }
+  },
+}
+
+export const UserDetailSingleTokenGuard: Story = {
+  render: () => (
+    <UserDetailPageCanvas
+      detail={{
+        ...MOCK_USER_DETAIL,
+        tokenCount: 1,
+        tokens: [MOCK_USER_TOKENS[0]],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const addButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('添加令牌'))
+    if (!addButton) {
+      throw new Error('Expected user detail story to expose the add-token action.')
+    }
+    const disabledDeleteButton = canvasElement.querySelector<HTMLButtonElement>(
+      'button[aria-label="至少保留一个令牌"]',
+    )
+    if (!disabledDeleteButton?.disabled) {
+      throw new Error('Expected single-token user detail story to disable token deletion.')
     }
   },
 }

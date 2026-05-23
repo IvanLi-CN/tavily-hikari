@@ -850,6 +850,59 @@ async fn get_user_usage_series(
     }))
 }
 
+#[axum::debug_handler]
+async fn create_user_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<AuthTokenSecretView>), (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    match state.proxy.create_user_bound_access_token(&id, None).await {
+        Ok(secret) => Ok((
+            StatusCode::CREATED,
+            Json(AuthTokenSecretView {
+                token: secret.token,
+            }),
+        )),
+        Err(ProxyError::Database(sqlx::Error::RowNotFound)) => {
+            Err((StatusCode::NOT_FOUND, "user not found".to_string()))
+        }
+        Err(err) => Err(admin_proxy_error_response(
+            "create admin user token error",
+            err,
+        )),
+    }
+}
+
+async fn delete_user_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, token_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    match state
+        .proxy
+        .delete_user_bound_access_token(&id, &token_id)
+        .await
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(ProxyError::Database(sqlx::Error::RowNotFound)) => Err((
+            StatusCode::NOT_FOUND,
+            "user token binding not found".to_string(),
+        )),
+        Err(err) => Err(admin_proxy_error_response(
+            "delete admin user token error",
+            err,
+        )),
+    }
+}
+
 async fn update_user_quota(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

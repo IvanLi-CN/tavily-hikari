@@ -77,6 +77,7 @@ export const UserTagNew = { ...RuntimeStories.UserTagNew }
 export const UserTagEdit = { ...RuntimeStories.UserTagEdit }
 export const UserDetail = { ...RuntimeStories.UserDetail }
 export const UserDetailCompact = { ...RuntimeStories.UserDetailCompact }
+export const UserDetailSingleTokenGuard = { ...RuntimeStories.UserDetailSingleTokenGuard }
 export const UserDetailSharedUsageTooltip = { ...RuntimeStories.UserDetailSharedUsageTooltip }
 export const UserDetailMonthlyGap = { ...RuntimeStories.UserDetailMonthlyGap }
 export const UserDetailIpUsage = { ...RuntimeStories.UserDetailIpUsage }

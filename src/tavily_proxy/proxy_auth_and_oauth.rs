@@ -15,6 +15,17 @@ impl TavilyProxy {
         self.key_store.create_access_token(note).await
     }
 
+    /// Admin: create a new access token and bind it to the specified user.
+    pub async fn create_user_bound_access_token(
+        &self,
+        user_id: &str,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        self.key_store
+            .create_user_bound_access_token(user_id, note)
+            .await
+    }
+
     /// Admin: batch create access tokens with required group name.
     pub async fn create_access_tokens_batch(
         &self,
@@ -129,6 +140,17 @@ impl TavilyProxy {
     /// Admin: delete a token by id code.
     pub async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
         self.key_store.delete_access_token(id).await
+    }
+
+    /// Admin: delete a token only when it belongs to a user and is not their last token.
+    pub async fn delete_user_bound_access_token(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .delete_user_bound_access_token(user_id, token_id)
+            .await
     }
 
     /// Admin: set token enabled/disabled.

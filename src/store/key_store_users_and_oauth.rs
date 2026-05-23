@@ -444,6 +444,167 @@ impl KeyStore {
             .await
     }
 
+    pub(crate) async fn create_user_bound_access_token(
+        &self,
+        user_id: &str,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let note = note.unwrap_or("").trim().to_string();
+
+        for _ in 0..4 {
+            let now = Utc::now().timestamp();
+            let mut tx = self.pool.begin().await?;
+
+            let user_exists = sqlx::query_scalar::<_, Option<i64>>(
+                r#"SELECT 1 FROM users WHERE id = ? LIMIT 1"#,
+            )
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if user_exists.is_none() {
+                tx.rollback().await.ok();
+                return Err(ProxyError::Database(sqlx::Error::RowNotFound));
+            }
+
+            let mut created: Option<(String, String)> = None;
+            for _ in 0..8 {
+                let token_id = random_string(ALPHABET, 4);
+                let secret = random_string(ALPHABET, 24);
+                let inserted_token = sqlx::query(
+                    r#"INSERT INTO auth_tokens
+                       (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                       VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
+                )
+                .bind(&token_id)
+                .bind(&secret)
+                .bind(&note)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match inserted_token {
+                    Ok(_) => {
+                        created = Some((token_id, secret));
+                        break;
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => {
+                        tx.rollback().await.ok();
+                        return Err(ProxyError::Database(err));
+                    }
+                }
+            }
+
+            let Some((token_id, secret)) = created else {
+                tx.rollback().await.ok();
+                return Err(ProxyError::Other(
+                    "failed to create auth token for user binding".to_string(),
+                ));
+            };
+
+            let inserted_binding = sqlx::query(
+                r#"INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)"#,
+            )
+            .bind(user_id)
+            .bind(&token_id)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await;
+
+            match inserted_binding {
+                Ok(_) => {
+                    tx.commit().await?;
+                    self.cache_token_binding(&token_id, Some(user_id)).await;
+                    return Ok(AuthTokenSecret {
+                        id: token_id.clone(),
+                        token: Self::compose_full_token(&token_id, &secret),
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    tx.rollback().await.ok();
+                    continue;
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(ProxyError::Database(err));
+                }
+            }
+        }
+
+        Err(ProxyError::Other(
+            "failed to create user-bound token after retries".to_string(),
+        ))
+    }
+
+    pub(crate) async fn delete_user_bound_access_token(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"UPDATE auth_tokens
+               SET enabled = 0, deleted_at = ?
+               WHERE id = ?
+                 AND deleted_at IS NULL
+                 AND EXISTS (
+                   SELECT 1
+                   FROM user_token_bindings b
+                   WHERE b.user_id = ? AND b.token_id = auth_tokens.id
+                 )
+                 AND (
+                   SELECT COUNT(*)
+                   FROM user_token_bindings b_count
+                   JOIN auth_tokens t_count ON t_count.id = b_count.token_id
+                   WHERE b_count.user_id = ? AND t_count.deleted_at IS NULL
+                 ) > 1"#,
+        )
+        .bind(now)
+        .bind(token_id)
+        .bind(user_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            self.cache_token_binding(token_id, None).await;
+            return Ok(());
+        }
+
+        let bound_active_count = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*)
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND t.deleted_at IS NULL"#,
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let token_belongs_to_user = sqlx::query_scalar::<_, Option<i64>>(
+            r#"SELECT 1
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND b.token_id = ? AND t.deleted_at IS NULL
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+
+        if token_belongs_to_user && bound_active_count <= 1 {
+            return Err(ProxyError::Other(
+                "cannot delete the user's last token".to_string(),
+            ));
+        }
+
+        Err(ProxyError::Database(sqlx::Error::RowNotFound))
+    }
+
     pub(crate) async fn fetch_active_token_secret_by_id(
         &self,
         token_id: &str,

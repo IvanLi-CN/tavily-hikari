@@ -24,6 +24,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.TokenDetailRecentRequests).toMatchObject({})
     expect(adminPageStories.UserDetailSharedUsageTooltip).toMatchObject({})
     expect(adminPageStories.UserDetailCompact).toMatchObject({})
+    expect(adminPageStories.UserDetailSingleTokenGuard).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -156,5 +157,22 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-user-mobile-chip')
     expect(markup).toContain('累计请求')
     expect(markup).toContain('最终有效额度')
+  })
+
+  it('renders user detail token add and single-token delete guard actions', () => {
+    const renderStory = adminPageStories.UserDetailSingleTokenGuard.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('添加令牌')
+    expect(markup).toContain('aria-label="至少保留一个令牌"')
+    expect(markup).toContain('disabled=""')
   })
 })

@@ -1,7 +1,7 @@
 .jobs-table.admin-user-tokens-table th:last-child,
 .jobs-table.admin-user-tokens-table td:last-child {
-  width: 86px;
-  min-width: 86px;
+  width: 104px;
+  min-width: 104px;
   text-align: center;
 }
 
@@ -83,6 +83,13 @@
 
 .token-compact-pair .status-badge {
   width: fit-content;
+}
+
+.admin-user-token-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .admin-mobile-kv--stacked {
