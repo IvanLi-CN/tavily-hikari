@@ -7977,19 +7977,31 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="user-tag-binding-actions">
                   <div className="user-tag-bind-controls">
-                    <select
-                      className="select select-bordered"
+                    <Select
                       value={selectedBindableTagId}
-                      onChange={(event) => setSelectedBindableTagId(event.target.value)}
-                      disabled={savingUserTagBinding || bindableCustomTags.length === 0}
+                      onValueChange={setSelectedBindableTagId}
+                      disabled={savingUserTagBinding}
                     >
-                      <option value="">{usersStrings.userTags.bindPlaceholder}</option>
-                      {bindableCustomTags.map((tag) => (
-                        <option key={tag.id} value={tag.id}>
-                          {tag.displayName}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger
+                        className="user-tag-bind-select"
+                        aria-label={usersStrings.userTags.bindPlaceholder}
+                      >
+                        <SelectValue placeholder={usersStrings.userTags.bindPlaceholder} />
+                      </SelectTrigger>
+                      <SelectContent align="start">
+                        {bindableCustomTags.length === 0 ? (
+                          <SelectItem value="__no_bindable_user_tags__" disabled>
+                            暂无可绑定标签
+                          </SelectItem>
+                        ) : (
+                          bindableCustomTags.map((tag) => (
+                            <SelectItem key={tag.id} value={tag.id}>
+                              {tag.displayName}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
                     <button
                       type="button"
                       className="btn btn-primary"

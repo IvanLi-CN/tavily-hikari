@@ -63,6 +63,7 @@ import {
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu'
 import { Input } from '../../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
@@ -5794,6 +5795,7 @@ function UserDetailPageCanvas({
     monthlyLimit: String(detail.quotaBase.monthlyLimit),
   })
   const [monthlyBrokenDrawerOpen, setMonthlyBrokenDrawerOpen] = useState(false)
+  const [selectedBindableTagId, setSelectedBindableTagId] = useState<string | undefined>(undefined)
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
   const systemTagCount = detail.tags.filter((tag) => isSystemUserTag(tag)).length
   const manualTagCount = detail.tags.length - systemTagCount
@@ -5899,10 +5901,14 @@ function UserDetailPageCanvas({
           </div>
           <div className="user-tag-binding-actions">
             <div className="user-tag-bind-controls">
-              <select className="select select-bordered" defaultValue="">
-                <option value="">{users.userTags.bindPlaceholder}</option>
-                <option value="suspended_manual">Suspended</option>
-              </select>
+              <Select value={selectedBindableTagId} onValueChange={setSelectedBindableTagId}>
+                <SelectTrigger className="user-tag-bind-select" aria-label={users.userTags.bindPlaceholder}>
+                  <SelectValue placeholder={users.userTags.bindPlaceholder} />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="suspended_manual">Suspended</SelectItem>
+                </SelectContent>
+              </Select>
               <button type="button" className="btn btn-primary">{users.userTags.bindAction}</button>
             </div>
           </div>
@@ -6822,6 +6828,31 @@ export const UserDetail: Story = {
     const bindingMetrics = canvasElement.querySelectorAll('.user-tag-binding-summary-metric')
     if (bindingMetrics.length !== 3) {
       throw new Error(`Expected the user tag summary to show three compact metrics, received ${bindingMetrics.length}.`)
+    }
+    if (canvasElement.querySelector('.user-tag-bind-controls select')) {
+      throw new Error('Expected user tag binding to use the shared Select component instead of a native select.')
+    }
+    const tagSelectTrigger = canvasElement.querySelector<HTMLButtonElement>(
+      '.user-tag-bind-controls [role="combobox"]',
+    )
+    if (!tagSelectTrigger) {
+      throw new Error('Expected user tag binding to render an accessible Select combobox trigger.')
+    }
+    tagSelectTrigger.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+      }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const tagOptions = Array.from(
+      canvasElement.ownerDocument.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).map((item) => item.textContent?.trim())
+    if (!tagOptions.includes('Suspended')) {
+      throw new Error('Expected opening the user tag Select to reveal bindable tag options.')
     }
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))

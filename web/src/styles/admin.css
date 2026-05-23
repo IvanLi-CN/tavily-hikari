@@ -479,10 +479,11 @@
   min-width: 0;
 }
 
-.user-tag-binding-actions .select {
+.user-tag-binding-actions .user-tag-bind-select {
   flex: 1 1 auto;
   min-width: 0;
   width: auto;
+  min-height: 48px;
 }
 
 .user-tag-binding-actions .btn {
@@ -615,7 +616,7 @@
     justify-content: stretch;
   }
 
-  .user-tag-binding-actions .select {
+  .user-tag-binding-actions .user-tag-bind-select {
     min-width: 0;
   }
 
