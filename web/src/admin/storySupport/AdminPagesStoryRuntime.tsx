@@ -5795,6 +5795,8 @@ function UserDetailPageCanvas({
   })
   const [monthlyBrokenDrawerOpen, setMonthlyBrokenDrawerOpen] = useState(false)
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
+  const systemTagCount = detail.tags.filter((tag) => isSystemUserTag(tag)).length
+  const manualTagCount = detail.tags.length - systemTagCount
 
   return (
     <AdminPageFrame
@@ -5873,13 +5875,36 @@ function UserDetailPageCanvas({
           </button>
         </div>
         <div className="user-tag-binding-toolbar">
-          <StoryUserTagBadgeList tags={detail.tags} users={users} emptyLabel={users.userTags.empty} />
-          <div className="user-tag-bind-controls">
-            <select className="select select-bordered" defaultValue="">
-              <option value="">{users.userTags.bindPlaceholder}</option>
-              <option value="suspended_manual">Suspended</option>
-            </select>
-            <button type="button" className="btn btn-primary">{users.userTags.bindAction}</button>
+          <div className="user-tag-binding-summary">
+            <div className="user-tag-binding-summary-top">
+              <StoryUserTagBadgeList tags={detail.tags} users={users} emptyLabel={users.userTags.empty} />
+              <p className="panel-description user-tag-binding-summary-note">
+                系统标签保持只读，手动标签在右侧选择后绑定。
+              </p>
+            </div>
+            <div className="user-tag-binding-summary-metrics" aria-label={users.userTags.title}>
+              <div className="user-tag-binding-summary-metric">
+                <span className="user-tag-binding-summary-label">已绑定</span>
+                <strong>{formatNumber(detail.tags.length)}</strong>
+              </div>
+              <div className="user-tag-binding-summary-metric">
+                <span className="user-tag-binding-summary-label">系统标签</span>
+                <strong>{formatNumber(systemTagCount)}</strong>
+              </div>
+              <div className="user-tag-binding-summary-metric">
+                <span className="user-tag-binding-summary-label">手动标签</span>
+                <strong>{formatNumber(manualTagCount)}</strong>
+              </div>
+            </div>
+          </div>
+          <div className="user-tag-binding-actions">
+            <div className="user-tag-bind-controls">
+              <select className="select select-bordered" defaultValue="">
+                <option value="">{users.userTags.bindPlaceholder}</option>
+                <option value="suspended_manual">Suspended</option>
+              </select>
+              <button type="button" className="btn btn-primary">{users.userTags.bindAction}</button>
+            </div>
           </div>
         </div>
         <div className="user-tag-binding-list">
@@ -6788,6 +6813,15 @@ export const UserDetail: Story = {
     }
     if (!canvasElement.textContent?.includes('账户共享请求频率、业务额度消耗与 IP 活跃趋势。')) {
       throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
+    }
+
+    const bindingToolbar = canvasElement.querySelector<HTMLElement>('.user-tag-binding-toolbar')
+    if (!bindingToolbar || getComputedStyle(bindingToolbar).display !== 'grid') {
+      throw new Error('Expected the user tag binding area to use a two-column grid on desktop.')
+    }
+    const bindingMetrics = canvasElement.querySelectorAll('.user-tag-binding-summary-metric')
+    if (bindingMetrics.length !== 3) {
+      throw new Error(`Expected the user tag summary to show three compact metrics, received ${bindingMetrics.length}.`)
     }
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
