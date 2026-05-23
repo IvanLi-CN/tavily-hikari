@@ -1,5 +1,5 @@
 import type { DashboardHourlyRequestBucket, DashboardHourlyRequestWindow } from '../api'
-import { buildHourlyBucketLookup, getHourlyBucketsInRange } from './dashboardHourlyCharts'
+import { getHourlyBucketsInRange } from './dashboardHourlyCharts'
 
 export type DashboardBackdropMetricKey =
   | 'total'
@@ -53,13 +53,15 @@ export function buildHourlyBackdropSeries(
   rangeStart: number,
   rangeEnd: number,
   metricKey: DashboardBackdropMetricKey = 'total',
+  comparisonRangeStart = rangeStart,
+  comparisonRangeEnd = rangeEnd,
 ): { current: number[]; comparison: number[] } {
   const visibleBuckets = getHourlyBucketsInRange(hourlyRequestWindow, rangeStart, rangeEnd)
-  const bucketLookup = buildHourlyBucketLookup(hourlyRequestWindow.buckets)
+  const comparisonBuckets = getHourlyBucketsInRange(hourlyRequestWindow, comparisonRangeStart, comparisonRangeEnd)
   const current = visibleBuckets.map((bucket) => getBackdropMetricValue(bucket, metricKey))
-  const comparison = visibleBuckets.map((bucket) => {
-    const previousBucket = bucketLookup.get(bucket.bucketStart - hourlyRequestWindow.bucketSeconds * 24)
-    return previousBucket ? getBackdropMetricValue(previousBucket, metricKey) : 0
+  const comparison = visibleBuckets.map((_, index) => {
+    const comparisonBucket = comparisonBuckets[index]
+    return comparisonBucket ? getBackdropMetricValue(comparisonBucket, metricKey) : 0
   })
   return { current, comparison }
 }

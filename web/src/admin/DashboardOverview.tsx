@@ -990,13 +990,24 @@ export default function DashboardOverview({
     yesterday: readChartColorVar('--secondary', 'hsl(330 80% 51%)'),
     month: readChartColorVar('--info', 'hsl(199 89% 48%)'),
   }
+  const comparisonRangeStart = summaryWindowValues.yesterday_start
+  const comparisonRangeEnd = summaryWindowValues.yesterday_end
   const todayBackdrop = useMemo(
     () => buildHourlyBackdropSeries(
       hourlyRequestWindow,
       summaryWindowValues.today_start,
       summaryWindowValues.today_end,
+      'total',
+      comparisonRangeStart,
+      comparisonRangeEnd,
     ),
-    [hourlyRequestWindow, summaryWindowValues.today_end, summaryWindowValues.today_start],
+    [
+      comparisonRangeEnd,
+      comparisonRangeStart,
+      hourlyRequestWindow,
+      summaryWindowValues.today_end,
+      summaryWindowValues.today_start,
+    ],
   )
   const todayCardBackdrops = useMemo<DashboardCardBackdropMap>(() => (
     {
@@ -1011,6 +1022,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'valuableSuccess',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: backdropColors.today,
         comparisonColor: backdropColors.yesterday,
@@ -1021,6 +1034,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'valuableFailure',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: readChartColorVar('--destructive', 'hsl(0 84% 60%)'),
         comparisonColor: backdropColors.yesterday,
@@ -1031,6 +1046,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'otherSuccess',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: readChartColorVar('--success', 'hsl(160 84% 39%)'),
         comparisonColor: backdropColors.yesterday,
@@ -1041,6 +1058,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'otherFailure',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: readChartColorVar('--warning', 'hsl(38 92% 50%)'),
         comparisonColor: backdropColors.yesterday,
@@ -1051,6 +1070,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'unknown',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: readChartColorVar('--muted-foreground', 'hsl(215 16% 47%)'),
         comparisonColor: backdropColors.yesterday,
@@ -1061,6 +1082,8 @@ export default function DashboardOverview({
           summaryWindowValues.today_start,
           summaryWindowValues.today_end,
           'upstreamExhausted',
+          comparisonRangeStart,
+          comparisonRangeEnd,
         ),
         color: readChartColorVar('--info', 'hsl(199 89% 48%)'),
         comparisonColor: backdropColors.yesterday,
@@ -1069,6 +1092,8 @@ export default function DashboardOverview({
   ), [
     backdropColors.today,
     backdropColors.yesterday,
+    comparisonRangeEnd,
+    comparisonRangeStart,
     hourlyRequestWindow,
     summaryWindowValues.today_end,
     summaryWindowValues.today_start,
@@ -1079,8 +1104,17 @@ export default function DashboardOverview({
       hourlyRequestWindow,
       summaryWindowValues.today_start,
       summaryWindowValues.today_end,
+      'total',
+      comparisonRangeStart,
+      comparisonRangeEnd,
     ),
-    [hourlyRequestWindow, summaryWindowValues.today_end, summaryWindowValues.today_start],
+    [
+      comparisonRangeEnd,
+      comparisonRangeStart,
+      hourlyRequestWindow,
+      summaryWindowValues.today_end,
+      summaryWindowValues.today_start,
+    ],
   )
   const monthBackdropBaseline = Math.max(
     summaryWindowValues.month.total_requests - summaryWindowValues.today.total_requests,
@@ -1096,6 +1130,8 @@ export default function DashboardOverview({
         summaryWindowValues.today_start,
         summaryWindowValues.today_end,
         metricKey,
+        comparisonRangeStart,
+        comparisonRangeEnd,
       ),
       baseline: metricKey === 'total' ? monthBackdropBaseline : 0,
       color,
@@ -1120,6 +1156,8 @@ export default function DashboardOverview({
   }, [
     backdropColors.month,
     backdropColors.today,
+    comparisonRangeEnd,
+    comparisonRangeStart,
     hourlyRequestWindow,
     monthBackdrop,
     monthBackdropBaseline,
