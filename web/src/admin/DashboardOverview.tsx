@@ -1150,8 +1150,6 @@ export default function DashboardOverview({
       otherFailure: buildMonthCardBackdrop('otherFailure', readChartColorVar('--warning', 'hsl(38 92% 50%)')),
       unknown: buildMonthCardBackdrop('unknown', readChartColorVar('--muted-foreground', 'hsl(215 16% 47%)')),
       upstreamExhausted: buildMonthCardBackdrop('upstreamExhausted', readChartColorVar('--info', 'hsl(199 89% 48%)')),
-      newKeys: buildMonthCardBackdrop('newKeys', readChartColorVar('--success', 'hsl(160 84% 39%)')),
-      newQuarantines: buildMonthCardBackdrop('newQuarantines', readChartColorVar('--warning', 'hsl(38 92% 50%)')),
     }
   }, [
     backdropColors.month,

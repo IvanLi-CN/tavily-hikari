@@ -947,8 +947,8 @@ export const ZhDarkEvidence: Story = {
       throw new Error('Expected both today and month quota charge cards to render')
     }
     const cardBackdropCanvases = canvasElement.querySelectorAll('.dashboard-summary-card-backdrop canvas')
-    if (cardBackdropCanvases.length !== 18) {
-      throw new Error(`Expected 18 card backdrop charts, received ${cardBackdropCanvases.length}`)
+    if (cardBackdropCanvases.length !== 16) {
+      throw new Error(`Expected 16 card backdrop charts, received ${cardBackdropCanvases.length}`)
     }
     const blockBackdropCanvases = canvasElement.querySelectorAll('.dashboard-summary-block-backdrop canvas')
     if (blockBackdropCanvases.length !== 0) {
