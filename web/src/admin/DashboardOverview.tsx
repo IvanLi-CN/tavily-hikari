@@ -38,6 +38,7 @@ import {
   DEFAULT_VISIBLE_TYPE_SERIES,
   createDashboardHourlyChartPreferences,
   formatHourlyBucketLabel,
+  getCurrentDayHourlyBuckets,
   getResultSeriesValue,
   getTypeSeriesValue,
   getVisibleHourlyBuckets,
@@ -243,14 +244,14 @@ function sumHourlyBucketRequests(bucket: DashboardHourlyRequestBucket): number {
 
 function buildHourlyBackdropSeries(
   hourlyRequestWindow: DashboardHourlyRequestWindow,
-  scale = 1,
+  timeZone?: string,
 ): { current: number[]; comparison: number[] } {
-  const visibleBuckets = getVisibleHourlyBuckets(hourlyRequestWindow)
+  const visibleBuckets = getCurrentDayHourlyBuckets(hourlyRequestWindow, timeZone)
   const bucketLookup = buildHourlyBucketLookup(hourlyRequestWindow.buckets)
-  const current = visibleBuckets.map((bucket) => sumHourlyBucketRequests(bucket) * scale)
+  const current = visibleBuckets.map((bucket) => sumHourlyBucketRequests(bucket))
   const comparison = visibleBuckets.map((bucket) => {
     const previousBucket = bucketLookup.get(bucket.bucketStart - hourlyRequestWindow.bucketSeconds * 24)
-    return previousBucket ? sumHourlyBucketRequests(previousBucket) * scale : 0
+    return previousBucket ? sumHourlyBucketRequests(previousBucket) : 0
   })
   return { current, comparison }
 }
@@ -930,12 +931,12 @@ export default function DashboardOverview({
     },
   }
   const todayBackdrop = useMemo(
-    () => buildHourlyBackdropSeries(hourlyRequestWindow),
-    [hourlyRequestWindow],
+    () => buildHourlyBackdropSeries(hourlyRequestWindow, chartLabelTimeZone ?? undefined),
+    [chartLabelTimeZone, hourlyRequestWindow],
   )
   const monthBackdrop = useMemo(
-    () => buildHourlyBackdropSeries(hourlyRequestWindow),
-    [hourlyRequestWindow],
+    () => buildHourlyBackdropSeries(hourlyRequestWindow, chartLabelTimeZone ?? undefined),
+    [chartLabelTimeZone, hourlyRequestWindow],
   )
   const monthBackdropBaseline = Math.max(
     summaryWindowValues.month.total_requests - summaryWindowValues.today.total_requests,

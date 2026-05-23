@@ -152,6 +152,27 @@ const bucketLabelFormatterCache = new Map<string, {
   hourFormatter: Intl.DateTimeFormat
 }>()
 
+const bucketDayKeyFormatterCache = new Map<string, Intl.DateTimeFormat>()
+
+function getHourlyBucketDayKeyFormatter(timeZone?: string): Intl.DateTimeFormat {
+  const cacheKey = timeZone ?? '__local__'
+  const cached = bucketDayKeyFormatterCache.get(cacheKey)
+  if (cached) return cached
+
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    ...(timeZone ? { timeZone } : {}),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  bucketDayKeyFormatterCache.set(cacheKey, formatter)
+  return formatter
+}
+
+export function getHourlyBucketDayKey(bucketStart: number, timeZone?: string): string {
+  return getHourlyBucketDayKeyFormatter(timeZone).format(new Date(bucketStart * 1000))
+}
+
 function getHourlyBucketLabelFormatters(timeZone?: string): {
   dayFormatter: Intl.DateTimeFormat
   hourFormatter: Intl.DateTimeFormat
@@ -193,6 +214,16 @@ export function getVisibleHourlyBuckets(window: DashboardHourlyRequestWindow): D
     : window.buckets.length
   if (retained <= 0) return []
   return window.buckets.slice(-retained)
+}
+
+export function getCurrentDayHourlyBuckets(
+  window: DashboardHourlyRequestWindow,
+  timeZone?: string,
+): DashboardHourlyRequestBucket[] {
+  const latestBucket = window.buckets.at(-1)
+  if (!latestBucket) return []
+  const latestDayKey = getHourlyBucketDayKey(latestBucket.bucketStart, timeZone)
+  return window.buckets.filter((bucket) => getHourlyBucketDayKey(bucket.bucketStart, timeZone) === latestDayKey)
 }
 
 export function buildHourlyBucketLookup(
