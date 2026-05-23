@@ -11,6 +11,7 @@ import type {
 } from '../api'
 import { fetchAlertCatalog, fetchAlertEvents, fetchAlertGroups, fetchRequestLogDetails } from '../api'
 import type { Language } from '../i18n'
+import { Icon } from '../lib/icons'
 import { getBlockingLoadState, getRefreshingLoadState, type QueryLoadState } from './queryLoadState'
 import {
   alertsPath,
@@ -136,7 +137,6 @@ function defaultCopy(language: Language) {
           allKeys: '全部 Key',
           requestKindsAll: '全部请求类型',
           requestKindsEmpty: '没有可选请求类型',
-          more: '更多筛选',
           searchPlaceholder: '搜索…',
           applyTime: '应用时间',
           clear: '清空筛选',
@@ -204,7 +204,6 @@ function defaultCopy(language: Language) {
           allKeys: 'All keys',
           requestKindsAll: 'All request kinds',
           requestKindsEmpty: 'No request kinds',
-          more: 'More filters',
           searchPlaceholder: 'Search…',
           applyTime: 'Apply time',
           clear: 'Clear filters',
@@ -363,7 +362,6 @@ export default function AlertsCenter({
   const [requestBodies, setRequestBodies] = useState<RequestLogBodies | null>(null)
   const [requestLoadState, setRequestLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestLoadError, setRequestLoadError] = useState<string | null>(null)
-  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(() => Boolean(userId || tokenId || keyId))
   const hasLoadedCatalogRef = useRef(Boolean(initialCatalog))
   const currentPerPage = view === 'events' ? eventsPage.perPage : groupsPage.perPage
   const currentListQuery = useMemo<AlertsQuery>(
@@ -391,10 +389,6 @@ export default function AlertsCenter({
     setDraftSince(isoToDateTimeLocal(since))
     setDraftUntil(isoToDateTimeLocal(until))
   }, [since, until])
-
-  useEffect(() => {
-    if (userId || tokenId || keyId) setAdvancedFiltersOpen(true)
-  }, [keyId, tokenId, userId])
 
   const navigateWith = useCallback(
     (patch: Partial<Parameters<typeof alertsPath>[0]>) => {
@@ -529,10 +523,6 @@ export default function AlertsCenter({
         : language === 'zh'
           ? `已选 ${requestKinds.length} 项`
           : `${requestKinds.length} selected`
-  const advancedFilterCount = [userId, tokenId, keyId].filter(Boolean).length
-  const advancedFiltersLabel =
-    advancedFilterCount > 0 ? `${copy.filters.more} (${advancedFilterCount})` : copy.filters.more
-
   return (
     <div className="alerts-center-stack">
       <section className="surface panel alerts-center-panel">
@@ -551,7 +541,7 @@ export default function AlertsCenter({
           </div>
 
           <div className="alerts-center-filters alerts-center-filters--primary">
-            <div className="alerts-center-filter-field">
+            <div className="alerts-center-filter-field alerts-center-filter-field--type">
               <span className="alerts-center-filter-label">{copy.filters.type}</span>
               <SearchableFacetSelect
                 value={type}
@@ -571,9 +561,14 @@ export default function AlertsCenter({
               <span className="alerts-center-filter-label">{copy.filters.requestKinds}</span>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline" className="alerts-center-request-kinds-trigger">
-                    {requestKindsSummary}
-                  </Button>
+                  <button
+                    type="button"
+                    className="searchable-facet-select__trigger alerts-center-request-kinds-trigger"
+                    aria-label={copy.filters.requestKinds}
+                  >
+                    <span className="searchable-facet-select__summary">{requestKindsSummary}</span>
+                    <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" />
+                  </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="alerts-center-request-kinds-menu">
                   {(catalog?.requestKindOptions ?? []).length === 0 ? (
@@ -604,13 +599,70 @@ export default function AlertsCenter({
               </DropdownMenu>
             </div>
 
-            <div className="alerts-center-filter-field alerts-center-filter-field--time">
+            <div className="alerts-center-filter-field alerts-center-filter-field--since">
               <span className="alerts-center-filter-label">{copy.filters.since}</span>
-              <Input type="datetime-local" value={draftSince} onChange={(event) => setDraftSince(event.target.value)} />
+              <Input
+                type="datetime-local"
+                className="alerts-center-time-input"
+                value={draftSince}
+                onChange={(event) => setDraftSince(event.target.value)}
+              />
             </div>
-            <div className="alerts-center-filter-field alerts-center-filter-field--time">
+            <div className="alerts-center-filter-field alerts-center-filter-field--until">
               <span className="alerts-center-filter-label">{copy.filters.until}</span>
-              <Input type="datetime-local" value={draftUntil} onChange={(event) => setDraftUntil(event.target.value)} />
+              <Input
+                type="datetime-local"
+                className="alerts-center-time-input"
+                value={draftUntil}
+                onChange={(event) => setDraftUntil(event.target.value)}
+              />
+            </div>
+            <div className="alerts-center-filter-field alerts-center-filter-field--user">
+              <span className="alerts-center-filter-label">{copy.filters.user}</span>
+              <SearchableFacetSelect
+                value={userId}
+                options={catalog?.users ?? []}
+                summary={catalog?.users.find((option) => option.value === userId)?.label ?? copy.filters.allUsers}
+                allLabel={copy.filters.allUsers}
+                emptyLabel={copy.filters.allUsers}
+                searchPlaceholder={copy.filters.searchPlaceholder}
+                searchAriaLabel={copy.filters.user}
+                triggerAriaLabel={copy.filters.user}
+                listAriaLabel={copy.filters.user}
+                onChange={(nextUserId) => navigateWith({ userId: nextUserId, page: 1 })}
+              />
+            </div>
+            <div className="alerts-center-filter-field alerts-center-filter-field--token">
+              <span className="alerts-center-filter-label">{copy.filters.token}</span>
+              <SearchableFacetSelect
+                value={tokenId}
+                options={catalog?.tokens ?? []}
+                summary={catalog?.tokens.find((option) => option.value === tokenId)?.label ?? copy.filters.allTokens}
+                allLabel={copy.filters.allTokens}
+                emptyLabel={copy.filters.allTokens}
+                searchPlaceholder={copy.filters.searchPlaceholder}
+                searchAriaLabel={copy.filters.token}
+                triggerAriaLabel={copy.filters.token}
+                listAriaLabel={copy.filters.token}
+                onChange={(nextTokenId) => navigateWith({ tokenId: nextTokenId, page: 1 })}
+                labelVariant="mono"
+              />
+            </div>
+            <div className="alerts-center-filter-field alerts-center-filter-field--key">
+              <span className="alerts-center-filter-label">{copy.filters.key}</span>
+              <SearchableFacetSelect
+                value={keyId}
+                options={catalog?.keys ?? []}
+                summary={catalog?.keys.find((option) => option.value === keyId)?.label ?? copy.filters.allKeys}
+                allLabel={copy.filters.allKeys}
+                emptyLabel={copy.filters.allKeys}
+                searchPlaceholder={copy.filters.searchPlaceholder}
+                searchAriaLabel={copy.filters.key}
+                triggerAriaLabel={copy.filters.key}
+                listAriaLabel={copy.filters.key}
+                onChange={(nextKeyId) => navigateWith({ keyId: nextKeyId, page: 1 })}
+                labelVariant="mono"
+              />
             </div>
             <div className="alerts-center-filter-actions">
               <Button
@@ -630,69 +682,6 @@ export default function AlertsCenter({
                 {copy.filters.clear}
               </Button>
             </div>
-          </div>
-
-          <div className="alerts-center-more-filters">
-            <Button
-              type="button"
-              variant="ghost"
-              className="alerts-center-more-toggle"
-              aria-expanded={advancedFiltersOpen}
-              onClick={() => setAdvancedFiltersOpen((current) => !current)}
-            >
-              {advancedFiltersLabel}
-            </Button>
-            {advancedFiltersOpen ? (
-              <div className="alerts-center-filters alerts-center-filters--advanced">
-                <div className="alerts-center-filter-field">
-                  <span className="alerts-center-filter-label">{copy.filters.user}</span>
-                  <SearchableFacetSelect
-                    value={userId}
-                    options={catalog?.users ?? []}
-                    summary={catalog?.users.find((option) => option.value === userId)?.label ?? copy.filters.allUsers}
-                    allLabel={copy.filters.allUsers}
-                    emptyLabel={copy.filters.allUsers}
-                    searchPlaceholder={copy.filters.searchPlaceholder}
-                    searchAriaLabel={copy.filters.user}
-                    triggerAriaLabel={copy.filters.user}
-                    listAriaLabel={copy.filters.user}
-                    onChange={(nextUserId) => navigateWith({ userId: nextUserId, page: 1 })}
-                  />
-                </div>
-                <div className="alerts-center-filter-field">
-                  <span className="alerts-center-filter-label">{copy.filters.token}</span>
-                  <SearchableFacetSelect
-                    value={tokenId}
-                    options={catalog?.tokens ?? []}
-                    summary={catalog?.tokens.find((option) => option.value === tokenId)?.label ?? copy.filters.allTokens}
-                    allLabel={copy.filters.allTokens}
-                    emptyLabel={copy.filters.allTokens}
-                    searchPlaceholder={copy.filters.searchPlaceholder}
-                    searchAriaLabel={copy.filters.token}
-                    triggerAriaLabel={copy.filters.token}
-                    listAriaLabel={copy.filters.token}
-                    onChange={(nextTokenId) => navigateWith({ tokenId: nextTokenId, page: 1 })}
-                    labelVariant="mono"
-                  />
-                </div>
-                <div className="alerts-center-filter-field">
-                  <span className="alerts-center-filter-label">{copy.filters.key}</span>
-                  <SearchableFacetSelect
-                    value={keyId}
-                    options={catalog?.keys ?? []}
-                    summary={catalog?.keys.find((option) => option.value === keyId)?.label ?? copy.filters.allKeys}
-                    allLabel={copy.filters.allKeys}
-                    emptyLabel={copy.filters.allKeys}
-                    searchPlaceholder={copy.filters.searchPlaceholder}
-                    searchAriaLabel={copy.filters.key}
-                    triggerAriaLabel={copy.filters.key}
-                    listAriaLabel={copy.filters.key}
-                    onChange={(nextKeyId) => navigateWith({ keyId: nextKeyId, page: 1 })}
-                    labelVariant="mono"
-                  />
-                </div>
-              </div>
-            ) : null}
           </div>
         </div>
 

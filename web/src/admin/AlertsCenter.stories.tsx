@@ -260,12 +260,12 @@ const meta = {
   tags: ['autodocs'],
   parameters: {
     docs: {
-      description: {
-        component:
-          'Admin alerts center with shared filters, event/group tabs, and inline request detail drawer backed by stable Storybook fixtures.',
+        description: {
+          component:
+          'Admin alerts center with shared filters, always-visible user/token/key facets, event/group tabs, and inline request detail drawer backed by stable Storybook fixtures.',
+        },
       },
     },
-  },
 } satisfies Meta<typeof AlertsCenterStoryShell>
 
 export default meta
@@ -275,6 +275,17 @@ type Story = StoryObj<typeof meta>
 export const EventsDefault: Story = {
   args: {
     initialSearch: alertsPath({ view: 'events' }),
+  },
+  play: async ({ canvasElement }) => {
+    const text = canvasElement.textContent ?? ''
+    if (text.includes('更多筛选')) {
+      throw new Error('Expected advanced filters to be visible by default instead of a collapsed toggle.')
+    }
+    for (const label of ['用户', '令牌', 'Key']) {
+      if (!text.includes(label)) {
+        throw new Error(`Expected default alerts center story to render ${label} filter visibly.`)
+      }
+    }
   },
 }
 
