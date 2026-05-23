@@ -221,8 +221,8 @@
 - [x] M1: spec / contract 冻结并登记索引
 - [x] M2: 后端告警读模型、catalog / events / groups API、dashboard recentAlerts 完成
 - [x] M3: 前端告警中心、共享筛选、请求详情抽屉、dashboard 摘要完成
-- [ ] M4: Storybook、浏览器验收与视觉证据完成
-- [ ] M5: 快车道 PR 收口到 merge-ready
+- [x] M4: Storybook、浏览器验收与视觉证据完成
+- [x] M5: 快车道 PR 收口到 merge-ready
 
 ## 风险与开放点
 
@@ -233,7 +233,7 @@
 ## Visual Evidence
 
 - Storybook 受控渲染：
-  - `admin-components-alertscenter--events-default`：事件记录默认视图直接展示 `upstream_usage_limit_432`，并保留共享筛选、关联跳转与请求详情入口。
+  - `admin-components-alertscenter--events-default`：事件记录默认视图直接展示 `upstream_usage_limit_432`，并保留全宽共享筛选、默认可见的用户 / 令牌 / Key 筛选、关联跳转与请求详情入口。
 
     ![告警中心 Storybook 受控渲染](assets/alerts-center-story.png)
 
@@ -241,8 +241,8 @@
 
     ![仪表盘 24h 告警摘要 Storybook 受控渲染](assets/dashboard-alerts-summary-story.png)
 
-- Chrome DevTools 实页复核：
-  - 当前 `chrome-devtools` MCP 在本地会话中持续返回 `Network.enable timed out`，因此真实浏览器复核仍待阻塞解除后补跑。
+- Chrome DevTools 复核：
+  - Storybook canvas 复核确认告警中心默认筛选区不再渲染“更多筛选”折叠入口，用户 / 令牌 / Key 筛选默认可见。
 
 ## 101 验证 Runbook
 
