@@ -2692,6 +2692,17 @@ export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<
   return requestJson(`/api/users/${encoded}`, { signal })
 }
 
+export async function createAdminUserToken(id: string): Promise<AuthTokenSecret> {
+  const encoded = encodeURIComponent(id)
+  return await requestJson(`/api/users/${encoded}/tokens`, { method: 'POST' })
+}
+
+export async function deleteAdminUserToken(id: string, tokenId: string): Promise<void> {
+  const encodedUserId = encodeURIComponent(id)
+  const encodedTokenId = encodeURIComponent(tokenId)
+  await requestNoContent(`/api/users/${encodedUserId}/tokens/${encodedTokenId}`, { method: 'DELETE' })
+}
+
 export function fetchAdminUserUsageSeries(
   id: string,
   series: AdminUserUsageSeriesKey,
@@ -3238,21 +3249,10 @@ export function fetchForwardProxyErrorStats(
   return requestJson('/api/stats/forward-proxy/errors', { signal })
 }
 
-export function updateForwardProxyNodesDisabled(
-  proxyKeys: string[],
-  disabled: boolean,
-  signal?: AbortSignal,
-): Promise<ForwardProxyNodeStateUpdateResponse> {
-  return requestJson('/api/settings/forward-proxy/nodes/state', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proxyKeys, disabled }),
-    signal,
-  })
+export function updateForwardProxyNodesDisabled(proxyKeys: string[], disabled: boolean, signal?: AbortSignal): Promise<ForwardProxyNodeStateUpdateResponse> {
+  return requestJson('/api/settings/forward-proxy/nodes/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxyKeys, disabled }), signal })
 }
 
-export function fetchForwardProxyDashboardSummary(
-  signal?: AbortSignal,
-): Promise<ForwardProxyDashboardSummaryResponse> {
+export function fetchForwardProxyDashboardSummary(signal?: AbortSignal): Promise<ForwardProxyDashboardSummaryResponse> {
   return requestJson('/api/stats/forward-proxy/summary', { signal })
 }

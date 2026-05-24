@@ -4,6 +4,8 @@ import {
   buildPublicEventsUrl,
   bindAdminUserTag,
   createBrowserTodayWindow,
+  createAdminUserToken,
+  deleteAdminUserToken,
   fetchAdminRegistrationSettings,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserUsageSeries,
@@ -290,6 +292,31 @@ describe('admin user tag api helpers', () => {
     await fetchAdminUserUsageSeries('user/abc', 'quotaMonth')
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/users/user%2Fabc/usage-series?series=quotaMonth')
+  })
+
+  it('creates and deletes user-scoped admin tokens through user endpoints', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ token: 'th-a1b2-secret' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await createAdminUserToken('user/abc')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    let [input, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/users/user%2Fabc/tokens')
+    expect(init.method).toBe('POST')
+
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })))
+    await deleteAdminUserToken('user/abc', 'tok/1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    ;[input, init] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(input).toBe('/api/users/user%2Fabc/tokens/tok%2F1')
+    expect(init.method).toBe('DELETE')
   })
 
   it('fetches the alert catalog from the dedicated endpoint', async () => {

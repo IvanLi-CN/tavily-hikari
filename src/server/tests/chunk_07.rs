@@ -2124,6 +2124,144 @@
     }
 
     #[tokio::test]
+    async fn admin_user_detail_can_create_and_delete_user_tokens_with_last_token_guard() {
+        let db_path = temp_db_path("admin-user-detail-token-controls");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let alice = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-user-token-controls-alice".to_string(),
+                username: Some("alice".to_string()),
+                name: Some("Alice".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert alice");
+        let bob = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-user-token-controls-bob".to_string(),
+                username: Some("bob".to_string()),
+                name: Some("Bob".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert bob");
+        let alice_initial = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("alice-initial"))
+            .await
+            .expect("bind alice initial token");
+        let bob_initial = proxy
+            .ensure_user_token_binding(&bob.user_id, Some("bob-initial"))
+            .await
+            .expect("bind bob initial token");
+
+        let addr = spawn_admin_users_server(proxy, true).await;
+        let client = Client::new();
+
+        let create_resp = client
+            .post(format!("http://{}/api/users/{}/tokens", addr, alice.user_id))
+            .send()
+            .await
+            .expect("create user token request");
+        assert_eq!(create_resp.status(), reqwest::StatusCode::CREATED);
+        let create_body: serde_json::Value = create_resp.json().await.expect("create token json");
+        let created_token = create_body
+            .get("token")
+            .and_then(|value| value.as_str())
+            .expect("created full token");
+        assert!(created_token.starts_with("th-"));
+        let created_token_id = created_token
+            .split('-')
+            .nth(1)
+            .expect("created token id segment")
+            .to_string();
+        assert_ne!(created_token_id, alice_initial.id);
+
+        let detail_resp = client
+            .get(format!("http://{}/api/users/{}", addr, alice.user_id))
+            .send()
+            .await
+            .expect("user detail after create");
+        assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
+        let detail_body: serde_json::Value = detail_resp.json().await.expect("detail json");
+        let token_ids: Vec<String> = detail_body
+            .get("tokens")
+            .and_then(|value| value.as_array())
+            .expect("tokens array")
+            .iter()
+            .filter_map(|token| token.get("tokenId").and_then(|value| value.as_str()))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(token_ids.len(), 2);
+        assert!(token_ids.contains(&alice_initial.id));
+        assert!(token_ids.contains(&created_token_id));
+
+        let delete_other_user_resp = client
+            .delete(format!(
+                "http://{}/api/users/{}/tokens/{}",
+                addr, alice.user_id, bob_initial.id
+            ))
+            .send()
+            .await
+            .expect("delete other user token request");
+        assert_eq!(delete_other_user_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let delete_created_resp = client
+            .delete(format!(
+                "http://{}/api/users/{}/tokens/{}",
+                addr, alice.user_id, created_token_id
+            ))
+            .send()
+            .await
+            .expect("delete created user token request");
+        assert_eq!(delete_created_resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let delete_last_resp = client
+            .delete(format!(
+                "http://{}/api/users/{}/tokens/{}",
+                addr, alice.user_id, alice_initial.id
+            ))
+            .send()
+            .await
+            .expect("delete last user token request");
+        assert_eq!(delete_last_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let final_detail_resp = client
+            .get(format!("http://{}/api/users/{}", addr, alice.user_id))
+            .send()
+            .await
+            .expect("user detail after delete");
+        assert_eq!(final_detail_resp.status(), reqwest::StatusCode::OK);
+        let final_detail: serde_json::Value =
+            final_detail_resp.json().await.expect("final detail json");
+        let final_tokens = final_detail
+            .get("tokens")
+            .and_then(|value| value.as_array())
+            .expect("final tokens array");
+        assert_eq!(final_tokens.len(), 1);
+        assert_eq!(
+            final_tokens
+                .first()
+                .and_then(|token| token.get("tokenId"))
+                .and_then(|value| value.as_str()),
+            Some(alice_initial.id.as_str())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_token_log_views_include_business_credits() {
         let db_path = temp_db_path("admin-token-log-business-credits");
         let db_str = db_path.to_string_lossy().to_string();
@@ -2773,4 +2911,3 @@
 
         let _ = std::fs::remove_file(db_path);
     }
-

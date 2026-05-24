@@ -11,7 +11,7 @@ interface UserDetailTokenTableProps {
   formatNumber: (value: number) => string
   formatTimestamp: (value: number | null | undefined) => string
   onViewToken: (tokenId: string) => void
-  onDeleteToken?: (tokenId: string) => void
+  onDeleteToken: (tokenId: string) => void
   deletingTokenId?: string | null
 }
 
@@ -27,8 +27,6 @@ export function UserDetailTokenTable({
   if (tokens.length === 0) {
     return <div className="empty-state alert">{usersStrings.empty.noTokens}</div>
   }
-
-  const canDeleteTokens = tokens.length > 1
 
   return (
     <>
@@ -46,6 +44,9 @@ export function UserDetailTokenTable({
           <tbody>
             {tokens.map((token) => {
               const successDailyText = `${formatNumber(token.dailySuccess)} / ${formatNumber(token.dailyFailure)}`
+              const canDelete = tokens.length > 1
+              const isDeleting = deletingTokenId === token.tokenId
+              const deleteLabel = canDelete ? usersStrings.tokens.actions.delete : usersStrings.tokens.actions.deleteDisabled
               return (
                 <tr key={token.tokenId}>
                   <td>
@@ -107,20 +108,18 @@ export function UserDetailTokenTable({
                       >
                         <Icon icon="mdi:eye-outline" width={16} height={16} />
                       </Button>
-                      {onDeleteToken && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 rounded-full p-0 shadow-none"
-                          title={canDeleteTokens ? usersStrings.tokens.actions.delete : usersStrings.tokens.actions.deleteLastDisabled}
-                          aria-label={usersStrings.tokens.actions.delete}
-                          onClick={() => onDeleteToken(token.tokenId)}
-                          disabled={!canDeleteTokens || deletingTokenId === token.tokenId}
-                        >
-                          <Icon icon="mdi:trash-outline" width={16} height={16} />
-                        </Button>
-                      )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-full p-0 shadow-none"
+                        title={deleteLabel}
+                        aria-label={deleteLabel}
+                        disabled={!canDelete || isDeleting}
+                        onClick={() => onDeleteToken(token.tokenId)}
+                      >
+                        <Icon icon={isDeleting ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={16} height={16} />
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -133,6 +132,9 @@ export function UserDetailTokenTable({
       <div className="admin-mobile-list admin-responsive-down">
         {tokens.map((token) => {
           const successDailyText = `${formatNumber(token.dailySuccess)} / ${formatNumber(token.dailyFailure)}`
+          const canDelete = tokens.length > 1
+          const isDeleting = deletingTokenId === token.tokenId
+          const deleteLabel = canDelete ? usersStrings.tokens.actions.delete : usersStrings.tokens.actions.deleteDisabled
           return (
             <article key={token.tokenId} className="admin-mobile-card admin-user-token-card">
               <div className="admin-user-mobile-card-head">
@@ -163,20 +165,18 @@ export function UserDetailTokenTable({
                   >
                     <Icon icon="mdi:eye-outline" width={16} height={16} />
                   </Button>
-                  {onDeleteToken && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 rounded-full p-0 shadow-none"
-                      title={canDeleteTokens ? usersStrings.tokens.actions.delete : usersStrings.tokens.actions.deleteLastDisabled}
-                      aria-label={usersStrings.tokens.actions.delete}
-                      onClick={() => onDeleteToken(token.tokenId)}
-                      disabled={!canDeleteTokens || deletingTokenId === token.tokenId}
-                    >
-                      <Icon icon="mdi:trash-outline" width={16} height={16} />
-                    </Button>
-                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full p-0 shadow-none"
+                    title={deleteLabel}
+                    aria-label={deleteLabel}
+                    disabled={!canDelete || isDeleting}
+                    onClick={() => onDeleteToken(token.tokenId)}
+                  >
+                    <Icon icon={isDeleting ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={16} height={16} />
+                  </Button>
                 </div>
               </div>
 

@@ -6157,8 +6157,9 @@ function UserDetailPageCanvas({
             <h2>{users.detail.tokensTitle}</h2>
             <p className="panel-description">{users.detail.tokensDescription}</p>
           </div>
-          <Button type="button" onClick={addToken}>
-            {users.detail.tokensAddAction}
+          <Button type="button" variant="secondary" size="sm" onClick={addToken}>
+            <Icon icon="mdi:key-plus" width={16} height={16} />
+            <span>{users.detail.addToken}</span>
           </Button>
         </div>
         <div className="table-wrapper jobs-table-wrapper">

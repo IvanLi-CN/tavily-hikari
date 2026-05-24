@@ -709,7 +709,14 @@ export interface AdminTranslationsShape {
       ipUsageListEmpty: string
       tokensTitle: string
       tokensDescription: string
-      tokensAddAction: string
+      addToken: string
+      addingToken: string
+      tokenDelete: {
+        title: string
+        description: string
+        cancel: string
+        confirm: string
+      }
     }
     brokenKeys: {
       limitTitle: string
@@ -864,7 +871,7 @@ export interface AdminTranslationsShape {
       actions: {
         view: string
         delete: string
-        deleteLastDisabled: string
+        deleteDisabled: string
       }
     }
   }

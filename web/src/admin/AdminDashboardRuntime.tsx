@@ -203,6 +203,8 @@ import {
   fetchTokenSecret,
   createToken,
   deleteToken,
+  createAdminUserToken,
+  deleteAdminUserToken,
   setTokenEnabled,
   updateTokenNote,
   createTokensBatch,
@@ -1717,6 +1719,12 @@ function AdminDashboard(): JSX.Element {
   const [savingUserQuota, setSavingUserQuota] = useState(false)
   const [userQuotaError, setUserQuotaError] = useState<string | null>(null)
   const [userQuotaSavedAt, setUserQuotaSavedAt] = useState<number | null>(null)
+  const [addingUserToken, setAddingUserToken] = useState(false)
+  const [deletingUserTokenId, setDeletingUserTokenId] = useState<string | null>(null)
+  const [pendingUserTokenDeleteTarget, setPendingUserTokenDeleteTarget] = useState<{
+    userId: string
+    tokenId: string
+  } | null>(null)
   const [tagCatalog, setTagCatalog] = useState<AdminUserTag[]>([])
   const [tagCatalogLoading, setTagCatalogLoading] = useState(false)
   const [tagCatalogLoadedOnce, setTagCatalogLoadedOnce] = useState(false)
@@ -5913,6 +5921,64 @@ function AdminDashboard(): JSX.Element {
     return detail
   }
 
+  const refreshCurrentUserAfterTokenMutation = async (userId: string) => {
+    await Promise.all([
+      refreshUserDetail(userId),
+      refreshUsersList(),
+      refreshBaseData(),
+    ])
+  }
+
+  const handleAddUserToken = async (userId: string) => {
+    setManualCopyBubble(null)
+    setManualCopyDialog(null)
+    setAddingUserToken(true)
+    setUserQuotaError(null)
+    try {
+      const { token } = await createAdminUserToken(userId)
+      const copyResult = await copyToClipboard(token)
+      if (!copyResult.ok) {
+        setManualCopyDialog({
+          title: manualCopyText.createToken.title,
+          description: manualCopyText.createToken.description,
+          fieldLabel: manualCopyText.fields.token,
+          value: token,
+        })
+      }
+      await refreshCurrentUserAfterTokenMutation(userId)
+    } catch (err) {
+      console.error(err)
+      setUserQuotaError(err instanceof Error ? err.message : errorStrings.createToken)
+    } finally {
+      setAddingUserToken(false)
+    }
+  }
+
+  const handleDeleteUserToken = async (userId: string, tokenId: string) => {
+    setDeletingUserTokenId(tokenId)
+    setUserQuotaError(null)
+    try {
+      await deleteAdminUserToken(userId, tokenId)
+      await refreshCurrentUserAfterTokenMutation(userId)
+    } catch (err) {
+      console.error(err)
+      setUserQuotaError(err instanceof Error ? err.message : errorStrings.deleteToken)
+    } finally {
+      setDeletingUserTokenId(null)
+    }
+  }
+
+  const confirmUserTokenDelete = async () => {
+    const target = pendingUserTokenDeleteTarget
+    if (!target) return
+    setPendingUserTokenDeleteTarget(null)
+    await handleDeleteUserToken(target.userId, target.tokenId)
+  }
+
+  const cancelUserTokenDelete = () => {
+    setPendingUserTokenDeleteTarget(null)
+  }
+
   const openMonthlyBrokenDrawer = (subjectKind: 'user' | 'token', id: string, label: string) => {
     setMonthlyBrokenDrawer({ subjectKind, id, label })
   }
@@ -8214,15 +8280,16 @@ function AdminDashboard(): JSX.Element {
                   <h2>{usersStrings.detail.tokensTitle}</h2>
                   <p className="panel-description">{usersStrings.detail.tokensDescription}</p>
                 </div>
-                {isAdmin && (
-                  <Button
-                    type="button"
-                    onClick={(event) => void handleAddToken(event.currentTarget)}
-                    disabled={submitting}
-                  >
-                    {submitting ? tokenStrings.creating : usersStrings.detail.tokensAddAction}
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void handleAddUserToken(detail.userId)}
+                  disabled={addingUserToken}
+                >
+                  <Icon icon={addingUserToken ? 'mdi:progress-helper' : 'mdi:key-plus'} width={16} height={16} />
+                  <span>{addingUserToken ? usersStrings.detail.addingToken : usersStrings.detail.addToken}</span>
+                </Button>
               </div>
               <div className="table-wrapper jobs-table-wrapper">
                 <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={220}>
@@ -8232,12 +8299,38 @@ function AdminDashboard(): JSX.Element {
                     formatNumber={formatNumber}
                     formatTimestamp={(value) => formatTimestamp(value ?? null)}
                     onViewToken={navigateToken}
-                    onDeleteToken={isAdmin ? openTokenDeleteConfirm : undefined}
-                    deletingTokenId={deletingId}
+                    onDeleteToken={(tokenId) => setPendingUserTokenDeleteTarget({ userId: detail.userId, tokenId })}
+                    deletingTokenId={deletingUserTokenId}
                   />
                 </AdminLazyBoundary>
               </div>
             </section>
+            <Dialog
+              open={pendingUserTokenDeleteTarget != null}
+              onOpenChange={(open) => {
+                if (!open) cancelUserTokenDelete()
+              }}
+            >
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>{usersStrings.detail.tokenDelete.title}</DialogTitle>
+                  <DialogDescription>{usersStrings.detail.tokenDelete.description}</DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="modal-action">
+                  <Button type="button" variant="outline" onClick={cancelUserTokenDelete}>
+                    {usersStrings.detail.tokenDelete.cancel}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={() => void confirmUserTokenDelete()}
+                    disabled={!!deletingUserTokenId}
+                  >
+                    {usersStrings.detail.tokenDelete.confirm}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </>
         )}
         {appFooter}
