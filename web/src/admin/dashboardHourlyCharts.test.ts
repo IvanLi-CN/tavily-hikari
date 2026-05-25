@@ -3,7 +3,9 @@ import { describe, expect, it } from 'bun:test'
 import {
   buildDashboardHourlyRequestWindowFixture,
   buildDeltaSeriesValues,
+  buildDeltaSeriesSlotValues,
   buildHourlyBucketLookup,
+  buildHourlyRangeSlots,
   createDashboardHourlyChartPreferences,
   createEmptyDashboardHourlyRequestWindow,
   DASHBOARD_RESULT_SERIES_ORDER,
@@ -88,6 +90,48 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(buckets[0]?.bucketStart).toBe(rangeStart)
     expect(buckets.at(-1)?.bucketStart).toBe(currentHourStart)
     expect(getHourlyBucketsInRange(window, rangeStart, rangeStart)).toEqual([])
+  })
+
+  it('builds fixed hourly slots and leaves missing buckets empty', () => {
+    const currentHourStart = Date.UTC(2026, 3, 7, 4, 0, 0) / 1000
+    const window = buildDashboardHourlyRequestWindowFixture({
+      currentHourStart,
+      retainedBuckets: 4,
+    })
+    const rangeStart = currentHourStart - 3 * 3600
+    const rangeEnd = currentHourStart + 2 * 3600
+
+    const slots = buildHourlyRangeSlots(window, rangeStart, rangeEnd)
+
+    expect(slots.map((slot) => slot.bucketStart)).toEqual([
+      currentHourStart - 3 * 3600,
+      currentHourStart - 2 * 3600,
+      currentHourStart - 1 * 3600,
+      currentHourStart,
+      currentHourStart + 3600,
+    ])
+    expect(slots.slice(0, 4).every((slot) => slot.bucket != null)).toBe(true)
+    expect(slots[4]?.bucket).toBeNull()
+  })
+
+  it('returns null deltas when either fixed-range side is missing', () => {
+    const currentHourStart = Date.UTC(2026, 3, 7, 4, 0, 0) / 1000
+    const window = buildDashboardHourlyRequestWindowFixture({
+      currentHourStart,
+      retainedBuckets: 6,
+      mapBucket: ({ index }) => ({
+        primarySuccess: index === 0 ? 10 : index === 4 ? 50 : 0,
+      }),
+    })
+    window.buckets = window.buckets.filter((bucket) => bucket.bucketStart !== currentHourStart)
+    const currentSlots = buildHourlyRangeSlots(window, currentHourStart - 3600, currentHourStart + 2 * 3600)
+    const comparisonSlots = buildHourlyRangeSlots(window, currentHourStart - 5 * 3600, currentHourStart - 2 * 3600)
+
+    expect(buildDeltaSeriesSlotValues(currentSlots, comparisonSlots, 'primarySuccess')).toEqual([
+      40,
+      null,
+      null,
+    ])
   })
 
   it('toggles absolute-series visibility without mutating the source array', () => {

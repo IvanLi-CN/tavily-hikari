@@ -1,5 +1,5 @@
 import type { DashboardHourlyRequestBucket, DashboardHourlyRequestWindow } from '../api'
-import { getHourlyBucketsInRange } from './dashboardHourlyCharts'
+import { buildHourlyRangeSlots } from './dashboardHourlyCharts'
 
 export type DashboardBackdropMetricKey =
   | 'total'
@@ -13,8 +13,8 @@ export type DashboardBackdropMetricKey =
   | 'newQuarantines'
 
 export interface DashboardCardBackdropSeries {
-  current: number[]
-  comparison: number[]
+  current: Array<number | null>
+  comparison: Array<number | null>
   baseline?: number
   color?: string
   comparisonColor?: string
@@ -55,13 +55,17 @@ export function buildHourlyBackdropSeries(
   metricKey: DashboardBackdropMetricKey = 'total',
   comparisonRangeStart = rangeStart,
   comparisonRangeEnd = rangeEnd,
-): { current: number[]; comparison: number[] } {
-  const visibleBuckets = getHourlyBucketsInRange(hourlyRequestWindow, rangeStart, rangeEnd)
-  const comparisonBuckets = getHourlyBucketsInRange(hourlyRequestWindow, comparisonRangeStart, comparisonRangeEnd)
-  const current = visibleBuckets.map((bucket) => getBackdropMetricValue(bucket, metricKey))
-  const comparison = visibleBuckets.map((_, index) => {
-    const comparisonBucket = comparisonBuckets[index]
-    return comparisonBucket ? getBackdropMetricValue(comparisonBucket, metricKey) : 0
+): { current: Array<number | null>; comparison: Array<number | null> } {
+  const visibleSlots = buildHourlyRangeSlots(hourlyRequestWindow, rangeStart, rangeEnd)
+  const comparisonSlots = buildHourlyRangeSlots(hourlyRequestWindow, comparisonRangeStart, comparisonRangeEnd)
+  const slotCount = Math.max(visibleSlots.length, comparisonSlots.length)
+  const current = Array.from({ length: slotCount }, (_, index) => {
+    const bucket = visibleSlots[index]?.bucket ?? null
+    return bucket ? getBackdropMetricValue(bucket, metricKey) : null
+  })
+  const comparison = Array.from({ length: slotCount }, (_, index) => {
+    const comparisonBucket = comparisonSlots[index]?.bucket ?? null
+    return comparisonBucket ? getBackdropMetricValue(comparisonBucket, metricKey) : null
   })
   return { current, comparison }
 }

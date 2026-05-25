@@ -58,6 +58,11 @@ export interface DashboardHourlyChartPreferencesInput {
   typeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
 }
 
+export interface DashboardHourlyRangeSlot {
+  bucketStart: number
+  bucket: DashboardHourlyRequestBucket | null
+}
+
 function normalizeSeriesSelection<T extends string>(
   value: unknown,
   allowed: ReadonlyArray<T>,
@@ -235,6 +240,45 @@ export function getHourlyBucketsInRange(
   return window.buckets.filter((bucket) => bucket.bucketStart >= rangeStart && bucket.bucketStart < rangeEnd)
 }
 
+export function buildHourlyRangeSlots(
+  window: DashboardHourlyRequestWindow,
+  rangeStart: number,
+  rangeEnd: number,
+): DashboardHourlyRangeSlot[] {
+  if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeEnd <= rangeStart) return []
+  const bucketSeconds = Number.isFinite(window.bucketSeconds) && window.bucketSeconds > 0
+    ? Math.trunc(window.bucketSeconds)
+    : 3600
+  const lookup = buildHourlyBucketLookup(window.buckets)
+  const firstBucketStart = Math.floor(rangeStart / bucketSeconds) * bucketSeconds
+  const slots: DashboardHourlyRangeSlot[] = []
+  for (let bucketStart = firstBucketStart; bucketStart < rangeEnd; bucketStart += bucketSeconds) {
+    if (bucketStart < rangeStart) continue
+    slots.push({
+      bucketStart,
+      bucket: lookup.get(bucketStart) ?? null,
+    })
+  }
+  return slots
+}
+
+export function derivePreviousMonthRange(monthStart: number): { rangeStart: number; rangeEnd: number } | null {
+  if (!Number.isFinite(monthStart)) return null
+  const startDate = new Date(monthStart * 1000)
+  const previousMonthStart = Date.UTC(
+    startDate.getUTCFullYear(),
+    startDate.getUTCMonth() - 1,
+    1,
+    startDate.getUTCHours(),
+    startDate.getUTCMinutes(),
+    startDate.getUTCSeconds(),
+  ) / 1000
+  return {
+    rangeStart: previousMonthStart,
+    rangeEnd: monthStart,
+  }
+}
+
 export function buildHourlyBucketLookup(
   buckets: ReadonlyArray<DashboardHourlyRequestBucket>,
 ): Map<number, DashboardHourlyRequestBucket> {
@@ -300,6 +344,25 @@ export function buildDeltaSeriesValues<T extends DashboardResultSeriesId | Dashb
     }
     return getTypeSeriesValue(bucket, series as DashboardTypeSeriesId)
       - getTypeSeriesValue(baseline, series as DashboardTypeSeriesId)
+  })
+}
+
+export function buildDeltaSeriesSlotValues<T extends DashboardResultSeriesId | DashboardTypeSeriesId>(
+  slots: ReadonlyArray<DashboardHourlyRangeSlot>,
+  comparisonSlots: ReadonlyArray<DashboardHourlyRangeSlot>,
+  series: T,
+): Array<number | null> {
+  const slotCount = Math.max(slots.length, comparisonSlots.length)
+  return Array.from({ length: slotCount }, (_, index) => {
+    const slot = slots[index]
+    const comparisonBucket = comparisonSlots[index]?.bucket ?? null
+    if (!slot?.bucket || !comparisonBucket) return null
+    if ((DASHBOARD_RESULT_SERIES_ORDER as readonly string[]).includes(series)) {
+      return getResultSeriesValue(slot.bucket, series as DashboardResultSeriesId)
+        - getResultSeriesValue(comparisonBucket, series as DashboardResultSeriesId)
+    }
+    return getTypeSeriesValue(slot.bucket, series as DashboardTypeSeriesId)
+      - getTypeSeriesValue(comparisonBucket, series as DashboardTypeSeriesId)
   })
 }
 

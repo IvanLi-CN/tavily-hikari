@@ -12,6 +12,7 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(dashboardStories.ResultsDeltaMode).toMatchObject({})
     expect(dashboardStories.TypesDeltaMode).toMatchObject({})
     expect(dashboardStories.HiddenSeriesEmpty).toMatchObject({})
+    expect(dashboardStories.FixedRangeWithGaps).toMatchObject({})
   })
 
   it('renders the empty-selection story with the updated server-time copy', () => {
@@ -20,9 +21,16 @@ describe('DashboardOverview Storybook coverage', () => {
     const markup = renderToStaticMarkup(createElement(meta.component, args as never))
     expect(markup).toContain('No visible chart series for the current selection.')
     expect(markup).toContain('Traffic Trends')
-    expect(markup).toContain('Local time axis · Last 24 hours (25 server-time hour buckets, current hour included)')
-    expect(markup).toContain('x-axis is shown in local time')
+    expect(markup).toContain('Local time axis · Fixed range')
+    expect(markup).toContain('missing buckets are left blank')
     expect(markup).toContain('dashboard-summary-card-backdrop')
+  })
+
+  it('exposes a fixed-range gap story for visual evidence', () => {
+    const args = dashboardStories.FixedRangeWithGaps.args
+    expect(args?.initialChartMode).toBe('resultsDelta')
+    expect(args?.initialResultDeltaSeries).toBe('primarySuccess')
+    expect(args?.hourlyRequestWindow.buckets.length).toBeLessThan(args?.hourlyRequestWindow.retainedBuckets ?? 0)
   })
 
   it('keeps the absolute charts on all-series defaults in the primary stories', () => {

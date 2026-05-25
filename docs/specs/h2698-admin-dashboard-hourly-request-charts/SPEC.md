@@ -15,7 +15,7 @@
 ## Goals
 
 - 在管理员仪表盘现有 `Traffic Trends` 区域内，用单一 stacked bar 图表面板替换旧 sparkline。
-- 后端统一返回最近 49 个**服务器时区对齐**的小时桶，并保证**最新一桶就是当前服务器时区小时进行中**；前端默认展示近 24 小时的 25 个小时桶，并将横轴标签按浏览器本地时间渲染，同时支持与昨日同小时做 signed delta 对比。
+- 后端统一返回有限的**服务器时区对齐**小时桶，并保证**最新一桶就是当前服务器时区小时进行中**；前端按固定自然范围展示今日/本月，并将横轴标签按浏览器本地时间渲染，同时支持与完整昨日/上月范围做 signed delta 对比。
 - 图表固定支持 4 种视图：
   - 调用结果
   - 调用类型
@@ -64,7 +64,7 @@
 - 小时桶窗口：
   - 以**服务器时区当前整点**作为当前未封口小时起点，并将该整点换算成 UTC epoch `bucketStart`
   - 返回 `[currentHourStart - 48h, currentHourStart]` 的 49 个小时桶，其中最后一桶就是当前小时
-  - 无日志的小时必须零填
+  - 后端已返回的 bucket 可为 0 值；前端不得为缺失 bucket 自行补 0、插值或伪造 bucket，缺失时间槽位必须保持空缺不渲染。
 - “主要 / 次要”直接复用现有 `request_value_bucket`：
   - `valuable -> primary`
   - `other -> secondary`
@@ -82,8 +82,9 @@
   - `apiNonBillable`
   - `apiBillable`
 - 与昨日对比：
-  - 对最近 25 个小时中的每个当前 bucket，取 `bucketStart - 24h` 的 bucket 做差
-  - 当前小时不做分钟截断，直接对比“昨日同小时整桶”
+  - 今日图使用 `summaryWindows.today_start/today_end`；对比图使用完整 `summaryWindows.yesterday_start/yesterday_end`。
+  - 本月图使用 `summaryWindows.month_start/month_end`；若需要上月对比，前端从 `month_start` 推导完整上月起止，只筛选已有 buckets，不伪造历史数据。
+  - 当前小时不做分钟截断，直接对比固定范围内对应序号的完整 bucket。
   - delta 图 Y 轴允许正负值
 
 ## 展示约束
@@ -95,15 +96,17 @@
 - 前两个绝对图默认全选全部 series。
 - 前两个图使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
 - 前端需要记忆上次选中的图表模式与 series 组合，并在下次重新打开管理台时恢复。
-- 小时桶统计口径改为按**服务器时区**对齐，但 UI 文案必须明确表达“近 24 小时（共 25 组，含当前小时）”，横轴日期/时间标签按浏览器本地时间显示。
+- 小时桶统计口径按**服务器时区**对齐，但 UI 文案必须明确表达固定今日/本月范围与完整昨日/上月对比；横轴日期/时间标签按浏览器本地时间显示。
+- 图表渲染必须把“时间槽位”和“已有 bucket 数据”分开：时间槽位可用于展示完整范围，bucket 缺失时数据值为 `null` 或等价空值，不渲染柱/点/线段。
 - API / MCP 配色必须复用请求记录界面的语义色族；结果图复用 success / warning / destructive / neutral 语义，不新造一套与现有 UI 脱节的颜色体系。
 
 ## 验收标准
 
-- 管理员仪表盘首页能直接看到近 24 小时（共 25 组，含当前小时）的 stacked bar 图表，不再显示旧 sparkline 卡片。
+- 管理员仪表盘首页能直接看到固定今日/本月范围的 stacked bar 图表，不再显示旧 sparkline 卡片。
 - `/api/dashboard/overview` 与 `/api/events` snapshot 都包含 `hourlyRequestWindow`，且 dashboard 切到该路由后可实时刷新。
 - `hourlyRequestWindow.retainedBuckets = 49`、`visibleBuckets = 25` 保持不变，且最新一桶必须等于 `currentHourStart`。
 - 小时桶最后一组必须是当前服务器时区小时进行中；横轴标签则按浏览器本地时间展示同一批 bucket。
+- 当固定范围内缺少 bucket 时，对应柱/点/线段保持空缺，不得补 0、不插值、不自行生成 bucket。
 - 结果图与类型图的默认堆叠顺序、默认可见系列、delta 行为与本 spec 一致。
 - 管理台重新打开后，会恢复上一次选中的图表模式与 series 显示状态。
 - 当所有可见系列被隐藏时，图表区域显示明确 empty state，而不是坏图或空白画布。
@@ -115,7 +118,7 @@
 - [x] M2: 后端 hourly bucket 聚合与 overview/snapshot 扩展
 - [x] M3: DashboardOverview 图表模式、图例切换与 i18n
 - [x] M4: Storybook / 前端测试 / 后端测试补齐
-- [ ] M5: 视觉证据、review-loop 与快车道收敛
+- [ ] M5: 固定今日/本月范围、缺口留空视觉证据、review-loop 与快车道收敛
 
 ## 风险与假设
 
@@ -159,3 +162,10 @@
   evidence_note: 验证绝对图在所有系列都被隐藏后呈现明确 empty state，而不是坏图或空白画布。
   image:
   ![管理员仪表盘小时图表：空系列状态](./assets/dashboard-hourly-empty.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `admin-components-dashboardoverview--fixed-range-with-gaps`
+  state: `fixed-range-gaps`
+  evidence_note: 验证图表元信息展示固定当前/对比范围，且固定范围缺失小时由 Storybook fixture 保持为空缺，不由前端补 0 或伪造 bucket。
+  image:
+  ![管理员仪表盘图表：固定范围缺口留空](./assets/dashboard-fixed-range-gaps.png)

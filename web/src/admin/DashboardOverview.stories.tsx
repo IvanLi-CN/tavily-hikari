@@ -68,7 +68,7 @@ const strings = {
   otherTag: 'Other',
   unknownTag: 'Unknown',
   trendsTitle: 'Traffic Trends',
-  trendsDescription: 'The chart covers the last 24 hours as 25 server-time hour buckets, including the current hour in progress, while the x-axis is shown in local time.',
+  trendsDescription: 'Charts use fixed today/month windows; yesterday/previous-month comparisons stay complete and missing buckets are left blank.',
   requestTrend: 'Request volume',
   errorTrend: 'Error volume',
   chartModeResults: 'Results',
@@ -79,7 +79,7 @@ const strings = {
   chartDeltaSeries: 'Compared series',
   chartSelectionAll: 'All',
   chartEmpty: 'No visible chart series for the current selection.',
-  chartUtcWindow: 'Local time axis · Last 24 hours ({count} server-time hour buckets, current hour included)',
+  chartUtcWindow: 'Local time axis · Fixed range ({count} current buckets, {comparisonCount} comparison buckets)',
   chartResultSecondarySuccess: 'Secondary success',
   chartResultPrimarySuccess: 'Primary success',
   chartResultSecondaryFailure: 'Secondary failure',
@@ -385,6 +385,44 @@ const defaultHourlyRequestWindow = buildDashboardHourlyRequestWindowFixture({
   }),
 })
 
+const fixedRangeGapHourlyRequestWindow = buildDashboardHourlyRequestWindowFixture({
+  currentHourStart: Date.UTC(2026, 3, 7, 12, 0, 0) / 1000,
+  retainedBuckets: 49,
+  mapBucket: ({ index, bucket }) => {
+    if ([2, 7, 19, 31, 42].includes(index)) {
+      return {
+        ...bucket,
+        secondarySuccess: 0,
+        primarySuccess: 0,
+        secondaryFailure: 0,
+        primaryFailure429: 0,
+        primaryFailureOther: 0,
+        unknown: 0,
+        mcpNonBillable: 0,
+        mcpBillable: 0,
+        apiNonBillable: 0,
+        apiBillable: 0,
+      }
+    }
+    return {
+      secondarySuccess: (index % 4) + 1,
+      primarySuccess: bucket.primarySuccess + (index % 4),
+      secondaryFailure: index % 3,
+      primaryFailure429: index % 9 === 0 ? 2 : 0,
+      primaryFailureOther: index % 7 === 0 ? 1 : 0,
+      unknown: index % 13 === 0 ? 1 : 0,
+      mcpNonBillable: index % 2,
+      mcpBillable: (index % 4) + 2,
+      apiNonBillable: index % 3,
+      apiBillable: (index % 5) + 3,
+    }
+  },
+})
+
+fixedRangeGapHourlyRequestWindow.buckets = fixedRangeGapHourlyRequestWindow.buckets.filter(
+  (_, index) => ![2, 7, 19, 31, 42].includes(index),
+)
+
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
   { id: 'keys', label: 'Active Keys', value: '57', subtitle: 'Current snapshot' },
@@ -420,7 +458,7 @@ const zhStrings = {
   otherTag: '次要',
   unknownTag: '未知',
   trendsTitle: '流量趋势',
-  trendsDescription: '统计窗口覆盖近 24 小时（共 25 组服务器时区小时数据，含当前小时进行中），横轴按本地时间显示。',
+  trendsDescription: '图表使用固定今日/本月窗口；昨日/上月对比保持完整，缺失小时留空不补。',
   requestTrend: '请求量',
   errorTrend: '错误量',
   chartModeResults: '调用结果',
@@ -431,7 +469,7 @@ const zhStrings = {
   chartDeltaSeries: '对比系列',
   chartSelectionAll: '全部',
   chartEmpty: '当前选择下没有可显示的图表系列。',
-  chartUtcWindow: '本地时间横轴 · 近 24 小时（共 {count} 组服务器时区小时数据，含当前小时）',
+  chartUtcWindow: '本地时间横轴 · 固定范围（当前 {count} 组，对比 {comparisonCount} 组）',
   chartResultSecondarySuccess: '次要成功',
   chartResultPrimarySuccess: '主要成功',
   chartResultSecondaryFailure: '次要失败',
@@ -892,6 +930,33 @@ export const HiddenSeriesEmpty: Story = {
   args: {
     ...Default.args,
     initialVisibleResultSeries: [],
+  },
+}
+
+export const FixedRangeWithGaps: Story = {
+  args: {
+    ...Default.args,
+    hourlyRequestWindow: fixedRangeGapHourlyRequestWindow,
+    initialChartMode: 'resultsDelta',
+    initialResultDeltaSeries: 'primarySuccess',
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Fixed today/month range proof with intentionally missing hourly buckets; gaps must remain blank instead of being zero-filled.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    if (canvasElement.querySelector('.dashboard-chart-canvas canvas') == null) {
+      throw new Error('Expected fixed-range gap story to render the dashboard chart canvas')
+    }
+    const meta = canvasElement.querySelector('.dashboard-trend-meta')?.textContent ?? ''
+    if (!meta.includes('Fixed range')) {
+      throw new Error(`Expected fixed-range chart metadata, received: ${meta}`)
+    }
   },
 }
 
