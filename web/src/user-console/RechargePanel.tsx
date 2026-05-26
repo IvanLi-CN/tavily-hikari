@@ -134,64 +134,66 @@ export default function RechargePanel({
 
           {config?.enabled ? (
             <div className="user-console-recharge-form">
-              <div className="user-console-recharge-field">
-                <span>{text.credits}</span>
-                <div className="user-console-recharge-stepper">
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={() => onCreditsChange(clampRechargeStep(normalizedCredits - creditsStep, minCredits, maxCredits, creditsStep))}
-                    disabled={normalizedCredits <= minCredits}
-                    aria-label={`Decrease ${text.credits}`}
-                  >
-                    <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
-                  </button>
-                  <input
-                    className="input input-bordered user-console-recharge-readonly"
-                    type="text"
-                    readOnly
-                    value={formatNumber(normalizedCredits)}
-                    aria-label={text.credits}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={() => onCreditsChange(clampRechargeStep(normalizedCredits + creditsStep, minCredits, maxCredits, creditsStep))}
-                    disabled={normalizedCredits >= maxCredits}
-                    aria-label={`Increase ${text.credits}`}
-                  >
-                    <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
-                  </button>
+              <div className="user-console-recharge-controls">
+                <div className="user-console-recharge-field">
+                  <span>{text.credits}</span>
+                  <div className="user-console-recharge-stepper">
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => onCreditsChange(clampRechargeStep(normalizedCredits - creditsStep, minCredits, maxCredits, creditsStep))}
+                      disabled={normalizedCredits <= minCredits}
+                      aria-label={`Decrease ${text.credits}`}
+                    >
+                      <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
+                    <input
+                      className="input input-bordered user-console-recharge-readonly"
+                      type="text"
+                      readOnly
+                      value={formatNumber(normalizedCredits)}
+                      aria-label={text.credits}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => onCreditsChange(clampRechargeStep(normalizedCredits + creditsStep, minCredits, maxCredits, creditsStep))}
+                      disabled={normalizedCredits >= maxCredits}
+                      aria-label={`Increase ${text.credits}`}
+                    >
+                      <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <div className="user-console-recharge-field">
-                <span>{text.months}</span>
-                <div className="user-console-recharge-stepper">
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={() => onMonthsChange(Math.max(minMonths, normalizedMonths - 1))}
-                    disabled={normalizedMonths <= minMonths}
-                    aria-label={`Decrease ${text.months}`}
-                  >
-                    <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
-                  </button>
-                  <input
-                    className="input input-bordered user-console-recharge-readonly"
-                    type="text"
-                    readOnly
-                    value={formatNumber(normalizedMonths)}
-                    aria-label={text.months}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={() => onMonthsChange(Math.min(maxMonths, normalizedMonths + 1))}
-                    disabled={normalizedMonths >= maxMonths}
-                    aria-label={`Increase ${text.months}`}
-                  >
-                    <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
-                  </button>
+                <div className="user-console-recharge-field">
+                  <span>{text.months}</span>
+                  <div className="user-console-recharge-stepper">
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => onMonthsChange(Math.max(minMonths, normalizedMonths - 1))}
+                      disabled={normalizedMonths <= minMonths}
+                      aria-label={`Decrease ${text.months}`}
+                    >
+                      <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
+                    <input
+                      className="input input-bordered user-console-recharge-readonly"
+                      type="text"
+                      readOnly
+                      value={formatNumber(normalizedMonths)}
+                      aria-label={text.months}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => onMonthsChange(Math.min(maxMonths, normalizedMonths + 1))}
+                      disabled={normalizedMonths >= maxMonths}
+                      aria-label={`Increase ${text.months}`}
+                    >
+                      <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="user-console-recharge-delta" aria-label={text.quotaDelta}>
