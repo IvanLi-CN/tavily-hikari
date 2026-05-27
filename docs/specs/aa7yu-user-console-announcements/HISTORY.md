@@ -9,6 +9,7 @@
 - 已发布公告编辑时生成新公告 ID，并归档旧公告，确保内容更新后用户端不会被旧关闭记录吞掉。
 - 管理端正文编辑使用 Milkdown Crepe，但只在进入创建/编辑视图时按需加载，避免公告列表路径承担编辑器依赖成本。
 - Milkdown Crepe 的默认 Toolbar 与 LinkTooltip 在公告空状态会泄漏无标签浮层，因此公告编辑器关闭这些默认浮层，并用真实用户侧预览与保存并发布动作承载发布确认。
+- 公告正文编辑器同时保留 Markdown、左右对比、所见即所得三种模式；任何预览态都使用 Milkdown 只读实例渲染，避免维护另一套 Markdown 预览实现。
 - Storybook 静态构建使用轻量 Markdown 编辑器替身，真实 Milkdown 行为通过本地 demo mock 页面验证并沉淀视觉证据。
 
 ## Key Reasons / Replacements

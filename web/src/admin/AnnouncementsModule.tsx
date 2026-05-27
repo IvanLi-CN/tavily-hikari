@@ -14,6 +14,7 @@ import {
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import MarkdownContent from '../components/MarkdownContent'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
+import SegmentedTabs, { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
@@ -37,6 +38,7 @@ type AnnouncementEditorMode =
   | { kind: 'edit'; id: string; status: AnnouncementStatus }
 
 type AnnouncementSubmitAction = 'draft' | 'publish'
+type AnnouncementBodyMode = 'markdown' | 'split' | 'wysiwyg'
 
 type AnnouncementCopy = ReturnType<typeof copy>
 
@@ -73,6 +75,11 @@ function copy(language: Language) {
         bodyLabel: '正文',
         bodyPlaceholder: '写给用户看的公告内容。',
         bodyA11yHint: '正文支持 Markdown，保存时保留 Markdown 原文。',
+        bodyModeLabel: '正文编辑模式',
+        bodyModeMarkdown: 'Markdown',
+        bodyModeSplit: '左右对比',
+        bodyModeWysiwyg: '所见即所得',
+        bodyModePreviewLabel: 'Milkdown 只读预览',
         displayLabel: '展示方式',
         modal: '弹窗',
         ticker: '滚动',
@@ -133,6 +140,11 @@ function copy(language: Language) {
         bodyLabel: 'Body',
         bodyPlaceholder: 'Write the user-facing announcement body.',
         bodyA11yHint: 'The body supports Markdown and is saved as the original Markdown text.',
+        bodyModeLabel: 'Body editor mode',
+        bodyModeMarkdown: 'Markdown',
+        bodyModeSplit: 'Split',
+        bodyModeWysiwyg: 'WYSIWYG',
+        bodyModePreviewLabel: 'Milkdown read-only preview',
         displayLabel: 'Display',
         modal: 'Modal',
         ticker: 'Ticker',
@@ -254,7 +266,11 @@ function AnnouncementDisplayPreview({
           </div>
           <div className="announcements-preview-copy">
             <strong>{previewTitle}</strong>
-            <MarkdownContent content={previewBody} compact={!hasContent} />
+            <MilkdownPreviewContent
+              value={previewBody}
+              label={strings.previewTitle}
+              compact={!hasContent}
+            />
           </div>
         </div>
       ) : (
@@ -263,7 +279,11 @@ function AnnouncementDisplayPreview({
             <Icon icon="mdi:bullhorn-outline" width={18} height={18} aria-hidden="true" />
             <strong>{previewTitle}</strong>
           </div>
-          <MarkdownContent content={previewBody} className="announcements-preview-body" />
+          <MilkdownPreviewContent
+            value={previewBody}
+            label={strings.previewTitle}
+            className="announcements-preview-body"
+          />
           <div className="announcements-preview-modal-actions">
             <Button type="button" size="xs" disabled>
               {strings.previewAcknowledge}
@@ -272,6 +292,100 @@ function AnnouncementDisplayPreview({
         </div>
       )}
     </section>
+  )
+}
+
+function AnnouncementBodyEditor({
+  mode,
+  draft,
+  strings,
+  saving,
+  onChangeDraft,
+}: {
+  mode: AnnouncementBodyMode
+  draft: AnnouncementDraft
+  strings: AnnouncementCopy
+  saving: boolean
+  onChangeDraft: (draft: AnnouncementDraft) => void
+}): JSX.Element {
+  const textarea = (
+    <TextareaFallback
+      id="announcement-body-editor"
+      name="announcement-body"
+      ariaLabelledBy="announcement-body-editor-label"
+      ariaDescribedBy="announcement-body-editor-hint"
+      value={draft.body}
+      placeholder={strings.bodyPlaceholder}
+      disabled={saving}
+      onChange={(body) => onChangeDraft({ ...draft, body })}
+    />
+  )
+
+  if (mode === 'markdown') {
+    return textarea
+  }
+
+  if (mode === 'split') {
+    return (
+      <div className="announcements-body-split">
+        {textarea}
+        <MilkdownPreviewContent
+          value={draft.body || strings.previewEmpty}
+          label={strings.bodyModePreviewLabel}
+          className="announcements-body-milkdown-preview"
+        />
+      </div>
+    )
+  }
+
+  return (
+    <LazyMarkdownEditor
+      id="announcement-body-editor"
+      name="announcement-body"
+      ariaLabelledBy="announcement-body-editor-label"
+      ariaDescribedBy="announcement-body-editor-hint"
+      value={draft.body}
+      placeholder={strings.bodyPlaceholder}
+      disabled={saving}
+      onChange={(body) => onChangeDraft({ ...draft, body })}
+      fallback={textarea}
+    />
+  )
+}
+
+function MilkdownPreviewContent({
+  value,
+  label,
+  compact = false,
+  className,
+}: {
+  value: string
+  label: string
+  compact?: boolean
+  className?: string
+}): JSX.Element {
+  return (
+    <LazyMarkdownEditor
+      value={value}
+      placeholder=""
+      ariaLabel={label}
+      readOnly
+      className={[
+        'announcements-milkdown-preview',
+        compact ? 'announcements-milkdown-preview--compact' : '',
+        className ?? '',
+      ].filter(Boolean).join(' ')}
+      onChange={() => {}}
+      fallback={(
+        <textarea
+          className="textarea announcements-body-fallback announcements-body-fallback--readonly"
+          value={value}
+          aria-label={label}
+          rows={compact ? 2 : 5}
+          readOnly
+        />
+      )}
+    />
   )
 }
 
@@ -294,10 +408,17 @@ function AnnouncementEditorPanel({
 }): JSX.Element {
   const saving = submittingAction != null
   const isPublishedEdit = mode.kind === 'edit' && mode.status === 'published'
+  const [bodyMode, setBodyMode] = useState<AnnouncementBodyMode>('split')
+  const bodyModeOptions: ReadonlyArray<SegmentedTabsOption<AnnouncementBodyMode>> = [
+    { value: 'markdown', label: strings.bodyModeMarkdown },
+    { value: 'split', label: strings.bodyModeSplit },
+    { value: 'wysiwyg', label: strings.bodyModeWysiwyg },
+  ]
 
   return (
     <form
       className="announcements-editor"
+      aria-label={mode.kind === 'edit' ? strings.formTitleEdit : strings.formTitleNew}
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit('draft')
@@ -347,29 +468,24 @@ function AnnouncementEditorPanel({
       </label>
       <div className="announcements-editor-body-grid">
         <div className="announcements-field">
-          <span id="announcement-body-editor-label">{strings.bodyLabel}</span>
+          <div className="announcements-body-heading">
+            <span id="announcement-body-editor-label">{strings.bodyLabel}</span>
+            <SegmentedTabs<AnnouncementBodyMode>
+              value={bodyMode}
+              onChange={setBodyMode}
+              options={bodyModeOptions}
+              ariaLabel={strings.bodyModeLabel}
+              className="announcements-body-mode-tabs"
+              disabled={saving}
+            />
+          </div>
           <span id="announcement-body-editor-hint" className="sr-only">{strings.bodyA11yHint}</span>
-          <LazyMarkdownEditor
-            id="announcement-body-editor"
-            name="announcement-body"
-            ariaLabelledBy="announcement-body-editor-label"
-            ariaDescribedBy="announcement-body-editor-hint"
-            value={draft.body}
-            placeholder={strings.bodyPlaceholder}
-            disabled={saving}
-            onChange={(body) => onChangeDraft({ ...draft, body })}
-            fallback={(
-              <TextareaFallback
-                id="announcement-body-editor"
-                name="announcement-body"
-                ariaLabelledBy="announcement-body-editor-label"
-                ariaDescribedBy="announcement-body-editor-hint"
-                value={draft.body}
-                placeholder={strings.bodyPlaceholder}
-                disabled={saving}
-                onChange={(body) => onChangeDraft({ ...draft, body })}
-              />
-            )}
+          <AnnouncementBodyEditor
+            mode={bodyMode}
+            draft={draft}
+            strings={strings}
+            saving={saving}
+            onChangeDraft={onChangeDraft}
           />
         </div>
         <AnnouncementDisplayPreview draft={draft} strings={strings} />
@@ -434,13 +550,16 @@ function TextareaFallback({
 }
 
 interface LazyMarkdownEditorProps {
-  id: string
-  name: string
+  id?: string
+  name?: string
   value: string
   placeholder: string
-  ariaLabelledBy: string
-  ariaDescribedBy: string
-  disabled: boolean
+  ariaLabel?: string
+  ariaLabelledBy?: string
+  ariaDescribedBy?: string
+  disabled?: boolean
+  readOnly?: boolean
+  className?: string
   onChange: (value: string) => void
   fallback: JSX.Element
 }

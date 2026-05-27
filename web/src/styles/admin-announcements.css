@@ -67,6 +67,17 @@
   font-weight: 700;
 }
 
+.announcements-body-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.announcements-body-mode-tabs {
+  flex: 0 1 auto;
+}
+
 .announcements-editor-body-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
@@ -78,6 +89,21 @@
   resize: vertical;
 }
 
+.announcements-body-fallback {
+  min-height: 190px;
+  resize: vertical;
+}
+
+.announcements-body-fallback--readonly {
+  resize: none;
+}
+
+.announcements-body-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
 .markdown-editor-shell {
   overflow: hidden;
   min-height: 190px;
@@ -85,6 +111,10 @@
   border-radius: 18px;
   background: hsl(var(--background) / 0.86);
   box-shadow: var(--shadow-clay-pressed);
+}
+
+.markdown-editor-shell--readonly {
+  background: hsl(var(--card) / 0.72);
 }
 
 .markdown-editor-shell .milkdown {
@@ -119,6 +149,10 @@
   resize: vertical;
 }
 
+.markdown-editor-shell--readonly .markdown-editor-storybook-input {
+  resize: none;
+}
+
 .markdown-editor-shell .ProseMirror > * {
   margin-top: 0;
   margin-bottom: 0.75em;
@@ -126,6 +160,28 @@
 
 .markdown-editor-shell .ProseMirror > :last-child {
   margin-bottom: 0;
+}
+
+.markdown-editor-shell .ProseMirror :where(ul, ol) {
+  padding-left: 1.35rem;
+}
+
+.markdown-editor-shell .ProseMirror ul > li {
+  list-style-type: disc;
+}
+
+.markdown-editor-shell .ProseMirror ol > li {
+  list-style-type: decimal;
+}
+
+.markdown-editor-shell .ProseMirror li {
+  display: list-item;
+  margin: 0.25em 0;
+}
+
+.markdown-editor-shell .ProseMirror li p {
+  display: inline;
+  margin: 0;
 }
 
 .markdown-editor-shell .ProseMirror p.is-editor-empty:first-child::before {
@@ -195,6 +251,36 @@
 .announcements-preview-copy {
   display: grid;
   gap: 4px;
+}
+
+.announcements-milkdown-preview {
+  min-height: 120px;
+}
+
+.announcements-body-milkdown-preview.markdown-editor-shell,
+.announcements-body-milkdown-preview.markdown-editor-shell .ProseMirror {
+  min-height: 190px;
+}
+
+.announcements-preview-copy .announcements-milkdown-preview,
+.announcements-preview-modal .announcements-milkdown-preview {
+  min-height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.announcements-preview-copy .announcements-milkdown-preview .ProseMirror,
+.announcements-preview-modal .announcements-milkdown-preview .ProseMirror {
+  min-height: auto;
+  padding: 0;
+  font-size: inherit;
+  line-height: 1.5;
+}
+
+.announcements-preview-copy .announcements-milkdown-preview .ProseMirror {
+  color: hsl(var(--muted-foreground));
 }
 
 .announcements-preview-copy strong,
@@ -326,6 +412,15 @@
   .markdown-editor-shell,
   .markdown-editor-shell .ProseMirror {
     min-height: 180px;
+  }
+
+  .announcements-body-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .announcements-body-split {
+    grid-template-columns: 1fr;
   }
 
   .announcements-editor-body-grid {

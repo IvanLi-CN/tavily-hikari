@@ -145,6 +145,13 @@
 
 - source_type: mock_ui
   story_id_or_title: `http://127.0.0.1:62400/admin/announcements`
+  state: admin announcement editor Markdown, split, and WYSIWYG modes
+  evidence_note: 正文编辑器提供 Markdown、左右对比、所见即所得三种模式；左右对比和用户侧预览都由 Milkdown 只读实例渲染，避免独立实现预览效果。
+  image:
+  ![Admin announcement editor modes](./assets/admin-announcements-editor-modes.png)
+
+- source_type: mock_ui
+  story_id_or_title: `http://127.0.0.1:62400/admin/announcements`
   state: mobile admin announcement create view with sticky actions
   evidence_note: 移动端创建公告时正文、用户侧预览和保存动作保持单栏阅读，保存草稿与保存并发布作为底部 sticky 操作可达。
   image:

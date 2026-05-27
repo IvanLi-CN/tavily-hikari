@@ -7,6 +7,7 @@
       "dependencies": {
         "@iconify/react": "^4.1.1",
         "@milkdown/crepe": "^7.21.1",
+        "@milkdown/kit": "^7.21.1",
         "@radix-ui/react-dialog": "^1.1.14",
         "@radix-ui/react-dropdown-menu": "^2.1.15",
         "@radix-ui/react-select": "^2.2.6",

@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
+import { replaceAll } from '@milkdown/kit/utils'
 import '@milkdown/crepe/theme/frame.css'
 
 import { Textarea } from './ui/textarea'
+import { cn } from '../lib/utils'
 
 interface MarkdownEditorProps {
   id?: string
   name?: string
   value: string
   placeholder: string
+  ariaLabel?: string
   ariaLabelledBy?: string
   ariaDescribedBy?: string
   disabled?: boolean
+  readOnly?: boolean
+  className?: string
   onChange: (value: string) => void
 }
 
@@ -20,19 +25,28 @@ export default function MarkdownEditor({
   name,
   value,
   placeholder,
+  ariaLabel,
   ariaLabelledBy,
   ariaDescribedBy,
   disabled = false,
+  readOnly = false,
+  className,
   onChange,
 }: MarkdownEditorProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<Crepe | null>(null)
   const onChangeRef = useRef(onChange)
+  const valueRef = useRef(value)
   const [fallback, setFallback] = useState(false)
+  const readonly = disabled || readOnly
 
   useEffect(() => {
     onChangeRef.current = onChange
   }, [onChange])
+
+  useEffect(() => {
+    valueRef.current = value
+  }, [value])
 
   useEffect(() => {
     const root = rootRef.current
@@ -50,7 +64,7 @@ export default function MarkdownEditor({
         [CrepeFeature.BlockEdit]: false,
         [CrepeFeature.Toolbar]: false,
         [CrepeFeature.Placeholder]: true,
-        [CrepeFeature.ListItem]: true,
+        [CrepeFeature.ListItem]: false,
         [CrepeFeature.LinkTooltip]: false,
         [CrepeFeature.Table]: true,
         [CrepeFeature.CodeMirror]: true,
@@ -67,6 +81,7 @@ export default function MarkdownEditor({
 
     editor.on((api) => {
       api.markdownUpdated((_ctx, markdown, prevMarkdown) => {
+        valueRef.current = markdown
         if (markdown !== prevMarkdown) onChangeRef.current(markdown)
       })
     })
@@ -78,7 +93,7 @@ export default function MarkdownEditor({
           return
         }
         editorRef.current = editor
-        editor.setReadonly(disabled)
+        editor.setReadonly(readonly)
       })
       .catch(() => {
         if (!cancelled) setFallback(true)
@@ -92,8 +107,16 @@ export default function MarkdownEditor({
   }, [])
 
   useEffect(() => {
-    editorRef.current?.setReadonly(disabled)
-  }, [disabled])
+    editorRef.current?.setReadonly(readonly)
+  }, [readonly])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    if (editor.getMarkdown() === value) return
+    valueRef.current = value
+    editor.editor.action(replaceAll(value))
+  }, [value])
 
   if (fallback) {
     return (
@@ -101,12 +124,14 @@ export default function MarkdownEditor({
         id={id}
         name={name}
         value={value}
+        aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         aria-describedby={ariaDescribedBy}
         placeholder={placeholder}
         rows={7}
         maxLength={4000}
         disabled={disabled}
+        readOnly={readOnly}
         onChange={(event) => onChange(event.target.value)}
       />
     )
@@ -115,10 +140,12 @@ export default function MarkdownEditor({
   return (
     <div
       id={id}
-      className="markdown-editor-shell"
+      className={cn('markdown-editor-shell', readOnly && 'markdown-editor-shell--readonly', className)}
+      aria-label={ariaLabel}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
     >
+      {name ? <input type="hidden" name={name} value={value} /> : null}
       <div ref={rootRef} />
     </div>
   )

@@ -11,8 +11,8 @@
 ## Coverage / rollout summary
 
 - Backend: SQLite announcement persistence, admin CRUD lifecycle APIs, archive edit/republish ID handling, and user active/history APIs are implemented.
-- Frontend: admin announcement management split into list and create/edit views, Milkdown-powered Markdown authoring, save-and-publish ergonomics, user-side preview, Markdown body rendering, user console modal/ticker/history UI, local close memory, and i18n copy are implemented.
-- Storybook: admin default/empty/create/mobile-create/mobile coverage and user console active/history announcement states are implemented; Storybook uses a lightweight editor stub while the app loads Milkdown on demand.
+- Frontend: admin announcement management split into list and create/edit views, Milkdown-powered Markdown authoring with Markdown/split/WYSIWYG modes, save-and-publish ergonomics, Milkdown-rendered user-side preview, Markdown body rendering, user console modal/ticker/history UI, local close memory, and i18n copy are implemented.
+- Storybook: admin default/empty/create/mobile-create/mobile coverage and user console active/history announcement states are implemented; Storybook uses a lightweight editor stub for static coverage while the app loads Milkdown on demand, and the create story asserts all editor modes remain available.
 - Visual evidence: stored in `./assets/` and referenced from `./SPEC.md`.
 
 ## Remaining Gaps

@@ -199,8 +199,16 @@ export const CreateAnnouncement: Story = {
     if (canvasElement.querySelector('.markdown-editor-shell') == null) {
       throw new Error('Expected Markdown editor to render.')
     }
+    for (const modeLabel of ['Markdown', '左右对比', '所见即所得']) {
+      if (!canvasElement.textContent?.includes(modeLabel)) {
+        throw new Error(`Expected create editor to expose ${modeLabel} mode.`)
+      }
+    }
     if (canvasElement.querySelector('.markdown-editor-storybook-toolbar') != null) {
       throw new Error('Expected create editor to avoid persistent toolbar chrome.')
+    }
+    if (canvasElement.querySelector('.announcements-body-milkdown-preview') == null) {
+      throw new Error('Expected split mode to render a Milkdown-backed read-only preview.')
     }
     if (canvasElement.querySelector('.announcements-preview') == null) {
       throw new Error('Expected user-side announcement preview to render.')
