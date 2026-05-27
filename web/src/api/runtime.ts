@@ -2884,6 +2884,8 @@ export interface SystemSettings {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  rechargeFeatureEnabled: boolean
+  rechargeUserEnabled: boolean
   userBlockedKeyBaseLimit: number
   globalIpLimit: number
   trustedProxyCidrs: string[]
@@ -2912,6 +2914,8 @@ export interface UpdateSystemSettingsPayload {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  rechargeFeatureEnabled: boolean
+  rechargeUserEnabled: boolean
   trustedProxyCidrs: string[]
   trustedClientIpHeaders: string[]
   userBlockedKeyBaseLimit: number
@@ -3055,6 +3059,8 @@ function createEmptySystemSettings(): SystemSettings {
     rebalanceMcpSessionPercent: 100,
     apiRebalanceEnabled: false,
     apiRebalancePercent: 0,
+    rechargeFeatureEnabled: true,
+    rechargeUserEnabled: true,
     userBlockedKeyBaseLimit: 5,
     globalIpLimit: 5,
     trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],

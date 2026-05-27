@@ -18,6 +18,8 @@ const initialSettings: SystemSettings = {
   rebalanceMcpSessionPercent: 100,
   apiRebalanceEnabled: false,
   apiRebalancePercent: 0,
+  rechargeFeatureEnabled: true,
+  rechargeUserEnabled: true,
   userBlockedKeyBaseLimit: 5,
   globalIpLimit: 5,
   trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
@@ -119,6 +121,58 @@ describe('SystemSettingsModule interactions', () => {
 
     expect(compactButton!.getAttribute('aria-pressed')).toBe('true')
     expect(applied).toHaveLength(0)
+
+    await act(async () => root.unmount())
+  })
+
+  it('saves recharge switches immediately', async () => {
+    const applied: SystemSettings[] = []
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    function Harness(): JSX.Element {
+      const [settings, setSettings] = useState<SystemSettings>(initialSettings)
+      return (
+        <SystemSettingsModule
+          strings={strings}
+          settings={settings}
+          loadState="ready"
+          error={null}
+          saving={false}
+          onApply={(nextSettings) => {
+            applied.push(nextSettings)
+            setSettings(nextSettings)
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      root.render(<Harness />)
+    })
+    await flushEffects()
+
+    const featureSwitch = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="switch"]')).find(
+      (button) => button.getAttribute('aria-label') === strings.form.rechargeFeatureLabel,
+    )
+    const userSwitch = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="switch"]')).find(
+      (button) => button.getAttribute('aria-label') === strings.form.rechargeUserLabel,
+    )
+    expect(featureSwitch).not.toBeNull()
+    expect(userSwitch).not.toBeNull()
+
+    await act(async () => {
+      featureSwitch!.click()
+    })
+    await flushEffects()
+    await act(async () => {
+      userSwitch!.click()
+    })
+    await flushEffects()
+
+    expect(applied[0]?.rechargeFeatureEnabled).toBe(false)
+    expect(applied[1]?.rechargeUserEnabled).toBe(false)
 
     await act(async () => root.unmount())
   })

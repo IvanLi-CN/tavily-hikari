@@ -58,6 +58,7 @@
 - 私钥配置应支持 32-byte seed（base64/base64url/hex）和 PKCS#8 DER/PEM，方便部署。
 - 用户控制台应通过后端返回的价格与配置展示充值选项，避免前端重复实现支付规则。
 - 订单查询接口用于用户返回控制台后的状态刷新，不作为发放权益的唯一依据。
+- 管理端系统设置应提供充值总开关与“开放非管理员充值”调试开关；总开关关闭时用户控制台不展示充值入口，创建订单接口拒绝新订单；非管理员开关关闭时仅管理员请求可看到并创建充值订单。
 
 ### COULD
 
@@ -125,6 +126,14 @@
   When 用户打开控制台
   Then 充值卡片展示不可用状态，创建订单接口不应产生本地订单。
 
+- Given 管理员关闭充值功能总开关
+  When 普通用户打开控制台或调用创建订单接口
+  Then 用户控制台不展示充值入口，创建订单接口返回不可用且不产生本地订单。
+
+- Given 管理员关闭“开放非管理员充值”调试开关
+  When 普通用户打开控制台
+  Then 用户控制台不展示充值入口；管理员请求仍可看到并创建充值订单。
+
 ## 验收清单（Acceptance checklist）
 
 - [x] 核心路径的长期行为已被明确描述。
@@ -165,6 +174,8 @@
 ![Reduced hourly and daily recharge deltas in the web demo](./assets/recharge-reduced-quota-web-demo.png)
 
 ![Recharge orders empty state fills the parent column](./assets/recharge-orders-fill-web-demo.png)
+
+![Recharge system settings switches](./assets/recharge-system-settings-switches.png)
 
 ## Related PRs
 

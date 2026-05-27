@@ -1166,6 +1166,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -1457,6 +1459,8 @@
                 rebalance_mcp_session_percent: 0,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -1507,6 +1511,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -1596,6 +1602,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -1830,6 +1838,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -2068,6 +2078,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -2172,6 +2184,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -2246,6 +2260,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -2311,6 +2327,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
@@ -2762,14 +2780,13 @@
             .await
             .expect("decode settings");
         let system_settings = &settings_body["systemSettings"];
-        assert_eq!(
-            settings_body["forwardProxy"]["insertDirect"].as_bool(),
-            Some(true)
-        );
+        assert_eq!(settings_body["forwardProxy"]["insertDirect"].as_bool(), Some(true));
         assert_eq!(system_settings["mcpSessionAffinityKeyCount"].as_i64(), Some(5));
         assert_eq!(system_settings["requestRateLimit"].as_i64(), Some(request_rate_limit()));
         assert_eq!(system_settings["rebalanceMcpEnabled"].as_bool(), Some(false));
         assert_eq!(system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(100));
+        assert_eq!(system_settings["rechargeFeatureEnabled"].as_bool(), Some(true));
+        assert_eq!(system_settings["rechargeUserEnabled"].as_bool(), Some(true));
         assert_eq!(
             system_settings["userBlockedKeyBaseLimit"].as_i64(),
             Some(tavily_hikari::USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
@@ -2786,6 +2803,8 @@
                 "mcpSessionAffinityKeyCount": 3,
                 "rebalanceMcpEnabled": true,
                 "rebalanceMcpSessionPercent": 35,
+                "rechargeFeatureEnabled": false,
+                "rechargeUserEnabled": false,
                 "userBlockedKeyBaseLimit": 8,
                 "globalIpLimit": 6,
             }))
@@ -2797,19 +2816,12 @@
             .json::<serde_json::Value>()
             .await
             .expect("decode updated system settings");
-        assert_eq!(
-            updated_system_body["mcpSessionAffinityKeyCount"].as_i64(),
-            Some(3)
-        );
+        assert_eq!(updated_system_body["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
         assert_eq!(updated_system_body["requestRateLimit"].as_i64(), Some(72));
-        assert_eq!(
-            updated_system_body["rebalanceMcpEnabled"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            updated_system_body["rebalanceMcpSessionPercent"].as_i64(),
-            Some(35)
-        );
+        assert_eq!(updated_system_body["rebalanceMcpEnabled"].as_bool(), Some(true));
+        assert_eq!(updated_system_body["rebalanceMcpSessionPercent"].as_i64(), Some(35));
+        assert_eq!(updated_system_body["rechargeFeatureEnabled"].as_bool(), Some(false));
+        assert_eq!(updated_system_body["rechargeUserEnabled"].as_bool(), Some(false));
         assert_eq!(updated_system_body["userBlockedKeyBaseLimit"].as_i64(), Some(8));
         assert_eq!(updated_system_body["globalIpLimit"].as_i64(), Some(6));
 
@@ -2829,10 +2841,9 @@
         assert_eq!(persisted_system_settings["globalIpLimit"].as_i64(), Some(6));
         assert_eq!(persisted_system_settings["rebalanceMcpEnabled"].as_bool(), Some(true));
         assert_eq!(persisted_system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(35));
-        assert_eq!(
-            persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(),
-            Some(8)
-        );
+        assert_eq!(persisted_system_settings["rechargeFeatureEnabled"].as_bool(), Some(false));
+        assert_eq!(persisted_system_settings["rechargeUserEnabled"].as_bool(), Some(false));
+        assert_eq!(persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(), Some(8));
 
         let updated = client
             .put(format!("http://{addr}/api/settings/forward-proxy"))
@@ -2924,6 +2935,8 @@
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                recharge_feature_enabled: true,
+                recharge_user_enabled: true,
                 user_blocked_key_base_limit: 7,
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,

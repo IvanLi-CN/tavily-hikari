@@ -811,6 +811,7 @@ impl From<tavily_hikari::LinuxDoCreditRechargeOrder> for RechargeOrderView {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RechargeConfigView {
+    visible: bool,
     enabled: bool,
     unit_credits: i64,
     unit_price_ldc: i64,
@@ -950,6 +951,20 @@ fn linuxdo_credit_config_unavailable() -> (StatusCode, String) {
     (StatusCode::SERVICE_UNAVAILABLE, "recharge not configured".to_string())
 }
 
+async fn user_recharge_gate_for_request(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(bool, bool), (StatusCode, String)> {
+    let settings = state
+        .proxy
+        .get_system_settings()
+        .await
+        .map_err(|err| map_recharge_error("load recharge gate settings", err))?;
+    let visible = settings.recharge_feature_enabled
+        && (settings.recharge_user_enabled || is_admin_request(state, headers));
+    Ok((visible, visible && state.linuxdo_credit.is_enabled_and_configured()))
+}
+
 fn map_recharge_error(stage: &'static str, err: impl std::fmt::Display) -> (StatusCode, String) {
     eprintln!("{stage}: {err}");
     (StatusCode::INTERNAL_SERVER_ERROR, "recharge failed".to_string())
@@ -1064,8 +1079,10 @@ async fn get_user_recharge_config(
     let price = state.linuxdo_credit.price_config();
     let quota_delta_base_credits = tavily_hikari::LINUXDO_CREDIT_RECHARGE_UNIT_CREDITS;
     let quota_delta = tavily_hikari::linuxdo_credit_recharge_quota_delta(quota_delta_base_credits);
+    let (visible, enabled) = user_recharge_gate_for_request(state.as_ref(), &headers).await?;
     Ok(Json(RechargeConfigView {
-        enabled: state.linuxdo_credit.is_enabled_and_configured(),
+        visible,
+        enabled,
         unit_credits: price.unit_credits,
         unit_price_ldc: price.unit_price_cents / 100,
         min_credits: price.min_credits,
@@ -1142,7 +1159,8 @@ async fn post_user_recharge_order(
     let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     };
-    if !state.linuxdo_credit.is_enabled_and_configured() {
+    let (_, recharge_enabled) = user_recharge_gate_for_request(state.as_ref(), &headers).await?;
+    if !recharge_enabled {
         return Err(linuxdo_credit_config_unavailable());
     }
     let price = state.linuxdo_credit.price_config();

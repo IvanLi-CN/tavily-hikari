@@ -1043,6 +1043,8 @@ pub struct SystemSettings {
     pub rebalance_mcp_session_percent: i64,
     pub api_rebalance_enabled: bool,
     pub api_rebalance_percent: i64,
+    pub recharge_feature_enabled: bool,
+    pub recharge_user_enabled: bool,
     pub user_blocked_key_base_limit: i64,
     pub global_ip_limit: i64,
     pub trusted_proxy_cidrs: Vec<String>,

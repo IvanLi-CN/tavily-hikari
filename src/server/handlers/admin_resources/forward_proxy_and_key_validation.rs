@@ -48,6 +48,12 @@ async fn put_system_settings(
             api_rebalance_percent: payload
                 .api_rebalance_percent
                 .unwrap_or(current_settings.api_rebalance_percent),
+            recharge_feature_enabled: payload
+                .recharge_feature_enabled
+                .unwrap_or(current_settings.recharge_feature_enabled),
+            recharge_user_enabled: payload
+                .recharge_user_enabled
+                .unwrap_or(current_settings.recharge_user_enabled),
             user_blocked_key_base_limit: payload
                 .user_blocked_key_base_limit
                 .unwrap_or(current_settings.user_blocked_key_base_limit),

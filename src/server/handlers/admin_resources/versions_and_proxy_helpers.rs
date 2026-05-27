@@ -685,6 +685,8 @@ struct SystemSettingsUpdatePayload {
     rebalance_mcp_session_percent: i64,
     api_rebalance_enabled: Option<bool>,
     api_rebalance_percent: Option<i64>,
+    recharge_feature_enabled: Option<bool>,
+    recharge_user_enabled: Option<bool>,
     user_blocked_key_base_limit: Option<i64>,
     global_ip_limit: Option<i64>,
     trusted_proxy_cidrs: Option<Vec<String>>,

@@ -6,6 +6,7 @@ import {
 } from './userConsoleNormalization'
 
 export interface RechargeConfig {
+  visible: boolean
   enabled: boolean
   unitCredits: number
   unitPriceLdc: number

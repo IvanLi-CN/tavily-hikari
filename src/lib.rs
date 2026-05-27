@@ -643,6 +643,8 @@ const META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA_MONTH_COVERAGE_START: &str =
     "account_usage_rollup_quota_month_coverage_start";
 const META_KEY_ACCOUNT_LIMIT_SNAPSHOT_BACKFILL_V1: &str = "account_limit_snapshot_backfill_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
+const META_KEY_RECHARGE_FEATURE_ENABLED_V1: &str = "recharge_feature_enabled_v1";
+const META_KEY_RECHARGE_USER_ENABLED_V1: &str = "recharge_user_enabled_v1";
 const META_KEY_REQUEST_RATE_LIMIT_V1: &str = "request_rate_limit_v1";
 const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
 const META_KEY_REBALANCE_MCP_ENABLED_V1: &str = "rebalance_mcp_enabled_v1";

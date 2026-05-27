@@ -21,8 +21,9 @@ function readNullableString(value: RecordLike, camelKey: string, snakeKey = came
   return typeof candidate === 'string' ? candidate : null
 }
 
-function readBoolean(value: RecordLike, camelKey: string, snakeKey = camelKey): boolean {
-  return Boolean(value[camelKey] ?? value[snakeKey])
+function readBoolean(value: RecordLike, camelKey: string, snakeKey = camelKey, fallback = false): boolean {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return typeof candidate === 'boolean' ? candidate : fallback
 }
 
 function readNumber(value: RecordLike, camelKey: string, snakeKey = camelKey, fallback = 0): number {
@@ -55,6 +56,7 @@ function normalizeRechargeSummary(value: unknown): UserDashboard['recharge'] {
 export function normalizeRechargeConfig(value: unknown): RechargeConfig {
   const source = isRecordLike(value) ? value : {}
   return {
+    visible: readBoolean(source, 'visible', 'visible', true),
     enabled: readBoolean(source, 'enabled', 'enabled'),
     unitCredits: readNumber(source, 'unitCredits', 'unit_credits', 1000),
     unitPriceLdc: readNumber(source, 'unitPriceLdc', 'unit_price_ldc', 100),

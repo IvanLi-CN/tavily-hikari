@@ -41,6 +41,8 @@ describe('SystemSettingsModule rendering', () => {
           rebalanceMcpSessionPercent: 100,
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
+          rechargeFeatureEnabled: true,
+          rechargeUserEnabled: true,
           userBlockedKeyBaseLimit: 5,
           globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
@@ -65,6 +67,8 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.form.currentPercentValue.replace('{percent}', '100'))
     expect(markup).toContain(strings.form.currentApiRebalancePercentValue.replace('{percent}', '0'))
     expect(markup).toContain(strings.form.apiRebalancePercentDisabledHint)
+    expect(markup).toContain(strings.form.rechargeFeatureLabel)
+    expect(markup).toContain(strings.form.rechargeUserLabel)
     expect(markup).toContain(strings.form.currentBlockedKeyBaseLimitValue.replace('{count}', '5'))
     expect(markup).toContain(strings.form.blockedKeyBaseLimitHint)
     expect(markup).toContain(strings.form.currentGlobalIpLimitValue.replace('{count}', '5'))
@@ -89,6 +93,8 @@ describe('SystemSettingsModule rendering', () => {
           rebalanceMcpSessionPercent: 35,
           apiRebalanceEnabled: true,
           apiRebalancePercent: 25,
+          rechargeFeatureEnabled: true,
+          rechargeUserEnabled: true,
           userBlockedKeyBaseLimit: 5,
           globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
@@ -115,6 +121,8 @@ describe('SystemSettingsModule rendering', () => {
           rebalanceMcpSessionPercent: 35,
           apiRebalanceEnabled: false,
           apiRebalancePercent: 25,
+          rechargeFeatureEnabled: true,
+          rechargeUserEnabled: true,
           userBlockedKeyBaseLimit: 5,
           globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],

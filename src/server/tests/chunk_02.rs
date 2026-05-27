@@ -1895,6 +1895,19 @@ fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
     }
 }
 
+fn linuxdo_credit_options_for_test() -> LinuxDoCreditOptions {
+    LinuxDoCreditOptions {
+        enabled: true,
+        client_id: Some("linuxdo-credit-client-id".to_string()),
+        client_secret: Some("linuxdo-credit-client-secret".to_string()),
+        merchant_private_key: Some("test-private-key".to_string()),
+        submit_url: "http://127.0.0.1:9/linuxdo-credit/submit".to_string(),
+        notify_url: None,
+        return_url: None,
+        test_price_enabled: true,
+    }
+}
+
 async fn spawn_user_oauth_server_with_options(
     proxy: TavilyProxy,
     linuxdo_oauth: LinuxDoOAuthOptions,
@@ -1935,6 +1948,40 @@ async fn spawn_user_oauth_server_with_options(
         )
         .route("/api/user/tokens/:id/logs", get(get_user_token_logs))
         .route("/api/user/tokens/:id/events", get(sse_user_token))
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    addr
+}
+
+async fn spawn_user_oauth_recharge_server(
+    proxy: TavilyProxy,
+    linuxdo_credit: LinuxDoCreditOptions,
+    dev_open_admin: bool,
+) -> SocketAddr {
+    let static_dir = temp_static_dir("linuxdo-user-oauth-recharge");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: Some(static_dir),
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        linuxdo_oauth: linuxdo_oauth_options_for_test(),
+        linuxdo_credit,
+        dev_open_admin,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+    });
+
+    let app = Router::new()
+        .route("/api/user/recharge/config", get(get_user_recharge_config))
+        .route("/api/user/recharge/orders", post(post_user_recharge_order))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

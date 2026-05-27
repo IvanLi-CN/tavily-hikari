@@ -48,6 +48,8 @@ type NormalSystemSettingsOverrides = Partial<
     | 'rebalanceMcpSessionPercent'
     | 'apiRebalanceEnabled'
     | 'apiRebalancePercent'
+    | 'rechargeFeatureEnabled'
+    | 'rechargeUserEnabled'
     | 'userBlockedKeyBaseLimit'
     | 'globalIpLimit'
   >
@@ -202,6 +204,10 @@ export default function SystemSettingsModule({
   const [draftApiRebalancePercent, setDraftApiRebalancePercent] = useState(() =>
     settings ? String(settings.apiRebalancePercent) : '0',
   )
+  const [draftRechargeFeatureEnabled, setDraftRechargeFeatureEnabled] = useState(
+    settings?.rechargeFeatureEnabled ?? true,
+  )
+  const [draftRechargeUserEnabled, setDraftRechargeUserEnabled] = useState(settings?.rechargeUserEnabled ?? true)
   const [draftBlockedKeyBaseLimit, setDraftBlockedKeyBaseLimit] = useState(() =>
     settings ? String(settings.userBlockedKeyBaseLimit) : '5',
   )
@@ -223,6 +229,8 @@ export default function SystemSettingsModule({
     setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
     setDraftApiRebalanceEnabled(settings?.apiRebalanceEnabled ?? false)
     setDraftApiRebalancePercent(settings ? String(settings.apiRebalancePercent) : '0')
+    setDraftRechargeFeatureEnabled(settings?.rechargeFeatureEnabled ?? true)
+    setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
     setDraftBlockedKeyBaseLimit(settings ? String(settings.userBlockedKeyBaseLimit) : '5')
     setDraftGlobalIpLimit(settings ? String(settings.globalIpLimit) : '5')
     if (!clientIpDialogOpen) {
@@ -236,6 +244,8 @@ export default function SystemSettingsModule({
     settings?.rebalanceMcpSessionPercent,
     settings?.apiRebalanceEnabled,
     settings?.apiRebalancePercent,
+    settings?.rechargeFeatureEnabled,
+    settings?.rechargeUserEnabled,
     settings?.userBlockedKeyBaseLimit,
     settings?.globalIpLimit,
     settings?.trustedProxyCidrs,
@@ -298,6 +308,8 @@ export default function SystemSettingsModule({
       parsedPercent !== settings.rebalanceMcpSessionPercent ||
       draftApiRebalanceEnabled !== settings.apiRebalanceEnabled ||
       parsedApiRebalancePercent !== settings.apiRebalancePercent ||
+      draftRechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
+      draftRechargeUserEnabled !== settings.rechargeUserEnabled ||
       parsedBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit ||
       parsedGlobalIpLimit !== settings.globalIpLimit)
   const trustedClientIpChanged =
@@ -357,6 +369,8 @@ export default function SystemSettingsModule({
       rebalanceMcpSessionPercent: overrides.rebalanceMcpSessionPercent ?? parsedPercent,
       apiRebalanceEnabled: overrides.apiRebalanceEnabled ?? draftApiRebalanceEnabled,
       apiRebalancePercent: overrides.apiRebalancePercent ?? parsedApiRebalancePercent,
+      rechargeFeatureEnabled: overrides.rechargeFeatureEnabled ?? draftRechargeFeatureEnabled,
+      rechargeUserEnabled: overrides.rechargeUserEnabled ?? draftRechargeUserEnabled,
       userBlockedKeyBaseLimit: overrides.userBlockedKeyBaseLimit ?? parsedBlockedKeyBaseLimit,
       globalIpLimit: overrides.globalIpLimit ?? parsedGlobalIpLimit,
       trustedProxyCidrs: settings.trustedProxyCidrs,
@@ -372,6 +386,8 @@ export default function SystemSettingsModule({
       payload.rebalanceMcpSessionPercent !== settings.rebalanceMcpSessionPercent ||
       payload.apiRebalanceEnabled !== settings.apiRebalanceEnabled ||
       payload.apiRebalancePercent !== settings.apiRebalancePercent ||
+      payload.rechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
+      payload.rechargeUserEnabled !== settings.rechargeUserEnabled ||
       payload.userBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit ||
       payload.globalIpLimit !== settings.globalIpLimit)
 
@@ -667,6 +683,50 @@ export default function SystemSettingsModule({
                   />
                 </div>
               )}
+
+              <div className="system-settings-action-row" aria-labelledby="system-settings-recharge-feature-title">
+                <div className="system-settings-toggle-copy">
+                  <span className="system-settings-setting-title" id="system-settings-recharge-feature-title">
+                    {strings.form.rechargeFeatureLabel}
+                  </span>
+                  <p>{strings.form.rechargeFeatureHint}</p>
+                </div>
+                <Switch
+                  checked={draftRechargeFeatureEnabled}
+                  disabled={saving}
+                  aria-label={strings.form.rechargeFeatureLabel}
+                  onCheckedChange={(checked) => {
+                    setDraftRechargeFeatureEnabled(checked)
+                    void commitNormalSettings({
+                      rechargeFeatureEnabled: checked,
+                    }).then((saved) => {
+                      if (!saved) setDraftRechargeFeatureEnabled(settings?.rechargeFeatureEnabled ?? true)
+                    })
+                  }}
+                />
+              </div>
+
+              <div className="system-settings-action-row" aria-labelledby="system-settings-recharge-user-title">
+                <div className="system-settings-toggle-copy">
+                  <span className="system-settings-setting-title" id="system-settings-recharge-user-title">
+                    {strings.form.rechargeUserLabel}
+                  </span>
+                  <p>{strings.form.rechargeUserHint}</p>
+                </div>
+                <Switch
+                  checked={draftRechargeUserEnabled}
+                  disabled={saving}
+                  aria-label={strings.form.rechargeUserLabel}
+                  onCheckedChange={(checked) => {
+                    setDraftRechargeUserEnabled(checked)
+                    void commitNormalSettings({
+                      rechargeUserEnabled: checked,
+                    }).then((saved) => {
+                      if (!saved) setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
+                    })
+                  }}
+                />
+              </div>
 
               <div className="system-settings-action-row" aria-labelledby="system-settings-density-title">
                 <div className="system-settings-toggle-copy">

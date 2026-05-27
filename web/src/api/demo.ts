@@ -255,6 +255,7 @@ function demoRechargeSummary() {
 
 function demoRechargeConfig() {
   return {
+    visible: true,
     enabled: true,
     unitCredits: DEMO_RECHARGE_UNIT_CREDITS,
     unitPriceLdc: DEMO_RECHARGE_UNIT_PRICE_LDC,
@@ -488,6 +489,8 @@ function createDemoSystemSettings() {
     rebalanceMcpSessionPercent: 35,
     apiRebalanceEnabled: true,
     apiRebalancePercent: 25,
+    rechargeFeatureEnabled: true,
+    rechargeUserEnabled: true,
     userBlockedKeyBaseLimit: 5,
     globalIpLimit: 8,
     trustedProxyCidrs: ['127.0.0.0/8', '10.0.0.0/8'],

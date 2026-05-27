@@ -6246,6 +6246,8 @@ function SystemSettingsPageCanvas(): JSX.Element {
           rebalanceMcpSessionPercent: 100,
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
+          rechargeFeatureEnabled: true,
+          rechargeUserEnabled: true,
           userBlockedKeyBaseLimit: 5,
           globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],

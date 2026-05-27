@@ -1405,6 +1405,7 @@ include!("key_store_admin_user_listing.rs");
 include!("key_store_admin_tokens.rs");
 include!("key_store_keys.rs");
 include!("key_store_sessions.rs");
+include!("key_store_system_settings.rs");
 include!("key_store_users_and_oauth.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
 include!("key_store_token_logs.rs");

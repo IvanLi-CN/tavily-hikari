@@ -90,6 +90,7 @@ const dashboardSample: UserDashboard = {
 }
 
 const rechargeConfigSample: RechargeConfig = {
+  visible: true,
   enabled: true,
   unitCredits: 1000,
   unitPriceLdc: 100,
