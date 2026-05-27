@@ -128,24 +128,29 @@
 }
 
 .user-console-recharge-checkout {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
   padding-top: 2px;
 }
 
-.user-console-recharge-checkout > div {
-  display: inline-flex;
-  align-items: baseline;
+.user-console-recharge-checkout > div:first-child {
+  display: flex;
+  align-items: center;
   gap: 5px;
+  min-height: 44px;
+  min-width: 0;
 }
 
 .user-console-recharge-actions {
-  display: inline-flex;
+  display: grid;
+  grid-column: 2 / span 2;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  justify-content: flex-end;
+  justify-items: end;
   gap: 8px;
+  min-width: 0;
 }
 
 .user-console-recharge-checkout .btn,
@@ -357,12 +362,11 @@
   }
 
   .user-console-recharge-checkout {
-    align-items: stretch;
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
 
   .user-console-recharge-actions {
-    display: grid;
+    grid-column: auto;
     grid-template-columns: 1fr;
   }
 
