@@ -181,6 +181,40 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://<your-host>/auth/linuxdo/callback'
 
 如果你不启用 Linux DO OAuth，也不影响管理员自己发 token 给客户端使用。
 
+## Linux.do Credit 充值支付
+
+Linux.do Credit 充值让已登录的 Linux DO 用户在用户控制台购买额外自然月额度。它依赖 Linux DO OAuth，因为每一笔充值订单都会绑定到当前登录的本地用户账户。
+
+最小支付配置：
+
+```bash
+export LINUXDO_CREDIT_ENABLED=true
+export LINUXDO_CREDIT_CLIENT_ID='<linuxdo-credit-client-id>'
+export LINUXDO_CREDIT_CLIENT_SECRET='<linuxdo-credit-client-secret>'
+export LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY='<ed25519-private-key>'
+export LINUXDO_CREDIT_NOTIFY_URL='https://<your-host>/api/linuxdo-credit/notify'
+export LINUXDO_CREDIT_RETURN_URL='https://<your-host>/console/dashboard'
+```
+
+必填值：
+
+- `LINUXDO_CREDIT_ENABLED`
+- `LINUXDO_CREDIT_CLIENT_ID`
+- `LINUXDO_CREDIT_CLIENT_SECRET`
+- `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY`
+
+商户私钥用于签名官方 LDC 创建订单请求。后端接受 Ed25519 私钥的 base64、base64url、hex seed，或 PKCS#8 DER/PEM。
+
+回调和浏览器返回地址：
+
+- `LINUXDO_CREDIT_NOTIFY_URL` 通常指向 `https://<your-host>/api/linuxdo-credit/notify`，并且必须能被 Linux.do Credit 公网访问。
+- `LINUXDO_CREDIT_RETURN_URL` 通常指回用户控制台，例如 `https://<your-host>/console/dashboard`。
+- `LINUXDO_CREDIT_SUBMIT_URL` 默认指向官方 Linux.do Credit LDC 提交端点，通常不需要修改。
+
+进程带有效支付凭据启动后，进入管理端系统设置并打开“启用充值功能”。调试支付链路时先保持“开放非管理员充值”关闭，用管理员会话验证；确认无误后再打开给普通用户。关闭“启用充值功能”时，用户控制台会隐藏充值入口，后端也会拒绝创建新订单，但仍会继续接收已支付订单的回调。
+
+沙盒检查可设置 `LINUXDO_CREDIT_TEST_PRICE_ENABLED=true`，开放 `1 LDC` 购买 `1` 个自然月积分的测试档位。正式收费时保持关闭。
+
 ## 客户端到底该拿什么 token
 
 这点要分清楚：
@@ -227,6 +261,7 @@ th-<id>-<secret>
 - 单机自托管：`ADMIN_AUTH_BUILTIN_ENABLED=true` + `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`
 - 网关接入：`ADMIN_AUTH_FORWARD_ENABLED=true` + `FORWARD_AUTH_HEADER` + `FORWARD_AUTH_ADMIN_VALUE`
 - 终端用户网页登录：再额外启用 `LINUXDO_OAUTH_ENABLED=true`
+- 用户充值支付：再额外启用 `LINUXDO_CREDIT_ENABLED=true`，并配置 Linux.do Credit 凭据和 notify 回调地址
 - 客户端接入：始终使用 `th-<id>-<secret>`，不要直接发 Tavily 官方 key
 
 ## 继续阅读

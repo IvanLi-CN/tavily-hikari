@@ -132,6 +132,14 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--linuxdo-oauth-refresh-token-crypt-key` / `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` | Encrypts persisted LinuxDo refresh tokens (32 raw bytes or base64/base64url encoded 32-byte key).                    |
 | `--linuxdo-oauth-user-sync-enabled` / `LINUXDO_OAUTH_USER_SYNC_ENABLED`             | Enable the daily LinuxDo offline user sync scheduler (default `true`).                                               |
 | `--linuxdo-oauth-user-sync-at` / `LINUXDO_OAUTH_USER_SYNC_AT`                       | Daily LinuxDo offline sync time in server local time, format `HH:mm` (default `06:20`).                              |
+| `--linuxdo-credit-enabled` / `LINUXDO_CREDIT_ENABLED`                               | Enable the Linux.do Credit recharge payment flow (default `false`).                                                  |
+| `--linuxdo-credit-client-id` / `LINUXDO_CREDIT_CLIENT_ID`                           | Linux.do Credit application client ID.                                                                               |
+| `--linuxdo-credit-client-secret` / `LINUXDO_CREDIT_CLIENT_SECRET`                   | Linux.do Credit application client secret.                                                                           |
+| `--linuxdo-credit-merchant-private-key` / `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY`     | Ed25519 merchant private key for Linux.do Credit LDC signing.                                                        |
+| `--linuxdo-credit-submit-url` / `LINUXDO_CREDIT_SUBMIT_URL`                         | Linux.do Credit LDC submit endpoint (default `https://credit.linux.do/epay/pay/submit.php`).                         |
+| `--linuxdo-credit-notify-url` / `LINUXDO_CREDIT_NOTIFY_URL`                         | Optional order-level notify URL, usually `https://<your-host>/api/linuxdo-credit/notify`.                            |
+| `--linuxdo-credit-return-url` / `LINUXDO_CREDIT_RETURN_URL`                         | Optional browser return URL after payment, usually `https://<your-host>/console/dashboard`.                          |
+| `--linuxdo-credit-test-price-enabled` / `LINUXDO_CREDIT_TEST_PRICE_ENABLED`         | Enable the test offer where `1 LDC` buys `1` monthly credit (default `false`).                                       |
 | `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`                         | End-user login cookie max age in seconds (default `1209600`, 14 days).                                               |
 | `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`                       | One-time OAuth state token TTL in seconds (default `600`).                                                           |
 
@@ -254,6 +262,38 @@ export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
   - `GET /auth/linuxdo/callback`
   - `GET /api/user/token`
   - `POST /api/user/logout`
+
+## Linux.do Credit Recharge (Payment)
+
+Tavily Hikari can let logged-in Linux DO users buy additional monthly quota through Linux.do
+Credit LDC payments. This requires Linux DO OAuth login to be enabled first, because recharge
+orders are attached to the logged-in user account.
+
+```bash
+export LINUXDO_CREDIT_ENABLED=true
+export LINUXDO_CREDIT_CLIENT_ID='<your-linuxdo-credit-client-id>'
+export LINUXDO_CREDIT_CLIENT_SECRET='<your-linuxdo-credit-client-secret>'
+export LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY='<ed25519-private-key>'
+export LINUXDO_CREDIT_NOTIFY_URL='https://<your-hikari-host>/api/linuxdo-credit/notify'
+export LINUXDO_CREDIT_RETURN_URL='https://<your-hikari-host>/console/dashboard'
+```
+
+- `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY` is used to sign official LDC order creation requests. The
+  backend accepts Ed25519 private material as base64/base64url/hex seed or PKCS#8 DER/PEM.
+- `LINUXDO_CREDIT_NOTIFY_URL` must be publicly reachable by Linux.do Credit. Successful signed
+  notifications mark pending orders as paid and apply quota entitlements idempotently.
+- `LINUXDO_CREDIT_RETURN_URL` is the browser landing page after payment. The user console can
+  refresh order state after returning.
+- `LINUXDO_CREDIT_SUBMIT_URL` defaults to the official Linux.do Credit LDC endpoint and usually
+  does not need to be changed.
+- `LINUXDO_CREDIT_TEST_PRICE_ENABLED=true` exposes a test offer where `1 LDC` buys `1` monthly
+  credit. Keep it disabled for normal paid operation.
+
+After the process starts with the payment credentials, open the admin system settings and enable
+**Enable recharge**. Keep **Allow non-admin recharge** disabled while testing with an admin session;
+turn it on only when regular users should see the recharge card and create payment orders. When
+**Enable recharge** is off, the user console hides the recharge entry and the backend rejects new
+order creation while still accepting already-paid callbacks.
 
 ## Frontend Highlights
 

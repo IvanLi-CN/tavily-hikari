@@ -124,6 +124,14 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--linuxdo-oauth-refresh-token-crypt-key` / `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` | 用于加密落库 LinuxDo refresh token（32 字节原文，或可解码为 32 字节的 base64/base64url）。                                   |
 | `--linuxdo-oauth-user-sync-enabled` / `LINUXDO_OAUTH_USER_SYNC_ENABLED`             | 是否启用 LinuxDo 离线每日用户同步调度器（默认 `true`）。                                                                     |
 | `--linuxdo-oauth-user-sync-at` / `LINUXDO_OAUTH_USER_SYNC_AT`                       | LinuxDo 离线每日同步时间，按服务器本地时区解释，格式固定 `HH:mm`（默认 `06:20`）。                                           |
+| `--linuxdo-credit-enabled` / `LINUXDO_CREDIT_ENABLED`                               | 是否启用 Linux.do Credit 充值支付流程（默认 `false`）。                                                                      |
+| `--linuxdo-credit-client-id` / `LINUXDO_CREDIT_CLIENT_ID`                           | Linux.do Credit 应用 Client ID。                                                                                             |
+| `--linuxdo-credit-client-secret` / `LINUXDO_CREDIT_CLIENT_SECRET`                   | Linux.do Credit 应用 Client Secret。                                                                                         |
+| `--linuxdo-credit-merchant-private-key` / `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY`     | Linux.do Credit LDC 创建订单签名使用的 Ed25519 商户私钥。                                                                    |
+| `--linuxdo-credit-submit-url` / `LINUXDO_CREDIT_SUBMIT_URL`                         | Linux.do Credit LDC 提交订单端点（默认 `https://credit.linux.do/epay/pay/submit.php`）。                                     |
+| `--linuxdo-credit-notify-url` / `LINUXDO_CREDIT_NOTIFY_URL`                         | 可选的订单级回调地址，通常为 `https://<你的 Hikari 域名>/api/linuxdo-credit/notify`。                                        |
+| `--linuxdo-credit-return-url` / `LINUXDO_CREDIT_RETURN_URL`                         | 可选的支付后浏览器返回地址，通常为 `https://<你的 Hikari 域名>/console/dashboard`。                                          |
+| `--linuxdo-credit-test-price-enabled` / `LINUXDO_CREDIT_TEST_PRICE_ENABLED`         | 是否启用 `1 LDC` 购买 `1` 个自然月积分的测试档位（默认 `false`）。                                                           |
 | `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`                         | 用户登录会话 cookie 的有效期（秒，默认 `1209600`，即 14 天）。                                                               |
 | `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`                       | OAuth 一次性 state 的有效期（秒，默认 `600`）。                                                                              |
 
@@ -246,6 +254,27 @@ export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
   - `GET /auth/linuxdo/callback`
   - `GET /api/user/token`
   - `POST /api/user/logout`
+
+## Linux.do Credit 充值支付
+
+Tavily Hikari 可以让已登录的 Linux DO 用户通过 Linux.do Credit LDC 支付购买额外自然月额度。充值订单会绑定到当前登录用户，因此需要先启用 Linux DO OAuth 登录。
+
+```bash
+export LINUXDO_CREDIT_ENABLED=true
+export LINUXDO_CREDIT_CLIENT_ID='<你的-linuxdo-credit-client-id>'
+export LINUXDO_CREDIT_CLIENT_SECRET='<你的-linuxdo-credit-client-secret>'
+export LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY='<ed25519-private-key>'
+export LINUXDO_CREDIT_NOTIFY_URL='https://<你的 Hikari 域名>/api/linuxdo-credit/notify'
+export LINUXDO_CREDIT_RETURN_URL='https://<你的 Hikari 域名>/console/dashboard'
+```
+
+- `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY` 用于签名官方 LDC 创建订单请求。后端接受 Ed25519 私钥的 base64、base64url、hex seed，或 PKCS#8 DER/PEM。
+- `LINUXDO_CREDIT_NOTIFY_URL` 必须能被 Linux.do Credit 公网访问。支付成功的签名通知会把 pending 订单置为 paid，并幂等展开额度权益。
+- `LINUXDO_CREDIT_RETURN_URL` 是用户支付完成后的浏览器落点；返回用户控制台后可刷新订单状态。
+- `LINUXDO_CREDIT_SUBMIT_URL` 默认指向官方 Linux.do Credit LDC 提交端点，通常不需要修改。
+- `LINUXDO_CREDIT_TEST_PRICE_ENABLED=true` 会开放 `1 LDC` 购买 `1` 个自然月积分的测试档位，正式收费时应保持关闭。
+
+进程带支付凭据启动后，进入管理端系统设置并打开“启用充值功能”。调试期间可先关闭“开放非管理员充值”，只用管理员会话验证链路；确认无误后再打开给普通用户。关闭“启用充值功能”时，用户控制台不会展示充值入口，后端也会拒绝创建新订单，但仍会继续接收已支付订单的回调。
 
 ## 前端控制台
 

@@ -192,6 +192,51 @@ Session tuning is also available:
 
 If Linux DO OAuth stays disabled, admins can still issue tokens manually for downstream clients.
 
+## Linux.do Credit recharge payments
+
+Linux.do Credit recharge lets signed-in Linux DO users buy additional monthly quota from the user
+console. It depends on Linux DO OAuth because every recharge order is attached to a logged-in local
+user account.
+
+Minimum payment config:
+
+```bash
+export LINUXDO_CREDIT_ENABLED=true
+export LINUXDO_CREDIT_CLIENT_ID='<linuxdo-credit-client-id>'
+export LINUXDO_CREDIT_CLIENT_SECRET='<linuxdo-credit-client-secret>'
+export LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY='<ed25519-private-key>'
+export LINUXDO_CREDIT_NOTIFY_URL='https://<your-host>/api/linuxdo-credit/notify'
+export LINUXDO_CREDIT_RETURN_URL='https://<your-host>/console/dashboard'
+```
+
+Required values:
+
+- `LINUXDO_CREDIT_ENABLED`
+- `LINUXDO_CREDIT_CLIENT_ID`
+- `LINUXDO_CREDIT_CLIENT_SECRET`
+- `LINUXDO_CREDIT_MERCHANT_PRIVATE_KEY`
+
+The merchant private key signs official LDC order creation requests. The backend accepts Ed25519
+private material as base64/base64url/hex seed or PKCS#8 DER/PEM.
+
+Callback and browser URLs:
+
+- `LINUXDO_CREDIT_NOTIFY_URL` should normally point to
+  `https://<your-host>/api/linuxdo-credit/notify` and must be reachable by Linux.do Credit.
+- `LINUXDO_CREDIT_RETURN_URL` should normally point back to the user console, such as
+  `https://<your-host>/console/dashboard`.
+- `LINUXDO_CREDIT_SUBMIT_URL` defaults to the official Linux.do Credit LDC submit endpoint and
+  usually does not need to be changed.
+
+After the process starts with valid payment credentials, open admin system settings and turn on
+**Enable recharge**. Keep **Allow non-admin recharge** off while testing the payment flow with an
+admin session; turn it on only when regular users should see the recharge card and create orders.
+When **Enable recharge** is off, the user console hides recharge and the backend rejects new order
+creation while still accepting already-paid callbacks.
+
+For sandbox checks, `LINUXDO_CREDIT_TEST_PRICE_ENABLED=true` exposes a test offer where `1 LDC` buys
+`1` monthly credit. Keep it disabled for normal paid operation.
+
 ## Which token should clients use
 
 This distinction matters:
@@ -242,6 +287,8 @@ If you only want the shortest correct answer:
 - gateway integration:
   `ADMIN_AUTH_FORWARD_ENABLED=true` + `FORWARD_AUTH_HEADER` + `FORWARD_AUTH_ADMIN_VALUE`
 - end-user web login: additionally enable `LINUXDO_OAUTH_ENABLED=true`
+- user recharge payments: additionally enable `LINUXDO_CREDIT_ENABLED=true` and configure the
+  Linux.do Credit credentials + notify URL
 - downstream client access: always use `th-<id>-<secret>`, never raw Tavily API keys
 
 ## Related reading
