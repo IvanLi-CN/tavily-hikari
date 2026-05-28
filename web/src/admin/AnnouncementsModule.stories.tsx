@@ -268,8 +268,18 @@ export const CreateAnnouncement: Story = {
     if (previewStyle.borderLeftWidth !== '1px') {
       throw new Error('Expected split mode preview to use a light divider.')
     }
-    if (splitHeight < 280 || splitHeight > 620) {
-      throw new Error('Expected split mode editor height to adapt to the viewport instead of forcing a page-bottom action area.')
+    if (splitHeight < 160 || splitHeight > 480) {
+      throw new Error('Expected split mode editor height to adapt to content and viewport instead of forcing a page-bottom action area.')
+    }
+    const bodyHeading = canvasElement.querySelector<HTMLElement>('.announcements-body-heading')
+    const modeTabs = canvasElement.querySelector<HTMLElement>('.announcements-body-mode-tabs')
+    if (bodyHeading == null || modeTabs == null) {
+      throw new Error('Expected body mode tabs to render in the body heading.')
+    }
+    const headingRight = Math.round(bodyHeading.getBoundingClientRect().right)
+    const tabsRight = Math.round(modeTabs.getBoundingClientRect().right)
+    if (Math.abs(headingRight - tabsRight) > 4) {
+      throw new Error('Expected body mode tabs to align to the right edge of the body heading.')
     }
     const editorActions = canvasElement.querySelector<HTMLElement>('.announcements-editor-header .announcements-editor-actions')
     if (editorActions == null) {
@@ -287,7 +297,7 @@ export const CreateAnnouncement: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 420))
     const wysiwygEditor = canvasElement.querySelector<HTMLElement>('.markdown-editor-shell:not(.markdown-editor-shell--readonly)')
     const wysiwygHeight = wysiwygEditor?.getBoundingClientRect().height ?? 0
-    if (wysiwygEditor == null || wysiwygHeight < 280 || wysiwygHeight > 620) {
+    if (wysiwygEditor == null || wysiwygHeight < 160 || wysiwygHeight > 480) {
       throw new Error('Expected WYSIWYG mode to keep an adaptive editor workspace.')
     }
     if (canvasElement.querySelector('.milkdown-toolbar') == null) {

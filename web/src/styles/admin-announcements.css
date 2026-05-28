@@ -1,7 +1,7 @@
 .announcements-module {
   display: grid;
   gap: 18px;
-  --announcements-body-editor-min-height: clamp(280px, 42vh, 520px);
+  --announcements-body-editor-min-height: clamp(160px, 24vh, 300px);
 }
 
 .announcements-editor,
@@ -11,13 +11,12 @@
 
 .announcements-editor {
   display: grid;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  padding: 0;
   width: 100%;
-  border-radius: 22px;
-  border: 1px solid hsl(var(--border) / 0.72);
-  background: hsl(var(--muted) / 0.32);
-  box-shadow: var(--shadow-clay-card);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .announcements-editor-actions {
@@ -71,11 +70,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .announcements-body-mode-tabs {
   flex: 0 1 auto;
+  margin-left: auto;
 }
 
 .announcements-field textarea {
@@ -101,7 +102,7 @@
   border: 1px solid hsl(var(--border) / 0.82);
   border-radius: 18px;
   background: hsl(var(--background) / 0.86);
-  box-shadow: var(--shadow-clay-pressed);
+  box-shadow: inset 0 2px 8px hsl(var(--foreground) / 0.06);
 }
 
 .announcements-body-split::after,
@@ -156,7 +157,7 @@
   border: 1px solid hsl(var(--border) / 0.82);
   border-radius: 18px;
   background: hsl(var(--background) / 0.86);
-  box-shadow: var(--shadow-clay-pressed);
+  box-shadow: inset 0 2px 8px hsl(var(--foreground) / 0.06);
 }
 
 .markdown-editor-shell--readonly {
@@ -479,7 +480,7 @@
 
 @media (max-width: 720px) {
   .announcements-module {
-    --announcements-body-editor-min-height: clamp(220px, 44vh, 360px);
+    --announcements-body-editor-min-height: clamp(150px, 30vh, 260px);
   }
 
   .announcements-editor-header,
@@ -493,10 +494,6 @@
     padding: 14px;
   }
 
-  .announcements-editor {
-    padding: 14px;
-  }
-
   .markdown-editor-shell,
   .markdown-editor-shell .ProseMirror {
     min-height: var(--announcements-body-editor-min-height);
@@ -505,6 +502,10 @@
   .announcements-body-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .announcements-body-mode-tabs {
+    margin-left: 0;
   }
 
   .announcements-body-split {

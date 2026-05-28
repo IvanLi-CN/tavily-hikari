@@ -79,9 +79,10 @@ function copy(language: Language) {
         formTitleNew: '新建公告',
         formTitleEdit: '编辑公告',
         formDescriptionNew: '编写公告正文，选择展示方式后可保存草稿或直接发布。',
-        formDescriptionEdit: '保存修改会更新草稿；发布会让用户控制台显示最新内容。',
-        formDescriptionPublished: '保存已发布公告会归档旧公告，并生成新公告 ID 重新提醒用户。',
+        formDescriptionEdit: '保存修改会更新草稿；发布后会让用户控制台显示最新内容。',
+        formDescriptionPublished: '发布新版本会归档旧公告，并生成新公告 ID 重新提醒用户。',
         formDescriptionArchived: '编辑归档公告会保留历史记录，并生成新的草稿或发布项。',
+        publishImpact: '发布后会立即对用户可见；归档后不再作为当前公告展示。',
         titleLabel: '标题',
         titlePlaceholder: '例如：维护窗口通知',
         bodyLabel: '正文',
@@ -146,8 +147,9 @@ function copy(language: Language) {
         formTitleEdit: 'Edit announcement',
         formDescriptionNew: 'Write the announcement body, choose a display mode, then save a draft or publish directly.',
         formDescriptionEdit: 'Saving updates the draft; publishing makes the latest content visible in the user console.',
-        formDescriptionPublished: 'Saving a published announcement archives the old item and creates a new ID so users are reminded again.',
+        formDescriptionPublished: 'Publishing a new version archives the old item and creates a new ID so users are reminded again.',
         formDescriptionArchived: 'Editing an archived announcement keeps the history entry and creates a new draft or published item.',
+        publishImpact: 'Publishing makes it visible immediately; archiving removes it from current announcements.',
         titleLabel: 'Title',
         titlePlaceholder: 'For example: maintenance window',
         bodyLabel: 'Body',
@@ -258,15 +260,24 @@ function editorDescription(mode: AnnouncementEditorMode, strings: AnnouncementCo
   return strings.formDescriptionEdit
 }
 
+export function estimateAnnouncementBodyRows(body: string): number {
+  const visualLines = body.split('\n').reduce((count, line) => (
+    count + Math.max(1, Math.ceil(line.length / 72))
+  ), 0)
+  return Math.min(18, Math.max(6, visualLines + 2))
+}
+
 function AnnouncementBodyEditor({
   mode,
   draft,
+  rows,
   strings,
   saving,
   onChangeDraft,
 }: {
   mode: AnnouncementBodyMode
   draft: AnnouncementDraft
+  rows: number
   strings: AnnouncementCopy
   saving: boolean
   onChangeDraft: (draft: AnnouncementDraft) => void
@@ -279,6 +290,7 @@ function AnnouncementBodyEditor({
       ariaDescribedBy="announcement-body-editor-hint"
       value={draft.body}
       placeholder={strings.bodyPlaceholder}
+      rows={rows}
       disabled={saving}
       onChange={(body) => onChangeDraft({ ...draft, body })}
     />
@@ -370,6 +382,7 @@ function AnnouncementEditorPanel({
   const isPublishedEdit = mode.kind === 'edit' && mode.status === 'published'
   const bodyRequired = isAnnouncementBodyRequired(draft.displayKind)
   const [bodyMode, setBodyMode] = useState<AnnouncementBodyMode>('split')
+  const bodyRows = estimateAnnouncementBodyRows(draft.body)
   const bodyModeOptions: ReadonlyArray<SegmentedTabsOption<AnnouncementBodyMode>> = [
     { value: 'markdown', label: strings.bodyModeMarkdown },
     { value: 'split', label: strings.bodyModeSplit },
@@ -403,6 +416,8 @@ function AnnouncementEditorPanel({
           <Button
             type="button"
             size="sm"
+            className="announcements-publish-action"
+            title={strings.publishImpact}
             onClick={() => onSubmit('publish')}
             disabled={saving}
           >
@@ -462,6 +477,7 @@ function AnnouncementEditorPanel({
         <AnnouncementBodyEditor
           mode={bodyMode}
           draft={draft}
+          rows={bodyRows}
           strings={{
             ...strings,
             bodyPlaceholder: bodyRequired ? strings.bodyPlaceholder : strings.bodyOptionalPlaceholder,
@@ -481,6 +497,7 @@ function TextareaFallback({
   placeholder,
   ariaLabelledBy,
   ariaDescribedBy,
+  rows,
   disabled,
   onChange,
 }: {
@@ -490,6 +507,7 @@ function TextareaFallback({
   placeholder: string
   ariaLabelledBy: string
   ariaDescribedBy: string
+  rows: number
   disabled: boolean
   onChange: (value: string) => void
 }): JSX.Element {
@@ -502,7 +520,7 @@ function TextareaFallback({
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
       placeholder={placeholder}
-      rows={7}
+      rows={rows}
       maxLength={4000}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}

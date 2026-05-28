@@ -162,17 +162,17 @@
   image:
   ![Admin announcements single header](./assets/admin-announcements-single-header.png)
 
-- source_type: storybook_canvas
-  story_id_or_title: `Admin/AnnouncementsModule/Create Announcement`
+- source_type: local_preview
+  story_id_or_title: `http://127.0.0.1:58910/admin/announcements/new`
   state: admin announcement create view
-  evidence_note: 新增公告在独立路由视图中完成，页面不同时展示公告列表表格；保存操作位于编辑器标题区，正文编辑区随视口自适应，避免把提交按钮推到页面底部。
+  evidence_note: 新增公告在独立路由视图中完成，页面不同时展示公告列表表格；保存操作位于编辑器标题区，发布保持一键完成；正文编辑区随内容和视口自适应，避免把提交按钮推到页面底部。
   image:
   ![Admin announcements create route](./assets/admin-announcements-create-route.png)
 
-- source_type: storybook_canvas
-  story_id_or_title: `Admin/AnnouncementsModule/Edit Announcement Route Static`
+- source_type: local_preview
+  story_id_or_title: `http://127.0.0.1:58910/admin/announcements/2dd9ve3f/edit`
   state: admin announcement edit route
-  evidence_note: 编辑公告可直接作为独立路由渲染，加载目标公告草稿并在标题区提供返回列表、保存修改、保存并发布操作。
+  evidence_note: 编辑公告可直接作为独立路由渲染，加载目标公告草稿并在标题区提供返回列表、保存修改、保存并发布操作；发布保持一键完成，归档后的可见性由用户端当前公告过滤规则保证。
   image:
   ![Admin announcements edit route](./assets/admin-announcements-edit-route.png)
 
