@@ -15,10 +15,11 @@
 - 默认价格为 `50 LDC = 1000 积分额度 / 自然月`，当前月充值权益按每 `1000`
   积分派生 `+20` 小时、`+100` 日、`+1000` 月额度；小额测试价正数保底为
   `+1/+1/+credits`。
+- 商户私钥解析支持 32-byte Ed25519 seed、PKCS#8 PEM/DER，以及 Linux.do Credit
+  线上配置中出现的 48-byte 最小 Ed25519 PKCS#8 v1 DER。
 
 ## Remaining Gaps
 
-- 待补齐最终 review/PR 流程收口。
 - 待根据后续线上观察微调充值文案或布局。
 
 ## Related Changes

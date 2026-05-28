@@ -1005,6 +1005,9 @@ fn decode_ed25519_private_key(raw: &str) -> Result<Vec<u8>, String> {
         if let Ok(decoded) = engine.decode(&pem_body)
             && (decoded.len() == 32 || decoded.len() > 32)
         {
+            if let Some(seed) = ed25519_seed_from_pkcs8_v1_der(&decoded) {
+                return Ok(seed);
+            }
             return Ok(decoded);
         }
     }
@@ -1018,6 +1021,17 @@ fn decode_ed25519_private_key(raw: &str) -> Result<Vec<u8>, String> {
         return Ok(bytes);
     }
     Err("private key must be base64/base64url/hex seed or PKCS#8 DER/PEM".to_string())
+}
+
+fn ed25519_seed_from_pkcs8_v1_der(decoded: &[u8]) -> Option<Vec<u8>> {
+    const PREFIX: [u8; 16] = [
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
+        0x04, 0x20,
+    ];
+    decoded
+        .strip_prefix(&PREFIX)
+        .filter(|seed| seed.len() == 32)
+        .map(|seed| seed.to_vec())
 }
 
 fn sign_linuxdo_credit_ldc(params: &[(&str, String)], cfg: &LinuxDoCreditOptions) -> Result<String, String> {
@@ -1782,4 +1796,54 @@ async fn sse_user_token(
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+#[cfg(test)]
+mod linuxdo_credit_key_tests {
+    use super::*;
+
+    #[test]
+    fn linuxdo_credit_accepts_minimal_ed25519_pkcs8_v1_der() {
+        const SEED: [u8; 32] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29, 30, 31, 32,
+        ];
+        let mut der = vec![
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
+            0x22, 0x04, 0x20,
+        ];
+        der.extend_from_slice(&SEED);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&der);
+
+        let decoded = decode_ed25519_private_key(&encoded).expect("decode pkcs8 v1 der");
+        assert_eq!(decoded, SEED);
+    }
+
+    #[test]
+    fn linuxdo_credit_signs_with_minimal_ed25519_pkcs8_v1_der() {
+        const SEED: [u8; 32] = [
+            32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13,
+            12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
+        ];
+        let mut der = vec![
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
+            0x22, 0x04, 0x20,
+        ];
+        der.extend_from_slice(&SEED);
+        let private_key = base64::engine::general_purpose::STANDARD.encode(&der);
+        let cfg = LinuxDoCreditOptions {
+            enabled: true,
+            client_id: Some("pid".to_string()),
+            client_secret: Some("secret".to_string()),
+            merchant_private_key: Some(private_key),
+            submit_url: "https://credit.linux.do/epay/pay/submit.php".to_string(),
+            notify_url: None,
+            return_url: None,
+            test_price_enabled: false,
+        };
+
+        let signature = sign_linuxdo_credit_ldc(&[("money", "50.00".to_string())], &cfg)
+            .expect("sign with pkcs8 v1 der");
+        assert!(!signature.is_empty());
+    }
 }
