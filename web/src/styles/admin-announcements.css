@@ -13,7 +13,7 @@
   display: grid;
   gap: 14px;
   padding: 16px;
-  max-width: 1040px;
+  width: 100%;
   border-radius: 22px;
   border: 1px solid hsl(var(--border) / 0.72);
   background: hsl(var(--muted) / 0.32);
@@ -491,7 +491,6 @@
   }
 
   .announcements-editor {
-    max-width: none;
     padding: 14px;
   }
 

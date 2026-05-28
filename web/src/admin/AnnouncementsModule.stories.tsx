@@ -214,6 +214,14 @@ export const CreateAnnouncement: Story = {
     if (canvasElement.querySelector('.announcements-editor') == null) {
       throw new Error('Expected create editor to render.')
     }
+    const moduleSurface = canvasElement.querySelector<HTMLElement>('.announcements-module')
+    const editor = canvasElement.querySelector<HTMLElement>('.announcements-editor')
+    if (moduleSurface == null || editor == null) {
+      throw new Error('Expected create editor to render inside the announcements module.')
+    }
+    if (editor.getBoundingClientRect().width < moduleSurface.getBoundingClientRect().width * 0.96) {
+      throw new Error('Expected create editor to use the available module width.')
+    }
     if (canvasElement.querySelector('.markdown-editor-shell') == null) {
       throw new Error('Expected Markdown editor to render.')
     }
