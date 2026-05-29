@@ -29,6 +29,9 @@ interface UserConsoleHeaderProps {
   adminHref?: string | null
   adminActionLabel?: string | null
   adminMenuLabel?: string | null
+  announcementsLabel?: string | null
+  announcementCount?: number
+  onOpenAnnouncements?: () => void
   logoutVisible: boolean
   isLoggingOut: boolean
   logoutLabel: string
@@ -105,6 +108,21 @@ export default function UserConsoleHeader(props: UserConsoleHeaderProps): JSX.El
       <div className="user-console-header-actions" aria-label={props.sessionLabel}>
         <ThemeToggle />
         <LanguageSwitcher />
+        {props.onOpenAnnouncements && props.announcementsLabel ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="user-console-announcements-trigger"
+            aria-label={props.announcementsLabel}
+            onClick={props.onOpenAnnouncements}
+          >
+            <Icon icon="mdi:bell-outline" width={16} height={16} aria-hidden="true" />
+            {props.announcementCount && props.announcementCount > 0 ? (
+              <span className="user-console-announcements-count">{props.announcementCount}</span>
+            ) : null}
+          </Button>
+        ) : null}
 
         {showAccountMenu && (
           <DropdownMenu>

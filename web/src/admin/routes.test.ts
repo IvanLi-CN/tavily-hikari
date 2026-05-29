@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test'
 
 import {
+  announcementCreatePath,
+  announcementEditPath,
+  announcementListPath,
   buildAdminKeysPath,
   buildAdminUsersPath,
   isSameAdminRoute,
@@ -30,6 +33,16 @@ describe('admin user tag routes', () => {
 
   it('parses the system settings module route', () => {
     expect(parseAdminPath('/admin/system-settings')).toEqual({ name: 'module', module: 'system-settings' })
+  })
+
+  it('parses dedicated announcement editor routes before module fallback', () => {
+    expect(parseAdminPath('/admin/announcements')).toEqual({ name: 'module', module: 'announcements' })
+    expect(parseAdminPath('/admin/announcements/new')).toEqual({ name: 'announcement-editor', mode: 'create' })
+    expect(parseAdminPath('/admin/announcements/ann%2042/edit')).toEqual({
+      name: 'announcement-editor',
+      mode: 'edit',
+      id: 'ann 42',
+    })
   })
 
   it('parses the user tag create page', () => {
@@ -67,6 +80,9 @@ describe('admin user tag routes', () => {
     })).toBe('/admin/tokens/tok%2042?q=legacy&group=ops&owner=bound&enabled=frozen&quota_state=day&page=3&perPage=50')
     expect(userTagCreatePath()).toBe('/admin/users/tags/new')
     expect(userTagEditPath('linuxdo l2')).toBe('/admin/users/tags/linuxdo%20l2')
+    expect(announcementListPath()).toBe('/admin/announcements')
+    expect(announcementCreatePath()).toBe('/admin/announcements/new')
+    expect(announcementEditPath('ann 42')).toBe('/admin/announcements/ann%2042/edit')
   })
 
   it('preserves full users list context when building cross-page routes', () => {

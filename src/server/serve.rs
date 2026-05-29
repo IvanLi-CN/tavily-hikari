@@ -102,6 +102,11 @@ pub async fn serve(
         .route("/api/user/logout", post(post_user_logout))
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))
+        .route("/api/user/announcements", get(get_user_announcements))
+        .route(
+            "/api/user/announcements/history",
+            get(get_user_announcement_history),
+        )
         .route("/api/user/recharge/config", get(get_user_recharge_config))
         .route(
             "/api/user/recharge/orders",
@@ -185,6 +190,17 @@ pub async fn serve(
         .route("/api/logs/list", get(list_logs_cursor))
         .route("/api/logs/catalog", get(get_logs_catalog))
         .route("/api/logs/:log_id/details", get(get_log_details))
+        .route("/api/announcements", get(get_announcements))
+        .route("/api/announcements", post(create_announcement))
+        .route("/api/announcements/:id", patch(update_announcement))
+        .route(
+            "/api/announcements/:id/publish",
+            post(publish_announcement),
+        )
+        .route(
+            "/api/announcements/:id/archive",
+            post(archive_announcement),
+        )
         .route("/api/alerts/catalog", get(get_alert_catalog))
         .route("/api/alerts/events", get(get_alert_events))
         .route("/api/alerts/groups", get(get_alert_groups))

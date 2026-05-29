@@ -9,6 +9,7 @@ import type {
   AlertEvent,
   AlertGroup,
   AlertsPage,
+  Announcement,
   ApiKeyBulkAction,
   AdminUnboundTokenUsageSortField,
   AdminUnboundTokenUsageSummary,
@@ -130,6 +131,7 @@ import {
 } from '../quotaSlider'
 import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
 import AdminOverlayHost from '../AdminOverlayHost'
+import AnnouncementsModule from '../AnnouncementsModule'
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -3205,16 +3207,32 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
     { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
     { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'announcements', label: strings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
     { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
     { target: 'system-settings', label: strings.nav.systemSettings, icon: <Icon icon="mdi:cog-outline" width={18} height={18} /> },
     { target: 'proxy-settings', label: strings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 }
 
-interface AdminPageFrameProps { activeModule: AdminNavTarget; children: ReactNode; introActions?: ReactNode; overlays?: ReactNode; showDefaultShellChrome?: boolean }
+interface AdminPageFrameProps {
+  activeModule: AdminNavTarget
+  children: ReactNode
+  introActions?: ReactNode
+  overlays?: ReactNode
+  showDefaultShellChrome?: boolean
+  actions?: ReactNode
+}
 
-function AdminPageFrame({ activeModule, children, introActions, overlays, showDefaultShellChrome = true }: AdminPageFrameProps): JSX.Element {
+function AdminPageFrame({
+  activeModule,
+  children,
+  overlays,
+  showDefaultShellChrome = true,
+  actions,
+  introActions,
+}: AdminPageFrameProps): JSX.Element {
   const admin = useTranslate().admin
+  const headerActions = actions ?? introActions
   const intro = (() => {
     switch (activeModule) {
       case 'dashboard':
@@ -3251,6 +3269,11 @@ function AdminPageFrame({ activeModule, children, introActions, overlays, showDe
         return {
           title: admin.modules.alerts.title,
           description: admin.modules.alerts.description,
+        }
+      case 'announcements':
+        return {
+          title: admin.modules.announcements.title,
+          description: admin.modules.announcements.description,
         }
       case 'system-settings':
         return {
@@ -3332,7 +3355,7 @@ function AdminPageFrame({ activeModule, children, introActions, overlays, showDe
               />
             </div>
             <div className="admin-desktop-only">
-              <AdminCompactIntro title={intro.title} description={intro.description} actions={introActions} />
+              <AdminCompactIntro title={intro.title} description={intro.description} actions={headerActions} />
             </div>
           </>
         )}
@@ -6200,6 +6223,84 @@ function AlertsPageCanvas(): JSX.Element {
   )
 }
 
+const STORY_ANNOUNCEMENTS: Announcement[] = [
+  {
+    id: 'ann-story-modal',
+    title: '维护窗口通知',
+    body: '**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
+    displayKind: 'modal',
+    status: 'published',
+    createdAt: 1_762_380_000,
+    updatedAt: 1_762_386_000,
+    publishedAt: 1_762_386_000,
+    archivedAt: null,
+  },
+  {
+    id: 'ann-story-ticker',
+    title: '额度计数已刷新',
+    body: '每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
+    displayKind: 'ticker',
+    status: 'draft',
+    createdAt: 1_762_378_000,
+    updatedAt: 1_762_385_000,
+    publishedAt: null,
+    archivedAt: null,
+  },
+]
+const ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID = 'storybook-announcements-header-action-slot'
+
+function installStoryAnnouncementsFetchMock(): () => void {
+  const originalFetch = window.fetch.bind(window)
+
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = input instanceof Request
+      ? input
+      : new Request(input, init)
+    const url = new URL(request.url, window.location.origin)
+
+    if (url.pathname === '/api/announcements' && request.method === 'GET') {
+      return new Response(JSON.stringify({ items: STORY_ANNOUNCEMENTS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return originalFetch(input, init)
+  }
+
+  return () => {
+    window.fetch = originalFetch
+  }
+}
+
+function AnnouncementsPageCanvas(): JSX.Element {
+  const { language } = useLanguage()
+  const [ready, setReady] = useState(false)
+
+  useLayoutEffect(() => {
+    const cleanup = installStoryAnnouncementsFetchMock()
+    setReady(true)
+    return cleanup
+  }, [])
+
+  return (
+    <AdminPageFrame
+      activeModule="announcements"
+      actions={<div id={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID} />}
+    >
+      {ready ? (
+        <AnnouncementsModule
+          language={language}
+          headerActionSlotId={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID}
+          showListCreateAction={false}
+        />
+      ) : (
+        <div style={{ minHeight: 360 }} />
+      )}
+    </AdminPageFrame>
+  )
+}
+
 function ProxySettingsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
 
@@ -7068,6 +7169,48 @@ export const Alerts: Story = {
   render: () => <AlertsPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const Announcements: Story = {
+  render: () => <AnnouncementsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    const visibleHeadings = Array.from(canvasElement.querySelectorAll('h1, h2, h3'))
+      .filter((heading) => {
+        const style = window.getComputedStyle(heading)
+        const rect = heading.getBoundingClientRect()
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0
+      })
+      .map((heading) => ({ tag: heading.tagName, text: heading.textContent?.trim() }))
+    const pageTitles = ['公告', 'Announcements']
+    const listTitles = ['公告列表', 'Announcement list']
+    const pageTitleCount = visibleHeadings
+      .filter((heading) => heading.text != null && pageTitles.includes(heading.text) && heading.tag !== 'H3')
+      .length
+
+    if (pageTitleCount !== 1) {
+      throw new Error('Expected the announcements page to render exactly one page-level title.')
+    }
+    if (visibleHeadings.some((heading) => heading.tag === 'H2' && heading.text != null && pageTitles.includes(heading.text))) {
+      throw new Error('Expected the announcements module to avoid a duplicate h2 page title.')
+    }
+    if (!visibleHeadings.some((heading) => heading.tag === 'H3' && heading.text != null && listTitles.includes(heading.text))) {
+      throw new Error('Expected the announcements business list heading to remain visible.')
+    }
+    const headerActionButton = canvasElement.querySelector<HTMLButtonElement>('.admin-compact-intro-actions button')
+    if (!headerActionButton?.textContent?.match(/新建公告|New announcement/)) {
+      throw new Error('Expected the create announcement action to live in the page title row.')
+    }
+    if (canvasElement.querySelector('.announcements-list-header button') != null) {
+      throw new Error('Expected the announcements list header to avoid a duplicate create action.')
+    }
+    if (canvasElement.querySelector('.announcements-module .admin-module-toolbar') != null) {
+      throw new Error('Expected the announcements module to avoid rendering a refresh toolbar.')
+    }
   },
 }
 

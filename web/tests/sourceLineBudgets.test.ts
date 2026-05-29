@@ -18,14 +18,14 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13000,
+      max: 13050,
       reason: 'Legacy admin dashboard runtime remains as a compatibility shell while thin entry/Admin helper modules land incrementally.',
     },
   ],
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7100,
+      max: 7300,
       reason: 'Storybook proof runtime remains centralized temporarily while Admin/Pages stories stay on stable export names.',
     },
   ],

@@ -528,6 +528,7 @@ include!("proxy_auth_and_oauth.rs");
 include!("proxy_usage_and_metrics.rs");
 include!("proxy_request_limits.rs");
 include!("proxy_alerts.rs");
+include!("proxy_announcements.rs");
 include!("proxy_admin_user_usage_series.rs");
 include!("proxy_quota_sync_and_jobs.rs");
 include!("proxy_forward_proxy_maintenance.rs");

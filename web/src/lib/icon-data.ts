@@ -32,6 +32,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
     "width": 24,
     "height": 24
   },
+  "mdi:bullhorn-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 8H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1v4a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-4h3l5 4V4zm3 7.6L13 14H4v-4h9l2-1.6zm6.5-3.6c0 1.71-.96 3.26-2.5 4V8c1.53.75 2.5 2.3 2.5 4\"/>",
+    "width": 24,
+    "height": 24
+  },
   "mdi:calendar-clock-outline": {
     "body": "<path fill=\"currentColor\" d=\"M6 1v2H5c-1.11 0-2 .89-2 2v14a2 2 0 0 0 2 2h6.1c1.26 1.24 2.99 2 4.9 2c3.87 0 7-3.13 7-7c0-1.91-.76-3.64-2-4.9V5a2 2 0 0 0-2-2h-1V1h-2v2H8V1M5 5h14v2H5m0 2h14v.67c-.91-.43-1.93-.67-3-.67c-3.87 0-7 3.13-7 7c0 1.07.24 2.09.67 3H5m11-7.85c2.68 0 4.85 2.17 4.85 4.85s-2.17 4.85-4.85 4.85s-4.85-2.17-4.85-4.85s2.17-4.85 4.85-4.85M15 13v3.69l3.19 1.84l.75-1.3l-2.44-1.41V13Z\"/>",
     "width": 24,

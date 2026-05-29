@@ -1033,6 +1033,274 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn announcement_http_lifecycle_feeds_user_active_and_history_views() {
+        let db_path = temp_db_path("announcement-http-lifecycle");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-announcement-user".to_string(),
+                username: Some("announcement_user".to_string()),
+                name: Some("Announcement User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert oauth user");
+        let user_session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let admin_addr = spawn_keys_admin_server(proxy.clone(), forward_auth, false).await;
+        let user_addr = spawn_user_oauth_server(proxy).await;
+        let client = Client::new();
+        let admin_base = format!("http://{admin_addr}");
+        let user_base = format!("http://{user_addr}");
+        let user_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", user_session.token);
+
+        let forbidden = client
+            .post(format!("{admin_base}/api/announcements"))
+            .json(&serde_json::json!({
+                "title": "Hidden notice",
+                "body": "Missing admin header",
+                "displayKind": "modal"
+            }))
+            .send()
+            .await
+            .expect("anonymous admin request");
+        assert_eq!(forbidden.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let draft_resp = client
+            .post(format!("{admin_base}/api/announcements"))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "title": "Launch notice",
+                "body": "Initial announcement body",
+                "displayKind": "modal"
+            }))
+            .send()
+            .await
+            .expect("create announcement request");
+        assert_eq!(draft_resp.status(), reqwest::StatusCode::OK);
+        let draft: serde_json::Value = draft_resp.json().await.expect("draft json");
+        let draft_id = draft
+            .get("id")
+            .and_then(|value| value.as_str())
+            .expect("draft id")
+            .to_string();
+        assert_eq!(draft.get("status").and_then(|value| value.as_str()), Some("draft"));
+
+        let publish_resp = client
+            .post(format!("{admin_base}/api/announcements/{draft_id}/publish"))
+            .header("x-forward-user", "admin")
+            .send()
+            .await
+            .expect("publish announcement request");
+        assert_eq!(publish_resp.status(), reqwest::StatusCode::OK);
+        let published: serde_json::Value = publish_resp.json().await.expect("published json");
+        assert_eq!(
+            published.get("status").and_then(|value| value.as_str()),
+            Some("published")
+        );
+
+        let active_resp = client
+            .get(format!("{user_base}/api/user/announcements"))
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user active announcements request");
+        assert_eq!(active_resp.status(), reqwest::StatusCode::OK);
+        let active: serde_json::Value = active_resp.json().await.expect("active json");
+        assert_eq!(
+            active
+                .get("items")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            active
+                .pointer("/items/0/id")
+                .and_then(|value| value.as_str()),
+            Some(draft_id.as_str())
+        );
+
+        let updated_resp = client
+            .patch(format!("{admin_base}/api/announcements/{draft_id}"))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "title": "Updated notice",
+                "body": "Updated announcement body",
+                "displayKind": "modal"
+            }))
+            .send()
+            .await
+            .expect("update announcement request");
+        assert_eq!(updated_resp.status(), reqwest::StatusCode::OK);
+        let updated: serde_json::Value = updated_resp.json().await.expect("updated json");
+        let updated_id = updated
+            .get("id")
+            .and_then(|value| value.as_str())
+            .expect("updated id")
+            .to_string();
+        assert_ne!(updated_id, draft_id);
+        assert_eq!(
+            updated.get("status").and_then(|value| value.as_str()),
+            Some("published")
+        );
+
+        let history_resp = client
+            .get(format!("{user_base}/api/user/announcements/history"))
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user announcement history request");
+        assert_eq!(history_resp.status(), reqwest::StatusCode::OK);
+        let history: serde_json::Value = history_resp.json().await.expect("history json");
+        let history_ids = history
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("history items")
+            .iter()
+            .filter_map(|item| item.get("id").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+        assert!(history_ids.contains(&updated_id.as_str()));
+        assert!(history_ids.contains(&draft_id.as_str()));
+
+        let archive_resp = client
+            .post(format!("{admin_base}/api/announcements/{updated_id}/archive"))
+            .header("x-forward-user", "admin")
+            .send()
+            .await
+            .expect("archive announcement request");
+        assert_eq!(archive_resp.status(), reqwest::StatusCode::OK);
+        let archived: serde_json::Value = archive_resp.json().await.expect("archived json");
+        assert_eq!(
+            archived.get("status").and_then(|value| value.as_str()),
+            Some("archived")
+        );
+
+        let active_after_archive_resp = client
+            .get(format!("{user_base}/api/user/announcements"))
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user active announcements after archive request");
+        assert_eq!(active_after_archive_resp.status(), reqwest::StatusCode::OK);
+        let active_after_archive: serde_json::Value = active_after_archive_resp
+            .json()
+            .await
+            .expect("active after archive json");
+        assert_eq!(
+            active_after_archive
+                .get("items")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let anonymous_user_resp = client
+            .get(format!("{user_base}/api/user/announcements"))
+            .send()
+            .await
+            .expect("anonymous user announcements request");
+        assert_eq!(anonymous_user_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn announcement_http_allows_bodyless_ticker_but_rejects_bodyless_modal() {
+        let db_path = temp_db_path("announcement-http-bodyless-ticker");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let admin_addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+        let client = Client::new();
+        let admin_base = format!("http://{admin_addr}");
+
+        let ticker_resp = client
+            .post(format!("{admin_base}/api/announcements"))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "title": "Bodyless banner",
+                "body": "",
+                "displayKind": "ticker"
+            }))
+            .send()
+            .await
+            .expect("create bodyless ticker request");
+        assert_eq!(ticker_resp.status(), reqwest::StatusCode::OK);
+        let ticker: serde_json::Value = ticker_resp.json().await.expect("ticker json");
+        assert_eq!(ticker.get("body").and_then(|value| value.as_str()), Some(""));
+        assert_eq!(
+            ticker.get("displayKind").and_then(|value| value.as_str()),
+            Some("ticker")
+        );
+        let ticker_id = ticker
+            .get("id")
+            .and_then(|value| value.as_str())
+            .expect("ticker id")
+            .to_string();
+
+        let modal_resp = client
+            .post(format!("{admin_base}/api/announcements"))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "title": "Bodyless modal",
+                "body": "",
+                "displayKind": "modal"
+            }))
+            .send()
+            .await
+            .expect("create bodyless modal request");
+        assert_eq!(modal_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        let modal_error = modal_resp.text().await.expect("modal error text");
+        assert!(modal_error.contains("body is required"));
+
+        let updated_resp = client
+            .patch(format!("{admin_base}/api/announcements/{ticker_id}"))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "title": "Still bodyless",
+                "body": "   ",
+                "displayKind": "ticker"
+            }))
+            .send()
+            .await
+            .expect("update bodyless ticker request");
+        assert_eq!(updated_resp.status(), reqwest::StatusCode::OK);
+        let updated: serde_json::Value = updated_resp.json().await.expect("updated ticker json");
+        assert_eq!(updated.get("body").and_then(|value| value.as_str()), Some(""));
+        assert_eq!(
+            updated.get("displayKind").and_then(|value| value.as_str()),
+            Some("ticker")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn user_profile_and_user_token_reflect_linuxdo_session() {
         let db_path = temp_db_path("linuxdo-profile-token");
         let db_str = db_path.to_string_lossy().to_string();

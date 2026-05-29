@@ -302,6 +302,7 @@ const LazyTokenDetail = lazy(() => import('../pages/TokenDetail'))
 const LazyForwardProxySettingsModule = lazy(() => import('./ForwardProxySettingsModule'))
 const LazyKeyStickyPanels = lazy(() => import('./KeyStickyPanels'))
 const LazyAlertsCenter = lazy(() => import('./AlertsCenter'))
+const LazyAnnouncementsModule = lazy(() => import('./AnnouncementsModule'))
 const LazySystemSettingsModule = lazy(() => import('./SystemSettingsModule'))
 const LazyUserDetailSharedUsagePanel = lazy(async () =>
   import('./UserDetailSharedUsagePanel').then((module) => ({
@@ -313,6 +314,8 @@ const LazyUserDetailTokenTable = lazy(async () =>
     default: module.UserDetailTokenTable,
   })),
 )
+
+const ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID = 'announcements-header-action-slot'
 
 function AdminLazyBoundary({
   children,
@@ -1847,6 +1850,7 @@ function AdminDashboard(): JSX.Element {
     useState<ForwardProxyDialogProgressState | null>(null)
   const [forwardProxySavedAt, setForwardProxySavedAt] = useState<number | null>(null)
   const [alertsRefreshToken, setAlertsRefreshToken] = useState(0)
+  const [announcementsRefreshToken, setAnnouncementsRefreshToken] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
@@ -4042,6 +4046,9 @@ function AdminDashboard(): JSX.Element {
         if (route.name === 'module' && route.module === 'alerts') {
           setAlertsRefreshToken((current) => current + 1)
         }
+        if ((route.name === 'module' && route.module === 'announcements') || route.name === 'announcement-editor') {
+          setAnnouncementsRefreshToken((current) => current + 1)
+        }
         void Promise.all(tasks).finally(() => controller.abort())
       }
 
@@ -4574,6 +4581,9 @@ function AdminDashboard(): JSX.Element {
     }
     if (route.name === 'module' && route.module === 'alerts') {
       setAlertsRefreshToken((current) => current + 1)
+    }
+    if (route.name === 'module' && route.module === 'announcements') {
+      setAnnouncementsRefreshToken((current) => current + 1)
     }
     if (route.name === 'module' && route.module === 'system-settings') {
       tasks.push(loadSystemSettingsData({ signal: controller.signal, reason: 'refresh' }))
@@ -7129,6 +7139,7 @@ function AdminDashboard(): JSX.Element {
     { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
     { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'announcements', label: adminStrings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
     { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
     { target: 'system-settings', label: adminStrings.nav.systemSettings, icon: <Icon icon="mdi:cog-outline" width={18} height={18} /> },
     { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
@@ -7144,6 +7155,8 @@ function AdminDashboard(): JSX.Element {
               || route.name === 'user-tags'
               || route.name === 'user-tag-editor'
             ? 'users'
+            : route.name === 'announcement-editor'
+              ? 'announcements'
             : route.name === 'not-found'
               ? 'dashboard'
               : 'tokens'
@@ -7157,6 +7170,8 @@ function AdminDashboard(): JSX.Element {
             || route.name === 'user-tags'
             || route.name === 'user-tag-editor'
           ? 'users'
+          : route.name === 'announcement-editor'
+            ? 'announcements'
           : route.name === 'not-found'
             ? 'dashboard'
             : 'tokens'
@@ -9525,6 +9540,7 @@ function AdminDashboard(): JSX.Element {
   const showRequests = activeModule === 'requests'
   const showJobs = activeModule === 'jobs'
   const showUsers = activeModule === 'users'
+  const showAnnouncements = activeModule === 'announcements'
   const showAlerts = activeModule === 'alerts'
   const showSystemSettings = activeModule === 'system-settings'
   const showProxySettings = activeModule === 'proxy-settings'
@@ -9626,6 +9642,11 @@ function AdminDashboard(): JSX.Element {
         return {
           title: adminStrings.modules.alerts.title,
           description: adminStrings.modules.alerts.description,
+        }
+      case 'announcements':
+        return {
+          title: adminStrings.modules.announcements.title,
+          description: adminStrings.modules.announcements.description,
         }
       case 'system-settings':
         return {
@@ -10092,6 +10113,8 @@ function AdminDashboard(): JSX.Element {
                             ? renderJobFilterToolbar('admin-module-toolbar--header-filter')
                             : showAlerts
                               ? renderAlertsViewTabs()
+                              : showAnnouncements
+                                ? <div id={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID} />
                               : undefined
             }
           />
@@ -11823,6 +11846,23 @@ function AdminDashboard(): JSX.Element {
             formatTime={formatClockTime}
             formatTimeDetail={formatMonthDay}
             inlineTabsVariant="mobile"
+          />
+        </AdminLazyBoundary>
+      )}
+
+      {showAnnouncements && (
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>
+          <LazyAnnouncementsModule
+            language={language}
+            refreshToken={announcementsRefreshToken}
+            routeMode={route.name === 'announcement-editor'
+              ? route.mode === 'create'
+                ? { kind: 'create' }
+                : { kind: 'edit', id: route.id }
+              : { kind: 'list' }}
+            onNavigate={navigateToPath}
+            headerActionSlotId={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID}
+            showListCreateAction={false}
           />
         </AdminLazyBoundary>
       )}

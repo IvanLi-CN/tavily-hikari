@@ -1,0 +1,101 @@
+.markdown-content {
+  display: grid;
+  gap: 0.72em;
+  color: inherit;
+  line-height: 1.6;
+}
+
+.markdown-content > * {
+  margin: 0;
+}
+
+.markdown-content :where(ul, ol) {
+  display: grid;
+  gap: 0.36em;
+  padding-left: 1.25em;
+}
+
+.markdown-content :where(blockquote) {
+  padding: 0.65em 0.85em;
+  border: 1px solid hsl(var(--border) / 0.74);
+  border-radius: 14px;
+  background: hsl(var(--muted) / 0.28);
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-content :where(code) {
+  padding: 0.12em 0.36em;
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.48);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.markdown-content :where(pre) {
+  overflow: auto;
+  padding: 0.85em;
+  border-radius: 14px;
+  background: hsl(var(--muted) / 0.42);
+}
+
+.markdown-content :where(pre code) {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-content :where(a) {
+  color: hsl(var(--primary));
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+}
+
+.markdown-content :where(table) {
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+
+.markdown-content :where(th, td) {
+  padding: 0.45em 0.6em;
+  border: 1px solid hsl(var(--border) / 0.76);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-content :where(th) {
+  background: hsl(var(--muted) / 0.34);
+  font-weight: 800;
+}
+
+.markdown-content :where(input[type='checkbox']) {
+  margin-right: 0.45em;
+}
+
+.markdown-content-compact {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-content-compact > * {
+  display: inline;
+}
+
+.markdown-content-compact :where(ul, ol, li, blockquote, pre, table, thead, tbody, tr, th, td) {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.markdown-content-compact :where(li)::before {
+  content: ' ';
+}

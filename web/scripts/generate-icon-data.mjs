@@ -12,6 +12,7 @@ const ICON_SOURCES = [
     ['mdi:alert-circle-outline', 'alert-circle-outline'],
     ['mdi:arrow-left', 'arrow-left'],
     ['mdi:bell-ring-outline', 'bell-ring-outline'],
+    ['mdi:bullhorn-outline', 'bullhorn-outline'],
     ['mdi:calendar-clock-outline', 'calendar-clock-outline'],
     ['mdi:calendar-today-outline', 'calendar-today-outline'],
     ['mdi:chart-timeline-variant', 'chart-timeline-variant'],

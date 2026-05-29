@@ -586,6 +586,60 @@ struct AlertsQuery {
     key_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnouncementMutationRequest {
+    title: String,
+    body: String,
+    display_kind: String,
+}
+
+impl From<AnnouncementMutationRequest> for tavily_hikari::AnnouncementMutation {
+    fn from(value: AnnouncementMutationRequest) -> Self {
+        Self {
+            title: value.title,
+            body: value.body,
+            display_kind: value.display_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnouncementView {
+    id: String,
+    title: String,
+    body: String,
+    display_kind: String,
+    status: String,
+    created_at: i64,
+    updated_at: i64,
+    published_at: Option<i64>,
+    archived_at: Option<i64>,
+}
+
+impl From<tavily_hikari::Announcement> for AnnouncementView {
+    fn from(value: tavily_hikari::Announcement) -> Self {
+        Self {
+            id: value.id,
+            title: value.title,
+            body: value.body,
+            display_kind: value.display_kind,
+            status: value.status,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            published_at: value.published_at,
+            archived_at: value.archived_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnouncementsResponse {
+    items: Vec<AnnouncementView>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LogFacetOptionView {

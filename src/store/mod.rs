@@ -1410,6 +1410,7 @@ include!("key_store_users_and_oauth.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alerts.rs");
+include!("key_store_announcements.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");

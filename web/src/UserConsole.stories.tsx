@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { Profile, RechargeConfig, RechargeOrder, RequestRate, RequestRateScope, UserDashboard, UserTokenSummary } from './api'
+import type { Announcement, Profile, RechargeConfig, RechargeOrder, RequestRate, RequestRateScope, UserDashboard, UserTokenSummary } from './api'
 import UserConsole from './UserConsole'
 import {
   DropdownMenu,
@@ -17,6 +17,7 @@ type LandingFocus = 'Overview Focus' | 'Token Focus'
 type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
 type PushStatusPreview = 'Live' | 'Reconnecting' | 'Unsupported'
+type AnnouncementPreview = 'Active' | 'Ticker Bodyless' | 'Closed' | 'History Open' | 'None'
 type RechargePreview = 'normal' | 'test-price'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
@@ -32,6 +33,7 @@ interface UserConsoleStoryArgs {
   pushStatusPreview?: PushStatusPreview
   pushStatusBubbleOpen?: boolean
   autoOpenAccountMenu?: boolean
+  announcementPreview?: AnnouncementPreview
   rechargePreview?: RechargePreview
 }
 
@@ -41,6 +43,7 @@ interface UserConsoleStoryState {
   rechargePreview: RechargePreview
   routePath: string
   tokenListMode: 'single' | 'multiple' | 'empty'
+  announcementPreview: AnnouncementPreview
 }
 
 type MockEventSourceShape = EventSource & {
@@ -250,6 +253,49 @@ const tokenLogsSample: ServerPublicTokenLogMock[] = [
   },
 ]
 
+const announcementModalSample: Announcement = {
+  id: 'ann-modal-01',
+  title: 'Maintenance window',
+  body: '**Tavily Hikari will restart tonight** between 23:00 and 23:10.\n\n- Existing MCP sessions may reconnect once.\n- API requests should retry normally.',
+  displayKind: 'modal',
+  status: 'published',
+  createdAt: 1_762_380_000,
+  updatedAt: 1_762_386_000,
+  publishedAt: 1_762_386_000,
+  archivedAt: null,
+}
+
+const announcementTickerSample: Announcement = {
+  id: 'ann-ticker-01',
+  title: 'Quota refresh',
+  body: 'Daily quota counters have refreshed. Token detail pages now include `live request` updates.',
+  displayKind: 'ticker',
+  status: 'published',
+  createdAt: 1_762_378_000,
+  updatedAt: 1_762_385_000,
+  publishedAt: 1_762_385_000,
+  archivedAt: null,
+}
+
+const announcementBodylessTickerSample: Announcement = {
+  ...announcementTickerSample,
+  id: 'ann-ticker-empty-01',
+  title: 'Quota refresh complete',
+  body: '',
+}
+
+const announcementArchivedSample: Announcement = {
+  id: 'ann-archived-01',
+  title: 'Endpoint migration completed',
+  body: 'The previous Tavily-compatible endpoint migration has been completed. See [migration notes](https://example.com).',
+  displayKind: 'ticker',
+  status: 'archived',
+  createdAt: 1_762_200_000,
+  updatedAt: 1_762_250_000,
+  publishedAt: 1_762_210_000,
+  archivedAt: 1_762_250_000,
+}
+
 const storyAvatarDataUrl =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
@@ -321,6 +367,7 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
     rechargePreview: args.rechargePreview ?? 'normal',
     routePath: routePathFromView(args.consoleView, args.landingFocus, args.routePathOverride),
     tokenListMode,
+    announcementPreview: args.announcementPreview ?? 'Active',
   }
 }
 
@@ -462,6 +509,28 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
 
     if (url.pathname === '/api/user/tokens') {
       return jsonResponse(tokenList)
+    }
+
+    if (url.pathname === '/api/user/announcements') {
+      const activeAnnouncements = state.announcementPreview === 'Ticker Bodyless'
+        ? [announcementBodylessTickerSample]
+        : [announcementModalSample, announcementTickerSample]
+      return jsonResponse({
+        items: state.announcementPreview === 'None'
+          ? []
+          : activeAnnouncements,
+      })
+    }
+
+    if (url.pathname === '/api/user/announcements/history') {
+      const historyAnnouncements = state.announcementPreview === 'Ticker Bodyless'
+        ? [announcementBodylessTickerSample, announcementArchivedSample]
+        : [announcementModalSample, announcementTickerSample, announcementArchivedSample]
+      return jsonResponse({
+        items: state.announcementPreview === 'None'
+          ? []
+          : historyAnnouncements,
+      })
     }
 
     const tokenRoute = url.pathname.match(/^\/api\/user\/tokens\/([^/]+)(?:\/(secret|logs)(?:\/rotate)?)?$/)
@@ -762,23 +831,43 @@ function UserConsoleStory(
     const cleanupEventSource = installEventSourceMock(pushStatusPreview)
     const cleanupClipboard = copyRecoveryMode === 'none' ? null : installClipboardFailureMock()
     window.history.replaceState(null, '', storyState.routePath)
+    const storageKey = 'tavily-hikari:user-console-announcement-closed'
+    if (storyState.announcementPreview === 'Closed') {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        [announcementModalSample.id]: 1_762_390_000,
+        [announcementTickerSample.id]: 1_762_390_120,
+        [announcementBodylessTickerSample.id]: 1_762_390_120,
+      }))
+    } else {
+      window.localStorage.removeItem(storageKey)
+    }
     setReady(true)
 
     return () => {
       cleanupFetch()
       cleanupEventSource()
       cleanupClipboard?.()
+      window.localStorage.removeItem(storageKey)
       window.history.replaceState(null, '', previousLocation)
       setReady(false)
     }
   }, [
     copyRecoveryMode,
     pushStatusPreview,
+    storyState.announcementPreview,
     storyState.isAdmin,
     storyState.rechargePreview,
     storyState.routePath,
     storyState.tokenListMode,
   ])
+
+  useEffect(() => {
+    if (!ready || storyState.announcementPreview !== 'History Open') return
+    const timer = window.setTimeout(() => {
+      document.querySelector<HTMLButtonElement>('.user-console-announcements-trigger')?.click()
+    }, 180)
+    return () => window.clearTimeout(timer)
+  }, [ready, storyState.announcementPreview])
 
   useEffect(() => {
     if (!ready || !storyState.autoRevealToken) return
@@ -854,6 +943,7 @@ function UserConsoleStory(
     guideRevealMode,
     pushStatusPreview,
     pushStatusBubbleOpen ? 'push-open' : 'push-closed',
+    storyState.announcementPreview,
   ].join(':')
 
   return <UserConsole key={storyKey} />
@@ -930,6 +1020,10 @@ const meta = {
       control: false,
     },
     autoOpenAccountMenu: {
+      table: { disable: true },
+      control: false,
+    },
+    announcementPreview: {
       table: { disable: true },
       control: false,
     },
@@ -1022,6 +1116,164 @@ export const ConsoleHomeAdmin: Story = {
     consoleView: 'Console Home',
     isAdmin: true,
     landingFocus: 'Overview Focus',
+  },
+}
+
+export const ConsoleHomeAnnouncements: Story = {
+  name: 'Console Home Announcements',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'Active',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    if (canvasElement.querySelector('.user-console-announcement-ticker') == null) {
+      throw new Error('Expected ticker announcement to render.')
+    }
+    const ticker = canvasElement.querySelector<HTMLElement>('.user-console-announcement-ticker')
+    if (ticker?.textContent?.includes('Daily quota counters have refreshed')) {
+      throw new Error('Expected ticker announcement to show title only before opening details.')
+    }
+    if (canvasElement.ownerDocument.querySelector('.user-console-announcement-dialog') == null) {
+      throw new Error('Expected modal announcement dialog to render.')
+    }
+    const acknowledgeButton = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => ['Got it', '知道了'].includes(button.textContent?.trim() ?? ''))
+    acknowledgeButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const tickerAction = canvasElement.querySelector<HTMLButtonElement>('.user-console-announcement-ticker .user-console-announcement-close')
+    tickerAction?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const tickerDialog = canvasElement.ownerDocument.querySelector<HTMLElement>('.user-console-announcement-dialog')
+    if (!tickerDialog?.textContent?.includes(announcementTickerSample.title)) {
+      throw new Error('Expected clicking ticker announcement to open its detail dialog.')
+    }
+    if (!tickerDialog.textContent?.includes('Daily quota counters have refreshed')) {
+      throw new Error('Expected ticker detail dialog to render the announcement body.')
+    }
+    if (canvasElement.querySelector('.user-console-announcement-ticker') == null) {
+      throw new Error('Expected ticker announcement to remain visible while its detail dialog is open.')
+    }
+
+    const tickerAcknowledgeButton = Array.from(tickerDialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => ['Got it', '知道了'].includes(button.textContent?.trim() ?? ''))
+    if (tickerAcknowledgeButton == null) {
+      throw new Error('Expected ticker detail dialog to render an acknowledge action.')
+    }
+    tickerAcknowledgeButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    if (canvasElement.querySelector('.user-console-announcement-ticker') != null) {
+      throw new Error('Expected acknowledging ticker details to dismiss the ticker announcement.')
+    }
+    if (canvasElement.ownerDocument.querySelector('.user-console-announcement-dialog') != null) {
+      throw new Error('Expected acknowledging ticker details to close the detail dialog.')
+    }
+  },
+}
+
+export const ConsoleHomeTickerDetailClose: Story = {
+  name: 'Console Home Ticker Detail Close',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'Active',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const modalAcknowledgeButton = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => ['Got it', '知道了'].includes(button.textContent?.trim() ?? ''))
+    if (modalAcknowledgeButton == null) {
+      throw new Error('Expected initial modal announcement to render an acknowledge action.')
+    }
+    modalAcknowledgeButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const tickerMain = canvasElement.querySelector<HTMLButtonElement>('.user-console-announcement-ticker-main')
+    if (tickerMain == null) {
+      throw new Error('Expected bodyful ticker announcement to render a title trigger.')
+    }
+    tickerMain?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const tickerDialog = canvasElement.ownerDocument.querySelector<HTMLElement>('.user-console-announcement-dialog')
+    if (!tickerDialog?.textContent?.includes(announcementTickerSample.title)) {
+      throw new Error('Expected clicking ticker title to open its detail dialog.')
+    }
+
+    const closeButton = Array.from(tickerDialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Close')
+    if (closeButton == null) {
+      throw new Error('Expected ticker detail dialog to render a close button.')
+    }
+    closeButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    if (canvasElement.querySelector('.user-console-announcement-ticker') != null) {
+      throw new Error('Expected closing ticker details to dismiss the ticker announcement.')
+    }
+    if (canvasElement.ownerDocument.querySelector('.user-console-announcement-dialog') != null) {
+      throw new Error('Expected closing ticker details to close the detail dialog.')
+    }
+  },
+}
+
+export const ConsoleHomeBodylessTicker: Story = {
+  name: 'Console Home Bodyless Ticker',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'Ticker Bodyless',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const ticker = canvasElement.querySelector<HTMLElement>('.user-console-announcement-ticker')
+    if (ticker == null) {
+      throw new Error('Expected bodyless ticker announcement to render.')
+    }
+    if (canvasElement.querySelector('.user-console-announcement-ticker-main--static') == null) {
+      throw new Error('Expected bodyless ticker copy to render without a details trigger.')
+    }
+
+    const closeAction = canvasElement.querySelector<HTMLButtonElement>('.user-console-announcement-ticker .user-console-announcement-close')
+    closeAction?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    if (canvasElement.querySelector('.user-console-announcement-ticker') != null) {
+      throw new Error('Expected bodyless ticker close action to dismiss the announcement.')
+    }
+    if (canvasElement.ownerDocument.querySelector('.user-console-announcement-dialog') != null) {
+      throw new Error('Expected bodyless ticker close action to avoid opening a detail dialog.')
+    }
+  },
+}
+
+export const ConsoleHomeAnnouncementHistory: Story = {
+  name: 'Console Home Announcement History',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: true,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'History Open',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 260))
+
+    if (canvasElement.ownerDocument.querySelector('.user-console-announcement-history') == null) {
+      throw new Error('Expected announcement history drawer to render.')
+    }
   },
 }
 

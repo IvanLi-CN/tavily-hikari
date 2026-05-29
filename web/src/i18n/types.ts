@@ -213,6 +213,7 @@ export interface AdminTranslationsShape {
     requests: string
     jobs: string
     users: string
+    announcements: string
     alerts: string
     systemSettings: string
     proxySettings: string
@@ -322,6 +323,10 @@ export interface AdminTranslationsShape {
         thresholds: string
         channels: string
       }
+    }
+    announcements: {
+      title: string
+      description: string
     }
     proxySettings: {
       title: string

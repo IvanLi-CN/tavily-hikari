@@ -16,6 +16,10 @@ import TokenListActions from './TokenListActions'
 import RechargePanel from './RechargePanel'
 import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rechargeControls'
 import TokenResetDialogs from './TokenResetDialogs'
+import AccessStatePanel from './AccessStatePanel'
+import { UserConsoleAnnouncementsSection } from './Announcements'
+import { useUserConsoleAnnouncements } from './useAnnouncements'
+
 import {
   createBrowserTodayWindow,
   fetchVersion,
@@ -1218,17 +1222,30 @@ export default function UserConsole(): JSX.Element {
   const landingScrollBehaviorRef = useRef<ScrollBehavior>('auto')
   const shouldScrollLandingSectionRef = useRef(route.name === 'landing' && route.section !== null)
   const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(pageRef)
+  const consoleAvailability = resolveUserConsoleAvailability(profile)
+  const {
+    activeAnnouncements,
+    announcementHistory,
+    closedAnnouncements,
+    announcementHistoryOpen,
+    visibleAnnouncementCount,
+    announcementButtonLabel,
+    setAnnouncementHistoryOpen,
+    closeAnnouncement,
+    clearAnnouncements,
+  } = useUserConsoleAnnouncements(consoleAvailability, text.header)
 
   const clearConsoleData = useCallback(() => {
     setDashboard(null)
     setTokens([])
     setRechargeConfig(null)
     setRechargeOrders([])
+    clearAnnouncements()
     setDetail(null)
     setDetailLogs([])
     setDetailLogsPushIssue(null)
     setError(null)
-  }, [])
+  }, [clearAnnouncements])
 
   const clearProbeUi = useCallback(() => {
     const clearedProbeState = createClearedProbeUiState(probeRunIdRef.current)
@@ -1442,8 +1459,6 @@ export default function UserConsole(): JSX.Element {
       })
     return () => controller.abort()
   }, [])
-
-  const consoleAvailability = resolveUserConsoleAvailability(profile)
 
   useEffect(() => {
     if (consoleAvailability !== 'enabled' || route.name !== 'token') {
@@ -2535,6 +2550,9 @@ export default function UserConsole(): JSX.Element {
         adminHref={adminHref}
         adminActionLabel={publicStrings.adminButton}
         adminMenuLabel={text.header.adminMenuAction}
+        announcementsLabel={consoleEmptyState ? null : announcementButtonLabel}
+        announcementCount={consoleEmptyState ? 0 : visibleAnnouncementCount}
+        onOpenAnnouncements={consoleEmptyState ? undefined : () => setAnnouncementHistoryOpen(true)}
         logoutVisible={logoutVisible}
         isLoggingOut={isLoggingOut}
         logoutLabel={text.header.logout}
@@ -2542,64 +2560,23 @@ export default function UserConsole(): JSX.Element {
         onLogout={handleLogout}
       />
 
-      {consoleUnavailable && (
-        <section className="surface panel access-panel">
-          <div className="console-unavailable-state">
-            <div className="console-unavailable-icon" aria-hidden="true">
-              <Icon icon="mdi:account-off-outline" width={22} height={22} />
-            </div>
-            <div className="console-unavailable-copy">
-              <h2>{text.unavailable.title}</h2>
-              <p>{text.unavailable.description}</p>
-            </div>
-            <div className="table-actions console-unavailable-actions">
-              <button type="button" className="btn btn-primary" onClick={goHome}>
-                {text.unavailable.home}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {consoleLoggedOut && (
-        <section className="surface panel access-panel">
-          <div className="console-unavailable-state">
-            <div className="console-unavailable-icon" aria-hidden="true">
-              <Icon icon="mdi:logout-variant" width={22} height={22} />
-            </div>
-            <div className="console-unavailable-copy">
-              <h2>{text.loggedOut.title}</h2>
-              <p>{text.loggedOut.description}</p>
-            </div>
-            <div className="table-actions console-unavailable-actions">
-              <button type="button" className="btn btn-primary" onClick={() => { window.location.href = '/auth/linuxdo' }}>
-                {text.loggedOut.action}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {consoleNeedsLogin && (
-        <section className="surface panel access-panel">
-          <div className="console-unavailable-state">
-            <div className="console-unavailable-icon" aria-hidden="true">
-              <Icon icon="mdi:account-arrow-right-outline" width={22} height={22} />
-            </div>
-            <div className="console-unavailable-copy">
-              <h2>{text.loginRequired.title}</h2>
-              <p>{text.loginRequired.description}</p>
-            </div>
-            <div className="table-actions console-unavailable-actions">
-              <button type="button" className="btn btn-primary" onClick={() => { window.location.href = '/auth/linuxdo' }}>
-                {text.loginRequired.action}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
+      {consoleUnavailable && <AccessStatePanel state="unavailable" text={text} onHome={goHome} />}
+      {consoleLoggedOut && <AccessStatePanel state="logged_out" text={text} onHome={goHome} />}
+      {consoleNeedsLogin && <AccessStatePanel state="login_required" text={text} onHome={goHome} />}
 
       {!consoleEmptyState && error && <section className="surface error-banner">{error}</section>}
+
+      <UserConsoleAnnouncementsSection
+        hidden={consoleEmptyState}
+        language={language}
+        text={text}
+        activeAnnouncements={activeAnnouncements}
+        historyAnnouncements={announcementHistory}
+        closedRecords={closedAnnouncements}
+        historyOpen={announcementHistoryOpen}
+        onHistoryOpenChange={setAnnouncementHistoryOpen}
+        onCloseAnnouncement={closeAnnouncement}
+      />
 
       {!consoleEmptyState && route.name === 'landing' && (
         <div className="user-console-landing-stack">

@@ -1,3 +1,9 @@
+import {
+  createDemoAnnouncements,
+  demoUserActiveAnnouncements,
+  demoUserAnnouncementHistory,
+  handleAnnouncementsRoute,
+} from './demoAnnouncements'
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 type DemoListener = EventListenerOrEventListenerObject
 interface DemoRechargeOrder {
@@ -222,6 +228,7 @@ function createDemoState() {
     tokenSecrets: new Map(tokens.map((token) => [token.id, token.id === DEMO_TOKEN_ID ? DEMO_TOKEN : `th-${token.id}-demoaccesssecret`])),
     keys,
     logs,
+    announcements: createDemoAnnouncements(nowSeconds),
     users: createDemoUsers(),
     jobs: createDemoJobs(),
     forwardProxy: createDemoForwardProxy(),
@@ -1088,6 +1095,8 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   }
   if (path === '/api/user/tokens') return jsonResponse(demoState.tokens)
   if (path.startsWith('/api/user/tokens/')) return handleUserTokenRoute(path, url)
+  if (path === '/api/user/announcements') return jsonResponse({ items: demoUserActiveAnnouncements(demoState.announcements) })
+  if (path === '/api/user/announcements/history') return jsonResponse({ items: demoUserAnnouncementHistory(demoState.announcements) })
 
   if (path === '/api/keys/validate' && method === 'POST') return jsonResponse({
     summary: { input_lines: 2, valid_lines: 2, unique_in_input: 2, duplicate_in_input: 0, already_exists: 1, ok: 1, exhausted: 1, invalid: 0, error: 0 },
@@ -1117,6 +1126,9 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/logs') return jsonResponse(requestLogsPage(url))
   if (/^\/api\/logs\/\d+\/details$/.test(path)) return jsonResponse(demoLogDetailForPath(path))
   if (path === '/api/jobs') return jsonResponse({ ...buildListPage(demoState.jobs, url, 10), groupCounts: { all: demoState.jobs.length, quota: 4, usage: 4, logs: 2, geo: 2, linuxdo: 0 } })
+
+  if (path === '/api/announcements') return handleAnnouncementsRoute({ announcements: demoState.announcements, path, method, init, nowSeconds, readJsonBody, jsonResponse })
+  if (path.startsWith('/api/announcements/')) return handleAnnouncementsRoute({ announcements: demoState.announcements, path, method, init, nowSeconds, readJsonBody, jsonResponse })
 
   if (path === '/api/users') return jsonResponse(buildListPage(demoState.users, url))
   if (path.startsWith('/api/users/')) return handleUserRoute(path, url, method, init)

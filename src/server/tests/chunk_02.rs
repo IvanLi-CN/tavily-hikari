@@ -1489,6 +1489,19 @@ async fn spawn_keys_admin_server(
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
+        .route(
+            "/api/announcements",
+            get(get_announcements).post(create_announcement),
+        )
+        .route("/api/announcements/:id", patch(update_announcement))
+        .route(
+            "/api/announcements/:id/publish",
+            post(publish_announcement),
+        )
+        .route(
+            "/api/announcements/:id/archive",
+            post(archive_announcement),
+        )
         .route("/api/admin/login", post(post_admin_login))
         .with_state(state);
 
@@ -1939,6 +1952,11 @@ async fn spawn_user_oauth_server_with_options(
         .route("/api/profile", get(get_profile))
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))
+        .route("/api/user/announcements", get(get_user_announcements))
+        .route(
+            "/api/user/announcements/history",
+            get(get_user_announcement_history),
+        )
         .route("/api/user/tokens", get(get_user_tokens))
         .route("/api/user/tokens/:id", get(get_user_token_detail))
         .route("/api/user/tokens/:id/secret", get(get_user_token_secret))

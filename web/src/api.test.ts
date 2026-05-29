@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
 import {
+  archiveAnnouncement,
   buildPublicEventsUrl,
   bindAdminUserTag,
+  createAnnouncement,
   createBrowserTodayWindow,
   createAdminUserToken,
   deleteAdminUserToken,
@@ -14,6 +16,7 @@ import {
   fetchAlertCatalog,
   fetchAlertEvents,
   fetchAlertGroups,
+  fetchAnnouncements,
   fetchApiKeys,
   fetchDashboardOverview,
   fetchJobs,
@@ -31,6 +34,8 @@ import {
   fetchTokenMetrics,
   fetchTokenLogDetails,
   fetchTokenLogsList,
+  fetchUserAnnouncementHistory,
+  fetchUserAnnouncements,
   fetchUserDashboard,
   postUserLogout,
   fetchUserTokenDetail,
@@ -38,8 +43,10 @@ import {
   fetchUserTokens,
   millisecondsUntilNextBrowserDayBoundary,
   parseUserTokenEventSnapshot,
+  publishAnnouncement,
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
+  updateAnnouncement,
   updateAdminUserQuota,
   updateSystemSettings,
   validateForwardProxyCandidateWithProgress,
@@ -70,6 +77,68 @@ function createSseResponse(chunks: string[]): Response {
 }
 
 describe('admin user tag api helpers', () => {
+  it('routes announcement lifecycle requests through dedicated endpoints', async () => {
+    const announcement = {
+      id: 'ann/id 1',
+      title: 'Launch notice',
+      body: 'Maintenance window',
+      displayKind: 'modal',
+      status: 'published',
+      createdAt: 1,
+      updatedAt: 2,
+      publishedAt: 2,
+      archivedAt: null,
+    }
+    const fetchMock = mock((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(JSON.stringify({ items: [announcement], ...announcement }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const createPayload = {
+      title: 'Launch notice',
+      body: 'Maintenance window',
+      displayKind: 'modal' as const,
+    }
+    const updatePayload = {
+      title: 'Updated notice',
+      body: '',
+      displayKind: 'ticker' as const,
+    }
+
+    await fetchAnnouncements()
+    await createAnnouncement(createPayload)
+    await updateAnnouncement('ann/id 1', updatePayload)
+    await publishAnnouncement('ann/id 1')
+    await archiveAnnouncement('ann/id 1')
+    await fetchUserAnnouncements()
+    await fetchUserAnnouncementHistory()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/announcements')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/announcements')
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createPayload),
+    })
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/announcements/ann%2Fid%201')
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatePayload),
+    })
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/announcements/ann%2Fid%201/publish')
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('/api/announcements/ann%2Fid%201/archive')
+    expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls[5]?.[0]).toBe('/api/user/announcements')
+    expect(fetchMock.mock.calls[6]?.[0]).toBe('/api/user/announcements/history')
+  })
+
   it('formats browser today windows with explicit ISO8601 offsets', () => {
     const localNoon = new Date()
     localNoon.setFullYear(2026, 2, 8)

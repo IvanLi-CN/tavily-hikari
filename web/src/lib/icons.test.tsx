@@ -13,6 +13,7 @@ const REQUIRED_RUNTIME_ICON_NAMES = [
   'mdi:alert-circle-outline',
   'mdi:arrow-left',
   'mdi:bell-ring-outline',
+  'mdi:bullhorn-outline',
   'mdi:calendar-clock-outline',
   'mdi:calendar-today-outline',
   'mdi:chart-timeline-variant',

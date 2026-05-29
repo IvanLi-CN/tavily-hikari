@@ -272,6 +272,8 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        self.ensure_announcements_schema().await?;
+
         forward_proxy::ensure_forward_proxy_schema(&self.pool).await?;
 
         // User identity model (separated from admin auth):

@@ -30,6 +30,7 @@ export type AdminModuleId =
   | 'requests'
   | 'jobs'
   | 'users'
+  | 'announcements'
   | 'alerts'
   | 'system-settings'
   | 'proxy-settings'
@@ -44,6 +45,8 @@ export type AdminPathRoute =
   | { name: 'user-tags' }
   | { name: 'user-tag-editor'; mode: 'create' }
   | { name: 'user-tag-editor'; mode: 'edit'; id: string }
+  | { name: 'announcement-editor'; mode: 'create' }
+  | { name: 'announcement-editor'; mode: 'edit'; id: string }
   | { name: 'key'; id: string }
 
 const ADMIN_BASE = '/admin'
@@ -130,6 +133,17 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/alerts`) {
     return { name: 'module', module: 'alerts' }
   }
+  if (path === `${ADMIN_BASE}/announcements`) {
+    return { name: 'module', module: 'announcements' }
+  }
+  if (path === `${ADMIN_BASE}/announcements/new`) {
+    return { name: 'announcement-editor', mode: 'create' }
+  }
+  if (path.startsWith(`${ADMIN_BASE}/announcements/`) && path.endsWith('/edit')) {
+    const id = decodeSegment(path.slice(`${ADMIN_BASE}/announcements/`.length, -'/edit'.length))
+    if (id) return { name: 'announcement-editor', mode: 'edit', id }
+    return { name: 'module', module: 'announcements' }
+  }
   if (path === `${ADMIN_BASE}/system-settings` || path === `${ADMIN_BASE}/settings`) {
     return { name: 'module', module: 'system-settings' }
   }
@@ -162,6 +176,11 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
     if (left.mode === 'edit' && right.mode === 'edit') return left.id === right.id
     return false
   }
+  if (left.name === 'announcement-editor' && right.name === 'announcement-editor') {
+    if (left.mode === 'create' && right.mode === 'create') return true
+    if (left.mode === 'edit' && right.mode === 'edit') return left.id === right.id
+    return false
+  }
   if (left.name === 'key' && right.name === 'key') {
     return left.id === right.id
   }
@@ -174,6 +193,18 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
 export function modulePath(module: AdminModuleId): string {
   if (module === 'dashboard') return `${ADMIN_BASE}/dashboard`
   return `${ADMIN_BASE}/${module}`
+}
+
+export function announcementListPath(): string {
+  return `${ADMIN_BASE}/announcements`
+}
+
+export function announcementCreatePath(): string {
+  return `${ADMIN_BASE}/announcements/new`
+}
+
+export function announcementEditPath(id: string): string {
+  return `${ADMIN_BASE}/announcements/${encodeURIComponent(id)}/edit`
 }
 
 export interface AdminAlertsPathContext {
