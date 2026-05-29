@@ -1,0 +1,210 @@
+@layer components {
+  .admin-recharge-module { display: grid; gap: 1rem; min-width: 0; overflow: hidden; }
+  .admin-recharge-module--empty { padding-block: 1rem; }
+  .admin-recharge-module > .admin-loading-region { min-width: 0; }
+  .admin-recharge-summary { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .admin-recharge-summary span {
+    background: hsl(var(--muted) / 0.26);
+    border: 1px solid hsl(var(--border) / 0.52);
+    border-radius: 999px;
+    color: hsl(var(--foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+    padding: 0.38rem 0.68rem;
+  }
+  .admin-recharge-toolbar { display: grid; gap: 0.7rem; }
+  .admin-recharge-toolbar-primary,
+  .admin-recharge-filter-row { align-items: end; display: grid; gap: 0.65rem; }
+  .admin-recharge-toolbar-primary { grid-template-columns: minmax(18rem, 1fr) auto; }
+  .admin-recharge-filter-row { grid-template-columns: repeat(3, minmax(9rem, 12rem)); }
+  .admin-recharge-search-field,
+  .admin-recharge-filter-field { display: grid; gap: 0.28rem; min-width: 0; }
+  .admin-recharge-filter-field span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.72rem;
+    font-weight: 800;
+  }
+  .admin-recharge-toolbar select {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border) / 0.55);
+    border-radius: 0.75rem;
+    font-weight: 700;
+    min-height: 2.5rem;
+    padding: 0 0.75rem;
+    width: 100%;
+  }
+  .admin-recharge-table-scroll {
+    background: hsl(var(--card) / 0.44);
+    border: 1px solid hsl(var(--border) / 0.5);
+    border-radius: 0.75rem;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .admin-recharge-table { min-width: 65rem; table-layout: fixed; width: 100%; }
+  .admin-recharge-table th,
+  .admin-recharge-table td { overflow-wrap: anywhere; vertical-align: top; }
+  .admin-recharge-table th:nth-child(1),
+  .admin-recharge-table td:nth-child(1) { width: 8rem; }
+  .admin-recharge-table th:nth-child(2),
+  .admin-recharge-table td:nth-child(2) { width: 13.5rem; }
+  .admin-recharge-table th:nth-child(3),
+  .admin-recharge-table td:nth-child(3) { width: 5.5rem; }
+  .admin-recharge-table th:nth-child(4),
+  .admin-recharge-table td:nth-child(4) { width: 6.25rem; }
+  .admin-recharge-table th:nth-child(5),
+  .admin-recharge-table td:nth-child(5),
+  .admin-recharge-table th:nth-child(6),
+  .admin-recharge-table td:nth-child(6),
+  .admin-recharge-table th:nth-child(7),
+  .admin-recharge-table td:nth-child(7) { width: 7rem; }
+  .admin-recharge-table th:nth-child(8),
+  .admin-recharge-table td:nth-child(8) { width: 10.75rem; }
+  .admin-recharge-user-link {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: left;
+    white-space: normal;
+  }
+  .admin-recharge-order-cell { display: grid; gap: 0.22rem; min-width: 0; }
+  .admin-recharge-order-cell span { color: hsl(var(--foreground)); font-weight: 800; }
+  .admin-recharge-order-cell code {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .admin-recharge-actions {
+    display: grid;
+    gap: 0.45rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-recharge-action-button { min-width: 0; white-space: normal; }
+  .admin-recharge-action-state {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+  .admin-recharge-totp-field {
+    align-items: center;
+    display: grid;
+    gap: 0.55rem;
+    justify-items: center;
+    padding-block: 0.35rem 0.55rem;
+  }
+  .admin-recharge-totp-field span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+  .admin-recharge-totp-input {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.45rem !important;
+    font-variant-numeric: tabular-nums;
+    height: 3.25rem !important;
+    letter-spacing: 0.26em !important;
+    max-width: 13rem;
+    padding-inline: 1.15rem 0.82rem;
+    text-align: center !important;
+    width: 13rem;
+  }
+  .admin-recharge-pagination {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+  .admin-recharge-group-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  }
+  .admin-recharge-user-card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border) / 0.55);
+    border-radius: 0.5rem;
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.85rem;
+    text-align: left;
+  }
+  .admin-recharge-user-card span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+  }
+  .admin-recharge-quota-table-scroll {
+    background: hsl(var(--card) / 0.5);
+    border: 1px solid hsl(var(--border) / 0.55);
+    border-radius: 0.75rem;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .admin-recharge-quota-table-facts {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.75rem;
+  }
+  .admin-recharge-quota-table-facts span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+  .admin-recharge-quota-table {
+    font-variant-numeric: tabular-nums;
+    min-width: 46rem;
+    table-layout: fixed;
+    width: 100%;
+  }
+  .user-recharge-quota-calendar-panel--embedded .panel-header h3 {
+    font-size: 1rem;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .user-recharge-quota-calendar-panel--embedded .panel-header {
+    margin-bottom: 0;
+  }
+  .admin-recharge-quota-table th,
+  .admin-recharge-quota-table td {
+    overflow-wrap: anywhere;
+    text-align: left;
+    vertical-align: middle;
+  }
+  .admin-recharge-quota-table th:first-child,
+  .admin-recharge-quota-table td:first-child { width: 10rem; }
+  .admin-recharge-quota-table tbody th {
+    color: hsl(var(--foreground));
+    font-weight: 800;
+  }
+  @media (max-width: 900px) {
+    .admin-recharge-toolbar-primary,
+    .admin-recharge-filter-row { grid-template-columns: 1fr; }
+  }
+
+}
+
+.admin-layout.admin-layout--recharges {
+  gap: clamp(0.75rem, 1vw, 1rem);
+  grid-template-columns: clamp(13rem, 15vw, 15rem) minmax(0, 1fr);
+  padding: clamp(0.75rem, 1vw, 1rem);
+}
+
+.admin-layout--recharges .admin-sidebar {
+  padding-inline: 0.75rem;
+}
+
+.admin-layout--recharges .admin-main-content .app-shell {
+  max-width: none;
+  padding-inline: clamp(0.75rem, 1.2vw, 1rem);
+  width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .admin-layout.admin-layout--recharges {
+    grid-template-columns: 1fr;
+  }
+}

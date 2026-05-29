@@ -206,4 +206,83 @@ impl KeyStore {
         .await?;
         self.get_system_settings().await
     }
+
+    pub(crate) async fn get_admin_totp_secret_record(
+        &self,
+    ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        let Some(ciphertext) = self
+            .get_meta_string(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1)
+            .await?
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(nonce) = self
+            .get_meta_string(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1)
+            .await?
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let enabled_at = self
+            .get_meta_i64(META_KEY_ADMIN_TOTP_ENABLED_AT_V1)
+            .await?
+            .unwrap_or(0);
+        Ok(Some((ciphertext, nonce, enabled_at)))
+    }
+
+    pub(crate) async fn set_admin_totp_secret_record(
+        &self,
+        ciphertext: &str,
+        nonce: &str,
+        enabled_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1, ciphertext)
+            .await?;
+        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1, nonce)
+            .await?;
+        self.set_meta_i64(META_KEY_ADMIN_TOTP_ENABLED_AT_V1, enabled_at)
+            .await?;
+        self.clear_admin_totp_failures().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_admin_totp_secret_record(&self) -> Result<(), ProxyError> {
+        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1, "")
+            .await?;
+        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1, "")
+            .await?;
+        self.set_meta_i64(META_KEY_ADMIN_TOTP_ENABLED_AT_V1, 0)
+            .await?;
+        self.clear_admin_totp_failures().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_admin_totp_failure_state(&self) -> Result<(i64, i64), ProxyError> {
+        let count = self
+            .get_meta_i64(META_KEY_ADMIN_TOTP_FAILURE_COUNT_V1)
+            .await?
+            .unwrap_or(0);
+        let locked_until = self
+            .get_meta_i64(META_KEY_ADMIN_TOTP_LOCKED_UNTIL_V1)
+            .await?
+            .unwrap_or(0);
+        Ok((count, locked_until))
+    }
+
+    pub(crate) async fn set_admin_totp_failure_state(
+        &self,
+        count: i64,
+        locked_until: i64,
+    ) -> Result<(), ProxyError> {
+        self.set_meta_i64(META_KEY_ADMIN_TOTP_FAILURE_COUNT_V1, count)
+            .await?;
+        self.set_meta_i64(META_KEY_ADMIN_TOTP_LOCKED_UNTIL_V1, locked_until)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_admin_totp_failures(&self) -> Result<(), ProxyError> {
+        self.set_admin_totp_failure_state(0, 0).await
+    }
 }

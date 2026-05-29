@@ -1,3 +1,4 @@
+import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
 import type { TranslationShape } from '../types'
 
 export const EN: TranslationShape = {
@@ -219,6 +220,7 @@ export const EN: TranslationShape = {
         jobs: 'Jobs',
         users: 'Users',
         announcements: 'Announcements',
+        recharges: 'Recharges',
         alerts: 'Alerts',
         systemSettings: 'System Settings',
         proxySettings: 'Proxy Settings',
@@ -592,6 +594,7 @@ export const EN: TranslationShape = {
           currentApiRebalancePercentValue: 'Current API ratio: {percent}%',
           rechargeFeatureLabel: 'Enable recharge', rechargeFeatureHint: 'Hides recharge from the user console and rejects new recharge orders. Paid callbacks are still processed.',
           rechargeUserLabel: 'Allow non-admin recharge', rechargeUserHint: 'Debug switch. When off, only admin requests can see and create recharge orders.',
+          ...adminTotpTranslations.en, ...adminTrustedClientIpTranslations.en,
           blockedKeyBaseLimitLabel: 'Blocked-key base limit',
           blockedKeyBaseLimitHint: 'Global base for every user blocked-key limit. Hidden user deltas may be positive or negative; the effective limit never drops below 0.',
           currentBlockedKeyBaseLimitValue: 'Current base: {count}',
@@ -605,10 +608,8 @@ export const EN: TranslationShape = {
           invalidGlobalIpLimit: 'Enter a non-negative integer for the IP limit.',
           saveFailed: 'Failed to save system settings.',
         },
-        actions: {
-          apply: 'Apply', applying: 'Applying…', cancel: 'Cancel',
-        },
-      },
+        actions: { apply: 'Apply', applying: 'Applying…', cancel: 'Cancel' },
+      }, recharges: adminRechargeTranslations.en,
       users: {
         title: 'User Management',
         description: 'Account-level metrics, tag overlays, and shared quota controls.',
@@ -764,7 +765,7 @@ export const EN: TranslationShape = {
           hint: 'Base quota accepts non-negative integers only.',
           save: 'Save base quota',
           saving: 'Saving…',
-          savedAt: 'Saved at {time}',
+          savedAt: 'Saved at {time}', unsaved: 'Unsaved quota changes',
           invalid: 'All base quota fields must be non-negative integers.',
           saveFailed: 'Failed to update base quota.',
           inheritsDefaults: 'Following defaults',

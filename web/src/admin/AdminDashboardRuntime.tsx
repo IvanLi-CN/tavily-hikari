@@ -6,7 +6,6 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminTableShell from '../components/AdminTableShell'
 import JobKeyLink from '../components/JobKeyLink'
 import ManualCopyBubble from '../components/ManualCopyBubble'
-import QuotaRangeField from '../components/QuotaRangeField'
 import {
   Suspense,
   lazy,
@@ -61,6 +60,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import { UserTagBindingControls } from './UserTagBindingControls'
+import { AdminUserDetailQuotaWorkspace } from './AdminUserDetailQuotaWorkspace'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './DashboardOverview'
@@ -101,20 +101,13 @@ import {
   updateApiKeyBulkSyncProgressState,
 } from './apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from './apiKeySelection'
-import { UserDetailQuotaBreakdown } from './UserDetailQuotaBreakdown'
 import {
   createApiKeyBulkSyncBubblePinnedPosition,
   type ApiKeyBulkSyncBubblePinnedPosition,
 } from './apiKeyBulkSyncBubblePosition'
 import {
-  buildQuotaSliderTrack,
-  clampQuotaSliderStageIndex,
   createQuotaSliderSeed,
-  formatQuotaDraftInput,
-  getQuotaSliderStagePosition,
-  getQuotaSliderStageValue,
   normalizeQuotaDraftInput,
-  parseQuotaDraftValue,
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './quotaSlider'
@@ -232,6 +225,7 @@ import {
   fetchTokenGroups,
   type AdminUsersSortField,
   fetchAdminUsers,
+  fetchAdminRecharges,
   fetchAdminUserBrokenKeys,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
@@ -252,6 +246,7 @@ import {
   type AdminUserDetail,
   type AdminUserTag,
   type AdminUserTagBinding,
+  type AdminRechargeListResponse,
   type SortDirection,
   type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
@@ -304,6 +299,7 @@ const LazyKeyStickyPanels = lazy(() => import('./KeyStickyPanels'))
 const LazyAlertsCenter = lazy(() => import('./AlertsCenter'))
 const LazyAnnouncementsModule = lazy(() => import('./AnnouncementsModule'))
 const LazySystemSettingsModule = lazy(() => import('./SystemSettingsModule'))
+const LazyAdminRechargeRecordsModule = lazy(() => import('./AdminRechargeRecordsModule'))
 const LazyUserDetailSharedUsagePanel = lazy(async () =>
   import('./UserDetailSharedUsagePanel').then((module) => ({
     default: module.UserDetailSharedUsagePanel,
@@ -1822,14 +1818,14 @@ function AdminDashboard(): JSX.Element {
   const [savingUserTagBinding, setSavingUserTagBinding] = useState(false)
   const [userTagError, setUserTagError] = useState<string | null>(null)
   const [forwardProxySettings, setForwardProxySettings] = useState<ForwardProxySettings | null>(null)
-  const [forwardProxySettingsLoadState, setForwardProxySettingsLoadState] =
-    useState<QueryLoadState>('initial_loading')
+  const [forwardProxySettingsLoadState, setForwardProxySettingsLoadState] = useState<QueryLoadState>('initial_loading')
   const [forwardProxySettingsError, setForwardProxySettingsError] = useState<string | null>(null)
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null)
   const [systemSettingsLoadState, setSystemSettingsLoadState] =
     useState<QueryLoadState>('initial_loading')
   const [systemSettingsError, setSystemSettingsError] = useState<string | null>(null)
   const [systemSettingsSaving, setSystemSettingsSaving] = useState(false)
+  const [rechargeRecordsMeta, setRechargeRecordsMeta] = useState<AdminRechargeListResponse | null>(null)
   const [adminDisplayDensity, setAdminDisplayDensity] = useState<AdminDisplayDensity>(() =>
     readStoredAdminDisplayDensity(),
   )
@@ -3321,6 +3317,16 @@ function AdminDashboard(): JSX.Element {
 
     return () => controller.abort()
   }, [route, loadSystemSettingsData])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchAdminRecharges({ perPage: 1 }, controller.signal)
+      .then(setRechargeRecordsMeta)
+      .catch(() => {
+        if (!controller.signal.aborted) setRechargeRecordsMeta(null)
+      })
+    return () => controller.abort()
+  }, [])
 
   useEffect(() => {
     if (!(route.name === 'user' || route.name === 'user-usage')) return
@@ -7140,6 +7146,7 @@ function AdminDashboard(): JSX.Element {
     { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
     { target: 'announcements', label: adminStrings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
+    ...(rechargeRecordsMeta?.hasRechargeOrders ? [{ target: 'recharges' as const, label: adminStrings.nav.recharges, icon: <Icon icon="mdi:credit-card-clock-outline" width={18} height={18} /> }] : []),
     { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
     { target: 'system-settings', label: adminStrings.nav.systemSettings, icon: <Icon icon="mdi:cog-outline" width={18} height={18} /> },
     { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
@@ -7702,7 +7709,7 @@ function AdminDashboard(): JSX.Element {
       >
         <DrawerContent className="request-entity-drawer-content-fit">
           <div className="request-entity-drawer-body-fit">
-            <section className="surface panel">
+            <section className="surface panel user-detail-panel-compact" id="user-detail-tags">
               <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
@@ -8384,57 +8391,63 @@ function AdminDashboard(): JSX.Element {
           </section>
         ) : (
           <>
-            <section className="surface panel">
+            <nav className="user-detail-section-nav" aria-label={usersStrings.detail.title}>
+              <a href="#user-detail-identity">{usersStrings.detail.identityTitle}</a>
+              <a href="#user-detail-tags">{usersStrings.userTags.title}</a>
+              <a href="#user-detail-quota">{usersStrings.quota.title}</a>
+              <a href="#user-detail-activity">{usersStrings.detail.sharedUsageTitle}</a>
+              <a href="#user-detail-tokens">{usersStrings.detail.tokensTitle}</a>
+            </nav>
+
+            <section className="surface panel user-detail-panel-compact" id="user-detail-identity">
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.detail.identityTitle}</h2>
                   <p className="panel-description">{usersStrings.detail.identityDescription}</p>
                 </div>
               </div>
-              <div className="token-info-grid">
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.detail.userId}</span>
-                  <span className="token-info-value">
+              <dl className="user-detail-definition-grid">
+                <div>
+                  <dt>{usersStrings.detail.userId}</dt>
+                  <dd>
                     <code>{detail.userId}</code>
-                  </span>
+                  </dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.table.displayName}</span>
-                  <span className="token-info-value">{detail.displayName || '—'}</span>
+                <div>
+                  <dt>{usersStrings.table.displayName}</dt>
+                  <dd>{detail.displayName || '—'}</dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.table.username}</span>
-                  <span className="token-info-value">{detail.username || '—'}</span>
+                <div>
+                  <dt>{usersStrings.table.username}</dt>
+                  <dd>{detail.username || '—'}</dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.table.status}</span>
-                  <span className="token-info-value">
+                <div>
+                  <dt>{usersStrings.table.status}</dt>
+                  <dd>
                     <StatusBadge tone={detail.active ? 'success' : 'neutral'}>
                       {detail.active ? usersStrings.status.active : usersStrings.status.inactive}
                     </StatusBadge>
-                  </span>
+                  </dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.table.lastLogin}</span>
-                  <span className="token-info-value">{formatTimestamp(detail.lastLoginAt)}</span>
+                <div>
+                  <dt>{usersStrings.table.lastLogin}</dt>
+                  <dd>{formatTimestamp(detail.lastLoginAt)}</dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.table.tokenCount}</span>
-                  <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
+                <div>
+                  <dt>{usersStrings.table.tokenCount}</dt>
+                  <dd>{formatNumber(detail.tokenCount)}</dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.usage.table.ipCount24h}</span>
-                  <span
-                    className={`token-info-value${ipCountPrimaryClassName(detail.recentIpCount24h, globalIpLimit) ? ' admin-table-value-primary-danger' : ''}`}
-                  >
+                <div>
+                  <dt>{usersStrings.usage.table.ipCount24h}</dt>
+                  <dd className={ipCountPrimaryClassName(detail.recentIpCount24h, globalIpLimit) ? 'admin-table-value-primary-danger' : undefined}>
                     {formatNumber(detail.recentIpCount24h)}
-                  </span>
+                  </dd>
                 </div>
-                <div className="token-info-card">
-                  <span className="token-info-label">{usersStrings.usage.table.ipCount7d}</span>
-                  <span className="token-info-value">{formatNumber(detail.recentIpCount7d)}</span>
+                <div>
+                  <dt>{usersStrings.usage.table.ipCount7d}</dt>
+                  <dd>{formatNumber(detail.recentIpCount7d)}</dd>
                 </div>
-              </div>
+              </dl>
             </section>
 
             <section className="surface panel">
@@ -8460,7 +8473,7 @@ function AdminDashboard(): JSX.Element {
                       系统标签保持只读，手动标签在右侧选择后绑定。
                     </p>
                   </div>
-                  <div className="user-tag-binding-summary-metrics" aria-label={usersStrings.userTags.title}>
+                  <div className="user-tag-binding-summary-metrics user-tag-binding-summary-metrics--inline" aria-label={usersStrings.userTags.title}>
                     <div className="user-tag-binding-summary-metric">
                       <span className="user-tag-binding-summary-label">已绑定</span>
                       <strong>{formatNumber(boundTags.length)}</strong>
@@ -8544,127 +8557,25 @@ function AdminDashboard(): JSX.Element {
               )}
             </section>
 
-            <section className="surface panel">
-              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-                <div>
-                  <h2>{usersStrings.quota.title}</h2>
-                  <p className="panel-description">{usersStrings.quota.description}</p>
-                </div>
-                <StatusBadge tone={detail.quotaBase.inheritsDefaults ? 'info' : 'neutral'}>
-                  {detail.quotaBase.inheritsDefaults
-                    ? usersStrings.quota.inheritsDefaults
-                    : usersStrings.quota.customized}
-                </StatusBadge>
-              </div>
-              <div className="quota-grid">
-                {([
-                  {
-                    field: 'hourlyLimit',
-                    label: usersStrings.quota.hourly,
-                    used: detail.quotaHourlyUsed,
-                    currentLimit: detail.quotaBase.hourlyLimit,
-                  },
-                  {
-                    field: 'dailyLimit',
-                    label: usersStrings.quota.daily,
-                    used: detail.quotaDailyUsed,
-                    currentLimit: detail.quotaBase.dailyLimit,
-                  },
-                  {
-                    field: 'monthlyLimit',
-                    label: usersStrings.quota.monthly,
-                    used: detail.quotaMonthlyUsed,
-                    currentLimit: detail.quotaBase.monthlyLimit,
-                  },
-                ] as const).map((item) => {
-                  const sliderSeed = userQuotaSnapshot?.[item.field] ?? createQuotaSliderSeed(item.field, item.used, item.currentLimit)
-                  const draftValue = userQuotaDraft?.[item.field] ?? String(sliderSeed.initialLimit)
-                  const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
-                  const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
-                  return (
-                    <QuotaRangeField
-                      key={item.field}
-                      label={item.label}
-                      sliderName={`${item.field}-slider`}
-                      sliderMin={0}
-                      sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
-                      sliderValue={sliderPosition}
-                      sliderAriaLabel={item.label}
-                      sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
-                      onSliderChange={(nextValue) => {
-                        const nextIndex = clampQuotaSliderStageIndex(sliderSeed.stages, nextValue)
-                        updateQuotaDraftField(item.field, String(getQuotaSliderStageValue(sliderSeed.stages, nextIndex)))
-                      }}
-                      helperText={
-                        <>
-                          {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
-                        </>
-                      }
-                      inputName={item.field}
-                      inputValue={formatQuotaDraftInput(draftValue)}
-                      inputAriaLabel={`${item.label} input`}
-                      onInputChange={(nextValue) => updateQuotaDraftField(item.field, nextValue)}
-                    />
-                  )
-                })}
-              </div>
-              <div
-                style={{
-                  marginTop: 16,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <span className="panel-description">
-                  {userQuotaSavedAt
-                    ? usersStrings.quota.savedAt.replace(
-                        '{time}',
-                        timeOnlyFormatter.format(new Date(userQuotaSavedAt)),
-                      )
-                    : usersStrings.quota.hint}
-                </span>
-                <Button type="button" onClick={() => void saveUserQuota()} disabled={savingUserQuota}>
-                  {savingUserQuota ? usersStrings.quota.saving : usersStrings.quota.save}
-                </Button>
-              </div>
-            </section>
+            <AdminUserDetailQuotaWorkspace
+              detail={detail}
+              usersStrings={usersStrings}
+              rechargeStrings={adminStrings.recharges.userDetail}
+              language={language}
+              quotaDraft={userQuotaDraft}
+              quotaSnapshot={userQuotaSnapshot}
+              quotaSavedAt={userQuotaSavedAt}
+              savingQuota={savingUserQuota}
+              hasBlockAllTag={hasBlockAllTag}
+              formatNumber={formatNumber}
+              formatQuotaLimitValue={formatQuotaLimitValue}
+              formatSignedQuotaDelta={formatSignedQuotaDelta}
+              formatSaveTime={(date) => timeOnlyFormatter.format(date)}
+              onQuotaDraftChange={updateQuotaDraftField}
+              onSaveQuota={() => void saveUserQuota()}
+            />
 
-            <section className="surface panel">
-              <div className="panel-header">
-                <div>
-                  <h2>{usersStrings.effectiveQuota.title}</h2>
-                  <p className="panel-description">{usersStrings.effectiveQuota.description}</p>
-                </div>
-              </div>
-              {hasBlockAllTag && (
-                <div className="alert alert-warning" role="status" style={{ marginBottom: 12 }}>
-                  {usersStrings.effectiveQuota.blockAllNotice}
-                </div>
-              )}
-              <div className="token-info-grid">
-                {([
-                  ['hourly', usersStrings.quota.hourly, detail.effectiveQuota.hourlyLimit],
-                  ['daily', usersStrings.quota.daily, detail.effectiveQuota.dailyLimit],
-                  ['monthly', usersStrings.quota.monthly, detail.effectiveQuota.monthlyLimit],
-                ] as const).map(([key, label, value]) => (
-                  <div className="token-info-card" key={key}>
-                    <span className="token-info-label">{label}</span>
-                    <span className="token-info-value">{formatQuotaLimitValue(value)}</span>
-                  </div>
-                ))}
-              </div>
-              <UserDetailQuotaBreakdown
-                entries={detail.quotaBreakdown}
-                usersStrings={usersStrings}
-                formatQuotaLimitValue={formatQuotaLimitValue}
-                formatSignedQuotaDelta={formatSignedQuotaDelta}
-              />
-            </section>
-
-            <section className="surface panel">
+            <section className="surface panel" id="user-detail-activity">
               <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={280}>
                 <LazyUserDetailSharedUsagePanel
                   key={`usage:${detail.userId}:${userDetailRevision}`}
@@ -8682,7 +8593,7 @@ function AdminDashboard(): JSX.Element {
               </AdminLazyBoundary>
             </section>
 
-            <section className="surface panel">
+            <section className="surface panel" id="user-detail-tokens">
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.detail.tokensTitle}</h2>
@@ -9541,6 +9452,7 @@ function AdminDashboard(): JSX.Element {
   const showJobs = activeModule === 'jobs'
   const showUsers = activeModule === 'users'
   const showAnnouncements = activeModule === 'announcements'
+  const showRecharges = activeModule === 'recharges'
   const showAlerts = activeModule === 'alerts'
   const showSystemSettings = activeModule === 'system-settings'
   const showProxySettings = activeModule === 'proxy-settings'
@@ -9638,6 +9550,8 @@ function AdminDashboard(): JSX.Element {
           title: usersStrings.title,
           description: usersStrings.description,
         }
+      case 'recharges':
+        return { title: adminStrings.recharges.title, description: adminStrings.recharges.description }
       case 'alerts':
         return {
           title: adminStrings.modules.alerts.title,
@@ -10078,16 +9992,14 @@ function AdminDashboard(): JSX.Element {
       {!showNotFound && (
         <div className="admin-stacked-only">
           <AdminPanelHeader
-            title={headerStrings.title}
-            subtitle={headerStrings.subtitle}
+            title={moduleDesktopIntro.title} subtitle={moduleDesktopIntro.description}
             displayName={displayName}
             isAdmin={isAdmin}
             updatedPrefix={headerStrings.updatedPrefix}
             updatedTime={headerUpdatedTime}
             isRefreshing={loading}
             refreshDisabled={activeModuleBlocking}
-            refreshLabel={headerStrings.refreshNow}
-            refreshingLabel={headerStrings.refreshing}
+            refreshLabel={headerStrings.refreshNow} refreshingLabel={headerStrings.refreshing}
             userConsoleLabel={headerStrings.returnToConsole}
             userConsoleHref={userConsoleHref}
             onRefresh={handleManualRefresh}
@@ -11889,6 +11801,8 @@ function AdminDashboard(): JSX.Element {
           />
         </AdminLazyBoundary>
       )}
+
+      {showRecharges && <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}><LazyAdminRechargeRecordsModule onOpenUser={navigateUser} /></AdminLazyBoundary>}
 
       {showProxySettings && (
         <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={320}>

@@ -260,6 +260,8 @@ struct AdminUserRechargeOrderView {
     created_at: i64,
     updated_at: i64,
     paid_at: Option<i64>,
+    refunded_at: Option<i64>,
+    refund_actor: Option<String>,
     last_notify_at: Option<i64>,
     last_error: Option<String>,
 }
@@ -288,6 +290,8 @@ fn build_admin_user_recharge_order_view(
         created_at: order.created_at,
         updated_at: order.updated_at,
         paid_at: order.paid_at,
+        refunded_at: order.refunded_at,
+        refund_actor: order.refund_actor,
         last_notify_at: order.last_notify_at,
         last_error: order.last_error,
     }

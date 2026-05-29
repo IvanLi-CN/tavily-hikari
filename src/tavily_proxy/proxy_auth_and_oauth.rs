@@ -1123,6 +1123,37 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn has_linuxdo_credit_recharge_orders(&self) -> Result<bool, ProxyError> {
+        self.key_store.has_linuxdo_credit_recharge_orders().await
+    }
+
+    pub async fn count_admin_linuxdo_credit_recharge_orders(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .count_admin_linuxdo_credit_recharge_orders(query)
+            .await
+    }
+
+    pub async fn list_admin_linuxdo_credit_recharge_orders(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<Vec<LinuxDoCreditRechargeAdminOrder>, ProxyError> {
+        self.key_store
+            .list_admin_linuxdo_credit_recharge_orders(query)
+            .await
+    }
+
+    pub async fn list_admin_linuxdo_credit_recharge_user_groups(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<Vec<LinuxDoCreditRechargeAdminUserGroup>, ProxyError> {
+        self.key_store
+            .list_admin_linuxdo_credit_recharge_user_groups(query)
+            .await
+    }
+
     pub async fn create_linuxdo_credit_recharge_order(
         &self,
         order: &LinuxDoCreditRechargeOrder,
@@ -1192,6 +1223,66 @@ impl TavilyProxy {
                 paid_at,
             )
             .await
+    }
+
+    pub async fn refund_linuxdo_credit_recharge_order(
+        &self,
+        out_trade_no: &str,
+        next_status: &str,
+        refund_actor: &str,
+        refund_payload: &str,
+        refunded_at: i64,
+        revoke_entitlements: bool,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        self.key_store
+            .refund_linuxdo_credit_recharge_order(
+                out_trade_no,
+                next_status,
+                refund_actor,
+                refund_payload,
+                refunded_at,
+                revoke_entitlements,
+            )
+            .await
+    }
+
+    pub async fn get_admin_totp_secret_record(
+        &self,
+    ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        self.key_store.get_admin_totp_secret_record().await
+    }
+
+    pub async fn set_admin_totp_secret_record(
+        &self,
+        ciphertext: &str,
+        nonce: &str,
+        enabled_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .set_admin_totp_secret_record(ciphertext, nonce, enabled_at)
+            .await
+    }
+
+    pub async fn clear_admin_totp_secret_record(&self) -> Result<(), ProxyError> {
+        self.key_store.clear_admin_totp_secret_record().await
+    }
+
+    pub async fn get_admin_totp_failure_state(&self) -> Result<(i64, i64), ProxyError> {
+        self.key_store.get_admin_totp_failure_state().await
+    }
+
+    pub async fn set_admin_totp_failure_state(
+        &self,
+        count: i64,
+        locked_until: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .set_admin_totp_failure_state(count, locked_until)
+            .await
+    }
+
+    pub async fn clear_admin_totp_failures(&self) -> Result<(), ProxyError> {
+        self.key_store.clear_admin_totp_failures().await
     }
 
     /// Create persisted user session.

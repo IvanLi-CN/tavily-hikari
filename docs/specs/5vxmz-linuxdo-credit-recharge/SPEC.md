@@ -16,12 +16,12 @@
 - 使用 Linux.do Credit 官方 LDC 创建订单：`type=ldcpay`、Ed25519 签名、跳转至平台认证支付页。
 - 支付成功后按服务器本地自然月展开权益，当前自然月从购买时所在月份到月底算第 1 个月。
 - 已生效权益叠加到账户有效 `hourlyLimit`、`dailyLimit` 与 `monthlyLimit`，不改变 hourly-any 请求频率额度。
-- 管理端用户详情只读展示充值订单与权益，便于审计。
+- 管理端提供充值记录页，可查看、筛选、排序、按用户聚合订单，并在 TOTP 二次确认后执行退单或仅退款。
 
 ### Non-goals
 
 - 不接入易支付兼容 MD5 创建订单路径。
-- 不实现退款后的自动扣回或争议处理。
+- 不实现部分退款；Linux.do Credit 当前退款接口只支持全额退回。
 - 不改变 Tavily business credits 的实际扣减口径。
 - 不改变现有用户标签、基线额度、`block_all` 语义。
 
@@ -32,11 +32,11 @@
 - 后端充值配置、订单创建、通知验签、订单查询封装、DB schema 与幂等权益发放。
 - 账户有效额度解析读取当前服务器本地自然月命中的充值权益。
 - 用户控制台充值卡片、订单历史、状态刷新与 Storybook 状态覆盖。
-- Admin 用户详情只读审计区域。
+- Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定。
 
 ### Out of scope
 
-- 自动退款、手动改订单状态、后台补单按钮。
+- 部分退款、后台补单按钮、单管理员独立 TOTP、恢复码。
 - 多币种、多价格表、多支付渠道。
 - 将充值额度拆分到 token 级别。
 
@@ -59,10 +59,15 @@
 - 用户控制台应通过后端返回的价格与配置展示充值选项，避免前端重复实现支付规则。
 - 订单查询接口用于用户返回控制台后的状态刷新，不作为发放权益的唯一依据。
 - 管理端系统设置应提供充值总开关与“开放非管理员充值”调试开关；总开关关闭时用户控制台不展示充值入口，创建订单接口拒绝新订单；非管理员开关关闭时仅管理员请求可看到并创建充值订单。
+- 管理端系统设置在充值总开关开启时提供全局管理端 TOTP 绑定；首次绑定需确认当前验证码，重置/解绑需当前 TOTP。
+- 退单与仅退款必须先验证全局管理端 TOTP，输入框必须使用 `autocomplete="one-time-code"`、`inputmode="numeric"`、数字 `pattern` 和稳定 `name/id`，且不能是密码框。
+- 管理端充值记录支持按用户、时间范围、状态搜索，支持按下单时间、成交时间、退款时间、状态排序，并支持平铺与按用户聚合视图。
+- 管理端充值记录在没有任何充值订单时不显示导航模块；直达 `/admin/recharges` 时只显示轻量占位。
+- `DEV_OPEN_ADMIN` 下禁止修改充值总开关，禁止执行退单/仅退款，避免免鉴权环境进入真实退款链路。
 
 ### COULD
 
-- 后续可支持平台公钥验签、退款回滚与管理员补偿单。
+- 后续可支持平台公钥验签、部分退款、恢复码与管理员补偿单。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -73,6 +78,10 @@
 - 后端不跟随 Linux.do Credit 创建订单响应的跳转；若上游返回 3xx `Location`，将该地址作为支付 URL 返回给浏览器，由浏览器跳转到 Linux.do Credit 完成认证支付。
 - Linux.do Credit GET 通知本服务 notify endpoint；服务验签和校验金额后，将订单置为 paid，并按购买月份展开权益。
 - 用户回到 `/console?payment=<out_trade_no>` 后，控制台刷新 dashboard 和订单列表，显示当前生效额度与订单状态。
+- 管理员打开 `/admin/recharges` 后，后端返回订单列表、聚合数据和 `hasRechargeOrders`；前端仅在存在订单时展示导航项。
+- 管理员在充值记录列表或按用户聚合视图点击用户名时，跳转到用户详情页；用户详情页以表格形式展示覆盖所有充值周期前一个月至后一个月的额度月历。
+- 管理员执行退单时，服务先调用 Linux.do Credit `POST /epay/api.php` 全额退款接口；平台成功后订单状态置为 `refunded`，删除该订单权益并刷新额度快照。
+- 管理员执行仅退款时，服务先调用同一全额退款接口；平台成功后订单状态置为 `refundOnly`，保留该订单权益并记录退款审计字段。
 
 ### Edge cases / errors
 
@@ -81,19 +90,29 @@
 - 金额、订单号或签名不匹配的通知返回 `400`，不发放权益。
 - 重复成功通知不重复插入权益，仍返回 `success`。
 - 过期月份权益不参与当前 quota 解析。
+- 未绑定 TOTP、TOTP 错误或失败次数锁定时，退款操作返回错误且不会调用 Linux.do Credit。
+- 已退款、失败或 pending 订单不能重复退款；重复操作明确拒绝。
 
 ## 接口契约（Interfaces & Contracts）
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                  | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                      |
-| --------------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ---------------------------------- |
-| `GET /api/user/recharge/config`               | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 读取充值可用性、价格、当前权益摘要 |
-| `GET /api/user/recharge/orders`               | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 用户订单历史                       |
-| `POST /api/user/recharge/orders`              | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 创建 Linux.do Credit 支付订单      |
-| `GET /api/user/recharge/orders/:out_trade_no` | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 查询当前用户订单                   |
-| `GET /api/linuxdo-credit/notify`              | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | Linux.do Credit     | 支付成功异步通知                   |
-| `GET /api/users/:id`                          | HTTP         | external      | Modify         | `./contracts/http-apis.md` | backend         | admin UI            | 增加只读充值审计字段               |
+| 接口（Name）                                          | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                      |
+| ----------------------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ---------------------------------- |
+| `GET /api/user/recharge/config`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 读取充值可用性、价格、当前权益摘要 |
+| `GET /api/user/recharge/orders`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 用户订单历史                       |
+| `POST /api/user/recharge/orders`                      | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 创建 Linux.do Credit 支付订单      |
+| `GET /api/user/recharge/orders/:out_trade_no`         | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 查询当前用户订单                   |
+| `GET /api/linuxdo-credit/notify`                      | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | Linux.do Credit     | 支付成功异步通知                   |
+| `GET /api/users/:id`                                  | HTTP         | external      | Modify         | `./contracts/http-apis.md` | backend         | admin UI            | 增加只读充值审计字段               |
+| `GET /api/admin/recharges`                            | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 充值记录搜索、排序、聚合           |
+| `POST /api/admin/recharges/:out_trade_no/refund`      | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 全额退款并撤销权益                 |
+| `POST /api/admin/recharges/:out_trade_no/refund-only` | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 全额退款但保留权益                 |
+| `GET /api/admin/totp`                                 | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 查询全局管理端 TOTP 状态           |
+| `POST /api/admin/totp/setup`                          | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 生成未确认 TOTP secret 与 QR       |
+| `POST /api/admin/totp/confirm`                        | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 首次确认并持久化 TOTP              |
+| `POST /api/admin/totp/reset`                          | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 当前 TOTP 验证后重置绑定           |
+| `POST /api/admin/totp/disable`                        | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | admin UI            | 当前 TOTP 验证后解绑               |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -134,6 +153,22 @@
   When 普通用户打开控制台
   Then 用户控制台不展示充值入口；管理员请求仍可看到并创建充值订单。
 
+- Given 没有任何充值订单
+  When 管理员打开管理端
+  Then 导航不展示充值记录模块；直达 `/admin/recharges` 只显示轻量占位。
+
+- Given 管理员已绑定 TOTP 且订单为 paid
+  When 管理员输入当前 TOTP 后执行退单
+  Then 服务先调用 Linux.do Credit 全额退款，成功后订单状态为 `refunded`，该订单权益被撤销并刷新额度快照。
+
+- Given 管理员已绑定 TOTP 且订单为 paid
+  When 管理员输入当前 TOTP 后执行仅退款
+  Then 服务先调用 Linux.do Credit 全额退款，成功后订单状态为 `refundOnly`，该订单权益保留。
+
+- Given 服务运行在 `DEV_OPEN_ADMIN`
+  When 管理员尝试开启充值功能或执行退款
+  Then 请求被拒绝，不进入真实退款链路。
+
 ## 验收清单（Acceptance checklist）
 
 - [x] 核心路径的长期行为已被明确描述。
@@ -145,13 +180,13 @@
 
 ### Testing
 
-- Unit tests: LDC 签名字符串、私钥解析、通知验签、月份展开。
-- Integration tests: 创建订单、重复通知幂等、权益叠加 quota、`block_all` 优先级。
+- Unit tests: LDC 签名字符串、私钥解析、通知验签、月份展开、TOTP ±1 窗口与失败锁定。
+- Integration tests: 创建订单、重复通知幂等、权益叠加 quota、`block_all` 优先级、退款成功/失败、退单撤销权益、仅退款保留权益、`DEV_OPEN_ADMIN` 阻断。
 - E2E tests (if applicable): 用户控制台充值交互可用。
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `UserConsole` 充值默认、调档、处理中、成功、回调延迟、错误态。
+- Stories to add/update: `UserConsole` 充值默认、调档、处理中、成功、回调延迟、错误态；`AdminRechargeRecordsModule` 平铺、聚合、空记录；`SystemSettingsModule` TOTP 绑定态。
 - Docs pages / state galleries to add/update: 用户控制台充值状态 gallery。
 - `play` / interaction coverage to add/update: stepper 调整与创建订单成功/失败路径。
 - Visual regression baseline changes (if any): 充值卡片桌面与移动布局。
@@ -168,6 +203,9 @@
 ## Visual Evidence
 
 ![Recharge burst price and quota controls](./assets/recharge-burst-price-story.png)
+![Admin recharge records flat desktop view](./assets/admin-recharge-records-flat.png)
+![Admin recharge refund TOTP confirmation](./assets/admin-recharge-refund-totp.png)
+![Admin recharge user detail quota calendar](./assets/admin-recharge-user-detail-calendar.png)
 
 ## Related PRs
 

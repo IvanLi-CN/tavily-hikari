@@ -1251,6 +1251,9 @@ async fn post_user_recharge_order(
         created_at: now,
         updated_at: now,
         paid_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
         last_notify_at: None,
         last_error: None,
     };

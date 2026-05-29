@@ -104,6 +104,9 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
         created_at: payment_month - 60,
         updated_at: payment_month - 60,
         paid_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
         last_notify_at: None,
         last_error: None,
     };

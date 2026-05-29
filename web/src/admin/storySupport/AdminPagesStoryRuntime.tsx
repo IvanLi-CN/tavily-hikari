@@ -87,6 +87,7 @@ import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavT
 import AlertsCenter from '../AlertsCenter'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
 import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
+import { UserRechargeQuotaCalendar } from '../UserRechargeQuotaCalendar'
 import { UserDetailSharedUsagePanel } from '../UserDetailSharedUsagePanel'
 import { UserDetailTokenTable } from '../UserDetailTokenTable'
 import {
@@ -132,6 +133,7 @@ import {
 import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
 import AdminOverlayHost from '../AdminOverlayHost'
 import AnnouncementsModule from '../AnnouncementsModule'
+import { createStoryUserRechargeAudit } from './userRechargeFixtures'
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -1722,6 +1724,7 @@ const MOCK_USER_DETAIL: AdminUserDetail = {
       requestCount: 19,
     },
   ],
+  recharge: createStoryUserRechargeAudit(now),
 }
 
 const MOCK_USER_DETAIL_SINGLE_TOKEN: AdminUserDetail = {
@@ -5864,7 +5867,7 @@ function UserDetailPageCanvas({
   initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
   initialDetail?: AdminUserDetail
 } = {}): JSX.Element {
-  const users = useTranslate().admin.users
+  const admin = useTranslate().admin, users = admin.users
   const { language } = useLanguage()
   const [detail, setDetail] = useState<AdminUserDetail>(initialDetail)
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
@@ -5923,7 +5926,6 @@ function UserDetailPageCanvas({
             <p className="panel-description">{users.detail.subtitle.replace('{id}', detail.userId)}</p>
           </div>
         </div>
-
         <div className="token-info-grid">
           <div className="token-info-card">
             <span className="token-info-label">{users.detail.userId}</span>
@@ -6049,7 +6051,6 @@ function UserDetailPageCanvas({
           })}
         </div>
       </section>
-
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
@@ -6124,7 +6125,6 @@ function UserDetailPageCanvas({
           })}
         </div>
       </section>
-
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -6152,7 +6152,7 @@ function UserDetailPageCanvas({
           formatSignedQuotaDelta={formatSignedQuotaDelta}
         />
       </section>
-
+      <UserRechargeQuotaCalendar detail={detail} strings={admin.recharges.userDetail} language={language} formatNumber={formatNumber} />
       <section className="surface panel">
         <UserDetailSharedUsagePanel
           usersStrings={users}
@@ -6171,7 +6171,6 @@ function UserDetailPageCanvas({
           }}
         />
       </section>
-
       <section className="surface panel">
         <div className="panel-header">
           <div>

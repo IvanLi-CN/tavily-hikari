@@ -1,5 +1,6 @@
 export type Language = 'en' | 'zh'
 
+import type { AdminRechargeTranslations, SystemSettingsTotpTranslationKey, SystemSettingsTrustedClientIpTranslationKey } from './adminRechargeTranslationTypes'
 
 export interface LanguageContextValue {
   language: Language
@@ -206,17 +207,10 @@ export interface AdminTranslationsShape {
     error: string
   }
   nav: {
-    dashboard: string
-    usage: string
-    tokens: string
-    keys: string
-    requests: string
-    jobs: string
-    users: string
+    dashboard: string; usage: string; tokens: string; keys: string; requests: string; jobs: string; users: string
     announcements: string
-    alerts: string
-    systemSettings: string
-    proxySettings: string
+    recharges: string
+    alerts: string; systemSettings: string; proxySettings: string
   }
   dashboard: {
     title: string
@@ -617,13 +611,14 @@ export interface AdminTranslationsShape {
       invalidBlockedKeyBaseLimit: string
       invalidGlobalIpLimit: string
       saveFailed: string
-    }
+    } & Record<SystemSettingsTotpTranslationKey | SystemSettingsTrustedClientIpTranslationKey, string>
     actions: {
       apply: string
       applying: string
       cancel: string
     }
   }
+  recharges: AdminRechargeTranslations
   users: {
     title: string
     description: string
@@ -780,6 +775,7 @@ export interface AdminTranslationsShape {
       save: string
       saving: string
       savedAt: string
+      unsaved: string
       invalid: string
       saveFailed: string
       inheritsDefaults: string

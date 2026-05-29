@@ -32,6 +32,16 @@ async fn put_system_settings(
         eprintln!("get current system settings error: {err}");
         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
+    if state.dev_open_admin
+        && payload
+            .recharge_feature_enabled
+            .is_some_and(|next| next != current_settings.recharge_feature_enabled)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "DEV_OPEN_ADMIN cannot modify recharge feature switch".to_string(),
+        ));
+    }
 
     state
         .proxy

@@ -28,6 +28,7 @@ const ICON_SOURCES = [
     ['mdi:close-circle-outline', 'close-circle-outline'],
     ['mdi:content-copy', 'content-copy'],
     ['mdi:cog-outline', 'cog-outline'],
+    ['mdi:credit-card-clock-outline', 'credit-card-clock-outline'],
     ['mdi:crown-outline', 'crown-outline'],
     ['mdi:dots-horizontal', 'dots-horizontal'],
     ['mdi:eye-off-outline', 'eye-off-outline'],

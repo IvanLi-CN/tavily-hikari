@@ -4,22 +4,9 @@ import {
   demoUserAnnouncementHistory,
   handleAnnouncementsRoute,
 } from './demoAnnouncements'
+import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRechargeAction, handleDemoAdminRecharges, type DemoRechargeOrder } from './demoAdminRecharge'
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 type DemoListener = EventListenerOrEventListenerObject
-interface DemoRechargeOrder {
-  outTradeNo: string
-  status: string
-  credits: number
-  months: number
-  money: string
-  tradeNo: string | null
-  paymentUrl: string | null
-  createdAt: number
-  updatedAt: number
-  paidAt: number | null
-  lastNotifyAt: number | null
-  lastError: string | null
-}
 
 declare global {
   interface Window {
@@ -233,7 +220,7 @@ function createDemoState() {
     jobs: createDemoJobs(),
     forwardProxy: createDemoForwardProxy(),
     systemSettings: createDemoSystemSettings(),
-    rechargeOrders: createDemoRechargeOrders(),
+    rechargeOrders: createDemoRechargeOrders(nowSeconds, window.location.origin),
     userTags: [createDemoUserTag('tag-demo', {
       name: 'demo',
       displayName: 'Demo',
@@ -246,10 +233,6 @@ function createDemoState() {
     }, 3)],
     registration: { allowRegistration: false },
   }
-}
-
-function createDemoRechargeOrders(): DemoRechargeOrder[] {
-  return []
 }
 
 function demoRechargeSummary() {
@@ -1087,6 +1070,17 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
     if (method === 'POST') return handleCreateDemoRechargeOrder(init)
     return jsonResponse({ items: demoState.rechargeOrders })
   }
+  if (path === '/api/admin/recharges') {
+    return handleDemoAdminRecharges(demoState.rechargeOrders, url, jsonResponse)
+  }
+  const adminRechargeAction = handleDemoAdminRechargeAction(demoState.rechargeOrders, path, method, jsonResponse, nowSeconds)
+  if (adminRechargeAction) return adminRechargeAction
+  if (path === '/api/admin/totp') {
+    return jsonResponse({ enabled: false, available: true, rechargeFeatureEnabled: true, missingCryptoKey: false, lockedUntil: null, issuer: 'Tavily Hikari', accountName: 'admin-recharge' })
+  }
+  if (path === '/api/admin/totp/setup' && method === 'POST') {
+    return jsonResponse({ secret: 'JBSWY3DPEHPK3PXP', otpAuthUrl: 'otpauth://totp/Tavily%20Hikari:admin-recharge?secret=JBSWY3DPEHPK3PXP&issuer=Tavily%20Hikari', qrPngBase64: '' })
+  }
   const rechargeOrderRoute = path.match(/^\/api\/user\/recharge\/orders\/([^/]+)$/)
   if (rechargeOrderRoute) {
     const outTradeNo = decodeURIComponent(rechargeOrderRoute[1])
@@ -1224,6 +1218,7 @@ function handleUserRoute(path: string, url: URL, method: string, init?: RequestI
     recentIpAddresses24h: ['198.51.100.24', '203.0.113.45'],
     recentIpAddresses7d: ['198.51.100.24', '203.0.113.45', '192.0.2.14'],
     recentIpTimeline7d: range(3).map((index) => ({ ipAddress: `198.51.100.${20 + index}`, firstSeenAt: nowSeconds(-(index + 1) * 86400), lastSeenAt: nowSeconds(-index * 2400), requestCount: 20 + index })),
+    recharge: demoAdminUserRechargeAudit(demoState.rechargeOrders, user.userId),
   })
 }
 
@@ -1311,6 +1306,9 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
   const paymentUrl = `${window.location.origin}/console/dashboard?demo_checkout=${encodeURIComponent(outTradeNo)}`
   const order: DemoRechargeOrder = {
     outTradeNo,
+    userId: DEMO_TOKEN_OWNER.userId,
+    userDisplayName: DEMO_TOKEN_OWNER.displayName,
+    username: DEMO_TOKEN_OWNER.username,
     status: 'pending',
     credits,
     months,
@@ -1320,6 +1318,8 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
     createdAt: nowSeconds(),
     updatedAt: nowSeconds(),
     paidAt: null,
+    refundedAt: null,
+    refundActor: null,
     lastNotifyAt: null,
     lastError: null,
   }

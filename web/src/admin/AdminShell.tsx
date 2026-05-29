@@ -37,6 +37,7 @@ export default function AdminShell({
 }: AdminShellProps): JSX.Element {
   const contentRef = useRef<HTMLElement>(null)
   const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(contentRef)
+  const activeLayoutClass = `admin-layout--${activeItem.replaceAll('_', '-')}`
   const [isStackedSidebar, setIsStackedSidebar] = useState<boolean>(() => readStackedSidebarMode())
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [sidebarUtilityHost, setSidebarUtilityHost] = useState<HTMLDivElement | null>(null)
@@ -77,7 +78,7 @@ export default function AdminShell({
   return (
     <AdminSidebarUtilityContext.Provider value={sidebarUtilityHost}>
       <div
-        className={`admin-layout viewport-${viewportMode} content-${contentMode}${isCompactLayout ? ' is-compact-layout' : ''}`}
+        className={`admin-layout ${activeLayoutClass} viewport-${viewportMode} content-${contentMode}${isCompactLayout ? ' is-compact-layout' : ''}`}
       >
         <a className="admin-skip-link" href="#admin-main-content">
           {skipToContentLabel}

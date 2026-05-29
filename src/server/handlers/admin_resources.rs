@@ -5,4 +5,5 @@ include!("admin_resources/admin_user_views_and_sort.rs");
 include!("admin_resources/user_tag_and_token_handlers.rs");
 include!("admin_resources/announcements.rs");
 include!("admin_resources/alerts.rs");
+include!("admin_resources/recharges_and_totp.rs");
 include!("admin_resources/tests.rs");

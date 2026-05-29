@@ -31,6 +31,7 @@ export type AdminModuleId =
   | 'jobs'
   | 'users'
   | 'announcements'
+  | 'recharges'
   | 'alerts'
   | 'system-settings'
   | 'proxy-settings'
@@ -110,6 +111,9 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   }
   if (path === `${ADMIN_BASE}/users`) {
     return { name: 'module', module: 'users' }
+  }
+  if (path === `${ADMIN_BASE}/recharges`) {
+    return { name: 'module', module: 'recharges' }
   }
   if (path === `${ADMIN_BASE}/users/usage`) {
     return { name: 'user-usage' }

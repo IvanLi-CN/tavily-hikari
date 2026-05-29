@@ -147,6 +147,20 @@ pub async fn serve(
         .route("/api/summary/windows", get(fetch_summary_windows))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
+        .route("/api/admin/recharges", get(get_admin_recharges))
+        .route(
+            "/api/admin/recharges/:out_trade_no/refund",
+            post(post_admin_recharge_refund),
+        )
+        .route(
+            "/api/admin/recharges/:out_trade_no/refund-only",
+            post(post_admin_recharge_refund_only),
+        )
+        .route("/api/admin/totp", get(get_admin_totp_status))
+        .route("/api/admin/totp/setup", post(post_admin_totp_setup))
+        .route("/api/admin/totp/confirm", post(post_admin_totp_confirm))
+        .route("/api/admin/totp/reset", post(post_admin_totp_reset))
+        .route("/api/admin/totp/disable", post(post_admin_totp_disable))
         .route(
             "/api/settings/client-ip/observed-headers",
             get(get_observed_client_ip_requests),

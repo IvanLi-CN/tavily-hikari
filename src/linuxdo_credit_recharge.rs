@@ -3,6 +3,8 @@ use chrono::{Datelike, Local, TimeZone, Utc};
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_PENDING: &str = "pending";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_PAID: &str = "paid";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_FAILED: &str = "failed";
+pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED: &str = "refunded";
+pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY: &str = "refundOnly";
 pub const LINUXDO_CREDIT_RECHARGE_UNIT_CREDITS: i64 = 1000;
 pub const LINUXDO_CREDIT_RECHARGE_UNIT_PRICE_CENTS: i64 = 5_000;
 pub const LINUXDO_CREDIT_RECHARGE_MIN_MONTHS: i64 = 1;
@@ -31,8 +33,48 @@ pub struct LinuxDoCreditRechargeOrder {
     pub created_at: i64,
     pub updated_at: i64,
     pub paid_at: Option<i64>,
+    pub refunded_at: Option<i64>,
+    pub refund_actor: Option<String>,
+    pub refund_payload: Option<String>,
     pub last_notify_at: Option<i64>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinuxDoCreditRechargeAdminOrder {
+    pub order: LinuxDoCreditRechargeOrder,
+    pub user_display_name: Option<String>,
+    pub user_username: Option<String>,
+    pub user_avatar_template: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinuxDoCreditRechargeAdminUserGroup {
+    pub user_id: String,
+    pub user_display_name: Option<String>,
+    pub user_username: Option<String>,
+    pub user_avatar_template: Option<String>,
+    pub order_count: i64,
+    pub paid_order_count: i64,
+    pub refunded_order_count: i64,
+    pub total_credits: i64,
+    pub total_money_cents: i64,
+    pub latest_order_created_at: i64,
+    pub latest_paid_at: Option<i64>,
+    pub latest_refunded_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinuxDoCreditRechargeAdminListQuery {
+    pub user_query: Option<String>,
+    pub status: Option<String>,
+    pub start_at: Option<i64>,
+    pub end_at: Option<i64>,
+    pub sort: String,
+    pub order: String,
+    pub page: i64,
+    pub per_page: i64,
+    pub group_limit: i64,
 }
 
 #[derive(Debug, Clone)]

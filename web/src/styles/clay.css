@@ -1318,6 +1318,35 @@
     white-space: nowrap;
   }
 
+  .system-settings-totp-row {
+    align-items: start;
+  }
+
+  .system-settings-totp-row .system-settings-toggle-copy p {
+    white-space: normal;
+  }
+
+  .system-settings-totp-actions,
+  .system-settings-totp-setup {
+    display: grid;
+    gap: 0.5rem;
+    justify-items: end;
+  }
+
+  .system-settings-totp-setup {
+    max-width: 20rem;
+    justify-items: stretch;
+  }
+
+  .system-settings-totp-qr {
+    width: 8.25rem;
+    height: 8.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border) / 0.7);
+    background: white;
+    padding: 0.25rem;
+  }
+
   .system-settings-trusted-panel {
     display: grid;
     grid-template-columns: 10rem minmax(0, 1fr) auto;

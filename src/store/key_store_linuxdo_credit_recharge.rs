@@ -30,6 +30,28 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        for (column, ty) in [
+            ("refunded_at", "INTEGER"),
+            ("refund_actor", "TEXT"),
+            ("refund_payload", "TEXT"),
+        ] {
+            if !self
+                .table_column_exists("linuxdo_credit_recharge_orders", column)
+                .await?
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE linuxdo_credit_recharge_orders ADD COLUMN {column} {ty}"
+                ))
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_linuxdo_credit_recharge_orders_status_time
+               ON linuxdo_credit_recharge_orders(status, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS linuxdo_credit_recharge_entitlements (
@@ -73,6 +95,9 @@ impl KeyStore {
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             paid_at: row.try_get("paid_at")?,
+            refunded_at: row.try_get("refunded_at").unwrap_or(None),
+            refund_actor: row.try_get("refund_actor").unwrap_or(None),
+            refund_payload: row.try_get("refund_payload").unwrap_or(None),
             last_notify_at: row.try_get("last_notify_at")?,
             last_error: row.try_get("last_error")?,
         })
@@ -100,9 +125,9 @@ impl KeyStore {
             INSERT INTO linuxdo_credit_recharge_orders (
                 out_trade_no, user_id, status, credits, months, money_cents,
                 trade_no, payment_url, order_name, notify_payload, created_at, updated_at,
-                paid_at, last_notify_at, last_error
+                paid_at, refunded_at, refund_actor, refund_payload, last_notify_at, last_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&order.out_trade_no)
@@ -118,6 +143,9 @@ impl KeyStore {
         .bind(order.created_at)
         .bind(order.updated_at)
         .bind(order.paid_at)
+        .bind(order.refunded_at)
+        .bind(&order.refund_actor)
+        .bind(&order.refund_payload)
         .bind(order.last_notify_at)
         .bind(&order.last_error)
         .execute(&self.pool)
@@ -212,6 +240,128 @@ impl KeyStore {
             .collect()
     }
 
+    pub(crate) async fn has_linuxdo_credit_recharge_orders(&self) -> Result<bool, ProxyError> {
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM linuxdo_credit_recharge_orders LIMIT 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    pub(crate) async fn count_admin_linuxdo_credit_recharge_orders(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<i64, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
+        );
+        push_admin_recharge_filters(
+            &mut builder,
+            query.user_query.as_deref(),
+            query.status.as_deref(),
+            query.start_at,
+            query.end_at,
+        );
+        builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn list_admin_linuxdo_credit_recharge_orders(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<Vec<LinuxDoCreditRechargeAdminOrder>, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT o.*, u.display_name AS user_display_name, u.username AS user_username, u.avatar_template AS user_avatar_template FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
+        );
+        push_admin_recharge_filters(
+            &mut builder,
+            query.user_query.as_deref(),
+            query.status.as_deref(),
+            query.start_at,
+            query.end_at,
+        );
+        builder.push(" ORDER BY ");
+        match query.sort.as_str() {
+            "paidAt" => builder.push("o.paid_at"),
+            "refundedAt" => builder.push("o.refunded_at"),
+            "status" => builder.push("o.status"),
+            _ => builder.push("o.created_at"),
+        };
+        if query.order.eq_ignore_ascii_case("asc") {
+            builder.push(" ASC");
+        } else {
+            builder.push(" DESC");
+        }
+        builder.push(", o.out_trade_no DESC LIMIT ");
+        builder.push_bind(query.per_page.clamp(1, 100));
+        builder.push(" OFFSET ");
+        builder.push_bind((query.page.max(1) - 1) * query.per_page.clamp(1, 100));
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(LinuxDoCreditRechargeAdminOrder {
+                    order: Self::linuxdo_credit_recharge_order_from_row(row)?,
+                    user_display_name: row.try_get("user_display_name")?,
+                    user_username: row.try_get("user_username")?,
+                    user_avatar_template: row.try_get("user_avatar_template")?,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) async fn list_admin_linuxdo_credit_recharge_user_groups(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<Vec<LinuxDoCreditRechargeAdminUserGroup>, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT o.user_id, u.display_name AS user_display_name, u.username AS user_username, u.avatar_template AS user_avatar_template, COUNT(*) AS order_count, SUM(CASE WHEN o.status = 'paid' THEN 1 ELSE 0 END) AS paid_order_count, SUM(CASE WHEN o.status IN ('refunded', 'refundOnly') THEN 1 ELSE 0 END) AS refunded_order_count, COALESCE(SUM(o.credits * o.months), 0) AS total_credits, COALESCE(SUM(o.money_cents), 0) AS total_money_cents, MAX(o.created_at) AS latest_order_created_at, MAX(o.paid_at) AS latest_paid_at, MAX(o.refunded_at) AS latest_refunded_at FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
+        );
+        push_admin_recharge_filters(
+            &mut builder,
+            query.user_query.as_deref(),
+            query.status.as_deref(),
+            query.start_at,
+            query.end_at,
+        );
+        builder.push(" GROUP BY o.user_id, u.display_name, u.username, u.avatar_template ORDER BY ");
+        match query.sort.as_str() {
+            "paidAt" => builder.push("latest_paid_at"),
+            "refundedAt" => builder.push("latest_refunded_at"),
+            "status" => builder.push("refunded_order_count"),
+            _ => builder.push("latest_order_created_at"),
+        };
+        if query.order.eq_ignore_ascii_case("asc") {
+            builder.push(" ASC");
+        } else {
+            builder.push(" DESC");
+        }
+        builder.push(" LIMIT ");
+        builder.push_bind(query.group_limit.clamp(1, 200));
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(LinuxDoCreditRechargeAdminUserGroup {
+                    user_id: row.try_get("user_id")?,
+                    user_display_name: row.try_get("user_display_name")?,
+                    user_username: row.try_get("user_username")?,
+                    user_avatar_template: row.try_get("user_avatar_template")?,
+                    order_count: row.try_get("order_count")?,
+                    paid_order_count: row.try_get("paid_order_count")?,
+                    refunded_order_count: row.try_get("refunded_order_count")?,
+                    total_credits: row.try_get("total_credits")?,
+                    total_money_cents: row.try_get("total_money_cents")?,
+                    latest_order_created_at: row.try_get("latest_order_created_at")?,
+                    latest_paid_at: row.try_get("latest_paid_at")?,
+                    latest_refunded_at: row.try_get("latest_refunded_at")?,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) async fn apply_linuxdo_credit_recharge_payment(
         &self,
         out_trade_no: &str,
@@ -286,6 +436,71 @@ impl KeyStore {
         tx.commit().await?;
         self.invalidate_account_quota_resolution(&order.user_id).await;
         self.record_effective_account_quota_snapshot_at(&order.user_id, paid_at)
+            .await?;
+        self.fetch_linuxdo_credit_recharge_order(out_trade_no)
+            .await?
+            .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
+    }
+
+    pub(crate) async fn refund_linuxdo_credit_recharge_order(
+        &self,
+        out_trade_no: &str,
+        next_status: &str,
+        refund_actor: &str,
+        refund_payload: &str,
+        refunded_at: i64,
+        revoke_entitlements: bool,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT *
+            FROM linuxdo_credit_recharge_orders
+            WHERE out_trade_no = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(out_trade_no)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other("recharge order not found".to_string()));
+        };
+        let order = Self::linuxdo_credit_recharge_order_from_row(&row)?;
+        if order.status != LINUXDO_CREDIT_RECHARGE_STATUS_PAID {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other(format!(
+                "recharge order is not refundable from status {}",
+                order.status
+            )));
+        }
+        sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET status = ?, refunded_at = ?, refund_actor = ?, refund_payload = ?,
+                   updated_at = ?, last_error = NULL
+             WHERE out_trade_no = ? AND status = ?
+            "#,
+        )
+        .bind(next_status)
+        .bind(refunded_at)
+        .bind(refund_actor)
+        .bind(refund_payload)
+        .bind(refunded_at)
+        .bind(out_trade_no)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+        .execute(&mut *tx)
+        .await?;
+        if revoke_entitlements {
+            sqlx::query("DELETE FROM linuxdo_credit_recharge_entitlements WHERE out_trade_no = ?")
+                .bind(out_trade_no)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        self.invalidate_account_quota_resolution(&order.user_id).await;
+        self.record_effective_account_quota_snapshot_at(&order.user_id, refunded_at)
             .await?;
         self.fetch_linuxdo_credit_recharge_order(out_trade_no)
             .await?
@@ -426,5 +641,40 @@ impl KeyStore {
                 .list_linuxdo_credit_recharge_entitlements_for_user(user_id, 24)
                 .await?,
         })
+    }
+}
+
+fn push_admin_recharge_filters<'a>(
+    builder: &mut QueryBuilder<'a, Sqlite>,
+    user_query: Option<&str>,
+    status: Option<&str>,
+    start_at: Option<i64>,
+    end_at: Option<i64>,
+) {
+    if let Some(q) = user_query.map(str::trim).filter(|q| !q.is_empty()) {
+        let like = format!("%{q}%");
+        builder.push(" AND (o.user_id LIKE ");
+        builder.push_bind(like.clone());
+        builder.push(" OR COALESCE(u.display_name, '') LIKE ");
+        builder.push_bind(like.clone());
+        builder.push(" OR COALESCE(u.username, '') LIKE ");
+        builder.push_bind(like.clone());
+        builder.push(" OR o.out_trade_no LIKE ");
+        builder.push_bind(like.clone());
+        builder.push(" OR COALESCE(o.trade_no, '') LIKE ");
+        builder.push_bind(like);
+        builder.push(")");
+    }
+    if let Some(status) = status.map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
+        builder.push(" AND o.status = ");
+        builder.push_bind(status.to_string());
+    }
+    if let Some(start_at) = start_at {
+        builder.push(" AND o.created_at >= ");
+        builder.push_bind(start_at);
+    }
+    if let Some(end_at) = end_at {
+        builder.push(" AND o.created_at <= ");
+        builder.push_bind(end_at);
     }
 }

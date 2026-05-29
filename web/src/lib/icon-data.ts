@@ -112,6 +112,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
     "width": 24,
     "height": 24
   },
+  "mdi:credit-card-clock-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M16 14h1.5v2.82l2.44 1.41l-.75 1.3L16 17.69zm8 3a7 7 0 0 1-7 7c-2.79 0-5.2-1.64-6.33-4H4a2 2 0 0 1-2-2V6c0-1.11.89-2 2-2h16a2 2 0 0 1 2 2v6.1c1.24 1.26 2 2.99 2 4.9m-14 0c0-1.96.81-3.73 2.1-5H4v6h6.07c-.07-.33-.07-.66-.07-1m7-5a5 5 0 0 0-5 5a5 5 0 0 0 5 5a5 5 0 0 0 5-5a5 5 0 0 0-5-5m3-4V6H4v2z\"/>",
+    "width": 24,
+    "height": 24
+  },
   "mdi:crown-outline": {
     "body": "<path fill=\"currentColor\" d=\"m12 8l3 5.2l3-2.7l-.7 3.5H6.7L6 10.5l3 2.7zm0-4l-3.5 6L3 5l2 11h14l2-11l-5.5 5zm7 14H5v1c0 .6.4 1 1 1h12c.6 0 1-.4 1-1z\"/>",
     "width": 24,

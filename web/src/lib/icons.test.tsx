@@ -29,6 +29,7 @@ const REQUIRED_RUNTIME_ICON_NAMES = [
   'mdi:close-circle-outline',
   'mdi:content-copy',
   'mdi:cog-outline',
+  'mdi:credit-card-clock-outline',
   'mdi:crown-outline',
   'mdi:dots-horizontal',
   'mdi:eye-off-outline',

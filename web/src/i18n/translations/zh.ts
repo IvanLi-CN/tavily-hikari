@@ -1,3 +1,4 @@
+import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
 import type { TranslationShape } from '../types'
 
 export const ZH: TranslationShape = {
@@ -218,6 +219,7 @@ export const ZH: TranslationShape = {
         jobs: '任务作业',
         users: '用户管理',
         announcements: '公告',
+        recharges: '充值记录',
         alerts: '告警中心',
         systemSettings: '系统设置',
         proxySettings: '代理设置',
@@ -592,6 +594,7 @@ export const ZH: TranslationShape = {
           currentApiRebalancePercentValue: '当前 API 比例：{percent}%',
           rechargeFeatureLabel: '启用充值功能', rechargeFeatureHint: '关闭后用户控制台不展示充值入口，后端也会拒绝创建充值订单；已支付回调仍会继续处理。',
           rechargeUserLabel: '开放非管理员充值', rechargeUserHint: '调试开关。关闭后只有管理员请求能看到并创建充值订单。',
+          ...adminTotpTranslations.zh, ...adminTrustedClientIpTranslations.zh,
           blockedKeyBaseLimitLabel: '封禁数基础值',
           blockedKeyBaseLimitHint: '作为所有用户封禁数限额的全局基础值；用户隐藏附加额度可正可负，最终有效值不会低于 0。',
           currentBlockedKeyBaseLimitValue: '当前基础值：{count}',
@@ -605,10 +608,8 @@ export const ZH: TranslationShape = {
           invalidGlobalIpLimit: 'IP 数限制必须是非负整数。',
           saveFailed: '保存系统设置失败。',
         },
-        actions: {
-          apply: '应用', applying: '应用中…', cancel: '取消',
-        },
-      },
+        actions: { apply: '应用', applying: '应用中…', cancel: '取消' },
+      }, recharges: adminRechargeTranslations.zh,
       users: {
         title: '用户管理',
         description: '查看账户层统计、用户标签叠加与共享额度设置。',
@@ -764,7 +765,7 @@ export const ZH: TranslationShape = {
           hint: '基础额度只接受非负整数。',
           save: '保存基础额度',
           saving: '保存中…',
-          savedAt: '已于 {time} 保存',
+          savedAt: '已于 {time} 保存', unsaved: '有未保存的额度变更',
           invalid: '所有基础额度字段必须为非负整数。',
           saveFailed: '保存基础额度失败。',
           inheritsDefaults: '跟随默认值',

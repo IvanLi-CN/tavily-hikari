@@ -1683,9 +1683,42 @@ export interface AdminUserDetail extends AdminUserSummary {
   quotaBase: AdminQuotaLimitSet
   effectiveQuota: AdminQuotaLimitSet
   quotaBreakdown: AdminUserQuotaBreakdownEntry[]
+  recharge: AdminUserRechargeAudit
   recentIpAddresses24h: string[]
   recentIpAddresses7d: string[]
   recentIpTimeline7d: AdminUserIpTimelineEntry[]
+}
+
+export interface AdminUserRechargeAudit {
+  currentMonthEntitlementCredits: number
+  effectiveUntilMonthStart: number | null
+  orders: AdminUserRechargeOrderAudit[]
+  entitlements: AdminUserRechargeEntitlementAudit[]
+}
+
+export interface AdminUserRechargeOrderAudit {
+  outTradeNo: string
+  status: string
+  credits: number
+  months: number
+  money: string
+  tradeNo: string | null
+  paymentUrl: string | null
+  createdAt: number
+  updatedAt: number
+  paidAt: number | null
+  refundedAt: number | null
+  refundActor: string | null
+  lastNotifyAt: number | null
+  lastError: string | null
+}
+
+export interface AdminUserRechargeEntitlementAudit {
+  id: number
+  outTradeNo: string
+  monthStart: number
+  credits: number
+  createdAt: number
 }
 
 export type AdminUserIpTimelineEntry = { ipAddress: string; firstSeenAt: number; lastSeenAt: number; requestCount: number }

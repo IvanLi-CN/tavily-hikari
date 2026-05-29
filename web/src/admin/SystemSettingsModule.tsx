@@ -1,6 +1,17 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 
-import { fetchObservedClientIpRequests, type ObservedClientIpRequest, type SystemSettings } from '../api'
+import {
+  confirmAdminTotp,
+  createAdminTotpSetup,
+  disableAdminTotp,
+  fetchAdminTotpStatus,
+  resetAdminTotp,
+  fetchObservedClientIpRequests,
+  type AdminTotpSetup,
+  type AdminTotpStatus,
+  type ObservedClientIpRequest,
+  type SystemSettings,
+} from '../api'
 import type { QueryLoadState } from './queryLoadState'
 import type { AdminTranslations } from '../i18n'
 import type { AdminDisplayDensity } from './displayDensity'
@@ -221,6 +232,12 @@ export default function SystemSettingsModule({
   )
   const [observedClientIpRequests, setObservedClientIpRequests] = useState<ObservedClientIpRequest[]>([])
   const [observedClientIpRequestsError, setObservedClientIpRequestsError] = useState<string | null>(null)
+  const [totpStatus, setTotpStatus] = useState<AdminTotpStatus | null>(null)
+  const [totpSetup, setTotpSetup] = useState<AdminTotpSetup | null>(null)
+  const [totpCode, setTotpCode] = useState('')
+  const [totpCurrentCode, setTotpCurrentCode] = useState('')
+  const [totpBusy, setTotpBusy] = useState(false)
+  const [totpError, setTotpError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraftRequestRateLimit(settings ? String(settings.requestRateLimit) : '100')
@@ -266,6 +283,72 @@ export default function SystemSettingsModule({
       })
     return () => controller.abort()
   }, [clientIpDialogOpen])
+
+  useEffect(() => {
+    if (!settings?.rechargeFeatureEnabled) {
+      setTotpStatus(null)
+      setTotpSetup(null)
+      setTotpError(null)
+      return
+    }
+    const controller = new AbortController()
+    fetchAdminTotpStatus(controller.signal)
+      .then(setTotpStatus)
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setTotpError(err instanceof Error ? err.message : String(err))
+      })
+    return () => controller.abort()
+  }, [settings?.rechargeFeatureEnabled])
+
+  const beginTotpSetup = async () => {
+    setTotpBusy(true)
+    setTotpError(null)
+    try {
+      const setup = await createAdminTotpSetup()
+      setTotpSetup(setup)
+      setTotpCode('')
+      setTotpCurrentCode('')
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
+
+  const confirmTotpSetup = async () => {
+    if (!totpSetup) return
+    setTotpBusy(true)
+    setTotpError(null)
+    try {
+      const status = totpStatus?.enabled
+        ? await resetAdminTotp(totpCurrentCode, totpSetup.secret, totpCode)
+        : await confirmAdminTotp(totpSetup.secret, totpCode)
+      setTotpStatus(status)
+      setTotpSetup(null)
+      setTotpCode('')
+      setTotpCurrentCode('')
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
+
+  const disableTotpBinding = async () => {
+    setTotpBusy(true)
+    setTotpError(null)
+    try {
+      const status = await disableAdminTotp(totpCurrentCode || totpCode)
+      setTotpStatus(status)
+      setTotpSetup(null)
+      setTotpCode('')
+      setTotpCurrentCode('')
+    } catch (err) {
+      setTotpError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setTotpBusy(false)
+    }
+  }
 
   const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
@@ -445,21 +528,21 @@ export default function SystemSettingsModule({
   const observedClientIpRequestsSection = (
     <div className="grid gap-3 rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
       <div className="grid gap-1">
-        <span className="font-medium">最近请求中的字段值</span>
-        <p className="text-xs text-muted-foreground">最近 50 条可见请求，按时间倒序。</p>
+        <span className="font-medium">{strings.form.observedClientIpTitle}</span>
+        <p className="text-xs text-muted-foreground">{strings.form.observedClientIpDescription}</p>
       </div>
       {observedClientIpRequestsError ? (
         <p className="text-sm text-destructive">{observedClientIpRequestsError}</p>
       ) : observedHeaderColumns.length === 0 ? (
-        <p className="text-sm text-muted-foreground">先在上方添加要核对的请求头字段。</p>
+        <p className="text-sm text-muted-foreground">{strings.form.observedClientIpNoHeaders}</p>
       ) : observedClientIpRequests.length === 0 ? (
-        <p className="text-sm text-muted-foreground">暂无近期请求。</p>
+        <p className="text-sm text-muted-foreground">{strings.form.observedClientIpNoRequests}</p>
       ) : (
         <div className="max-h-[min(18rem,36dvh)] overflow-auto rounded-md border border-border bg-background">
           <table className="w-max min-w-full table-auto text-left text-sm">
             <thead className="bg-muted/50 text-sm text-muted-foreground">
               <tr>
-                <th className="whitespace-nowrap px-4 py-3">请求</th>
+                <th className="whitespace-nowrap px-4 py-3">{strings.form.observedClientIpRequestColumn}</th>
                 {observedHeaderColumns.map((header) => (
                   <th key={header} className="whitespace-nowrap px-4 py-3 font-mono">
                     {header}
@@ -497,7 +580,7 @@ export default function SystemSettingsModule({
   const trustedClientIpPanel = (
     <section className="system-settings-trusted-panel">
       <div className="system-settings-trusted-copy">
-        <h4>可信客户端 IP</h4>
+        <h4>{strings.form.trustedClientIpTitle}</h4>
         <p>
           {settings?.trustedClientIpHeaders?.join(' -> ') ||
             'cf-connecting-ip -> true-client-ip -> x-real-ip -> x-forwarded-for -> forwarded'}
@@ -511,7 +594,7 @@ export default function SystemSettingsModule({
       >
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={openClientIpDialog}>
           <Icon icon="mdi:shield-account-outline" width={16} height={16} aria-hidden="true" />
-          配置可信 IP
+          {strings.form.trustedClientIpConfigure}
         </Button>
         <DialogContent
           hideCloseButton
@@ -520,15 +603,15 @@ export default function SystemSettingsModule({
           className="grid max-h-[calc(100dvh-2rem)] w-[min(72rem,calc(100vw-2rem))] max-w-6xl grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
         >
           <DialogHeader className="px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>可信客户端 IP</DialogTitle>
+            <DialogTitle>{strings.form.trustedClientIpTitle}</DialogTitle>
             <DialogDescription>
-              先核对最近请求中的真实值，再用快捷按钮切换下方请求头顺序。使用应用或取消关闭弹窗。
+              {strings.form.trustedClientIpDialogDescription}
             </DialogDescription>
           </DialogHeader>
           <div className="grid min-h-0 gap-4 overflow-y-auto px-6 pb-4">
             <div className="grid gap-2 text-sm">
               <label className="flex flex-col gap-2">
-                <span className="font-medium">可信代理 CIDR</span>
+                <span className="font-medium">{strings.form.trustedProxyCidrs}</span>
                 <textarea
                   rows={4}
                   className="resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-6"
@@ -539,8 +622,8 @@ export default function SystemSettingsModule({
               </label>
 
               <div className="grid gap-1">
-                <span className="font-medium">客户端 IP 请求头顺序</span>
-                <p className="text-xs text-muted-foreground">点击切换。选中会出现在列表末尾，取消会从列表删除。</p>
+                <span className="font-medium">{strings.form.trustedClientIpHeaderOrder}</span>
+                <p className="text-xs text-muted-foreground">{strings.form.trustedClientIpHeaderOrderHint}</p>
               </div>
               <div className="grid gap-3">
                 <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/10 p-2">
@@ -727,6 +810,98 @@ export default function SystemSettingsModule({
                   }}
                 />
               </div>
+
+              {draftRechargeFeatureEnabled && (
+                <div className="system-settings-action-row system-settings-totp-row" aria-labelledby="system-settings-totp-title">
+                  <div className="system-settings-toggle-copy">
+                    <span className="system-settings-setting-title" id="system-settings-totp-title">
+                      {strings.form.totpTitle}
+                    </span>
+                    <p>
+                      {totpStatus?.enabled
+                        ? strings.form.totpBoundHint
+                        : strings.form.totpUnboundHint}
+                    </p>
+                    {totpStatus?.missingCryptoKey && <p className="form-error">{strings.form.totpMissingCryptoKey}</p>}
+                    {totpError && <p className="form-error">{totpError}</p>}
+                    {totpSetup && (
+                      <div className="system-settings-totp-setup">
+                        <img
+                          src={`data:image/png;base64,${totpSetup.qrPngBase64}`}
+                          alt={strings.form.totpQrAlt}
+                          className="system-settings-totp-qr"
+                        />
+                        <Input value={totpSetup.secret} readOnly aria-label={strings.form.totpSetupSecretLabel} />
+                        {totpStatus?.enabled && (
+                          <Input
+                            id="admin-totp-current-code"
+                            name="admin_totp_current_code"
+                            value={totpCurrentCode}
+                            onChange={(event) => setTotpCurrentCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                            placeholder={strings.form.totpCurrentCodePlaceholder}
+                            autoComplete="one-time-code"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                          />
+                        )}
+                        <Input
+                          id="admin-totp-bind-code"
+                          name="admin_totp_bind_code"
+                          value={totpCode}
+                          onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                          placeholder={strings.form.totpConfirmCodePlaceholder}
+                          autoComplete="one-time-code"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="system-settings-totp-actions">
+                    {!totpSetup && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={totpBusy || !totpStatus?.available}
+                        onClick={() => void beginTotpSetup()}
+                      >
+                        {totpStatus?.enabled ? strings.form.totpResetAction : strings.form.totpBindAction}
+                      </Button>
+                    )}
+                    {totpSetup && (
+                      <Button
+                        type="button"
+                        disabled={totpBusy || totpCode.length !== 6 || (totpStatus?.enabled && totpCurrentCode.length !== 6)}
+                        onClick={() => void confirmTotpSetup()}
+                      >
+                        {strings.form.totpConfirmAction}
+                      </Button>
+                    )}
+                    {totpStatus?.enabled && !totpSetup && (
+                      <>
+                        <Input
+                          id="admin-totp-disable-code"
+                          name="admin_totp_disable_code"
+                          value={totpCurrentCode}
+                          onChange={(event) => setTotpCurrentCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                          placeholder={strings.form.totpCurrentCodePlaceholder}
+                          autoComplete="one-time-code"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={totpBusy || totpCurrentCode.length !== 6}
+                          onClick={() => void disableTotpBinding()}
+                        >
+                          {strings.form.totpDisableAction}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="system-settings-action-row" aria-labelledby="system-settings-density-title">
                 <div className="system-settings-toggle-copy">
