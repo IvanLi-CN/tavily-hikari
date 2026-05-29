@@ -1,6 +1,6 @@
 import { requestJson, type SortDirection } from './runtime'
 
-export type AdminRechargeStatus = 'pending' | 'paid' | 'failed' | 'refunded' | 'refundOnly'
+export type AdminRechargeStatus = 'pending' | 'paid' | 'failed' | 'refunding' | 'refunded' | 'refundOnly'
 export type AdminRechargeSort = 'createdAt' | 'paidAt' | 'refundedAt' | 'status'
 export type AdminRechargeViewMode = 'flat' | 'user'
 

@@ -25,7 +25,7 @@ interface AdminRechargeRecordsModuleProps {
 
 type RefundKind = 'refund' | 'refundOnly'
 
-const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'refunded', 'refundOnly']
+const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'refunding', 'refunded', 'refundOnly']
 const SORT_OPTIONS: AdminRechargeSort[] = ['createdAt', 'paidAt', 'refundedAt', 'status']
 
 function formatDate(ts: number | null | undefined): string {

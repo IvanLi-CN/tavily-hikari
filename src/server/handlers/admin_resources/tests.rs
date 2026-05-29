@@ -49,6 +49,114 @@ mod admin_resources_tests {
         }
     }
 
+    fn admin_test_db_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
+    }
+
+    fn admin_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forward-user", HeaderValue::from_static("admin"));
+        headers
+    }
+
+    async fn totp_test_state(prefix: &str) -> (Arc<AppState>, PathBuf) {
+        let db_path = admin_test_db_path(prefix);
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), tavily_hikari::DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let mut settings = proxy.get_system_settings().await.expect("settings");
+        settings.recharge_feature_enabled = true;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable recharge feature");
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth,
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions {
+                enabled: true,
+                client_id: Some("linuxdo-test-client-id".to_string()),
+                client_secret: Some("linuxdo-test-client-secret".to_string()),
+                authorize_url: "https://connect.linux.do/oauth2/authorize".to_string(),
+                token_url: "https://connect.linux.do/oauth2/token".to_string(),
+                userinfo_url: "https://connect.linux.do/api/user".to_string(),
+                scope: "user".to_string(),
+                redirect_url: Some("http://127.0.0.1/auth/linuxdo/callback".to_string()),
+                refresh_token_crypt_key: Some(*b"0123456789abcdef0123456789abcdef"),
+                user_sync_enabled: true,
+                user_sync_at: (6, 20),
+                session_max_age_secs: 3600,
+                login_state_ttl_secs: 600,
+            },
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+        (state, db_path)
+    }
+
+    #[test]
+    fn linuxdo_credit_refund_url_refuses_unknown_submit_url() {
+        assert_eq!(
+            linuxdo_credit_refund_url("https://credit.linux.do/epay/pay/submit.php")
+                .expect("official URL derives"),
+            "https://credit.linux.do/epay/api.php"
+        );
+        let err = linuxdo_credit_refund_url("http://127.0.0.1:9/linuxdo-credit/submit")
+            .expect_err("unknown sandbox URL is refused");
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn admin_totp_confirm_rejects_existing_binding() {
+        let (state, db_path) = totp_test_state("admin-totp-confirm-existing").await;
+        let first_secret = generate_totp_secret();
+        let first_code = build_totp(&first_secret)
+            .expect("build first totp")
+            .generate_current()
+            .expect("first code");
+        let _ = post_admin_totp_confirm(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpConfirmPayload {
+                secret: first_secret,
+                code: first_code,
+            }),
+        )
+        .await
+        .expect("first bind succeeds");
+
+        let next_secret = generate_totp_secret();
+        let next_code = build_totp(&next_secret)
+            .expect("build next totp")
+            .generate_current()
+            .expect("next code");
+        let err = post_admin_totp_confirm(
+            State(state),
+            admin_headers(),
+            Json(AdminTotpConfirmPayload {
+                secret: next_secret,
+                code: next_code,
+            }),
+        )
+        .await
+        .expect_err("confirm cannot overwrite existing binding");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     #[test]
     fn build_forward_proxy_validation_view_preserves_readable_display_name() {
         let view = build_forward_proxy_validation_view(tavily_hikari::ForwardProxyValidationResponse {

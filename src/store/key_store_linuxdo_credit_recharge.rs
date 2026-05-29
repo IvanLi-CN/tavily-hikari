@@ -386,52 +386,73 @@ impl KeyStore {
             return Err(ProxyError::Other("recharge order not found".to_string()));
         };
         let order = Self::linuxdo_credit_recharge_order_from_row(&row)?;
-        sqlx::query(
-            r#"
-            UPDATE linuxdo_credit_recharge_orders
-               SET status = ?,
-                   trade_no = COALESCE(NULLIF(?, ''), trade_no),
-                   notify_payload = ?,
-                   paid_at = COALESCE(paid_at, ?),
-                   last_notify_at = ?,
-                   updated_at = ?,
-                   last_error = NULL
-             WHERE out_trade_no = ?
-            "#,
-        )
-        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
-        .bind(trade_no)
-        .bind(notify_payload)
-        .bind(paid_at)
-        .bind(paid_at)
-        .bind(paid_at)
-        .bind(out_trade_no)
-        .execute(&mut *tx)
-        .await?;
-
-        let start_month = start_of_local_month_utc_ts(
-            Utc.timestamp_opt(paid_at, 0)
-                .single()
-                .unwrap_or_else(Utc::now)
-                .with_timezone(&Local),
-        );
-        for month_index in 0..order.months {
-            let month_start = shift_local_month_start_utc_ts(start_month, month_index as i32);
+        if matches!(
+            order.status.as_str(),
+            LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
+                | LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
+                | LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY
+        ) {
             sqlx::query(
                 r#"
-                INSERT OR IGNORE INTO linuxdo_credit_recharge_entitlements (
-                    out_trade_no, user_id, month_start, credits, created_at
-                )
-                VALUES (?, ?, ?, ?, ?)
+                UPDATE linuxdo_credit_recharge_orders
+                   SET notify_payload = ?, last_notify_at = ?, updated_at = ?
+                 WHERE out_trade_no = ?
                 "#,
             )
-            .bind(out_trade_no)
-            .bind(&order.user_id)
-            .bind(month_start)
-            .bind(order.credits)
+            .bind(notify_payload)
             .bind(paid_at)
+            .bind(paid_at)
+            .bind(out_trade_no)
             .execute(&mut *tx)
             .await?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE linuxdo_credit_recharge_orders
+                   SET status = ?,
+                       trade_no = COALESCE(NULLIF(?, ''), trade_no),
+                       notify_payload = ?,
+                       paid_at = COALESCE(paid_at, ?),
+                       last_notify_at = ?,
+                       updated_at = ?,
+                       last_error = NULL
+                 WHERE out_trade_no = ?
+                "#,
+            )
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+            .bind(trade_no)
+            .bind(notify_payload)
+            .bind(paid_at)
+            .bind(paid_at)
+            .bind(paid_at)
+            .bind(out_trade_no)
+            .execute(&mut *tx)
+            .await?;
+
+            let start_month = start_of_local_month_utc_ts(
+                Utc.timestamp_opt(paid_at, 0)
+                    .single()
+                    .unwrap_or_else(Utc::now)
+                    .with_timezone(&Local),
+            );
+            for month_index in 0..order.months {
+                let month_start = shift_local_month_start_utc_ts(start_month, month_index as i32);
+                sqlx::query(
+                    r#"
+                    INSERT OR IGNORE INTO linuxdo_credit_recharge_entitlements (
+                        out_trade_no, user_id, month_start, credits, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(out_trade_no)
+                .bind(&order.user_id)
+                .bind(month_start)
+                .bind(order.credits)
+                .bind(paid_at)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         tx.commit().await?;
         self.invalidate_account_quota_resolution(&order.user_id).await;
@@ -468,10 +489,10 @@ impl KeyStore {
             return Err(ProxyError::Other("recharge order not found".to_string()));
         };
         let order = Self::linuxdo_credit_recharge_order_from_row(&row)?;
-        if order.status != LINUXDO_CREDIT_RECHARGE_STATUS_PAID {
+        if order.status != LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING {
             tx.rollback().await.ok();
             return Err(ProxyError::Other(format!(
-                "recharge order is not refundable from status {}",
+                "recharge order refund is not reserved from status {}",
                 order.status
             )));
         }
@@ -489,7 +510,7 @@ impl KeyStore {
         .bind(refund_payload)
         .bind(refunded_at)
         .bind(out_trade_no)
-        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
         .execute(&mut *tx)
         .await?;
         if revoke_entitlements {
@@ -505,6 +526,95 @@ impl KeyStore {
         self.fetch_linuxdo_credit_recharge_order(out_trade_no)
             .await?
             .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
+    }
+
+    pub(crate) async fn reserve_linuxdo_credit_recharge_order_refund(
+        &self,
+        out_trade_no: &str,
+        reserved_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT *
+            FROM linuxdo_credit_recharge_orders
+            WHERE out_trade_no = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(out_trade_no)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other("recharge order not found".to_string()));
+        };
+        let order = Self::linuxdo_credit_recharge_order_from_row(&row)?;
+        if order.status != LINUXDO_CREDIT_RECHARGE_STATUS_PAID {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other(format!(
+                "recharge order is not refundable from status {}",
+                order.status
+            )));
+        }
+        if order
+            .trade_no
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other(
+                "recharge order has no trade number".to_string(),
+            ));
+        }
+        let result = sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET status = ?, updated_at = ?, last_error = NULL
+             WHERE out_trade_no = ? AND status = ?
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .bind(reserved_at)
+        .bind(out_trade_no)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other(
+                "recharge order refund is already in progress".to_string(),
+            ));
+        }
+        tx.commit().await?;
+        self.fetch_linuxdo_credit_recharge_order(out_trade_no)
+            .await?
+            .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
+    }
+
+    pub(crate) async fn release_linuxdo_credit_recharge_order_refund_reservation(
+        &self,
+        out_trade_no: &str,
+        message: &str,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET status = ?, updated_at = ?, last_error = ?
+             WHERE out_trade_no = ? AND status = ?
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+        .bind(updated_at)
+        .bind(message)
+        .bind(out_trade_no)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn sum_linuxdo_credit_recharge_entitlements_for_month(

@@ -1246,6 +1246,31 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn reserve_linuxdo_credit_recharge_order_refund(
+        &self,
+        out_trade_no: &str,
+        reserved_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        self.key_store
+            .reserve_linuxdo_credit_recharge_order_refund(out_trade_no, reserved_at)
+            .await
+    }
+
+    pub async fn release_linuxdo_credit_recharge_order_refund_reservation(
+        &self,
+        out_trade_no: &str,
+        message: &str,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .release_linuxdo_credit_recharge_order_refund_reservation(
+                out_trade_no,
+                message,
+                updated_at,
+            )
+            .await
+    }
+
     pub async fn get_admin_totp_secret_record(
         &self,
     ) -> Result<Option<(String, String, i64)>, ProxyError> {

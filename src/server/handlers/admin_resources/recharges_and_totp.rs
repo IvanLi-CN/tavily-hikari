@@ -246,6 +246,18 @@ async fn post_admin_totp_confirm(
     Json(payload): Json<AdminTotpConfirmPayload>,
 ) -> Result<Json<AdminTotpStatusResponse>, (StatusCode, String)> {
     ensure_totp_management_allowed(state.as_ref(), &headers).await?;
+    if state
+        .proxy
+        .get_admin_totp_secret_record()
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .is_some()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "admin TOTP is already bound; use reset with current TOTP".to_string(),
+        ));
+    }
     if !check_totp_code(&payload.secret, &payload.code)? {
         return Err((StatusCode::BAD_REQUEST, "invalid TOTP code".to_string()));
     }
@@ -313,22 +325,29 @@ async fn refund_admin_recharge_order(
     verify_admin_totp_for_sensitive_action(state.as_ref(), &totp_code).await?;
     let order = state
         .proxy
-        .get_linuxdo_credit_recharge_order(&out_trade_no)
+        .reserve_linuxdo_credit_recharge_order_refund(&out_trade_no, Utc::now().timestamp())
         .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "recharge order not found".to_string()))?;
-    if order.status != tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_PAID {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("recharge order is not refundable from status {}", order.status),
-        ));
-    }
+        .map_err(|err| (StatusCode::CONFLICT, err.to_string()))?;
     let trade_no = order
         .trade_no
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| (StatusCode::CONFLICT, "recharge order has no trade number".to_string()))?;
-    let refund_payload = post_linuxdo_credit_full_refund(state.as_ref(), &order, trade_no).await?;
+    let refund_payload = match post_linuxdo_credit_full_refund(state.as_ref(), &order, trade_no).await {
+        Ok(payload) => payload,
+        Err(err) => {
+            let message = err.1.clone();
+            let _ = state
+                .proxy
+                .release_linuxdo_credit_recharge_order_refund_reservation(
+                    &out_trade_no,
+                    &message,
+                    Utc::now().timestamp(),
+                )
+                .await;
+            return Err(err);
+        }
+    };
     let actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
     let actor_display = actor
         .actor_display_name
@@ -392,7 +411,7 @@ async fn post_linuxdo_credit_full_refund(
         .client_secret
         .as_deref()
         .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Linux.do Credit client secret missing".to_string()))?;
-    let endpoint = linuxdo_credit_refund_url(&state.linuxdo_credit.submit_url);
+    let endpoint = linuxdo_credit_refund_url(&state.linuxdo_credit.submit_url)?;
     let money = tavily_hikari::format_linuxdo_credit_money(order.money_cents);
     let params = [
         ("pid", client_id.to_string()),
@@ -426,17 +445,20 @@ async fn post_linuxdo_credit_full_refund(
     Ok(text)
 }
 
-fn linuxdo_credit_refund_url(submit_url: &str) -> String {
+fn linuxdo_credit_refund_url(submit_url: &str) -> Result<String, (StatusCode, String)> {
     if submit_url.ends_with("/epay/pay/submit.php") {
-        return submit_url.replace("/epay/pay/submit.php", "/epay/api.php");
+        return Ok(submit_url.replace("/epay/pay/submit.php", "/epay/api.php"));
     }
     if submit_url.ends_with("/pay/submit.php") {
-        return submit_url.replace("/pay/submit.php", "/api.php");
+        return Ok(submit_url.replace("/pay/submit.php", "/api.php"));
     }
     if let Some((base, _)) = submit_url.rsplit_once("/pay/") {
-        return format!("{base}/api.php");
+        return Ok(format!("{base}/api.php"));
     }
-    "https://credit.linux.do/epay/api.php".to_string()
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Linux.do Credit refund endpoint cannot be derived from submit URL".to_string(),
+    ))
 }
 
 async fn ensure_totp_management_allowed(

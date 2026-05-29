@@ -296,7 +296,23 @@
             .expect("record error");
 
         let pool = connect_sqlite_test_pool(&db_str).await;
-        let now = Utc::now().timestamp();
+        let now = Utc::now();
+        let local_now = now.with_timezone(&Local);
+        let day_start = Local
+            .with_ymd_and_hms(
+                local_now.year(),
+                local_now.month(),
+                local_now.day(),
+                0,
+                0,
+                0,
+            )
+            .single()
+            .expect("local day start")
+            .timestamp();
+        let now = now.timestamp();
+        let charlie_daily_success_at = day_start + 3_601;
+        let charlie_latest_activity_at = now + 3_601;
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
@@ -318,15 +334,18 @@
             ) VALUES
                 (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:search', 'MCP | search', 'success', 'none', 'none', 'none', 1, 'none', ?),
                 (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:search', 'MCP | search', 'success', 'none', 'none', 'none', 1, 'none', ?),
-                (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:search', 'MCP | search', 'success', 'none', 'none', 'none', 1, 'none', ?)
+                (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:search', 'MCP | search', 'success', 'none', 'none', 'none', 1, 'none', ?),
+                (?, 'POST', '/mcp', NULL, 500, -32001, 'mcp:search', 'MCP | search', 'error', 'none', 'none', 'none', 1, 'none', ?)
             "#,
         )
         .bind(&charlie_token.id)
-        .bind(now + 3_601)
+        .bind(charlie_daily_success_at)
         .bind(&charlie_token.id)
-        .bind(now + 3_602)
+        .bind(charlie_daily_success_at + 1)
         .bind(&charlie_token.id)
-        .bind(now + 3_603)
+        .bind(charlie_daily_success_at + 2)
+        .bind(&charlie_token.id)
+        .bind(charlie_latest_activity_at)
         .execute(&pool)
         .await
         .expect("insert legacy null request_user_id auth logs");
@@ -360,6 +379,15 @@
                 .expect("insert non-charlie failure log");
             }
         }
+        sqlx::query(
+            "UPDATE auth_token_logs SET created_at = ? WHERE token_id IN (?, ?)",
+        )
+        .bind(now.saturating_sub(10))
+        .bind(&alice_token.id)
+        .bind(&bob_token.id)
+        .execute(&pool)
+        .await
+        .expect("normalize non-charlie log activity time");
         for (client_ip, created_at, visibility) in [
             ("203.0.113.7", now - 300, "visible"),
             ("198.51.100.10", now - 3_600, "visible"),

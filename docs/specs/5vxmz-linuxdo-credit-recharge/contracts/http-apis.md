@@ -59,6 +59,10 @@
 - Response:
   - `200 text/plain` body `success` when accepted or already applied.
   - `400` when signature, order, status, or amount does not match.
+- Behavior:
+  - Moves payable orders to `paid` and creates monthly entitlements from the payment month.
+  - Replayed callbacks update notify audit fields only and must not move `refunding`,
+    `refunded`, or `refundOnly` orders back to `paid`.
 
 ## GET /api/users/:id
 
@@ -74,7 +78,7 @@
 - Auth: admin request.
 - Query:
   - `user`: optional search across user id/display name/username/order/trade number.
-  - `status`: optional `pending|paid|failed|refunded|refundOnly|all`.
+  - `status`: optional `pending|paid|failed|refunding|refunded|refundOnly|all`.
   - `startAt`, `endAt`: optional Unix timestamps matched against order creation time.
   - `sort`: `createdAt|paidAt|refundedAt|status`; default `createdAt`.
   - `order`: `asc|desc`; default `desc`.
@@ -93,7 +97,9 @@
 - Behavior:
   - Rejects `DEV_OPEN_ADMIN`, missing TOTP binding, invalid/locked TOTP, and non-`paid` orders.
   - Calls Linux.do Credit `POST /epay/api.php` with `pid`, `key`, `trade_no`, `out_trade_no`, `money`.
+  - Before the platform call, atomically moves the order from `paid` to `refunding` so duplicate admin requests cannot issue duplicate external refunds.
   - On platform success, marks order `refunded`, sets `refundedAt/refundActor/refundPayload`, deletes order entitlements, invalidates quota and records a quota snapshot.
+  - On platform failure before completion, moves the order back to `paid` and records the refund error in `lastError`.
 - Response `200`: updated `AdminRechargeOrder`.
 
 ## POST /api/admin/recharges/:out_trade_no/refund-only
@@ -146,7 +152,7 @@
 ## RechargeOrder
 
 - `outTradeNo`
-- `status`: `pending|paid|failed|refunded|refundOnly`
+- `status`: `pending|paid|failed|refunding|refunded|refundOnly`
 - `credits`
 - `months`
 - `money`

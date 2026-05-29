@@ -38,7 +38,8 @@
 - Entitlements are append-only after successful payment except when an admin `refund` explicitly
   revokes the order benefits. `refundOnly` keeps entitlements.
 - Repeated notifications update order metadata but must not duplicate entitlement rows.
-- `status` values are `pending`, `paid`, `failed`, `refunded`, and `refundOnly`.
+- `status` values are `pending`, `paid`, `failed`, `refunding`, `refunded`, and `refundOnly`.
+  `refunding` is an internal in-progress reservation used before the external refund call.
 - Refund audit details are persisted on the order row; TOTP codes are never stored.
 
 ## Admin TOTP meta records

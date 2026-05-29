@@ -3,6 +3,7 @@ use chrono::{Datelike, Local, TimeZone, Utc};
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_PENDING: &str = "pending";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_PAID: &str = "paid";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_FAILED: &str = "failed";
+pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING: &str = "refunding";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED: &str = "refunded";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY: &str = "refundOnly";
 pub const LINUXDO_CREDIT_RECHARGE_UNIT_CREDITS: i64 = 1000;

@@ -138,3 +138,204 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
+    let db_path = temp_db_path("linuxdo-recharge-refund-reservation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-refund-reservation".to_string(),
+            username: Some("refund_reservation".to_string()),
+            name: Some("Refund Reservation".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+    let now = Utc::now().timestamp();
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_refund_reservation".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PAID.to_string(),
+        credits: 1000,
+        months: 1,
+        money_cents: 5_000,
+        trade_no: Some("trade-refund-reservation".to_string()),
+        payment_url: None,
+        order_name: "Refund reservation recharge".to_string(),
+        notify_payload: None,
+        created_at: now - 60,
+        updated_at: now - 60,
+        paid_at: Some(now - 30),
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+
+    let reserved = proxy
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now)
+        .await
+        .expect("reserve refund");
+    assert_eq!(reserved.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING);
+    let duplicate = proxy
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 1)
+        .await
+        .expect_err("duplicate refund reservation rejected");
+    assert!(
+        duplicate.to_string().contains("refunding"),
+        "unexpected duplicate error: {duplicate}"
+    );
+
+    proxy
+        .release_linuxdo_credit_recharge_order_refund_reservation(
+            &order.out_trade_no,
+            "refund endpoint unavailable",
+            now + 2,
+        )
+        .await
+        .expect("release reservation");
+    let released = proxy
+        .get_linuxdo_credit_recharge_order(&order.out_trade_no)
+        .await
+        .expect("read released order")
+        .expect("order exists");
+    assert_eq!(released.status, LINUXDO_CREDIT_RECHARGE_STATUS_PAID);
+    assert_eq!(released.last_error.as_deref(), Some("refund endpoint unavailable"));
+
+    proxy
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 3)
+        .await
+        .expect("reserve refund again");
+    let refunded = proxy
+        .refund_linuxdo_credit_recharge_order(
+            &order.out_trade_no,
+            LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
+            "admin",
+            "{\"code\":1}",
+            now + 4,
+            false,
+        )
+        .await
+        .expect("complete refund");
+    assert_eq!(refunded.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED);
+
+    let after_refund = proxy
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 5)
+        .await
+        .expect_err("refunded order cannot be reserved again");
+    assert!(
+        after_refund.to_string().contains("refunded"),
+        "unexpected refunded error: {after_refund}"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn linuxdo_credit_payment_callback_does_not_resurrect_refunded_order() {
+    let db_path = temp_db_path("linuxdo-recharge-refund-no-resurrect");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-refund-no-resurrect".to_string(),
+            username: Some("refund_no_resurrect".to_string()),
+            name: Some("Refund No Resurrect".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+    let now = Utc::now().timestamp();
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_refund_no_resurrect".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+        credits: 1000,
+        months: 1,
+        money_cents: 5_000,
+        trade_no: None,
+        payment_url: None,
+        order_name: "Refund no resurrect recharge".to_string(),
+        notify_payload: None,
+        created_at: now - 60,
+        updated_at: now - 60,
+        paid_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+    proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-refund-no-resurrect",
+            "paid=1",
+            now - 30,
+        )
+        .await
+        .expect("apply payment");
+    proxy
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now)
+        .await
+        .expect("reserve refund");
+    proxy
+        .refund_linuxdo_credit_recharge_order(
+            &order.out_trade_no,
+            LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
+            "admin",
+            "{\"code\":1}",
+            now + 1,
+            true,
+        )
+        .await
+        .expect("complete refund");
+
+    let after_refund_audit = proxy
+        .linuxdo_credit_recharge_admin_audit(&user.user_id)
+        .await
+        .expect("audit after refund");
+    assert!(after_refund_audit.entitlements.is_empty());
+
+    let replayed = proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-refund-no-resurrect",
+            "paid=1&replay=1",
+            now + 2,
+        )
+        .await
+        .expect("replayed callback");
+    assert_eq!(replayed.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED);
+    assert_eq!(replayed.notify_payload.as_deref(), Some("paid=1&replay=1"));
+    let replayed_audit = proxy
+        .linuxdo_credit_recharge_admin_audit(&user.user_id)
+        .await
+        .expect("audit after replay");
+    assert!(replayed_audit.entitlements.is_empty());
+
+    let _ = std::fs::remove_file(db_path);
+}
