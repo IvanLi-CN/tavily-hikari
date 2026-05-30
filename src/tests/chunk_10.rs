@@ -219,13 +219,28 @@ async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
         .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 3)
         .await
         .expect("reserve refund again");
+    let marked = proxy
+        .mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+            &order.out_trade_no,
+            "admin",
+            "{\"phase\":\"externalSucceeded\",\"response\":{\"code\":1}}",
+            now + 4,
+        )
+        .await
+        .expect("mark external refund success");
+    assert_eq!(marked.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING);
+    assert_eq!(marked.refund_actor.as_deref(), Some("admin"));
+    assert_eq!(
+        marked.last_error.as_deref(),
+        Some("external refund succeeded; local finalize pending")
+    );
     let refunded = proxy
         .refund_linuxdo_credit_recharge_order(
             &order.out_trade_no,
             LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
             "admin",
             "{\"code\":1}",
-            now + 4,
+            now + 5,
             false,
         )
         .await
@@ -233,7 +248,7 @@ async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
     assert_eq!(refunded.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED);
 
     let after_refund = proxy
-        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 5)
+        .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 6)
         .await
         .expect_err("refunded order cannot be reserved again");
     assert!(

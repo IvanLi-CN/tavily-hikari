@@ -528,6 +528,38 @@ impl KeyStore {
             .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
     }
 
+    pub(crate) async fn mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+        &self,
+        out_trade_no: &str,
+        refund_actor: &str,
+        refund_payload: &str,
+        updated_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET refund_actor = ?, refund_payload = ?, updated_at = ?, last_error = ?
+             WHERE out_trade_no = ? AND status = ?
+            "#,
+        )
+        .bind(refund_actor)
+        .bind(refund_payload)
+        .bind(updated_at)
+        .bind("external refund succeeded; local finalize pending")
+        .bind(out_trade_no)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(ProxyError::Other(
+                "recharge order refund success marker could not be persisted".to_string(),
+            ));
+        }
+        self.fetch_linuxdo_credit_recharge_order(out_trade_no)
+            .await?
+            .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
+    }
+
     pub(crate) async fn reserve_linuxdo_credit_recharge_order_refund(
         &self,
         out_trade_no: &str,

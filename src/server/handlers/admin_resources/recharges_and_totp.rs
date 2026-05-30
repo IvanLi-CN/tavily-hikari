@@ -116,6 +116,18 @@ struct LinuxDoCreditRefundResponse {
     msg: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDoCreditRefundExternalSuccessMarker {
+    phase: String,
+    next_status: String,
+    revoke_entitlements: bool,
+    refund_actor: String,
+    response: String,
+}
+
+const LINUXDO_CREDIT_REFUND_EXTERNAL_SUCCEEDED_PHASE: &str = "externalSucceeded";
+
 const ADMIN_TOTP_ISSUER: &str = "Tavily Hikari";
 const ADMIN_TOTP_ACCOUNT: &str = "admin-recharge";
 const ADMIN_TOTP_FAILURE_LOCK_THRESHOLD: i64 = 5;
@@ -323,11 +335,45 @@ async fn refund_admin_recharge_order(
         ));
     }
     verify_admin_totp_for_sensitive_action(state.as_ref(), &totp_code).await?;
-    let order = state
+    let actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
+    let actor_display = actor
+        .actor_display_name
+        .or(actor.actor_user_id)
+        .unwrap_or_else(|| "admin".to_string());
+    let next_status = if revoke_entitlements {
+        tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
+    } else {
+        tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY
+    };
+    let order = match state
         .proxy
         .reserve_linuxdo_credit_recharge_order_refund(&out_trade_no, Utc::now().timestamp())
         .await
-        .map_err(|err| (StatusCode::CONFLICT, err.to_string()))?;
+    {
+        Ok(order) => order,
+        Err(err) => {
+            let existing = state
+                .proxy
+                .get_linuxdo_credit_recharge_order(&out_trade_no)
+                .await
+                .map_err(|fetch_err| (StatusCode::INTERNAL_SERVER_ERROR, fetch_err.to_string()))?;
+            if let Some(existing) = existing
+                && existing.status == tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
+                && let Some(marker) =
+                    decode_refund_external_success_marker(existing.refund_payload.as_deref())
+            {
+                return finalize_admin_refund_from_external_success(
+                    state,
+                    out_trade_no,
+                    next_status,
+                    revoke_entitlements,
+                    marker,
+                )
+                .await;
+            }
+            return Err((StatusCode::CONFLICT, err.to_string()));
+        }
+    };
     let trade_no = order
         .trade_no
         .as_deref()
@@ -348,28 +394,63 @@ async fn refund_admin_recharge_order(
             return Err(err);
         }
     };
-    let actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
-    let actor_display = actor
-        .actor_display_name
-        .or(actor.actor_user_id)
-        .unwrap_or_else(|| "admin".to_string());
-    let next_status = if revoke_entitlements {
-        tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
-    } else {
-        tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY
+    let marker = LinuxDoCreditRefundExternalSuccessMarker {
+        phase: LINUXDO_CREDIT_REFUND_EXTERNAL_SUCCEEDED_PHASE.to_string(),
+        next_status: next_status.to_string(),
+        revoke_entitlements,
+        refund_actor: actor_display.clone(),
+        response: refund_payload,
     };
+    persist_refund_external_success_marker_with_retry(
+        state.as_ref(),
+        &out_trade_no,
+        &actor_display,
+        &marker,
+    )
+    .await?;
+    finalize_admin_refund_from_external_success(
+        state,
+        out_trade_no,
+        next_status,
+        revoke_entitlements,
+        marker,
+    )
+    .await
+}
+
+async fn finalize_admin_refund_from_external_success(
+    state: Arc<AppState>,
+    out_trade_no: String,
+    next_status: &str,
+    revoke_entitlements: bool,
+    marker: LinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<Json<AdminRechargeOrderView>, (StatusCode, String)> {
+    if marker.phase != LINUXDO_CREDIT_REFUND_EXTERNAL_SUCCEEDED_PHASE
+        || marker.next_status != next_status
+        || marker.revoke_entitlements != revoke_entitlements
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "recharge refund recovery intent does not match this endpoint".to_string(),
+        ));
+    }
     let updated = state
         .proxy
         .refund_linuxdo_credit_recharge_order(
             &out_trade_no,
             next_status,
-            &actor_display,
-            &refund_payload,
+            &marker.refund_actor,
+            &marker.response,
             Utc::now().timestamp(),
             revoke_entitlements,
         )
         .await
-        .map_err(|err| (StatusCode::CONFLICT, err.to_string()))?;
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("external refund succeeded; local finalize pending: {err}"),
+            )
+        })?;
     Ok(Json(AdminRechargeOrderView {
         user: AdminRechargeOrderUserView {
             id: updated.user_id.clone(),
@@ -394,6 +475,55 @@ async fn refund_admin_recharge_order(
         last_notify_at: updated.last_notify_at,
         last_error: updated.last_error,
     }))
+}
+
+async fn persist_refund_external_success_marker_with_retry(
+    state: &AppState,
+    out_trade_no: &str,
+    actor_display: &str,
+    marker: &LinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<(), (StatusCode, String)> {
+    let marker_payload = serde_json::to_string(marker).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to encode refund success marker: {err}"),
+        )
+    })?;
+    let mut last_error = None;
+    for delay_ms in [0, 50, 200] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        match state
+            .proxy
+            .mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+                out_trade_no,
+                actor_display,
+                &marker_payload,
+                Utc::now().timestamp(),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!(
+            "external refund succeeded but local success marker failed: {}",
+            last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "unknown error".to_string())
+        ),
+    ))
+}
+
+fn decode_refund_external_success_marker(
+    payload: Option<&str>,
+) -> Option<LinuxDoCreditRefundExternalSuccessMarker> {
+    let marker = serde_json::from_str::<LinuxDoCreditRefundExternalSuccessMarker>(payload?).ok()?;
+    (marker.phase == LINUXDO_CREDIT_REFUND_EXTERNAL_SUCCEEDED_PHASE).then_some(marker)
 }
 
 async fn post_linuxdo_credit_full_refund(

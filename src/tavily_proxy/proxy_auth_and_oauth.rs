@@ -1256,6 +1256,23 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+        &self,
+        out_trade_no: &str,
+        refund_actor: &str,
+        refund_payload: &str,
+        updated_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        self.key_store
+            .mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+                out_trade_no,
+                refund_actor,
+                refund_payload,
+                updated_at,
+            )
+            .await
+    }
+
     pub async fn release_linuxdo_credit_recharge_order_refund_reservation(
         &self,
         out_trade_no: &str,
