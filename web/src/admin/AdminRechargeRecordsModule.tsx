@@ -37,6 +37,18 @@ function userLabel(user: AdminRechargeOrder['user']): string {
   return user.displayName || user.username || user.id
 }
 
+function dateStartSeconds(value: string): number | undefined {
+  if (!value) return undefined
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? undefined : Math.floor(date.getTime() / 1000)
+}
+
+function dateEndSeconds(value: string): number | undefined {
+  if (!value) return undefined
+  const date = new Date(`${value}T23:59:59`)
+  return Number.isNaN(date.getTime()) ? undefined : Math.floor(date.getTime() / 1000)
+}
+
 export default function AdminRechargeRecordsModule({ initialData, disableAutoLoad = false, onOpenUser }: AdminRechargeRecordsModuleProps): JSX.Element {
   const strings = useTranslate().admin.recharges
   const [data, setData] = useState<AdminRechargeListResponse | null>(initialData ?? null)
@@ -44,6 +56,8 @@ export default function AdminRechargeRecordsModule({ initialData, disableAutoLoa
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<AdminRechargeStatus | 'all'>('all')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   const [sort, setSort] = useState<AdminRechargeSort>('createdAt')
   const [view, setView] = useState<AdminRechargeViewMode>('flat')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
@@ -60,6 +74,8 @@ export default function AdminRechargeRecordsModule({ initialData, disableAutoLoa
       {
         user: query.trim() || undefined,
         status,
+        startAt: dateStartSeconds(startDate),
+        endAt: dateEndSeconds(endDate),
         sort,
         order,
         view,
@@ -94,7 +110,7 @@ export default function AdminRechargeRecordsModule({ initialData, disableAutoLoa
   useEffect(() => {
     if (disableAutoLoad) return
     return load()
-  }, [disableAutoLoad, query, status, sort, order, view, page])
+  }, [disableAutoLoad, query, status, startDate, endDate, sort, order, view, page])
 
   const summary = useMemo(() => {
     const items = data?.items ?? []
@@ -161,6 +177,28 @@ export default function AdminRechargeRecordsModule({ initialData, disableAutoLoa
             <select id="admin-recharge-status" name="admin_recharge_status" value={status} onChange={(event) => { setPage(1); setStatus(event.target.value as AdminRechargeStatus | 'all') }}>
               {STATUS_OPTIONS.map((item) => <option key={item} value={item}>{item === 'all' ? strings.allStatuses : statusLabel(item, strings)}</option>)}
             </select>
+          </label>
+          <label className="admin-recharge-filter-field" htmlFor="admin-recharge-start-date">
+            <span>{strings.startDateFilterLabel}</span>
+            <Input
+              id="admin-recharge-start-date"
+              name="admin_recharge_start_date"
+              type="date"
+              value={startDate}
+              max={endDate || undefined}
+              onChange={(event) => { setPage(1); setStartDate(event.target.value) }}
+            />
+          </label>
+          <label className="admin-recharge-filter-field" htmlFor="admin-recharge-end-date">
+            <span>{strings.endDateFilterLabel}</span>
+            <Input
+              id="admin-recharge-end-date"
+              name="admin_recharge_end_date"
+              type="date"
+              value={endDate}
+              min={startDate || undefined}
+              onChange={(event) => { setPage(1); setEndDate(event.target.value) }}
+            />
           </label>
           <label className="admin-recharge-filter-field" htmlFor="admin-recharge-sort">
             <span>{strings.sortFilterLabel}</span>

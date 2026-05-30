@@ -39,6 +39,8 @@ export interface AdminRechargeTranslations {
   loading: string
   searchLabel: string
   statusFilterLabel: string
+  startDateFilterLabel: string
+  endDateFilterLabel: string
   sortFilterLabel: string
   orderFilterLabel: string
   groupSummary: string

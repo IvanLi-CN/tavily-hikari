@@ -16,7 +16,7 @@
   .admin-recharge-toolbar-primary,
   .admin-recharge-filter-row { align-items: end; display: grid; gap: 0.65rem; }
   .admin-recharge-toolbar-primary { grid-template-columns: minmax(18rem, 1fr) auto; }
-  .admin-recharge-filter-row { grid-template-columns: repeat(3, minmax(9rem, 12rem)); }
+  .admin-recharge-filter-row { grid-template-columns: repeat(5, minmax(9rem, 12rem)); }
   .admin-recharge-search-field,
   .admin-recharge-filter-field { display: grid; gap: 0.28rem; min-width: 0; }
   .admin-recharge-filter-field span {
