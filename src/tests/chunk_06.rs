@@ -804,6 +804,11 @@ async fn linuxdo_system_tags_seed_backfill_and_trust_level_sync() {
         .execute(&proxy.key_store.pool)
         .await
         .expect("delete bindings to simulate historical gap");
+    sqlx::query("DELETE FROM meta WHERE key = ?")
+        .bind(META_KEY_LINUXDO_USER_TAG_BINDINGS_BACKFILL_V1)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear linuxdo binding backfill marker");
     drop(proxy);
 
     let proxy_after = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -873,6 +878,75 @@ async fn linuxdo_system_tags_seed_backfill_and_trust_level_sync() {
     .await
     .expect("read retained linuxdo bindings");
     assert_eq!(retained_keys, vec!["linuxdo_l1".to_string()]);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn startup_skips_linuxdo_tag_backfill_after_marker() {
+    let _guard = env_lock().lock_owned().await;
+    let db_path = temp_db_path("linuxdo-system-tags-backfill-marker");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-backfill-marker-user".to_string(),
+            username: Some("linuxdo_backfill_marker_user".to_string()),
+            name: Some("LinuxDo Backfill Marker User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert linuxdo user");
+    let binding_updated_at_before: i64 = sqlx::query_scalar(
+        r#"SELECT b.updated_at
+           FROM user_tag_bindings b
+           JOIN user_tags t ON t.id = b.tag_id
+           WHERE b.user_id = ? AND t.system_key = 'linuxdo_l2'
+           LIMIT 1"#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read binding timestamp before restart");
+    let snapshot_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read snapshot count before restart");
+    drop(proxy);
+
+    let proxy_after = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy reopened");
+    let binding_updated_at_after: i64 = sqlx::query_scalar(
+        r#"SELECT b.updated_at
+           FROM user_tag_bindings b
+           JOIN user_tags t ON t.id = b.tag_id
+           WHERE b.user_id = ? AND t.system_key = 'linuxdo_l2'
+           LIMIT 1"#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy_after.key_store.pool)
+    .await
+    .expect("read binding timestamp after restart");
+    let snapshot_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
+    )
+    .bind(&user.user_id)
+    .fetch_one(&proxy_after.key_store.pool)
+    .await
+    .expect("read snapshot count after restart");
+    assert_eq!(binding_updated_at_after, binding_updated_at_before);
+    assert_eq!(snapshot_count_after, snapshot_count_before);
 
     let _ = std::fs::remove_file(db_path);
 }

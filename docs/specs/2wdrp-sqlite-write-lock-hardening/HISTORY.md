@@ -13,3 +13,9 @@
 - Extended the same lock-hardening line to forward-proxy startup: subscription refresh now fetches
   multiple feeds concurrently, runtime snapshot persistence retries transient busy/locked writes,
   and startup logs now break out sqlite, refresh, xray, and store-sync phases.
+
+## 2026-05-31
+
+- Removed a repeated startup backfill from the LinuxDo system tag path after production startup
+  timing showed SQLite initialization dominated by no-op per-user binding sync on an already
+  consistent database.

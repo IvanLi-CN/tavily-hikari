@@ -1482,7 +1482,18 @@ impl KeyStore {
         }
         self.sync_linuxdo_system_tag_default_deltas_with_env()
             .await?;
-        self.backfill_linuxdo_user_tag_bindings().await?;
+        if self
+            .get_meta_i64(META_KEY_LINUXDO_USER_TAG_BINDINGS_BACKFILL_V1)
+            .await?
+            .is_none()
+        {
+            self.backfill_linuxdo_user_tag_bindings().await?;
+            self.set_meta_i64(
+                META_KEY_LINUXDO_USER_TAG_BINDINGS_BACKFILL_V1,
+                Utc::now().timestamp(),
+            )
+            .await?;
+        }
         self.sync_account_quota_limits_with_defaults().await?;
         if self
             .get_meta_i64(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)

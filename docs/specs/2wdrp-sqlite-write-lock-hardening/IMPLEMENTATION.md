@@ -17,6 +17,9 @@
   subscription source. If restored endpoints exist, startup skips the blocking remote refresh and
   proceeds to xray sync/runtime persistence; the existing maintenance scheduler performs
   subscription calibration after the service is running.
+- LinuxDo system tag binding backfill is now a one-time startup migration. Existing complete
+  bindings are detected with a single indexed precheck, and per-user sync avoids no-op writes or
+  quota snapshot recalculation when the desired binding already exists.
 - Added local contention tests for quota subject lock acquisition and scheduled job start.
 - Added local contention coverage for forward-proxy startup subscription refresh and runtime
   snapshot persistence.
@@ -37,4 +40,7 @@
 
 - Production baseline was read-only: container healthy, version `0.46.2`, database `8.3G`, WAL
   `235M`, and the most recent one-hour lock sample only showed LinuxDo OAuth upsert contention.
+- Later production inspection found a `20G` database where startup spent roughly `78s` inside
+  SQLite initialization; the repeated LinuxDo tag binding backfill over all OAuth accounts was a
+  primary avoidable startup cost.
 - The implementation does not perform production data mutation and does not alter pool size.
