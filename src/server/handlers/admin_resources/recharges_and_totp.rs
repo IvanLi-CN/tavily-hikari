@@ -116,7 +116,7 @@ struct LinuxDoCreditRefundResponse {
     msg: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LinuxDoCreditRefundExternalSuccessMarker {
     phase: String,
@@ -401,21 +401,29 @@ async fn refund_admin_recharge_order(
         refund_actor: actor_display.clone(),
         response: refund_payload,
     };
-    persist_refund_external_success_marker_with_retry(
+    let marker_result = persist_refund_external_success_marker_with_retry(
         state.as_ref(),
         &out_trade_no,
         &actor_display,
         &marker,
     )
-    .await?;
-    finalize_admin_refund_from_external_success(
+    .await;
+    let finalize_result = finalize_admin_refund_from_external_success_with_retry(
         state,
         out_trade_no,
         next_status,
         revoke_entitlements,
         marker,
     )
-    .await
+    .await;
+    match (marker_result, finalize_result) {
+        (_, Ok(response)) => Ok(response),
+        (Ok(()), Err(err)) => Err(err),
+        (Err(marker_err), Err(finalize_err)) => Err((
+            finalize_err.0,
+            format!("{}; success marker also failed: {}", finalize_err.1, marker_err.1),
+        )),
+    }
 }
 
 async fn finalize_admin_refund_from_external_success(
@@ -475,6 +483,37 @@ async fn finalize_admin_refund_from_external_success(
         last_notify_at: updated.last_notify_at,
         last_error: updated.last_error,
     }))
+}
+
+async fn finalize_admin_refund_from_external_success_with_retry(
+    state: Arc<AppState>,
+    out_trade_no: String,
+    next_status: &str,
+    revoke_entitlements: bool,
+    marker: LinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<Json<AdminRechargeOrderView>, (StatusCode, String)> {
+    let mut last_error = None;
+    for delay_ms in [0, 50, 200] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        match finalize_admin_refund_from_external_success(
+            state.clone(),
+            out_trade_no.clone(),
+            next_status,
+            revoke_entitlements,
+            marker.clone(),
+        )
+        .await
+        {
+            Ok(response) => return Ok(response),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "external refund succeeded; local finalize pending".to_string(),
+    )))
 }
 
 async fn persist_refund_external_success_marker_with_retry(
