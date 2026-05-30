@@ -413,13 +413,7 @@ async fn post_linuxdo_credit_full_refund(
         .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Linux.do Credit client secret missing".to_string()))?;
     let endpoint = linuxdo_credit_refund_url(&state.linuxdo_credit.submit_url)?;
     let money = tavily_hikari::format_linuxdo_credit_money(order.money_cents);
-    let params = [
-        ("pid", client_id.to_string()),
-        ("key", client_secret.to_string()),
-        ("trade_no", trade_no.to_string()),
-        ("out_trade_no", order.out_trade_no.clone()),
-        ("money", money),
-    ];
+    let params = linuxdo_credit_refund_params(client_id, client_secret, trade_no, &order.out_trade_no, &money);
     let response = reqwest::Client::new()
         .post(endpoint)
         .form(&params)
@@ -443,6 +437,23 @@ async fn post_linuxdo_credit_full_refund(
         ));
     }
     Ok(text)
+}
+
+fn linuxdo_credit_refund_params(
+    client_id: &str,
+    client_secret: &str,
+    trade_no: &str,
+    out_trade_no: &str,
+    money: &str,
+) -> [(&'static str, String); 6] {
+    [
+        ("act", "refund".to_string()),
+        ("pid", client_id.to_string()),
+        ("key", client_secret.to_string()),
+        ("trade_no", trade_no.to_string()),
+        ("out_trade_no", out_trade_no.to_string()),
+        ("money", money.to_string()),
+    ]
 }
 
 fn linuxdo_credit_refund_url(submit_url: &str) -> Result<String, (StatusCode, String)> {

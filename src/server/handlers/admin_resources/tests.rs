@@ -118,6 +118,23 @@ mod admin_resources_tests {
         assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    #[test]
+    fn linuxdo_credit_refund_params_select_refund_action() {
+        let params = linuxdo_credit_refund_params(
+            "client-id",
+            "client-secret",
+            "trade-123",
+            "out-trade-123",
+            "50.00",
+        );
+        assert_eq!(params[0], ("act", "refund".to_string()));
+        assert!(params.contains(&("pid", "client-id".to_string())));
+        assert!(params.contains(&("key", "client-secret".to_string())));
+        assert!(params.contains(&("trade_no", "trade-123".to_string())));
+        assert!(params.contains(&("out_trade_no", "out-trade-123".to_string())));
+        assert!(params.contains(&("money", "50.00".to_string())));
+    }
+
     #[tokio::test]
     async fn admin_totp_confirm_rejects_existing_binding() {
         let (state, db_path) = totp_test_state("admin-totp-confirm-existing").await;

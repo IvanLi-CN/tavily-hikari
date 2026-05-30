@@ -96,7 +96,7 @@
 - Request JSON: `{ "totpCode": "123456" }`.
 - Behavior:
   - Rejects `DEV_OPEN_ADMIN`, missing TOTP binding, invalid/locked TOTP, and non-`paid` orders.
-  - Calls Linux.do Credit `POST /epay/api.php` with `pid`, `key`, `trade_no`, `out_trade_no`, `money`.
+  - Calls Linux.do Credit `POST /epay/api.php` with `act=refund`, `pid`, `key`, `trade_no`, `out_trade_no`, `money`.
   - Before the platform call, atomically moves the order from `paid` to `refunding` so duplicate admin requests cannot issue duplicate external refunds.
   - On platform success, marks order `refunded`, sets `refundedAt/refundActor/refundPayload`, deletes order entitlements, invalidates quota and records a quota snapshot.
   - On platform failure before completion, moves the order back to `paid` and records the refund error in `lastError`.
