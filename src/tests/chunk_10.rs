@@ -140,6 +140,81 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
 }
 
 #[tokio::test]
+async fn linuxdo_credit_admin_recharge_user_groups_are_paginated() {
+    let db_path = temp_db_path("linuxdo-recharge-admin-group-pagination");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let now = Utc::now().timestamp();
+    let mut user_ids = Vec::new();
+    for index in 0..3 {
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: format!("linuxdo-recharge-admin-group-{index}"),
+                username: Some(format!("group_user_{index}")),
+                name: Some(format!("Group User {index}")),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert oauth user");
+        user_ids.push(user.user_id.clone());
+        proxy
+            .create_linuxdo_credit_recharge_order(&LinuxDoCreditRechargeOrder {
+                out_trade_no: format!("ldc_group_page_{index}"),
+                user_id: user.user_id,
+                status: LINUXDO_CREDIT_RECHARGE_STATUS_PAID.to_string(),
+                credits: 1000,
+                months: 1,
+                money_cents: 5_000,
+                trade_no: Some(format!("trade-group-page-{index}")),
+                payment_url: None,
+                order_name: "Grouped pagination recharge".to_string(),
+                notify_payload: None,
+                created_at: now - index,
+                updated_at: now - index,
+                paid_at: Some(now - index),
+                refunded_at: None,
+                refund_actor: None,
+                refund_payload: None,
+                last_notify_at: None,
+                last_error: None,
+            })
+            .await
+            .expect("create recharge order");
+    }
+
+    let query = LinuxDoCreditRechargeAdminListQuery {
+        user_query: None,
+        status: None,
+        start_at: None,
+        end_at: None,
+        sort: "createdAt".to_string(),
+        order: "desc".to_string(),
+        page: 2,
+        per_page: 1,
+    };
+    let total_groups = proxy
+        .count_admin_linuxdo_credit_recharge_user_groups(&query)
+        .await
+        .expect("count grouped recharge users");
+    assert_eq!(total_groups, 3);
+    let groups = proxy
+        .list_admin_linuxdo_credit_recharge_user_groups(&query)
+        .await
+        .expect("list grouped recharge users");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].user_id, user_ids[1]);
+    assert_eq!(groups[0].order_count, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
     let db_path = temp_db_path("linuxdo-recharge-refund-reservation");
     let db_str = db_path.to_string_lossy().to_string();

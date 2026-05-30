@@ -75,7 +75,6 @@ pub struct LinuxDoCreditRechargeAdminListQuery {
     pub order: String,
     pub page: i64,
     pub per_page: i64,
-    pub group_limit: i64,
 }
 
 #[derive(Debug, Clone)]

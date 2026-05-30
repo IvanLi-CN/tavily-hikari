@@ -270,6 +270,27 @@ impl KeyStore {
             .map_err(ProxyError::Database)
     }
 
+    pub(crate) async fn count_admin_linuxdo_credit_recharge_user_groups(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<i64, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(DISTINCT o.user_id) FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
+        );
+        push_admin_recharge_filters(
+            &mut builder,
+            query.user_query.as_deref(),
+            query.status.as_deref(),
+            query.start_at,
+            query.end_at,
+        );
+        builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
     pub(crate) async fn list_admin_linuxdo_credit_recharge_orders(
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,
@@ -340,7 +361,9 @@ impl KeyStore {
             builder.push(" DESC");
         }
         builder.push(" LIMIT ");
-        builder.push_bind(query.group_limit.clamp(1, 200));
+        builder.push_bind(query.per_page.clamp(1, 100));
+        builder.push(" OFFSET ");
+        builder.push_bind((query.page.max(1) - 1) * query.per_page.clamp(1, 100));
         let rows = builder.build().fetch_all(&self.pool).await?;
         rows.iter()
             .map(|row| {

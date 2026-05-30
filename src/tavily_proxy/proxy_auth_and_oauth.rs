@@ -1136,6 +1136,15 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn count_admin_linuxdo_credit_recharge_user_groups(
+        &self,
+        query: &LinuxDoCreditRechargeAdminListQuery,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .count_admin_linuxdo_credit_recharge_user_groups(query)
+            .await
+    }
+
     pub async fn list_admin_linuxdo_credit_recharge_orders(
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,

@@ -169,32 +169,37 @@ async fn get_admin_recharges(
         order: order.to_string(),
         page,
         per_page,
-        group_limit: 200,
     };
-    let total = state
-        .proxy
-        .count_admin_linuxdo_credit_recharge_orders(&list_query)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let items = state
-        .proxy
-        .list_admin_linuxdo_credit_recharge_orders(&list_query)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
-        .into_iter()
-        .map(admin_recharge_order_view)
-        .collect();
-    let groups = if query.view.as_deref() == Some("user") {
-        state
+    let (total, items, groups) = if query.view.as_deref() == Some("user") {
+        let total = state
+            .proxy
+            .count_admin_linuxdo_credit_recharge_user_groups(&list_query)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        let groups = state
             .proxy
             .list_admin_linuxdo_credit_recharge_user_groups(&list_query)
             .await
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
             .into_iter()
             .map(admin_recharge_group_view)
-            .collect()
+            .collect();
+        (total, Vec::new(), groups)
     } else {
-        Vec::new()
+        let total = state
+            .proxy
+            .count_admin_linuxdo_credit_recharge_orders(&list_query)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        let items = state
+            .proxy
+            .list_admin_linuxdo_credit_recharge_orders(&list_query)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+            .into_iter()
+            .map(admin_recharge_order_view)
+            .collect();
+        (total, items, Vec::new())
     };
     Ok(Json(AdminRechargeListResponse {
         has_recharge_orders,
