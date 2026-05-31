@@ -137,6 +137,23 @@ describe('AdminRechargeRecordsModule refund TOTP feedback', () => {
     await act(async () => root.unmount())
   })
 
+  it('blocks refund submission when admin TOTP is unavailable', async () => {
+    const { container, root } = renderRefundDialog({
+      totpStatus: { ...boundTotpStatus, available: false },
+      totpCode: '123456',
+    })
+
+    expect(container.textContent).toContain('管理端 TOTP 当前不可用')
+    expect(container.textContent).toContain('请先恢复服务端 TOTP 配置')
+    expect(container.querySelector('#admin-recharge-refund-totp')).toBeNull()
+    const confirmButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      ['确认', 'Confirm'].some((label) => button.textContent?.includes(label)),
+    )
+    expect(confirmButton).toBeUndefined()
+
+    await act(async () => root.unmount())
+  })
+
   it('keeps the refund dialog open and renders backend failure text', async () => {
     const { container, root } = renderRefundDialog({
       totpStatus: boundTotpStatus,

@@ -436,16 +436,22 @@ export function AdminRechargeRefundDialogBody({
 }: AdminRechargeRefundDialogProps): JSX.Element {
   const strings = useTranslate().admin.recharges
   const refundDialogNeedsStatus = totpStatus == null
-  const refundDialogBlocked = refundDialogNeedsStatus || totpStatus.enabled === false
+  const refundDialogUnavailable = totpStatus?.available === false
+  const refundDialogNeedsSetup = totpStatus?.enabled === false
+  const refundDialogBlocked = refundDialogNeedsStatus || refundDialogUnavailable || refundDialogNeedsSetup
   const refundDialogStatus = refundError ?? (refundBusy ? strings.confirm.processing : null)
   const title = refundDialogBlocked
     ? refundDialogNeedsStatus
       ? strings.confirm.totpStatusTitle
+      : refundDialogUnavailable
+        ? strings.confirm.totpUnavailableTitle
       : strings.confirm.totpSetupTitle
     : refundTarget?.kind === 'refund' ? strings.confirm.refundTitle : strings.confirm.refundOnlyTitle
   const description = refundDialogBlocked
     ? refundDialogNeedsStatus
       ? strings.confirm.totpStatusDescription
+      : refundDialogUnavailable
+        ? strings.confirm.totpUnavailableDescription
       : strings.confirm.totpSetupDescription
     : strings.confirm.description
   const blockedCallout = refundDialogNeedsStatus
@@ -454,6 +460,8 @@ export function AdminRechargeRefundDialogBody({
       : totpStatusLoading
         ? strings.confirm.totpStatusLoadingCallout
         : strings.confirm.totpStatusUnknownCallout
+    : refundDialogUnavailable
+      ? strings.confirm.totpUnavailableCallout
     : strings.confirm.totpSetupCallout
   const header = chrome === 'dialog' ? (
     <DialogHeader>
@@ -469,7 +477,7 @@ export function AdminRechargeRefundDialogBody({
   const footerContent = (
     <>
       <Button type="button" variant="outline" disabled={refundBusy} onClick={onClose}>{strings.actions.cancel}</Button>
-      {refundDialogBlocked && !refundDialogNeedsStatus ? (
+      {refundDialogNeedsSetup && !refundDialogUnavailable ? (
         <Button type="button" onClick={onOpenSystemSettings}>{strings.actions.openTotpSettings}</Button>
       ) : refundDialogBlocked ? null : (
         <Button type="button" disabled={refundBusy || totpCode.length !== 6} onClick={onExecuteRefund}>
