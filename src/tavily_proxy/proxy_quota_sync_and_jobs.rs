@@ -365,6 +365,38 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn linuxdo_user_tag_binding_refresh_wait_secs(&self, max_age_secs: i64) -> i64 {
+        match self
+            .key_store
+            .linuxdo_user_tag_binding_refresh_wait_secs(max_age_secs)
+            .await
+        {
+            Ok(wait_secs) => wait_secs,
+            Err(err) => {
+                eprintln!("linuxdo tag binding refresh: read schedule error: {err}");
+                max_age_secs.max(0)
+            }
+        }
+    }
+
+    pub async fn linuxdo_user_tag_binding_refresh_due(&self, max_age_secs: i64) -> bool {
+        match self
+            .key_store
+            .linuxdo_user_tag_binding_refresh_due(max_age_secs)
+            .await
+        {
+            Ok(due) => due,
+            Err(err) => {
+                eprintln!("linuxdo tag binding refresh: due check error: {err}");
+                false
+            }
+        }
+    }
+
+    pub async fn refresh_linuxdo_user_tag_bindings(&self) -> Result<i64, ProxyError> {
+        self.key_store.refresh_linuxdo_user_tag_bindings().await
+    }
+
     /// Job logging helpers
     pub async fn scheduled_job_start(
         &self,

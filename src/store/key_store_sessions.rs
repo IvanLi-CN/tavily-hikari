@@ -1859,16 +1859,29 @@ impl KeyStore {
         &self,
         user_id: &str,
         trust_level: Option<i64>,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<bool, ProxyError> {
+        self.sync_linuxdo_system_tag_binding_with_refresh(user_id, trust_level, false)
+            .await
+    }
+
+    async fn sync_linuxdo_system_tag_binding_with_refresh(
+        &self,
+        user_id: &str,
+        trust_level: Option<i64>,
+        force_refresh: bool,
+    ) -> Result<bool, ProxyError> {
         let changed_at = Utc::now().timestamp();
         let mut tx = self.pool.begin().await?;
-        self.sync_linuxdo_system_tag_binding_in_tx(&mut tx, user_id, trust_level)
+        let changed = self
+            .sync_linuxdo_system_tag_binding_in_tx(&mut tx, user_id, trust_level, force_refresh)
             .await?;
         tx.commit().await?;
-        self.invalidate_account_quota_resolution(user_id).await;
-        self.record_effective_account_quota_snapshot_at(user_id, changed_at)
-            .await?;
-        Ok(())
+        if changed {
+            self.invalidate_account_quota_resolution(user_id).await;
+            self.record_effective_account_quota_snapshot_at(user_id, changed_at)
+                .await?;
+        }
+        Ok(changed)
     }
 
     pub(crate) async fn sync_linuxdo_system_tag_binding_in_tx(
@@ -1876,9 +1889,10 @@ impl KeyStore {
         tx: &mut Transaction<'_, Sqlite>,
         user_id: &str,
         trust_level: Option<i64>,
-    ) -> Result<(), ProxyError> {
+        force_refresh: bool,
+    ) -> Result<bool, ProxyError> {
         let Some(level) = normalize_linuxdo_trust_level(trust_level) else {
-            return Ok(());
+            return Ok(false);
         };
         let desired_key = linuxdo_system_key_for_level(level);
         let Some((tag_id,)) =
@@ -1891,8 +1905,27 @@ impl KeyStore {
                 "linuxdo system tag sync skipped for user {} trust_level {:?}: missing system tag for LinuxDo trust level {}",
                 user_id, trust_level, level
             );
-            return Ok(());
+            return Ok(false);
         };
+
+        let existing_bindings = sqlx::query_as::<_, (String, String)>(
+            r#"SELECT b.tag_id, b.source
+               FROM user_tag_bindings b
+               JOIN user_tags t ON t.id = b.tag_id
+               WHERE b.user_id = ?
+                 AND t.system_key LIKE 'linuxdo_l%'
+               ORDER BY b.tag_id"#,
+        )
+        .bind(user_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        if existing_bindings.len() == 1
+            && existing_bindings[0].0 == tag_id
+            && existing_bindings[0].1 == USER_TAG_SOURCE_SYSTEM_LINUXDO
+            && !force_refresh
+        {
+            return Ok(false);
+        }
 
         let now = Utc::now().timestamp();
         sqlx::query(
@@ -1921,7 +1954,7 @@ impl KeyStore {
         .bind(now)
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) async fn sync_linuxdo_system_tag_binding_best_effort(
@@ -1941,6 +1974,36 @@ impl KeyStore {
     }
 
     pub(crate) async fn backfill_linuxdo_user_tag_bindings(&self) -> Result<(), ProxyError> {
+        let mismatched_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)
+               FROM oauth_accounts oa
+               WHERE oa.provider = 'linuxdo'
+                 AND oa.trust_level BETWEEN 0 AND 4
+                 AND (
+                     (
+                         SELECT COUNT(*)
+                         FROM user_tag_bindings b
+                         JOIN user_tags t ON t.id = b.tag_id
+                         WHERE b.user_id = oa.user_id
+                           AND t.system_key LIKE 'linuxdo_l%'
+                     ) != 1
+                     OR NOT EXISTS (
+                         SELECT 1
+                         FROM user_tag_bindings b
+                         JOIN user_tags t ON t.id = b.tag_id
+                         WHERE b.user_id = oa.user_id
+                           AND t.system_key = 'linuxdo_l' || CAST(oa.trust_level AS TEXT)
+                           AND b.source = ?
+                     )
+                 )"#,
+        )
+        .bind(USER_TAG_SOURCE_SYSTEM_LINUXDO)
+        .fetch_one(&self.pool)
+        .await?;
+        if mismatched_count == 0 {
+            return Ok(());
+        }
+
         let rows = sqlx::query_as::<_, (String, Option<i64>)>(
             r#"SELECT user_id, trust_level
                FROM oauth_accounts
@@ -1953,6 +2016,57 @@ impl KeyStore {
                 .await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn linuxdo_user_tag_binding_refresh_wait_secs(
+        &self,
+        max_age_secs: i64,
+    ) -> Result<i64, ProxyError> {
+        let now = Utc::now().timestamp();
+        let Some(refreshed_at) = self
+            .get_meta_i64(META_KEY_LINUXDO_USER_TAG_BINDINGS_REFRESH_V1)
+            .await?
+        else {
+            return Ok(0);
+        };
+        let age = now.saturating_sub(refreshed_at);
+        Ok(max_age_secs.max(0).saturating_sub(age))
+    }
+
+    pub(crate) async fn linuxdo_user_tag_binding_refresh_due(
+        &self,
+        max_age_secs: i64,
+    ) -> Result<bool, ProxyError> {
+        Ok(self
+            .linuxdo_user_tag_binding_refresh_wait_secs(max_age_secs)
+            .await?
+            <= 0)
+    }
+
+    pub(crate) async fn refresh_linuxdo_user_tag_bindings(&self) -> Result<i64, ProxyError> {
+        let rows = sqlx::query_as::<_, (String, Option<i64>)>(
+            r#"SELECT user_id, trust_level
+               FROM oauth_accounts
+               WHERE provider = 'linuxdo'
+                 AND trust_level BETWEEN 0 AND 4"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut refreshed = 0_i64;
+        for (user_id, trust_level) in rows {
+            if self
+                .sync_linuxdo_system_tag_binding_with_refresh(&user_id, trust_level, true)
+                .await?
+            {
+                refreshed += 1;
+            }
+        }
+        self.set_meta_i64(
+            META_KEY_LINUXDO_USER_TAG_BINDINGS_REFRESH_V1,
+            Utc::now().timestamp(),
+        )
+        .await?;
+        Ok(refreshed)
     }
 
     pub(crate) async fn fetch_user_tag_by_id(

@@ -380,6 +380,7 @@ pub async fn serve(
     if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
         spawn_linuxdo_user_status_sync_scheduler(state.clone());
     }
+    spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());
 

@@ -63,6 +63,9 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Avoid high-resource retention catch-up tactics such as rebuilding large log tables or producing a
   large WAL. If the backlog is very large, run repeated bounded cleanup windows and verify progress
   with row counts and resource telemetry.
+- Keep startup backfills cheap and no-op aware. Large production SQLite files make repeated per-user
+  repair loops expensive even when every row is already correct; use an indexed precheck in the
+  readiness path and move periodic refresh work to a background scheduler.
 - Prefer bounded retries and narrower write windows before increasing SQLite pool size.
 
 ## Guardrails / Reuse Notes

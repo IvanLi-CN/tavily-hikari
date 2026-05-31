@@ -708,6 +708,7 @@ const META_KEY_TRUSTED_PROXY_CIDRS_V1: &str = "trusted_proxy_cidrs_v1";
 const META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1: &str = "trusted_client_ip_headers_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
+const META_KEY_LINUXDO_USER_TAG_BINDINGS_REFRESH_V1: &str = "linuxdo_user_tag_bindings_refresh_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =
     "request_kind_canonical_migration_v1_state";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE: &str =

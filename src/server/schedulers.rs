@@ -21,6 +21,7 @@ fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
 }
 
 const LINUXDO_USER_STATUS_SYNC_JOB_TYPE: &str = "linuxdo_user_status_sync";
+const LINUXDO_USER_TAG_BINDING_REFRESH_JOB_TYPE: &str = "linuxdo_user_tag_binding_refresh";
 
 fn next_local_daily_run_after(now: DateTime<Local>, hour: u32, minute: u32) -> DateTime<Local> {
     let today = now.date_naive();
@@ -663,6 +664,61 @@ fn spawn_linuxdo_user_status_sync_scheduler(state: Arc<AppState>) {
             tokio::time::sleep(duration_until_next_local_daily_run(Local::now(), hour, minute))
                 .await;
             run_linuxdo_user_status_sync_job(state.clone()).await;
+        }
+    });
+}
+
+async fn run_linuxdo_user_tag_binding_refresh_job(state: Arc<AppState>) {
+    let job_id = match state
+        .proxy
+        .scheduled_job_start(LINUXDO_USER_TAG_BINDING_REFRESH_JOB_TYPE, None, 1)
+        .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!("linuxdo-tag-binding-refresh: start job error: {err}");
+            return;
+        }
+    };
+
+    match state.proxy.refresh_linuxdo_user_tag_bindings().await {
+        Ok(refreshed) => {
+            let msg = format!("refreshed={refreshed}");
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "success", Some(&msg))
+                .await;
+        }
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+        }
+    }
+}
+
+fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            let wait_secs = state
+                .proxy
+                .linuxdo_user_tag_binding_refresh_wait_secs(twenty_four_hours_secs())
+                .await;
+            if wait_secs <= 0 {
+                if state
+                    .proxy
+                    .linuxdo_user_tag_binding_refresh_due(twenty_four_hours_secs())
+                    .await
+                {
+                    run_linuxdo_user_tag_binding_refresh_job(state.clone()).await;
+                }
+                tokio::time::sleep(Duration::from_secs(fifteen_minutes_secs() as u64)).await;
+                continue;
+            }
+
+            let sleep_secs = wait_secs.min(fifteen_minutes_secs()) as u64;
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
         }
     });
 }
