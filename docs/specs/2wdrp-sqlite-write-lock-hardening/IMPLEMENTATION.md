@@ -24,6 +24,10 @@
   supporting reference indexes, uses a lightweight CLI open path that skips full startup
   migrations, and disables SQLite secure-delete for the delete connection so retention cleanup does
   not spend extra CPU overwriting expired payload pages.
+- Request-log GC temporarily removes and restores the catalog-rollup delete trigger inside each
+  batch transaction. The old rollup buckets are deleted separately in bounded batches, avoiding a
+  per-row trigger update for expired request payloads while keeping normal request log writes and
+  updates covered by the trigger set.
 - The daily `request_logs_gc` scheduler records partial progress in `scheduled_jobs` and waits
   before continuing catch-up instead of keeping one long-running cleanup job open.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and

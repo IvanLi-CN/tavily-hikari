@@ -214,7 +214,7 @@ async fn request_logs_gc_bounded_deletes_old_rows_and_preserves_recent_rows() {
 
     assert!(report.completed);
     assert_eq!(report.deleted_request_logs, 1);
-    assert_eq!(report.deleted_rollups, 1);
+    assert_eq!(report.deleted_rollups, 2);
     let old_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM request_logs WHERE id = ?")
         .bind(old_id)
         .fetch_optional(&proxy.key_store.pool)
@@ -281,7 +281,7 @@ async fn request_logs_gc_bounded_reports_partial_and_resumes() {
         .expect("run second request logs gc pass");
     assert!(second.completed);
     assert_eq!(second.deleted_request_logs, 2);
-    assert_eq!(second.deleted_rollups, 2);
+    assert_eq!(second.deleted_rollups, 5);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

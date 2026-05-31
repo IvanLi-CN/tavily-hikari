@@ -17,15 +17,15 @@ struct Cli {
     db_path: String,
 
     /// Maximum request_logs and rollup rows to delete per batch.
-    #[arg(long, default_value_t = RequestLogsGcOptions::default().batch_size)]
+    #[arg(long, default_value_t = RequestLogsGcOptions::default().batch_size, value_parser = positive_i64)]
     batch_size: i64,
 
     /// Maximum batches per GC pass.
-    #[arg(long, default_value_t = RequestLogsGcOptions::default().max_batches)]
+    #[arg(long, default_value_t = RequestLogsGcOptions::default().max_batches, value_parser = positive_i64)]
     max_batches: i64,
 
     /// Maximum seconds per GC pass.
-    #[arg(long, default_value_t = RequestLogsGcOptions::default().max_runtime_secs)]
+    #[arg(long, default_value_t = RequestLogsGcOptions::default().max_runtime_secs, value_parser = positive_u64)]
     max_runtime_secs: u64,
 
     /// Sleep between batches to reduce write-lock pressure.
@@ -39,6 +39,28 @@ struct Cli {
     /// Emit JSON output. Plain output is retained for interactive use.
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+fn positive_i64(value: &str) -> Result<i64, String> {
+    let parsed = value
+        .parse::<i64>()
+        .map_err(|err| format!("expected a positive integer: {err}"))?;
+    if parsed > 0 {
+        Ok(parsed)
+    } else {
+        Err("expected a positive integer".to_string())
+    }
+}
+
+fn positive_u64(value: &str) -> Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|err| format!("expected a positive integer: {err}"))?;
+    if parsed > 0 {
+        Ok(parsed)
+    } else {
+        Err("expected a positive integer".to_string())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -178,5 +200,18 @@ mod tests {
         assert_eq!(report.deleted_rollups, 5);
         assert!(report.completed);
         assert_eq!(report.elapsed_ms, 20);
+    }
+
+    #[test]
+    fn cli_rejects_zero_runtime() {
+        let err = Cli::try_parse_from([
+            "request_logs_gc_once",
+            "--max-runtime-secs",
+            "0",
+            "--run-until-complete",
+        ])
+        .expect_err("zero runtime must be rejected");
+
+        assert!(err.to_string().contains("expected a positive integer"));
     }
 }

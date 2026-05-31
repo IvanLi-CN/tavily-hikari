@@ -76,6 +76,10 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - For WAL growth, inspect active readers and checkpoint behavior before running live maintenance.
 - Deleting rows does not shrink the SQLite file by itself. Treat VACUUM or database replacement as
   a separate maintenance-window decision after retention cleanup has completed.
+- If a retention table has aggregate-maintenance triggers, validate large-copy cleanup with the
+  triggers in mind. For `request_logs`, GC deletes expired rollup buckets separately and suppresses
+  the per-row rollup delete trigger inside each batch transaction to avoid spending minutes per
+  batch on redundant aggregate updates.
 
 ## References
 

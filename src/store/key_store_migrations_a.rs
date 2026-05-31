@@ -1988,12 +1988,16 @@ impl KeyStore {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut retry_attempt = 0usize;
         loop {
-            let mut conn = self.pool.acquire().await?;
+            let delete_trigger = Self::request_log_catalog_rollup_delete_trigger_sql();
+            let mut tx = self.pool.begin().await?;
             let result = async {
                 sqlx::query("PRAGMA secure_delete = OFF")
-                    .execute(&mut *conn)
+                    .execute(&mut *tx)
                     .await?;
-                sqlx::query(
+                sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_catalog_rollup_delete")
+                    .execute(&mut *tx)
+                    .await?;
+                let result = sqlx::query(
                     r#"
                     DELETE FROM request_logs
                     WHERE id IN (
@@ -2007,8 +2011,11 @@ impl KeyStore {
                 )
                 .bind(threshold)
                 .bind(batch_size)
-                .execute(&mut *conn)
-                .await
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(&delete_trigger).execute(&mut *tx).await?;
+                tx.commit().await?;
+                Ok::<_, sqlx::Error>(result)
             }
             .await;
             match result {

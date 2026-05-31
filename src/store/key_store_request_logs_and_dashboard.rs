@@ -360,6 +360,27 @@ impl KeyStore {
         .join(" AND ")
     }
 
+    fn request_log_catalog_rollup_delete_trigger_sql() -> String {
+        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
+        format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_delete
+            AFTER DELETE ON request_logs
+            WHEN OLD.visibility = 'visible' AND {}
+            BEGIN
+                UPDATE request_log_catalog_rollups
+                SET request_count = request_count - 1,
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE {};
+                DELETE FROM request_log_catalog_rollups
+                WHERE request_count <= 0;
+            END
+            "#,
+            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
+            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
+        )
+    }
+
     fn push_request_log_catalog_rollup_filters<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,
@@ -1302,24 +1323,7 @@ impl KeyStore {
         );
         sqlx::query(&insert_trigger).execute(&self.pool).await?;
 
-        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
-        let delete_trigger = format!(
-            r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_delete
-            AFTER DELETE ON request_logs
-            WHEN OLD.visibility = 'visible' AND {}
-            BEGIN
-                UPDATE request_log_catalog_rollups
-                SET request_count = request_count - 1,
-                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
-                WHERE {};
-                DELETE FROM request_log_catalog_rollups
-                WHERE request_count <= 0;
-            END
-            "#,
-            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
-            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
-        );
+        let delete_trigger = Self::request_log_catalog_rollup_delete_trigger_sql();
         sqlx::query(&delete_trigger).execute(&self.pool).await?;
 
         let update_columns = "
@@ -1338,6 +1342,7 @@ impl KeyStore {
             path,
             request_body
         ";
+        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
         let update_delete_trigger = format!(
             r#"
             CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_update_old
