@@ -19,11 +19,11 @@ permissions:
 jobs:
   lint:
     name: Lint & Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
@@ -37,7 +37,7 @@ jobs:
         run: rustup component add rustfmt clippy
 
       - name: Cache cargo directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -57,11 +57,11 @@ jobs:
 
   unit-tests:
     name: Backend Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
@@ -72,7 +72,7 @@ jobs:
           toolchain: 1.91.0
 
       - name: Cache cargo directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -86,11 +86,11 @@ jobs:
 
   frontend-checks:
     name: Frontend Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -115,7 +115,7 @@ jobs:
 
   compose-smoke-forwardauth-caddy:
     name: Compose Smoke (ForwardAuth + Caddy)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint, unit-tests, frontend-checks]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 20
@@ -127,7 +127,7 @@ jobs:
       IMAGE_TAG: tavily-hikari:ci
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -242,13 +242,13 @@ jobs:
 
   build:
     name: Build (Release)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     needs: [lint, unit-tests, frontend-checks]
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
@@ -259,7 +259,7 @@ jobs:
           toolchain: 1.91.0
 
       - name: Cache cargo directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
