@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "ModifyAccelerationDomain":
             info = payload.get("OriginInfo", {})
             host = info.get("Origin", "")
-            port = int(info.get("HttpOriginPort") or info.get("HttpsOriginPort") or 80)
+            port = int(payload.get("HttpsOriginPort") or payload.get("HttpOriginPort") or 443)
             write_origin(f"{host}:{port}")
             self._json(200, {"Response": {"RequestId": "modify-mock", "Origin": read_origin()}})
             return

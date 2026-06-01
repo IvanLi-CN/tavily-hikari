@@ -62,10 +62,14 @@ pub struct HaConfig {
     pub mode: HaMode,
     pub node_id: String,
     pub database_path: Option<String>,
-    pub node_public_origin: Option<String>,
+    pub node_public_scheme: Option<String>,
+    pub node_public_host: Option<String>,
+    pub node_public_port: Option<u16>,
     pub edgeone_zone_id: Option<String>,
     pub edgeone_domain: Option<String>,
-    pub edgeone_expected_origin: Option<String>,
+    pub edgeone_expected_origin_scheme: Option<String>,
+    pub edgeone_expected_origin_host: Option<String>,
+    pub edgeone_expected_origin_port: Option<u16>,
     pub edgeone_secret_id: Option<String>,
     pub edgeone_secret_key: Option<String>,
     pub edgeone_api_endpoint: String,
@@ -80,10 +84,14 @@ impl Default for HaConfig {
             mode: HaMode::Single,
             node_id: "single".to_string(),
             database_path: None,
-            node_public_origin: None,
+            node_public_scheme: None,
+            node_public_host: None,
+            node_public_port: None,
             edgeone_zone_id: None,
             edgeone_domain: None,
-            edgeone_expected_origin: None,
+            edgeone_expected_origin_scheme: None,
+            edgeone_expected_origin_host: None,
+            edgeone_expected_origin_port: None,
             edgeone_secret_id: None,
             edgeone_secret_key: None,
             edgeone_api_endpoint: "https://teo.intl.tencentcloudapi.com".to_string(),
@@ -97,10 +105,7 @@ impl Default for HaConfig {
 impl HaConfig {
     pub fn active_standby_ready(&self) -> bool {
         self.mode == HaMode::ActiveStandby
-            && self
-                .node_public_origin
-                .as_deref()
-                .is_some_and(|v| !v.is_empty())
+            && self.configured_node_origin().ok().flatten().is_some()
             && self
                 .edgeone_zone_id
                 .as_deref()
@@ -314,14 +319,20 @@ impl HaRuntime {
         HaStatusView {
             mode: self.config.mode,
             node_id: self.config.node_id.clone(),
-            node_public_origin: self.config.node_public_origin.clone(),
+            node_public_origin: self
+                .config
+                .configured_node_origin()
+                .ok()
+                .flatten()
+                .map(|origin| origin.authority())
+                .or_else(|| self.config.node_public_host.clone()),
             role: state.role,
             degraded: state.role.is_degraded(),
             allows_basic_business: state.role.allows_basic_business(),
             allows_full_writes: state.role.allows_full_writes(),
             edgeone_domain: self.config.edgeone_domain.clone(),
             edgeone_origin: state.edgeone_origin.clone(),
-            edgeone_expected_origin: self.config.edgeone_expected_origin.clone(),
+            edgeone_expected_origin: self.config.canonical_expected_origin(),
             edgeone_api_configured: self.config.active_standby_ready(),
             last_edgeone_check_at: state.last_edgeone_check_at,
             last_sync_at: state.last_sync_at,
@@ -404,9 +415,8 @@ impl HaRuntime {
         let mut audit = Vec::new();
         let target_origin = self
             .config
-            .node_public_origin
-            .as_deref()
-            .ok_or_else(|| "NODE_PUBLIC_ORIGIN is required for HA promote".to_string())?;
+            .configured_node_origin()?
+            .ok_or_else(|| "NODE_PUBLIC_HOST is required for HA promote".to_string())?;
         if !force && self.role().await != HaNodeRole::Standby {
             return Err("promote requires standby role unless force is set".to_string());
         }
@@ -417,20 +427,32 @@ impl HaRuntime {
                 let mut state = self.state.write().await;
                 state.edgeone_origin = current;
                 state.last_edgeone_check_at = Some(Utc::now().timestamp());
-            } else if let Some(expected) = self.config.edgeone_expected_origin.as_deref()
-                && current.as_deref() != Some(expected)
+            } else if let Some(expected) = self.config.configured_expected_origin()?
+                && !current
+                    .as_deref()
+                    .and_then(|current| PublicOrigin::parse(current, expected.scheme).ok())
+                    .is_some_and(|current| current.equivalent_to(&expected))
             {
                 return Err(format!(
-                    "EdgeOne origin is {:?}, expected {expected}; refusing promote without force",
+                    "EdgeOne origin is {:?}, expected {}; refusing promote without force",
+                    current,
+                    expected.authority()
+                ));
+            } else if self.config.configured_expected_origin()?.is_none() {
+                return Err(format!(
+                    "EdgeOne origin is {:?}, expected origin is not configured; refusing promote without force",
                     current
                 ));
             }
         }
-        let entry = self.edgeone.modify_origin_with_audit(target_origin).await?;
+        let entry = self
+            .edgeone
+            .modify_origin_with_audit(&target_origin)
+            .await?;
         audit.push(entry);
         let mut state = self.state.write().await;
         state.role = HaNodeRole::ProvisionalMaster;
-        state.edgeone_origin = Some(target_origin.to_string());
+        state.edgeone_origin = Some(target_origin.authority());
         state.last_edgeone_check_at = Some(Utc::now().timestamp());
         state.message = Some("promoted by EdgeOne origin switch; finalize required".to_string());
         drop(state);
@@ -457,8 +479,10 @@ impl HaRuntime {
     }
 
     fn is_self_origin(&self, origin: Option<&str>) -> bool {
-        match (origin, self.config.node_public_origin.as_deref()) {
-            (Some(current), Some(self_origin)) => current.trim() == self_origin.trim(),
+        match (origin, self.config.configured_node_origin().ok().flatten()) {
+            (Some(current), Some(self_origin)) => PublicOrigin::parse(current, self_origin.scheme)
+                .ok()
+                .is_some_and(|current| current.equivalent_to(&self_origin)),
             _ => false,
         }
     }
@@ -515,28 +539,41 @@ impl EdgeOneClient {
             .call_with_audit("DescribeAccelerationDomains", payload)
             .await?;
         let origin_detail = value.pointer("/Response/AccelerationDomains/0/OriginDetail");
-        Ok((origin_detail.and_then(origin_detail_to_authority), audit))
+        Ok((
+            origin_detail
+                .and_then(|detail| {
+                    origin_detail_to_public_origin(detail, self.config.configured_origin_scheme())
+                })
+                .map(|origin| origin.authority()),
+            audit,
+        ))
     }
 
     async fn modify_origin_with_audit(
         &self,
-        target_origin: &str,
+        target_origin: &PublicOrigin,
     ) -> Result<EdgeOneAuditEntry, String> {
         if !self.config.active_standby_ready() {
             return Err("EdgeOne credentials and domain configuration are required".to_string());
         }
-        let (origin_host, origin_port) = split_origin_host_port(target_origin)?;
-        let payload = json!({
+        let mut payload = json!({
             "ZoneId": self.config.edgeone_zone_id.as_deref().unwrap_or_default(),
             "DomainName": self.config.edgeone_domain.as_deref().unwrap_or_default(),
+            "OriginProtocol": target_origin.scheme.edgeone_value(),
             "OriginInfo": {
                 "OriginType": "ip_domain",
-                "Origin": origin_host,
-                "HttpOriginPort": origin_port,
-                "HttpsOriginPort": origin_port,
+                "Origin": target_origin.host,
                 "BackupOrigin": ""
             }
         });
+        match target_origin.scheme {
+            OriginScheme::Http => payload["HttpOriginPort"] = json!(target_origin.port),
+            OriginScheme::Https => payload["HttpsOriginPort"] = json!(target_origin.port),
+            OriginScheme::Follow => {
+                payload["HttpOriginPort"] = json!(target_origin.port);
+                payload["HttpsOriginPort"] = json!(target_origin.port);
+            }
+        }
         let (_value, audit) = self
             .call_with_audit("ModifyAccelerationDomain", payload)
             .await?;
@@ -618,20 +655,35 @@ impl EdgeOneClient {
     }
 }
 
-fn origin_detail_to_authority(origin_detail: &Value) -> Option<String> {
+fn origin_detail_to_public_origin(
+    origin_detail: &Value,
+    default_scheme: OriginScheme,
+) -> Option<PublicOrigin> {
     let origin = origin_detail.get("Origin")?.as_str()?.trim();
     if origin.is_empty() {
         return None;
     }
-    let port = origin_detail
-        .get("HttpsOriginPort")
-        .or_else(|| origin_detail.get("HttpOriginPort"))
-        .and_then(Value::as_i64)
-        .filter(|port| *port > 0 && *port <= 65535);
-    match port {
-        Some(port) => Some(format!("{origin}:{port}")),
-        None => Some(origin.to_string()),
+    let scheme = origin_detail
+        .get("OriginProtocol")
+        .and_then(Value::as_str)
+        .and_then(OriginScheme::parse)
+        .unwrap_or(default_scheme);
+    let port = match scheme {
+        OriginScheme::Http => origin_detail.get("HttpOriginPort").and_then(Value::as_i64),
+        OriginScheme::Https => origin_detail.get("HttpsOriginPort").and_then(Value::as_i64),
+        OriginScheme::Follow => origin_detail
+            .get("HttpsOriginPort")
+            .or_else(|| origin_detail.get("HttpOriginPort"))
+            .and_then(Value::as_i64),
     }
+    .and_then(|port| u16::try_from(port).ok())
+    .filter(|port| *port > 0)
+    .unwrap_or_else(|| scheme.default_port());
+    Some(PublicOrigin {
+        scheme,
+        host: origin.to_string(),
+        port,
+    })
 }
 
 fn tc3_authorization(
@@ -686,21 +738,144 @@ fn encode_hex(data: &[u8]) -> String {
     out
 }
 
-fn split_origin_host_port(origin: &str) -> Result<(String, i64), String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OriginScheme {
+    Http,
+    Https,
+    Follow,
+}
+
+impl OriginScheme {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "http" => Some(Self::Http),
+            "https" => Some(Self::Https),
+            "follow" | "match" | "request" => Some(Self::Follow),
+            _ => None,
+        }
+    }
+
+    fn default_port(self) -> u16 {
+        match self {
+            Self::Http => 80,
+            Self::Https | Self::Follow => 443,
+        }
+    }
+
+    fn edgeone_value(self) -> &'static str {
+        match self {
+            Self::Http => "HTTP",
+            Self::Https => "HTTPS",
+            Self::Follow => "FOLLOW",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PublicOrigin {
+    scheme: OriginScheme,
+    host: String,
+    port: u16,
+}
+
+impl PublicOrigin {
+    fn parse(raw: &str, default_scheme: OriginScheme) -> Result<Self, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("origin is empty".to_string());
+        }
+        let (scheme, rest) = if let Some((scheme_raw, rest)) = trimmed.split_once("://") {
+            (
+                OriginScheme::parse(scheme_raw)
+                    .ok_or_else(|| format!("invalid origin scheme: {scheme_raw}"))?,
+                rest,
+            )
+        } else {
+            (default_scheme, trimmed)
+        };
+        let (host, port) = split_origin_host_port(rest, scheme)?;
+        Ok(Self { scheme, host, port })
+    }
+
+    fn authority(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+
+    fn equivalent_to(&self, other: &Self) -> bool {
+        self.scheme == other.scheme
+            && self.host.eq_ignore_ascii_case(&other.host)
+            && self.port == other.port
+    }
+}
+
+fn split_origin_host_port(origin: &str, scheme: OriginScheme) -> Result<(String, u16), String> {
     let trimmed = origin.trim();
     let Some((host, port_raw)) = trimmed.rsplit_once(':') else {
-        return Ok((trimmed.to_string(), 80));
+        return Ok((trimmed.to_string(), scheme.default_port()));
     };
     if host.is_empty() || port_raw.is_empty() || host.contains(']') {
-        return Ok((trimmed.to_string(), 80));
+        return Ok((trimmed.to_string(), scheme.default_port()));
     }
     let port = port_raw
-        .parse::<i64>()
-        .map_err(|_| format!("invalid NODE_PUBLIC_ORIGIN port: {origin}"))?;
-    if !(1..=65535).contains(&port) {
-        return Err(format!("NODE_PUBLIC_ORIGIN port out of range: {origin}"));
+        .parse::<u16>()
+        .map_err(|_| format!("invalid origin port: {origin}"))?;
+    if port == 0 {
+        return Err(format!("origin port out of range: {origin}"));
     }
     Ok((host.to_string(), port))
+}
+
+impl HaConfig {
+    fn configured_origin_scheme(&self) -> OriginScheme {
+        self.node_public_scheme
+            .as_deref()
+            .and_then(OriginScheme::parse)
+            .unwrap_or(OriginScheme::Https)
+    }
+
+    fn configured_node_origin(&self) -> Result<Option<PublicOrigin>, String> {
+        let scheme = self.configured_origin_scheme();
+        Ok(self
+            .node_public_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|host| PublicOrigin {
+                scheme,
+                host: host.to_string(),
+                port: self
+                    .node_public_port
+                    .unwrap_or_else(|| scheme.default_port()),
+            }))
+    }
+
+    fn configured_expected_origin(&self) -> Result<Option<PublicOrigin>, String> {
+        let scheme = self
+            .edgeone_expected_origin_scheme
+            .as_deref()
+            .and_then(OriginScheme::parse)
+            .unwrap_or_else(|| self.configured_origin_scheme());
+        Ok(self
+            .edgeone_expected_origin_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|host| PublicOrigin {
+                scheme,
+                host: host.to_string(),
+                port: self
+                    .edgeone_expected_origin_port
+                    .unwrap_or_else(|| scheme.default_port()),
+            }))
+    }
+
+    fn canonical_expected_origin(&self) -> Option<String> {
+        self.configured_expected_origin()
+            .ok()
+            .flatten()
+            .map(|origin| origin.authority())
+            .or_else(|| self.edgeone_expected_origin_host.clone())
+    }
 }
 
 #[cfg(test)]
@@ -721,7 +896,8 @@ mod tests {
         let runtime = HaRuntime::new(HaConfig {
             mode: HaMode::ActiveStandby,
             node_id: "n1".to_string(),
-            node_public_origin: Some("127.0.0.1:58087".to_string()),
+            node_public_host: Some("127.0.0.1".to_string()),
+            node_public_port: Some(58087),
             ..HaConfig::default()
         });
         let err = runtime
@@ -750,12 +926,12 @@ mod tests {
     #[test]
     fn split_origin_host_port_moves_port_out_of_origin() {
         assert_eq!(
-            split_origin_host_port("203.0.113.10:58087").expect("split"),
+            split_origin_host_port("203.0.113.10:58087", OriginScheme::Https).expect("split"),
             ("203.0.113.10".to_string(), 58087)
         );
         assert_eq!(
-            split_origin_host_port("origin.example.com").expect("split"),
-            ("origin.example.com".to_string(), 80)
+            split_origin_host_port("origin.example.com", OriginScheme::Https).expect("split"),
+            ("origin.example.com".to_string(), 443)
         );
     }
 
@@ -767,8 +943,52 @@ mod tests {
             "HttpsOriginPort": 58087
         });
         assert_eq!(
-            origin_detail_to_authority(&detail).as_deref(),
+            origin_detail_to_public_origin(&detail, OriginScheme::Https)
+                .map(|origin| origin.authority())
+                .as_deref(),
             Some("203.0.113.10:58087")
         );
+    }
+
+    #[test]
+    fn origin_detail_defaults_https_port_when_edgeone_omits_port() {
+        let detail = json!({
+            "Origin": "gz.ivanli.cc",
+            "OriginProtocol": "HTTPS"
+        });
+        assert_eq!(
+            origin_detail_to_public_origin(&detail, OriginScheme::Https)
+                .map(|origin| origin.authority())
+                .as_deref(),
+            Some("gz.ivanli.cc:443")
+        );
+    }
+
+    #[test]
+    fn structured_node_origin_requires_explicit_host_port() {
+        let config = HaConfig {
+            node_public_scheme: Some("https".to_string()),
+            node_public_host: Some("gz.ivanli.cc".to_string()),
+            node_public_port: Some(443),
+            ..HaConfig::default()
+        };
+        assert_eq!(
+            config
+                .configured_node_origin()
+                .expect("origin parse")
+                .expect("origin")
+                .authority(),
+            "gz.ivanli.cc:443"
+        );
+    }
+
+    #[test]
+    fn public_origin_equivalence_requires_same_scheme() {
+        let https_origin =
+            PublicOrigin::parse("gz.ivanli.cc:443", OriginScheme::Https).expect("https origin");
+        let http_origin =
+            PublicOrigin::parse("gz.ivanli.cc:443", OriginScheme::Http).expect("http origin");
+
+        assert!(!https_origin.equivalent_to(&http_origin));
     }
 }

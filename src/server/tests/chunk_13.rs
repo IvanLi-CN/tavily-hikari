@@ -700,7 +700,8 @@ async fn ha_startup_role_check_failure_does_not_recover_previous_active() {
     let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
         mode: tavily_hikari::HaMode::ActiveStandby,
         node_id: "node-previous-active".to_string(),
-        node_public_origin: Some("127.0.0.1:58102".to_string()),
+        node_public_host: Some("127.0.0.1".to_string()),
+        node_public_port: Some(58102),
         edgeone_zone_id: Some("zone-test".to_string()),
         edgeone_domain: Some("hikari.example.test".to_string()),
         edgeone_secret_id: Some("secret-id".to_string()),
@@ -750,7 +751,8 @@ async fn ha_promote_records_edgeone_request_response_audit() {
         mode: tavily_hikari::HaMode::ActiveStandby,
         node_id: "node-promote".to_string(),
         database_path: Some(db_str.clone()),
-        node_public_origin: Some("127.0.0.1:58101".to_string()),
+        node_public_host: Some("127.0.0.1".to_string()),
+        node_public_port: Some(58101),
         edgeone_zone_id: Some("zone-test".to_string()),
         edgeone_domain: Some("hikari.example.test".to_string()),
         edgeone_secret_id: Some("secret-id".to_string()),
@@ -788,7 +790,12 @@ async fn ha_promote_records_edgeone_request_response_audit() {
         row.1
     );
     assert!(
-        row.1.contains("\"HttpOriginPort\":58101"),
+        row.1.contains("\"OriginProtocol\":\"HTTPS\""),
+        "request audit should contain origin protocol: {}",
+        row.1
+    );
+    assert!(
+        row.1.contains("\"HttpsOriginPort\":58101"),
         "request audit should contain origin port: {}",
         row.1
     );
@@ -999,7 +1006,8 @@ async fn ha_provisional_allows_basic_tavily_and_mcp_entrypoints() {
         mode: tavily_hikari::HaMode::ActiveStandby,
         node_id: "node-provisional".to_string(),
         database_path: Some(db_str.clone()),
-        node_public_origin: Some("127.0.0.1:58100".to_string()),
+        node_public_host: Some("127.0.0.1".to_string()),
+        node_public_port: Some(58100),
         edgeone_zone_id: Some("zone-test".to_string()),
         edgeone_domain: Some("hikari.example.test".to_string()),
         edgeone_secret_id: Some("secret-id".to_string()),

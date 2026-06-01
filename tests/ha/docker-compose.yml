@@ -44,10 +44,14 @@ services:
       ADMIN_AUTH_FORWARD_ENABLED: "false"
       HA_MODE: active_standby
       NODE_ID: node-a
-      NODE_PUBLIC_ORIGIN: node-a:8787
+      NODE_PUBLIC_SCHEME: https
+      NODE_PUBLIC_HOST: node-a
+      NODE_PUBLIC_PORT: 8787
       EDGEONE_ZONE_ID: zone-test
       EDGEONE_DOMAIN: hikari.example.test
-      EDGEONE_EXPECTED_ORIGIN: node-a:8787
+      EDGEONE_EXPECTED_ORIGIN_SCHEME: https
+      EDGEONE_EXPECTED_ORIGIN_HOST: node-a
+      EDGEONE_EXPECTED_ORIGIN_PORT: 8787
       EDGEONE_SECRET_ID: secret-id
       EDGEONE_SECRET_KEY: secret-key
       EDGEONE_API_ENDPOINT: http://edgeone-mock:9000
@@ -74,10 +78,14 @@ services:
       ADMIN_AUTH_FORWARD_ENABLED: "false"
       HA_MODE: active_standby
       NODE_ID: node-b
-      NODE_PUBLIC_ORIGIN: node-b:8787
+      NODE_PUBLIC_SCHEME: https
+      NODE_PUBLIC_HOST: node-b
+      NODE_PUBLIC_PORT: 8787
       EDGEONE_ZONE_ID: zone-test
       EDGEONE_DOMAIN: hikari.example.test
-      EDGEONE_EXPECTED_ORIGIN: node-a:8787
+      EDGEONE_EXPECTED_ORIGIN_SCHEME: https
+      EDGEONE_EXPECTED_ORIGIN_HOST: node-a
+      EDGEONE_EXPECTED_ORIGIN_PORT: 8787
       EDGEONE_SECRET_ID: secret-id
       EDGEONE_SECRET_KEY: secret-key
       EDGEONE_API_ENDPOINT: http://edgeone-mock:9000
