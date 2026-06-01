@@ -654,6 +654,125 @@ async fn ha_events_storage_forces_rebaseline_when_retained_outbox_is_empty() {
 }
 
 #[tokio::test]
+async fn ha_sync_transports_system_settings_meta_only() {
+    let active_db = temp_db_path("ha-meta-active");
+    let standby_db = temp_db_path("ha-meta-standby");
+    let active_db_str = active_db.to_string_lossy().to_string();
+    let standby_db_str = standby_db.to_string_lossy().to_string();
+    let active = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-meta-active-key".to_string()],
+        DEFAULT_UPSTREAM,
+        &active_db_str,
+    )
+    .await
+    .expect("active proxy created");
+    let standby = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-meta-standby-key".to_string()],
+        DEFAULT_UPSTREAM,
+        &standby_db_str,
+    )
+    .await
+    .expect("standby proxy created");
+
+    let active_pool = connect_sqlite_test_pool(&active_db_str).await;
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value) VALUES
+            ('request_rate_limit_v1', '42'),
+            ('trusted_proxy_cidrs_v1', '["10.0.0.0/8"]'),
+            ('ha_unsynced_local_marker', 'local-only')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .execute(&active_pool)
+    .await
+    .expect("seed active meta");
+    active_pool.close().await;
+
+    let baseline = active
+        .export_ha_baseline_ndjson("active-meta")
+        .await
+        .expect("export baseline");
+    assert!(baseline.ndjson.contains("request_rate_limit_v1"));
+    assert!(baseline.ndjson.contains("trusted_proxy_cidrs_v1"));
+    assert!(!baseline.ndjson.contains("ha_unsynced_local_marker"));
+
+    standby
+        .apply_ha_baseline_ndjson(&baseline.ndjson)
+        .await
+        .expect("apply baseline");
+    let standby_pool = connect_sqlite_test_pool(&standby_db_str).await;
+    let request_rate_limit: Option<String> =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = 'request_rate_limit_v1'")
+            .fetch_optional(&standby_pool)
+            .await
+            .expect("read synced meta");
+    let local_only: Option<String> =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = 'ha_unsynced_local_marker'")
+            .fetch_optional(&standby_pool)
+            .await
+            .expect("read unsynced meta");
+    assert_eq!(request_rate_limit.as_deref(), Some("42"));
+    assert!(local_only.is_none());
+    standby_pool.close().await;
+
+    let active_pool = connect_sqlite_test_pool(&active_db_str).await;
+    sqlx::query("DELETE FROM ha_outbox")
+        .execute(&active_pool)
+        .await
+        .expect("clear outbox");
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value) VALUES
+            ('request_rate_limit_v1', '55'),
+            ('ha_unsynced_local_marker', 'still-local-only')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .execute(&active_pool)
+    .await
+    .expect("update active meta");
+    active_pool.close().await;
+
+    let events = active
+        .list_ha_outbox_events_after(0, 10)
+        .await
+        .expect("list meta events");
+    assert_eq!(events.len(), 1, "only whitelisted meta should emit events");
+    assert_eq!(events[0].resource, "meta");
+    assert_eq!(events[0].payload["key"].as_str(), Some("request_rate_limit_v1"));
+    let events_ndjson = [
+        serde_json::json!({"schemaVersion":1,"kind":"events_start","after":0,"limit":10})
+            .to_string(),
+        serde_json::json!({"schemaVersion":1,"kind":"event","event":events[0]}).to_string(),
+        serde_json::json!({"schemaVersion":1,"kind":"events_end","lastSeq":events[0].seq,"eventCount":1})
+            .to_string(),
+    ]
+    .join("\n");
+    standby
+        .apply_ha_events_ndjson(&events_ndjson)
+        .await
+        .expect("apply meta event");
+    let standby_pool = connect_sqlite_test_pool(&standby_db_str).await;
+    let request_rate_limit: Option<String> =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = 'request_rate_limit_v1'")
+            .fetch_optional(&standby_pool)
+            .await
+            .expect("read updated meta");
+    let local_only: Option<String> =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = 'ha_unsynced_local_marker'")
+            .fetch_optional(&standby_pool)
+            .await
+            .expect("read unsynced updated meta");
+    assert_eq!(request_rate_limit.as_deref(), Some("55"));
+    assert!(local_only.is_none());
+    standby_pool.close().await;
+
+    let _ = std::fs::remove_file(active_db);
+    let _ = std::fs::remove_file(standby_db);
+}
+
+#[tokio::test]
 async fn ha_standby_sync_does_not_repeat_zero_watermark_baseline() {
     let baseline_count = Arc::new(AtomicUsize::new(0));
     let events_count = Arc::new(AtomicUsize::new(0));

@@ -50,6 +50,7 @@ const HA_BASELINE_TABLES: &[&str] = &[
     "http_project_api_key_affinity",
     "linuxdo_credit_recharge_entitlements",
     "linuxdo_credit_recharge_orders",
+    "meta",
     "mcp_sessions",
     "oauth_accounts",
     "quota_subject_locks",
@@ -66,6 +67,22 @@ const HA_BASELINE_TABLES: &[&str] = &[
     "user_tags",
     "user_token_bindings",
     "users",
+];
+
+const HA_META_KEYS: &[&str] = &[
+    "allow_registration_v1",
+    "api_rebalance_enabled_v1",
+    "api_rebalance_percent_v1",
+    "global_ip_limit_v1",
+    "mcp_session_affinity_key_count_v1",
+    "rebalance_mcp_enabled_v1",
+    "rebalance_mcp_session_percent_v1",
+    "recharge_feature_enabled_v1",
+    "recharge_user_enabled_v1",
+    "request_rate_limit_v1",
+    "trusted_client_ip_headers_v1",
+    "trusted_proxy_cidrs_v1",
+    "user_blocked_key_base_limit_v1",
 ];
 
 impl KeyStore {
@@ -289,8 +306,15 @@ impl KeyStore {
             let result = async {
                 for table in HA_BASELINE_TABLES {
                     if self.table_exists(table).await? {
-                        let sql =
-                            format!("DELETE FROM {}", quote_sqlite_identifier(table));
+                        let sql = if *table == "meta" {
+                            format!(
+                                "DELETE FROM {} WHERE key IN ({})",
+                                quote_sqlite_identifier(table),
+                                ha_meta_key_list_sql()
+                            )
+                        } else {
+                            format!("DELETE FROM {}", quote_sqlite_identifier(table))
+                        };
                         sqlx::query(&sql).execute(&mut *conn).await?;
                     }
                 }
@@ -679,10 +703,18 @@ impl KeyStore {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SELECT json_object({json_args}) AS row_json FROM {} ORDER BY rowid ASC",
-            quote_sqlite_identifier(table)
-        );
+        let sql = if table == "meta" {
+            format!(
+                "SELECT json_object({json_args}) AS row_json FROM {} WHERE key IN ({}) ORDER BY key ASC",
+                quote_sqlite_identifier(table),
+                ha_meta_key_list_sql()
+            )
+        } else {
+            format!(
+                "SELECT json_object({json_args}) AS row_json FROM {} ORDER BY rowid ASC",
+                quote_sqlite_identifier(table)
+            )
+        };
         let rows = sqlx::query_scalar::<_, String>(&sql)
             .fetch_all(&self.pool)
             .await?;
@@ -717,17 +749,27 @@ impl KeyStore {
             let old_resource_id = ha_trigger_resource_id("OLD", &columns);
             let table_ident = quote_sqlite_identifier(table);
             let table_lit = quote_sqlite_string(table);
+            let meta_filter = if *table == "meta" {
+                Some(format!("key IN ({})", ha_meta_key_list_sql()))
+            } else {
+                None
+            };
             for (suffix, timing, row_json, resource_id, op) in [
                 ("insert", "AFTER INSERT", new_json.as_str(), new_resource_id.as_str(), "upsert"),
                 ("update", "AFTER UPDATE", new_json.as_str(), new_resource_id.as_str(), "upsert"),
                 ("delete", "AFTER DELETE", old_json.as_str(), old_resource_id.as_str(), "delete"),
             ] {
                 let trigger = quote_sqlite_identifier(&format!("trg_ha_outbox_{table}_{suffix}"));
+                let row_alias = if timing == "AFTER DELETE" { "OLD" } else { "NEW" };
+                let row_filter = meta_filter
+                    .as_ref()
+                    .map(|filter| format!(" AND {row_alias}.{filter}"))
+                    .unwrap_or_default();
                 let sql = format!(
                     r#"
                     CREATE TRIGGER IF NOT EXISTS {trigger}
                     {timing} ON {table_ident}
-                    WHEN NOT EXISTS (SELECT 1 FROM ha_outbox_suppression WHERE id = 'local')
+                    WHEN NOT EXISTS (SELECT 1 FROM ha_outbox_suppression WHERE id = 'local'){row_filter}
                     BEGIN
                         INSERT INTO ha_outbox (
                             kind, resource, resource_id, op, payload_json, created_at, checksum
@@ -784,6 +826,14 @@ fn quote_sqlite_identifier(value: &str) -> String {
 
 fn quote_sqlite_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ha_meta_key_list_sql() -> String {
+    HA_META_KEYS
+        .iter()
+        .map(|key| quote_sqlite_string(key))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn ensure_ha_resource_whitelisted(resource: &str) -> Result<(), ProxyError> {
