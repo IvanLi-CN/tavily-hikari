@@ -9,7 +9,7 @@
 - Added standby snapshot restore through `ATTACH` on the current SQLite pool so the process does not need to replace an open database file.
 - Added optional active-to-standby snapshot push loop controlled by `HA_SYNC_PEER_URL`, `HA_INTERNAL_TOKEN`, and `HA_SYNC_INTERVAL_SECS`.
 - Added recovery batch idempotency, HA sync watermarks, failover operation persistence, EdgeOne request/response audit persistence, and node state persistence.
-- Adjusted EdgeOne origin switching to send host and origin port separately.
+- Adjusted EdgeOne origin switching to require explicit origin protocol, host, and port configuration, send them as top-level EdgeOne API fields, and normalize EdgeOne describe responses that omit default ports.
 - Added full-master fencing for system settings, upstream key creation, user token management, user quota changes, registration settings, OAuth login start, recharge order creation, and payment notify.
 - Added basic-business fencing for external Tavily HTTP API, MCP root/subpaths, and Tavily usage routes; `standby` and `recovery` return 503 before auth/quota/upstream work.
 - Restricted non-force promote to `standby` callers so an active node cannot demote itself through an accidental promote operation.

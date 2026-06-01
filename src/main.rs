@@ -233,9 +233,17 @@ struct Cli {
     #[arg(long, env = "NODE_ID", default_value = "single")]
     node_id: String,
 
-    /// Public EdgeOne origin for this node, including port when required.
-    #[arg(long, env = "NODE_PUBLIC_ORIGIN")]
-    node_public_origin: Option<String>,
+    /// Public EdgeOne origin scheme for this node: http, https, or follow.
+    #[arg(long, env = "NODE_PUBLIC_SCHEME")]
+    node_public_scheme: Option<String>,
+
+    /// Public EdgeOne origin host for this node.
+    #[arg(long, env = "NODE_PUBLIC_HOST")]
+    node_public_host: Option<String>,
+
+    /// Public EdgeOne origin port for this node. Defaults from NODE_PUBLIC_SCHEME when omitted.
+    #[arg(long, env = "NODE_PUBLIC_PORT")]
+    node_public_port: Option<u16>,
 
     /// Tencent EdgeOne zone id.
     #[arg(long, env = "EDGEONE_ZONE_ID")]
@@ -245,9 +253,17 @@ struct Cli {
     #[arg(long, env = "EDGEONE_DOMAIN")]
     edgeone_domain: Option<String>,
 
-    /// Expected previous EdgeOne origin before non-force promotion.
-    #[arg(long, env = "EDGEONE_EXPECTED_ORIGIN")]
-    edgeone_expected_origin: Option<String>,
+    /// Expected previous EdgeOne origin scheme before non-force promotion: http, https, or follow.
+    #[arg(long, env = "EDGEONE_EXPECTED_ORIGIN_SCHEME")]
+    edgeone_expected_origin_scheme: Option<String>,
+
+    /// Expected previous EdgeOne origin host before non-force promotion.
+    #[arg(long, env = "EDGEONE_EXPECTED_ORIGIN_HOST")]
+    edgeone_expected_origin_host: Option<String>,
+
+    /// Expected previous EdgeOne origin port before non-force promotion.
+    #[arg(long, env = "EDGEONE_EXPECTED_ORIGIN_PORT")]
+    edgeone_expected_origin_port: Option<u16>,
 
     /// Tencent Cloud secret id for EdgeOne API.
     #[arg(long, env = "EDGEONE_SECRET_ID", hide_env_values = true)]
@@ -282,6 +298,7 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let cli = Cli::parse();
+    reject_legacy_ha_origin_env_vars()?;
 
     // Ensure parent directory for database exists when using nested path like data/tavily_proxy.db
     let db_path = Path::new(&cli.db_path);
@@ -466,10 +483,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mode: HaMode::parse(&cli.ha_mode),
         node_id: cli.node_id.trim().to_string(),
         database_path: Some(cli.db_path.clone()),
-        node_public_origin: trim_optional(cli.node_public_origin),
+        node_public_scheme: trim_optional(cli.node_public_scheme),
+        node_public_host: trim_optional(cli.node_public_host),
+        node_public_port: cli.node_public_port,
         edgeone_zone_id: trim_optional(cli.edgeone_zone_id),
         edgeone_domain: trim_optional(cli.edgeone_domain),
-        edgeone_expected_origin: trim_optional(cli.edgeone_expected_origin),
+        edgeone_expected_origin_scheme: trim_optional(cli.edgeone_expected_origin_scheme),
+        edgeone_expected_origin_host: trim_optional(cli.edgeone_expected_origin_host),
+        edgeone_expected_origin_port: cli.edgeone_expected_origin_port,
         edgeone_secret_id: trim_optional(cli.edgeone_secret_id),
         edgeone_secret_key: trim_optional(cli.edgeone_secret_key),
         edgeone_api_endpoint: cli.edgeone_api_endpoint.trim().to_string(),
@@ -509,6 +530,28 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn reject_legacy_ha_origin_env_vars() -> Result<(), Box<dyn std::error::Error>> {
+    let legacy_vars = ["NODE_PUBLIC_ORIGIN", "EDGEONE_EXPECTED_ORIGIN"];
+    let configured = legacy_vars
+        .into_iter()
+        .filter(|name| {
+            std::env::var(name)
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+
+    if configured.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{} are no longer supported; use NODE_PUBLIC_SCHEME, NODE_PUBLIC_HOST, NODE_PUBLIC_PORT, EDGEONE_EXPECTED_ORIGIN_SCHEME, EDGEONE_EXPECTED_ORIGIN_HOST, and EDGEONE_EXPECTED_ORIGIN_PORT",
+        configured.join(", ")
+    )
+    .into())
 }
 
 fn parse_header_name(
