@@ -19,6 +19,8 @@ import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rec
 import TokenResetDialogs from './TokenResetDialogs'
 import AccessStatePanel from './AccessStatePanel'
 import { UserConsoleAnnouncementsSection } from './Announcements'
+import DebugInfoSharingToggle from './DebugInfoSharingToggle'
+import { useDebugInfoSharing } from './useDebugInfoSharing'
 import { useUserConsoleAnnouncements } from './useAnnouncements'
 
 import {
@@ -49,7 +51,6 @@ import {
   fetchUserTokens,
   postUserLogout,
   rotateUserTokenSecret,
-  updateUserDebugInfoSharing,
   parseUserTokenEventSnapshot,
   type Profile,
   type PublicTokenLog,
@@ -1170,8 +1171,6 @@ export default function UserConsole(): JSX.Element {
   const [rechargeMonths, setRechargeMonths] = useState(1)
   const [rechargeBusy, setRechargeBusy] = useState(false)
   const [rechargeError, setRechargeError] = useState<string | null>(null)
-  const [debugSharingSaving, setDebugSharingSaving] = useState(false)
-  const [debugSharingError, setDebugSharingError] = useState<string | null>(null)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2389,31 +2388,9 @@ export default function UserConsole(): JSX.Element {
     }
   }, [anyProbeRunning, route, text.detail.probe])
 
-  const handleDebugSharingToggle = useCallback(
-    async (shared: boolean) => {
-      if (!dashboard || debugSharingSaving) return
-      const previous = dashboard.debugInfoShared
-      setDebugSharingSaving(true)
-      setDebugSharingError(null)
-      setDashboard((current) => (current ? { ...current, debugInfoShared: shared } : current))
-      try {
-        const updated = await updateUserDebugInfoSharing(shared)
-        setDashboard((current) =>
-          current ? { ...current, debugInfoShared: updated.debugInfoShared } : current,
-        )
-      } catch (err) {
-        setDashboard((current) => (current ? { ...current, debugInfoShared: previous } : current))
-        setDebugSharingError(
-          formatTemplate(text.dashboard.debugSharingFailed, {
-            message: err instanceof Error ? err.message : String(err),
-          }),
-        )
-      } finally {
-        setDebugSharingSaving(false)
-      }
-    },
-    [dashboard, debugSharingSaving, text.dashboard.debugSharingFailed],
-  )
+  const debugSharing = useDebugInfoSharing({
+    dashboard, setDashboard, failedTemplate: text.dashboard.debugSharingFailed, formatError: formatTemplate,
+  })
 
   const goHome = () => {
     window.location.href = '/'
@@ -2646,27 +2623,14 @@ export default function UserConsole(): JSX.Element {
               monthlyLimit={dashboard?.quotaMonthlyLimit ?? 0}
               formatNumber={formatNumber}
             />
-            <div className="access-stat user-console-debug-sharing">
-              <label className="inline-flex items-start gap-3 text-sm">
-                <input
-                  id="user-console-debug-info-sharing"
-                  name="user_console_debug_info_sharing"
-                  type="checkbox"
-                  checked={dashboard?.debugInfoShared ?? false}
-                  disabled={loading || debugSharingSaving || dashboard == null}
-                  onChange={(event) => void handleDebugSharingToggle(event.target.checked)}
-                />
-                <span>
-                  <span className="access-stat-title">{text.dashboard.debugSharing}</span>
-                  <span className="block text-xs text-muted-foreground">{text.dashboard.debugSharingHint}</span>
-                </span>
-              </label>
-              {(debugSharingSaving || debugSharingError) && (
-                <p className="mt-2 text-xs" role="status" aria-live="polite">
-                  {debugSharingSaving ? text.dashboard.debugSharingSaving : debugSharingError}
-                </p>
-              )}
-            </div>
+            <DebugInfoSharingToggle
+              shared={dashboard?.debugInfoShared ?? false}
+              disabled={loading || debugSharing.saving || dashboard == null}
+              saving={debugSharing.saving}
+              error={debugSharing.error}
+              text={text.dashboard}
+              onChange={(shared) => void debugSharing.toggle(shared)}
+            />
           </section>
 
           {showRechargePanel ? (

@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { cleanedRequestLogBodySummary } from '../requestLogBodySummary'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import type { RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
 import AdminTablePagination from '../components/AdminTablePagination'
@@ -12035,31 +12036,14 @@ function LogDetails({
   const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
   const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`
   const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
-  const cleanedReasonLabel = (reason: string | null | undefined): string => {
-    if (language === 'zh') {
-      if (reason === 'policy_zero_days') return '策略设置为 0 天'
-      if (reason === 'retention_expired') return 'body 保留到期'
-      return reason || '已清理'
-    }
-    if (reason === 'policy_zero_days') return 'zero-day policy'
-    if (reason === 'retention_expired') return 'body retention expired'
-    return reason || 'cleaned'
-  }
-  const cleanedBodySummary = (kind: 'request' | 'response'): string => {
-    const bytes = kind === 'request' ? log.request_body_bytes : log.response_body_bytes
-    const sha256 = kind === 'request' ? log.request_body_sha256 : log.response_body_sha256
-    if (!log.body_cleaned_reason) return strings.logDetails.noBody
-    const lines = [
-      language === 'zh' ? '完整 body 已清理' : 'Full body was cleaned',
-      `${language === 'zh' ? '原因' : 'Reason'}: ${cleanedReasonLabel(log.body_cleaned_reason)}`,
-      `${language === 'zh' ? '原始字节数' : 'Original bytes'}: ${bytes ?? strings.logs.errors.none}`,
-      `SHA-256: ${sha256 ?? strings.logs.errors.none}`,
-    ]
-    if (log.body_cleaned_at != null) {
-      lines.push(`${language === 'zh' ? '清理时间' : 'Cleaned at'}: ${formatTimestampWithMs(log.body_cleaned_at)}`)
-    }
-    return lines.join('\n')
-  }
+  const cleanedBodySummary = (kind: 'request' | 'response'): string => cleanedRequestLogBodySummary({
+    source: log,
+    kind,
+    language,
+    noBodyLabel: strings.logDetails.noBody,
+    emptyValueLabel: strings.logs.errors.none,
+    formatTime: formatTimestampWithMs,
+  })
   const requestBody = log.request_body ?? cleanedBodySummary('request')
   const responseBody = log.response_body ?? cleanedBodySummary('response')
   const keyEffect = formatKeyEffectSummary(log, strings, language)

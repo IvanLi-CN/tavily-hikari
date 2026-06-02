@@ -5,6 +5,8 @@ import {
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
+import type { RequestLogRetentionSettings } from './requestLogRetention'
+import type { ForwardProxySettingsEnvelope, SystemSettings, UpdateSystemSettingsPayload } from './systemSettingsTypes'
 import type { AuthToken, AuthTokenSecret } from './tokens'
 import { normalizeUserDashboard, normalizeUserTokenSummary, normalizeUserTokenSummaryList } from './userConsoleNormalization'
 
@@ -2973,41 +2975,6 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[]
 }
 
-export interface RequestLogRetentionProfile {
-  businessBodyDays: number
-  nonBusinessBodyDays: number
-  nonSuccessBodyDays: number
-}
-
-export interface RequestLogRetentionSettings {
-  maxLogRetentionDays: number
-  heavyUsageThresholdPercent: number
-  global: RequestLogRetentionProfile
-  heavyUsage: RequestLogRetentionProfile
-  debugShared: RequestLogRetentionProfile
-}
-
-export interface SystemSettings {
-  requestRateLimit: number
-  mcpSessionAffinityKeyCount: number
-  rebalanceMcpEnabled: boolean
-  rebalanceMcpSessionPercent: number
-  apiRebalanceEnabled: boolean
-  apiRebalancePercent: number
-  rechargeFeatureEnabled: boolean
-  rechargeUserEnabled: boolean
-  userBlockedKeyBaseLimit: number
-  globalIpLimit: number
-  trustedProxyCidrs: string[]
-  trustedClientIpHeaders: string[]
-  requestLogRetention: RequestLogRetentionSettings
-}
-
-export interface ForwardProxySettingsEnvelope {
-  forwardProxy?: ForwardProxySettings | null
-  systemSettings?: SystemSettings | null
-}
-
 export interface UpdateForwardProxySettingsPayload {
   proxyUrls: string[]
   subscriptionUrls: string[]
@@ -3016,22 +2983,6 @@ export interface UpdateForwardProxySettingsPayload {
   egressSocks5Enabled?: boolean
   egressSocks5Url?: string
   skipBootstrapProbe?: boolean
-}
-
-export interface UpdateSystemSettingsPayload {
-  requestRateLimit: number
-  mcpSessionAffinityKeyCount: number
-  rebalanceMcpEnabled: boolean
-  rebalanceMcpSessionPercent: number
-  apiRebalanceEnabled: boolean
-  apiRebalancePercent: number
-  rechargeFeatureEnabled: boolean
-  rechargeUserEnabled: boolean
-  trustedProxyCidrs: string[]
-  trustedClientIpHeaders: string[]
-  userBlockedKeyBaseLimit: number
-  globalIpLimit: number
-  requestLogRetention: RequestLogRetentionSettings
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'

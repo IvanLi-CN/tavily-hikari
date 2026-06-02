@@ -427,17 +427,23 @@ async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
         .await
         .expect("log non-business attempt");
 
-    let row: (Option<Vec<u8>>, Option<Vec<u8>>, Option<i64>, Option<String>, Option<String>) =
-        sqlx::query_as(
-            r#"
+    type BodyMetadataRow = (
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: BodyMetadataRow = sqlx::query_as(
+        r#"
             SELECT request_body, response_body, request_body_bytes, request_body_sha256, body_cleaned_reason
             FROM request_logs WHERE id = ?
             "#,
-        )
-        .bind(log_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("fetch request log body metadata");
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch request log body metadata");
     assert!(row.0.is_none());
     assert!(row.1.is_none());
     assert_eq!(row.2, Some(request_body.len() as i64));
