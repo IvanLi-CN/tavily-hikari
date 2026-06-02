@@ -14,9 +14,6 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
-        if let Some(settings) = self.system_settings_cache.read().await.clone() {
-            return Ok(settings);
-        }
         let request_rate_limit = self
             .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
             .await?
@@ -139,7 +136,7 @@ impl KeyStore {
                 },
             },
         )?;
-        let settings = SystemSettings {
+        Ok(SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
@@ -153,9 +150,7 @@ impl KeyStore {
             trusted_proxy_cidrs,
             trusted_client_ip_headers,
             request_log_retention,
-        };
-        *self.system_settings_cache.write().await = Some(settings.clone());
-        Ok(settings)
+        })
     }
 
     pub(crate) async fn set_system_settings(
@@ -341,7 +336,6 @@ impl KeyStore {
             trusted_client_ip_headers: trusted_client_ip.trusted_client_ip_headers,
             request_log_retention: request_log_retention.clone(),
         };
-        *self.system_settings_cache.write().await = Some(saved_settings.clone());
         if previous_request_log_retention.max_log_retention_days
             != request_log_retention.max_log_retention_days
         {

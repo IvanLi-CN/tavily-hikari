@@ -1,20 +1,12 @@
 impl KeyStore {
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
-        if let Some(shared) = self.user_debug_info_shared_cache.read().await.get(user_id) {
-            return Ok(*shared);
-        }
         let value = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT debug_info_shared FROM users WHERE id = ? LIMIT 1",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
-        let shared = value.flatten().unwrap_or(0) != 0;
-        self.user_debug_info_shared_cache
-            .write()
-            .await
-            .insert(user_id.to_string(), shared);
-        Ok(shared)
+        Ok(value.flatten().unwrap_or(0) != 0)
     }
 
     pub(crate) async fn set_user_debug_info_shared(
@@ -36,10 +28,6 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() > 0 {
-            self.user_debug_info_shared_cache
-                .write()
-                .await
-                .insert(user_id.to_string(), shared);
             self.clear_request_log_body_gc_cursor().await?;
         }
         Ok(shared)
@@ -70,10 +58,6 @@ impl KeyStore {
             let shared: i64 = row.try_get("debug_info_shared")?;
             map.insert(id, shared != 0);
         }
-        self.user_debug_info_shared_cache
-            .write()
-            .await
-            .extend(map.iter().map(|(id, shared)| (id.clone(), *shared)));
         Ok(map)
     }
 
