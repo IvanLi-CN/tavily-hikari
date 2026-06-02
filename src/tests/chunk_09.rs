@@ -927,6 +927,67 @@ async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
 }
 
 #[tokio::test]
+async fn user_debug_info_shared_caches_enabled_lookup_until_local_update() {
+    let db_path = temp_db_path("request-log-retention-debug-sharing-true-cache");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-debug-sharing-cache".to_string(),
+            username: Some("request_log_debug_sharing_cache".to_string()),
+            name: Some("Request Log Debug Sharing Cache".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+    assert!(
+        proxy
+            .key_store
+            .user_debug_info_shared(&user.user_id)
+            .await
+            .expect("load debug sharing from cache")
+    );
+
+    sqlx::query("UPDATE users SET debug_info_shared = 0 WHERE id = ?")
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate remote debug sharing opt-out");
+    assert!(
+        proxy
+            .key_store
+            .user_debug_info_shared(&user.user_id)
+            .await
+            .expect("debug sharing true is cached briefly")
+    );
+
+    proxy
+        .set_user_debug_info_shared(&user.user_id, false)
+        .await
+        .expect("disable debug sharing locally");
+    assert!(
+        !proxy
+            .key_store
+            .user_debug_info_shared(&user.user_id)
+            .await
+            .expect("local update refreshes debug sharing cache")
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_change() {
     let db_path = temp_db_path("request-log-retention-gc-policy-change");
     let db_str = db_path.to_string_lossy().to_string();
@@ -1876,6 +1937,70 @@ async fn request_logs_gc_retries_transient_sqlite_write_lock() {
         .await
         .expect("query old log after locked gc");
     assert!(old_exists.is_none());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn request_logs_gc_body_cleanup_retries_transient_sqlite_write_lock() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let db_path = temp_db_path("request-logs-gc-body-cleanup-retries-sqlite-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 32;
+    settings.request_log_retention.global.business_body_days = 0;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_body, response_body,
+            visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"query":"body cleanup lock retry"}"#.as_slice())
+    .bind(br#"{"ok":true}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(Utc::now().timestamp())
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed request log body");
+
+    let release = hold_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("request log body cleanup retries after transient sqlite write lock");
+    release.await.expect("release task");
+
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+    assert_eq!(report.deleted_request_logs, 0);
+    let body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch cleaned request log body");
+    assert!(body.is_none());
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

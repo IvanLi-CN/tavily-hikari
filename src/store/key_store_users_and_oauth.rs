@@ -1,16 +1,16 @@
 impl KeyStore {
-    const USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL: Duration = Duration::from_secs(5);
+    const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
 
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
         let now = Instant::now();
-        if self
-            .user_debug_info_shared_false_cache
+        if let Some(cached) = self
+            .user_debug_info_shared_cache
             .read()
             .await
             .get(user_id)
-            .is_some_and(|expires_at| *expires_at > now)
+            .filter(|entry| entry.expires_at > now)
         {
-            return Ok(false);
+            return Ok(cached.shared);
         }
 
         let value = sqlx::query_scalar::<_, Option<i64>>(
@@ -20,15 +20,13 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
         let shared = value.flatten().unwrap_or(0) != 0;
-        let mut cache = self.user_debug_info_shared_false_cache.write().await;
-        if shared {
-            cache.remove(user_id);
-        } else {
-            cache.insert(
-                user_id.to_string(),
-                now + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
-            );
-        }
+        self.user_debug_info_shared_cache.write().await.insert(
+            user_id.to_string(),
+            UserDebugInfoSharedCacheEntry {
+                shared,
+                expires_at: now + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+            },
+        );
         Ok(shared)
     }
 
@@ -51,15 +49,13 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() > 0 {
-            let mut cache = self.user_debug_info_shared_false_cache.write().await;
-            if shared {
-                cache.remove(user_id);
-            } else {
-                cache.insert(
-                    user_id.to_string(),
-                    Instant::now() + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
-                );
-            }
+            self.user_debug_info_shared_cache.write().await.insert(
+                user_id.to_string(),
+                UserDebugInfoSharedCacheEntry {
+                    shared,
+                    expires_at: Instant::now() + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+                },
+            );
             self.clear_request_log_body_gc_cursor().await?;
         }
         Ok(shared)
@@ -91,17 +87,16 @@ impl KeyStore {
             map.insert(id, shared != 0);
         }
         let now = Instant::now();
-        let mut cache = self.user_debug_info_shared_false_cache.write().await;
-        cache.retain(|_, expires_at| *expires_at > now);
+        let mut cache = self.user_debug_info_shared_cache.write().await;
+        cache.retain(|_, entry| entry.expires_at > now);
         for (id, shared) in &map {
-            if *shared {
-                cache.remove(id);
-            } else {
-                cache.insert(
-                    id.clone(),
-                    now + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
-                );
-            }
+            cache.insert(
+                id.clone(),
+                UserDebugInfoSharedCacheEntry {
+                    shared: *shared,
+                    expires_at: now + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+                },
+            );
         }
         Ok(map)
     }

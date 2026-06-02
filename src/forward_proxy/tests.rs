@@ -178,7 +178,7 @@ rule-providers:
             ),
             request_logs_catalog_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             request_log_retention_cache: tokio::sync::RwLock::new(None),
-            user_debug_info_shared_false_cache: tokio::sync::RwLock::new(
+            user_debug_info_shared_cache: tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             ),
             admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),

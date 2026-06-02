@@ -532,41 +532,69 @@ impl KeyStore {
                 } else {
                     REQUEST_LOG_BODY_CLEANED_REASON_RETENTION_EXPIRED
                 };
-                let result = sqlx::query(
-                    r#"
-                    UPDATE request_logs
-                    SET request_body = NULL,
-                        response_body = NULL,
-                        request_kind_key = ?,
-                        request_kind_label = ?,
-                        request_kind_detail = ?,
-                        counts_business_quota = COALESCE(counts_business_quota, ?),
-                        request_body_bytes = COALESCE(request_body_bytes, ?),
-                        response_body_bytes = COALESCE(response_body_bytes, ?),
-                        request_body_sha256 = COALESCE(request_body_sha256, ?),
-                        response_body_sha256 = COALESCE(response_body_sha256, ?),
-                        body_retention_days = ?,
-                        body_retention_profile = ?,
-                        body_cleaned_reason = ?,
-                        body_cleaned_at = ?
-                    WHERE id = ? AND (request_body IS NOT NULL OR response_body IS NOT NULL)
-                    "#,
-                )
-                .bind(request_kind.key)
-                .bind(request_kind.label)
-                .bind(request_kind.detail)
-                .bind(i64::from(counts_business_quota))
-                .bind(request_body_slice.len() as i64)
-                .bind(response_body_slice.len() as i64)
-                .bind(sha256_hex_bytes(request_body_slice))
-                .bind(sha256_hex_bytes(response_body_slice))
-                .bind(retention_days)
-                .bind(retention_decision.profile)
-                .bind(reason)
-                .bind(now)
-                .bind(candidate.id)
-                .execute(&self.pool)
-                .await?;
+                let request_kind_key = request_kind.key;
+                let request_kind_label = request_kind.label;
+                let request_kind_detail = request_kind.detail;
+                let request_body_bytes = request_body_slice.len() as i64;
+                let response_body_bytes = response_body_slice.len() as i64;
+                let request_body_sha256 = sha256_hex_bytes(request_body_slice);
+                let response_body_sha256 = sha256_hex_bytes(response_body_slice);
+                let mut retry_attempt = 0usize;
+                let result = loop {
+                    match sqlx::query(
+                        r#"
+                        UPDATE request_logs
+                        SET request_body = NULL,
+                            response_body = NULL,
+                            request_kind_key = ?,
+                            request_kind_label = ?,
+                            request_kind_detail = ?,
+                            counts_business_quota = COALESCE(counts_business_quota, ?),
+                            request_body_bytes = COALESCE(request_body_bytes, ?),
+                            response_body_bytes = COALESCE(response_body_bytes, ?),
+                            request_body_sha256 = COALESCE(request_body_sha256, ?),
+                            response_body_sha256 = COALESCE(response_body_sha256, ?),
+                            body_retention_days = ?,
+                            body_retention_profile = ?,
+                            body_cleaned_reason = ?,
+                            body_cleaned_at = ?
+                        WHERE id = ? AND (request_body IS NOT NULL OR response_body IS NOT NULL)
+                        "#,
+                    )
+                    .bind(&request_kind_key)
+                    .bind(&request_kind_label)
+                    .bind(request_kind_detail.as_deref())
+                    .bind(i64::from(counts_business_quota))
+                    .bind(request_body_bytes)
+                    .bind(response_body_bytes)
+                    .bind(&request_body_sha256)
+                    .bind(&response_body_sha256)
+                    .bind(retention_days)
+                    .bind(retention_decision.profile)
+                    .bind(reason)
+                    .bind(now)
+                    .bind(candidate.id)
+                    .execute(&self.pool)
+                    .await
+                    {
+                        Ok(result) => break result,
+                        Err(err) => {
+                            let err = ProxyError::Database(err);
+                            if sleep_before_sqlite_transient_write_retry(
+                                "request log body cleanup",
+                                retry_attempt,
+                                deadline,
+                                &err,
+                            )
+                            .await
+                            {
+                                retry_attempt += 1;
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    }
+                };
                 cleaned += result.rows_affected() as i64;
                 if cleaned >= batch_size
                     || scanned >= scan_limit
