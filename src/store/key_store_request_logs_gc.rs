@@ -345,7 +345,7 @@ impl KeyStore {
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
                        request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM request_logs
-                WHERE request_body IS NOT NULL OR response_body IS NOT NULL
+                WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
                   AND created_at >= ?
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?

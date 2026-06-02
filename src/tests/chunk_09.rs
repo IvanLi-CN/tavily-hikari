@@ -870,6 +870,63 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
 }
 
 #[tokio::test]
+async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
+    let db_path = temp_db_path("request-log-retention-gc-skips-body-cleanup-for-old-row");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 32;
+    settings.request_log_retention.global.business_body_days = 0;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let old_ts = Utc::now().timestamp() - 40 * SECS_PER_DAY;
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_body, response_body,
+            visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, NULL, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"query":"row retention wins"}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(old_ts)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed request log beyond row retention");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 0);
+    assert_eq!(report.deleted_request_logs, 1);
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE id = ?")
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count old request log rows");
+    assert_eq!(remaining, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_change() {
     let db_path = temp_db_path("request-log-retention-gc-policy-change");
     let db_str = db_path.to_string_lossy().to_string();
