@@ -72,6 +72,7 @@ struct CliReport {
     threshold: i64,
     batch_size: i64,
     max_batches: i64,
+    cleaned_request_log_bodies: i64,
     deleted_request_logs: i64,
     deleted_rollups: i64,
     batches: i64,
@@ -93,6 +94,10 @@ impl CliReport {
             threshold: last.threshold,
             batch_size: last.batch_size,
             max_batches: last.max_batches,
+            cleaned_request_log_bodies: reports
+                .iter()
+                .map(|report| report.cleaned_request_log_bodies)
+                .sum(),
             deleted_request_logs: reports
                 .iter()
                 .map(|report| report.deleted_request_logs)
@@ -116,10 +121,11 @@ fn write_json_report(mut writer: impl Write, report: &CliReport) -> io::Result<(
 fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<()> {
     writeln!(
         writer,
-        "request_logs_gc: completed={} has_more={} passes={} deleted_request_logs={} deleted_rollups={} batches={} elapsed_ms={} retention_days={}",
+        "request_logs_gc: completed={} has_more={} passes={} cleaned_request_log_bodies={} deleted_request_logs={} deleted_rollups={} batches={} elapsed_ms={} retention_days={}",
         report.completed,
         report.has_more,
         report.passes,
+        report.cleaned_request_log_bodies,
         report.deleted_request_logs,
         report.deleted_rollups,
         report.batches,
@@ -174,6 +180,7 @@ mod tests {
                     threshold: 100,
                     batch_size: 10,
                     max_batches: 1,
+                    cleaned_request_log_bodies: 5,
                     deleted_request_logs: 10,
                     deleted_rollups: 4,
                     batches: 1,
@@ -186,6 +193,7 @@ mod tests {
                     threshold: 100,
                     batch_size: 10,
                     max_batches: 1,
+                    cleaned_request_log_bodies: 3,
                     deleted_request_logs: 2,
                     deleted_rollups: 1,
                     batches: 1,
@@ -198,6 +206,7 @@ mod tests {
 
         assert_eq!(report.deleted_request_logs, 12);
         assert_eq!(report.deleted_rollups, 5);
+        assert_eq!(report.cleaned_request_log_bodies, 8);
         assert!(report.completed);
         assert_eq!(report.elapsed_ms, 20);
     }

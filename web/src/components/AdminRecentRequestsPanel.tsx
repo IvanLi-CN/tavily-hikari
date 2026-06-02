@@ -599,22 +599,50 @@ function RecentRequestDetails({
 }): JSX.Element {
   const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
   const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
+  const cleanedReasonLabel = (reason: string | null | undefined): string => {
+    if (language === 'zh') {
+      if (reason === 'policy_zero_days') return '策略设置为 0 天'
+      if (reason === 'retention_expired') return 'body 保留到期'
+      return reason || '已清理'
+    }
+    if (reason === 'policy_zero_days') return 'zero-day policy'
+    if (reason === 'retention_expired') return 'body retention expired'
+    return reason || 'cleaned'
+  }
+  const cleanedBodySummary = (
+    source: RequestLog | RequestLogBodies,
+    kind: 'request' | 'response',
+  ): string => {
+    const bytes = kind === 'request' ? source.request_body_bytes : source.response_body_bytes
+    const sha256 = kind === 'request' ? source.request_body_sha256 : source.response_body_sha256
+    if (!source.body_cleaned_reason) return strings.logDetails.noBody
+    const lines = [
+      language === 'zh' ? '完整 body 已清理' : 'Full body was cleaned',
+      `${language === 'zh' ? '原因' : 'Reason'}: ${cleanedReasonLabel(source.body_cleaned_reason)}`,
+      `${language === 'zh' ? '原始字节数' : 'Original bytes'}: ${bytes ?? strings.logs.errors.none}`,
+      `SHA-256: ${sha256 ?? strings.logs.errors.none}`,
+    ]
+    if (source.body_cleaned_at != null) {
+      lines.push(`${language === 'zh' ? '清理时间' : 'Cleaned at'}: ${formatTime(source.body_cleaned_at)}`)
+    }
+    return lines.join('\n')
+  }
   const requestBody =
     logBodiesState?.status === 'ready'
-      ? logBodiesState.value.request_body ?? strings.logDetails.noBody
+      ? logBodiesState.value.request_body ?? cleanedBodySummary(logBodiesState.value, 'request')
       : logBodiesState?.status === 'loading'
         ? strings.logDetails.loadingBody
         : logBodiesState?.status === 'error'
           ? strings.logDetails.loadBodyFailed
-          : log.request_body ?? strings.logDetails.noBody
+          : log.request_body ?? cleanedBodySummary(log, 'request')
   const responseBody =
     logBodiesState?.status === 'ready'
-      ? logBodiesState.value.response_body ?? strings.logDetails.noBody
+      ? logBodiesState.value.response_body ?? cleanedBodySummary(logBodiesState.value, 'response')
       : logBodiesState?.status === 'loading'
         ? strings.logDetails.loadingBody
         : logBodiesState?.status === 'error'
           ? strings.logDetails.loadBodyFailed
-          : log.response_body ?? strings.logDetails.noBody
+          : log.response_body ?? cleanedBodySummary(log, 'response')
   const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
   const effectEntries = [
     hasExplicitEffect(log.key_effect_code)

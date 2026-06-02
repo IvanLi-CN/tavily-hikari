@@ -276,9 +276,8 @@ impl KeyStore {
         created_at_sql.to_string()
     }
 
-    fn clamp_request_logs_rollup_since(since: Option<i64>) -> Option<i64> {
-        let retention_since =
-            request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+    fn clamp_request_logs_rollup_since(since: Option<i64>, retention_days: i64) -> Option<i64> {
+        let retention_since = configured_request_logs_retention_threshold_utc_ts(retention_days);
         Some(since.unwrap_or(retention_since).max(retention_since))
     }
 
@@ -292,8 +291,12 @@ impl KeyStore {
         };
         let stored_request_kind_sql = col("request_kind_key");
         let effective_request_kind_sql = stored_request_kind_sql.clone();
-        let counts_business_quota_sql =
+        let fallback_counts_business_quota_sql =
             request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"));
+        let counts_business_quota_sql = format!(
+            "COALESCE({}, {fallback_counts_business_quota_sql})",
+            col("counts_business_quota")
+        );
         let operational_class_sql = request_log_operational_class_case_sql(
             &effective_request_kind_sql,
             &counts_business_quota_sql,
@@ -576,11 +579,12 @@ impl KeyStore {
         &self,
         scoped_key_id: Option<&str>,
         since: Option<i64>,
+        retention_days: i64,
         include_token_facets: bool,
         include_key_facets: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
-        let since = Self::clamp_request_logs_rollup_since(since);
+        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
         let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
             Self::request_logs_catalog_cache_key(
                 scoped_key_id,
@@ -648,7 +652,7 @@ impl KeyStore {
         };
 
         let catalog = RequestLogsCatalog {
-            retention_days: effective_request_logs_retention_days(),
+            retention_days,
             request_kind_options,
             facets: RequestLogPageFacets {
                 results,
@@ -682,6 +686,12 @@ impl KeyStore {
         direction: RequestLogsCursorDirection,
         page_size: i64,
     ) -> Result<RequestLogsCursorPage, ProxyError> {
+        let retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
         let page_size = page_size.clamp(1, 200);
         let query_limit = page_size + 1;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
@@ -695,8 +705,10 @@ impl KeyStore {
         );
         let effective_request_kind_label_sql =
             canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -775,6 +787,12 @@ impl KeyStore {
                 fallback_reason,
                 NULL AS request_body,
                 NULL AS response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
                 forwarded_headers,
                 dropped_headers,
                 remote_addr,
@@ -918,7 +936,12 @@ impl KeyStore {
         include_key_facets: bool,
         include_bodies: bool,
     ) -> Result<RequestLogsPage, ProxyError> {
-        let since = Self::clamp_request_logs_rollup_since(since);
+        let retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
@@ -938,8 +961,10 @@ impl KeyStore {
         );
         let effective_request_kind_label_sql =
             canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let stored_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
             &stored_counts_business_quota_sql,
@@ -1042,6 +1067,12 @@ impl KeyStore {
                 fallback_reason,
                 {request_body_select},
                 {response_body_select},
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
                 forwarded_headers,
                 dropped_headers,
                 remote_addr,
@@ -1398,7 +1429,12 @@ impl KeyStore {
     }
 
     pub(crate) async fn rebuild_request_log_catalog_rollups(&self) -> Result<(), ProxyError> {
-        let since = request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+        let retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        let since = configured_request_logs_retention_threshold_utc_ts(retention_days);
         let exprs = Self::request_log_catalog_rollup_exprs("");
         let canonical_request_kind_predicate_sql =
             canonical_request_kind_stored_predicate_sql("request_kind_key");

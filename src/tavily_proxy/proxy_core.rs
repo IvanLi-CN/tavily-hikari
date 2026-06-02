@@ -667,6 +667,16 @@ impl TavilyProxy {
         self.key_store.get_system_settings().await
     }
 
+    pub async fn set_user_debug_info_shared(
+        &self,
+        user_id: &str,
+        shared: bool,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .set_user_debug_info_shared(user_id, shared)
+            .await
+    }
+
     pub async fn set_system_settings(
         &self,
         settings: &SystemSettings,

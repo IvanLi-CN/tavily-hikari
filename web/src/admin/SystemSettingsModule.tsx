@@ -10,6 +10,8 @@ import {
   type AdminTotpSetup,
   type AdminTotpStatus,
   type ObservedClientIpRequest,
+  type RequestLogRetentionProfile,
+  type RequestLogRetentionSettings,
   type SystemSettings,
 } from '../api'
 import type { QueryLoadState } from './queryLoadState'
@@ -63,8 +65,40 @@ type NormalSystemSettingsOverrides = Partial<
     | 'rechargeUserEnabled'
     | 'userBlockedKeyBaseLimit'
     | 'globalIpLimit'
+    | 'requestLogRetention'
   >
 >
+
+const requestLogRetentionDayStops = [0, 1, 2, 3, 7, 14, 32, 62, 92] as const
+
+const defaultRequestLogRetention: RequestLogRetentionSettings = {
+  maxLogRetentionDays: 32,
+  heavyUsageThresholdPercent: 80,
+  global: { businessBodyDays: 7, nonBusinessBodyDays: 0, nonSuccessBodyDays: 3 },
+  heavyUsage: { businessBodyDays: 3, nonBusinessBodyDays: 0, nonSuccessBodyDays: 1 },
+  debugShared: { businessBodyDays: 14, nonBusinessBodyDays: 1, nonSuccessBodyDays: 7 },
+}
+
+function cloneRequestLogRetention(value?: RequestLogRetentionSettings): RequestLogRetentionSettings {
+  const source = value ?? defaultRequestLogRetention
+  return {
+    maxLogRetentionDays: source.maxLogRetentionDays,
+    heavyUsageThresholdPercent: source.heavyUsageThresholdPercent,
+    global: { ...source.global },
+    heavyUsage: { ...source.heavyUsage },
+    debugShared: { ...source.debugShared },
+  }
+}
+
+function dayStopIndex(value: number): number {
+  const exact = requestLogRetentionDayStops.indexOf(value as (typeof requestLogRetentionDayStops)[number])
+  if (exact >= 0) return exact
+  let best = 0
+  requestLogRetentionDayStops.forEach((stop, index) => {
+    if (Math.abs(stop - value) < Math.abs(requestLogRetentionDayStops[best] - value)) best = index
+  })
+  return best
+}
 
 function isValidCountDraft(value: string): value is `${number}` {
   if (!/^\d+$/.test(value)) return false
@@ -223,6 +257,9 @@ export default function SystemSettingsModule({
     settings ? String(settings.userBlockedKeyBaseLimit) : '5',
   )
   const [draftGlobalIpLimit, setDraftGlobalIpLimit] = useState(() => (settings ? String(settings.globalIpLimit) : '5'))
+  const [draftRequestLogRetention, setDraftRequestLogRetention] = useState<RequestLogRetentionSettings>(() =>
+    cloneRequestLogRetention(settings?.requestLogRetention),
+  )
   const [clientIpDialogOpen, setClientIpDialogOpen] = useState(false)
   const [draftTrustedProxyCidrs, setDraftTrustedProxyCidrs] = useState(
     () => settings?.trustedProxyCidrs?.join('\n') ?? '',
@@ -250,6 +287,7 @@ export default function SystemSettingsModule({
     setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
     setDraftBlockedKeyBaseLimit(settings ? String(settings.userBlockedKeyBaseLimit) : '5')
     setDraftGlobalIpLimit(settings ? String(settings.globalIpLimit) : '5')
+    setDraftRequestLogRetention(cloneRequestLogRetention(settings?.requestLogRetention))
     if (!clientIpDialogOpen) {
       setDraftTrustedProxyCidrs(settings?.trustedProxyCidrs?.join('\n') ?? '')
       setDraftTrustedClientIpHeaders(settings?.trustedClientIpHeaders?.join('\n') ?? '')
@@ -265,6 +303,7 @@ export default function SystemSettingsModule({
     settings?.rechargeUserEnabled,
     settings?.userBlockedKeyBaseLimit,
     settings?.globalIpLimit,
+    settings?.requestLogRetention,
     settings?.trustedProxyCidrs,
     settings?.trustedClientIpHeaders,
     clientIpDialogOpen,
@@ -394,7 +433,8 @@ export default function SystemSettingsModule({
       draftRechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       draftRechargeUserEnabled !== settings.rechargeUserEnabled ||
       parsedBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit ||
-      parsedGlobalIpLimit !== settings.globalIpLimit)
+      parsedGlobalIpLimit !== settings.globalIpLimit ||
+      JSON.stringify(draftRequestLogRetention) !== JSON.stringify(settings.requestLogRetention))
   const trustedClientIpChanged =
     settings != null &&
     parsedTrustedClientIpHeaders.duplicateError == null &&
@@ -456,6 +496,7 @@ export default function SystemSettingsModule({
       rechargeUserEnabled: overrides.rechargeUserEnabled ?? draftRechargeUserEnabled,
       userBlockedKeyBaseLimit: overrides.userBlockedKeyBaseLimit ?? parsedBlockedKeyBaseLimit,
       globalIpLimit: overrides.globalIpLimit ?? parsedGlobalIpLimit,
+      requestLogRetention: overrides.requestLogRetention ?? draftRequestLogRetention,
       trustedProxyCidrs: settings.trustedProxyCidrs,
       trustedClientIpHeaders: settings.trustedClientIpHeaders,
     }
@@ -472,7 +513,8 @@ export default function SystemSettingsModule({
       payload.rechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       payload.rechargeUserEnabled !== settings.rechargeUserEnabled ||
       payload.userBlockedKeyBaseLimit !== settings.userBlockedKeyBaseLimit ||
-      payload.globalIpLimit !== settings.globalIpLimit)
+      payload.globalIpLimit !== settings.globalIpLimit ||
+      JSON.stringify(payload.requestLogRetention) !== JSON.stringify(settings.requestLogRetention))
 
   const commitNormalSettings = (overrides: NormalSystemSettingsOverrides = {}): Promise<boolean> => {
     if (saving) return Promise.resolve(false)
@@ -524,6 +566,58 @@ export default function SystemSettingsModule({
     } catch {
       // Parent state owns the visible save error; keep the dialog draft intact.
     }
+  }
+  const updateRetentionDraft = (
+    updater: (current: RequestLogRetentionSettings) => RequestLogRetentionSettings,
+  ): RequestLogRetentionSettings => {
+    const next = updater(cloneRequestLogRetention(draftRequestLogRetention))
+    setDraftRequestLogRetention(next)
+    return next
+  }
+  const commitRetentionSettings = (next = draftRequestLogRetention): Promise<boolean> =>
+    commitNormalSettings({ requestLogRetention: next })
+  const setRetentionProfileField = (
+    profileKey: 'global' | 'heavyUsage' | 'debugShared',
+    field: keyof RequestLogRetentionProfile,
+    value: number,
+  ) =>
+    updateRetentionDraft((current) => ({
+      ...current,
+      [profileKey]: {
+        ...current[profileKey],
+        [field]: value,
+      },
+    }))
+  const retentionDaySlider = (
+    label: string,
+    profileKey: 'global' | 'heavyUsage' | 'debugShared',
+    field: keyof RequestLogRetentionProfile,
+  ) => {
+    const value = draftRequestLogRetention[profileKey][field]
+    return (
+      <label className="grid gap-2 text-sm">
+        <span className="font-medium">{label}</span>
+        <div className="grid grid-cols-[minmax(0,1fr),64px] items-center gap-3">
+          <input
+            className="range"
+            type="range"
+            min={0}
+            max={requestLogRetentionDayStops.length - 1}
+            step={1}
+            value={dayStopIndex(value)}
+            disabled={saving}
+            onChange={(event) => {
+              const stop = requestLogRetentionDayStops[Number.parseInt(event.target.value, 10)] ?? 0
+              setRetentionProfileField(profileKey, field, stop)
+            }}
+            onBlur={() => {
+              void commitRetentionSettings()
+            }}
+          />
+          <span className="text-right font-mono text-sm">{value}d</span>
+        </div>
+      </label>
+    )
   }
   const observedClientIpRequestsSection = (
     <div className="grid gap-3 rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
@@ -1040,6 +1134,104 @@ export default function SystemSettingsModule({
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
+              </div>
+            </div>
+          </section>
+
+          <section
+            className="system-settings-config-section system-settings-retention-section"
+            data-testid="request-log-retention-settings"
+          >
+            <h4>调用日志保留</h4>
+            <div className="system-settings-retention-content">
+              <div className="system-settings-field-grid system-settings-field-grid--limits">
+                <div className="system-settings-field">
+                  <label className="text-sm font-medium" htmlFor="system-settings-request-log-max-days">
+                    最大日志行保留
+                  </label>
+                  <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),64px] md:items-center">
+                    <input
+                      id="system-settings-request-log-max-days"
+                      className="range"
+                      type="range"
+                      min={0}
+                      max={requestLogRetentionDayStops.length - 1}
+                      step={1}
+                      value={dayStopIndex(draftRequestLogRetention.maxLogRetentionDays)}
+                      disabled={saving}
+                      onChange={(event) => {
+                        const maxLogRetentionDays =
+                          requestLogRetentionDayStops[Number.parseInt(event.target.value, 10)] ?? 32
+                        const next = updateRetentionDraft((current) => ({
+                          ...current,
+                          maxLogRetentionDays,
+                        }))
+                        if (maxLogRetentionDays < draftRequestLogRetention.maxLogRetentionDays) {
+                          setDraftRequestLogRetention(cloneRequestLogRetention(next))
+                        }
+                      }}
+                      onBlur={() => {
+                        void commitRetentionSettings()
+                      }}
+                    />
+                    <span className="text-right font-mono text-sm">{draftRequestLogRetention.maxLogRetentionDays}d</span>
+                  </div>
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    到期日志行会由 request_logs_gc 分批删除，body 会先按下方策略清空。
+                  </p>
+                </div>
+
+                <div className="system-settings-field">
+                  <label className="text-sm font-medium" htmlFor="system-settings-heavy-usage-threshold">
+                    高频用户阈值
+                  </label>
+                  <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),64px] md:items-center">
+                    <input
+                      id="system-settings-heavy-usage-threshold"
+                      className="range"
+                      type="range"
+                      min={50}
+                      max={150}
+                      step={10}
+                      value={draftRequestLogRetention.heavyUsageThresholdPercent}
+                      disabled={saving}
+                      onChange={(event) => {
+                        const heavyUsageThresholdPercent = Number.parseInt(event.target.value, 10)
+                        updateRetentionDraft((current) => ({ ...current, heavyUsageThresholdPercent }))
+                      }}
+                      onBlur={() => {
+                        void commitRetentionSettings()
+                      }}
+                    />
+                    <span className="text-right font-mono text-sm">
+                      {draftRequestLogRetention.heavyUsageThresholdPercent}%
+                    </span>
+                  </div>
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    最近 24 小时额度使用比例达到该阈值时，使用高频用户 body 保留策略。
+                  </p>
+                </div>
+              </div>
+
+              <div className="system-settings-retention-profiles">
+                <div className="system-settings-retention-card">
+                  <h5 className="text-sm font-semibold">全局默认</h5>
+                  {retentionDaySlider('业务 body', 'global', 'businessBodyDays')}
+                  {retentionDaySlider('非业务 body', 'global', 'nonBusinessBodyDays')}
+                  {retentionDaySlider('非成功 body', 'global', 'nonSuccessBodyDays')}
+                </div>
+                <div className="system-settings-retention-card">
+                  <h5 className="text-sm font-semibold">高频调用用户</h5>
+                  {retentionDaySlider('业务 body', 'heavyUsage', 'businessBodyDays')}
+                  {retentionDaySlider('非业务 body', 'heavyUsage', 'nonBusinessBodyDays')}
+                  {retentionDaySlider('非成功 body', 'heavyUsage', 'nonSuccessBodyDays')}
+                </div>
+                <div className="system-settings-retention-card">
+                  <h5 className="text-sm font-semibold">共享调试用户</h5>
+                  {retentionDaySlider('业务 body', 'debugShared', 'businessBodyDays')}
+                  {retentionDaySlider('非业务 body', 'debugShared', 'nonBusinessBodyDays')}
+                  {retentionDaySlider('非成功 body', 'debugShared', 'nonSuccessBodyDays')}
+                </div>
               </div>
             </div>
           </section>

@@ -891,6 +891,157 @@ async fn dashboard_rollup_bounded_rebuild_is_idempotent() {
 }
 
 #[tokio::test]
+async fn rollup_rebuilds_preserve_cleaned_batch_business_classification() {
+    let db_path = temp_db_path("rollup-rebuild-cleaned-batch-classification");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-rollup-cleaned-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let created_at = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 34, 56)
+        .single()
+        .expect("valid timestamp")
+        .timestamp();
+
+    for (offset, counts_business_quota) in [(0_i64, 0_i64), (1_i64, 1_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_body,
+                response_body,
+                counts_business_quota,
+                body_cleaned_reason,
+                body_cleaned_at,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (?, NULL, 'POST', '/mcp', NULL, 200, 200, NULL, 'success', 'mcp:batch', 'MCP | batch', NULL, NULL, ?, 'retention_expired', ?, '[]', '[]', ?, ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(counts_business_quota)
+        .bind(created_at + 10)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(created_at + offset)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert cleaned batch request log");
+    }
+
+    proxy
+        .rebuild_api_key_usage_buckets()
+        .await
+        .expect("rebuild api key usage buckets");
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets()
+        .await
+        .expect("rebuild dashboard rollups");
+
+    let usage_bucket = sqlx::query(
+        r#"
+        SELECT valuable_success_count, other_success_count, unknown_count
+        FROM api_key_usage_buckets
+        WHERE api_key_id = ? AND bucket_secs = 86400 AND bucket_start = ?
+        "#,
+    )
+    .bind(&key_id)
+    .bind(local_day_bucket_start_utc_ts(created_at))
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("usage bucket");
+    assert_eq!(
+        usage_bucket
+            .try_get::<i64, _>("valuable_success_count")
+            .expect("usage valuable"),
+        1
+    );
+    assert_eq!(
+        usage_bucket
+            .try_get::<i64, _>("other_success_count")
+            .expect("usage other"),
+        1
+    );
+    assert_eq!(
+        usage_bucket
+            .try_get::<i64, _>("unknown_count")
+            .expect("usage unknown"),
+        0
+    );
+
+    let dashboard_bucket = sqlx::query(
+        r#"
+        SELECT valuable_success_count, other_success_count, unknown_count, mcp_billable, mcp_non_billable
+        FROM dashboard_request_rollup_buckets
+        WHERE bucket_secs = 60 AND bucket_start = ?
+        "#,
+    )
+    .bind(created_at.div_euclid(60) * 60)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("dashboard bucket");
+    assert_eq!(
+        dashboard_bucket
+            .try_get::<i64, _>("valuable_success_count")
+            .expect("dashboard valuable"),
+        1
+    );
+    assert_eq!(
+        dashboard_bucket
+            .try_get::<i64, _>("other_success_count")
+            .expect("dashboard other"),
+        1
+    );
+    assert_eq!(
+        dashboard_bucket
+            .try_get::<i64, _>("unknown_count")
+            .expect("dashboard unknown"),
+        0
+    );
+    assert_eq!(
+        dashboard_bucket
+            .try_get::<i64, _>("mcp_billable")
+            .expect("dashboard mcp billable"),
+        1
+    );
+    assert_eq!(
+        dashboard_bucket
+            .try_get::<i64, _>("mcp_non_billable")
+            .expect("dashboard mcp non-billable"),
+        1
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn suppressed_retry_shadow_logs_are_hidden_from_recent_logs_and_summary_windows() {
     let db_path = temp_db_path("summary-windows-suppressed-retry-shadow");
     let db_str = db_path.to_string_lossy().to_string();

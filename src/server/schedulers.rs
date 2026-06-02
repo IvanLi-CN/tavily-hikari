@@ -381,7 +381,8 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
                 {
                     Ok(report) => {
                         let msg = format!(
-                            "deleted_rows={} rollup_deleted={} completed={} retention_days={} batches={} elapsed_ms={}",
+                            "cleaned_bodies={} deleted_rows={} rollup_deleted={} completed={} retention_days={} batches={} elapsed_ms={}",
+                            report.cleaned_request_log_bodies,
                             report.deleted_request_logs,
                             report.deleted_rollups,
                             report.completed,

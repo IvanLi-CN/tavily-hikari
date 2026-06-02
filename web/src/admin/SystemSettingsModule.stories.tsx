@@ -7,6 +7,14 @@ import type { SystemSettings } from '../api'
 import type { AdminDisplayDensity } from './displayDensity'
 import { translations } from '../i18n'
 
+const requestLogRetention = {
+  maxLogRetentionDays: 32,
+  heavyUsageThresholdPercent: 80,
+  global: { businessBodyDays: 7, nonBusinessBodyDays: 0, nonSuccessBodyDays: 3 },
+  heavyUsage: { businessBodyDays: 3, nonBusinessBodyDays: 0, nonSuccessBodyDays: 1 },
+  debugShared: { businessBodyDays: 14, nonBusinessBodyDays: 1, nonSuccessBodyDays: 7 },
+}
+
 function SystemSettingsCanvas(props: {
   requestRateLimit?: number
   count?: number
@@ -43,6 +51,7 @@ function SystemSettingsCanvas(props: {
       'cf-connecting-ipv6',
       'eo-connecting-ip',
     ],
+    requestLogRetention,
   })
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -195,6 +204,7 @@ const meta = {
       globalIpLimit: 5,
       trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
       trustedClientIpHeaders: ['cf-connecting-ip', 'x-forwarded-for'],
+      requestLogRetention,
     },
     loadState: 'ready',
     error: null,

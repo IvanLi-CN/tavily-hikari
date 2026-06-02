@@ -1172,6 +1172,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1465,6 +1466,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("disable rebalance mcp");
@@ -1517,6 +1519,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1608,6 +1611,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1844,6 +1848,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2084,6 +2089,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2190,6 +2196,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2266,6 +2273,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2333,6 +2341,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2941,6 +2950,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("seed system settings");

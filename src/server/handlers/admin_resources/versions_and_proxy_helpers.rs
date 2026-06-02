@@ -691,6 +691,7 @@ struct SystemSettingsUpdatePayload {
     global_ip_limit: Option<i64>,
     trusted_proxy_cidrs: Option<Vec<String>>,
     trusted_client_ip_headers: Option<Vec<String>>,
+    request_log_retention: Option<tavily_hikari::RequestLogRetentionSettings>,
 }
 
 #[derive(Debug, Serialize)]

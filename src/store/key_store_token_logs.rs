@@ -1,3 +1,31 @@
+struct RequestLogBodyStorageDecision<'a> {
+    request_body: Option<&'a [u8]>,
+    response_body: Option<&'a [u8]>,
+    request_body_bytes: i64,
+    response_body_bytes: i64,
+    request_body_sha256: String,
+    response_body_sha256: String,
+    body_retention_days: i64,
+    body_retention_profile: &'static str,
+    body_cleaned_reason: Option<&'static str>,
+    body_cleaned_at: Option<i64>,
+}
+
+struct RequestLogBodyStorageInput<'a> {
+    request_body: &'a [u8],
+    response_body: &'a [u8],
+    created_at: i64,
+}
+
+struct RequestLogBodyRetentionDecision {
+    days: i64,
+    profile: &'static str,
+}
+
+const REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL: &str = "global";
+const REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE: &str = "heavy_usage";
+const REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED: &str = "debug_shared";
+
 impl KeyStore {
     pub async fn fetch_token_logs(
         &self,
@@ -1701,6 +1729,140 @@ impl KeyStore {
         Ok(())
     }
 
+    fn request_log_body_days_for_profile(
+        profile: &RequestLogRetentionProfile,
+        result_status: &str,
+        request_value_bucket: RequestValueBucket,
+    ) -> i64 {
+        if result_status != OUTCOME_SUCCESS {
+            return profile.non_success_body_days;
+        }
+        match request_value_bucket {
+            RequestValueBucket::Valuable => profile.business_body_days,
+            RequestValueBucket::Other | RequestValueBucket::Unknown => profile.non_business_body_days,
+        }
+    }
+
+    async fn request_log_user_is_heavy_usage(
+        &self,
+        user_id: &str,
+        threshold_percent: i64,
+        additional_usage: i64,
+    ) -> Result<bool, ProxyError> {
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+        let current_hour = now_ts - now_ts.rem_euclid(SECS_PER_HOUR);
+        let rolling_hour_start = current_hour.saturating_sub(23 * SECS_PER_HOUR);
+        let local_now = now.with_timezone(&Local);
+        let day_start = start_of_local_day_utc_ts(local_now);
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let current_day_used = self
+            .sum_account_usage_buckets(user_id, GRANULARITY_DAY, day_start)
+            .await?
+            + self
+                .sum_account_usage_buckets_between(user_id, GRANULARITY_HOUR, day_start, day_end)
+                .await?;
+        let rolling_hour_used = self
+            .sum_account_usage_buckets_between(
+                user_id,
+                GRANULARITY_HOUR,
+                rolling_hour_start,
+                current_hour.saturating_add(SECS_PER_HOUR),
+            )
+            .await?;
+        let recent_minute_used = self
+            .sum_account_usage_buckets_between(
+                user_id,
+                GRANULARITY_MINUTE,
+                rolling_hour_start,
+                now_ts.saturating_add(SECS_PER_MINUTE),
+            )
+            .await?;
+        let used = current_day_used
+            .max(rolling_hour_used)
+            .max(recent_minute_used)
+            .saturating_add(additional_usage.max(0));
+        let resolution = self.resolve_account_quota_resolution(user_id).await?;
+        let daily_limit = resolution.effective.daily_limit;
+        Ok(daily_limit > 0
+            && i128::from(used).saturating_mul(100)
+                >= i128::from(daily_limit).saturating_mul(i128::from(threshold_percent)))
+    }
+
+    async fn request_log_body_retention_decision(
+        &self,
+        settings: &RequestLogRetentionSettings,
+        user_id: Option<&str>,
+        result_status: &str,
+        request_value_bucket: RequestValueBucket,
+        additional_usage: i64,
+        include_debug_shared: bool,
+    ) -> Result<RequestLogBodyRetentionDecision, ProxyError> {
+        if let Some(user_id) = user_id {
+            if include_debug_shared && self.user_debug_info_shared(user_id).await? {
+                return Ok(RequestLogBodyRetentionDecision {
+                    days: Self::request_log_body_days_for_profile(
+                    &settings.debug_shared,
+                    result_status,
+                    request_value_bucket,
+                    ),
+                    profile: REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED,
+                });
+            }
+
+            if self
+                .request_log_user_is_heavy_usage(
+                    user_id,
+                    settings.heavy_usage_threshold_percent,
+                    additional_usage,
+                )
+                .await?
+            {
+                return Ok(RequestLogBodyRetentionDecision {
+                    days: Self::request_log_body_days_for_profile(
+                    &settings.heavy_usage,
+                    result_status,
+                    request_value_bucket,
+                    ),
+                    profile: REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE,
+                });
+            }
+        }
+
+        Ok(RequestLogBodyRetentionDecision {
+            days: Self::request_log_body_days_for_profile(
+                &settings.global,
+                result_status,
+                request_value_bucket,
+            ),
+            profile: REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL,
+        })
+    }
+
+    fn request_log_body_storage_decision<'a>(
+        retention_days: i64,
+        retention_profile: &'static str,
+        input: RequestLogBodyStorageInput<'a>,
+    ) -> RequestLogBodyStorageDecision<'a> {
+        let request_body_bytes = input.request_body.len() as i64;
+        let response_body_bytes = input.response_body.len() as i64;
+        let body_cleaned_reason = (retention_days <= 0
+            && (request_body_bytes > 0 || response_body_bytes > 0))
+            .then_some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO);
+        RequestLogBodyStorageDecision {
+            request_body: (retention_days > 0).then_some(input.request_body),
+            response_body: (retention_days > 0).then_some(input.response_body),
+            request_body_bytes,
+            response_body_bytes,
+            request_body_sha256: sha256_hex_bytes(input.request_body),
+            response_body_sha256: sha256_hex_bytes(input.response_body),
+            body_retention_days: retention_days,
+            body_retention_profile: retention_profile,
+            body_cleaned_reason,
+            body_cleaned_at: body_cleaned_reason.map(|_| input.created_at),
+        }
+    }
+
     pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
@@ -1766,6 +1928,30 @@ impl KeyStore {
         };
         let request_value_bucket =
             request_value_bucket_for_request_log(&request_kind.key, Some(entry.request_body));
+        let counts_business_quota =
+            request_log_counts_business_quota(&request_kind.key, Some(entry.request_body));
+        let retention_usage_delta =
+            i64::from(counts_business_quota && entry.outcome == OUTCOME_SUCCESS);
+        let system_settings = self.get_system_settings().await?;
+        let retention_decision = self
+            .request_log_body_retention_decision(
+                &system_settings.request_log_retention,
+                request_user_id.as_deref(),
+                entry.outcome,
+                request_value_bucket,
+                retention_usage_delta,
+                true,
+            )
+            .await?;
+        let body_storage = Self::request_log_body_storage_decision(
+            retention_decision.days,
+            retention_decision.profile,
+            RequestLogBodyStorageInput {
+                request_body: entry.request_body,
+                response_body: entry.response_body,
+                created_at,
+            },
+        );
         let (
             bucket_valuable_success,
             bucket_valuable_failure,
@@ -1791,6 +1977,7 @@ impl KeyStore {
             entry.outcome,
             failure_kind.as_deref(),
             0,
+            counts_business_quota,
         );
         let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
 
@@ -1812,6 +1999,7 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
+                counts_business_quota,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -1828,6 +2016,14 @@ impl KeyStore {
                 fallback_reason,
                 request_body,
                 response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_retention_days,
+                body_retention_profile,
+                body_cleaned_reason,
+                body_cleaned_at,
                 forwarded_headers,
                 dropped_headers,
                 remote_addr,
@@ -1836,7 +2032,7 @@ impl KeyStore {
                 client_ip_trusted,
                 ip_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -1853,6 +2049,7 @@ impl KeyStore {
         .bind(&request_kind.key)
         .bind(&request_kind.label)
         .bind(request_kind.detail.as_deref())
+        .bind(i64::from(counts_business_quota))
         .bind(None::<i64>)
         .bind(failure_kind)
         .bind(entry.key_effect_code)
@@ -1867,8 +2064,16 @@ impl KeyStore {
         .bind(entry.routing_subject_hash)
         .bind(entry.upstream_operation)
         .bind(entry.fallback_reason)
-        .bind(entry.request_body)
-        .bind(entry.response_body)
+        .bind(body_storage.request_body)
+        .bind(body_storage.response_body)
+        .bind(body_storage.request_body_bytes)
+        .bind(body_storage.response_body_bytes)
+        .bind(body_storage.request_body_sha256)
+        .bind(body_storage.response_body_sha256)
+        .bind(body_storage.body_retention_days)
+        .bind(body_storage.body_retention_profile)
+        .bind(body_storage.body_cleaned_reason)
+        .bind(body_storage.body_cleaned_at)
         .bind(forwarded_json)
         .bind(dropped_json)
         .bind(remote_addr)
@@ -2477,11 +2682,13 @@ impl KeyStore {
     pub(crate) async fn fetch_recent_logs(
         &self,
         limit: usize,
+        since: Option<i64>,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
 
-        let rows = sqlx::query(
-            r#"
+        let rows = if let Some(since) = since {
+            sqlx::query(
+                r#"
             SELECT
                 id,
                 api_key_id,
@@ -2496,6 +2703,7 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
+                counts_business_quota,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -2512,6 +2720,71 @@ impl KeyStore {
                 fallback_reason,
                 request_body,
                 response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
+                forwarded_headers,
+                dropped_headers,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
+                created_at
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(since)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                counts_business_quota,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
+                request_body,
+                response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
                 forwarded_headers,
                 dropped_headers,
                 remote_addr,
@@ -2525,11 +2798,12 @@ impl KeyStore {
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         let records = rows
             .into_iter()
@@ -2752,6 +3026,11 @@ impl KeyStore {
         );
         let result_status: String = row.try_get("result_status")?;
         let failure_kind: Option<String> = row.try_get("failure_kind")?;
+        let counts_business_quota =
+            match row.try_get::<Option<i64>, _>("counts_business_quota") {
+                Ok(Some(value)) => value != 0,
+                _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
+            };
         let request_kind_protocol_group =
             match row.try_get::<Option<String>, _>("request_kind_protocol_group") {
                 Ok(Some(value)) => value,
@@ -2760,19 +3039,19 @@ impl KeyStore {
         let request_kind_billing_group =
             match row.try_get::<Option<String>, _>("request_kind_billing_group") {
                 Ok(Some(value)) => value,
-                _ => token_request_kind_billing_group_for_request_log(
+                _ => token_request_kind_billing_group_for_token_log(
                     &request_kind.key,
-                    request_body.as_deref(),
+                    counts_business_quota,
                 )
                 .to_string(),
             };
         let operational_class = match row.try_get::<Option<String>, _>("operational_class") {
             Ok(Some(value)) => value,
-            _ => operational_class_for_request_log(
+            _ => operational_class_for_token_log(
                 &request_kind.key,
-                request_body.as_deref(),
                 result_status.as_str(),
                 failure_kind.as_deref(),
+                counts_business_quota,
             )
             .to_string(),
         };
@@ -2810,6 +3089,12 @@ impl KeyStore {
             operational_class,
             request_body: request_body.unwrap_or_default(),
             response_body: response_body.unwrap_or_default(),
+            request_body_bytes: row.try_get("request_body_bytes")?,
+            response_body_bytes: row.try_get("response_body_bytes")?,
+            request_body_sha256: row.try_get("request_body_sha256")?,
+            response_body_sha256: row.try_get("response_body_sha256")?,
+            body_cleaned_reason: row.try_get("body_cleaned_reason")?,
+            body_cleaned_at: row.try_get("body_cleaned_at")?,
             created_at: row.try_get("created_at")?,
             forwarded_headers: forwarded,
             dropped_headers: dropped,
@@ -2827,6 +3112,12 @@ impl KeyStore {
         Ok(RequestLogBodiesRecord {
             request_body: row.try_get("request_body")?,
             response_body: row.try_get("response_body")?,
+            request_body_bytes: row.try_get("request_body_bytes")?,
+            response_body_bytes: row.try_get("response_body_bytes")?,
+            request_body_sha256: row.try_get("request_body_sha256")?,
+            response_body_sha256: row.try_get("response_body_sha256")?,
+            body_cleaned_reason: row.try_get("body_cleaned_reason")?,
+            body_cleaned_at: row.try_get("body_cleaned_at")?,
         })
     }
 
@@ -2836,7 +3127,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, response_body,
+                   request_body_bytes, response_body_bytes,
+                   request_body_sha256, response_body_sha256,
+                   body_cleaned_reason, body_cleaned_at
             FROM request_logs
             WHERE id = ? AND visibility = ?
             LIMIT 1
@@ -2858,7 +3152,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, response_body,
+                   request_body_bytes, response_body_bytes,
+                   request_body_sha256, response_body_sha256,
+                   body_cleaned_reason, body_cleaned_at
             FROM request_logs
             WHERE id = ? AND api_key_id = ? AND visibility = ?
             LIMIT 1
@@ -2881,7 +3178,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT rl.request_body, rl.response_body
+            SELECT rl.request_body, rl.response_body,
+                   rl.request_body_bytes, rl.response_body_bytes,
+                   rl.request_body_sha256, rl.response_body_sha256,
+                   rl.body_cleaned_reason, rl.body_cleaned_at
             FROM auth_token_logs atl
             LEFT JOIN request_logs rl
               ON rl.id = atl.request_log_id

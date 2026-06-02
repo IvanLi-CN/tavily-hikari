@@ -46,6 +46,10 @@ export const EN = {
     hourly: 'Hourly Quota',
     daily: 'Daily Quota',
     monthly: 'Monthly Quota',
+    debugSharing: 'Share debug information',
+    debugSharingHint: 'When enabled, admins may retain request bodies longer according to the debug-sharing policy.',
+    debugSharingSaving: 'Updating debug sharing…',
+    debugSharingFailed: 'Failed to update debug sharing: {message}',
   },
   recharge: {
     title: 'Credit Recharge',
@@ -322,6 +326,10 @@ export const ZH = {
     hourly: '小时配额',
     daily: '日配额',
     monthly: '月配额',
+    debugSharing: '共享调试信息',
+    debugSharingHint: '开启后，管理员可按共享调试策略延长请求 body 保留时间。',
+    debugSharingSaving: '正在更新调试共享…',
+    debugSharingFailed: '更新调试共享失败：{message}',
   },
   recharge: {
     title: '积分充值',

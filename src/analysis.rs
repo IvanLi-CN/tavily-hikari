@@ -1746,7 +1746,10 @@ pub fn operational_class_for_request_path(
     )
 }
 
-fn request_log_counts_business_quota(request_kind_key: &str, body: Option<&[u8]>) -> bool {
+pub(crate) fn request_log_counts_business_quota(
+    request_kind_key: &str,
+    body: Option<&[u8]>,
+) -> bool {
     let normalized = request_kind_key.trim();
     if normalized == "mcp:session-delete-unsupported" {
         return false;

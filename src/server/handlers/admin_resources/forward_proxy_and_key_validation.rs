@@ -77,6 +77,9 @@ async fn put_system_settings(
             trusted_client_ip_headers: payload
                 .trusted_client_ip_headers
                 .unwrap_or(current_settings.trusted_client_ip_headers),
+            request_log_retention: payload
+                .request_log_retention
+                .unwrap_or(current_settings.request_log_retention),
         })
         .await
         .map(Json)
@@ -89,6 +92,12 @@ async fn put_system_settings(
                 || message.contains("api_rebalance_percent must be between")
                 || message.contains("user_blocked_key_base_limit must be")
                 || message.contains("global_ip_limit must be")
+                || message.contains("request_log_retention")
+                || message.contains("max_log_retention_days")
+                || message.contains("business_body_days")
+                || message.contains("non_business_body_days")
+                || message.contains("non_success_body_days")
+                || message.contains("heavy_usage_threshold_percent")
                 || message.contains("trusted_proxy_cidrs")
                 || message.contains("trusted_client_ip_headers")
             {

@@ -129,12 +129,17 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
+                       counts_business_quota,
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
                 binding_effect_code, binding_effect_summary,
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers,
+                       request_body, response_body,
+                       request_body_bytes, response_body_bytes,
+                       request_body_sha256, response_body_sha256,
+                       body_cleaned_reason, body_cleaned_at,
+                       created_at, forwarded_headers, dropped_headers,
                        remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
@@ -153,12 +158,17 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
+                       counts_business_quota,
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
                 binding_effect_code, binding_effect_summary,
                 selection_effect_code, selection_effect_summary,
                 gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
                 upstream_operation, fallback_reason,
-                       request_body, response_body, created_at, forwarded_headers, dropped_headers,
+                       request_body, response_body,
+                       request_body_bytes, response_body_bytes,
+                       request_body_sha256, response_body_sha256,
+                       body_cleaned_reason, body_cleaned_at,
+                       created_at, forwarded_headers, dropped_headers,
                        remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?

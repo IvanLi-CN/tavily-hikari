@@ -338,6 +338,1294 @@ impl Drop for RequestLogsRetentionEnvGuard {
 }
 
 #[tokio::test]
+async fn request_log_retention_settings_clamp_days_to_max_and_reject_bad_threshold() {
+    let db_path = temp_db_path("request-log-retention-settings-clamp");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load system settings");
+    proxy
+        .key_store
+        .set_meta_string("request_log_body_gc_cursor_v1", "1:2:9999999999")
+        .await
+        .expect("seed body gc cursor");
+    settings.request_log_retention.max_log_retention_days = 7;
+    settings.request_log_retention.global.business_body_days = 92;
+    settings.request_log_retention.debug_shared.non_success_body_days = 32;
+    let saved = proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save clamped retention settings");
+    assert_eq!(saved.request_log_retention.global.business_body_days, 7);
+    assert_eq!(saved.request_log_retention.debug_shared.non_success_body_days, 7);
+    assert!(
+        proxy
+            .key_store
+            .get_meta_string("request_log_body_gc_cursor_v1")
+            .await
+            .expect("read body gc cursor")
+            .is_none()
+    );
+
+    let mut invalid = saved.clone();
+    invalid.request_log_retention.heavy_usage_threshold_percent = 85;
+    assert!(proxy.set_system_settings(&invalid).await.is_err());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
+    let db_path = temp_db_path("request-log-retention-nonbusiness-body");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(vec!["tvly-body-policy".to_string()], DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+
+    let request_body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let response_body = br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search"}]}}"#;
+    let log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: Some(&key_id),
+            auth_token_id: None,
+            method: &Method::POST,
+            path: "/mcp",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body,
+            response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+            client_ip: None,
+        })
+        .await
+        .expect("log non-business attempt");
+
+    let row: (Option<Vec<u8>>, Option<Vec<u8>>, Option<i64>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            r#"
+            SELECT request_body, response_body, request_body_bytes, request_body_sha256, body_cleaned_reason
+            FROM request_logs WHERE id = ?
+            "#,
+        )
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch request log body metadata");
+    assert!(row.0.is_none());
+    assert!(row.1.is_none());
+    assert_eq!(row.2, Some(request_body.len() as i64));
+    assert_eq!(row.3.as_deref(), Some(sha256_hex_bytes(request_body).as_str()));
+    assert_eq!(row.4.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_policy_preserves_batch_non_business_classification_without_body() {
+    let db_path = temp_db_path("request-log-retention-batch-classification-without-body");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(vec!["tvly-body-policy-batch".to_string()], DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+
+    let request_body =
+        br#"[{"jsonrpc":"2.0","id":1,"method":"initialize"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#;
+    let response_body =
+        br#"[{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}},{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}]"#;
+    let log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: Some(&key_id),
+            auth_token_id: None,
+            method: &Method::POST,
+            path: "/mcp",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body,
+            response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+            client_ip: None,
+        })
+        .await
+        .expect("log non-business batch attempt");
+
+    let stored: (Option<Vec<u8>>, Option<i64>, String) = sqlx::query_as(
+        "SELECT request_body, counts_business_quota, request_kind_key FROM request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch stored batch request log");
+    assert!(stored.0.is_none());
+    assert_eq!(stored.1, Some(0));
+    assert_eq!(stored.2, "mcp:batch");
+
+    let direct_logs = proxy
+        .key_store
+        .fetch_recent_logs(10, None)
+        .await
+        .expect("fetch direct recent logs");
+    let direct_log = direct_logs
+        .iter()
+        .find(|log| log.id == log_id)
+        .expect("direct recent log exists");
+    assert_eq!(direct_log.request_kind_billing_group, "non_billable");
+    assert_eq!(direct_log.operational_class, "neutral");
+
+    let (page_logs, _) = proxy
+        .key_store
+        .fetch_recent_logs_page(None, None, 1, 10)
+        .await
+        .expect("fetch paged recent logs");
+    let page_log = page_logs
+        .iter()
+        .find(|log| log.id == log_id)
+        .expect("paged recent log exists");
+    assert_eq!(page_log.request_kind_billing_group, "non_billable");
+    assert_eq!(page_log.operational_class, "neutral");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_policy_keeps_debug_shared_business_body() {
+    let db_path = temp_db_path("request-log-retention-debug-shared-body");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-retention-debug-shared".to_string(),
+            username: Some("request_log_retention_debug_shared".to_string()),
+            name: Some("Request Log Retention Debug Shared".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("request-log-retention-debug-shared"))
+        .await
+        .expect("bind token");
+    proxy
+        .key_store
+        .set_meta_string("request_log_body_gc_cursor_v1", "1:2:9999999999")
+        .await
+        .expect("seed body gc cursor");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+    assert!(
+        proxy
+            .key_store
+            .get_meta_string("request_log_body_gc_cursor_v1")
+            .await
+            .expect("read body gc cursor")
+            .is_none()
+    );
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.business_body_days = 0;
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let request_body = br#"{"query":"debug shared"}"#;
+    let response_body = br#"{"answer":"retained"}"#;
+    let log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: None,
+            auth_token_id: Some(&token.id),
+            method: &Method::POST,
+            path: "/api/tavily/search",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body,
+            response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+            client_ip: None,
+        })
+        .await
+        .expect("log debug shared attempt");
+
+    let row: (Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch request log body");
+    assert_eq!(row.0.as_deref(), Some(request_body.as_slice()));
+    assert!(row.1.is_none());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_policy_applies_heavy_usage_business_body_days() {
+    let db_path = temp_db_path("request-log-retention-heavy-usage-body");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-retention-heavy-usage".to_string(),
+            username: Some("request_log_retention_heavy_usage".to_string()),
+            name: Some("Request Log Retention Heavy Usage".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("request-log-retention-heavy-usage"))
+        .await
+        .expect("bind token");
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 100, 100, 10_000)
+        .await
+        .expect("set account quota limits");
+    let day_bucket = start_of_local_day_utc_ts(Utc::now().with_timezone(&Local));
+    sqlx::query(
+        r#"
+        INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(day_bucket)
+    .bind(GRANULARITY_DAY)
+    .bind(79_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed heavy usage bucket");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.business_body_days = 7;
+    settings.request_log_retention.heavy_usage.business_body_days = 0;
+    settings.request_log_retention.heavy_usage_threshold_percent = 80;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let request_body = br#"{"query":"heavy usage"}"#;
+    let response_body = br#"{"answer":"dropped"}"#;
+    let log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: None,
+            auth_token_id: Some(&token.id),
+            method: &Method::POST,
+            path: "/api/tavily/search",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body,
+            response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+            client_ip: None,
+        })
+        .await
+        .expect("log heavy usage attempt");
+
+    let row: (Option<Vec<u8>>, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, request_body_bytes, body_cleaned_reason FROM request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch request log body metadata");
+    assert!(row.0.is_none());
+    assert_eq!(row.1, Some(request_body.len() as i64));
+    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
+    let db_path = temp_db_path("request-log-retention-gc-clears-body");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 32;
+    settings.request_log_retention.global.business_body_days = 1;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let old_ts = Utc::now().timestamp() - 2 * SECS_PER_DAY;
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_body, response_body,
+            visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"query":"old"}"#.as_slice())
+    .bind(br#"{"ok":true}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(old_ts)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed old request log body");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+    assert_eq!(report.deleted_request_logs, 0);
+
+    let row: (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, response_body, body_cleaned_reason FROM request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch cleaned request log row");
+    assert!(row.0.is_none());
+    assert!(row.1.is_none());
+    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_RETENTION_EXPIRED));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_uses_persisted_body_retention_days_for_heavy_users() {
+    let db_path = temp_db_path("request-log-retention-gc-persisted-heavy-profile");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-persisted-heavy-profile".to_string(),
+            username: Some("request_log_gc_persisted_heavy_profile".to_string()),
+            name: Some("Request Log GC Persisted Heavy Profile".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 100, 100, 10_000)
+        .await
+        .expect("set account quota limits");
+
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.business_body_days = 7;
+    settings.request_log_retention.heavy_usage.business_body_days = 0;
+    settings.request_log_retention.heavy_usage_threshold_percent = 80;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let now = Utc::now().timestamp();
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_user_id,
+            request_body, response_body, body_retention_days, visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, 7, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(br#"{"query":"normal before heavy"}"#.as_slice())
+    .bind(br#"{"ok":true}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now - SECS_PER_DAY)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed retained normal-profile body");
+
+    let day_bucket = start_of_local_day_utc_ts(Utc::now().with_timezone(&Local));
+    sqlx::query(
+        r#"
+        INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(day_bucket)
+    .bind(GRANULARITY_DAY)
+    .bind(80_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed current heavy usage");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 0);
+
+    let retained_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch retained body");
+    assert!(retained_body.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profile() {
+    let db_path = temp_db_path("request-log-retention-gc-debug-opt-out");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-debug-opt-out".to_string(),
+            username: Some("request_log_gc_debug_opt_out".to_string()),
+            name: Some("Request Log GC Debug Opt Out".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.business_body_days = 0;
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
+
+    let now = Utc::now().timestamp();
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_user_id,
+            request_body, response_body, body_retention_days, body_retention_profile,
+            visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, 14, 'debug_shared', ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(br#"{"query":"debug opt out"}"#.as_slice())
+    .bind(br#"{"ok":true}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed debug-profile body");
+
+    proxy
+        .set_user_debug_info_shared(&user.user_id, false)
+        .await
+        .expect("disable debug sharing");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+
+    let row: (Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch cleaned opt-out row");
+    assert!(row.0.is_none());
+    assert_eq!(
+        row.1.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body() {
+    let db_path = temp_db_path("request-log-retention-gc-scans-past-unexpired");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-debug-unexpired".to_string(),
+            username: Some("request_log_gc_debug_unexpired".to_string()),
+            name: Some("Request Log GC Debug Unexpired".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+
+    let now = Utc::now().timestamp();
+    let unexpired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, request_user_id,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(br#"{"query":"debug still retained"}"#.as_slice())
+    .bind(br#"{"ok":true}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now - SECS_PER_DAY)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed unexpired debug body");
+    let expired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed later expired non-business body");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+
+    let unexpired_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(unexpired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch unexpired body");
+    let expired: (Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+            .bind(expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch expired body");
+    assert!(unexpired_body.is_some());
+    assert!(expired.0.is_none());
+    assert_eq!(
+        expired.1.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
+
+    let second_expired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed another expired non-business body");
+    let second_report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc with fresh body left behind");
+    assert_eq!(second_report.cleaned_request_log_bodies, 1);
+    assert!(second_report.completed);
+    assert!(!second_report.has_more);
+    let second_expired_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(second_expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch second expired body");
+    assert!(second_expired_body.is_none());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
+    let db_path = temp_db_path("request-log-retention-gc-body-cursor");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-cursor-user".to_string(),
+            username: Some("request_log_gc_cursor_user".to_string()),
+            name: Some("Request Log GC Cursor User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+
+    let now = Utc::now().timestamp();
+    for idx in 0..64 {
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                method, path, result_status, request_kind_key, request_user_id,
+                request_body, response_body, visibility, created_at
+            ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&user.user_id)
+        .bind(format!(r#"{{"query":"debug retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(br#"{"ok":true}"#.as_slice())
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(now - SECS_PER_DAY + idx)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed unexpired debug body");
+    }
+
+    let expired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed expired non-business body");
+
+    let first_report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 1,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run first request logs gc");
+    assert_eq!(first_report.cleaned_request_log_bodies, 0);
+    assert!(first_report.has_more);
+
+    let retained_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch expired body before resumed gc");
+    assert!(retained_body.is_some());
+
+    let second_report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run resumed request logs gc");
+    assert_eq!(second_report.cleaned_request_log_bodies, 1);
+    assert!(second_report.completed);
+    assert!(!second_report.has_more);
+
+    let cleaned_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch expired body after resumed gc");
+    assert!(cleaned_body.is_none());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
+    let db_path = temp_db_path("request-log-retention-gc-body-cursor-restart");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let now = Utc::now().timestamp();
+    let expired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed zero-day body before stale cursor");
+
+    proxy
+        .key_store
+        .set_meta_string(
+            "request_log_body_gc_cursor_v1",
+            &format!("{now}:{expired_id}:{}", now - 1),
+        )
+        .await
+        .expect("seed due body gc cursor");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc with due cursor restart");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+    assert!(report.completed);
+    assert!(!report.has_more);
+
+    let row: (Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+            .bind(expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch restarted cursor row");
+    assert!(row.0.is_none());
+    assert_eq!(
+        row.1.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
+    let db_path = temp_db_path("request-log-retention-gc-body-cursor-continues");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-cursor-continue-user".to_string(),
+            username: Some("request_log_gc_cursor_continue_user".to_string()),
+            name: Some("Request Log GC Cursor Continue User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+
+    let now = Utc::now().timestamp();
+    for idx in 0..64 {
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                method, path, result_status, request_kind_key, request_user_id,
+                request_body, response_body, visibility, created_at
+            ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&user.user_id)
+        .bind(format!(r#"{{"query":"debug retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(br#"{"ok":true}"#.as_slice())
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(now - SECS_PER_DAY + idx)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed unexpired debug body");
+    }
+
+    let expired_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed expired non-business body");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 1,
+            max_batches: 3,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run multi-batch request logs gc");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+    assert!(report.completed);
+    assert!(!report.has_more);
+
+    let cleaned_body: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+            .bind(expired_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch expired body after continued gc");
+    assert!(cleaned_body.is_none());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
+    let db_path = temp_db_path("request-log-retention-gc-body-cursor-preserved");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-log-gc-cursor-preserve-user".to_string(),
+            username: Some("request_log_gc_cursor_preserve_user".to_string()),
+            name: Some("Request Log GC Cursor Preserve User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .set_user_debug_info_shared(&user.user_id, true)
+        .await
+        .expect("enable debug sharing");
+
+    let now = Utc::now().timestamp();
+    let mut first_created_at = 0_i64;
+    let mut last_created_at = 0_i64;
+    for idx in 0..3 {
+        last_created_at = now - SECS_PER_DAY + idx;
+        if idx == 0 {
+            first_created_at = last_created_at;
+        }
+        let _: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                method, path, result_status, request_kind_key, request_user_id,
+                request_body, response_body, visibility, created_at
+            ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&user.user_id)
+        .bind(format!(r#"{{"query":"retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(br#"{"ok":true}"#.as_slice())
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(last_created_at)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("seed retained body");
+    }
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc over retained bodies");
+    assert_eq!(report.cleaned_request_log_bodies, 0);
+    assert!(report.completed);
+    assert!(!report.has_more);
+
+    let cursor = proxy
+        .key_store
+        .get_meta_string("request_log_body_gc_cursor_v1")
+        .await
+        .expect("fetch body gc cursor")
+        .expect("retained bodies should keep restart cursor");
+    let parts = cursor.split(':').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    let cursor_created_at = parts[0].parse::<i64>().expect("cursor created_at");
+    assert!(cursor_created_at >= first_created_at);
+    assert!(cursor_created_at <= last_created_at);
+    let cursor_id = parts[1].parse::<i64>().expect("cursor id");
+    assert!(cursor_id > 0);
+    let restart_at = parts[2].parse::<i64>().expect("cursor restart_at");
+    assert!(restart_at > now);
+
+    let second_report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run request logs gc before retained bodies expire");
+    assert_eq!(second_report.cleaned_request_log_bodies, 0);
+    assert!(second_report.completed);
+    assert!(!second_report.has_more);
+    let next_cursor = proxy
+        .key_store
+        .get_meta_string("request_log_body_gc_cursor_v1")
+        .await
+        .expect("refetch body gc cursor")
+        .expect("retained bodies should keep restart cursor after another pass");
+    let next_parts = next_cursor.split(':').collect::<Vec<_>>();
+    assert_eq!(next_parts.len(), 3);
+    assert!(
+        next_parts[2]
+            .parse::<i64>()
+            .expect("next cursor restart_at")
+            > now
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
+    let db_path = temp_db_path("request-log-retention-standalone-gc-upgrades-body-columns");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    for column in [
+        "request_body_bytes",
+        "response_body_bytes",
+        "request_body_sha256",
+        "response_body_sha256",
+        "body_cleaned_reason",
+        "body_cleaned_at",
+    ] {
+        sqlx::query(&format!("ALTER TABLE request_logs DROP COLUMN {column}"))
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("drop request log body metadata column");
+    }
+    let old_ts = Utc::now().timestamp() - SECS_PER_DAY;
+    let log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key,
+            request_body, response_body, visibility, created_at
+        ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
+        RETURNING id
+        "#,
+    )
+    .bind(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.as_slice())
+    .bind(br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#.as_slice())
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(old_ts)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy request log body");
+    sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_canonical_request_kind_update")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("drop canonical request kind update trigger");
+    sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_canonical_request_kind_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("drop canonical request kind insert trigger");
+    sqlx::query(
+        "UPDATE request_logs SET request_kind_key = 'mcp:raw:legacy-tools-list',
+            request_kind_label = 'Legacy tools list', request_kind_detail = NULL WHERE id = ?",
+    )
+    .bind(log_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark request log as legacy request kind");
+    drop(proxy);
+
+    let report = run_request_logs_gc_once(
+        &db_str,
+        RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        },
+    )
+    .await
+    .expect("standalone request logs gc upgrades schema and cleans body");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+
+    let pool = open_sqlite_pool(&db_str, true, false)
+        .await
+        .expect("open sqlite pool");
+    let row: (Option<Vec<u8>>, Option<i64>, Option<String>, String) = sqlx::query_as(
+        "SELECT request_body, request_body_bytes, body_cleaned_reason, request_kind_key FROM request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&pool)
+    .await
+    .expect("fetch upgraded cleaned request log");
+    assert!(row.0.is_none());
+    assert!(row.1.is_some());
+    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+    assert_eq!(row.3, "mcp:tools/list");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn standalone_request_logs_gc_initializes_meta_for_legacy_table() {
+    let db_path = temp_db_path("request-log-retention-standalone-gc-legacy-meta");
+    let db_str = db_path.to_string_lossy().to_string();
+    let pool = open_sqlite_pool(&db_str, true, false)
+        .await
+        .expect("open sqlite pool");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            method TEXT,
+            path TEXT,
+            created_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy request logs table");
+    sqlx::query("INSERT INTO request_logs (method, path, created_at) VALUES ('POST', '/mcp', 0)")
+        .execute(&pool)
+        .await
+        .expect("seed legacy request log");
+    let meta_exists_before: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+            .fetch_optional(&pool)
+            .await
+            .expect("check legacy meta table");
+    assert!(meta_exists_before.is_none());
+    drop(pool);
+
+    let report = run_request_logs_gc_once(
+        &db_str,
+        RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        },
+    )
+    .await
+    .expect("standalone request logs gc initializes meta");
+    assert_eq!(report.deleted_request_logs, 1);
+
+    let pool = open_sqlite_pool(&db_str, true, false)
+        .await
+        .expect("reopen sqlite pool");
+    let meta_exists_after: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+            .fetch_optional(&pool)
+            .await
+            .expect("check initialized meta table");
+    assert_eq!(meta_exists_after, Some(1));
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining request logs");
+    assert_eq!(remaining, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn request_logs_gc_bounded_deletes_old_rows_and_preserves_recent_rows() {
     let lock = env_lock();
     let _env_lock = lock.lock().await;

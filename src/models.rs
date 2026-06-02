@@ -904,6 +904,24 @@ pub struct McpSessionBinding {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct RequestLogRetentionProfile {
+    pub business_body_days: i64,
+    pub non_business_body_days: i64,
+    pub non_success_body_days: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogRetentionSettings {
+    pub max_log_retention_days: i64,
+    pub heavy_usage_threshold_percent: i64,
+    pub global: RequestLogRetentionProfile,
+    pub heavy_usage: RequestLogRetentionProfile,
+    pub debug_shared: RequestLogRetentionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemSettings {
     pub request_rate_limit: i64,
     pub mcp_session_affinity_key_count: i64,
@@ -917,6 +935,7 @@ pub struct SystemSettings {
     pub global_ip_limit: i64,
     pub trusted_proxy_cidrs: Vec<String>,
     pub trusted_client_ip_headers: Vec<String>,
+    pub request_log_retention: RequestLogRetentionSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -971,6 +990,12 @@ pub struct RequestLogRecord {
     pub operational_class: String,
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
+    pub request_body_bytes: Option<i64>,
+    pub response_body_bytes: Option<i64>,
+    pub request_body_sha256: Option<String>,
+    pub response_body_sha256: Option<String>,
+    pub body_cleaned_reason: Option<String>,
+    pub body_cleaned_at: Option<i64>,
     pub created_at: i64,
     pub forwarded_headers: Vec<String>,
     pub dropped_headers: Vec<String>,
@@ -985,6 +1010,12 @@ pub struct RequestLogRecord {
 pub struct RequestLogBodiesRecord {
     pub request_body: Option<Vec<u8>>,
     pub response_body: Option<Vec<u8>>,
+    pub request_body_bytes: Option<i64>,
+    pub response_body_bytes: Option<i64>,
+    pub request_body_sha256: Option<String>,
+    pub response_body_sha256: Option<String>,
+    pub body_cleaned_reason: Option<String>,
+    pub body_cleaned_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1474,6 +1505,7 @@ pub struct AdminUserQuotaDetails {
 
 #[derive(Debug, Clone)]
 pub struct UserDashboardSummary {
+    pub debug_info_shared: bool,
     pub request_rate: RequestRateView,
     pub hourly_any_used: i64,
     pub hourly_any_limit: i64,
@@ -2786,8 +2818,17 @@ pub fn parse_explicit_today_window(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
     let days = retention_days.max(REQUEST_LOGS_MIN_RETENTION_DAYS);
+    configured_request_logs_retention_threshold_utc_ts(days)
+}
+
+pub(crate) fn configured_request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
+    let days = retention_days.max(0);
+    if days == 0 {
+        return Local::now().with_timezone(&Utc).timestamp();
+    }
     let today = Local::now().date_naive();
     let keep_from_date = today
         .checked_sub_days(chrono::Days::new((days - 1) as u64))

@@ -744,6 +744,7 @@ async fn get_user_token(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserDashboardView {
+    debug_info_shared: bool,
     request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
@@ -758,6 +759,18 @@ struct UserDashboardView {
     monthly_success: i64,
     last_activity: Option<i64>,
     recharge: RechargeSummaryView,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDebugInfoSharingPayload {
+    shared: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDebugInfoSharingView {
+    debug_info_shared: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -936,6 +949,7 @@ async fn get_user_dashboard(
             (StatusCode::INTERNAL_SERVER_ERROR, "failed to load dashboard".to_string())
         })?;
     Ok(Json(UserDashboardView {
+        debug_info_shared: summary.debug_info_shared,
         request_rate: summary.request_rate.clone(),
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
@@ -951,6 +965,32 @@ async fn get_user_dashboard(
         last_activity: summary.last_activity,
         recharge: summary.recharge.into(),
     }))
+}
+
+async fn put_user_debug_info_sharing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UserDebugInfoSharingPayload>,
+) -> Result<Json<UserDebugInfoSharingView>, (StatusCode, String)> {
+    require_full_master_write(state.as_ref()).await?;
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    };
+    let debug_info_shared = state
+        .proxy
+        .set_user_debug_info_shared(&user_session.user.user_id, payload.shared)
+        .await
+        .map_err(|err| {
+            eprintln!("put user debug info sharing error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to update debug sharing".to_string(),
+            )
+        })?;
+    Ok(Json(UserDebugInfoSharingView { debug_info_shared }))
 }
 
 fn linuxdo_credit_config_unavailable() -> (StatusCode, String) {

@@ -131,6 +131,10 @@ pub async fn serve(
         .route("/api/user/logout", post(post_user_logout))
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))
+        .route(
+            "/api/user/debug-info-sharing",
+            put(put_user_debug_info_sharing),
+        )
         .route("/api/user/announcements", get(get_user_announcements))
         .route(
             "/api/user/announcements/history",
