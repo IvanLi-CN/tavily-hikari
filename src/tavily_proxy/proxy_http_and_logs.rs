@@ -1712,6 +1712,18 @@ impl TavilyProxy {
         self.key_store.fetch_latest_visible_request_log_id().await
     }
 
+    pub async fn recent_request_log_signature(
+        &self,
+        limit: usize,
+    ) -> Result<(i64, Vec<(i64, i64)>), ProxyError> {
+        let (retention_days, retention_since) = self.request_logs_retention_window().await?;
+        let signature = self
+            .key_store
+            .fetch_recent_visible_request_log_signature(limit, retention_since)
+            .await?;
+        Ok((retention_days, signature))
+    }
+
     pub async fn recent_client_ip_counts_by_user(
         &self,
         user_ids: &[String],

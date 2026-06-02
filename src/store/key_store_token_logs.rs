@@ -1775,6 +1775,25 @@ impl KeyStore {
         days
     }
 
+    fn request_log_body_cursor_retention_days(
+        settings: &RequestLogRetentionSettings,
+        retention_decision: &RequestLogBodyRetentionDecision,
+        result_status: &str,
+        request_value_bucket: RequestValueBucket,
+        has_user: bool,
+    ) -> i64 {
+        if retention_decision.profile == REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED {
+            retention_decision.days
+        } else {
+            Self::request_log_body_min_possible_cursor_days(
+                settings,
+                result_status,
+                request_value_bucket,
+                has_user,
+            )
+        }
+    }
+
     async fn request_log_user_is_heavy_usage(
         &self,
         user_id: &str,
@@ -2864,6 +2883,29 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await
         .map(|value| value.flatten())
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_recent_visible_request_log_signature(
+        &self,
+        limit: usize,
+        since: i64,
+    ) -> Result<Vec<(i64, i64)>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        sqlx::query_as::<_, (i64, i64)>(
+            r#"
+            SELECT id, created_at
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
         .map_err(ProxyError::from)
     }
 

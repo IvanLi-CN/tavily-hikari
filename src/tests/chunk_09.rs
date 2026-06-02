@@ -1493,6 +1493,11 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
     assert!(cursor_id > 0);
     let restart_at = parts[2].parse::<i64>().expect("cursor restart_at");
     assert!(restart_at > now);
+    assert_eq!(
+        restart_at,
+        shift_local_day_start_utc_ts(local_day_bucket_start_utc_ts(cursor_created_at), 14)
+            .max(now)
+    );
 
     let second_report = proxy
         .gc_request_logs_with_options(RequestLogsGcOptions {
