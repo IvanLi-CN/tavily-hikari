@@ -2519,9 +2519,15 @@ impl KeyStore {
                     .await?;
                 let retention_days = retention_decision.days;
                 if !Self::request_log_body_is_expired(candidate.created_at, retention_days) {
+                    let cursor_retention_days = Self::request_log_body_min_possible_cursor_days(
+                        settings,
+                        &candidate.result_status,
+                        request_value_bucket,
+                        candidate.request_user_id.is_some(),
+                    );
                     let candidate_restart_at = Self::request_log_body_cursor_restart_at(
                         candidate.created_at,
-                        retention_days,
+                        cursor_retention_days,
                         now,
                     );
                     restart_at = Some(

@@ -1,12 +1,29 @@
 impl KeyStore {
+    const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
+
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
+        let now = Instant::now();
+        if let Some(entry) = self.user_debug_info_shared_cache.read().await.get(user_id)
+            && entry.expires_at > now
+        {
+            return Ok(entry.value);
+        }
+
         let value = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT debug_info_shared FROM users WHERE id = ? LIMIT 1",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(value.flatten().unwrap_or(0) != 0)
+        let shared = value.flatten().unwrap_or(0) != 0;
+        self.user_debug_info_shared_cache.write().await.insert(
+            user_id.to_string(),
+            UserDebugInfoSharedCacheEntry {
+                value: shared,
+                expires_at: now + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+            },
+        );
+        Ok(shared)
     }
 
     pub(crate) async fn set_user_debug_info_shared(
@@ -28,6 +45,13 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() > 0 {
+            self.user_debug_info_shared_cache.write().await.insert(
+                user_id.to_string(),
+                UserDebugInfoSharedCacheEntry {
+                    value: shared,
+                    expires_at: Instant::now() + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+                },
+            );
             self.clear_request_log_body_gc_cursor().await?;
         }
         Ok(shared)
@@ -58,6 +82,19 @@ impl KeyStore {
             let shared: i64 = row.try_get("debug_info_shared")?;
             map.insert(id, shared != 0);
         }
+        let expires_at = Instant::now() + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL;
+        self.user_debug_info_shared_cache
+            .write()
+            .await
+            .extend(map.iter().map(|(id, shared)| {
+                (
+                    id.clone(),
+                    UserDebugInfoSharedCacheEntry {
+                        value: *shared,
+                        expires_at,
+                    },
+                )
+            }));
         Ok(map)
     }
 

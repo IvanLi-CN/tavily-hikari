@@ -1392,6 +1392,18 @@ pub(crate) struct RequestLogsCatalogCacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SystemSettingsCacheEntry {
+    value: SystemSettings,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UserDebugInfoSharedCacheEntry {
+    value: bool,
+    expires_at: Instant,
+}
+
 #[derive(Debug)]
 pub(crate) struct KeyStore {
     pub(crate) pool: SqlitePool,
@@ -1399,6 +1411,8 @@ pub(crate) struct KeyStore {
     pub(crate) account_quota_resolution_cache:
         RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
+    pub(crate) system_settings_cache: RwLock<Option<SystemSettingsCacheEntry>>,
+    pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,

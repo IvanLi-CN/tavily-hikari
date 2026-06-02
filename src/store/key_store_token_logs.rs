@@ -1749,6 +1749,32 @@ impl KeyStore {
         }
     }
 
+    fn request_log_body_min_possible_cursor_days(
+        settings: &RequestLogRetentionSettings,
+        result_status: &str,
+        request_value_bucket: RequestValueBucket,
+        has_user: bool,
+    ) -> i64 {
+        let mut days = Self::request_log_body_days_for_profile(
+            &settings.global,
+            result_status,
+            request_value_bucket,
+        );
+        if has_user {
+            days = days.min(Self::request_log_body_days_for_profile(
+                &settings.heavy_usage,
+                result_status,
+                request_value_bucket,
+            ));
+            days = days.min(Self::request_log_body_days_for_profile(
+                &settings.debug_shared,
+                result_status,
+                request_value_bucket,
+            ));
+        }
+        days
+    }
+
     async fn request_log_user_is_heavy_usage(
         &self,
         user_id: &str,
