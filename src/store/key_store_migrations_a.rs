@@ -2511,7 +2511,10 @@ impl KeyStore {
                         &candidate.result_status,
                         request_value_bucket,
                         0,
-                        true,
+                        RequestLogBodyRetentionDecisionMode {
+                            include_debug_shared: true,
+                            include_heavy_usage: true,
+                        },
                     )
                     .await?;
                 let retention_days = retention_decision.days;

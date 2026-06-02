@@ -11,9 +11,11 @@
 - `request_logs.counts_business_quota` preserves `mcp:batch` billing/operational classification
   after policy-zero or expired body cleanup.
 - User debug-sharing consent is persisted on `users` and exposed through the user dashboard and
-  `PUT /api/user/debug-info-sharing`.
+  `PUT /api/user/debug-info-sharing`; settings and debug-sharing reads are cached in `KeyStore` to
+  keep request logging off repeated SQLite meta/debug lookups.
 - Existing bounded `request_logs_gc` now cleans expired bodies before deleting rows past the
-  configured maximum log retention window.
+  configured maximum log retention window, and re-evaluates high-frequency usage so that expensive
+  usage-bucket scans stay out of the per-request logging path.
 - Admin settings UI includes the high-frequency threshold slider and nonlinear day sliders for
   global, high-frequency, and debug-sharing profiles.
 - User console shows the shared debug information toggle, and request detail views summarize

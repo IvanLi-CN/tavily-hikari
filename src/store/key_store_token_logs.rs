@@ -22,6 +22,12 @@ struct RequestLogBodyRetentionDecision {
     profile: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct RequestLogBodyRetentionDecisionMode {
+    include_debug_shared: bool,
+    include_heavy_usage: bool,
+}
+
 const REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL: &str = "global";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE: &str = "heavy_usage";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED: &str = "debug_shared";
@@ -1796,10 +1802,10 @@ impl KeyStore {
         result_status: &str,
         request_value_bucket: RequestValueBucket,
         additional_usage: i64,
-        include_debug_shared: bool,
+        mode: RequestLogBodyRetentionDecisionMode,
     ) -> Result<RequestLogBodyRetentionDecision, ProxyError> {
         if let Some(user_id) = user_id {
-            if include_debug_shared && self.user_debug_info_shared(user_id).await? {
+            if mode.include_debug_shared && self.user_debug_info_shared(user_id).await? {
                 return Ok(RequestLogBodyRetentionDecision {
                     days: Self::request_log_body_days_for_profile(
                     &settings.debug_shared,
@@ -1810,7 +1816,7 @@ impl KeyStore {
                 });
             }
 
-            if self
+            if mode.include_heavy_usage && self
                 .request_log_user_is_heavy_usage(
                     user_id,
                     settings.heavy_usage_threshold_percent,
@@ -1940,7 +1946,10 @@ impl KeyStore {
                 entry.outcome,
                 request_value_bucket,
                 retention_usage_delta,
-                true,
+                RequestLogBodyRetentionDecisionMode {
+                    include_debug_shared: true,
+                    include_heavy_usage: false,
+                },
             )
             .await?;
         let body_storage = Self::request_log_body_storage_decision(

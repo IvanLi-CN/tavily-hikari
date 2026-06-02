@@ -718,7 +718,7 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
     .bind(&user.user_id)
     .bind(day_bucket)
     .bind(GRANULARITY_DAY)
-    .bind(79_i64)
+    .bind(80_i64)
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed heavy usage bucket");
@@ -777,9 +777,32 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("fetch request log body metadata");
-    assert!(row.0.is_none());
+    assert!(row.0.is_some());
     assert_eq!(row.1, Some(request_body.len() as i64));
-    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+    assert!(row.2.is_none());
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 10,
+            max_batches: 1,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("run heavy usage gc");
+    assert_eq!(report.cleaned_request_log_bodies, 1);
+
+    let row: (Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch cleaned heavy usage body");
+    assert!(row.0.is_none());
+    assert_eq!(
+        row.1.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

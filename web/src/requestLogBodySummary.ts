@@ -37,6 +37,7 @@ export function cleanedRequestLogBodySummary({
 }): string {
   if (!source.body_cleaned_reason) return noBodyLabel
   const bytes = kind === 'request' ? source.request_body_bytes : source.response_body_bytes
+  if (bytes == null || bytes <= 0) return noBodyLabel
   const sha256 = kind === 'request' ? source.request_body_sha256 : source.response_body_sha256
   const lines = [
     language === 'zh' ? '完整 body 已清理' : 'Full body was cleaned',

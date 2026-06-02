@@ -14,6 +14,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
+        if let Some(settings) = self.system_settings_cache.read().await.clone() {
+            return Ok(settings);
+        }
         let request_rate_limit = self
             .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
             .await?
@@ -136,7 +139,7 @@ impl KeyStore {
                 },
             },
         )?;
-        Ok(SystemSettings {
+        let settings = SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
@@ -150,7 +153,9 @@ impl KeyStore {
             trusted_proxy_cidrs,
             trusted_client_ip_headers,
             request_log_retention,
-        })
+        };
+        *self.system_settings_cache.write().await = Some(settings.clone());
+        Ok(settings)
     }
 
     pub(crate) async fn set_system_settings(
@@ -321,6 +326,22 @@ impl KeyStore {
             Utc::now().timestamp(),
         )
         .await?;
+        let saved_settings = SystemSettings {
+            request_rate_limit: settings.request_rate_limit,
+            mcp_session_affinity_key_count: settings.mcp_session_affinity_key_count,
+            rebalance_mcp_enabled: settings.rebalance_mcp_enabled,
+            rebalance_mcp_session_percent: settings.rebalance_mcp_session_percent,
+            api_rebalance_enabled: settings.api_rebalance_enabled,
+            api_rebalance_percent: settings.api_rebalance_percent,
+            recharge_feature_enabled: settings.recharge_feature_enabled,
+            recharge_user_enabled: settings.recharge_user_enabled,
+            user_blocked_key_base_limit: settings.user_blocked_key_base_limit,
+            global_ip_limit: settings.global_ip_limit,
+            trusted_proxy_cidrs: trusted_client_ip.trusted_proxy_cidrs,
+            trusted_client_ip_headers: trusted_client_ip.trusted_client_ip_headers,
+            request_log_retention: request_log_retention.clone(),
+        };
+        *self.system_settings_cache.write().await = Some(saved_settings.clone());
         if previous_request_log_retention.max_log_retention_days
             != request_log_retention.max_log_retention_days
         {
@@ -338,7 +359,7 @@ impl KeyStore {
         if previous_request_log_retention != request_log_retention {
             self.clear_request_log_body_gc_cursor().await?;
         }
-        self.get_system_settings().await
+        Ok(saved_settings)
     }
 
     pub(crate) async fn get_admin_totp_secret_record(

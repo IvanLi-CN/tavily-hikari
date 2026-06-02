@@ -177,6 +177,8 @@ rule-providers:
                 std::collections::HashMap::new(),
             ),
             request_logs_catalog_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            system_settings_cache: tokio::sync::RwLock::new(None),
+            user_debug_info_shared_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: tokio::sync::Mutex::new(std::collections::HashSet::new()),
