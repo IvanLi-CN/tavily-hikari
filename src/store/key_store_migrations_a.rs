@@ -9,8 +9,6 @@ struct RequestLogBodyGcCandidate {
     path: String,
     request_body: Option<Vec<u8>>,
     response_body: Option<Vec<u8>>,
-    body_retention_days: Option<i64>,
-    body_retention_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2336,8 +2334,6 @@ impl KeyStore {
             path: row.try_get("path")?,
             request_body: row.try_get("request_body")?,
             response_body: row.try_get("response_body")?,
-            body_retention_days: row.try_get("body_retention_days")?,
-            body_retention_profile: row.try_get("body_retention_profile")?,
         })
     }
 
@@ -2350,8 +2346,7 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
-                       request_kind_label, request_kind_detail, path, request_body, response_body,
-                       body_retention_days, body_retention_profile
+                       request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM request_logs
                 WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
                   AND (created_at > ? OR (created_at = ? AND id > ?))
@@ -2369,8 +2364,7 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
-                       request_kind_label, request_kind_detail, path, request_body, response_body,
-                       body_retention_days, body_retention_profile
+                       request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM request_logs
                 WHERE request_body IS NOT NULL OR response_body IS NOT NULL
                 ORDER BY created_at ASC, id ASC
@@ -2510,46 +2504,17 @@ impl KeyStore {
                     request_log_counts_business_quota(&request_kind.key, Some(request_body_slice));
                 let request_value_bucket =
                     request_value_bucket_for_request_log(&request_kind.key, Some(request_body_slice));
-                let retention_days = match (
-                    candidate.body_retention_days,
-                    candidate.body_retention_profile.as_deref(),
-                ) {
-                    (Some(_days), Some(REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED))
-                        if candidate.request_user_id.is_some()
-                            && !self
-                                .user_debug_info_shared(
-                                    candidate
-                                        .request_user_id
-                                        .as_deref()
-                                        .expect("checked is_some"),
-                                )
-                                .await? =>
-                    {
-                        self.request_log_body_retention_decision(
-                            settings,
-                            candidate.request_user_id.as_deref(),
-                            &candidate.result_status,
-                            request_value_bucket,
-                            0,
-                            false,
-                        )
-                        .await?
-                        .days
-                    }
-                    (Some(days), _) => days,
-                    (None, _) => {
-                        self.request_log_body_retention_decision(
-                            settings,
-                            candidate.request_user_id.as_deref(),
-                            &candidate.result_status,
-                            request_value_bucket,
-                            0,
-                            true,
-                        )
-                        .await?
-                        .days
-                    }
-                };
+                let retention_decision = self
+                    .request_log_body_retention_decision(
+                        settings,
+                        candidate.request_user_id.as_deref(),
+                        &candidate.result_status,
+                        request_value_bucket,
+                        0,
+                        true,
+                    )
+                    .await?;
+                let retention_days = retention_decision.days;
                 if !Self::request_log_body_is_expired(candidate.created_at, retention_days) {
                     let candidate_restart_at = Self::request_log_body_cursor_restart_at(
                         candidate.created_at,
@@ -2587,8 +2552,8 @@ impl KeyStore {
                         response_body_bytes = COALESCE(response_body_bytes, ?),
                         request_body_sha256 = COALESCE(request_body_sha256, ?),
                         response_body_sha256 = COALESCE(response_body_sha256, ?),
-                        body_retention_days = COALESCE(body_retention_days, ?),
-                        body_retention_profile = COALESCE(body_retention_profile, ?),
+                        body_retention_days = ?,
+                        body_retention_profile = ?,
                         body_cleaned_reason = ?,
                         body_cleaned_at = ?
                     WHERE id = ? AND (request_body IS NOT NULL OR response_body IS NOT NULL)
@@ -2603,12 +2568,7 @@ impl KeyStore {
                 .bind(sha256_hex_bytes(request_body_slice))
                 .bind(sha256_hex_bytes(response_body_slice))
                 .bind(retention_days)
-                .bind(
-                    candidate
-                        .body_retention_profile
-                        .as_deref()
-                        .unwrap_or(REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL),
-                )
+                .bind(retention_decision.profile)
                 .bind(reason)
                 .bind(now)
                 .bind(candidate.id)

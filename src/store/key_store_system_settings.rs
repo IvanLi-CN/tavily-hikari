@@ -79,7 +79,9 @@ impl KeyStore {
             .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
             .map(|values| normalize_trusted_client_ip_headers(&values))
             .unwrap_or(defaults.trusted_client_ip_headers);
-        let retention_defaults = default_request_log_retention_settings();
+        let mut retention_defaults = default_request_log_retention_settings();
+        retention_defaults.max_log_retention_days =
+            effective_request_logs_retention_days().min(REQUEST_LOG_RETENTION_DAYS_MAX);
         let request_log_retention = normalize_request_log_retention_settings(
             &RequestLogRetentionSettings {
                 max_log_retention_days: self

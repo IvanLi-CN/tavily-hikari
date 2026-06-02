@@ -316,12 +316,16 @@ struct RequestLogsRetentionEnvGuard {
 }
 
 impl RequestLogsRetentionEnvGuard {
-    fn set_32_days() -> Self {
+    fn set_days(days: &str) -> Self {
         let prev = std::env::var("REQUEST_LOGS_RETENTION_DAYS").ok();
         unsafe {
-            std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "32");
+            std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", days);
         }
         Self { prev }
+    }
+
+    fn set_32_days() -> Self {
+        Self::set_days("32")
     }
 }
 
@@ -375,6 +379,41 @@ async fn request_log_retention_settings_clamp_days_to_max_and_reject_bad_thresho
     let mut invalid = saved.clone();
     invalid.request_log_retention.heavy_usage_threshold_percent = 85;
     assert!(proxy.set_system_settings(&invalid).await.is_err());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_log_retention_settings_default_max_days_uses_env_until_saved() {
+    let lock = env_lock();
+    let _lock = lock.lock().await;
+    let _env_guard = RequestLogsRetentionEnvGuard::set_days("60");
+    let db_path = temp_db_path("request-log-retention-settings-env-default");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load system settings");
+    assert_eq!(settings.request_log_retention.max_log_retention_days, 60);
+
+    let mut saved_settings = settings;
+    saved_settings.request_log_retention.max_log_retention_days = 32;
+    proxy
+        .set_system_settings(&saved_settings)
+        .await
+        .expect("persist explicit settings");
+    unsafe {
+        std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "70");
+    }
+    let settings = proxy
+        .get_system_settings()
+        .await
+        .expect("reload system settings");
+    assert_eq!(settings.request_log_retention.max_log_retention_days, 32);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -808,37 +847,18 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
 }
 
 #[tokio::test]
-async fn request_logs_gc_uses_persisted_body_retention_days_for_heavy_users() {
-    let db_path = temp_db_path("request-log-retention-gc-persisted-heavy-profile");
+async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_change() {
+    let db_path = temp_db_path("request-log-retention-gc-policy-change");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let user = proxy
-        .upsert_oauth_account(&OAuthAccountProfile {
-            provider: "github".to_string(),
-            provider_user_id: "request-log-gc-persisted-heavy-profile".to_string(),
-            username: Some("request_log_gc_persisted_heavy_profile".to_string()),
-            name: Some("Request Log GC Persisted Heavy Profile".to_string()),
-            avatar_template: None,
-            active: true,
-            trust_level: None,
-            raw_payload_json: None,
-        })
-        .await
-        .expect("upsert user");
-    proxy
-        .update_account_business_quota_limits(&user.user_id, 100, 100, 10_000)
-        .await
-        .expect("set account quota limits");
 
     let mut settings = proxy
         .get_system_settings()
         .await
         .expect("load settings");
     settings.request_log_retention.global.business_body_days = 7;
-    settings.request_log_retention.heavy_usage.business_body_days = 0;
-    settings.request_log_retention.heavy_usage_threshold_percent = 80;
     proxy
         .set_system_settings(&settings)
         .await
@@ -848,35 +868,26 @@ async fn request_logs_gc_uses_persisted_body_retention_days_for_heavy_users() {
     let log_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO request_logs (
-            method, path, result_status, request_kind_key, request_user_id,
-            request_body, response_body, body_retention_days, visibility, created_at
-        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, 7, ?, ?)
+            method, path, result_status, request_kind_key,
+            request_body, response_body, body_retention_days, body_retention_profile,
+            visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, 7, 'global', ?, ?)
         RETURNING id
         "#,
     )
-    .bind(&user.user_id)
-    .bind(br#"{"query":"normal before heavy"}"#.as_slice())
+    .bind(br#"{"query":"policy lowered"}"#.as_slice())
     .bind(br#"{"ok":true}"#.as_slice())
     .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-    .bind(now - SECS_PER_DAY)
+    .bind(now)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("seed retained normal-profile body");
+    .expect("seed persisted old-policy body");
 
-    let day_bucket = start_of_local_day_utc_ts(Utc::now().with_timezone(&Local));
-    sqlx::query(
-        r#"
-        INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
-        VALUES (?, ?, ?, ?)
-        "#,
-    )
-    .bind(&user.user_id)
-    .bind(day_bucket)
-    .bind(GRANULARITY_DAY)
-    .bind(80_i64)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("seed current heavy usage");
+    settings.request_log_retention.global.business_body_days = 0;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("lower retention settings");
 
     let report = proxy
         .gc_request_logs_with_options(RequestLogsGcOptions {
@@ -887,15 +898,23 @@ async fn request_logs_gc_uses_persisted_body_retention_days_for_heavy_users() {
         })
         .await
         .expect("run request logs gc");
-    assert_eq!(report.cleaned_request_log_bodies, 0);
+    assert_eq!(report.cleaned_request_log_bodies, 1);
 
-    let retained_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+    let row: (Option<Vec<u8>>, Option<String>, Option<i64>, Option<String>) =
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason, body_retention_days, body_retention_profile FROM request_logs WHERE id = ?",
+        )
             .bind(log_id)
             .fetch_one(&proxy.key_store.pool)
             .await
-            .expect("fetch retained body");
-    assert!(retained_body.is_some());
+            .expect("fetch cleaned body");
+    assert!(row.0.is_none());
+    assert_eq!(
+        row.1.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
+    assert_eq!(row.2, Some(0));
+    assert_eq!(row.3.as_deref(), Some("global"));
 
     let _ = std::fs::remove_file(db_path);
 }
