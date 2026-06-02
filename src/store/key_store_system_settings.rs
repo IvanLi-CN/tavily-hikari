@@ -1,6 +1,4 @@
 impl KeyStore {
-    const SYSTEM_SETTINGS_CACHE_TTL: Duration = Duration::from_secs(5);
-
     pub(crate) async fn allow_registration(&self) -> Result<bool, ProxyError> {
         Ok(self
             .get_meta_i64(META_KEY_ALLOW_REGISTRATION_V1)
@@ -16,13 +14,6 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
-        let now = Instant::now();
-        if let Some(entry) = self.system_settings_cache.read().await.clone()
-            && entry.expires_at > now
-        {
-            return Ok(entry.value);
-        }
-
         let request_rate_limit = self
             .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
             .await?
@@ -160,10 +151,6 @@ impl KeyStore {
             trusted_client_ip_headers,
             request_log_retention,
         };
-        *self.system_settings_cache.write().await = Some(SystemSettingsCacheEntry {
-            value: settings.clone(),
-            expires_at: now + Self::SYSTEM_SETTINGS_CACHE_TTL,
-        });
         Ok(settings)
     }
 
@@ -350,10 +337,6 @@ impl KeyStore {
             trusted_client_ip_headers: trusted_client_ip.trusted_client_ip_headers,
             request_log_retention: request_log_retention.clone(),
         };
-        *self.system_settings_cache.write().await = Some(SystemSettingsCacheEntry {
-            value: saved_settings.clone(),
-            expires_at: Instant::now() + Self::SYSTEM_SETTINGS_CACHE_TTL,
-        });
         if previous_request_log_retention.max_log_retention_days
             != request_log_retention.max_log_retention_days
         {

@@ -1392,18 +1392,6 @@ pub(crate) struct RequestLogsCatalogCacheEntry {
     expires_at: Instant,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SystemSettingsCacheEntry {
-    value: SystemSettings,
-    expires_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct UserDebugInfoSharedCacheEntry {
-    value: bool,
-    expires_at: Instant,
-}
-
 #[derive(Debug)]
 pub(crate) struct KeyStore {
     pub(crate) pool: SqlitePool,
@@ -1411,8 +1399,6 @@ pub(crate) struct KeyStore {
     pub(crate) account_quota_resolution_cache:
         RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
-    pub(crate) system_settings_cache: RwLock<Option<SystemSettingsCacheEntry>>,
-    pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
@@ -1422,6 +1408,7 @@ pub(crate) struct KeyStore {
 }
 
 include!("key_store_bootstrap.rs");
+include!("key_store_request_logs_gc.rs");
 include!("key_store_migrations_a.rs");
 include!("key_store_migrations_b.rs");
 include!("key_store_admin_user_listing.rs");
@@ -1431,10 +1418,12 @@ include!("key_store_sessions.rs");
 include!("key_store_system_settings.rs");
 include!("key_store_users_and_oauth.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
+include!("key_store_request_log_body_retention.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alerts.rs");
 include!("key_store_announcements.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");
 include!("key_store_account_usage_rollups.rs");
