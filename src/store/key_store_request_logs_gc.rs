@@ -317,6 +317,7 @@ impl KeyStore {
         &self,
         batch_size: i64,
         after: Option<(i64, i64)>,
+        row_retention_threshold: i64,
     ) -> Result<Vec<RequestLogBodyGcCandidate>, ProxyError> {
         let rows = if let Some((created_at, id)) = after {
             sqlx::query(
@@ -325,11 +326,13 @@ impl KeyStore {
                        request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM request_logs
                 WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
+                  AND created_at >= ?
                   AND (created_at > ? OR (created_at = ? AND id > ?))
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
             )
+            .bind(row_retention_threshold)
             .bind(created_at)
             .bind(created_at)
             .bind(id)
@@ -343,10 +346,12 @@ impl KeyStore {
                        request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM request_logs
                 WHERE request_body IS NOT NULL OR response_body IS NOT NULL
+                  AND created_at >= ?
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
             )
+            .bind(row_retention_threshold)
             .bind(batch_size)
             .fetch_all(&self.pool)
             .await?
@@ -443,6 +448,8 @@ impl KeyStore {
         let mut has_more = false;
         let now = Utc::now().timestamp();
         let mut cursor = self.get_request_log_body_gc_cursor().await?;
+        let row_retention_threshold =
+            configured_request_logs_retention_threshold_utc_ts(settings.max_log_retention_days);
         if cursor
             .and_then(|cursor| cursor.restart_at)
             .is_some_and(|restart_at| restart_at <= now)
@@ -459,7 +466,7 @@ impl KeyStore {
             && std::time::Instant::now() < deadline
         {
             let candidates = self
-                .fetch_request_log_body_gc_candidates(batch_size, after)
+                .fetch_request_log_body_gc_candidates(batch_size, after, row_retention_threshold)
                 .await?;
             if candidates.is_empty() {
                 break;

@@ -2300,6 +2300,8 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: RwLock::new(std::collections::HashMap::new()),
         request_logs_catalog_cache: RwLock::new(std::collections::HashMap::new()),
+        request_log_retention_cache: RwLock::new(None),
+        user_debug_info_shared_false_cache: RwLock::new(std::collections::HashMap::new()),
         admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
         #[cfg(test)]
         forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),

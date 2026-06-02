@@ -154,6 +154,17 @@ impl KeyStore {
         Ok(settings)
     }
 
+    pub(crate) async fn get_request_log_retention_settings_cached(
+        &self,
+    ) -> Result<RequestLogRetentionSettings, ProxyError> {
+        if let Some(settings) = self.request_log_retention_cache.read().await.clone() {
+            return Ok(settings);
+        }
+        let settings = self.get_system_settings().await?.request_log_retention;
+        *self.request_log_retention_cache.write().await = Some(settings.clone());
+        Ok(settings)
+    }
+
     pub(crate) async fn set_system_settings(
         &self,
         settings: &SystemSettings,
@@ -337,6 +348,7 @@ impl KeyStore {
             trusted_client_ip_headers: trusted_client_ip.trusted_client_ip_headers,
             request_log_retention: request_log_retention.clone(),
         };
+        *self.request_log_retention_cache.write().await = Some(request_log_retention.clone());
         if previous_request_log_retention.max_log_retention_days
             != request_log_retention.max_log_retention_days
         {

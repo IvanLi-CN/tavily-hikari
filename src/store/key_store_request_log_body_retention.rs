@@ -247,10 +247,10 @@ impl KeyStore {
             request_log_counts_business_quota(&request_kind.key, Some(entry.request_body));
         let retention_usage_delta =
             i64::from(counts_business_quota && entry.outcome == OUTCOME_SUCCESS);
-        let system_settings = self.get_system_settings().await?;
+        let request_log_retention = self.get_request_log_retention_settings_cached().await?;
         let retention_decision = self
             .request_log_body_retention_decision(
-                &system_settings.request_log_retention,
+                &request_log_retention,
                 request_user_id.as_deref(),
                 entry.outcome,
                 request_value_bucket,

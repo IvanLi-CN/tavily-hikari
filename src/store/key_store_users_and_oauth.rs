@@ -1,12 +1,35 @@
 impl KeyStore {
+    const USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL: Duration = Duration::from_secs(5);
+
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
+        let now = Instant::now();
+        if self
+            .user_debug_info_shared_false_cache
+            .read()
+            .await
+            .get(user_id)
+            .is_some_and(|expires_at| *expires_at > now)
+        {
+            return Ok(false);
+        }
+
         let value = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT debug_info_shared FROM users WHERE id = ? LIMIT 1",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(value.flatten().unwrap_or(0) != 0)
+        let shared = value.flatten().unwrap_or(0) != 0;
+        let mut cache = self.user_debug_info_shared_false_cache.write().await;
+        if shared {
+            cache.remove(user_id);
+        } else {
+            cache.insert(
+                user_id.to_string(),
+                now + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
+            );
+        }
+        Ok(shared)
     }
 
     pub(crate) async fn set_user_debug_info_shared(
@@ -28,6 +51,15 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() > 0 {
+            let mut cache = self.user_debug_info_shared_false_cache.write().await;
+            if shared {
+                cache.remove(user_id);
+            } else {
+                cache.insert(
+                    user_id.to_string(),
+                    Instant::now() + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
+                );
+            }
             self.clear_request_log_body_gc_cursor().await?;
         }
         Ok(shared)
@@ -57,6 +89,19 @@ impl KeyStore {
             let id: String = row.try_get("id")?;
             let shared: i64 = row.try_get("debug_info_shared")?;
             map.insert(id, shared != 0);
+        }
+        let now = Instant::now();
+        let mut cache = self.user_debug_info_shared_false_cache.write().await;
+        cache.retain(|_, expires_at| *expires_at > now);
+        for (id, shared) in &map {
+            if *shared {
+                cache.remove(id);
+            } else {
+                cache.insert(
+                    id.clone(),
+                    now + Self::USER_DEBUG_INFO_SHARED_FALSE_CACHE_TTL,
+                );
+            }
         }
         Ok(map)
     }

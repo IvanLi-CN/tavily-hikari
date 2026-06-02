@@ -1399,6 +1399,8 @@ pub(crate) struct KeyStore {
     pub(crate) account_quota_resolution_cache:
         RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
+    pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
+    pub(crate) user_debug_info_shared_false_cache: RwLock<HashMap<String, Instant>>,
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
