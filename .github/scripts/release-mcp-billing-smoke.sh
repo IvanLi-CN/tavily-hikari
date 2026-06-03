@@ -347,18 +347,32 @@ db_path = pathlib.Path(sys.argv[1])
 token_id = sys.argv[2]
 conn = sqlite3.connect(db_path)
 request_rows = conn.execute(
-    "SELECT request_body, result_status, failure_kind FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
+    """
+    SELECT request_body, result_status, failure_kind, request_kind_key
+    FROM request_logs
+    WHERE auth_token_id = ?
+    ORDER BY id DESC
+    """,
     (token_id,),
 ).fetchall()
 if not request_rows:
     raise SystemExit("missing request_logs row for smoke token")
 
 success_search_rows = []
-for request_body_raw, result_status, failure_kind in request_rows:
+cleaned_body_rows = 0
+for request_body_raw, result_status, failure_kind, request_kind_key in request_rows:
+    if request_body_raw is None:
+        cleaned_body_rows += 1
+        continue
     request_body = json.loads(request_body_raw.decode())
     request_id = request_body.get("id")
     if request_id == "release-smoke-search":
         success_search_rows.append((request_body, result_status, failure_kind))
+
+if cleaned_body_rows < 1:
+    raise SystemExit(
+        "expected at least one request_logs row with a cleaned or omitted body under release smoke retention policy"
+    )
 
 if len(success_search_rows) != 1:
     raise SystemExit(
