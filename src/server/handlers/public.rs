@@ -1040,6 +1040,11 @@ async fn compute_signatures(
         .latest_visible_request_log_id()
         .await
         .map_err(|_| ())?;
+    let (request_log_retention_days, recent_request_logs) = state
+        .proxy
+        .recent_request_log_signature(DASHBOARD_RECENT_LOGS_LIMIT)
+        .await
+        .map_err(|_| ())?;
     let exhausted_keys = state
         .proxy
         .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
@@ -1153,6 +1158,8 @@ async fn compute_signatures(
         disabled_tokens_error,
         disabled_tokens_truncated: disabled_token_truncated,
         recent_jobs,
+        request_log_retention_days,
+        recent_request_logs,
         hourly_window_anchor,
         recent_alerts_total_events: recent_alerts.total_events,
         recent_alerts_grouped_count: recent_alerts.grouped_count,

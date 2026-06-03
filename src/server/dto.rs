@@ -230,6 +230,12 @@ struct RequestLogView {
     fallback_reason: Option<String>,
     request_body: Option<String>,
     response_body: Option<String>,
+    request_body_bytes: Option<i64>,
+    response_body_bytes: Option<i64>,
+    request_body_sha256: Option<String>,
+    response_body_sha256: Option<String>,
+    body_cleaned_reason: Option<String>,
+    body_cleaned_at: Option<i64>,
     forwarded_headers: Vec<String>,
     dropped_headers: Vec<String>,
     remote_addr: Option<String>,
@@ -249,6 +255,12 @@ struct RequestLogView {
 struct RequestLogBodiesView {
     request_body: Option<String>,
     response_body: Option<String>,
+    request_body_bytes: Option<i64>,
+    response_body_bytes: Option<i64>,
+    request_body_sha256: Option<String>,
+    response_body_sha256: Option<String>,
+    body_cleaned_reason: Option<String>,
+    body_cleaned_at: Option<i64>,
 }
 
 impl From<RequestLogBodiesRecord> for RequestLogBodiesView {
@@ -256,6 +268,12 @@ impl From<RequestLogBodiesRecord> for RequestLogBodiesView {
         Self {
             request_body: value.request_body.as_deref().and_then(decode_body),
             response_body: value.response_body.as_deref().and_then(decode_body),
+            request_body_bytes: value.request_body_bytes,
+            response_body_bytes: value.response_body_bytes,
+            request_body_sha256: value.request_body_sha256,
+            response_body_sha256: value.response_body_sha256,
+            body_cleaned_reason: value.body_cleaned_reason,
+            body_cleaned_at: value.body_cleaned_at,
         }
     }
 }

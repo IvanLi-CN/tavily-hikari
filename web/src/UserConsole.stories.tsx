@@ -72,6 +72,7 @@ function createRequestRate(
 }
 
 const dashboardSample: UserDashboard = {
+  debugInfoShared: false,
   requestRate: createRequestRate(58, 60, 'user'),
   hourlyAnyUsed: 58,
   hourlyAnyLimit: 60,

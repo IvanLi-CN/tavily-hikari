@@ -319,7 +319,7 @@ impl TavilyProxy {
     }
 
     /// Time-based garbage collection for request_logs (online recent logs only).
-    /// Retention is defined by local-day boundaries and enforced via environment variables.
+    /// Retention is defined by local-day boundaries and enforced via Admin settings.
     pub async fn gc_request_logs(&self) -> Result<i64, ProxyError> {
         let report = self
             .gc_request_logs_with_options(RequestLogsGcOptions {
@@ -331,7 +331,8 @@ impl TavilyProxy {
             .await?;
         if !report.completed {
             return Err(ProxyError::Other(format!(
-                "request_logs_gc incomplete after legacy full pass: deleted_rows={} rollup_deleted={} batches={} retention_days={}",
+                "request_logs_gc incomplete after legacy full pass: cleaned_bodies={} deleted_rows={} rollup_deleted={} batches={} retention_days={}",
+                report.cleaned_request_log_bodies,
                 report.deleted_request_logs,
                 report.deleted_rollups,
                 report.batches,
@@ -345,10 +346,16 @@ impl TavilyProxy {
         &self,
         options: RequestLogsGcOptions,
     ) -> Result<RequestLogsGcReport, ProxyError> {
-        let retention_days = effective_request_logs_retention_days();
-        let threshold = request_logs_retention_threshold_utc_ts(retention_days);
+        let settings = self.key_store.get_system_settings().await?;
+        let retention_days = settings.request_log_retention.max_log_retention_days;
+        let threshold = configured_request_logs_retention_threshold_utc_ts(retention_days);
         self.key_store
-            .delete_old_request_logs_bounded(threshold, options, retention_days)
+            .delete_old_request_logs_bounded(
+                threshold,
+                options,
+                retention_days,
+                &settings.request_log_retention,
+            )
             .await
     }
 

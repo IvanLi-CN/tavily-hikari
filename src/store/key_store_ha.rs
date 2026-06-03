@@ -675,7 +675,7 @@ impl KeyStore {
         Ok(0)
     }
 
-    async fn table_exists(&self, table: &str) -> Result<bool, ProxyError> {
+    pub(crate) async fn table_exists(&self, table: &str) -> Result<bool, ProxyError> {
         Ok(sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
         )

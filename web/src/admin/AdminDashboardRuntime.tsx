@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { cleanedRequestLogBodySummary } from '../requestLogBodySummary'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import type { RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
 import AdminTablePagination from '../components/AdminTablePagination'
@@ -12082,8 +12083,16 @@ function LogDetails({
   const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
   const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`
   const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
-  const requestBody = log.request_body ?? strings.logDetails.noBody
-  const responseBody = log.response_body ?? strings.logDetails.noBody
+  const cleanedBodySummary = (kind: 'request' | 'response'): string => cleanedRequestLogBodySummary({
+    source: log,
+    kind,
+    language,
+    noBodyLabel: strings.logDetails.noBody,
+    emptyValueLabel: strings.logs.errors.none,
+    formatTime: formatTimestampWithMs,
+  })
+  const requestBody = log.request_body ?? cleanedBodySummary('request')
+  const responseBody = log.response_body ?? cleanedBodySummary('response')
   const keyEffect = formatKeyEffectSummary(log, strings, language)
   const guidance = operationalClassGuidance(log.operationalClass, log.failure_kind, language)
 

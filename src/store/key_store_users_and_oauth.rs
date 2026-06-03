@@ -1,4 +1,106 @@
 impl KeyStore {
+    const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
+
+    pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
+        let now = Instant::now();
+        if let Some(cached) = self
+            .user_debug_info_shared_cache
+            .read()
+            .await
+            .get(user_id)
+            .filter(|entry| entry.expires_at > now)
+        {
+            return Ok(cached.shared);
+        }
+
+        let value = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT debug_info_shared FROM users WHERE id = ? LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let shared = value.flatten().unwrap_or(0) != 0;
+        self.user_debug_info_shared_cache.write().await.insert(
+            user_id.to_string(),
+            UserDebugInfoSharedCacheEntry {
+                shared,
+                expires_at: now + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+            },
+        );
+        Ok(shared)
+    }
+
+    pub(crate) async fn set_user_debug_info_shared(
+        &self,
+        user_id: &str,
+        shared: bool,
+    ) -> Result<bool, ProxyError> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+            UPDATE users
+            SET debug_info_shared = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(i64::from(shared))
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() > 0 {
+            self.user_debug_info_shared_cache.write().await.insert(
+                user_id.to_string(),
+                UserDebugInfoSharedCacheEntry {
+                    shared,
+                    expires_at: Instant::now() + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+                },
+            );
+            self.clear_request_log_body_gc_cursor().await?;
+        }
+        Ok(shared)
+    }
+
+    pub(crate) async fn user_debug_info_shared_bulk(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, bool>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder: QueryBuilder<Sqlite> =
+            QueryBuilder::new("SELECT id, debug_info_shared FROM users WHERE id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            let shared: i64 = row.try_get("debug_info_shared")?;
+            map.insert(id, shared != 0);
+        }
+        let now = Instant::now();
+        let mut cache = self.user_debug_info_shared_cache.write().await;
+        cache.retain(|_, entry| entry.expires_at > now);
+        for (id, shared) in &map {
+            cache.insert(
+                id.clone(),
+                UserDebugInfoSharedCacheEntry {
+                    shared: *shared,
+                    expires_at: now + Self::USER_DEBUG_INFO_SHARED_CACHE_TTL,
+                },
+            );
+        }
+        Ok(map)
+    }
+
     async fn resolve_request_rollup_user_id(
         &self,
         token_id: &str,

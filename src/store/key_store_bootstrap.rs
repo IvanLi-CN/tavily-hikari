@@ -5,6 +5,8 @@ impl KeyStore {
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
+            request_log_retention_cache: RwLock::new(None),
+            user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
@@ -22,11 +24,16 @@ impl KeyStore {
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
+            request_log_retention_cache: RwLock::new(None),
+            user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
+        store.ensure_meta_schema().await?;
+        store.ensure_users_debug_info_shared_column().await?;
+        store.upgrade_request_logs_schema().await?;
         store.ensure_request_logs_gc_support_indexes().await?;
         Ok(store)
     }
@@ -77,6 +84,7 @@ impl KeyStore {
                 request_kind_key TEXT,
                 request_kind_label TEXT,
                 request_kind_detail TEXT,
+                counts_business_quota INTEGER,
                 business_credits INTEGER,
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -93,6 +101,14 @@ impl KeyStore {
                 fallback_reason TEXT,
                 request_body BLOB,
                 response_body BLOB,
+                request_body_bytes INTEGER,
+                response_body_bytes INTEGER,
+                request_body_sha256 TEXT,
+                response_body_sha256 TEXT,
+                body_retention_days INTEGER,
+                body_retention_profile TEXT,
+                body_cleaned_reason TEXT,
+                body_cleaned_at INTEGER,
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
                 remote_addr TEXT,
@@ -307,6 +323,7 @@ impl KeyStore {
                 username TEXT,
                 avatar_template TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
+                debug_info_shared INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_login_at INTEGER
@@ -315,6 +332,8 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        self.ensure_users_debug_info_shared_column().await?;
 
         sqlx::query(
             r#"
@@ -1300,17 +1319,7 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        // Meta table for lightweight global key/value settings (e.g., migrations, rollup state)
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        self.ensure_meta_schema().await?;
 
         if request_kind_schema_changed {
             self.reset_request_kind_canonical_migration_v1_markers()
@@ -1373,7 +1382,11 @@ impl KeyStore {
                 .await?;
         }
 
-        let request_log_catalog_rollup_retention_days = effective_request_logs_retention_days();
+        let request_log_catalog_rollup_retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
         let request_log_catalog_rollup_needs_rebuild = self
             .get_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
             .await?
@@ -1841,4 +1854,34 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn ensure_users_debug_info_shared_column(&self) -> Result<(), ProxyError> {
+        if !self.table_exists("users").await? {
+            return Ok(());
+        }
+        if !self
+            .table_column_exists("users", "debug_info_shared")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE users ADD COLUMN debug_info_shared INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_meta_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }

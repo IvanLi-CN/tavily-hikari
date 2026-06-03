@@ -628,6 +628,7 @@ fn build_monthly_broken_keys_view(
 
 fn empty_user_dashboard_summary() -> tavily_hikari::UserDashboardSummary {
     tavily_hikari::UserDashboardSummary {
+        debug_info_shared: false,
         request_rate: default_request_rate_view(tavily_hikari::RequestRateScope::User),
         hourly_any_used: 0,
         hourly_any_limit: 0,

@@ -79,7 +79,64 @@ impl KeyStore {
             .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
             .map(|values| normalize_trusted_client_ip_headers(&values))
             .unwrap_or(defaults.trusted_client_ip_headers);
-        Ok(SystemSettings {
+        let mut retention_defaults = default_request_log_retention_settings();
+        retention_defaults.max_log_retention_days =
+            effective_request_logs_retention_days().min(REQUEST_LOG_RETENTION_DAYS_MAX);
+        let request_log_retention = normalize_request_log_retention_settings(
+            &RequestLogRetentionSettings {
+                max_log_retention_days: self
+                    .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1)
+                    .await?
+                    .unwrap_or(retention_defaults.max_log_retention_days),
+                heavy_usage_threshold_percent: self
+                    .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1)
+                    .await?
+                    .unwrap_or(retention_defaults.heavy_usage_threshold_percent),
+                global: RequestLogRetentionProfile {
+                    business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.global.business_body_days),
+                    non_business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.global.non_business_body_days),
+                    non_success_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.global.non_success_body_days),
+                },
+                heavy_usage: RequestLogRetentionProfile {
+                    business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.heavy_usage.business_body_days),
+                    non_business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.heavy_usage.non_business_body_days),
+                    non_success_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.heavy_usage.non_success_body_days),
+                },
+                debug_shared: RequestLogRetentionProfile {
+                    business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.debug_shared.business_body_days),
+                    non_business_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.debug_shared.non_business_body_days),
+                    non_success_body_days: self
+                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1)
+                        .await?
+                        .unwrap_or(retention_defaults.debug_shared.non_success_body_days),
+                },
+            },
+        )?;
+        let settings = SystemSettings {
             request_rate_limit,
             mcp_session_affinity_key_count: count,
             rebalance_mcp_enabled,
@@ -92,7 +149,20 @@ impl KeyStore {
             global_ip_limit,
             trusted_proxy_cidrs,
             trusted_client_ip_headers,
-        })
+            request_log_retention,
+        };
+        Ok(settings)
+    }
+
+    pub(crate) async fn get_request_log_retention_settings_cached(
+        &self,
+    ) -> Result<RequestLogRetentionSettings, ProxyError> {
+        if let Some(settings) = self.request_log_retention_cache.read().await.clone() {
+            return Ok(settings);
+        }
+        let settings = self.get_system_settings().await?.request_log_retention;
+        *self.request_log_retention_cache.write().await = Some(settings.clone());
+        Ok(settings)
     }
 
     pub(crate) async fn set_system_settings(
@@ -143,6 +213,10 @@ impl KeyStore {
             trusted_proxy_cidrs: settings.trusted_proxy_cidrs.clone(),
             trusted_client_ip_headers: settings.trusted_client_ip_headers.clone(),
         })?;
+        let previous_request_log_retention =
+            self.get_system_settings().await?.request_log_retention;
+        let request_log_retention =
+            normalize_request_log_retention_settings(&settings.request_log_retention)?;
         self.set_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1, settings.request_rate_limit)
             .await?;
         self.set_meta_i64(
@@ -199,12 +273,100 @@ impl KeyStore {
                 .unwrap_or_else(|_| "[]".to_string()),
         )
         .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1,
+            request_log_retention.max_log_retention_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1,
+            request_log_retention.heavy_usage_threshold_percent,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.global.business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.global.non_business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1,
+            request_log_retention.global.non_success_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.heavy_usage.business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.heavy_usage.non_business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1,
+            request_log_retention.heavy_usage.non_success_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.debug_shared.business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1,
+            request_log_retention.debug_shared.non_business_body_days,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1,
+            request_log_retention.debug_shared.non_success_body_days,
+        )
+        .await?;
         self.record_request_rate_limit_snapshot_at(
             settings.request_rate_limit,
             Utc::now().timestamp(),
         )
         .await?;
-        self.get_system_settings().await
+        let saved_settings = SystemSettings {
+            request_rate_limit: settings.request_rate_limit,
+            mcp_session_affinity_key_count: settings.mcp_session_affinity_key_count,
+            rebalance_mcp_enabled: settings.rebalance_mcp_enabled,
+            rebalance_mcp_session_percent: settings.rebalance_mcp_session_percent,
+            api_rebalance_enabled: settings.api_rebalance_enabled,
+            api_rebalance_percent: settings.api_rebalance_percent,
+            recharge_feature_enabled: settings.recharge_feature_enabled,
+            recharge_user_enabled: settings.recharge_user_enabled,
+            user_blocked_key_base_limit: settings.user_blocked_key_base_limit,
+            global_ip_limit: settings.global_ip_limit,
+            trusted_proxy_cidrs: trusted_client_ip.trusted_proxy_cidrs,
+            trusted_client_ip_headers: trusted_client_ip.trusted_client_ip_headers,
+            request_log_retention: request_log_retention.clone(),
+        };
+        *self.request_log_retention_cache.write().await = Some(request_log_retention.clone());
+        if previous_request_log_retention.max_log_retention_days
+            != request_log_retention.max_log_retention_days
+        {
+            self.rebuild_request_log_catalog_rollups().await?;
+            self.set_meta_i64(
+                META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
+                request_log_retention.max_log_retention_days,
+            )
+            .await?;
+            self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
+                .await?;
+        } else {
+            self.invalidate_request_logs_catalog_cache().await;
+        }
+        if previous_request_log_retention != request_log_retention {
+            self.clear_request_log_body_gc_cursor().await?;
+        }
+        Ok(saved_settings)
     }
 
     pub(crate) async fn get_admin_totp_secret_record(

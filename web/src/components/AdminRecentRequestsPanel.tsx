@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { QueryLoadState } from '../admin/queryLoadState'
 import type { LogFacetOption, RequestLog, RequestLogBodies } from '../api'
 import type { AdminTranslations } from '../i18n'
+import { cleanedRequestLogBodySummary } from '../requestLogBodySummary'
 import { Icon } from '../lib/icons'
 import {
   buildRequestKindQuickFilterSelection,
@@ -599,22 +600,33 @@ function RecentRequestDetails({
 }): JSX.Element {
   const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
   const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
+  const cleanedBodySummary = (
+    source: RequestLog | RequestLogBodies,
+    kind: 'request' | 'response',
+  ): string => cleanedRequestLogBodySummary({
+    source,
+    kind,
+    language,
+    noBodyLabel: strings.logDetails.noBody,
+    emptyValueLabel: strings.logs.errors.none,
+    formatTime,
+  })
   const requestBody =
     logBodiesState?.status === 'ready'
-      ? logBodiesState.value.request_body ?? strings.logDetails.noBody
+      ? logBodiesState.value.request_body ?? cleanedBodySummary(logBodiesState.value, 'request')
       : logBodiesState?.status === 'loading'
         ? strings.logDetails.loadingBody
         : logBodiesState?.status === 'error'
           ? strings.logDetails.loadBodyFailed
-          : log.request_body ?? strings.logDetails.noBody
+          : log.request_body ?? cleanedBodySummary(log, 'request')
   const responseBody =
     logBodiesState?.status === 'ready'
-      ? logBodiesState.value.response_body ?? strings.logDetails.noBody
+      ? logBodiesState.value.response_body ?? cleanedBodySummary(logBodiesState.value, 'response')
       : logBodiesState?.status === 'loading'
         ? strings.logDetails.loadingBody
         : logBodiesState?.status === 'error'
           ? strings.logDetails.loadBodyFailed
-          : log.response_body ?? strings.logDetails.noBody
+          : log.response_body ?? cleanedBodySummary(log, 'response')
   const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
   const effectEntries = [
     hasExplicitEffect(log.key_effect_code)

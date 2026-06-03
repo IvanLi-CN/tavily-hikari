@@ -567,6 +567,7 @@ impl TavilyProxy {
             .user_dashboard_summaries_for_users(&[user_id.to_string()], daily_window)
             .await?;
         Ok(summaries.remove(user_id).unwrap_or(UserDashboardSummary {
+            debug_info_shared: false,
             request_rate: self.default_request_rate_view(RequestRateScope::User),
             hourly_any_used: 0,
             hourly_any_limit: 0,
@@ -659,6 +660,10 @@ impl TavilyProxy {
                 resolved_daily_window.end,
             )
             .await?;
+        let debug_info_shared = self
+            .key_store
+            .user_debug_info_shared_bulk(&deduped_user_ids)
+            .await?;
         let default_limits = AccountQuotaLimits::zero_base();
 
         Ok(deduped_user_ids
@@ -679,6 +684,7 @@ impl TavilyProxy {
                 (
                     user_id.clone(),
                     UserDashboardSummary {
+                        debug_info_shared: debug_info_shared.get(&user_id).copied().unwrap_or(false),
                         request_rate: request_rate.request_rate(),
                         hourly_any_used: request_rate.hourly_used,
                         hourly_any_limit: request_rate.hourly_limit,

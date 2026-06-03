@@ -59,6 +59,7 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
+                        counts_business_quota,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -69,6 +70,14 @@ impl KeyStore {
                         selection_effect_summary,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        body_retention_days,
+                        body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         remote_addr,
@@ -94,6 +103,7 @@ impl KeyStore {
                         NULL AS request_kind_key,
                         NULL AS request_kind_label,
                         NULL AS request_kind_detail,
+                        NULL AS counts_business_quota,
                         NULL AS business_credits,
                         NULL AS failure_kind,
                         'none' AS key_effect_code,
@@ -104,6 +114,14 @@ impl KeyStore {
                         NULL AS selection_effect_summary,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        NULL AS body_retention_days,
+                        NULL AS body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         NULL AS remote_addr,
@@ -138,6 +156,7 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
+                        counts_business_quota,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -148,6 +167,14 @@ impl KeyStore {
                         selection_effect_summary,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        body_retention_days,
+                        body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         remote_addr,
@@ -173,6 +200,7 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
+                        counts_business_quota,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -183,6 +211,14 @@ impl KeyStore {
                         selection_effect_summary,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        body_retention_days,
+                        body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         remote_addr,
@@ -216,12 +252,31 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
+                        counts_business_quota,
                         business_credits,
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
+                        gateway_mode,
+                        experiment_variant,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation,
+                        fallback_reason,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        body_retention_days,
+                        body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         remote_addr,
@@ -247,12 +302,31 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
+                        counts_business_quota,
                         business_credits,
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
+                        gateway_mode,
+                        experiment_variant,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation,
+                        fallback_reason,
                         request_body,
                         response_body,
+                        request_body_bytes,
+                        response_body_bytes,
+                        request_body_sha256,
+                        response_body_sha256,
+                        body_retention_days,
+                        body_retention_profile,
+                        body_cleaned_reason,
+                        body_cleaned_at,
                         forwarded_headers,
                         dropped_headers,
                         remote_addr,
@@ -1222,6 +1296,38 @@ impl KeyStore {
                 "ip_headers",
                 "ALTER TABLE request_logs ADD COLUMN ip_headers TEXT",
             ),
+            (
+                "request_body_bytes",
+                "ALTER TABLE request_logs ADD COLUMN request_body_bytes INTEGER",
+            ),
+            (
+                "response_body_bytes",
+                "ALTER TABLE request_logs ADD COLUMN response_body_bytes INTEGER",
+            ),
+            (
+                "request_body_sha256",
+                "ALTER TABLE request_logs ADD COLUMN request_body_sha256 TEXT",
+            ),
+            (
+                "response_body_sha256",
+                "ALTER TABLE request_logs ADD COLUMN response_body_sha256 TEXT",
+            ),
+            (
+                "body_retention_days",
+                "ALTER TABLE request_logs ADD COLUMN body_retention_days INTEGER",
+            ),
+            (
+                "body_retention_profile",
+                "ALTER TABLE request_logs ADD COLUMN body_retention_profile TEXT",
+            ),
+            (
+                "body_cleaned_reason",
+                "ALTER TABLE request_logs ADD COLUMN body_cleaned_reason TEXT",
+            ),
+            (
+                "body_cleaned_at",
+                "ALTER TABLE request_logs ADD COLUMN body_cleaned_at INTEGER",
+            ),
         ] {
             if !self.request_logs_column_exists(column).await? {
                 sqlx::query(sql).execute(&self.pool).await?;
@@ -1246,25 +1352,29 @@ impl KeyStore {
 
     pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<bool, ProxyError> {
         let mut request_kind_schema_changed = false;
+        let has_legacy_api_key_column = self.request_logs_column_exists("api_key").await?;
+        let has_api_keys_table = self.table_exists("api_keys").await?;
 
         if !self.request_logs_column_exists("api_key_id").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
                 .execute(&self.pool)
                 .await?;
 
-            sqlx::query(
-                r#"
-                UPDATE request_logs
-                SET api_key_id = (
-                    SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
+            if has_legacy_api_key_column && has_api_keys_table {
+                sqlx::query(
+                    r#"
+                    UPDATE request_logs
+                    SET api_key_id = (
+                        SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
+                    )
+                    "#,
                 )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
+                .execute(&self.pool)
+                .await?;
+            }
         }
 
-        if self.request_logs_column_exists("api_key").await? {
+        if has_legacy_api_key_column && has_api_keys_table {
             self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyApiKeyColumn)
                 .await?;
             request_kind_schema_changed = true;
@@ -1281,6 +1391,12 @@ impl KeyStore {
 
         if !self.request_logs_column_exists("request_body").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_body BLOB")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("response_body").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN response_body BLOB")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1334,6 +1450,15 @@ impl KeyStore {
 
         if !self.request_logs_column_exists("business_credits").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN business_credits INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("counts_business_quota")
+            .await?
+        {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN counts_business_quota INTEGER")
                 .execute(&self.pool)
                 .await?;
         }

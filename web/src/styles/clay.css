@@ -1265,6 +1265,35 @@
     white-space: nowrap;
   }
 
+  .system-settings-retention-content {
+    display: grid;
+    gap: 0.85rem;
+    min-width: 0;
+  }
+
+  .system-settings-retention-profiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .system-settings-retention-card {
+    display: grid;
+    align-content: start;
+    gap: 0.75rem;
+    min-width: 0;
+    border: 1px solid hsl(var(--border) / 0.6);
+    border-radius: 0.5rem;
+    background: hsl(var(--muted) / 0.1);
+    padding: 0.8rem;
+  }
+
+  .system-settings-retention-card h5 {
+    margin: 0;
+    color: hsl(var(--foreground));
+  }
+
   .system-settings-toggle-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1409,7 +1438,8 @@
     .system-settings-field-current,
     .system-settings-field-hint,
     .system-settings-field-error,
-    .system-settings-trusted-copy {
+    .system-settings-trusted-copy,
+    .system-settings-retention-content {
       grid-column: 1;
       grid-row: auto;
     }
@@ -1429,6 +1459,10 @@
 
     .system-settings-range-control .range {
       min-height: 2.75rem;
+    }
+
+    .system-settings-retention-profiles {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 

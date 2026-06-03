@@ -1,4 +1,6 @@
 export * from './runtime'
+export type * from './requestLogRetention'
+export type * from './systemSettingsTypes'
 export * from './tokens'
 export * from './clientIp'
 export * from './announcements'

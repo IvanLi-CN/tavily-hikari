@@ -125,6 +125,7 @@ export function normalizeUserDashboard(value: unknown): UserDashboard {
   const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
   const hourlyAnyLimit = readNumber(source, 'hourlyAnyLimit', 'hourly_any_limit', 60)
   return {
+    debugInfoShared: readBoolean(source, 'debugInfoShared', 'debug_info_shared'),
     requestRate: normalizeRequestRate(source.requestRate ?? source.request_rate, {
       used: hourlyAnyUsed,
       limit: hourlyAnyLimit,

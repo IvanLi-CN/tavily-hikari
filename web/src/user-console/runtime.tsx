@@ -19,6 +19,8 @@ import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rec
 import TokenResetDialogs from './TokenResetDialogs'
 import AccessStatePanel from './AccessStatePanel'
 import { UserConsoleAnnouncementsSection } from './Announcements'
+import DebugInfoSharingToggle from './DebugInfoSharingToggle'
+import { useDebugInfoSharing } from './useDebugInfoSharing'
 import { useUserConsoleAnnouncements } from './useAnnouncements'
 
 import {
@@ -2386,6 +2388,10 @@ export default function UserConsole(): JSX.Element {
     }
   }, [anyProbeRunning, route, text.detail.probe])
 
+  const debugSharing = useDebugInfoSharing({
+    dashboard, setDashboard, failedTemplate: text.dashboard.debugSharingFailed, formatError: formatTemplate,
+  })
+
   const goHome = () => {
     window.location.href = '/'
   }
@@ -2616,6 +2622,14 @@ export default function UserConsole(): JSX.Element {
               monthlyUsed={dashboard?.quotaMonthlyUsed ?? 0}
               monthlyLimit={dashboard?.quotaMonthlyLimit ?? 0}
               formatNumber={formatNumber}
+            />
+            <DebugInfoSharingToggle
+              shared={dashboard?.debugInfoShared ?? false}
+              disabled={loading || debugSharing.saving || dashboard == null}
+              saving={debugSharing.saving}
+              error={debugSharing.error}
+              text={text.dashboard}
+              onChange={(shared) => void debugSharing.toggle(shared)}
             />
           </section>
 

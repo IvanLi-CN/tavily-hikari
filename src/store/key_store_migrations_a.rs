@@ -1,3 +1,4 @@
+
 impl KeyStore {
     async fn reset_request_kind_canonical_migration_v1_markers(&self) -> Result<(), ProxyError> {
         let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
@@ -264,7 +265,7 @@ impl KeyStore {
 
         let mut rows = sqlx::query(
             r#"
-            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path
+            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path, counts_business_quota
             FROM request_logs
             WHERE visibility = ?
               AND api_key_id IS NOT NULL
@@ -285,6 +286,8 @@ impl KeyStore {
             let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
             let path: String = row.try_get("path")?;
+            let stored_counts_business_quota: Option<i64> =
+                row.try_get("counts_business_quota")?;
 
             let bucket_start = local_day_bucket_start_utc_ts(created_at);
 
@@ -320,7 +323,16 @@ impl KeyStore {
                 None,
             )
             .key;
-            match request_value_bucket_for_request_log(&request_kind_key, request_body.as_deref()) {
+            let counts_business_quota = stored_counts_business_quota
+                .map(|value| value != 0)
+                .unwrap_or_else(|| {
+                    request_log_counts_business_quota(&request_kind_key, request_body.as_deref())
+                });
+            match request_value_bucket_for_stored_request_log(
+                &request_kind_key,
+                request_body.as_deref(),
+                counts_business_quota,
+            ) {
                 RequestValueBucket::Valuable => match status.as_str() {
                     OUTCOME_SUCCESS => counts.valuable_success_count += 1,
                     OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => counts.valuable_failure_count += 1,
@@ -363,7 +375,7 @@ impl KeyStore {
 
         let mut rows = sqlx::query(
             r#"
-            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path
+            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path, counts_business_quota
             FROM request_logs
             WHERE visibility = ?
               AND api_key_id IS NOT NULL
@@ -443,6 +455,8 @@ impl KeyStore {
             let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
             let path: String = row.try_get("path")?;
+            let stored_counts_business_quota: Option<i64> =
+                row.try_get("counts_business_quota")?;
 
             let bucket_start = local_day_bucket_start_utc_ts(created_at);
 
@@ -472,7 +486,16 @@ impl KeyStore {
                 None,
             )
             .key;
-            match request_value_bucket_for_request_log(&request_kind_key, request_body.as_deref()) {
+            let counts_business_quota = stored_counts_business_quota
+                .map(|value| value != 0)
+                .unwrap_or_else(|| {
+                    request_log_counts_business_quota(&request_kind_key, request_body.as_deref())
+                });
+            match request_value_bucket_for_stored_request_log(
+                &request_kind_key,
+                request_body.as_deref(),
+                counts_business_quota,
+            ) {
                 RequestValueBucket::Valuable => match status.as_str() {
                     OUTCOME_SUCCESS => counts.valuable_success_count += 1,
                     OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => counts.valuable_failure_count += 1,
@@ -507,6 +530,7 @@ impl KeyStore {
         outcome: &str,
         failure_kind: Option<&str>,
         local_estimated_credits: i64,
+        counts_business_quota: bool,
     ) -> DashboardRequestRollupCounts {
         let mut counts = DashboardRequestRollupCounts {
             total_requests: 1,
@@ -521,7 +545,11 @@ impl KeyStore {
             _ => {}
         }
 
-        match request_value_bucket_for_request_log(request_kind_key, body) {
+        match request_value_bucket_for_stored_request_log(
+            request_kind_key,
+            body,
+            counts_business_quota,
+        ) {
             RequestValueBucket::Valuable => match outcome {
                 OUTCOME_SUCCESS => counts.valuable_success_count = 1,
                 OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => {
@@ -542,7 +570,7 @@ impl KeyStore {
 
         match (
             token_request_kind_protocol_group(request_kind_key),
-            token_request_kind_billing_group_for_request_log(request_kind_key, body),
+            token_request_kind_billing_group_for_token_log(request_kind_key, counts_business_quota),
         ) {
             ("mcp", "non_billable") => counts.mcp_non_billable = 1,
             ("mcp", "billable") => counts.mcp_billable = 1,
@@ -670,7 +698,7 @@ impl KeyStore {
                     let mut read_conn = self.pool.acquire().await?;
                     let mut rows = sqlx::query(
                         r#"
-                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits, counts_business_quota
                         FROM request_logs
                         WHERE visibility = ?
                           AND created_at >= ?
@@ -694,6 +722,8 @@ impl KeyStore {
                         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
                         let path: String = row.try_get("path")?;
                         let business_credits: Option<i64> = row.try_get("business_credits")?;
+                        let stored_counts_business_quota: Option<i64> =
+                            row.try_get("counts_business_quota")?;
                         let bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
 
                         if current_bucket_start != Some(bucket_start) {
@@ -719,12 +749,21 @@ impl KeyStore {
                             None,
                         )
                         .key;
+                        let counts_business_quota = stored_counts_business_quota
+                            .map(|value| value != 0)
+                            .unwrap_or_else(|| {
+                                request_log_counts_business_quota(
+                                    &request_kind_key,
+                                    request_body.as_deref(),
+                                )
+                            });
                         counts.add(Self::dashboard_rollup_counts_for_request(
                             &request_kind_key,
                             request_body.as_deref(),
                             &result_status,
                             failure_kind.as_deref(),
                             business_credits.unwrap_or_default(),
+                            counts_business_quota,
                         ));
                     }
 
@@ -744,7 +783,7 @@ impl KeyStore {
                     let mut read_conn = self.pool.acquire().await?;
                     let mut rows = sqlx::query(
                         r#"
-                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits, counts_business_quota
                         FROM request_logs
                         WHERE visibility = ?
                           AND created_at >= ?
@@ -768,6 +807,8 @@ impl KeyStore {
                         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
                         let path: String = row.try_get("path")?;
                         let business_credits: Option<i64> = row.try_get("business_credits")?;
+                        let stored_counts_business_quota: Option<i64> =
+                            row.try_get("counts_business_quota")?;
                         let bucket_start = local_day_bucket_start_utc_ts(created_at);
 
                         if current_bucket_start != Some(bucket_start) {
@@ -793,12 +834,21 @@ impl KeyStore {
                             None,
                         )
                         .key;
+                        let counts_business_quota = stored_counts_business_quota
+                            .map(|value| value != 0)
+                            .unwrap_or_else(|| {
+                                request_log_counts_business_quota(
+                                    &request_kind_key,
+                                    request_body.as_deref(),
+                                )
+                            });
                         counts.add(Self::dashboard_rollup_counts_for_request(
                             &request_kind_key,
                             request_body.as_deref(),
                             &result_status,
                             failure_kind.as_deref(),
                             business_credits.unwrap_or_default(),
+                            counts_business_quota,
                         ));
                     }
 
@@ -822,7 +872,7 @@ impl KeyStore {
                 let mut read_conn = self.pool.acquire().await?;
                 let mut rows = sqlx::query(
                     r#"
-                    SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                    SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits, counts_business_quota
                     FROM request_logs
                     WHERE visibility = ?
                     ORDER BY created_at ASC, id ASC
@@ -845,6 +895,8 @@ impl KeyStore {
                     let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
                     let path: String = row.try_get("path")?;
                     let business_credits: Option<i64> = row.try_get("business_credits")?;
+                    let stored_counts_business_quota: Option<i64> =
+                        row.try_get("counts_business_quota")?;
                     let minute_bucket_start =
                         created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
                     let day_bucket_start = local_day_bucket_start_utc_ts(created_at);
@@ -887,12 +939,21 @@ impl KeyStore {
                         None,
                     )
                     .key;
+                    let counts_business_quota = stored_counts_business_quota
+                        .map(|value| value != 0)
+                        .unwrap_or_else(|| {
+                            request_log_counts_business_quota(
+                                &request_kind_key,
+                                request_body.as_deref(),
+                            )
+                        });
                     let delta = Self::dashboard_rollup_counts_for_request(
                         &request_kind_key,
                         request_body.as_deref(),
                         &result_status,
                         failure_kind.as_deref(),
                         business_credits.unwrap_or_default(),
+                        counts_business_quota,
                     );
                     minute_counts.add(delta);
                     day_counts.add(delta);
@@ -1963,284 +2024,6 @@ impl KeyStore {
         Ok(result.rows_affected() as i64)
     }
 
-    pub(crate) async fn ensure_request_logs_gc_support_indexes(&self) -> Result<(), ProxyError> {
-        for sql in [
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
-               ON auth_token_logs(request_log_id)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_request_log
-               ON api_key_maintenance_records(request_log_id)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_source_request_log
-               ON api_key_transient_backoffs(source_request_log_id)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
-               ON request_logs(created_at DESC, id DESC)"#,
-        ] {
-            sqlx::query(sql).execute(&self.pool).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn delete_old_request_logs_batch(
-        &self,
-        threshold: i64,
-        batch_size: i64,
-    ) -> Result<i64, ProxyError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut retry_attempt = 0usize;
-        loop {
-            let delete_trigger = Self::request_log_catalog_rollup_delete_trigger_sql();
-            let mut tx = self.pool.begin().await?;
-            let result = async {
-                sqlx::query("PRAGMA secure_delete = OFF")
-                    .execute(&mut *tx)
-                    .await?;
-                sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_catalog_rollup_delete")
-                    .execute(&mut *tx)
-                    .await?;
-                let result = sqlx::query(
-                    r#"
-                    DELETE FROM request_logs
-                    WHERE id IN (
-                        SELECT id
-                        FROM request_logs
-                        WHERE created_at < ?
-                        ORDER BY created_at ASC, id ASC
-                        LIMIT ?
-                    )
-                    "#,
-                )
-                .bind(threshold)
-                .bind(batch_size)
-                .execute(&mut *tx)
-                .await?;
-                sqlx::query(&delete_trigger).execute(&mut *tx).await?;
-                tx.commit().await?;
-                Ok::<_, sqlx::Error>(result)
-            }
-            .await;
-            match result {
-                Ok(result) => return Ok(result.rows_affected() as i64),
-                Err(err) => {
-                    let err = ProxyError::Database(err);
-                    if sleep_before_sqlite_transient_write_retry(
-                        "request logs gc batch delete",
-                        retry_attempt,
-                        deadline,
-                        &err,
-                    )
-                    .await
-                    {
-                        retry_attempt += 1;
-                        continue;
-                    }
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    async fn unlink_old_request_log_references_batch(
-        &self,
-        threshold: i64,
-        batch_size: i64,
-    ) -> Result<(), ProxyError> {
-        for (operation, sql) in [
-            (
-                "auth token request log unlink",
-                r#"
-                UPDATE auth_token_logs
-                SET request_log_id = NULL
-                WHERE request_log_id IN (
-                    SELECT id
-                    FROM request_logs
-                    WHERE created_at < ?
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT ?
-                )
-                "#,
-            ),
-            (
-                "maintenance request log unlink",
-                r#"
-                UPDATE api_key_maintenance_records
-                SET request_log_id = NULL
-                WHERE request_log_id IN (
-                    SELECT id
-                    FROM request_logs
-                    WHERE created_at < ?
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT ?
-                )
-                "#,
-            ),
-            (
-                "transient backoff request log unlink",
-                r#"
-                UPDATE api_key_transient_backoffs
-                SET source_request_log_id = NULL
-                WHERE source_request_log_id IN (
-                    SELECT id
-                    FROM request_logs
-                    WHERE created_at < ?
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT ?
-                )
-                "#,
-            ),
-        ] {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut retry_attempt = 0usize;
-            loop {
-                match sqlx::query(sql)
-                    .bind(threshold)
-                    .bind(batch_size)
-                    .execute(&self.pool)
-                    .await
-                {
-                    Ok(_) => break,
-                    Err(err) => {
-                        let err = ProxyError::Database(err);
-                        if sleep_before_sqlite_transient_write_retry(
-                            operation,
-                            retry_attempt,
-                            deadline,
-                            &err,
-                        )
-                        .await
-                        {
-                            retry_attempt += 1;
-                            continue;
-                        }
-                        return Err(err);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn delete_old_request_log_rollups_batch(
-        &self,
-        threshold: i64,
-        batch_size: i64,
-    ) -> Result<i64, ProxyError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut retry_attempt = 0usize;
-        loop {
-            match sqlx::query(
-                r#"
-                DELETE FROM request_log_catalog_rollups
-                WHERE rowid IN (
-                    SELECT rowid
-                    FROM request_log_catalog_rollups
-                    WHERE bucket_start < ?
-                    ORDER BY bucket_start ASC
-                    LIMIT ?
-                )
-                "#,
-            )
-            .bind(threshold)
-            .bind(batch_size)
-            .execute(&self.pool)
-            .await
-            {
-                Ok(result) => return Ok(result.rows_affected() as i64),
-                Err(err) => {
-                    let err = ProxyError::Database(err);
-                    if sleep_before_sqlite_transient_write_retry(
-                        "request log rollups gc batch delete",
-                        retry_attempt,
-                        deadline,
-                        &err,
-                    )
-                    .await
-                    {
-                        retry_attempt += 1;
-                        continue;
-                    }
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    async fn has_old_request_log_rows(&self, threshold: i64) -> Result<bool, ProxyError> {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM request_logs WHERE created_at < ? LIMIT 1",
-        )
-        .bind(threshold)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(exists.is_some())
-    }
-
-    async fn has_old_request_log_rollup_rows(&self, threshold: i64) -> Result<bool, ProxyError> {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM request_log_catalog_rollups WHERE bucket_start < ? LIMIT 1",
-        )
-        .bind(threshold)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(exists.is_some())
-    }
-
-    pub(crate) async fn delete_old_request_logs_bounded(
-        &self,
-        threshold: i64,
-        options: RequestLogsGcOptions,
-        retention_days: i64,
-    ) -> Result<RequestLogsGcReport, ProxyError> {
-        let batch_size = options.batch_size.max(1);
-        let max_batches = options.max_batches.max(1);
-        let deadline = std::time::Instant::now() + Duration::from_secs(options.max_runtime_secs);
-        let started = std::time::Instant::now();
-        let mut deleted_request_logs = 0_i64;
-        let mut deleted_rollups = 0_i64;
-        let mut batches = 0_i64;
-
-        while batches < max_batches && std::time::Instant::now() < deadline {
-            self.unlink_old_request_log_references_batch(threshold, batch_size)
-                .await?;
-            let request_deleted = self
-                .delete_old_request_logs_batch(threshold, batch_size)
-                .await?;
-            let rollup_deleted = self
-                .delete_old_request_log_rollups_batch(threshold, batch_size)
-                .await?;
-            deleted_request_logs += request_deleted;
-            deleted_rollups += rollup_deleted;
-            batches += 1;
-
-            if request_deleted == 0 && rollup_deleted == 0 {
-                break;
-            }
-
-            if batches < max_batches && options.inter_batch_sleep_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(options.inter_batch_sleep_ms)).await;
-            }
-        }
-
-        let has_more = self.has_old_request_log_rows(threshold).await?
-            || self.has_old_request_log_rollup_rows(threshold).await?;
-        self.invalidate_request_logs_catalog_cache().await;
-        Ok(RequestLogsGcReport {
-            retention_days,
-            threshold,
-            batch_size,
-            max_batches,
-            deleted_request_logs,
-            deleted_rollups,
-            batches,
-            completed: !has_more,
-            has_more,
-            elapsed_ms: started.elapsed().as_millis(),
-        })
-    }
-
-    /// Aggregate per-token usage logs into hourly buckets in token_usage_stats.
-    /// Returns (rows_affected, new_last_rollup_ts). When there are no new logs,
-    /// rows_affected is 0 and new_last_rollup_ts is None.
     pub(crate) async fn rollup_token_usage_stats(&self) -> Result<(i64, Option<i64>), ProxyError> {
         async fn read_meta_i64(
             tx: &mut Transaction<'_, Sqlite>,

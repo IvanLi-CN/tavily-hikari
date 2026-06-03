@@ -214,6 +214,7 @@ pub struct RequestLogsGcReport {
     pub threshold: i64,
     pub batch_size: i64,
     pub max_batches: i64,
+    pub cleaned_request_log_bodies: i64,
     pub deleted_request_logs: i64,
     pub deleted_rollups: i64,
     pub batches: i64,
@@ -227,10 +228,16 @@ pub async fn run_request_logs_gc_once(
     options: RequestLogsGcOptions,
 ) -> Result<RequestLogsGcReport, ProxyError> {
     let key_store = crate::store::KeyStore::open_for_request_logs_gc(database_path).await?;
-    let retention_days = effective_request_logs_retention_days();
-    let threshold = request_logs_retention_threshold_utc_ts(retention_days);
+    let settings = key_store.get_system_settings().await?;
+    let retention_days = settings.request_log_retention.max_log_retention_days;
+    let threshold = configured_request_logs_retention_threshold_utc_ts(retention_days);
     key_store
-        .delete_old_request_logs_bounded(threshold, options, retention_days)
+        .delete_old_request_logs_bounded(
+            threshold,
+            options,
+            retention_days,
+            &settings.request_log_retention,
+        )
         .await
 }
 
@@ -636,6 +643,15 @@ const QUOTA_SUBJECT_LOCK_REFRESH_SECS: u64 = 5;
 const QUOTA_SUBJECT_LOCK_REFRESH_RETRY_SECS: u64 = 1;
 
 const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 32;
+pub const REQUEST_LOG_RETENTION_DAYS_MIN: i64 = 0;
+pub const REQUEST_LOG_RETENTION_DAYS_MAX: i64 = 92;
+pub const REQUEST_LOG_RETENTION_MAX_DAYS_DEFAULT: i64 = 32;
+pub const REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_DEFAULT: i64 = 80;
+pub const REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MIN: i64 = 50;
+pub const REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MAX: i64 = 150;
+pub const REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_STEP: i64 = 10;
+pub const REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO: &str = "policy_zero_days";
+pub const REQUEST_LOG_BODY_CLEANED_REASON_RETENTION_EXPIRED: &str = "retention_expired";
 
 const BILLING_STATE_NONE: &str = "none";
 const BILLING_STATE_PENDING: &str = "pending";
@@ -708,6 +724,27 @@ const META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1: &str = "user_blocked_key_base_lim
 const META_KEY_GLOBAL_IP_LIMIT_V1: &str = "global_ip_limit_v1";
 const META_KEY_TRUSTED_PROXY_CIDRS_V1: &str = "trusted_proxy_cidrs_v1";
 const META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1: &str = "trusted_client_ip_headers_v1";
+const META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1: &str = "request_log_retention_max_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1: &str =
+    "request_log_retention_heavy_threshold_percent_v1";
+const META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_global_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_global_non_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1: &str =
+    "request_log_retention_global_non_success_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_heavy_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_heavy_non_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1: &str =
+    "request_log_retention_heavy_non_success_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_debug_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1: &str =
+    "request_log_retention_debug_non_business_body_days_v1";
+const META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1: &str =
+    "request_log_retention_debug_non_success_body_days_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
 const META_KEY_LINUXDO_USER_TAG_BINDINGS_REFRESH_V1: &str = "linuxdo_user_tag_bindings_refresh_v1";
@@ -812,6 +849,99 @@ pub fn effective_request_logs_retention_days() -> i64 {
         REQUEST_LOGS_MIN_RETENTION_DAYS,
     );
     days.max(REQUEST_LOGS_MIN_RETENTION_DAYS)
+}
+
+fn request_log_retention_profile(
+    business_body_days: i64,
+    non_business_body_days: i64,
+    non_success_body_days: i64,
+) -> RequestLogRetentionProfile {
+    RequestLogRetentionProfile {
+        business_body_days,
+        non_business_body_days,
+        non_success_body_days,
+    }
+}
+
+pub fn default_request_log_retention_settings() -> RequestLogRetentionSettings {
+    RequestLogRetentionSettings {
+        max_log_retention_days: REQUEST_LOG_RETENTION_MAX_DAYS_DEFAULT,
+        heavy_usage_threshold_percent: REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_DEFAULT,
+        global: request_log_retention_profile(7, 0, 3),
+        heavy_usage: request_log_retention_profile(3, 0, 1),
+        debug_shared: request_log_retention_profile(14, 1, 7),
+    }
+}
+
+fn validate_request_log_retention_days(field: &str, value: i64) -> Result<(), ProxyError> {
+    if !(REQUEST_LOG_RETENTION_DAYS_MIN..=REQUEST_LOG_RETENTION_DAYS_MAX).contains(&value) {
+        return Err(ProxyError::Other(format!(
+            "{field} must be between {} and {}",
+            REQUEST_LOG_RETENTION_DAYS_MIN, REQUEST_LOG_RETENTION_DAYS_MAX
+        )));
+    }
+    Ok(())
+}
+
+fn validate_request_log_retention_profile(
+    prefix: &str,
+    profile: &RequestLogRetentionProfile,
+) -> Result<(), ProxyError> {
+    validate_request_log_retention_days(
+        &format!("{prefix}.business_body_days"),
+        profile.business_body_days,
+    )?;
+    validate_request_log_retention_days(
+        &format!("{prefix}.non_business_body_days"),
+        profile.non_business_body_days,
+    )?;
+    validate_request_log_retention_days(
+        &format!("{prefix}.non_success_body_days"),
+        profile.non_success_body_days,
+    )?;
+    Ok(())
+}
+
+fn clamp_request_log_retention_profile(
+    profile: &RequestLogRetentionProfile,
+    max_days: i64,
+) -> RequestLogRetentionProfile {
+    RequestLogRetentionProfile {
+        business_body_days: profile.business_body_days.min(max_days),
+        non_business_body_days: profile.non_business_body_days.min(max_days),
+        non_success_body_days: profile.non_success_body_days.min(max_days),
+    }
+}
+
+pub fn normalize_request_log_retention_settings(
+    settings: &RequestLogRetentionSettings,
+) -> Result<RequestLogRetentionSettings, ProxyError> {
+    validate_request_log_retention_days("max_log_retention_days", settings.max_log_retention_days)?;
+    if !(REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MIN
+        ..=REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MAX)
+        .contains(&settings.heavy_usage_threshold_percent)
+        || settings.heavy_usage_threshold_percent
+            % REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_STEP
+            != 0
+    {
+        return Err(ProxyError::Other(format!(
+            "heavy_usage_threshold_percent must be between {} and {} in steps of {}",
+            REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MIN,
+            REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_MAX,
+            REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_STEP
+        )));
+    }
+    validate_request_log_retention_profile("global", &settings.global)?;
+    validate_request_log_retention_profile("heavy_usage", &settings.heavy_usage)?;
+    validate_request_log_retention_profile("debug_shared", &settings.debug_shared)?;
+    let max_days = settings.max_log_retention_days;
+    Ok(RequestLogRetentionSettings {
+        max_log_retention_days: max_days,
+        heavy_usage_threshold_percent: settings.heavy_usage_threshold_percent,
+        global: clamp_request_log_retention_profile(&settings.global, max_days),
+        heavy_usage: clamp_request_log_retention_profile(&settings.heavy_usage, max_days),
+        debug_shared: clamp_request_log_retention_profile(&settings.debug_shared, max_days),
+    })
 }
 
 pub fn effective_auth_token_log_retention_days() -> i64 {

@@ -5,6 +5,8 @@ import {
 } from '../lib/mcpProbe'
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
+import type { RequestLogRetentionSettings } from './requestLogRetention'
+import type { ForwardProxySettingsEnvelope, SystemSettings, UpdateSystemSettingsPayload } from './systemSettingsTypes'
 import type { AuthToken, AuthTokenSecret } from './tokens'
 import { normalizeUserDashboard, normalizeUserTokenSummary, normalizeUserTokenSummaryList } from './userConsoleNormalization'
 
@@ -366,6 +368,12 @@ export interface RequestLog {
   fallback_reason?: string | null
   request_body: string | null
   response_body: string | null
+  request_body_bytes?: number | null
+  response_body_bytes?: number | null
+  request_body_sha256?: string | null
+  response_body_sha256?: string | null
+  body_cleaned_reason?: string | null
+  body_cleaned_at?: number | null
   forwarded_headers: string[]
   dropped_headers: string[]
   remote_addr?: string | null
@@ -387,6 +395,12 @@ export interface RequestLog {
 export interface RequestLogBodies {
   request_body: string | null
   response_body: string | null
+  request_body_bytes?: number | null
+  response_body_bytes?: number | null
+  request_body_sha256?: string | null
+  response_body_sha256?: string | null
+  body_cleaned_reason?: string | null
+  body_cleaned_at?: number | null
 }
 
 export interface LogFacetOption {
@@ -1848,6 +1862,7 @@ export async function postUserLogout(signal?: AbortSignal): Promise<void> {
 }
 
 export interface UserDashboard {
+  debugInfoShared: boolean
   requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
@@ -1889,6 +1904,14 @@ export function fetchUserDashboard(todayWindow?: TodayWindowRange, signal?: Abor
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/dashboard${params.toString() ? `?${params.toString()}` : ''}`
   return requestJson<unknown>(url, { signal }).then(normalizeUserDashboard)
+}
+
+export function updateUserDebugInfoSharing(shared: boolean): Promise<{ debugInfoShared: boolean }> {
+  return requestJson('/api/user/debug-info-sharing', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ shared }),
+  })
 }
 
 export function fetchUserTokens(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserTokenSummary[]> {
@@ -2952,26 +2975,6 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[]
 }
 
-export interface SystemSettings {
-  requestRateLimit: number
-  mcpSessionAffinityKeyCount: number
-  rebalanceMcpEnabled: boolean
-  rebalanceMcpSessionPercent: number
-  apiRebalanceEnabled: boolean
-  apiRebalancePercent: number
-  rechargeFeatureEnabled: boolean
-  rechargeUserEnabled: boolean
-  userBlockedKeyBaseLimit: number
-  globalIpLimit: number
-  trustedProxyCidrs: string[]
-  trustedClientIpHeaders: string[]
-}
-
-export interface ForwardProxySettingsEnvelope {
-  forwardProxy?: ForwardProxySettings | null
-  systemSettings?: SystemSettings | null
-}
-
 export interface UpdateForwardProxySettingsPayload {
   proxyUrls: string[]
   subscriptionUrls: string[]
@@ -2980,21 +2983,6 @@ export interface UpdateForwardProxySettingsPayload {
   egressSocks5Enabled?: boolean
   egressSocks5Url?: string
   skipBootstrapProbe?: boolean
-}
-
-export interface UpdateSystemSettingsPayload {
-  requestRateLimit: number
-  mcpSessionAffinityKeyCount: number
-  rebalanceMcpEnabled: boolean
-  rebalanceMcpSessionPercent: number
-  apiRebalanceEnabled: boolean
-  apiRebalancePercent: number
-  rechargeFeatureEnabled: boolean
-  rechargeUserEnabled: boolean
-  trustedProxyCidrs: string[]
-  trustedClientIpHeaders: string[]
-  userBlockedKeyBaseLimit: number
-  globalIpLimit: number
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -3140,6 +3128,13 @@ function createEmptySystemSettings(): SystemSettings {
     globalIpLimit: 5,
     trustedProxyCidrs: ['127.0.0.0/8', '::1/128'],
     trustedClientIpHeaders: ['cf-connecting-ip', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'forwarded'],
+    requestLogRetention: {
+      maxLogRetentionDays: 32,
+      heavyUsageThresholdPercent: 80,
+      global: { businessBodyDays: 7, nonBusinessBodyDays: 0, nonSuccessBodyDays: 3 },
+      heavyUsage: { businessBodyDays: 3, nonBusinessBodyDays: 0, nonSuccessBodyDays: 1 },
+      debugShared: { businessBodyDays: 14, nonBusinessBodyDays: 1, nonSuccessBodyDays: 7 },
+    },
   }
 }
 

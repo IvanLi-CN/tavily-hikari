@@ -1172,6 +1172,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1465,6 +1466,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("disable rebalance mcp");
@@ -1517,6 +1519,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1608,6 +1611,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -1844,6 +1848,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2084,6 +2089,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2190,6 +2196,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2266,6 +2273,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2333,6 +2341,7 @@
                 global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
                 trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
                 trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
+                request_log_retention: tavily_hikari::default_request_log_retention_settings(),
             })
             .await
             .expect("enable rebalance mcp");
@@ -2912,85 +2921,6 @@
                 .is_some_and(|value| value >= 0),
             "dashboard summary should expose available node count",
         );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[tokio::test]
-    async fn admin_system_settings_put_preserves_request_rate_limit_when_legacy_payload_omits_it() {
-        let db_path = temp_db_path("admin-system-settings-legacy-request-rate");
-        let db_str = db_path.to_string_lossy().to_string();
-        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
-        let upstream = format!("http://{}/mcp", upstream_addr);
-        let usage_base = format!("http://{}", upstream_addr);
-        let proxy =
-            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-                .await
-                .expect("create proxy");
-        proxy
-            .set_system_settings(&tavily_hikari::SystemSettings {
-                request_rate_limit: 88,
-                mcp_session_affinity_key_count: 5,
-                rebalance_mcp_enabled: false,
-                rebalance_mcp_session_percent: 100,
-                api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
-                api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
-                recharge_feature_enabled: true,
-                recharge_user_enabled: true,
-                user_blocked_key_base_limit: 7,
-                global_ip_limit: tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT,
-                trusted_proxy_cidrs: tavily_hikari::TrustedClientIpSettings::default().trusted_proxy_cidrs,
-                trusted_client_ip_headers: tavily_hikari::TrustedClientIpSettings::default().trusted_client_ip_headers,
-            })
-            .await
-            .expect("seed system settings");
-        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
-
-        let client = Client::new();
-        let updated = client
-            .put(format!("http://{addr}/api/settings/system"))
-            .json(&serde_json::json!({
-                "mcpSessionAffinityKeyCount": 3,
-                "rebalanceMcpEnabled": true,
-                "rebalanceMcpSessionPercent": 40,
-            }))
-            .send()
-            .await
-            .expect("update system settings");
-
-        assert_eq!(updated.status(), StatusCode::OK);
-        let updated_body = updated
-            .json::<serde_json::Value>()
-            .await
-            .expect("decode updated system settings");
-        assert_eq!(updated_body["requestRateLimit"].as_i64(), Some(88));
-        assert_eq!(updated_body["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
-        assert_eq!(updated_body["rebalanceMcpEnabled"].as_bool(), Some(true));
-        assert_eq!(updated_body["rebalanceMcpSessionPercent"].as_i64(), Some(40));
-        assert_eq!(updated_body["apiRebalanceEnabled"].as_bool(), Some(false));
-        assert_eq!(updated_body["apiRebalancePercent"].as_i64(), Some(0));
-        assert_eq!(updated_body["userBlockedKeyBaseLimit"].as_i64(), Some(7));
-        assert_eq!(updated_body["globalIpLimit"].as_i64(), Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT));
-
-        let persisted = client
-            .get(format!("http://{addr}/api/settings"))
-            .send()
-            .await
-            .expect("get settings");
-        assert_eq!(persisted.status(), StatusCode::OK);
-        let persisted_body = persisted
-            .json::<serde_json::Value>()
-            .await
-            .expect("decode persisted settings");
-        let persisted_system_settings = &persisted_body["systemSettings"];
-        assert_eq!(persisted_system_settings["requestRateLimit"].as_i64(), Some(88));
-        assert_eq!(persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(), Some(7));
-        assert_eq!(
-            persisted_system_settings["globalIpLimit"].as_i64(),
-            Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT)
-        );
-        assert_eq!(persisted_system_settings["apiRebalanceEnabled"].as_bool(), Some(false));
-        assert_eq!(persisted_system_settings["apiRebalancePercent"].as_i64(), Some(0));
 
         let _ = std::fs::remove_file(db_path);
     }

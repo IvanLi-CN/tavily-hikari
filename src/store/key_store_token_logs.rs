@@ -1,3 +1,37 @@
+struct RequestLogBodyStorageDecision<'a> {
+    request_body: Option<&'a [u8]>,
+    response_body: Option<&'a [u8]>,
+    request_body_bytes: i64,
+    response_body_bytes: i64,
+    request_body_sha256: String,
+    response_body_sha256: String,
+    body_retention_days: i64,
+    body_retention_profile: &'static str,
+    body_cleaned_reason: Option<&'static str>,
+    body_cleaned_at: Option<i64>,
+}
+
+struct RequestLogBodyStorageInput<'a> {
+    request_body: &'a [u8],
+    response_body: &'a [u8],
+    created_at: i64,
+}
+
+struct RequestLogBodyRetentionDecision {
+    days: i64,
+    profile: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct RequestLogBodyRetentionDecisionMode {
+    include_debug_shared: bool,
+    include_heavy_usage: bool,
+}
+
+const REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL: &str = "global";
+const REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE: &str = "heavy_usage";
+const REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED: &str = "debug_shared";
+
 impl KeyStore {
     pub async fn fetch_token_logs(
         &self,
@@ -1701,532 +1735,6 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
-        let created_at = Utc::now().timestamp();
-        let status_code = entry.status.map(|code| code.as_u16() as i64);
-        let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
-            if entry.outcome == OUTCOME_ERROR {
-                classify_failure_kind(
-                    entry.path,
-                    status_code,
-                    entry.tavily_status_code,
-                    entry.error,
-                    entry.response_body,
-                )
-            } else {
-                None
-            }
-        });
-        let key_effect_summary = entry.key_effect_summary.map(str::to_string);
-        let binding_effect_summary = entry.binding_effect_summary.map(str::to_string);
-        let selection_effect_summary = entry.selection_effect_summary.map(str::to_string);
-        let request_kind = normalize_request_kind_for_response_context(
-            classify_token_request_kind(entry.path, Some(entry.request_body)),
-            ResponseRequestKindContext {
-                method: entry.method.as_str(),
-                path: entry.path,
-                http_status: status_code,
-                tavily_status: entry.tavily_status_code,
-                failure_kind: failure_kind.as_deref(),
-                error_message: entry.error,
-                response_body: entry.response_body,
-            },
-        );
-
-        let forwarded_json =
-            serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
-        let dropped_json =
-            serde_json::to_string(entry.dropped_headers).unwrap_or_else(|_| "[]".to_string());
-        let request_user_id = if let Some(token_id) = entry.auth_token_id {
-            self.resolve_request_rollup_user_id(token_id, None).await?
-        } else {
-            None
-        };
-        let remote_addr = entry.client_ip.and_then(|info| info.remote_addr.as_deref());
-        let client_ip = entry.client_ip.and_then(|info| info.client_ip.as_deref());
-        let client_ip_source = entry
-            .client_ip
-            .and_then(|info| info.client_ip_source.as_deref());
-        let client_ip_trusted = entry
-            .client_ip
-            .map(|info| i64::from(info.client_ip_trusted))
-            .unwrap_or(0);
-        let ip_headers_json = entry
-            .client_ip
-            .map(|info| serde_json::to_string(&info.ip_headers))
-            .transpose()
-            .unwrap_or_else(|_| Some("[]".to_string()));
-
-        let bucket_start = local_day_bucket_start_utc_ts(created_at);
-        let (bucket_success, bucket_error, bucket_quota_exhausted) = match entry.outcome {
-            OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64),
-            OUTCOME_ERROR => (0_i64, 1_i64, 0_i64),
-            OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 1_i64),
-            _ => (0_i64, 0_i64, 0_i64),
-        };
-        let request_value_bucket =
-            request_value_bucket_for_request_log(&request_kind.key, Some(entry.request_body));
-        let (
-            bucket_valuable_success,
-            bucket_valuable_failure,
-            bucket_other_success,
-            bucket_other_failure,
-            bucket_unknown,
-        ) = match request_value_bucket {
-            RequestValueBucket::Valuable => match entry.outcome {
-                OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 1_i64, 0_i64, 0_i64, 0_i64),
-                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-            },
-            RequestValueBucket::Other => match entry.outcome {
-                OUTCOME_SUCCESS => (0_i64, 0_i64, 1_i64, 0_i64, 0_i64),
-                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 0_i64, 1_i64, 0_i64),
-                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-            },
-            RequestValueBucket::Unknown => (0_i64, 0_i64, 0_i64, 0_i64, 1_i64),
-        };
-        let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
-            &request_kind.key,
-            Some(entry.request_body),
-            entry.outcome,
-            failure_kind.as_deref(),
-            0,
-        );
-        let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
-
-        let mut tx = self.pool.begin().await?;
-
-        let request_log_id: i64 = sqlx::query_scalar(
-            r#"
-            INSERT INTO request_logs (
-                api_key_id,
-                auth_token_id,
-                request_user_id,
-                method,
-                path,
-                query,
-                status_code,
-                tavily_status_code,
-                error_message,
-                result_status,
-                request_kind_key,
-                request_kind_label,
-                request_kind_detail,
-                business_credits,
-                failure_kind,
-                key_effect_code,
-                key_effect_summary,
-                binding_effect_code,
-                binding_effect_summary,
-                selection_effect_code,
-                selection_effect_summary,
-                gateway_mode,
-                experiment_variant,
-                proxy_session_id,
-                routing_subject_hash,
-                upstream_operation,
-                fallback_reason,
-                request_body,
-                response_body,
-                forwarded_headers,
-                dropped_headers,
-                remote_addr,
-                client_ip,
-                client_ip_source,
-                client_ip_trusted,
-                ip_headers,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-            "#,
-        )
-        .bind(entry.key_id)
-        .bind(entry.auth_token_id)
-        .bind(request_user_id)
-        .bind(entry.method.as_str())
-        .bind(entry.path)
-        .bind(entry.query)
-        .bind(status_code)
-        .bind(entry.tavily_status_code)
-        .bind(entry.error)
-        .bind(entry.outcome)
-        .bind(&request_kind.key)
-        .bind(&request_kind.label)
-        .bind(request_kind.detail.as_deref())
-        .bind(None::<i64>)
-        .bind(failure_kind)
-        .bind(entry.key_effect_code)
-        .bind(key_effect_summary)
-        .bind(entry.binding_effect_code)
-        .bind(binding_effect_summary)
-        .bind(entry.selection_effect_code)
-        .bind(selection_effect_summary)
-        .bind(entry.gateway_mode)
-        .bind(entry.experiment_variant)
-        .bind(entry.proxy_session_id)
-        .bind(entry.routing_subject_hash)
-        .bind(entry.upstream_operation)
-        .bind(entry.fallback_reason)
-        .bind(entry.request_body)
-        .bind(entry.response_body)
-        .bind(forwarded_json)
-        .bind(dropped_json)
-        .bind(remote_addr)
-        .bind(client_ip)
-        .bind(client_ip_source)
-        .bind(client_ip_trusted)
-        .bind(ip_headers_json)
-        .bind(created_at)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        // Daily API-key rollup bucket (bucket_secs=86400, aligned to local midnight).
-        if let Some(key_id) = entry.key_id {
-            sqlx::query(
-                r#"
-                INSERT INTO api_key_usage_buckets (
-                    api_key_id,
-                    bucket_start,
-                    bucket_secs,
-                    total_requests,
-                    success_count,
-                    error_count,
-                    quota_exhausted_count,
-                    valuable_success_count,
-                    valuable_failure_count,
-                    other_success_count,
-                    other_failure_count,
-                    unknown_count,
-                    updated_at
-                ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(api_key_id, bucket_start, bucket_secs)
-                DO UPDATE SET
-                    total_requests = total_requests + 1,
-                    success_count = success_count + excluded.success_count,
-                    error_count = error_count + excluded.error_count,
-                    quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
-                    valuable_success_count =
-                        valuable_success_count + excluded.valuable_success_count,
-                    valuable_failure_count =
-                        valuable_failure_count + excluded.valuable_failure_count,
-                    other_success_count = other_success_count + excluded.other_success_count,
-                    other_failure_count = other_failure_count + excluded.other_failure_count,
-                    unknown_count = unknown_count + excluded.unknown_count,
-                    updated_at = excluded.updated_at
-                "#,
-            )
-            .bind(key_id)
-            .bind(bucket_start)
-            .bind(bucket_success)
-            .bind(bucket_error)
-            .bind(bucket_quota_exhausted)
-            .bind(bucket_valuable_success)
-            .bind(bucket_valuable_failure)
-            .bind(bucket_other_success)
-            .bind(bucket_other_failure)
-            .bind(bucket_unknown)
-            .bind(created_at)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        Self::upsert_dashboard_request_rollup_bucket(
-            &mut tx,
-            minute_bucket_start,
-            SECS_PER_MINUTE,
-            dashboard_rollup_counts,
-            created_at,
-        )
-        .await?;
-        Self::upsert_dashboard_request_rollup_bucket(
-            &mut tx,
-            bucket_start,
-            SECS_PER_DAY,
-            dashboard_rollup_counts,
-            created_at,
-        )
-        .await?;
-
-        tx.commit().await?;
-        Ok(request_log_id)
-    }
-
-    pub(crate) fn api_key_metrics_from_clause() -> &'static str {
-        r#"
-            FROM api_keys ak
-            LEFT JOIN (
-                SELECT
-                    api_key_id,
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
-                FROM api_key_usage_buckets
-                WHERE bucket_secs = 86400
-                GROUP BY api_key_id
-            ) AS stats
-            ON stats.api_key_id = ak.id
-            LEFT JOIN api_key_quarantines aq
-            ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            LEFT JOIN (
-                SELECT
-                    key_id,
-                    MAX(cooldown_until) AS transient_backoff_cooldown_until,
-                    MAX(retry_after_secs) AS transient_backoff_retry_after_secs,
-                    GROUP_CONCAT(scope, ',') AS transient_backoff_scopes
-                FROM api_key_transient_backoffs
-                WHERE cooldown_until > strftime('%s', 'now')
-                  AND reason_code = 'upstream_unknown_403'
-                GROUP BY key_id
-            ) AS tb
-            ON tb.key_id = ak.id
-            WHERE ak.deleted_at IS NULL
-        "#
-    }
-
-    pub(crate) fn api_key_metrics_query(include_quarantine_detail: bool) -> String {
-        let quarantine_detail_sql = if include_quarantine_detail {
-            "aq.reason_detail AS quarantine_reason_detail,"
-        } else {
-            "NULL AS quarantine_reason_detail,"
-        };
-        format!(
-            r#"
-            SELECT
-                ak.id,
-                ak.status,
-                ak.group_name,
-                ak.registration_ip,
-                ak.registration_region,
-                ak.status_changed_at,
-                ak.last_used_at,
-                ak.deleted_at,
-                ak.quota_limit,
-                ak.quota_remaining,
-                ak.quota_synced_at,
-                aq.source AS quarantine_source,
-                aq.reason_code AS quarantine_reason_code,
-                aq.reason_summary AS quarantine_reason_summary,
-                {quarantine_detail_sql}
-                aq.created_at AS quarantine_created_at,
-                tb.transient_backoff_cooldown_until,
-                tb.transient_backoff_retry_after_secs,
-                tb.transient_backoff_scopes,
-                COALESCE(stats.total_requests, 0) AS total_requests,
-                COALESCE(stats.success_count, 0) AS success_count,
-                COALESCE(stats.error_count, 0) AS error_count,
-                COALESCE(stats.quota_exhausted_count, 0) AS quota_exhausted_count
-            {}
-            "#,
-            Self::api_key_metrics_from_clause(),
-        )
-    }
-
-    pub(crate) fn map_api_key_metrics_row(
-        row: sqlx::sqlite::SqliteRow,
-    ) -> Result<ApiKeyMetrics, sqlx::Error> {
-        let id: String = row.try_get("id")?;
-        let status: String = row.try_get("status")?;
-        let group_name: Option<String> = row.try_get("group_name")?;
-        let registration_ip: Option<String> = row.try_get("registration_ip")?;
-        let registration_region: Option<String> = row.try_get("registration_region")?;
-        let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
-        let last_used_at: i64 = row.try_get("last_used_at")?;
-        let deleted_at: Option<i64> = row.try_get("deleted_at")?;
-        let quota_limit: Option<i64> = row.try_get("quota_limit")?;
-        let quota_remaining: Option<i64> = row.try_get("quota_remaining")?;
-        let quota_synced_at: Option<i64> = row.try_get("quota_synced_at")?;
-        let total_requests: i64 = row.try_get("total_requests")?;
-        let success_count: i64 = row.try_get("success_count")?;
-        let error_count: i64 = row.try_get("error_count")?;
-        let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
-        let quarantine_source: Option<String> = row.try_get("quarantine_source")?;
-        let quarantine_reason_code: Option<String> = row.try_get("quarantine_reason_code")?;
-        let quarantine_reason_summary: Option<String> = row.try_get("quarantine_reason_summary")?;
-        let quarantine_reason_detail: Option<String> = row.try_get("quarantine_reason_detail")?;
-        let quarantine_created_at: Option<i64> = row.try_get("quarantine_created_at")?;
-        let transient_backoff_cooldown_until: Option<i64> =
-            row.try_get("transient_backoff_cooldown_until")?;
-        let transient_backoff_retry_after_secs: Option<i64> =
-            row.try_get("transient_backoff_retry_after_secs")?;
-        let transient_backoff_scopes: Option<String> = row.try_get("transient_backoff_scopes")?;
-        let is_temporary_isolated = status == STATUS_ACTIVE
-            && quarantine_source.is_none()
-            && transient_backoff_cooldown_until.is_some();
-
-        Ok(ApiKeyMetrics {
-            id,
-            status,
-            group_name: normalize_optional_api_key_field(group_name),
-            registration_ip: normalize_optional_api_key_field(registration_ip),
-            registration_region: normalize_optional_api_key_field(registration_region),
-            status_changed_at: status_changed_at.and_then(normalize_timestamp),
-            last_used_at: normalize_timestamp(last_used_at),
-            deleted_at: deleted_at.and_then(normalize_timestamp),
-            quota_limit,
-            quota_remaining,
-            quota_synced_at: quota_synced_at.and_then(normalize_timestamp),
-            total_requests,
-            success_count,
-            error_count,
-            quota_exhausted_count,
-            quarantine: quarantine_source.map(|source| ApiKeyQuarantine {
-                source,
-                reason_code: quarantine_reason_code.unwrap_or_default(),
-                reason_summary: quarantine_reason_summary.unwrap_or_default(),
-                reason_detail: quarantine_reason_detail.unwrap_or_default(),
-                created_at: quarantine_created_at.unwrap_or_default(),
-            }),
-            transient_backoff: is_temporary_isolated.then(|| ApiKeyTransientBackoff {
-                reason_code: FAILURE_KIND_UPSTREAM_UNKNOWN_403.to_string(),
-                cooldown_until: transient_backoff_cooldown_until.unwrap_or_default(),
-                retry_after_secs: transient_backoff_retry_after_secs.unwrap_or_default(),
-                scopes: transient_backoff_scopes
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|scope| !scope.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-            }),
-        })
-    }
-
-    pub(crate) fn normalize_api_key_groups(groups: &[String]) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for group in groups {
-            let value = group.trim().to_string();
-            if !normalized.iter().any(|existing| existing == &value) {
-                normalized.push(value);
-            }
-        }
-        normalized
-    }
-
-    pub(crate) fn normalize_api_key_regions(regions: &[String]) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for region in regions {
-            let value = region.trim().to_string();
-            if value.is_empty() {
-                continue;
-            }
-            if !normalized.iter().any(|existing| existing == &value) {
-                normalized.push(value);
-            }
-        }
-        normalized
-    }
-
-    pub(crate) fn normalize_api_key_statuses(statuses: &[String]) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for status in statuses {
-            let value = status.trim().to_ascii_lowercase();
-            if value.is_empty() {
-                continue;
-            }
-            if !normalized.iter().any(|existing| existing == &value) {
-                normalized.push(value);
-            }
-        }
-        normalized
-    }
-
-    pub(crate) fn push_api_key_group_filters<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
-        groups: &'a [String],
-    ) {
-        if groups.is_empty() {
-            return;
-        }
-
-        builder.push(" AND (");
-        for (index, group) in groups.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            if group.is_empty() {
-                builder.push("(TRIM(COALESCE(ak.group_name, '')) = '')");
-            } else {
-                builder
-                    .push("(TRIM(COALESCE(ak.group_name, '')) = ")
-                    .push_bind(group)
-                    .push(")");
-            }
-        }
-        builder.push(")");
-    }
-
-    pub(crate) fn push_api_key_status_filters<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
-        statuses: &'a [String],
-    ) {
-        if statuses.is_empty() {
-            return;
-        }
-
-        builder.push(" AND (");
-        for (index, status) in statuses.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            if status == "quarantined" {
-                builder.push("(aq.key_id IS NOT NULL)");
-            } else if status == "temporary_isolated" {
-                builder.push(
-                    "(aq.key_id IS NULL AND ak.status = 'active' AND tb.key_id IS NOT NULL)",
-                );
-            } else if status == STATUS_ACTIVE {
-                builder
-                    .push("(aq.key_id IS NULL AND ak.status = ")
-                    .push_bind(status)
-                    .push(" AND tb.key_id IS NULL)");
-            } else {
-                builder
-                    .push("(aq.key_id IS NULL AND ak.status = ")
-                    .push_bind(status)
-                    .push(")");
-            }
-        }
-        builder.push(")");
-    }
-
-    pub(crate) fn push_api_key_registration_ip_filter<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
-        registration_ip: Option<&'a str>,
-    ) {
-        let Some(registration_ip) = registration_ip
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return;
-        };
-
-        builder
-            .push(" AND TRIM(COALESCE(ak.registration_ip, '')) = ")
-            .push_bind(registration_ip);
-    }
-
-    pub(crate) fn push_api_key_region_filters<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
-        regions: &'a [String],
-    ) {
-        if regions.is_empty() {
-            return;
-        }
-
-        builder.push(" AND (");
-        for (index, region) in regions.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            builder
-                .push("(TRIM(COALESCE(ak.registration_region, '')) = ")
-                .push_bind(region)
-                .push(")");
-        }
-        builder.push(")");
-    }
-
     pub(crate) async fn fetch_api_key_group_facets(
         &self,
         statuses: &[String],
@@ -2477,11 +1985,13 @@ impl KeyStore {
     pub(crate) async fn fetch_recent_logs(
         &self,
         limit: usize,
+        since: Option<i64>,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
 
-        let rows = sqlx::query(
-            r#"
+        let rows = if let Some(since) = since {
+            sqlx::query(
+                r#"
             SELECT
                 id,
                 api_key_id,
@@ -2496,6 +2006,7 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
+                counts_business_quota,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -2512,6 +2023,71 @@ impl KeyStore {
                 fallback_reason,
                 request_body,
                 response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
+                forwarded_headers,
+                dropped_headers,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
+                created_at
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(since)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                counts_business_quota,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
+                request_body,
+                response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_cleaned_reason,
+                body_cleaned_at,
                 forwarded_headers,
                 dropped_headers,
                 remote_addr,
@@ -2525,11 +2101,12 @@ impl KeyStore {
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         let records = rows
             .into_iter()
@@ -2555,6 +2132,29 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await
         .map(|value| value.flatten())
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_recent_visible_request_log_signature(
+        &self,
+        limit: usize,
+        since: i64,
+    ) -> Result<Vec<(i64, i64)>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        sqlx::query_as::<_, (i64, i64)>(
+            r#"
+            SELECT id, created_at
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
         .map_err(ProxyError::from)
     }
 
@@ -2752,6 +2352,11 @@ impl KeyStore {
         );
         let result_status: String = row.try_get("result_status")?;
         let failure_kind: Option<String> = row.try_get("failure_kind")?;
+        let counts_business_quota =
+            match row.try_get::<Option<i64>, _>("counts_business_quota") {
+                Ok(Some(value)) => value != 0,
+                _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
+            };
         let request_kind_protocol_group =
             match row.try_get::<Option<String>, _>("request_kind_protocol_group") {
                 Ok(Some(value)) => value,
@@ -2760,19 +2365,19 @@ impl KeyStore {
         let request_kind_billing_group =
             match row.try_get::<Option<String>, _>("request_kind_billing_group") {
                 Ok(Some(value)) => value,
-                _ => token_request_kind_billing_group_for_request_log(
+                _ => token_request_kind_billing_group_for_token_log(
                     &request_kind.key,
-                    request_body.as_deref(),
+                    counts_business_quota,
                 )
                 .to_string(),
             };
         let operational_class = match row.try_get::<Option<String>, _>("operational_class") {
             Ok(Some(value)) => value,
-            _ => operational_class_for_request_log(
+            _ => operational_class_for_token_log(
                 &request_kind.key,
-                request_body.as_deref(),
                 result_status.as_str(),
                 failure_kind.as_deref(),
+                counts_business_quota,
             )
             .to_string(),
         };
@@ -2810,6 +2415,12 @@ impl KeyStore {
             operational_class,
             request_body: request_body.unwrap_or_default(),
             response_body: response_body.unwrap_or_default(),
+            request_body_bytes: row.try_get("request_body_bytes")?,
+            response_body_bytes: row.try_get("response_body_bytes")?,
+            request_body_sha256: row.try_get("request_body_sha256")?,
+            response_body_sha256: row.try_get("response_body_sha256")?,
+            body_cleaned_reason: row.try_get("body_cleaned_reason")?,
+            body_cleaned_at: row.try_get("body_cleaned_at")?,
             created_at: row.try_get("created_at")?,
             forwarded_headers: forwarded,
             dropped_headers: dropped,
@@ -2827,6 +2438,12 @@ impl KeyStore {
         Ok(RequestLogBodiesRecord {
             request_body: row.try_get("request_body")?,
             response_body: row.try_get("response_body")?,
+            request_body_bytes: row.try_get("request_body_bytes")?,
+            response_body_bytes: row.try_get("response_body_bytes")?,
+            request_body_sha256: row.try_get("request_body_sha256")?,
+            response_body_sha256: row.try_get("response_body_sha256")?,
+            body_cleaned_reason: row.try_get("body_cleaned_reason")?,
+            body_cleaned_at: row.try_get("body_cleaned_at")?,
         })
     }
 
@@ -2836,7 +2453,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, response_body,
+                   request_body_bytes, response_body_bytes,
+                   request_body_sha256, response_body_sha256,
+                   body_cleaned_reason, body_cleaned_at
             FROM request_logs
             WHERE id = ? AND visibility = ?
             LIMIT 1
@@ -2858,7 +2478,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT request_body, response_body
+            SELECT request_body, response_body,
+                   request_body_bytes, response_body_bytes,
+                   request_body_sha256, response_body_sha256,
+                   body_cleaned_reason, body_cleaned_at
             FROM request_logs
             WHERE id = ? AND api_key_id = ? AND visibility = ?
             LIMIT 1
@@ -2881,7 +2504,10 @@ impl KeyStore {
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
         sqlx::query(
             r#"
-            SELECT rl.request_body, rl.response_body
+            SELECT rl.request_body, rl.response_body,
+                   rl.request_body_bytes, rl.response_body_bytes,
+                   rl.request_body_sha256, rl.response_body_sha256,
+                   rl.body_cleaned_reason, rl.body_cleaned_at
             FROM auth_token_logs atl
             LEFT JOIN request_logs rl
               ON rl.id = atl.request_log_id

@@ -32,6 +32,7 @@ import AdminTableShell from '../components/AdminTableShell'
 import SearchableFacetSelect from '../components/SearchableFacetSelect'
 import RequestKindBadge from '../components/RequestKindBadge'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
+import { cleanedRequestLogBodySummary } from '../requestLogBodySummary'
 import { Button } from '../components/ui/button'
 import { Drawer, DrawerContent } from '../components/ui/drawer'
 import {
@@ -523,6 +524,23 @@ export default function AlertsCenter({
         : language === 'zh'
           ? `已选 ${requestKinds.length} 项`
           : `${requestKinds.length} selected`
+  const cleanedBodySummary = useCallback(
+    (source: RequestLogBodies | null, kind: 'request' | 'response') =>
+      source
+        ? cleanedRequestLogBodySummary({
+            source,
+            kind,
+            language,
+            noBodyLabel: copy.requestDrawer.noBody,
+            emptyValueLabel: '—',
+            formatTime: (ts) => formatTime(ts),
+          })
+        : copy.requestDrawer.noBody,
+    [copy.requestDrawer.noBody, formatTime, language],
+  )
+  const requestBody = requestBodies?.request_body ?? cleanedBodySummary(requestBodies, 'request')
+  const responseBody = requestBodies?.response_body ?? cleanedBodySummary(requestBodies, 'response')
+
   return (
     <div className="alerts-center-stack">
       <section className="surface panel alerts-center-panel">
@@ -902,11 +920,11 @@ export default function AlertsCenter({
               <div className="alerts-center-request-drawer__grid">
                 <div>
                   <h4>{copy.requestDrawer.requestBody}</h4>
-                  <pre>{requestBodies?.request_body ?? copy.requestDrawer.noBody}</pre>
+                  <pre>{requestBody}</pre>
                 </div>
                 <div>
                   <h4>{copy.requestDrawer.responseBody}</h4>
-                  <pre>{requestBodies?.response_body ?? copy.requestDrawer.noBody}</pre>
+                  <pre>{responseBody}</pre>
                 </div>
               </div>
             </AdminLoadingRegion>

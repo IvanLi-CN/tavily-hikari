@@ -6369,6 +6369,13 @@ function SystemSettingsPageCanvas(): JSX.Element {
           globalIpLimit: 5,
           trustedProxyCidrs: ["127.0.0.0/8", "::1/128"],
           trustedClientIpHeaders: ["cf-connecting-ip", "x-forwarded-for"],
+          requestLogRetention: {
+            maxLogRetentionDays: 32,
+            heavyUsageThresholdPercent: 80,
+            global: { businessBodyDays: 7, nonBusinessBodyDays: 0, nonSuccessBodyDays: 3 },
+            heavyUsage: { businessBodyDays: 3, nonBusinessBodyDays: 0, nonSuccessBodyDays: 1 },
+            debugShared: { businessBodyDays: 14, nonBusinessBodyDays: 1, nonSuccessBodyDays: 7 },
+          },
         }}
         loadState="ready"
         error={null}
