@@ -36,6 +36,7 @@
 
 - `.github/workflows/release.yml`
 - `.github/workflows/ci.yml`
+- `Dockerfile`
 - `build.rs`
 - `Cargo.toml` / `Cargo.lock`
 - `src/web_assets.rs`
