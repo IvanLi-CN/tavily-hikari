@@ -336,6 +336,155 @@ jobs:
             echo "- digest: ${{ steps.build-push.outputs.digest || '<none>' }}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  binary-native:
+    name: Build binary release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    needs: [prepare]
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      APP_EFFECTIVE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Checkout (workflow_run)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_HEAD_SHA }}
+
+      - name: Install Rust native dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Build web assets
+        working-directory: web
+        env:
+          VITE_APP_VERSION: ${{ env.APP_EFFECTIVE_VERSION }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin tavily-hikari
+
+      - name: Package release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="${RUNNER_TEMP}/release-binary-${{ matrix.arch }}"
+          package_root="${release_dir}/tavily-hikari-${RELEASE_TAG}-linux-${{ matrix.arch }}"
+          tarball="${release_dir}/tavily-hikari-${RELEASE_TAG}-linux-${{ matrix.arch }}.tar.gz"
+          sha_file="${tarball}.sha256"
+
+          mkdir -p "${package_root}"
+          install -m 0755 target/release/tavily-hikari "${package_root}/tavily-hikari"
+          tar -C "${release_dir}" -czf "${tarball}" "$(basename "${package_root}")"
+          (cd "${release_dir}" && sha256sum "$(basename "${tarball}")" > "$(basename "${sha_file}")")
+
+          echo "PACKAGE_ROOT=${package_root}" >> "${GITHUB_ENV}"
+          echo "TARBALL=${tarball}" >> "${GITHUB_ENV}"
+          echo "SHA_FILE=${sha_file}" >> "${GITHUB_ENV}"
+
+      - name: Smoke packaged binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          smoke_root="${RUNNER_TEMP}/release-smoke-${{ matrix.arch }}"
+          extract_dir="${smoke_root}/extract"
+          db_path="${smoke_root}/data/tavily_proxy.db"
+          port="$(
+            python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )"
+
+          mkdir -p "${extract_dir}" "$(dirname "${db_path}")"
+          tar -xzf "${TARBALL}" -C "${extract_dir}"
+          binary="${extract_dir}/tavily-hikari-${RELEASE_TAG}-linux-${{ matrix.arch }}/tavily-hikari"
+
+          "${binary}" \
+            --bind 127.0.0.1 \
+            --port "${port}" \
+            --db-path "${db_path}" \
+            --dev-open-admin \
+            >"${smoke_root}/stdout.log" \
+            2>"${smoke_root}/stderr.log" &
+          pid=$!
+          trap 'kill "${pid}" >/dev/null 2>&1 || true' EXIT
+
+          for i in {1..60}; do
+            if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "${pid}" >/dev/null 2>&1; then
+              echo "binary exited early" >&2
+              cat "${smoke_root}/stdout.log" >&2 || true
+              cat "${smoke_root}/stderr.log" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -fsS "http://127.0.0.1:${port}/health" >/dev/null
+          curl -fsSL "http://127.0.0.1:${port}/" | grep -qi '<html'
+          curl -fsS "http://127.0.0.1:${port}/admin" | grep -qi '<html'
+          curl -fsS "http://127.0.0.1:${port}/console" | grep -qi '<html'
+          curl -fsS "http://127.0.0.1:${port}/version.json" | grep -q '"version"'
+          curl -fsS "http://127.0.0.1:${port}/favicon.svg" >/dev/null
+          curl -fsS "http://127.0.0.1:${port}/linuxdo-logo.svg" >/dev/null
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-binary-${{ matrix.arch }}
+          path: |
+            ${{ env.TARBALL }}
+            ${{ env.SHA_FILE }}
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Binary release (${{ matrix.arch }})"
+            echo "- runner: ${{ matrix.runner }}"
+            echo "- platform: ${{ matrix.platform }}"
+            echo "- tag: ${RELEASE_TAG}"
+            echo "- tarball: $(basename "${TARBALL}")"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   docker-manifest:
     name: Publish multi-arch manifest (ghcr)
     runs-on: ubuntu-24.04
@@ -445,7 +594,7 @@ jobs:
     name: GitHub Release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [prepare, docker-manifest]
+    needs: [prepare, docker-manifest, binary-native]
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     permissions:
       contents: write
@@ -462,6 +611,32 @@ jobs:
           omitBodyDuringUpdate: true
           prerelease: ${{ needs.prepare.outputs.release_channel == 'rc' }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download binary release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-binary-*
+          path: ${{ runner.temp }}/release-binary-assets
+          merge-multiple: true
+
+      - name: Upload binary assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' assets < <(
+            find "${RUNNER_TEMP}/release-binary-assets" -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -print0 | sort -z
+          )
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "no binary release assets found" >&2
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
 
       - name: Upsert PR release comment
         uses: actions/github-script@v9
@@ -498,6 +673,13 @@ jobs:
               releaseChannel === 'stable'
                 ? [`${imageBase}:latest`, `${imageBase}:${releaseTag}`]
                 : [`${imageBase}:${releaseTag}`]
+            const binaryBase = `tavily-hikari-${releaseTag}`
+            const binaryAssets = [
+              `${binaryBase}-linux-amd64.tar.gz`,
+              `${binaryBase}-linux-amd64.tar.gz.sha256`,
+              `${binaryBase}-linux-arm64.tar.gz`,
+              `${binaryBase}-linux-arm64.tar.gz.sha256`,
+            ]
 
             const body = [
               marker,
@@ -505,6 +687,7 @@ jobs:
               `Version: \`${releaseVersion}\``,
               `Channel: \`${releaseChannel}\``,
               `Images: ${imageTags.map(tag => `\`${tag}\``).join(', ')}`,
+              `Binary assets: ${binaryAssets.map(asset => `\`${asset}\``).join(', ')}`,
               `Commit: \`${targetSha}\``,
             ].join('\n')
 

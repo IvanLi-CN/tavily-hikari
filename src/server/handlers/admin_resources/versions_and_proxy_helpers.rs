@@ -27,8 +27,15 @@ fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
         })
     });
 
+    let frontend_from_embedded = tavily_hikari::web_assets::embedded_bytes("version.json").and_then(|bytes| {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(|s| s.to_string()))
+    });
+
     // Fallback to web/package.json for dev setups
     let frontend = frontend_from_dist
+        .or(frontend_from_embedded)
         .or_else(|| {
             let path = FsPath::new("web").join("package.json");
             fs::File::open(&path).ok().and_then(|mut f| {
@@ -55,6 +62,32 @@ fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
     };
 
     (backend, frontend)
+}
+
+#[cfg(test)]
+mod version_detection_tests {
+    use super::*;
+
+    #[test]
+    fn static_dir_version_overrides_embedded_version() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tavily-hikari-version-override-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp static dir");
+        fs::write(temp_dir.join("version.json"), r#"{"version":"external-test"}"#)
+            .expect("write external version");
+
+        let (_backend, frontend) = detect_versions(Some(&temp_dir));
+        let expected = if cfg!(debug_assertions) {
+            "external-test-dev"
+        } else {
+            "external-test"
+        };
+        assert_eq!(frontend, expected);
+
+        fs::remove_dir_all(temp_dir).expect("remove temp static dir");
+    }
 }
 
 async fn list_keys(

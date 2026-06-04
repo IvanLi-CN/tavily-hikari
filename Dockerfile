@@ -7,7 +7,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 # Prepare a temporary stub target so `cargo fetch` doesn't fail on CI builders
 # that require at least one target in the manifest resolution phase.
 RUN mkdir -p src \

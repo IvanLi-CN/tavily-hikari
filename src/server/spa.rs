@@ -1,28 +1,94 @@
-// kept for potential future direct serving; currently ServeDir handles '/'
-#[allow(dead_code)]
-async fn load_spa_response(
-    state: &AppState,
-    file_name: &str,
-) -> Result<Response<Body>, StatusCode> {
-    let Some(dir) = state.static_dir.as_ref() else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let path = dir.join(file_name);
-    let Ok(bytes) = tokio::fs::read(path).await else {
+fn response_content_type(file_name: &str) -> String {
+    let guess = mime_guess::from_path(file_name).first_or_octet_stream();
+    if guess.essence_str() == "text/html" {
+        "text/html; charset=utf-8".to_string()
+    } else {
+        guess.to_string()
+    }
+}
+
+fn embedded_static_bytes(file_name: &str) -> Option<Bytes> {
+    tavily_hikari::web_assets::embedded_bytes(file_name).map(Bytes::from_static)
+}
+
+async fn read_static_bytes(state: &AppState, file_name: &str) -> Option<Bytes> {
+    if let Some(dir) = state.static_dir.as_ref() {
+        let path = dir.join(file_name);
+        if let Ok(bytes) = tokio::fs::read(path).await {
+            return Some(Bytes::from(bytes));
+        }
+    }
+
+    embedded_static_bytes(file_name)
+}
+
+async fn load_spa_response(state: &AppState, file_name: &str) -> Result<Response<Body>, StatusCode> {
+    let Some(bytes) = read_static_bytes(state, file_name).await else {
         return Err(StatusCode::NOT_FOUND);
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(CONTENT_TYPE, response_content_type(file_name))
         .body(Body::from(bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn spa_file_exists(state: &AppState, file_name: &str) -> bool {
-    let Some(dir) = state.static_dir.as_ref() else {
-        return false;
+    if let Some(dir) = state.static_dir.as_ref()
+        && tokio::fs::metadata(dir.join(file_name)).await.is_ok()
+    {
+        return true;
+    }
+
+    embedded_static_bytes(file_name).is_some()
+}
+
+fn is_safe_static_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && FsPath::new(path)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+async fn serve_asset(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+) -> Result<Response<Body>, StatusCode> {
+    let asset_path = path.trim_start_matches('/');
+    if !is_safe_static_path(asset_path) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let file_name = format!("assets/{asset_path}");
+    let Some(bytes) = read_static_bytes(state.as_ref(), &file_name).await else {
+        return Err(StatusCode::NOT_FOUND);
     };
-    tokio::fs::metadata(dir.join(file_name)).await.is_ok()
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, response_content_type(&file_name))
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn serve_assets_root() -> Result<Response<Body>, StatusCode> {
+    Err(StatusCode::NOT_FOUND)
+}
+
+async fn serve_favicon(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
+    load_spa_response(state.as_ref(), "favicon.svg").await
+}
+
+async fn serve_linuxdo_logo(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response<Body>, StatusCode> {
+    load_spa_response(state.as_ref(), "linuxdo-logo.svg").await
+}
+
+async fn serve_version_json(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
+    load_spa_response(state.as_ref(), "version.json").await
 }
 
 async fn serve_index(

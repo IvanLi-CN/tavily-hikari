@@ -817,6 +817,134 @@ async fn health_endpoint_is_stable_after_modularization() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 }
 
+#[cfg(web_assets_embedded)]
+#[tokio::test]
+async fn embedded_public_assets_are_served_without_static_dir() {
+    let (upstream_addr, _rx) = spawn_mock_upstream("tvly-test-key".to_string(), "/search").await;
+
+    let db_path = temp_db_path("server-http-contract-embedded-assets");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path, false).await;
+
+    let client = Client::new();
+
+    let root = client
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .expect("root request");
+    assert_eq!(root.status(), reqwest::StatusCode::OK);
+    assert!(
+        root.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html")),
+        "root content type should be html"
+    );
+    let root_body = root.text().await.expect("root body");
+    assert!(
+        root_body.to_lowercase().contains("<html"),
+        "root should be html"
+    );
+
+    let console = client
+        .get(format!("http://127.0.0.1:{port}/console"))
+        .send()
+        .await
+        .expect("console request");
+    assert_eq!(console.status(), reqwest::StatusCode::OK);
+    assert!(
+        console
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html")),
+        "console content type should be html"
+    );
+
+    let admin = client
+        .get(format!("http://127.0.0.1:{port}/admin"))
+        .send()
+        .await
+        .expect("admin request");
+    assert_eq!(admin.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let version = client
+        .get(format!("http://127.0.0.1:{port}/version.json"))
+        .send()
+        .await
+        .expect("version request");
+    assert_eq!(version.status(), reqwest::StatusCode::OK);
+    assert!(
+        version
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json")),
+        "version content type should be json"
+    );
+    let version_json: serde_json::Value = version.json().await.expect("version json");
+    assert!(
+        version_json
+            .get("version")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "version.json should expose a version string"
+    );
+
+    for path in ["/favicon.svg", "/linuxdo-logo.svg"] {
+        let response = client
+            .get(format!("http://127.0.0.1:{port}{path}"))
+            .send()
+            .await
+            .expect("static asset request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "path={path}");
+        assert!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("image/svg+xml")),
+            "asset content type should be svg: {path}"
+        );
+        assert!(
+            !response.bytes().await.expect("asset body").is_empty(),
+            "asset body should not be empty: {path}"
+        );
+    }
+}
+
+#[cfg(web_assets_embedded)]
+#[tokio::test]
+async fn embedded_admin_page_is_served_when_dev_open_admin_is_enabled() {
+    let (upstream_addr, _rx) = spawn_mock_upstream("tvly-test-key".to_string(), "/search").await;
+
+    let db_path = temp_db_path("server-http-contract-embedded-admin");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path, true).await;
+
+    let admin = Client::new()
+        .get(format!("http://127.0.0.1:{port}/admin"))
+        .send()
+        .await
+        .expect("admin request");
+    assert_eq!(admin.status(), reqwest::StatusCode::OK);
+    let admin_body = admin.text().await.expect("admin body");
+    assert!(
+        admin_body.to_lowercase().contains("<html"),
+        "admin should be html"
+    );
+
+    let no_redirect = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("no redirect client");
+    let root = no_redirect
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .expect("root request");
+    assert_eq!(root.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+}
+
 #[tokio::test]
 async fn search_endpoint_rewrites_upstream_credentials() {
     assert_upstream_rewrite_contract(

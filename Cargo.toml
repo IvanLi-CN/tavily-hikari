@@ -2,6 +2,7 @@
 name = "tavily-hikari"
 version = "0.2.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros", "json", "http1", "tokio"] }
@@ -23,6 +24,7 @@ tower = { version = "0.4", features = ["util"] }
 nanoid = "0.4"
 urlencoding = "2.1"
 html-escape = "0.2"
+mime_guess = "2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 async-stream = "0.3"
 futures-util = "0.3"

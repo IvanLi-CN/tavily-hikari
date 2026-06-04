@@ -25,6 +25,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Build frontend assets
+        working-directory: web
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
@@ -62,6 +74,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Build frontend assets
+        working-directory: web
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev

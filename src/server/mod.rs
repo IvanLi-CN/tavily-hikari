@@ -35,6 +35,7 @@ use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::path::Component;
 use url::form_urlencoded;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummarySig {
@@ -84,8 +85,6 @@ use tavily_hikari::{
 use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
-use tower_http::services::{ServeDir, ServeFile};
-
 include!("state.rs");
 include!("schedulers.rs");
 include!("spa.rs");

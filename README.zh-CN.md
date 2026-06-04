@@ -73,6 +73,10 @@ docker run --rm \
 
 镜像已包含 `web/dist`，默认监听 `0.0.0.0:8787` 并把 SQLite 数据写入 `/srv/app/data/tavily_proxy.db`（可通过挂载卷持久化）。容器启动后同样需通过管理员接口或前端控制台为代理注册 Tavily key。
 
+### 二进制发布
+
+GitHub Release 现在会附带 Linux `tar.gz` 二进制包，分别覆盖 `linux/amd64` 与 `linux/arm64`，并同步提供 `SHA256` 校验文件。该二进制把 Web 界面一并内嵌进程序里，运行时不再需要单独的 `web/dist` 目录。
+
 ### Docker Compose
 
 仓库内提供了一个最小化的 [`docker-compose.yml`](docker-compose.yml)，用于长期运行或一次性 POC：
@@ -339,7 +343,7 @@ codex mcp list | grep tavily_hikari
 - **无 Node 验证**：可运行 `bun run validate:no-node-runtime`，确认在前置失败 `node` shim 的情况下，仓库关键构建与 hook 路径仍可通过。
 - **CI**：`.github/workflows/ci.yml` 负责 lint、测试、PR 构建与集成 smoke。
 - **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）与 1 个 channel label（`channel:*`）。
-- **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像，并回写对应 PR 的发布评论。
+- **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 发布 Linux 二进制包 / 推送 GHCR 镜像，并回写对应 PR 的发布评论。
 
 ## 发版（PR Label）
 

@@ -8,6 +8,7 @@ mod store;
 mod tavily_proxy;
 #[cfg(test)]
 mod tests;
+pub mod web_assets;
 
 pub use admin_token_filters::*;
 pub use analysis::{

@@ -324,52 +324,35 @@ pub async fn serve(
         .route("/api/tokens/:id/status", patch(update_token_status))
         .route("/api/tokens/:id/note", patch(update_token_note))
         .route("/api/tokens/:id/secret", get(get_token_secret))
-        .route("/api/tokens/:id/secret/rotate", post(rotate_token_secret));
-
-    if let Some(dir) = static_dir.as_ref() {
-        if dir.is_dir() {
-            let index_file = dir.join("index.html");
-            if index_file.exists() {
-                router = router.nest_service("/assets", ServeDir::new(dir.join("assets")));
-                router = router.route("/", get(serve_index));
-                router = router.route("/admin", get(serve_admin_index));
-                router = router.route("/admin/", get(serve_admin_index));
-                router = router.route("/console", get(serve_console_index));
-                router = router.route("/console/", get(serve_console_index));
-                router = router.route("/console.html", get(serve_console_index));
-                router = router.route("/console/*path", get(serve_console_index));
-                router = router.route("/admin/*path", get(serve_admin_index));
-                router = router.route("/login", get(serve_login));
-                router = router.route("/login/", get(serve_login));
-                router = router.route("/login.html", get(serve_login));
-                router = router.route(
-                    "/registration-paused",
-                    get(serve_registration_paused_index),
-                );
-                router = router.route(
-                    "/registration-paused/",
-                    get(serve_registration_paused_index),
-                );
-                router = router.route(
-                    "/registration-paused.html",
-                    get(serve_registration_paused_index),
-                );
-                router =
-                    router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
-                router = router.route_service(
-                    "/linuxdo-logo.svg",
-                    ServeFile::new(dir.join("linuxdo-logo.svg")),
-                );
-            } else {
-                eprintln!(
-                    "static index.html not found at {} — skip serving SPA",
-                    index_file.display()
-                );
-            }
-        } else {
-            eprintln!("static dir '{}' is not a directory", dir.display());
-        }
-    }
+        .route("/api/tokens/:id/secret/rotate", post(rotate_token_secret))
+        .route("/", get(serve_index))
+        .route("/admin", get(serve_admin_index))
+        .route("/admin/", get(serve_admin_index))
+        .route("/admin/*path", get(serve_admin_index))
+        .route("/console", get(serve_console_index))
+        .route("/console/", get(serve_console_index))
+        .route("/console.html", get(serve_console_index))
+        .route("/console/*path", get(serve_console_index))
+        .route("/login", get(serve_login))
+        .route("/login/", get(serve_login))
+        .route("/login.html", get(serve_login))
+        .route(
+            "/registration-paused",
+            get(serve_registration_paused_index),
+        )
+        .route(
+            "/registration-paused/",
+            get(serve_registration_paused_index),
+        )
+        .route(
+            "/registration-paused.html",
+            get(serve_registration_paused_index),
+        )
+        .route("/favicon.svg", get(serve_favicon))
+        .route("/linuxdo-logo.svg", get(serve_linuxdo_logo))
+        .route("/version.json", get(serve_version_json))
+        .route("/assets", get(serve_assets_root))
+        .route("/assets/*path", get(serve_asset));
 
     router = router
         .route("/mcp", any(proxy_handler))

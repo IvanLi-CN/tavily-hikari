@@ -86,6 +86,10 @@ docker run --rm \
 
 The container listens on `0.0.0.0:8787`, serves `web/dist`, and persists data in `/srv/app/data/tavily_proxy.db`. Once it is up, register keys via the admin API/console.
 
+### Binary release
+
+GitHub Releases attach Linux `tar.gz` builds for `linux/amd64` and `linux/arm64`, plus matching `SHA256` files. The release binary carries the web UI inside the executable, so you do not need a separate `web/dist` directory at runtime.
+
 ### Docker Compose
 
 ```bash
@@ -357,7 +361,7 @@ codex mcp list | grep tavily_hikari
 - Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` on every commit.
 - No-node proof: run `bun run validate:no-node-runtime` to verify the repo build/hook paths still pass when a failing `node` shim is prepended to `PATH`.
 - CI: `.github/workflows/ci.yml` runs lint/tests/build.
-- Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, GHCR images, and an upserted PR release comment.
+- Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, Linux binary assets, GHCR images, and an upserted PR release comment.
 
 ## Release (PR labels)
 
