@@ -103,6 +103,18 @@
   flex-wrap: wrap;
 }
 
+.admin-jobs-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.admin-jobs-actions > * {
+  flex: 0 0 auto;
+}
+
 .user-tag-editor-panel {
   max-width: min(100%, 980px);
   margin: 0 auto;

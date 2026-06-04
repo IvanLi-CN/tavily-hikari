@@ -117,6 +117,24 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('Scheduled')
   })
 
+  it('renders the jobs story in Chinese with the dedicated jobs action spacing hook', () => {
+    const renderStory = adminPageStories.Jobs.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('admin-jobs-actions')
+    expect(markup).toContain('访问令牌日志清理')
+    expect(markup).not.toContain('mcp_sessions_gc')
+    expect(markup).not.toContain('mcp_session_init_backoffs_gc')
+  })
+
   it('keeps the tokens story title and creation toolbar on the shell chrome', () => {
     const renderStory = adminPageStories.Tokens.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()

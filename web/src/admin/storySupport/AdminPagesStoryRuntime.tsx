@@ -96,6 +96,7 @@ import {
   createDashboardTodayMetrics,
 } from '../dashboardTodayMetrics'
 import {
+  adminJobTypeLabel,
   buildAdminJobFilterOptions,
   countAdminJobGroups,
   jobSourceLabel,
@@ -4570,7 +4571,7 @@ function JobsPageCanvas(): JSX.Element {
     setJobTriggerNotice(
       jobType === 'db_compaction'
         ? 'DB compaction is already running; manual trigger was not queued.'
-        : `${jobsStrings.types?.[jobType] ?? jobType} queued as a manual job.`,
+        : `${adminJobTypeLabel(jobType, jobsStrings)} queued as a manual job.`,
     )
     window.setTimeout(() => setJobTriggering(null), 900)
   }
@@ -4595,12 +4596,12 @@ function JobsPageCanvas(): JSX.Element {
             <h2>{jobsStrings.title}</h2>
             <p className="panel-description">{jobsStrings.description}</p>
           </div>
-          <div className="panel-actions">
+          <div className="panel-actions admin-jobs-actions">
             <AdminJobTriggerMenu
               disabled={false}
               triggeringJobType={jobTriggering}
               strings={jobsStrings}
-              labelForJobType={(jobType) => jobsStrings.types?.[jobType] ?? jobType}
+              labelForJobType={(jobType) => adminJobTypeLabel(jobType, jobsStrings)}
               onTrigger={runStoryJob}
             />
             <DropdownMenu>

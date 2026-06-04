@@ -73,6 +73,7 @@ import {
   createDashboardTodayMetrics,
 } from './dashboardTodayMetrics'
 import {
+  adminJobTypeLabel,
   buildAdminJobFilterOptions,
   emptyAdminJobGroupCounts,
   jobSourceLabel,
@@ -1430,28 +1431,6 @@ function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine' | 'trans
   if (item.quarantine) return 'quarantined'
   if (item.transient_backoff) return 'temporary_isolated'
   return item.status
-}
-
-function jobTypeLabel(jobType: string, strings: AdminTranslations['jobs']): string {
-  const normalized = jobType.trim()
-  if (!normalized) return '—'
-
-  const direct = strings.types?.[normalized]
-  if (direct) return direct
-
-  const aliases: Record<string, string> = {
-    usage_aggregation: 'token_usage_rollup',
-    log_cleanup: 'auth_token_logs_gc',
-  }
-  const aliasTarget = aliases[normalized]
-  if (aliasTarget && strings.types?.[aliasTarget]) {
-    return strings.types[aliasTarget]
-  }
-
-  return normalized
-    .replace(/[\/_]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 function jobStatusLabel(status: string): string {
@@ -9748,12 +9727,12 @@ function AdminDashboard(): JSX.Element {
   )
   const renderJobFilterToolbar = (className?: string) => (
     <div className={['admin-module-toolbar admin-module-toolbar--end', className].filter(Boolean).join(' ')}>
-      <div className="panel-actions">
+      <div className="panel-actions admin-jobs-actions">
         <AdminJobTriggerMenu
           disabled={jobsBlocking}
           triggeringJobType={jobTriggering}
           strings={jobsStrings}
-          labelForJobType={(jobType) => jobTypeLabel(jobType, jobsStrings)}
+          labelForJobType={(jobType) => adminJobTypeLabel(jobType, jobsStrings)}
           onTrigger={handleManualJobTrigger}
         />
         <DropdownMenu>
@@ -11400,7 +11379,7 @@ function AdminDashboard(): JSX.Element {
               <tbody>
                 {jobs.map((j) => {
                   const jt = j.job_type
-                  const jobTypeLabelText = jobTypeLabel(jt, jobsStrings)
+                  const jobTypeLabelText = adminJobTypeLabel(jt, jobsStrings)
                   const jobSourceText = jobSourceLabel(j.trigger_source, jobsStrings)
                   const jobStatusText = jobStatusLabel(String(j.status ?? ''))
                   const keyId = j.key_id
@@ -11601,7 +11580,7 @@ function AdminDashboard(): JSX.Element {
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.type}</span>
-                    <strong>{jobTypeLabel(jt, jobsStrings)}</strong>
+                    <strong>{adminJobTypeLabel(jt, jobsStrings)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.key}</span>

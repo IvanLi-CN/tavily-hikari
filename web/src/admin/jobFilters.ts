@@ -26,6 +26,10 @@ const LOG_JOB_TYPES = new Set(['auth_token_logs_gc', 'request_logs_gc', 'log_cle
 const DB_JOB_TYPES = new Set(['db_compaction'])
 const GEO_JOB_TYPES = new Set(['forward_proxy_geo_refresh'])
 const LINUXDO_JOB_TYPES = new Set(['linuxdo_user_status_sync', 'linuxdo_user_tag_binding_refresh'])
+const JOB_TYPE_ALIASES: Record<string, string> = {
+  usage_aggregation: 'token_usage_rollup',
+  log_cleanup: 'auth_token_logs_gc',
+}
 
 export function emptyAdminJobGroupCounts(): JobGroupCounts {
   return {
@@ -83,6 +87,24 @@ export function jobFilterLabel(group: JobGroup, strings: AdminTranslations['jobs
 export function jobSourceLabel(source: string | null | undefined, strings: AdminTranslations['jobs']): string {
   const normalized = String(source ?? '').trim().toLowerCase()
   return normalized ? strings.sources?.[normalized] ?? normalized : '—'
+}
+
+export function adminJobTypeLabel(jobType: string, strings: AdminTranslations['jobs']): string {
+  const normalized = jobType.trim()
+  if (!normalized) return '—'
+
+  const direct = strings.types?.[normalized]
+  if (direct) return direct
+
+  const aliasTarget = JOB_TYPE_ALIASES[normalized]
+  if (aliasTarget && strings.types?.[aliasTarget]) {
+    return strings.types[aliasTarget]
+  }
+
+  return normalized
+    .replace(/[\/_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function buildAdminJobFilterOptions(
