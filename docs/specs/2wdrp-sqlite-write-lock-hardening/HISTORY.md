@@ -27,3 +27,10 @@
   and DB size convergence. Manual and automatic maintenance now share job bookkeeping semantics, and
   SQLite file shrinkage is treated as an explicit compaction concern rather than an implicit side
   effect of deleting old rows.
+
+## 2026-06-06
+
+- Added a process-wide execution gate for DB-backed scheduled/manual jobs after production evidence
+  showed stale running maintenance rows and overlapping writers across request-log GC, quota sync,
+  and compaction. Request-log GC catch-up only holds the gate during active cleanup windows, not
+  while sleeping between catch-up passes.

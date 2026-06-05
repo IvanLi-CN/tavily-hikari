@@ -63,6 +63,11 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Treat SQLite file shrinkage as a separate maintenance concern. Row deletes and body nulling create
   free pages; size convergence requires freelist telemetry plus a controlled compaction job after
   retention cleanup has made space reclaimable.
+- Serialize DB-backed scheduled/manual maintenance jobs through an in-process execution gate when
+  they can write SQLite. Same-job duplicate claiming is not enough when different logical jobs, such
+  as retention GC, quota sync, rollups, and compaction, can all compete for the single writer slot.
+- Do not hold that job execution gate while a catch-up scheduler is sleeping between cleanup
+  windows. Hold it for the active DB write window, then release it before throttled rechecks.
 - Provide a one-shot operational CLI for retention cleanup so production-derived database samples
   can be tested deterministically. Do not rely only on the daily scheduler when validating cleanup
   behavior.
@@ -87,6 +92,10 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
   a separate maintenance-window decision after retention cleanup has completed.
 - Automatic compaction should be threshold-gated and cooldown-limited. Triggering it on every GC
   pass can turn a cleanup backlog into a new writer-pressure loop.
+- Stale `scheduled_jobs.running` rows from a previous process lifetime are an operational restart
+  concern. The process-level gate prevents new same-process writer overlap, but a controlled restart
+  may still be needed to let startup stale-job cleanup mark old rows abandoned before operators
+  retry manual jobs.
 - If a retention table has aggregate-maintenance triggers, validate large-copy cleanup with the
   triggers in mind. For `request_logs`, GC deletes expired rollup buckets separately and suppresses
   the per-row rollup delete trigger inside each batch transaction to avoid spending minutes per

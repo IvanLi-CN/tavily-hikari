@@ -4,7 +4,7 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-05-24
+- Last: 2026-06-06
 
 ## Background
 
@@ -76,6 +76,11 @@ source when a usable persisted runtime already exists.
   pass. It must delete old `request_logs` and `request_log_catalog_rollups` in bounded batches,
   yield between batches, report partial progress, and continue catch-up after a throttled delay when
   more rows remain.
+- DB-backed scheduled and manual jobs that can write SQLite must also be serialized across logical
+  job types inside one process, so maintenance catch-up, quota sync, rollups, GC, and compaction do
+  not overlap as independent SQLite writers.
+- Request-log GC catch-up may reacquire that execution gate for each actual cleanup window, but it
+  must not keep the gate while sleeping or waiting for the next catch-up recheck.
 - SQLite file size must converge after retention cleanup. The service must expose DB size/freelist
   telemetry, automatically trigger compaction when reclaimable space crosses the configured
   threshold, and provide a manual compaction trigger. Health checks must remain available while DB
@@ -102,6 +107,8 @@ source when a usable persisted runtime already exists.
 - With a large backlog of old request logs, one scheduler pass records bounded progress instead of
   running indefinitely; later catch-up passes eventually remove all rows older than the retention
   threshold.
+- Overlapping DB-backed maintenance jobs in one process run through a shared execution gate, so a
+  second job waits for the active DB job instead of competing for the SQLite writer slot.
 - Manual trigger API calls return a job id, job rows expose `trigger_source`, and duplicate active
   manual triggers return a conflict instead of starting overlapping work.
 - After request-log retention cleanup creates enough freelist pages, DB compaction runs under the

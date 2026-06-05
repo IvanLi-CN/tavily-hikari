@@ -39,6 +39,12 @@
   body-cleanup backlog does not repeatedly consume the SQLite writer slot.
 - DB maintenance now records size/freelist telemetry and can compact the SQLite file through a
   dedicated job, with automatic threshold-based triggering and manual admin triggering.
+- DB-backed scheduled and manual jobs now pass through a process-wide execution gate before their
+  SQLite write windows. The gate covers retention GC, compaction, quota sync, rollups, session GC,
+  backoff GC, auth-token log GC, and LinuxDo sync/refresh jobs while preserving the existing
+  scheduled-job claim/finish semantics.
+- Request-log GC catch-up releases the DB job execution gate between cleanup windows so the
+  scheduler delay does not block other DB-backed jobs.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and
   `--run-until-complete` for deterministic low-resource validation against production-derived
   database samples.
@@ -47,6 +53,8 @@
   snapshot persistence.
 - Added request-log GC coverage for old-row deletion, recent-row preservation, partial catch-up,
   catalog rollup cleanup, and transient SQLite write-lock retry.
+- Added process-level DB job execution gate coverage that proves overlapping jobs serialize before
+  entering their write windows.
 - Added startup-order coverage for restored subscription runtime with a slow subscription endpoint,
   plus the strict no-runtime fallback where startup still waits for subscription readiness.
 
@@ -70,4 +78,8 @@
 - A later request-log body-retention backlog produced a much larger main DB file even after row
   retention was no longer the primary issue. Deleting or nulling payloads alone leaves free pages in
   SQLite, so file-size convergence is handled as a separate compaction job after retention work.
+- If production inspection shows long-lived `scheduled_jobs.running` rows from an older process,
+  restart the service under the current stale-job cleanup path before relying on manual retriggers.
+  The in-process execution gate prevents new same-process overlap; it does not rewrite stale rows
+  while the old process is still considered active.
 - The implementation does not perform production data mutation and does not alter pool size.
