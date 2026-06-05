@@ -204,7 +204,10 @@ pub(crate) async fn begin_immediate_sqlite_connection(
     pool: &SqlitePool,
 ) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
     let mut conn = pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    if let Err(err) = sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(ProxyError::Database(err));
+    }
     Ok(conn)
 }
 
