@@ -1863,7 +1863,7 @@ impl KeyStore {
             ),
             "usage" => format!("{column} = 'token_usage_rollup' OR {column} = 'usage_aggregation'"),
             "logs" => format!(
-                "{column} = 'auth_token_logs_gc' OR {column} = 'request_logs_gc' OR {column} = 'log_cleanup'"
+                "{column} = 'auth_token_logs_gc' OR {column} = 'request_logs_gc' OR {column} = 'mcp_sessions_gc' OR {column} = 'mcp_session_init_backoffs_gc' OR {column} = 'log_cleanup'"
             ),
             "db" => format!("{column} = 'db_compaction'"),
             "geo" => format!("{column} = 'forward_proxy_geo_refresh'"),
@@ -1882,7 +1882,7 @@ impl KeyStore {
                 COUNT(*) AS all_count,
                 COALESCE(SUM(CASE WHEN job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot' THEN 1 ELSE 0 END), 0) AS quota_count,
                 COALESCE(SUM(CASE WHEN job_type = 'token_usage_rollup' OR job_type = 'usage_aggregation' THEN 1 ELSE 0 END), 0) AS usage_count,
-                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0) AS logs_count,
+                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc' OR job_type = 'mcp_sessions_gc' OR job_type = 'mcp_session_init_backoffs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0) AS logs_count,
                 COALESCE(SUM(CASE WHEN job_type = 'db_compaction' THEN 1 ELSE 0 END), 0) AS db_count,
                 COALESCE(SUM(CASE WHEN job_type = 'forward_proxy_geo_refresh' THEN 1 ELSE 0 END), 0) AS geo_count,
                 COALESCE(SUM(CASE WHEN job_type = 'linuxdo_user_status_sync' OR job_type = 'linuxdo_user_tag_binding_refresh' THEN 1 ELSE 0 END), 0) AS linuxdo_count

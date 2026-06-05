@@ -26,6 +26,28 @@ describe('admin job filters', () => {
     expect(countAdminJobGroups(jobs).linuxdo).toBe(1)
   })
 
+  it('groups MCP cleanup jobs with log maintenance', () => {
+    expect(jobMatchesGroup('mcp_sessions_gc', 'logs')).toBe(true)
+    expect(jobMatchesGroup('mcp_session_init_backoffs_gc', 'logs')).toBe(true)
+
+    const jobs: JobLogView[] = [
+      {
+        id: 1,
+        job_type: 'mcp_sessions_gc',
+        trigger_source: 'scheduler',
+        key_id: null,
+        key_group: null,
+        status: 'success',
+        attempt: 1,
+        message: null,
+        started_at: 1,
+        finished_at: 2,
+      },
+    ]
+
+    expect(countAdminJobGroups(jobs).logs).toBe(1)
+  })
+
   it('labels manual jobs distinctly in Chinese without leaking raw job types', () => {
     const labels = MANUAL_JOB_ACTIONS.map((jobType) => adminJobTypeLabel(jobType, ZH.admin.jobs))
 

@@ -22,7 +22,13 @@ export const MANUAL_JOB_ACTIONS = [
 
 const QUOTA_JOB_TYPES = new Set(['quota_sync', 'quota_sync/manual', 'quota_sync/hot'])
 const USAGE_JOB_TYPES = new Set(['token_usage_rollup', 'usage_aggregation'])
-const LOG_JOB_TYPES = new Set(['auth_token_logs_gc', 'request_logs_gc', 'log_cleanup'])
+const LOG_JOB_TYPES = new Set([
+  'auth_token_logs_gc',
+  'request_logs_gc',
+  'mcp_sessions_gc',
+  'mcp_session_init_backoffs_gc',
+  'log_cleanup',
+])
 const DB_JOB_TYPES = new Set(['db_compaction'])
 const GEO_JOB_TYPES = new Set(['forward_proxy_geo_refresh'])
 const LINUXDO_JOB_TYPES = new Set(['linuxdo_user_status_sync', 'linuxdo_user_tag_binding_refresh'])

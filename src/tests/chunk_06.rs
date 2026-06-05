@@ -1343,6 +1343,24 @@ async fn list_recent_jobs_paginated_includes_key_group() {
         .await
         .expect("finish cleanup job");
 
+    let mcp_sessions_cleanup_job_id = proxy
+        .scheduled_job_start("mcp_sessions_gc", None, 1)
+        .await
+        .expect("start mcp sessions cleanup job");
+    proxy
+        .scheduled_job_finish(mcp_sessions_cleanup_job_id, "success", Some("deleted=2"))
+        .await
+        .expect("finish mcp sessions cleanup job");
+
+    let mcp_backoffs_cleanup_job_id = proxy
+        .scheduled_job_start("mcp_session_init_backoffs_gc", None, 1)
+        .await
+        .expect("start mcp session init backoffs cleanup job");
+    proxy
+        .scheduled_job_finish(mcp_backoffs_cleanup_job_id, "success", Some("deleted=3"))
+        .await
+        .expect("finish mcp session init backoffs cleanup job");
+
     let usage_job_id = proxy
         .scheduled_job_start("usage_aggregation", Some(&grouped_key_id), 1)
         .await
@@ -1392,14 +1410,14 @@ async fn list_recent_jobs_paginated_includes_key_group() {
         .await
         .expect("list jobs");
 
-    assert_eq!(total, 7);
+    assert_eq!(total, 9);
     assert_eq!(
         group_counts,
         JobGroupCounts {
-            all: 7,
+            all: 9,
             quota: 2,
             usage: 1,
-            logs: 1,
+            logs: 3,
             db: 0,
             geo: 1,
             linuxdo: 2,
@@ -1439,6 +1457,21 @@ async fn list_recent_jobs_paginated_includes_key_group() {
     assert_eq!(usage_items.len(), 1);
     assert_eq!(usage_items[0].job_type, "usage_aggregation");
     assert_eq!(usage_counts.usage, 1);
+
+    let (logs_items, logs_total, logs_counts) = proxy
+        .list_recent_jobs_paginated("logs", 1, 10)
+        .await
+        .expect("list logs jobs");
+    assert_eq!(logs_total, 3);
+    assert_eq!(logs_items.len(), 3);
+    assert!(logs_items.iter().any(|item| item.job_type == "log_cleanup"));
+    assert!(logs_items.iter().any(|item| item.job_type == "mcp_sessions_gc"));
+    assert!(
+        logs_items
+            .iter()
+            .any(|item| item.job_type == "mcp_session_init_backoffs_gc")
+    );
+    assert_eq!(logs_counts.logs, 3);
 
     let (geo_items, geo_total, geo_counts) = proxy
         .list_recent_jobs_paginated("geo", 1, 10)
