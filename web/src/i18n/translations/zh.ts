@@ -1364,7 +1364,7 @@ export const ZH: TranslationShape = {
           request_logs_gc: '请求日志清理',
           mcp_sessions_gc: 'MCP 会话清理',
           mcp_session_init_backoffs_gc: 'MCP 会话初始化退避清理',
-          log_cleanup: '访问令牌日志清理',
+          log_cleanup: '日志清理',
           db_compaction: '数据库压缩',
           forward_proxy_geo_refresh: '节点 IP/GEO 刷新',
           linuxdo_user_status_sync: 'LinuxDo 用户同步',

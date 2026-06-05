@@ -1365,7 +1365,7 @@ export const EN: TranslationShape = {
           request_logs_gc: 'Request log cleanup',
           mcp_sessions_gc: 'MCP session cleanup',
           mcp_session_init_backoffs_gc: 'MCP session init backoff cleanup',
-          log_cleanup: 'Access-token log cleanup',
+          log_cleanup: 'Log cleanup',
           db_compaction: 'DB compaction',
           forward_proxy_geo_refresh: 'Node IP/GEO refresh',
           linuxdo_user_status_sync: 'LinuxDo user sync',

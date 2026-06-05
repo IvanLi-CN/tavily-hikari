@@ -36,4 +36,8 @@ describe('admin job filters', () => {
     expect(new Set(labels).size).toBe(labels.length)
     expect(labels.some((label) => label.includes('_gc'))).toBe(false)
   })
+
+  it('keeps the legacy log cleanup label generic', () => {
+    expect(adminJobTypeLabel('log_cleanup', ZH.admin.jobs)).toBe('日志清理')
+  })
 })
