@@ -101,6 +101,9 @@ def build_test_executables(cargo_args):
         if not executable:
             continue
         target = record.get("target", {})
+        profile = record.get("profile", {})
+        if not (target.get("test") or profile.get("test")):
+            continue
         executables.append(
             {
                 "name": target.get("name"),
@@ -112,29 +115,28 @@ def build_test_executables(cargo_args):
 
 
 def list_executable_tests(executable_path):
-    completed = subprocess.run(
-        [executable_path, "--list"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            [executable_path, "--list"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     if completed.returncode != 0:
         return []
     return parse_test_list(completed.stdout)
-
-
-def chunked(items, size):
-    for start in range(0, len(items), size):
-        yield items[start : start + size]
 
 
 def run_exact_tests(executable_path, selected_tests):
     if not selected_tests:
         return
 
-    for batch in chunked(selected_tests, 64):
-        cmd = [executable_path, "--exact", "--test-threads=1", *batch]
+    for test_name in selected_tests:
+        cmd = [executable_path, "--exact", "--test-threads=1", test_name]
         print("+", " ".join(cmd), flush=True)
         subprocess.run(cmd, cwd=ROOT, check=True)
 
