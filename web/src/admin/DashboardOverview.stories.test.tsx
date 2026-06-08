@@ -13,6 +13,7 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(dashboardStories.TypesDeltaMode).toMatchObject({})
     expect(dashboardStories.ResultsAreaMode).toMatchObject({})
     expect(dashboardStories.TypesAreaMode).toMatchObject({})
+    expect(dashboardStories.TypesAreaHiddenMiddleSeries).toMatchObject({})
     expect(dashboardStories.HiddenSeriesEmpty).toMatchObject({})
     expect(dashboardStories.FixedRangeWithGaps).toMatchObject({})
   })
@@ -57,5 +58,14 @@ describe('DashboardOverview Storybook coverage', () => {
   it('exposes dedicated area-chart stories for both series families', () => {
     expect(dashboardStories.ResultsAreaMode.args?.initialChartMode).toBe('resultsArea')
     expect(dashboardStories.TypesAreaMode.args?.initialChartMode).toBe('typesArea')
+  })
+
+  it('exposes a stacked-area hidden-middle-series regression story', () => {
+    expect(dashboardStories.TypesAreaHiddenMiddleSeries.args?.initialChartMode).toBe('typesArea')
+    expect(dashboardStories.TypesAreaHiddenMiddleSeries.args?.initialVisibleTypeSeries).toEqual([
+      'mcpNonBillable',
+      'apiNonBillable',
+      'apiBillable',
+    ])
   })
 })

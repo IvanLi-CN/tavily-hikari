@@ -19,6 +19,7 @@ import {
 } from 'chart.js'
 import {
   buildDeltaSeriesSlotValues,
+  buildDashboardAreaStackLayers,
   buildHourlyRangeSlots,
   getVisibleHourlyWindow,
   DASHBOARD_RESULT_SERIES_ORDER,
@@ -337,46 +338,52 @@ export default function DashboardTrendPanel({
     if (chartMode === 'resultsArea') {
       return {
         labels,
-        datasets: activeSeries.map((seriesId) => ({
-          type: 'line' as const,
-          label: resultSeriesLabels[seriesId as DashboardResultSeriesId],
-          data: labels.map((_, index) => {
-            const bucket = rangeSlots[index]?.bucket ?? null
-            return bucket ? getResultSeriesValue(bucket, seriesId as DashboardResultSeriesId) : null
-          }),
-          borderColor: seriesColors[seriesId as DashboardResultSeriesId],
-          backgroundColor: withOpacity(seriesColors[seriesId as DashboardResultSeriesId], 0.22),
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 3,
-          tension: 0.34,
-          spanGaps: false,
-          stack: 'area',
-        })),
+        datasets: buildDashboardAreaStackLayers(activeSeries as DashboardResultSeriesId[]).map((layer) => {
+          const seriesId = layer.seriesId
+          return {
+            type: 'line' as const,
+            label: resultSeriesLabels[seriesId],
+            data: labels.map((_, index) => {
+              const bucket = rangeSlots[index]?.bucket ?? null
+              return bucket ? getResultSeriesValue(bucket, seriesId) : null
+            }),
+            borderColor: seriesColors[seriesId],
+            backgroundColor: withOpacity(seriesColors[seriesId], 0.22),
+            fill: layer.fill,
+            borderWidth: layer.borderWidth,
+            pointRadius: layer.pointRadius,
+            pointHoverRadius: layer.pointHoverRadius,
+            tension: layer.tension,
+            spanGaps: layer.spanGaps,
+            stack: layer.stack,
+          }
+        }),
       }
     }
 
     if (chartMode === 'typesArea') {
       return {
         labels,
-        datasets: activeSeries.map((seriesId) => ({
-          type: 'line' as const,
-          label: typeSeriesLabels[seriesId as DashboardTypeSeriesId],
-          data: labels.map((_, index) => {
-            const bucket = rangeSlots[index]?.bucket ?? null
-            return bucket ? getTypeSeriesValue(bucket, seriesId as DashboardTypeSeriesId) : null
-          }),
-          borderColor: seriesColors[seriesId as DashboardTypeSeriesId],
-          backgroundColor: withOpacity(seriesColors[seriesId as DashboardTypeSeriesId], 0.22),
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 3,
-          tension: 0.34,
-          spanGaps: false,
-          stack: 'area',
-        })),
+        datasets: buildDashboardAreaStackLayers(activeSeries as DashboardTypeSeriesId[]).map((layer) => {
+          const seriesId = layer.seriesId
+          return {
+            type: 'line' as const,
+            label: typeSeriesLabels[seriesId],
+            data: labels.map((_, index) => {
+              const bucket = rangeSlots[index]?.bucket ?? null
+              return bucket ? getTypeSeriesValue(bucket, seriesId) : null
+            }),
+            borderColor: seriesColors[seriesId],
+            backgroundColor: withOpacity(seriesColors[seriesId], 0.22),
+            fill: layer.fill,
+            borderWidth: layer.borderWidth,
+            pointRadius: layer.pointRadius,
+            pointHoverRadius: layer.pointHoverRadius,
+            tension: layer.tension,
+            spanGaps: layer.spanGaps,
+            stack: layer.stack,
+          }
+        }),
       }
     }
 
@@ -410,6 +417,9 @@ export default function DashboardTrendPanel({
       },
       plugins: {
         legend: { display: false },
+        filler: {
+          propagate: false,
+        },
         tooltip: {
           mode: 'index',
           intersect: false,

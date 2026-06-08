@@ -48,6 +48,11 @@ export const DEFAULT_VISIBLE_TYPE_SERIES = [
   ...DASHBOARD_TYPE_SERIES_ORDER,
 ] as const satisfies ReadonlyArray<DashboardTypeSeriesId>
 
+export const DASHBOARD_AREA_CHART_STACK_ID = 'area'
+export const DASHBOARD_AREA_CHART_TENSION = 0.18
+
+export type DashboardAreaFillTarget = 'origin' | '-1'
+
 export interface DashboardHourlyChartPreferences {
   chartMode: DashboardHourlyChartMode
   visibleResultSeries: DashboardResultSeriesId[]
@@ -73,6 +78,18 @@ export interface DashboardVisibleWindow {
   rangeStart: number
   rangeEnd: number
   slots: DashboardHourlyRangeSlot[]
+}
+
+export interface DashboardAreaStackLayer<T extends string> {
+  seriesId: T
+  type: 'line'
+  fill: DashboardAreaFillTarget
+  stack: typeof DASHBOARD_AREA_CHART_STACK_ID
+  tension: typeof DASHBOARD_AREA_CHART_TENSION
+  borderWidth: 2
+  pointRadius: 0
+  pointHoverRadius: 3
+  spanGaps: false
 }
 
 function positiveModulo(value: number, divisor: number): number {
@@ -269,6 +286,22 @@ export function getVisibleHourlyWindow(window: DashboardHourlyRequestWindow): Da
     rangeEnd,
     slots: buildHourlyRangeSlots(window, rangeStart, rangeEnd),
   }
+}
+
+export function buildDashboardAreaStackLayers<T extends string>(
+  visibleSeries: ReadonlyArray<T>,
+): DashboardAreaStackLayer<T>[] {
+  return visibleSeries.map((seriesId, index) => ({
+    seriesId,
+    type: 'line',
+    fill: index === 0 ? 'origin' : '-1',
+    stack: DASHBOARD_AREA_CHART_STACK_ID,
+    tension: DASHBOARD_AREA_CHART_TENSION,
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHoverRadius: 3,
+    spanGaps: false,
+  }))
 }
 
 export function getCurrentDayHourlyBuckets(

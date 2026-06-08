@@ -100,7 +100,11 @@
 - 图表默认显示：
   - 结果图：`次要成功 → 主要成功 → 次要失败 → 主要失败·429 → 主要失败·其他 → unknown`
   - 类型图：`MCP 非计费 → MCP 计费 → API 非计费 → API 计费`
-- 面积图沿用结果/类型两组 series 与颜色体系，使用 stacked area 读结构占比和波峰变化。
+- 面积图沿用结果/类型两组 series 与颜色体系，使用真正的 stacked area 读结构占比和波峰变化：
+  - 首个可见 series 填充到 `origin`，后续可见 series 填充到前一个可见 dataset，禁止所有 series 同时回填到零基线造成重叠面积。
+  - 用户隐藏中间 series 后，面积图必须按剩余可见 series 重新连续堆叠，不为隐藏层保留视觉空腔。
+  - Chart.js filler propagation 必须关闭，避免相邻目标在隐藏/缺失时被插件自动传播到非预期层。
+  - 面积图轮廓线只允许轻微平滑，避免小时桶数据被过度抹圆。
 - 绝对图与面积图默认全选全部 series。
 - 绝对图与面积图都使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
 - 结果维度的 series 可见性在结果柱状图和结果面积图之间共享；类型维度同理。
@@ -185,6 +189,14 @@
   PR: include
   image:
   ![管理员仪表盘小时图表：调用类型面积图](./assets/dashboard-hourly-types-area.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `admin-components-dashboardoverview--types-area-hidden-middle-series`
+  state: `types-area-hidden-middle`
+  evidence_note: 验证隐藏中间 type series 后，剩余可见 series 会重新连续堆叠，不为隐藏层保留视觉空腔。
+  PR: include
+  image:
+  ![管理员仪表盘小时图表：调用类型面积图隐藏中间层](./assets/dashboard-hourly-types-area-hidden-middle.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--hidden-series-empty`

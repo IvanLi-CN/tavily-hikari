@@ -2,12 +2,15 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   buildDashboardHourlyRequestWindowFixture,
+  buildDashboardAreaStackLayers,
   buildDeltaSeriesValues,
   buildDeltaSeriesSlotValues,
   buildHourlyBucketLookup,
   buildHourlyRangeSlots,
   createDashboardHourlyChartPreferences,
   createEmptyDashboardHourlyRequestWindow,
+  DASHBOARD_AREA_CHART_STACK_ID,
+  DASHBOARD_AREA_CHART_TENSION,
   DASHBOARD_RESULT_SERIES_ORDER,
   DASHBOARD_TYPE_SERIES_ORDER,
   getCurrentDayHourlyBuckets,
@@ -182,6 +185,35 @@ describe('dashboardHourlyCharts helpers', () => {
   it('supports the expanded chart mode set including area charts', () => {
     expect(createDashboardHourlyChartPreferences({ chartMode: 'resultsArea' }).chartMode).toBe('resultsArea')
     expect(createDashboardHourlyChartPreferences({ chartMode: 'typesArea' }).chartMode).toBe('typesArea')
+  })
+
+  it('builds non-overlapping stacked area fill targets for all visible result series', () => {
+    const layers = buildDashboardAreaStackLayers(DASHBOARD_RESULT_SERIES_ORDER)
+
+    expect(layers.map((layer) => layer.seriesId)).toEqual([...DASHBOARD_RESULT_SERIES_ORDER])
+    expect(layers.every((layer) => layer.type === 'line')).toBe(true)
+    expect(layers.map((layer) => layer.fill)).toEqual(['origin', '-1', '-1', '-1', '-1', '-1'])
+    expect(layers.every((layer) => layer.stack === DASHBOARD_AREA_CHART_STACK_ID)).toBe(true)
+    expect(layers.every((layer) => layer.tension === DASHBOARD_AREA_CHART_TENSION)).toBe(true)
+    expect(layers.every((layer) => layer.borderWidth === 2)).toBe(true)
+    expect(layers.every((layer) => layer.pointRadius === 0)).toBe(true)
+    expect(layers.every((layer) => layer.pointHoverRadius === 3)).toBe(true)
+    expect(layers.every((layer) => layer.spanGaps === false)).toBe(true)
+  })
+
+  it('rebuilds stacked area fill targets from the currently visible type series only', () => {
+    const visibleWithoutMiddle = DASHBOARD_TYPE_SERIES_ORDER.filter((seriesId) => seriesId !== 'mcpBillable')
+
+    const layers = buildDashboardAreaStackLayers(visibleWithoutMiddle)
+
+    expect(layers.map((layer) => layer.seriesId)).toEqual([
+      'mcpNonBillable',
+      'apiNonBillable',
+      'apiBillable',
+    ])
+    expect(layers.map((layer) => layer.fill)).toEqual(['origin', '-1', '-1'])
+    expect(layers.map((layer) => layer.stack)).toEqual(['area', 'area', 'area'])
+    expect(layers.map((layer) => layer.tension)).toEqual([0.18, 0.18, 0.18])
   })
 
   it('round-trips persisted chart preferences and preserves explicit empty absolute selections', () => {

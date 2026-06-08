@@ -427,6 +427,22 @@ fixedRangeGapHourlyRequestWindow.buckets = fixedRangeGapHourlyRequestWindow.buck
   (_, index) => ![2, 7, 19, 31, 42].includes(index),
 )
 
+const areaEvidenceHourlyRequestWindow = buildDashboardHourlyRequestWindowFixture({
+  currentHourStart: Date.UTC(2026, 3, 7, 12, 0, 0) / 1000,
+  mapBucket: ({ index, bucket }) => ({
+    secondarySuccess: (index % 4) + 2,
+    primarySuccess: bucket.primarySuccess + 5 + (index % 3),
+    secondaryFailure: index % 3,
+    primaryFailure429: index % 6 === 0 ? 2 : index % 4 === 0 ? 1 : 0,
+    primaryFailureOther: index % 5 === 0 ? 2 : index % 3 === 0 ? 1 : 0,
+    unknown: index % 9 === 0 ? 1 : 0,
+    mcpNonBillable: (index % 2) + 1,
+    mcpBillable: (index % 4) + 2,
+    apiNonBillable: (index % 3) + 1,
+    apiBillable: (index % 5) + 4,
+  }),
+})
+
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
   { id: 'keys', label: 'Active Keys', value: '57', subtitle: 'Current snapshot' },
@@ -936,6 +952,15 @@ export const ResultsAreaMode: Story = {
   args: {
     ...Default.args,
     initialChartMode: 'resultsArea',
+    hourlyRequestWindow: areaEvidenceHourlyRequestWindow,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Results area chart proof. The datasets use a true stacked fill sequence, first layer to origin and every later visible layer to the previous visible layer.',
+      },
+    },
   },
 }
 
@@ -943,6 +968,47 @@ export const TypesAreaMode: Story = {
   args: {
     ...Default.args,
     initialChartMode: 'typesArea',
+    hourlyRequestWindow: areaEvidenceHourlyRequestWindow,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Types area chart proof. The top contour remains absolute request volume while each type renders as a non-overlapping stacked band.',
+      },
+    },
+  },
+}
+
+export const TypesAreaHiddenMiddleSeries: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'typesArea',
+    hourlyRequestWindow: areaEvidenceHourlyRequestWindow,
+    initialVisibleTypeSeries: ['mcpNonBillable', 'apiNonBillable', 'apiBillable'],
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Regression proof for hidden middle layers: MCP billable is hidden, so the remaining type series must rebuild into a continuous stacked area with no reserved gap.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    const chips = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.dashboard-chart-series-chip'))
+    const mcpBillable = chips.find((chip) => chip.textContent?.includes('MCP billable'))
+    const apiNonBillable = chips.find((chip) => chip.textContent?.includes('API non-billable'))
+    if (mcpBillable?.getAttribute('aria-pressed') !== 'false') {
+      throw new Error('Expected hidden middle type series to be inactive in the stacked area story.')
+    }
+    if (apiNonBillable?.getAttribute('aria-pressed') !== 'true') {
+      throw new Error('Expected later visible type series to stay active after the middle series is hidden.')
+    }
+    if (canvasElement.querySelector('.dashboard-chart-canvas canvas') == null) {
+      throw new Error('Expected hidden-middle stacked area story to render the chart canvas.')
+    }
   },
 }
 
