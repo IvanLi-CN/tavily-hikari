@@ -34,3 +34,13 @@
   showed stale running maintenance rows and overlapping writers across request-log GC, quota sync,
   and compaction. Request-log GC catch-up only holds the gate during active cleanup windows, not
   while sleeping between catch-up passes.
+
+## 2026-06-09
+
+- Extended the same hardening line to `quota_sync`: upstream `/usage` now has a hard timeout,
+  `quota_sync` / `quota_sync/hot` runs are bounded and self-heal stale `running` rows at claim
+  time, and failed runs explicitly finish as `error` without mutating quota snapshot/sample data.
+- Added an offline `db_compaction_once` operator binary so maintenance compaction no longer depends
+  on the in-process admin trigger path when the DB execution gate is busy.
+- Reduced the default SQLite pool concurrency from `5` to `3` after production evidence showed that
+  more writer-capable connections amplified contention instead of absorbing it.

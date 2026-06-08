@@ -33,18 +33,6 @@ fn scheduled_request_logs_gc_options() -> RequestLogsGcOptions {
     }
 }
 
-fn db_compaction_min_reclaimable_bytes() -> u64 {
-    512 * 1024 * 1024
-}
-
-fn db_compaction_min_reclaimable_ratio() -> f64 {
-    0.20
-}
-
-fn db_compaction_cooldown_secs() -> u64 {
-    24 * 60 * 60
-}
-
 const LINUXDO_USER_STATUS_SYNC_JOB_TYPE: &str = "linuxdo_user_status_sync";
 const LINUXDO_USER_TAG_BINDING_REFRESH_JOB_TYPE: &str = "linuxdo_user_tag_binding_refresh";
 const TRIGGER_SOURCE_SCHEDULER: &str = "scheduler";
@@ -104,18 +92,30 @@ async fn sync_key_quota_with_db_job_gate(
     source: &str,
 ) -> Result<(i64, i64), ProxyError> {
     let secret = {
-        let _job_execution_gate = acquire_db_job_execution_gate_for_state(state).await;
         let _maintenance = acquire_db_maintenance_read_gate().await;
         state.proxy.quota_sync_api_key_secret(key_id).await?
     };
+    let result = tokio::time::timeout(
+        Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS),
+        state
+            .proxy
+            .fetch_usage_quota_for_sync_secret(&secret, &state.usage_base, key_id),
+    )
+    .await;
 
-    let (limit, remaining) = match state
-        .proxy
-        .fetch_usage_quota_for_sync_secret(&secret, &state.usage_base, key_id)
-        .await
-    {
-        Ok(quota) => quota,
-        Err(err) => {
+    let (limit, remaining) = match result {
+        Ok(Ok(quota)) => quota,
+        Ok(Err(err)) => {
+            let _job_execution_gate = acquire_db_job_execution_gate_for_state(state).await;
+            let _maintenance = acquire_db_maintenance_read_gate().await;
+            state.proxy.record_quota_sync_usage_error(key_id, &err).await?;
+            return Err(err);
+        }
+        Err(_) => {
+            let err = ProxyError::Other(format!(
+                "quota_sync timed out after {}s",
+                QUOTA_SYNC_JOB_TIMEOUT_SECS
+            ));
             let _job_execution_gate = acquire_db_job_execution_gate_for_state(state).await;
             let _maintenance = acquire_db_maintenance_read_gate().await;
             state.proxy.record_quota_sync_usage_error(key_id, &err).await?;
@@ -123,14 +123,12 @@ async fn sync_key_quota_with_db_job_gate(
         }
     };
 
-    {
-        let _job_execution_gate = acquire_db_job_execution_gate_for_state(state).await;
-        let _maintenance = acquire_db_maintenance_read_gate().await;
-        state
-            .proxy
-            .record_quota_sync_result(key_id, limit, remaining, source)
-            .await?;
-    }
+    let _job_execution_gate = acquire_db_job_execution_gate_for_state(state).await;
+    let _maintenance = acquire_db_maintenance_read_gate().await;
+    state
+        .proxy
+        .record_quota_sync_result(key_id, limit, remaining, source)
+        .await?;
 
     Ok((limit, remaining))
 }
@@ -1140,28 +1138,38 @@ async fn finish_db_compaction_claimed_job(state: Arc<AppState>, job_id: i64) -> 
         succeeded
     };
 
-    match state.proxy.sqlite_db_stats().await {
-        Ok(before) => match state.proxy.compact_sqlite_database().await {
-            Ok(after) => {
-                finish(
-                    state,
-                    "success",
-                    format!(
-                        "database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
-                        before.database_bytes,
-                        after.database_bytes,
-                        before.wal_bytes,
-                        after.wal_bytes,
-                        before.reclaimable_bytes,
-                        after.reclaimable_bytes,
-                        before.freelist_count,
-                        after.freelist_count
-                    ),
+    match run_db_compaction_once(state.proxy.sqlite_database_path(), false).await {
+        Ok(report) => {
+            let message = if report.skipped {
+                format!(
+                    "skipped=true forced={} reason={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
+                    report.forced,
+                    report.reason.unwrap_or_else(|| "unknown".to_string()),
+                    report.before.database_bytes,
+                    report.after.database_bytes,
+                    report.before.wal_bytes,
+                    report.after.wal_bytes,
+                    report.before.reclaimable_bytes,
+                    report.after.reclaimable_bytes,
+                    report.before.freelist_count,
+                    report.after.freelist_count
                 )
-                .await
-            }
-            Err(err) => finish(state, "error", err.to_string()).await,
-        },
+            } else {
+                format!(
+                    "skipped=false forced={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
+                    report.forced,
+                    report.before.database_bytes,
+                    report.after.database_bytes,
+                    report.before.wal_bytes,
+                    report.after.wal_bytes,
+                    report.before.reclaimable_bytes,
+                    report.after.reclaimable_bytes,
+                    report.before.freelist_count,
+                    report.after.freelist_count
+                )
+            };
+            finish(state, "success", message).await
+        }
         Err(err) => finish(state, "error", err.to_string()).await,
     }
 }
@@ -1188,8 +1196,8 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
                     continue;
                 }
             };
-            if stats.reclaimable_bytes < db_compaction_min_reclaimable_bytes()
-                || stats.reclaimable_ratio < db_compaction_min_reclaimable_ratio()
+            if stats.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
+                || stats.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO
             {
                 continue;
             }
@@ -1210,8 +1218,7 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
             };
             let succeeded = finish_db_compaction_claimed_job(state.clone(), job_id).await;
             if succeeded {
-                next_allowed_at =
-                    Instant::now() + Duration::from_secs(db_compaction_cooldown_secs());
+                next_allowed_at = Instant::now() + Duration::from_secs(DB_COMPACTION_COOLDOWN_SECS);
             }
         }
     });

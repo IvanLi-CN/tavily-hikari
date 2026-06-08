@@ -1,4 +1,12 @@
 impl KeyStore {
+    fn scheduled_job_stale_group(job_type: &str) -> Option<&'static str> {
+        match job_type {
+            "quota_sync" | "quota_sync/manual" => Some("quota_sync"),
+            "quota_sync/hot" => Some("quota_sync/hot"),
+            _ => None,
+        }
+    }
+
     fn sqlite_wal_path(&self) -> String {
         format!("{}-wal", self.database_path)
     }
@@ -105,11 +113,41 @@ impl KeyStore {
         attempt: i64,
     ) -> Result<Option<i64>, ProxyError> {
         let started_at = Utc::now().timestamp();
+        let stale_before = started_at.saturating_sub(QUOTA_SYNC_STALE_RUNNING_SECS);
+        let stale_group = Self::scheduled_job_stale_group(job_type);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut retry_attempt = 0usize;
         loop {
             let result = async {
                 let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+                if let Some(stale_group) = stale_group {
+                    sqlx::query(
+                        r#"
+                        UPDATE scheduled_jobs
+                        SET status = 'abandoned',
+                            message = COALESCE(message, 'abandoned after quota_sync timeout window'),
+                            finished_at = ?
+                        WHERE status = 'running'
+                          AND finished_at IS NULL
+                          AND started_at <= ?
+                          AND (
+                                (job_type = 'quota_sync' OR job_type = 'quota_sync/manual')
+                                AND ? = 'quota_sync'
+                              OR job_type = ? AND ? = 'quota_sync/hot'
+                          )
+                          AND ((key_id IS NULL AND ? IS NULL) OR key_id = ?)
+                        "#,
+                    )
+                    .bind(started_at)
+                    .bind(stale_before)
+                    .bind(stale_group)
+                    .bind(stale_group)
+                    .bind(stale_group)
+                    .bind(key_id)
+                    .bind(key_id)
+                    .execute(&mut *conn)
+                    .await?;
+                }
                 let running: Option<i64> = sqlx::query_scalar(
                     r#"
                     SELECT id

@@ -141,6 +141,234 @@ async fn scheduled_job_claim_records_trigger_source_and_rejects_duplicate_runnin
 }
 
 #[tokio::test]
+async fn scheduled_job_claim_abandons_stale_quota_sync_running_job() {
+    let db_path = temp_db_path("scheduled-job-claim-abandons-stale-quota-sync");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-stale-quota-sync".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+        .await
+        .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+    let stale_started_at = Utc::now()
+        .timestamp()
+        .saturating_sub(QUOTA_SYNC_STALE_RUNNING_SECS + 5);
+
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (job_type, trigger_source, key_id, status, attempt, started_at)
+        VALUES ('quota_sync', 'scheduler', ?, 'running', 1, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(stale_started_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert stale quota sync job");
+
+    let job_id = proxy
+        .scheduled_job_claim("quota_sync", "manual", Some(&key_id), 1)
+        .await
+        .expect("claim after stale running row")
+        .expect("new quota sync job claimed");
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, message FROM scheduled_jobs WHERE key_id = ? ORDER BY id ASC",
+    )
+    .bind(&key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch quota sync rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, "abandoned");
+    assert!(
+        rows[0]
+            .1
+            .as_deref()
+            .is_some_and(|message| message.contains("quota_sync timeout window"))
+    );
+    assert_eq!(rows[1].0, "running");
+    assert!(job_id > 0);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_claim_keeps_fresh_quota_sync_running_job() {
+    let db_path = temp_db_path("scheduled-job-claim-keeps-fresh-quota-sync");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-fresh-quota-sync".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+        .await
+        .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+
+    proxy
+        .scheduled_job_start("quota_sync", Some(&key_id), 1)
+        .await
+        .expect("start fresh quota sync job");
+
+    let duplicate = proxy
+        .scheduled_job_claim("quota_sync", "manual", Some(&key_id), 1)
+        .await
+        .expect("duplicate claim checked");
+    assert!(duplicate.is_none());
+
+    let running_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'quota_sync' AND status = 'running' AND key_id = ?",
+    )
+    .bind(&key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count fresh running jobs");
+    assert_eq!(running_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_claim_abandons_stale_hot_quota_sync_running_job() {
+    let db_path = temp_db_path("scheduled-job-claim-abandons-stale-hot-quota-sync");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-stale-hot-quota-sync".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+    let stale_started_at = Utc::now()
+        .timestamp()
+        .saturating_sub(QUOTA_SYNC_STALE_RUNNING_SECS + 5);
+
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (job_type, trigger_source, key_id, status, attempt, started_at)
+        VALUES ('quota_sync/hot', 'scheduler', ?, 'running', 1, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(stale_started_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert stale hot quota sync job");
+
+    let job_id = proxy
+        .scheduled_job_claim("quota_sync/hot", "auto", Some(&key_id), 1)
+        .await
+        .expect("claim after stale hot running row")
+        .expect("new hot quota sync job claimed");
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, message FROM scheduled_jobs WHERE key_id = ? ORDER BY id ASC",
+    )
+    .bind(&key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch hot quota sync rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, "abandoned");
+    assert!(
+        rows[0]
+            .1
+            .as_deref()
+            .is_some_and(|message| message.contains("quota_sync timeout window"))
+    );
+    assert_eq!(rows[1].0, "running");
+    assert!(job_id > 0);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_claim_reclaims_only_quota_sync_job_types() {
+    let db_path = temp_db_path("scheduled-job-claim-reclaims-only-quota-sync");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-quota-sync-scope".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+    let stale_started_at = Utc::now()
+        .timestamp()
+        .saturating_sub(QUOTA_SYNC_STALE_RUNNING_SECS + 5);
+
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (job_type, trigger_source, status, attempt, started_at)
+        VALUES ('request_logs_gc', 'scheduler', 'running', 1, ?)
+        "#,
+    )
+    .bind(stale_started_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert unrelated stale running job");
+
+    proxy
+        .scheduled_job_claim("quota_sync", "manual", Some(&key_id), 1)
+        .await
+        .expect("claim quota sync job")
+        .expect("quota sync job claimed");
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT job_type, status FROM scheduled_jobs ORDER BY id ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch scheduled job rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], ("request_logs_gc".to_string(), "running".to_string()));
+    assert_eq!(rows[1], ("quota_sync".to_string(), "running".to_string()));
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
     let db_path = temp_db_path("scheduled-job-claim-concurrent");
     let db_str = db_path.to_string_lossy().to_string();
@@ -221,6 +449,48 @@ async fn sqlite_db_stats_reports_reclaimable_shape() {
     assert!(stats.page_count > 0);
     assert!(stats.database_bytes > 0);
     assert!(stats.reclaimable_ratio >= 0.0);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn db_compaction_once_skips_when_reclaimable_space_is_below_threshold() {
+    let db_path = temp_db_path("db-compaction-once-skips-below-threshold");
+    let db_str = db_path.to_string_lossy().to_string();
+    let _proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let report = run_db_compaction_once(&db_str, false)
+        .await
+        .expect("db compaction report");
+    assert!(report.skipped);
+    assert!(!report.forced);
+    assert!(report.reason.is_some());
+    assert_eq!(report.before.database_bytes, report.after.database_bytes);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn db_compaction_once_force_runs_even_below_threshold() {
+    let db_path = temp_db_path("db-compaction-once-force");
+    let db_str = db_path.to_string_lossy().to_string();
+    let _proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let report = run_db_compaction_once(&db_str, true)
+        .await
+        .expect("forced db compaction report");
+    assert!(!report.skipped);
+    assert!(report.forced);
+    assert!(report.reason.is_none());
+    assert!(report.after.database_bytes > 0);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

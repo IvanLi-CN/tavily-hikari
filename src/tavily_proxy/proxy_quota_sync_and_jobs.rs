@@ -33,7 +33,7 @@ impl TavilyProxy {
             .fetch_usage_quota_for_secret(
                 &secret,
                 usage_base,
-                None,
+                Some(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS)),
                 Some(key_id),
                 None,
                 "quota_sync",
@@ -42,6 +42,7 @@ impl TavilyProxy {
         {
             Ok(quota) => quota,
             Err(err) => {
+                let err = normalize_quota_sync_fetch_error(err);
                 self.maybe_quarantine_usage_error(key_id, "/api/tavily/usage", &err)
                     .await?;
                 return Err(err);
@@ -72,12 +73,13 @@ impl TavilyProxy {
         self.fetch_usage_quota_for_secret(
             secret,
             usage_base,
-            None,
+            Some(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS)),
             Some(key_id),
             None,
             "quota_sync",
         )
         .await
+        .map_err(normalize_quota_sync_fetch_error)
     }
 
     pub async fn record_quota_sync_usage_error(
@@ -501,6 +503,10 @@ impl TavilyProxy {
         self.key_store.compact_sqlite_database().await
     }
 
+    pub fn sqlite_database_path(&self) -> &str {
+        &self.key_store.database_path
+    }
+
     pub async fn scheduled_job_finish(
         &self,
         job_id: i64,
@@ -542,5 +548,15 @@ impl TavilyProxy {
         self.key_store
             .list_recent_jobs_paginated(group, page, per_page)
             .await
+    }
+}
+
+fn normalize_quota_sync_fetch_error(err: ProxyError) -> ProxyError {
+    match err {
+        ProxyError::Http(http_err) if http_err.is_timeout() => ProxyError::Other(format!(
+            "quota_sync fetch timed out after {}s",
+            QUOTA_SYNC_FETCH_TIMEOUT_SECS
+        )),
+        other => other,
     }
 }

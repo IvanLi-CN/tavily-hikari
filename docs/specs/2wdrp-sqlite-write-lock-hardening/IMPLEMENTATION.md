@@ -36,11 +36,17 @@
   claims a fresh job for the next pass instead of keeping one long-running `running` row open.
 - Scheduled jobs now distinguish `trigger_source` from `job_type`, use an atomic claim path to avoid
   duplicate active work, and expose manual trigger entrypoints for maintenance/admin jobs.
+- `quota_sync` now uses a hard `/usage` timeout, a bounded job runtime budget, and claim-time stale
+  running row reclamation for `quota_sync` / `quota_sync/hot`, so hung syncs self-heal instead of
+  blocking future runs until a restart.
 - Request-log GC catch-up now uses smaller scheduler windows with a faster recheck cadence so a
   large body-cleanup backlog can make daily progress without one pass holding the SQLite writer
   slot for long.
 - DB maintenance now records size/freelist telemetry and can compact the SQLite file through a
   dedicated job, with automatic threshold-based triggering and manual admin triggering.
+- Added `db_compaction_once` as an offline operational binary. It reuses the same threshold gate as
+  the scheduler, supports `--force`, and avoids depending on the in-process admin trigger when the
+  DB execution gate is busy.
 - DB-backed scheduled and manual jobs now pass through a process-wide execution gate before their
   SQLite write windows. The gate covers retention GC, compaction, quota sync, rollups, session GC,
   backoff GC, auth-token log GC, and LinuxDo sync/refresh jobs while preserving the existing
@@ -86,4 +92,9 @@
   restart the service under the current stale-job cleanup path before relying on manual retriggers.
   The in-process execution gate prevents new same-process overlap; it does not rewrite stale rows
   while the old process is still considered active.
-- The implementation does not perform production data mutation and does not alter pool size.
+- The SQLite pool now defaults to `max_connections=3` instead of `5`, preserving WAL mode while
+  reducing writer contention on the single-file production database.
+- The recommended release path for this class of issue is: deploy code, perform one controlled
+  restart, verify `/health`, inspect `scheduled_jobs` / `database is locked` logs, continue
+  `request_logs_gc_once` if backlog remains, and only invoke `db_compaction_once` when reclaimable
+  space crosses the threshold or operators explicitly force a maintenance window.

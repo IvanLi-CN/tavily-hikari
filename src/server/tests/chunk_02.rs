@@ -1772,6 +1772,125 @@ async fn spawn_usage_mock_server() -> SocketAddr {
     addr
 }
 
+async fn spawn_usage_timeout_mock_server() -> SocketAddr {
+    let app = Router::new().route(
+        "/usage",
+        get(|headers: HeaderMap| async move {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert_eq!(auth, "Bearer tvly-timeout");
+            tokio::time::sleep(Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS + 2)).await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "key": { "limit": 1000, "usage": 10 },
+                })),
+            )
+                .into_response()
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    addr
+}
+
+#[tokio::test]
+async fn manual_sync_usage_times_out_and_finishes_job_with_error() {
+    let db_path = temp_db_path("manual-sync-usage-timeout");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-timeout".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+    let upstream_addr = spawn_usage_timeout_mock_server().await;
+    let usage_base = format!("http://{upstream_addr}");
+    let admin_addr = spawn_keys_admin_server_with_usage_base(
+        proxy.clone(),
+        ForwardAuthConfig::new(None, None, None, None),
+        true,
+        usage_base,
+    )
+    .await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&db_str)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("open db pool");
+
+    let started = std::time::Instant::now();
+    let response = Client::new()
+        .post(format!("http://{admin_addr}/api/keys/{key_id}/sync-usage"))
+        .send()
+        .await
+        .expect("manual sync usage request");
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    assert!(
+        elapsed < Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS),
+        "manual sync should fail before the {}s wall-clock timeout, took {elapsed:?}",
+        QUOTA_SYNC_JOB_TIMEOUT_SECS
+    );
+    let body: Value = response.json().await.expect("parse response body");
+    assert_eq!(
+        body.get("error").and_then(|value| value.as_str()),
+        Some("sync_failed")
+    );
+    assert!(
+        body.get("detail")
+            .and_then(|value| value.as_str())
+            .is_some_and(|detail| detail.contains("timed out"))
+    );
+
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, message FROM scheduled_jobs WHERE job_type = 'quota_sync' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fetch latest quota sync job");
+    assert_eq!(row.0, "error");
+    assert!(
+        row.1
+            .as_deref()
+            .is_some_and(|message| message.contains("timed out"))
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_quota_sync_samples WHERE key_id = ?",
+    )
+    .bind(&key_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count quota sync samples");
+    assert_eq!(count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
 #[derive(Clone)]
 struct ProxyRelayState {
     upstream_base: String,

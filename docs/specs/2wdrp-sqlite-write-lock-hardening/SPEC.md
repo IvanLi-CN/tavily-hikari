@@ -76,6 +76,12 @@ source when a usable persisted runtime already exists.
   pass. It must delete old `request_logs` and `request_log_catalog_rollups` in bounded batches,
   yield between batches, report partial progress, and continue catch-up after a throttled delay when
   more rows remain.
+- `quota_sync` and `quota_sync/hot` must run under a bounded runtime budget. Upstream `/usage`
+  fetches must use a hard timeout, timeout/error paths must finish the `scheduled_jobs` row as
+  `error`, and failed runs must not write quota snapshot/sample data.
+- Claiming `quota_sync` / `quota_sync/hot` must abandon stale `running` rows older than the
+  configured timeout window inside the same claim transaction, so a stuck job does not block future
+  sync attempts forever.
 - DB-backed scheduled and manual jobs that can write SQLite must also be serialized across logical
   job types inside one process, so maintenance catch-up, quota sync, rollups, GC, and compaction do
   not overlap as independent SQLite writers.
@@ -87,6 +93,9 @@ source when a usable persisted runtime already exists.
   maintenance is active.
 - A one-shot request-log GC CLI must reuse the same bounded cleanup path so production database
   samples can be validated deterministically without waiting for the daily scheduler.
+- A one-shot DB compaction CLI must reuse the same threshold logic, support forced execution for a
+  maintenance window, and remain available even when the in-process admin trigger is blocked by the
+  DB execution gate.
 - Request-log GC must avoid high-resource catch-up strategies such as rebuilding the whole
   `request_logs` table or generating a large WAL. Large backlogs are expected to catch up over
   repeated bounded windows.
@@ -111,8 +120,15 @@ source when a usable persisted runtime already exists.
   second job waits for the active DB job instead of competing for the SQLite writer slot.
 - Manual trigger API calls return a job id, job rows expose `trigger_source`, and duplicate active
   manual triggers return a conflict instead of starting overlapping work.
+- With an upstream `/usage` endpoint that hangs past the quota-sync timeout budget, manual and
+  scheduler-triggered quota sync runs finish as `error`, leave no long-lived `running` row behind,
+  and do not write `api_key_quota_sync_samples` or `api_keys.quota_*`.
+- With a stale `quota_sync` or `quota_sync/hot` `running` row older than the configured timeout
+  window, the next same-key claim abandons the stale row and starts a fresh run.
 - After request-log retention cleanup creates enough freelist pages, DB compaction runs under the
   maintenance gate and reduces the main SQLite file size or reports why compaction was skipped.
+- `db_compaction_once --json` reports threshold-based skip vs execution, and `--force` bypasses the
+  threshold for a controlled maintenance window.
 - `request_logs_gc_once --run-until-complete --json` removes old request logs and catalog rollups
   from a production-derived validation sample and reports `completed=true` when no old rows remain,
   while keeping WAL growth and CPU time bounded.

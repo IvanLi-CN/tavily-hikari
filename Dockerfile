@@ -24,6 +24,7 @@ RUN cargo build --release --locked \
     --bin monthly_quota_rebase \
     --bin mcp_search_billing_repair \
     --bin mcp_request_log_retry_repair \
+    --bin db_compaction_once \
     --bin request_logs_gc_once
 
 ########## Stage 2: import the official Xray runtime ##########
@@ -43,6 +44,7 @@ COPY --from=builder /app/target/release/billing_ledger_audit /usr/local/bin/bill
 COPY --from=builder /app/target/release/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase
 COPY --from=builder /app/target/release/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair
 COPY --from=builder /app/target/release/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair
+COPY --from=builder /app/target/release/db_compaction_once /usr/local/bin/db_compaction_once
 COPY --from=builder /app/target/release/request_logs_gc_once /usr/local/bin/request_logs_gc_once
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/xray /usr/local/share/xray

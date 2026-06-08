@@ -194,7 +194,7 @@ pub(crate) async fn open_sqlite_pool(
 
     SqlitePoolOptions::new()
         .min_connections(1)
-        .max_connections(5)
+        .max_connections(SQLITE_POOL_MAX_CONNECTIONS_DEFAULT)
         .connect_with(options)
         .await
         .map_err(ProxyError::Database)

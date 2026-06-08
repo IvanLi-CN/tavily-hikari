@@ -70,11 +70,17 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Serialize DB-backed scheduled/manual maintenance jobs through an in-process execution gate when
   they can write SQLite. Same-job duplicate claiming is not enough when different logical jobs, such
   as retention GC, quota sync, rollups, and compaction, can all compete for the single writer slot.
+- Keep `quota_sync` bounded. `/usage` fetches should have a hard timeout, the whole sync run should
+  finish on a short wall-clock budget, and stale `quota_sync` / `quota_sync/hot` `running` rows
+  should be abandoned during the next claim instead of waiting for a restart.
 - Do not hold that job execution gate while a catch-up scheduler is sleeping between cleanup
   windows. Hold it for the active DB write window, then release it before throttled rechecks.
 - Provide a one-shot operational CLI for retention cleanup so production-derived database samples
   can be tested deterministically. Do not rely only on the daily scheduler when validating cleanup
   behavior.
+- Provide the same offline path for compaction. Manual HTTP trigger endpoints are still useful, but
+  operators need a `db_compaction_once`-style bypass for maintenance windows when the online job
+  gate is busy.
 - Avoid high-resource retention catch-up tactics such as rebuilding large log tables or producing a
   large WAL. If the backlog is very large, run repeated bounded cleanup windows and verify progress
   with row counts and resource telemetry.
@@ -96,10 +102,10 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
   a separate maintenance-window decision after retention cleanup has completed.
 - Automatic compaction should be threshold-gated and cooldown-limited. Triggering it on every GC
   pass can turn a cleanup backlog into a new writer-pressure loop.
-- Stale `scheduled_jobs.running` rows from a previous process lifetime are an operational restart
-  concern. The process-level gate prevents new same-process writer overlap, but a controlled restart
-  may still be needed to let startup stale-job cleanup mark old rows abandoned before operators
-  retry manual jobs.
+- Stale `scheduled_jobs.running` rows from a previous process lifetime are still an operational
+  restart concern. Claim-time stale abandonment should cover fresh quota-sync wedges, but a
+  controlled restart remains the cleanest way to let startup stale-job cleanup mark older global
+  maintenance rows abandoned before operators retry manual jobs.
 - If a retention table has aggregate-maintenance triggers, validate large-copy cleanup with the
   triggers in mind. For `request_logs`, GC deletes expired rollup buckets separately and suppresses
   the per-row rollup delete trigger inside each batch transaction to avoid spending minutes per

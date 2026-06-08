@@ -224,6 +224,19 @@ pub struct RequestLogsGcReport {
     pub elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCompactionReport {
+    pub skipped: bool,
+    pub forced: bool,
+    pub reason: Option<String>,
+    pub min_reclaimable_bytes: u64,
+    pub min_reclaimable_ratio: f64,
+    pub before: SqliteDbStats,
+    pub after: SqliteDbStats,
+    pub elapsed_ms: u128,
+}
+
 pub fn format_request_logs_gc_report_message(
     report: &RequestLogsGcReport,
     passes: usize,
@@ -258,6 +271,55 @@ pub async fn run_request_logs_gc_once(
             &settings.request_log_retention,
         )
         .await
+}
+
+pub const SQLITE_POOL_MAX_CONNECTIONS_DEFAULT: u32 = 3;
+pub const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
+pub const QUOTA_SYNC_FETCH_TIMEOUT_SECS: u64 = USAGE_PROBE_TIMEOUT_SECS;
+pub const QUOTA_SYNC_JOB_TIMEOUT_SECS: u64 = 20;
+pub const QUOTA_SYNC_STALE_RUNNING_SECS: i64 = 40;
+pub const DB_COMPACTION_MIN_RECLAIMABLE_BYTES: u64 = 512 * 1024 * 1024;
+pub const DB_COMPACTION_MIN_RECLAIMABLE_RATIO: f64 = 0.20;
+pub const DB_COMPACTION_COOLDOWN_SECS: u64 = 24 * 60 * 60;
+
+pub async fn run_db_compaction_once(
+    database_path: &str,
+    force: bool,
+) -> Result<DbCompactionReport, ProxyError> {
+    let key_store = crate::store::KeyStore::open_for_request_logs_gc(database_path).await?;
+    let started = Instant::now();
+    let before = key_store.sqlite_db_stats().await?;
+
+    if !force
+        && (before.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
+            || before.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO)
+    {
+        return Ok(DbCompactionReport {
+            skipped: true,
+            forced: false,
+            reason: Some(format!(
+                "reclaimable space below threshold (bytes={} ratio={:.6})",
+                before.reclaimable_bytes, before.reclaimable_ratio
+            )),
+            min_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES,
+            min_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
+            before: before.clone(),
+            after: before,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
+
+    let after = key_store.compact_sqlite_database().await?;
+    Ok(DbCompactionReport {
+        skipped: false,
+        forced: force,
+        reason: None,
+        min_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES,
+        min_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
+        before,
+        after,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
 }
 
 impl ForwardProxyProgressEvent {
@@ -692,7 +754,6 @@ const SECS_PER_FIVE_MINUTES: i64 = 5 * SECS_PER_MINUTE;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
-const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
 
 // Time-based retention for per-token access logs (auth_token_logs).
 // This is purely time-driven and must not depend on access token enable/disable/delete status,

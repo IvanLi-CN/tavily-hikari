@@ -117,6 +117,33 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 - 容器镜像本身是无状态的，升级通常就是换 tag 后重启
 - 如果你还维护了 Caddy / 反代配置，也应该把这部分一起纳入备份
 
+## SQLite 维护窗口建议
+
+如果你遇到 `database is locked`、`quota_sync` 长时间停在 `running`、或者 request logs backlog
+很大，建议把恢复步骤固定成同一套剧本：
+
+1. 发布新镜像后做一次受控重启
+2. 验证 `/health` 返回 `200`
+3. 检查 `scheduled_jobs` 里没有新的长时间 `quota_sync*` `running`
+4. 检查日志里 `database is locked` 不再持续爆发
+5. 需要继续清理日志 backlog 时，优先运行 `request_logs_gc_once`
+6. 只有在 `reclaimable_bytes >= 512MB` 或你明确要开维护窗口时，再运行 `db_compaction_once`
+
+容器镜像内置了两个 operator CLI：
+
+```bash
+request_logs_gc_once --json
+db_compaction_once --json
+db_compaction_once --json --force
+```
+
+说明：
+
+- `request_logs_gc_once` 用于 bounded 地清理 request logs / body backlog
+- `db_compaction_once` 用于 SQLite 文件压缩；默认会尊重 reclaimable space 阈值，不满足条件时返回
+  `skipped=true`
+- `db_compaction_once --force` 只建议在明确的维护窗口里使用
+
 ## 高匿名透传
 
 Hikari 支持在转发上游时清洗或重写敏感请求头。
