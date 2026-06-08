@@ -172,3 +172,64 @@
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[tokio::test]
+    #[cfg(web_assets_embedded)]
+    async fn registration_paused_route_falls_back_to_local_index_even_when_embedded_dedicated_spa_exists(
+    ) {
+        assert!(
+            tavily_hikari::web_assets::embedded_bytes("registration-paused.html").is_some(),
+            "embedded registration paused asset should exist for this regression test",
+        );
+
+        let db_path = temp_db_path("registration-paused-route-embedded-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+        let static_dir = temp_static_dir("registration-paused-embedded-fallback");
+        std::fs::remove_file(static_dir.join("registration-paused.html"))
+            .expect("remove dedicated registration paused spa");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: Some(static_dir),
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: linuxdo_oauth_options_for_test(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/registration-paused", get(serve_registration_paused_index))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve app");
+        });
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let resp = client
+            .get(format!("http://{}/registration-paused", addr))
+            .send()
+            .await
+            .expect("registration paused request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let html = resp.text().await.expect("registration paused html");
+        assert!(html.contains("<title>index</title>"));
+
+        let _ = std::fs::remove_file(db_path);
+    }

@@ -22,6 +22,13 @@ async fn read_static_bytes(state: &AppState, file_name: &str) -> Option<Bytes> {
     embedded_static_bytes(file_name)
 }
 
+async fn local_static_file_exists(state: &AppState, file_name: &str) -> bool {
+    let Some(dir) = state.static_dir.as_ref() else {
+        return false;
+    };
+    tokio::fs::metadata(dir.join(file_name)).await.is_ok()
+}
+
 async fn load_spa_response(state: &AppState, file_name: &str) -> Result<Response<Body>, StatusCode> {
     let Some(bytes) = read_static_bytes(state, file_name).await else {
         return Err(StatusCode::NOT_FOUND);
@@ -142,6 +149,11 @@ async fn serve_login(
 async fn serve_registration_paused_index(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response<Body>, StatusCode> {
+    if state.static_dir.is_some()
+        && !local_static_file_exists(state.as_ref(), "registration-paused.html").await
+    {
+        return load_spa_response(state.as_ref(), "index.html").await;
+    }
     if !spa_file_exists(state.as_ref(), "registration-paused.html").await {
         return load_spa_response(state.as_ref(), "index.html").await;
     }

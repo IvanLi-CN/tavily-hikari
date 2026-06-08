@@ -1,0 +1,335 @@
+{
+  "coverage_targets": {
+    "lib": {
+      "list_args": ["--lib"]
+    },
+    "bin-main": {
+      "list_args": ["--bin", "tavily-hikari"]
+    },
+    "bin-support": {
+      "list_args": [
+        "--bin",
+        "admin_password_hash",
+        "--bin",
+        "billing_ledger_audit",
+        "--bin",
+        "mcp_request_log_retry_repair",
+        "--bin",
+        "mcp_search_billing_repair",
+        "--bin",
+        "mcp_session_delete_neutral_repair",
+        "--bin",
+        "mock_mcp_client",
+        "--bin",
+        "mock_tavily",
+        "--bin",
+        "mock_upstream",
+        "--bin",
+        "monthly_quota_rebase",
+        "--bin",
+        "request_kind_canonical_backfill",
+        "--bin",
+        "request_logs_gc_once",
+        "--bin",
+        "request_user_id_backfill"
+      ]
+    },
+    "integration:mcp_billing_regression": {
+      "list_args": ["--test", "mcp_billing_regression"]
+    },
+    "integration:mcp_session_affinity_e2e": {
+      "list_args": ["--test", "mcp_session_affinity_e2e"]
+    },
+    "integration:request_kind_canonical_backfill": {
+      "list_args": ["--test", "request_kind_canonical_backfill"]
+    },
+    "integration:rust_source_line_budgets": {
+      "list_args": ["--test", "rust_source_line_budgets"]
+    },
+    "integration:server_http_contract": {
+      "list_args": ["--test", "server_http_contract"]
+    }
+  },
+  "shards": [
+    {
+      "id": "lib-core",
+      "kind": "lib",
+      "name": "Lib Core",
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "include_prefixes": [
+        "affinity_tests::",
+        "analysis::tests::",
+        "forward_proxy::tests::",
+        "ha::tests::",
+        "models::client_ip_tests::",
+        "tavily_proxy::tests::",
+        "tests::parse_",
+        "tests::extract_",
+        "tests::classify_",
+        "tests::analyze_",
+        "tests::sanitize_",
+        "tests::map_",
+        "tests::operational_"
+      ]
+    },
+    {
+      "id": "lib-request-rollup",
+      "kind": "lib",
+      "name": "Lib Request Rollup",
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "include_prefixes": [
+        "tests::request_",
+        "tests::summary_",
+        "tests::dashboard_",
+        "tests::rollup_",
+        "tests::startup_",
+        "tests::pending_",
+        "tests::proxy_",
+        "tests::mcp_",
+        "tests::public_",
+        "tests::quota_",
+        "tests::standalone_",
+        "tests::successful_",
+        "tests::redact_",
+        "tests::record_",
+        "tests::persist_",
+        "tests::scheduled_",
+        "tests::suppressed_"
+      ]
+    },
+    {
+      "id": "lib-affinity-domain",
+      "kind": "lib",
+      "name": "Lib Affinity Domain",
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "include_prefixes": [
+        "tests::add_",
+        "tests::select_",
+        "tests::http_",
+        "tests::research_",
+        "tests::forward_",
+        "tests::reconcile_",
+        "tests::unknown_",
+        "tests::build_",
+        "tests::force_",
+        "tests::get_",
+        "tests::api_"
+      ]
+    },
+    {
+      "id": "lib-account-user",
+      "kind": "lib",
+      "name": "Lib Account User",
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "include_prefixes": [
+        "tests::account_",
+        "tests::linuxdo_",
+        "tests::token_",
+        "tests::user_",
+        "tests::admin_",
+        "tests::ensure_",
+        "tests::hourly_",
+        "tests::low_",
+        "tests::manual_",
+        "tests::list_",
+        "tests::oauth_",
+        "tests::new_",
+        "tests::legacy_",
+        "tests::shared_",
+        "tests::custom_",
+        "tests::business_",
+        "tests::bound_",
+        "tests::block_",
+        "tests::active_",
+        "tests::auto_",
+        "tests::delete_",
+        "tests::heal_",
+        "tests::historical_",
+        "tests::key_",
+        "tests::lock_",
+        "tests::locked_",
+        "tests::restored_",
+        "tests::settle_",
+        "tests::settling_",
+        "tests::sync_",
+        "tests::system_",
+        "tests::ticker_",
+        "tests::update_",
+        "tests::usage_"
+      ]
+    },
+    {
+      "id": "lib-misc",
+      "kind": "lib",
+      "name": "Lib Misc",
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "include_prefixes": [
+        "tests::abandon_",
+        "tests::abandoned_",
+        "tests::begin_",
+        "tests::billing_",
+        "tests::monthly_",
+        "tests::quarantine_",
+        "tests::quarantined_",
+        "tests::sqlite_",
+        "tests::published_"
+      ]
+    },
+    {
+      "id": "bin-support",
+      "kind": "bin",
+      "name": "Bin Support",
+      "coverage_target": "bin-support",
+      "run_args": [
+        "--bin",
+        "admin_password_hash",
+        "--bin",
+        "billing_ledger_audit",
+        "--bin",
+        "mcp_request_log_retry_repair",
+        "--bin",
+        "mcp_search_billing_repair",
+        "--bin",
+        "mcp_session_delete_neutral_repair",
+        "--bin",
+        "mock_mcp_client",
+        "--bin",
+        "mock_tavily",
+        "--bin",
+        "mock_upstream",
+        "--bin",
+        "monthly_quota_rebase",
+        "--bin",
+        "request_kind_canonical_backfill",
+        "--bin",
+        "request_logs_gc_once",
+        "--bin",
+        "request_user_id_backfill"
+      ]
+    },
+    {
+      "id": "bin-admin-api",
+      "kind": "bin",
+      "name": "Bin Admin API",
+      "coverage_target": "bin-main",
+      "run_args": ["--bin", "tavily-hikari"],
+      "include_prefixes": [
+        "server::admin_resources_tests::",
+        "server::dto_tests::",
+        "server::manual_trigger_tests::",
+        "server::db_maintenance_gate_tests::",
+        "server::version_detection_tests::",
+        "server::tests::admin_",
+        "server::tests::api_",
+        "server::tests::user_",
+        "server::tests::profile_",
+        "server::tests::token_",
+        "server::tests::log_",
+        "server::tests::public_",
+        "server::tests::announcement_",
+        "server::tests::alerts_",
+        "server::tests::compute_"
+      ]
+    },
+    {
+      "id": "bin-tavily-http",
+      "kind": "bin",
+      "name": "Bin Tavily HTTP",
+      "coverage_target": "bin-main",
+      "run_args": ["--bin", "tavily-hikari"],
+      "include_prefixes": [
+        "server::avatar_url_tests::",
+        "server::spa_404_tests::",
+        "server::linuxdo_credit_key_tests::",
+        "server::tests::tavily_",
+        "server::tests::extract_"
+      ]
+    },
+    {
+      "id": "bin-mcp-core",
+      "kind": "bin",
+      "name": "Bin MCP Core",
+      "coverage_target": "bin-main",
+      "run_args": ["--bin", "tavily-hikari"],
+      "include_prefixes": ["server::tests::mcp_"]
+    },
+    {
+      "id": "bin-linuxdo-forward",
+      "kind": "bin",
+      "name": "Bin LinuxDo Forward",
+      "coverage_target": "bin-main",
+      "run_args": ["--bin", "tavily-hikari"],
+      "include_prefixes": [
+        "server::tests::linuxdo_",
+        "server::tests::forward_",
+        "server::tests::request_",
+        "server::tests::dashboard_",
+        "server::tests::console_",
+        "server::tests::registration_",
+        "server::tests::post_",
+        "server::tests::builtin_",
+        "server::tests::revoking_",
+        "server::tests::session_",
+        "tests::parse_"
+      ]
+    },
+    {
+      "id": "bin-ha-rest",
+      "kind": "bin",
+      "name": "Bin HA Rest",
+      "coverage_target": "bin-main",
+      "run_args": ["--bin", "tavily-hikari"],
+      "include_prefixes": [
+        "server::tests::ha_",
+        "server::tests::health_",
+        "server::tests::key_",
+        "server::tests::db_",
+        "server::tests::manual_",
+        "server::tests::observed_",
+        "server::tests::proxy_",
+        "server::tests::startup_",
+        "server::tests::summary_"
+      ]
+    },
+    {
+      "id": "integration-mcp-billing-regression",
+      "kind": "integration",
+      "name": "Integration MCP Billing Regression",
+      "coverage_target": "integration:mcp_billing_regression",
+      "run_args": ["--test", "mcp_billing_regression"]
+    },
+    {
+      "id": "integration-mcp-session-affinity",
+      "kind": "integration",
+      "name": "Integration MCP Session Affinity",
+      "coverage_target": "integration:mcp_session_affinity_e2e",
+      "run_args": ["--test", "mcp_session_affinity_e2e"]
+    },
+    {
+      "id": "integration-request-kind-backfill",
+      "kind": "integration",
+      "name": "Integration Request Kind Backfill",
+      "coverage_target": "integration:request_kind_canonical_backfill",
+      "run_args": ["--test", "request_kind_canonical_backfill"]
+    },
+    {
+      "id": "integration-rust-source-line-budgets",
+      "kind": "integration",
+      "name": "Integration Rust Source Line Budgets",
+      "coverage_target": "integration:rust_source_line_budgets",
+      "run_args": ["--test", "rust_source_line_budgets"]
+    },
+    {
+      "id": "integration-server-http-contract",
+      "kind": "integration",
+      "name": "Integration Server HTTP Contract",
+      "coverage_target": "integration:server_http_contract",
+      "run_args": ["--test", "server_http_contract"]
+    }
+  ]
+}

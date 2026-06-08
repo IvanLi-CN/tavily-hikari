@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Lint & Checks
+  web-assets:
+    name: Web Assets
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -32,10 +32,34 @@ jobs:
 
       - name: Build frontend assets
         working-directory: web
+        env:
+          VITE_APP_VERSION: ci-${{ github.sha }}
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           bun run build
+
+      - name: Upload web assets artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  lint:
+    name: Lint & Checks
+    runs-on: ubuntu-24.04
+    needs: [web-assets]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
@@ -67,25 +91,24 @@ jobs:
       - name: Cargo check
         run: cargo check --locked --all-targets --all-features
 
-  unit-tests:
-    name: Backend Tests
+  backend-shard-plan:
+    name: Backend Shard Plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    needs: [web-assets]
+    timeout-minutes: 20
+    outputs:
+      lib-matrix: ${{ steps.matrix.outputs.lib-matrix }}
+      bin-matrix: ${{ steps.matrix.outputs.bin-matrix }}
+      integration-matrix: ${{ steps.matrix.outputs.integration-matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
         with:
-          bun-version-file: .bun-version
-
-      - name: Build frontend assets
-        working-directory: web
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bun run build
+          name: web-dist
+          path: web/dist
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
@@ -105,21 +128,157 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run library tests
-        run: cargo test --locked --all-features --lib -- --test-threads=1
+      - name: Verify backend shard coverage
+        run: python3 scripts/ci_backend_tests.py verify
 
-      - name: Run integration tests
-        shell: bash
+      - name: Export backend shard matrices
+        id: matrix
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          for test_file in tests/*.rs; do
-            test_name="$(basename "${test_file}" .rs)"
-            cargo test --locked --all-features --test "${test_name}" -- --test-threads=1
-          done
+          echo "lib-matrix=$(python3 scripts/ci_backend_tests.py matrix --kind lib)" >> "${GITHUB_OUTPUT}"
+          echo "bin-matrix=$(python3 scripts/ci_backend_tests.py matrix --kind bin)" >> "${GITHUB_OUTPUT}"
+          echo "integration-matrix=$(python3 scripts/ci_backend_tests.py matrix --kind integration)" >> "${GITHUB_OUTPUT}"
 
-      - name: Run binary tests
-        run: "cargo test --locked --all-features --bins -- --test-threads=1 --skip server::"
+  backend-lib-tests:
+    name: Backend Lib Tests (${{ matrix.shard.name }})
+    runs-on: ubuntu-24.04
+    needs: [web-assets, backend-shard-plan]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.backend-shard-plan.outputs.lib-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run library shard
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+
+  backend-bin-tests:
+    name: Backend Bin Tests (${{ matrix.shard.name }})
+    runs-on: ubuntu-24.04
+    needs: [web-assets, backend-shard-plan]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.backend-shard-plan.outputs.bin-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run binary shard
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+
+  backend-integration-tests:
+    name: Backend Integration Tests (${{ matrix.shard.name }})
+    runs-on: ubuntu-24.04
+    needs: [web-assets, backend-shard-plan]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.backend-shard-plan.outputs.integration-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run integration shard
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-24.04
+    needs: [backend-lib-tests, backend-integration-tests, backend-bin-tests]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Validate backend shards
+        env:
+          BACKEND_LIB_RESULT: ${{ needs.backend-lib-tests.result }}
+          BACKEND_INTEGRATION_RESULT: ${{ needs.backend-integration-tests.result }}
+          BACKEND_BIN_RESULT: ${{ needs.backend-bin-tests.result }}
+        run: |
+          set -euo pipefail
+          for result in "${BACKEND_LIB_RESULT}" "${BACKEND_INTEGRATION_RESULT}" "${BACKEND_BIN_RESULT}"; do
+            if [ "${result}" != "success" ]; then
+              echo "backend shard failed with result=${result}"
+              exit 1
+            fi
+          done
 
   frontend-checks:
     name: Frontend Checks
@@ -146,14 +305,10 @@ jobs:
         working-directory: web
         run: bun test
 
-      - name: Build frontend
-        working-directory: web
-        run: bun run build
-
   compose-smoke-forwardauth-caddy:
     name: Compose Smoke (ForwardAuth + Caddy)
     runs-on: ubuntu-24.04
-    needs: [lint, unit-tests, frontend-checks]
+    needs: [web-assets]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 20
     env:
@@ -166,10 +321,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
         with:
-          bun-version-file: .bun-version
+          name: web-dist
+          path: web/dist
 
       - name: Install system dependencies
         shell: bash
@@ -179,15 +335,6 @@ jobs:
           sudo apt-get install -y jq
           docker --version
           docker compose version || (sudo apt-get install -y docker-compose-plugin && docker compose version)
-
-      - name: Build web assets (required for Dockerfile)
-        working-directory: web
-        env:
-          VITE_APP_VERSION: ci-${{ github.sha }}
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bun run build
 
       - name: Build local Docker image (PR checkout)
         shell: bash
@@ -281,11 +428,17 @@ jobs:
     name: Build (Release)
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
-    needs: [lint, unit-tests, frontend-checks]
+    needs: [web-assets]
     timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Download web assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
