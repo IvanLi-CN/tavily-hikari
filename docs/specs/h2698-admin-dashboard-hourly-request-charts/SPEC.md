@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-04-07
-- Last: 2026-04-17
+- Last: 2026-06-08
 
 ## 背景
 
@@ -16,11 +16,13 @@
 
 - 在管理员仪表盘现有 `Traffic Trends` 区域内，用单一 stacked bar 图表面板替换旧 sparkline。
 - 后端统一返回有限的**服务器时区对齐**小时桶，并保证**最新一桶就是当前服务器时区小时进行中**；前端按固定自然范围展示今日/本月，并将横轴标签按浏览器本地时间渲染，同时支持与完整昨日/上月范围做 signed delta 对比。
-- 图表固定支持 4 种视图：
+- 图表固定支持 6 种视图：
   - 调用结果
   - 调用类型
   - 与昨日对比 · 调用结果
   - 与昨日对比 · 调用类型
+  - 24h 调用结果面积图
+  - 24h 调用类型面积图
 - 图表数据通过 `GET /api/dashboard/overview` 与 admin `/api/events` snapshot 共享同一契约，不新增单独 dashboard polling 接口。
 
 ## Non-goals
@@ -88,6 +90,9 @@
   - 若旧 payload 缺少上月边界，前端展示空上月对比范围，不根据当前月边界自行推导。
   - 当前小时不做分钟截断，直接对比固定范围内对应序号的完整 bucket。
   - delta 图 Y 轴允许正负值
+- 绝对图与面积图窗口：
+  - 主绝对图和两张面积图都直接使用 `hourlyRequestWindow.visibleBuckets=25` 对应的最新滚动窗口，不再用 `summaryWindows.today_*` 二次裁剪。
+  - 该窗口固定表示“24 个完整小时 + 1 个当前小时槽位”，与 `DashboardHourlyRequestWindow` 的最新 25 个 bucket 一一对应。
 
 ## 展示约束
 
@@ -95,24 +100,31 @@
 - 图表默认显示：
   - 结果图：`次要成功 → 主要成功 → 次要失败 → 主要失败·429 → 主要失败·其他 → unknown`
   - 类型图：`MCP 非计费 → MCP 计费 → API 非计费 → API 计费`
-- 前两个绝对图默认全选全部 series。
-- 前两个图使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
+- 面积图沿用结果/类型两组 series 与颜色体系，使用 stacked area 读结构占比和波峰变化。
+- 绝对图与面积图默认全选全部 series。
+- 绝对图与面积图都使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
+- 结果维度的 series 可见性在结果柱状图和结果面积图之间共享；类型维度同理。
 - 前端需要记忆上次选中的图表模式与 series 组合，并在下次重新打开管理台时恢复。
-- 小时桶统计口径按**服务器时区**对齐，但 UI 文案必须明确表达固定今日/本月范围与完整昨日/上月对比；横轴日期/时间标签按浏览器本地时间显示。
+- 小时桶统计口径按**服务器时区**对齐，但 UI 文案必须明确区分：
+  - 绝对图 / 面积图：最近 25 组滚动窗口
+  - delta 图：自然日 today/yesterday 对比
+  - 横轴日期/时间标签按浏览器本地时间显示。
 - 图表渲染必须把“时间槽位”和“已有 bucket 数据”分开：时间槽位可用于展示完整范围，bucket 缺失时数据值为 `null` 或等价空值，不渲染柱/点/线段。
 - API / MCP 配色必须复用请求记录界面的语义色族；结果图复用 success / warning / destructive / neutral 语义，不新造一套与现有 UI 脱节的颜色体系。
 
 ## 验收标准
 
-- 管理员仪表盘首页能直接看到固定今日/本月范围的 stacked bar 图表，不再显示旧 sparkline 卡片。
+- 管理员仪表盘首页能直接看到基于滚动 25 组窗口的 stacked bar 主图，不再显示旧 sparkline 卡片。
 - `/api/dashboard/overview` 与 `/api/events` snapshot 都包含 `hourlyRequestWindow`，且 dashboard 切到该路由后可实时刷新。
 - `hourlyRequestWindow.retainedBuckets = 49`、`visibleBuckets = 25` 保持不变，且最新一桶必须等于 `currentHourStart`。
 - 小时桶最后一组必须是当前服务器时区小时进行中；横轴标签则按浏览器本地时间展示同一批 bucket。
 - 当固定范围内缺少 bucket 时，对应柱/点/线段保持空缺，不得补 0、不插值、不自行生成 bucket。
-- 结果图与类型图的默认堆叠顺序、默认可见系列、delta 行为与本 spec 一致。
+- 主绝对图不再退化成“当天 00:00 到当前”，而是直接显示最新 25 个小时槽位。
+- 两张面积图与绝对图共享同一滚动 25 组横轴，并支持与同维度柱状图共享 series 显隐状态。
+- 结果图与类型图的默认堆叠顺序、默认可见系列、面积图行为和 delta 行为与本 spec 一致。
 - 管理台重新打开后，会恢复上一次选中的图表模式与 series 显示状态。
 - 当所有可见系列被隐藏时，图表区域显示明确 empty state，而不是坏图或空白画布。
-- Storybook 覆盖 4 个图表模式、toggle 行为与空数据场景，并提供最终视觉证据。
+- Storybook 覆盖 6 个图表模式、toggle 行为与空数据场景，并提供最终视觉证据。
 
 ## 里程碑
 
@@ -120,7 +132,7 @@
 - [x] M2: 后端 hourly bucket 聚合与 overview/snapshot 扩展
 - [x] M3: DashboardOverview 图表模式、图例切换与 i18n
 - [x] M4: Storybook / 前端测试 / 后端测试补齐
-- [ ] M5: 固定今日/本月范围、缺口留空视觉证据、review-loop 与快车道收敛
+- [x] M5: 趋势窗口纠偏、面积图补充、缺口留空视觉证据、review-loop 与快车道收敛
 
 ## 风险与假设
 
@@ -157,6 +169,22 @@
   evidence_note: 验证“与昨日对比·调用类型”图支持单选/全部切换，并在 `全部` 下显示类型差值柱状图。
   image:
   ![管理员仪表盘小时图表：调用类型差值](./assets/dashboard-hourly-types-delta.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `admin-components-dashboardoverview--results-area-mode`
+  state: `results-area`
+  evidence_note: 验证“24h 调用结果面积图”与主绝对图共享滚动 25 组窗口，并按结果分层堆叠展示。
+  PR: include
+  image:
+  ![管理员仪表盘小时图表：调用结果面积图](./assets/dashboard-hourly-results-area.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `admin-components-dashboardoverview--types-area-mode`
+  state: `types-area`
+  evidence_note: 验证“24h 调用类型面积图”与主绝对图共享滚动 25 组窗口，并按类型分层堆叠展示。
+  PR: include
+  image:
+  ![管理员仪表盘小时图表：调用类型面积图](./assets/dashboard-hourly-types-area.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--hidden-series-empty`

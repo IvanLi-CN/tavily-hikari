@@ -14,6 +14,7 @@ import {
   formatHourlyBucketLabel,
   getHourlyBucketsInRange,
   getVisibleHourlyBuckets,
+  getVisibleHourlyWindow,
   readDashboardHourlyChartPreferences,
   toggleSeriesSelection,
   writeDashboardHourlyChartPreferences,
@@ -178,6 +179,11 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(preferences.visibleTypeSeries).toEqual([...DASHBOARD_TYPE_SERIES_ORDER])
   })
 
+  it('supports the expanded chart mode set including area charts', () => {
+    expect(createDashboardHourlyChartPreferences({ chartMode: 'resultsArea' }).chartMode).toBe('resultsArea')
+    expect(createDashboardHourlyChartPreferences({ chartMode: 'typesArea' }).chartMode).toBe('typesArea')
+  })
+
   it('round-trips persisted chart preferences and preserves explicit empty absolute selections', () => {
     const storage = new Map<string, string>()
     const storageApi = {
@@ -205,5 +211,67 @@ describe('dashboardHourlyCharts helpers', () => {
       resultDeltaSeries: 'primaryFailure429',
       typeDeltaSeries: 'all',
     })
+  })
+
+  it('falls back to a legacy persistence key when the new key is empty', () => {
+    const storage = new Map<string, string>()
+    const storageApi = {
+      getItem(key: string) {
+        return storage.get(key) ?? null
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value)
+      },
+    }
+
+    storage.set('admin.dashboard.hourly-request-charts.v1', JSON.stringify({
+      chartMode: 'resultsArea',
+      visibleResultSeries: ['primarySuccess'],
+      visibleTypeSeries: ['apiBillable'],
+      resultDeltaSeries: 'primaryFailure429',
+      typeDeltaSeries: 'all',
+    }))
+
+    expect(
+      readDashboardHourlyChartPreferences(
+        storageApi,
+        'admin.dashboard.hourly-request-charts.v2',
+        ['admin.dashboard.hourly-request-charts.v1'],
+      ),
+    ).toEqual({
+      chartMode: 'resultsArea',
+      visibleResultSeries: ['primarySuccess'],
+      visibleTypeSeries: ['apiBillable'],
+      resultDeltaSeries: 'primaryFailure429',
+      typeDeltaSeries: 'all',
+    })
+  })
+
+  it('builds the rolling visible window directly from visibleBuckets metadata', () => {
+    const currentHourStart = Date.UTC(2026, 3, 7, 12, 0, 0) / 1000
+    const window = buildDashboardHourlyRequestWindowFixture({ currentHourStart })
+
+    const visible = getVisibleHourlyWindow(window)
+
+    expect(visible.rangeStart).toBe(currentHourStart - 24 * 3600)
+    expect(visible.rangeEnd).toBe(currentHourStart + 3600)
+    expect(visible.slots).toHaveLength(25)
+    expect(visible.slots[0]?.bucketStart).toBe(currentHourStart - 24 * 3600)
+    expect(visible.slots.at(-1)?.bucketStart).toBe(currentHourStart)
+  })
+
+  it('keeps the rolling window fixed to the latest visible slot count even when buckets are sparse', () => {
+    const currentHourStart = Date.UTC(2026, 3, 7, 12, 0, 0) / 1000
+    const window = buildDashboardHourlyRequestWindowFixture({ currentHourStart })
+    const missingBucketStart = currentHourStart - 12 * 3600
+    window.buckets = window.buckets.filter((bucket) => bucket.bucketStart !== missingBucketStart)
+
+    const visible = getVisibleHourlyWindow(window)
+
+    expect(visible.rangeStart).toBe(currentHourStart - 24 * 3600)
+    expect(visible.rangeEnd).toBe(currentHourStart + 3600)
+    expect(visible.slots).toHaveLength(25)
+    expect(visible.slots[12]?.bucketStart).toBe(missingBucketStart)
+    expect(visible.slots[12]?.bucket).toBeNull()
   })
 })

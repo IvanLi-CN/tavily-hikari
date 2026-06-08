@@ -75,11 +75,15 @@ const strings = {
   chartModeTypes: 'Types',
   chartModeResultsDelta: 'Δ Results',
   chartModeTypesDelta: 'Δ Types',
+  chartModeResultsArea: 'Area · Results',
+  chartModeTypesArea: 'Area · Types',
   chartVisibleSeries: 'Visible series',
   chartDeltaSeries: 'Compared series',
   chartSelectionAll: 'All',
   chartEmpty: 'No visible chart series for the current selection.',
   chartUtcWindow: 'Local time axis · Fixed range ({count} current buckets, {comparisonCount} comparison buckets)',
+  chartRollingWindow: 'Local time axis · Rolling 25 buckets ({count} current buckets)',
+  chartDeltaWindow: 'Local time axis · Natural-day comparison ({count} current buckets, {comparisonCount} comparison buckets)',
   chartResultSecondarySuccess: 'Secondary success',
   chartResultPrimarySuccess: 'Primary success',
   chartResultSecondaryFailure: 'Secondary failure',
@@ -467,11 +471,15 @@ const zhStrings = {
   chartModeTypes: '调用类型',
   chartModeResultsDelta: '较昨日 · 调用结果',
   chartModeTypesDelta: '较昨日 · 调用类型',
+  chartModeResultsArea: '面积图 · 调用结果',
+  chartModeTypesArea: '面积图 · 调用类型',
   chartVisibleSeries: '显示系列',
   chartDeltaSeries: '对比系列',
   chartSelectionAll: '全部',
   chartEmpty: '当前选择下没有可显示的图表系列。',
   chartUtcWindow: '本地时间横轴 · 固定范围（当前 {count} 组，对比 {comparisonCount} 组）',
+  chartRollingWindow: '本地时间横轴 · 最近 25 组滚动窗口（当前 {count} 组）',
+  chartDeltaWindow: '本地时间横轴 · 自然日对比窗口（当前 {count} 组，对比 {comparisonCount} 组）',
   chartResultSecondarySuccess: '次要成功',
   chartResultPrimarySuccess: '主要成功',
   chartResultSecondaryFailure: '次要失败',
@@ -928,6 +936,20 @@ export const TypesDeltaMode: Story = {
   },
 }
 
+export const ResultsAreaMode: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'resultsArea',
+  },
+}
+
+export const TypesAreaMode: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'typesArea',
+  },
+}
+
 export const HiddenSeriesEmpty: Story = {
   args: {
     ...Default.args,
@@ -956,8 +978,8 @@ export const FixedRangeWithGaps: Story = {
       throw new Error('Expected fixed-range gap story to render the dashboard chart canvas')
     }
     const meta = canvasElement.querySelector('.dashboard-trend-meta')?.textContent ?? ''
-    if (!meta.includes('Fixed range')) {
-      throw new Error(`Expected fixed-range chart metadata, received: ${meta}`)
+    if (!meta.includes('Natural-day comparison')) {
+      throw new Error(`Expected natural-day comparison metadata, received: ${meta}`)
     }
   },
 }

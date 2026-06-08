@@ -1,6 +1,12 @@
 import type { DashboardHourlyRequestBucket, DashboardHourlyRequestWindow } from '../api'
 
-export type DashboardHourlyChartMode = 'results' | 'types' | 'resultsDelta' | 'typesDelta'
+export type DashboardHourlyChartMode =
+  | 'results'
+  | 'types'
+  | 'resultsDelta'
+  | 'typesDelta'
+  | 'resultsArea'
+  | 'typesArea'
 
 export type DashboardResultSeriesId =
   | 'secondarySuccess'
@@ -63,6 +69,12 @@ export interface DashboardHourlyRangeSlot {
   bucket: DashboardHourlyRequestBucket | null
 }
 
+export interface DashboardVisibleWindow {
+  rangeStart: number
+  rangeEnd: number
+  slots: DashboardHourlyRangeSlot[]
+}
+
 function positiveModulo(value: number, divisor: number): number {
   return ((value % divisor) + divisor) % divisor
 }
@@ -107,6 +119,8 @@ export function createDashboardHourlyChartPreferences(
         || overrides.chartMode === 'types'
         || overrides.chartMode === 'resultsDelta'
         || overrides.chartMode === 'typesDelta'
+        || overrides.chartMode === 'resultsArea'
+        || overrides.chartMode === 'typesArea'
         ? overrides.chartMode
         : 'results',
     visibleResultSeries: normalizeSeriesSelection(
@@ -135,16 +149,20 @@ export function createDashboardHourlyChartPreferences(
 export function readDashboardHourlyChartPreferences(
   storage: Pick<Storage, 'getItem'> | null | undefined,
   key: string | null | undefined,
+  legacyKeys: ReadonlyArray<string> = [],
 ): DashboardHourlyChartPreferences | null {
   if (storage == null || !key) return null
-  const raw = storage.getItem(key)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as Partial<DashboardHourlyChartPreferences>
-    return createDashboardHourlyChartPreferences(parsed)
-  } catch {
-    return null
+  for (const candidateKey of [key, ...legacyKeys]) {
+    const raw = storage.getItem(candidateKey)
+    if (!raw) continue
+    try {
+      const parsed = JSON.parse(raw) as Partial<DashboardHourlyChartPreferences>
+      return createDashboardHourlyChartPreferences(parsed)
+    } catch {
+      continue
+    }
   }
+  return null
 }
 
 export function writeDashboardHourlyChartPreferences(
@@ -223,6 +241,34 @@ export function getVisibleHourlyBuckets(window: DashboardHourlyRequestWindow): D
     : window.buckets.length
   if (retained <= 0) return []
   return window.buckets.slice(-retained)
+}
+
+export function getVisibleHourlyWindow(window: DashboardHourlyRequestWindow): DashboardVisibleWindow {
+  const visibleBuckets = getVisibleHourlyBuckets(window)
+  const visibleBucketCount = Number.isFinite(window.visibleBuckets) && window.visibleBuckets > 0
+    ? Math.trunc(window.visibleBuckets)
+    : visibleBuckets.length
+  const bucketSeconds = Number.isFinite(window.bucketSeconds) && window.bucketSeconds > 0
+    ? Math.trunc(window.bucketSeconds)
+    : 3600
+
+  if (visibleBuckets.length === 0 || visibleBucketCount <= 0) {
+    return {
+      rangeStart: 0,
+      rangeEnd: 0,
+      slots: [],
+    }
+  }
+
+  const latestBucketStart = visibleBuckets.at(-1)?.bucketStart ?? 0
+  const rangeStart = latestBucketStart - (visibleBucketCount - 1) * bucketSeconds
+  const rangeEnd = latestBucketStart + bucketSeconds
+
+  return {
+    rangeStart,
+    rangeEnd,
+    slots: buildHourlyRangeSlots(window, rangeStart, rangeEnd),
+  }
 }
 
 export function getCurrentDayHourlyBuckets(
