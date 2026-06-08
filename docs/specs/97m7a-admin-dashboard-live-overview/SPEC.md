@@ -164,6 +164,9 @@
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `upstream exhausted lifecycle cards`; evidence_note: 验证中文总览中的今日/本月耗尽卡已经统一使用 `上游 Key 耗尽` 标签，并分别显示 `今日新增` / `本月新增`，同时耗尽卡不再展示请求占比副标题。
   ![管理仪表盘：上游 Key 耗尽新口径](./assets/dashboard-upstream-exhausted-key-cards.png)
 
+- source_type: `storybook_canvas`; target_program: `mock-only`; story_id_or_title: `Components/RollingNumber/CarryChainSuffixOnly`; state: `suffix-only carry chain`; evidence_note: 验证共享 `RollingNumber` 在 `65,777 -> 66,876` 场景中只滚动最右侧三位分组，逗号左侧高位直接更新。
+  ![RollingNumber 后缀进位链证据](./assets/rolling-number-carry-chain-story.png)
+
 ## Change log
 
 - 2026-03-14: 初始化 spec，定义 dashboard 实时总览、month lifecycle 指标、代理节点摘要与大数展示收口目标。
