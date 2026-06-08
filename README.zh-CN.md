@@ -354,6 +354,8 @@ codex mcp list | grep tavily_hikari
 - PR 合并到 `main` 且 CI 通过后：
   - `type:patch|minor|major`：计算下一版本并发布 tag（稳定：`vX.Y.Z`；预发布：`vX.Y.Z-rc.<sha7>`），同时创建 GitHub Release、推送 GHCR 镜像（稳定：`latest`、`vX.Y.Z`；预发布：仅 `vX.Y.Z-rc.<sha7>`，不推进 `latest`），并用幂等评论把发布结果回写到对应 PR。
   - `type:docs|skip`：不发版（不打 tag / 不推镜像）。
+- 同一次 release run 中，前端 `web/dist` 只会构建一次，再复用给 Docker 镜像与 Linux 二进制发布 job。
+- 如果 release 在首次 attempt 命中了瞬时 Docker Hub / BuildKit 拉取故障，repo-local notifier 会自动重跑一次 failed Docker jobs，并抑制第一次 Telegram 告警；若重跑后仍失败，则后续 attempt 会正常告警。
 - 如果某个 commit 无法映射到“恰好一个 PR”，则会保守跳过发版（避免误发）。
 
 ## 生产部署提示

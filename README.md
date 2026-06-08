@@ -375,6 +375,8 @@ Releases are label-driven:
   - GHCR image tags:
     - stable (`channel:stable`): `latest`, `vX.Y.Z`
     - prerelease (`channel:rc`): `vX.Y.Z-rc.<sha7>` (no `latest`)
+  - Web assets are built once per release run and reused by both Docker and binary release jobs
+- If the release fails on a first-attempt transient Docker Hub / BuildKit fetch outage, the repo-local notifier auto-reruns failed Docker jobs once and suppresses the first Telegram alert; if the rerun still fails, the later attempt alerts normally.
 - If a commit cannot be mapped to exactly one PR, release is skipped (conservative default).
 
 ## Deployment Notes

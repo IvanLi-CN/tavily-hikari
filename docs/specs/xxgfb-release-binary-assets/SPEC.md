@@ -22,6 +22,7 @@
 - 保留 `--static-dir` / `WEB_STATIC_DIR` 外部静态目录覆盖，且外部目录优先于内嵌资产。
 - 继续保留 GHCR 镜像发布路径，不用 binary 替代镜像。
 - release workflow 在上传 GitHub Release 前，对打包后的 binary 做本机 smoke，阻断不可用资产发布。
+- release workflow 内部的前端 `web/dist` 只构建一次，并通过 release-local artifact 复用给 Docker 与 binary 发布 job。
 
 ### Non-goals
 
@@ -56,6 +57,9 @@
 - Given release workflow 进入发布阶段
   When `binary-native` jobs 完成
   Then GitHub Release 必须包含 `tavily-hikari-<tag>-linux-amd64.tar.gz`、`tavily-hikari-<tag>-linux-amd64.tar.gz.sha256`、`tavily-hikari-<tag>-linux-arm64.tar.gz`、`tavily-hikari-<tag>-linux-arm64.tar.gz.sha256`。
+- Given release workflow 需要同时构建 Docker 镜像与 binary 资产
+  When `web-assets` job 成功完成
+  Then `docker-native` 与 `binary-native` 必须下载同一个 `release-web-dist` artifact，而不是各自重复执行 Bun 安装与前端构建。
 - Given 二进制资产被解压到无 `web/dist` 的裸机目录
   When 使用 `--bind`、`--port`、`--db-path` 启动服务
   Then `/health` 返回 200，`/`、`/admin`、`/console` 能返回 HTML，`/version.json` 返回版本 JSON，图标资源可访问。
@@ -77,3 +81,4 @@
 
 - 假设 GitHub-hosted `ubuntu-24.04` 与 `ubuntu-24.04-arm` runners 均可用并能安装 native SQLite build dependencies。
 - 风险：构建时没有 `web/dist` 时，binary 将不含内嵌资源；release workflow 必须先构建 Web 资产再构建 release binary。
+- 假设 release-local artifact 复用继续沿用 `web/dist` 目录合同，因此 Dockerfile 与 build script 无需改动路径语义。
