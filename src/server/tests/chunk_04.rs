@@ -2,11 +2,9 @@
     async fn api_keys_batch_does_not_override_existing_group() {
         let db_path = temp_db_path("keys-batch-group-no-override");
         let db_str = db_path.to_string_lossy().to_string();
-
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
             .await
             .expect("proxy created");
-
         // Existing key already belongs to a group.
         proxy
             .add_or_undelete_key_in_group("tvly-existing", Some("old"))
@@ -24,7 +22,6 @@
             .connect_with(options)
             .await
             .expect("open db pool");
-
         let forward_auth = ForwardAuthConfig::new(
             Some(HeaderName::from_static("x-forward-user")),
             Some("admin".to_string()),
@@ -32,7 +29,6 @@
             None,
         );
         let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
-
         let client = Client::new();
         let url = format!("http://{}/api/keys/batch", addr);
         let resp = client
@@ -42,13 +38,10 @@
             .send()
             .await
             .expect("request succeeds");
-
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
-
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         let summary = body.get("summary").expect("summary exists");
         assert_eq!(summary.get("existed").and_then(|v| v.as_u64()), Some(1));
-
         let group_name: Option<String> =
             sqlx::query_scalar("SELECT group_name FROM api_keys WHERE api_key = ?")
                 .bind("tvly-existing")
@@ -60,7 +53,6 @@
             Some("old"),
             "group_name should not be overridden for existing keys"
         );
-
         let _ = std::fs::remove_file(db_path);
     }
 
