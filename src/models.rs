@@ -1823,6 +1823,12 @@ pub struct TokenRequestKindOption {
     pub count: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenLogBillingFilter {
+    All,
+    Billable,
+}
+
 /// Per-token log for detail UI
 #[derive(Debug, Clone)]
 pub struct TokenLogRecord {

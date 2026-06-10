@@ -236,7 +236,17 @@ export const EN = {
       researchPendingAccepted: 'pending (accepted)',
       researchStatus: 'status={status}',
     },
-    logs: 'Recent Requests (20)',
+    logs: 'Recent Requests (50)',
+    logsSubtitle: 'Review the latest request records for this token.',
+    logsBack: 'Back to Token Detail',
+    mobileOpen: 'View recent requests',
+    mobileSummary: 'Latest 50 requests with quota-usage filter',
+    mobileAction: '›',
+    logFilters: {
+      ariaLabel: 'Recent request billing filter',
+      all: 'All',
+      billable: 'Quota usage',
+    },
     pushStatus: {
       ariaLabel: 'Real-time request log push status',
       browserUnsupported:
@@ -516,7 +526,17 @@ export const ZH = {
       researchPendingAccepted: 'pending（已受理）',
       researchStatus: '状态={status}',
     },
-    logs: '近期请求（20 条）',
+    logs: '近期请求（50 条）',
+    logsSubtitle: '查看该 Token 的最近请求记录。',
+    logsBack: '返回 Token 详情',
+    mobileOpen: '查看近期请求',
+    mobileSummary: '最近 50 条请求，含额度消耗筛选',
+    mobileAction: '›',
+    logFilters: {
+      ariaLabel: '近期请求额度筛选',
+      all: '全部',
+      billable: '额度消耗',
+    },
     pushStatus: {
       ariaLabel: '实时请求日志推送状态',
       browserUnsupported: '当前浏览器不支持服务器推送事件，实时请求日志推送不可用。',

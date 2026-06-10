@@ -223,7 +223,7 @@ describe('admin user tag api helpers', () => {
       logs: payload,
     }))
 
-    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/user/tokens/a1b2/logs?limit=20')
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/user/tokens/a1b2/logs?limit=50')
     expect((fetchMock.mock.calls[1] as [string])[0]).toBe('/api/public/logs?token=th-a1b2-secret&limit=20')
     expect(userLogs[0]?.business_credits).toBe(7)
     expect(snapshot.logs[0]?.business_credits).toBe(7)

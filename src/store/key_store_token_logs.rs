@@ -39,51 +39,43 @@ impl KeyStore {
         limit: usize,
         before_id: Option<i64>,
     ) -> Result<Vec<TokenLogRecord>, ProxyError> {
+        self.fetch_token_logs_by_billing(token_id, limit, before_id, TokenLogBillingFilter::All)
+            .await
+    }
+
+    pub async fn fetch_token_logs_by_billing(
+        &self,
+        token_id: &str,
+        limit: usize,
+        before_id: Option<i64>,
+        billing_filter: TokenLogBillingFilter,
+    ) -> Result<Vec<TokenLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
-        let rows = if let Some(bid) = before_id {
-            sqlx::query(
-                r#"
-                SELECT id, api_key_id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
-                       request_kind_key, request_kind_label, request_kind_detail,
-                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
-                       key_effect_summary, binding_effect_code, binding_effect_summary,
-                       selection_effect_code, selection_effect_summary,
-                       gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
-                       upstream_operation, fallback_reason, created_at
-                FROM auth_token_logs
-                WHERE token_id = ? AND id < ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                "#,
-            )
-            .bind(token_id)
-            .bind(bid)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query(
-                r#"
-                SELECT id, api_key_id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
-                       request_kind_key, request_kind_label, request_kind_detail,
-                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
-                       key_effect_summary, binding_effect_code, binding_effect_summary,
-                       selection_effect_code, selection_effect_summary,
-                       gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
-                       upstream_operation, fallback_reason, created_at
-                FROM auth_token_logs
-                WHERE token_id = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                "#,
-            )
-            .bind(token_id)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let mut builder = QueryBuilder::new(
+            r#"
+            SELECT id, api_key_id, method, path, query, http_status, mcp_status,
+                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
+                   request_kind_key, request_kind_label, request_kind_detail,
+                   counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
+                   key_effect_summary, binding_effect_code, binding_effect_summary,
+                   selection_effect_code, selection_effect_summary,
+                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                   upstream_operation, fallback_reason, created_at
+            FROM auth_token_logs
+            WHERE token_id =
+            "#,
+        );
+        builder.push_bind(token_id);
+        if let Some(bid) = before_id {
+            builder.push(" AND id < ");
+            builder.push_bind(bid);
+        }
+        if billing_filter == TokenLogBillingFilter::Billable {
+            builder.push(" AND counts_business_quota = 1");
+        }
+        builder.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        builder.push_bind(limit);
+        let rows = builder.build().fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()

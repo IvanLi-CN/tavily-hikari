@@ -95,8 +95,18 @@ describe('UserConsole Storybook acceptance controls', () => {
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
     })
     expect(userConsoleStories.TokenDetailMobileCredits).toMatchObject({
-      name: 'Token Detail Mobile Credits',
+      name: 'Token Detail Mobile Logs Entry',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
+    })
+    expect(userConsoleStories.TokenLogsMobile).toMatchObject({
+      name: 'Token Logs Mobile',
+      args: {
+        consoleView: 'Token Detail',
+        isAdmin: false,
+        landingFocus: 'Overview Focus',
+        tokenDetailPreview: 'Overview',
+        routePathOverride: '/console/tokens/a1b2/logs',
+      },
     })
     expect(userConsoleStories.TokenDetailPushWarning).toMatchObject({
       name: 'Token Detail Push Warning',

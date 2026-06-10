@@ -14,6 +14,7 @@ struct UserTokenLogView {
     http_status: Option<i64>,
     mcp_status: Option<i64>,
     business_credits: Option<i64>,
+    counts_business_quota: bool,
     result_status: String,
     error_message: Option<String>,
     created_at: i64,
@@ -22,6 +23,7 @@ struct UserTokenLogView {
 impl UserTokenLogView {
     fn from_record(record: TokenLogRecord, language: UiLanguage) -> Self {
         let business_credits = record.business_credits;
+        let counts_business_quota = record.counts_business_quota;
         let public_view = PublicTokenLogView::from_record(record, language);
         Self {
             id: public_view.id,
@@ -31,6 +33,7 @@ impl UserTokenLogView {
             http_status: public_view.http_status,
             mcp_status: public_view.mcp_status,
             business_credits,
+            counts_business_quota,
             result_status: public_view.result_status,
             error_message: public_view.error_message,
             created_at: public_view.created_at,
@@ -907,6 +910,7 @@ struct UserTokenSummaryView {
 #[derive(Debug, Deserialize)]
 struct UserTokenLogsQuery {
     limit: Option<usize>,
+    billing: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1574,11 +1578,12 @@ async fn build_user_token_logs_view(
     state: &Arc<AppState>,
     token_id: &str,
     limit: usize,
+    billing_filter: TokenLogBillingFilter,
     language: UiLanguage,
 ) -> Result<Vec<UserTokenLogView>, StatusCode> {
     let items = state
         .proxy
-        .token_recent_logs(token_id, limit.clamp(1, 20), None)
+        .token_recent_logs_by_billing(token_id, limit.clamp(1, 50), None, billing_filter)
         .await
         .map_err(|err| {
             eprintln!("get user token logs error: {err}");
@@ -1610,7 +1615,7 @@ async fn build_user_token_snapshot_event(
     let token = build_user_token_detail_view(state, user_id, token_id, daily_window)
         .await
         .ok()?;
-    let logs = build_user_token_logs_view(state, token_id, 20, language)
+    let logs = build_user_token_logs_view(state, token_id, 50, TokenLogBillingFilter::All, language)
         .await
         .ok()?;
     let latest_log_id = logs.first().map(|log| log.id);
@@ -1820,8 +1825,12 @@ async fn get_user_token_logs(
         return Err(StatusCode::NOT_FOUND);
     }
     let language = ui_language_from_headers(&headers);
-    let limit = q.limit.unwrap_or(20);
-    let logs = build_user_token_logs_view(&state, &id, limit, language).await?;
+    let limit = q.limit.unwrap_or(50);
+    let billing_filter = match q.billing.as_deref().map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("billable") => TokenLogBillingFilter::Billable,
+        _ => TokenLogBillingFilter::All,
+    };
+    let logs = build_user_token_logs_view(&state, &id, limit, billing_filter, language).await?;
     Ok(Json(logs))
 }
 

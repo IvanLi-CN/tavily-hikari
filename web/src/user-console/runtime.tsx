@@ -17,6 +17,12 @@ import TokenListActions from './TokenListActions'
 import RechargePanel from './RechargePanel'
 import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rechargeControls'
 import TokenResetDialogs from './TokenResetDialogs'
+import TokenLogsHeader, {
+  resolveDetailLogsPushIssueMessage,
+  type DetailLogsPushIssueCode,
+  type UserTokenLogFilter,
+} from './TokenLogsHeader'
+import TokenLogsPanel from './TokenLogsPanel'
 import AccessStatePanel from './AccessStatePanel'
 import { UserConsoleAnnouncementsSection } from './Announcements'
 import DebugInfoSharingToggle from './DebugInfoSharingToggle'
@@ -66,13 +72,13 @@ import RollingNumber from '../components/RollingNumber'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import UserConsoleFooter from '../components/UserConsoleFooter'
 import { Button } from '../components/ui/button'
+import { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import { useLanguage, useTranslate, type Language } from '../i18n'
 import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from '../lib/clipboard'
 import {
@@ -116,10 +122,10 @@ const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 const BASE_MCP_PROBE_STEP_COUNT = 4
 const BASE_API_PROBE_STEP_COUNT = 6
+const USER_TOKEN_LOG_LIMIT = 50
 
 export type GuideLanguage = 'toml' | 'json' | 'bash'
 export type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
-type DetailLogsPushIssueCode = 'unsupported' | 'reconnecting' | 'closed'
 
 export interface GuideReference {
   label: string
@@ -146,27 +152,6 @@ export interface GuideContent {
 interface ManualCopyBubbleState {
   anchorEl: HTMLElement | null
   value: string
-}
-
-interface DetailLogsPushStatusText {
-  ariaLabel: string
-  browserUnsupported: string
-  reconnecting: string
-  closed: string
-}
-
-function resolveDetailLogsPushIssueMessage(
-  issue: DetailLogsPushIssueCode,
-  text: DetailLogsPushStatusText,
-): string {
-  switch (issue) {
-    case 'unsupported':
-      return text.browserUnsupported
-    case 'reconnecting':
-      return text.reconnecting
-    case 'closed':
-      return text.closed
-  }
 }
 
 const GUIDE_KEY_ORDER: GuideKey[] = [
@@ -289,7 +274,7 @@ function statusTone(status: string): StatusTone {
 type UserConsoleViewKey = 'dashboard' | 'tokens' | 'tokenDetail'
 
 function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
-  if (route.name === 'token') return 'tokenDetail'
+  if (route.name === 'token' || route.name === 'tokenLogs') return 'tokenDetail'
   if (route.section === 'tokens') return 'tokens'
   return 'dashboard'
 }
@@ -471,7 +456,7 @@ function shouldRenderLandingGuide(route: ConsoleRoute, tokenCount: number): bool
 }
 
 function resolveGuideTokenId(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
-  if (route.name === 'token') {
+  if (route.name === 'token' || route.name === 'tokenLogs') {
     return route.id
   }
   if (tokens.length === 1) {
@@ -488,7 +473,7 @@ function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): str
 function resolveGuideRevealContextKey(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
   const guideTokenId = resolveGuideTokenId(route, tokens)
   if (!guideTokenId) return null
-  if (route.name === 'token') {
+  if (route.name === 'token' || route.name === 'tokenLogs') {
     return `token:${route.id}`
   }
   return `landing:${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`
@@ -1163,6 +1148,7 @@ export default function UserConsole(): JSX.Element {
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsolePath(window.location.pathname || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
+  const [detailLogFilter, setDetailLogFilter] = useState<UserTokenLogFilter>('all')
   const [detailLogsPushIssue, setDetailLogsPushIssue] = useState<DetailLogsPushIssueCode | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -1469,7 +1455,7 @@ export default function UserConsole(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    if (consoleAvailability !== 'enabled' || route.name !== 'token') {
+    if (consoleAvailability !== 'enabled' || (route.name !== 'token' && route.name !== 'tokenLogs')) {
       detailLoadRunIdRef.current += 1
       detailLoadAbortRef.current?.abort()
       detailLoadAbortRef.current = null
@@ -1488,7 +1474,7 @@ export default function UserConsole(): JSX.Element {
     detailLoadAbortRef.current = controller
     Promise.all([
       fetchUserTokenDetail(route.id, todayWindow, controller.signal),
-      fetchUserTokenLogs(route.id, 20, controller.signal),
+      fetchUserTokenLogs(route.id, USER_TOKEN_LOG_LIMIT, detailLogFilter, controller.signal),
     ])
       .then(([nextDetail, nextLogs]) => {
         if (controller.signal.aborted || detailLoadRunIdRef.current !== runId) return
@@ -1517,15 +1503,15 @@ export default function UserConsole(): JSX.Element {
         detailLoadAbortRef.current = null
       }
     }
-  }, [abortActiveConsoleLoads, consoleAvailability, redirectAfterLogoutIfNeeded, route, text.errors.detail, todayWindow])
+  }, [abortActiveConsoleLoads, consoleAvailability, detailLogFilter, redirectAfterLogoutIfNeeded, route, text.errors.detail, todayWindow])
 
   useEffect(() => {
     detailEventsRef.current?.close()
     detailEventsRef.current = null
     setDetailLogsPushIssue(null)
 
-    if (consoleAvailability !== 'enabled' || route.name !== 'token' || typeof EventSource === 'undefined') {
-      if (consoleAvailability === 'enabled' && route.name === 'token' && typeof EventSource === 'undefined') {
+    if (consoleAvailability !== 'enabled' || (route.name !== 'token' && route.name !== 'tokenLogs') || typeof EventSource === 'undefined') {
+      if (consoleAvailability === 'enabled' && (route.name === 'token' || route.name === 'tokenLogs') && typeof EventSource === 'undefined') {
         setDetailLogsPushIssue('unsupported')
       }
       return
@@ -1539,7 +1525,9 @@ export default function UserConsole(): JSX.Element {
       try {
         const snapshot: UserTokenEventSnapshot = parseUserTokenEventSnapshot(event.data)
         setDetail(snapshot.token)
-        setDetailLogs(snapshot.logs)
+        if (detailLogFilter === 'all') {
+          setDetailLogs(snapshot.logs)
+        }
         setDetailLoading(false)
         setError(null)
         setDetailLogsPushIssue(null)
@@ -1575,7 +1563,7 @@ export default function UserConsole(): JSX.Element {
         detailEventsRef.current = null
       }
     }
-  }, [consoleAvailability, route, todayWindow])
+  }, [consoleAvailability, detailLogFilter, route, todayWindow])
 
   useEffect(() => {
     const clearedProbeState = resetActiveProbeUiState(probeRunIdRef.current, abortActiveProbeRun)
@@ -1584,7 +1572,7 @@ export default function UserConsole(): JSX.Element {
     setApiProbe(clearedProbeState.apiProbe)
     setProbeBubble(null)
     setManualCopyBubble(null)
-  }, [abortActiveProbeRun, route.name === 'token' ? route.id : route.section ?? 'landing'])
+  }, [abortActiveProbeRun, route.name === 'token' || route.name === 'tokenLogs' ? route.id : route.section ?? 'landing'])
 
   const abortPendingTokenSecretRequest = useCallback((tokenId: string) => {
     const controller = tokenSecretRequestAbortRef.current.get(tokenId)
@@ -1624,7 +1612,7 @@ export default function UserConsole(): JSX.Element {
 
   useEffect(() => {
     clearTokenSecretState()
-  }, [clearTokenSecretState, consoleAvailability, route.name === 'token' ? route.id : route.name])
+  }, [clearTokenSecretState, consoleAvailability, route.name === 'token' || route.name === 'tokenLogs' ? route.id : route.name])
 
   useEffect(() => {
     return () => {
@@ -1649,7 +1637,7 @@ export default function UserConsole(): JSX.Element {
     setGuideTokenError(null)
   }, [
     consoleAvailability,
-    route.name === 'token' ? route.id : `${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`,
+    route.name === 'token' || route.name === 'tokenLogs' ? route.id : `${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`,
   ])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
@@ -2050,6 +2038,13 @@ export default function UserConsole(): JSX.Element {
     () => GUIDE_KEY_ORDER.map((id) => ({ id, label: publicStrings.guide.tabs[id] ?? id })),
     [publicStrings.guide.tabs],
   )
+  const detailLogFilterOptions = useMemo<ReadonlyArray<SegmentedTabsOption<UserTokenLogFilter>>>(
+    () => [
+      { value: 'all', label: text.detail.logFilters.all },
+      { value: 'billable', label: text.detail.logFilters.billable },
+    ],
+    [text.detail.logFilters.all, text.detail.logFilters.billable],
+  )
 
   const anyProbeRunning = mcpProbe.state === 'running' || apiProbe.state === 'running'
   const adminHref = getUserConsoleAdminHref(profile)
@@ -2106,7 +2101,7 @@ export default function UserConsole(): JSX.Element {
   }, [consoleEmptyState, route, scrollToLandingSection])
 
   useEffect(() => {
-    if (consoleEmptyState || route.name !== 'token') return
+    if (consoleEmptyState || (route.name !== 'token' && route.name !== 'tokenLogs')) return
     const frame = window.requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: 'auto' })
       detailHeadingRef.current?.focus({ preventScroll: true })
@@ -2402,6 +2397,9 @@ export default function UserConsole(): JSX.Element {
   }
   const goTokenDetail = (tokenId: string) => {
     navigateToRoute({ name: 'token', id: tokenId })
+  }
+  const goTokenLogs = (tokenId: string) => {
+    navigateToRoute({ name: 'tokenLogs', id: tokenId })
   }
 
   const probeButtonLabel = useCallback((
@@ -2901,113 +2899,20 @@ export default function UserConsole(): JSX.Element {
             />
           </section>
 
-          <section className="surface panel user-console-detail-panel">
-            <div className="panel-header">
-              <h2>{text.detail.logs}</h2>
-              <div className="user-console-push-status-slot">
-                {detailLogsPushIssue ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="user-console-push-status-trigger"
-                        aria-label={text.detail.pushStatus.ariaLabel}
-                      >
-                        <Icon icon="mdi:alert-circle-outline" width={18} height={18} aria-hidden="true" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" align="end" className="max-w-[min(20rem,calc(100vw-2rem))]">
-                      {resolveDetailLogsPushIssueMessage(detailLogsPushIssue, text.detail.pushStatus)}
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <span className="user-console-push-status-spacer" aria-hidden="true" />
-                )}
-              </div>
-            </div>
-            <div className="table-wrapper user-console-md-up">
-              {detailLogs.length === 0 ? (
-                <div className="empty-state alert">{text.detail.emptyLogs}</div>
-              ) : (
-                <table className="token-detail-table user-console-logs-table">
-                  <thead>
-                    <tr>
-                      <th>{text.detail.table.request}</th>
-                      <th>{text.detail.table.transport}</th>
-                      <th>{text.detail.table.credits}</th>
-                      <th>{text.detail.table.result}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detailLogs.map((log) => (
-                      <tr key={log.id}>
-                        <td>
-                          <div className="user-console-log-stack">
-                            <strong className="user-console-log-main">{formatTimestamp(log.created_at)}</strong>
-                            <span className="user-console-log-meta">
-                              {log.method} {log.path}
-                              {log.query ? ` · ${log.query}` : ''}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <div className="user-console-log-transport">
-                            <span className="user-console-log-transport-item">
-                              <em>H</em>
-                              <strong>{log.http_status ?? '—'}</strong>
-                            </span>
-                            <span className="user-console-log-transport-item">
-                              <em>T</em>
-                              <strong>{log.mcp_status ?? '—'}</strong>
-                            </span>
-                          </div>
-                        </td>
-                        <td className="user-console-log-credits">
-                          {formatLogCredits(log.business_credits)}
-                        </td>
-                        <td>
-                          <div className="user-console-log-result-line">
-                            <StatusBadge className="user-console-log-status" tone={statusTone(log.result_status)}>
-                              {log.result_status}
-                            </StatusBadge>
-                            <span className="user-console-log-error">{log.error_message ?? '—'}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div className="user-console-mobile-list user-console-md-down">
-              {detailLogs.length === 0 ? (
-                <div className="empty-state alert">{text.detail.emptyLogs}</div>
-              ) : (
-                detailLogs.map((log) => (
-                  <article key={log.id} className="user-console-mobile-card user-console-log-card">
-                    <header className="user-console-log-card-head">
-                      <div className="user-console-log-card-request">
-                        <strong>{log.method} {log.path}</strong>
-                        {log.query ? <span>{log.query}</span> : null}
-                      </div>
-                      <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
-                        {log.result_status}
-                      </StatusBadge>
-                    </header>
-                    <div className="user-console-log-card-meta">
-                      <time dateTime={new Date(log.created_at * 1000).toISOString()}>{formatTimestamp(log.created_at)}</time>
-                      <span>H {log.http_status ?? '—'}</span>
-                      <span>T {log.mcp_status ?? '—'}</span>
-                      <span>{text.detail.table.credits} {formatLogCredits(log.business_credits)}</span>
-                    </div>
-                    <p className="user-console-log-card-error">
-                      {log.error_message ?? text.detail.noError}
-                    </p>
-                  </article>
-                ))
-              )}
-            </div>
-          </section>
+          <TokenLogsPanel
+            logs={detailLogs}
+            text={text.detail}
+            filter={detailLogFilter}
+            filterOptions={detailLogFilterOptions}
+            filterDisabled={detailLoading}
+            pushIssue={detailLogsPushIssue}
+            mode="detail"
+            onFilterChange={setDetailLogFilter}
+            onOpenFull={() => goTokenLogs(route.id)}
+            formatTimestamp={formatTimestamp}
+            formatLogCredits={formatLogCredits}
+            statusTone={statusTone}
+          />
 
           <section className="surface panel user-console-guide-disclosure">
             <button
@@ -3037,6 +2942,39 @@ export default function UserConsole(): JSX.Element {
             ) : null}
           </section>
 
+        </>
+      )}
+
+      {!consoleEmptyState && route.name === 'tokenLogs' && (
+        <>
+          <section className="surface panel access-panel">
+            <header className="panel-header user-console-detail-header" style={{ marginBottom: 8 }}>
+              <div>
+                <h2 ref={detailHeadingRef} tabIndex={-1}>{text.detail.logs}</h2>
+                <p className="panel-description user-console-detail-description">
+                  {text.detail.logsSubtitle}
+                </p>
+              </div>
+              <button type="button" className="btn btn-outline user-console-detail-back" onClick={() => goTokenDetail(route.id)}>
+                <span className="user-console-detail-back-full">{text.detail.logsBack}</span>
+                <span className="user-console-detail-back-short">{text.detail.backShort}</span>
+              </button>
+            </header>
+          </section>
+          <TokenLogsPanel
+            logs={detailLogs}
+            text={text.detail}
+            filter={detailLogFilter}
+            filterOptions={detailLogFilterOptions}
+            filterDisabled={detailLoading}
+            pushIssue={detailLogsPushIssue}
+            mode="full"
+            onFilterChange={setDetailLogFilter}
+            onOpenFull={() => goTokenLogs(route.id)}
+            formatTimestamp={formatTimestamp}
+            formatLogCredits={formatLogCredits}
+            statusTone={statusTone}
+          />
         </>
       )}
       <UserConsoleFooter strings={text.footer} versionState={versionState} />

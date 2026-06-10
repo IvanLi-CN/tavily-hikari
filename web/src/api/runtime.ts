@@ -280,6 +280,7 @@ export interface PublicTokenLog {
   http_status: number | null
   mcp_status: number | null
   business_credits?: number | null
+  counts_business_quota?: boolean
   result_status: string
   error_message: string | null
   created_at: number
@@ -292,6 +293,7 @@ interface ServerPublicTokenLog {
   httpStatus: number | null
   mcpStatus: number | null
   businessCredits?: number | null
+  countsBusinessQuota?: boolean
   resultStatus: string
   errorMessage: string | null
   createdAt: number
@@ -1271,6 +1273,7 @@ export async function fetchPublicLogs(token: string, limit = 20, signal?: AbortS
     query: it.query,
     http_status: it.httpStatus,
     mcp_status: it.mcpStatus,
+    counts_business_quota: it.countsBusinessQuota ?? false,
     result_status: it.resultStatus,
     error_message: it.errorMessage,
     created_at: it.createdAt,
@@ -1979,9 +1982,17 @@ export function buildUserTokenEventsUrl(id: string, todayWindow?: TodayWindowRan
   return `/api/user/tokens/${encoded}/events${query ? `?${query}` : ''}`
 }
 
-export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortSignal): Promise<PublicTokenLog[]> {
+export type UserTokenLogsBillingFilter = 'all' | 'billable'
+
+export async function fetchUserTokenLogs(
+  id: string,
+  limit = 50,
+  billing: UserTokenLogsBillingFilter = 'all',
+  signal?: AbortSignal,
+): Promise<PublicTokenLog[]> {
   const encoded = encodeURIComponent(id)
   const params = new URLSearchParams({ limit: String(limit) })
+  if (billing !== 'all') params.set('billing', billing)
   const url = `/api/user/tokens/${encoded}/logs?${params.toString()}`
   const data = await requestJson<ServerPublicTokenLog[]>(url, { signal })
   return data.map((it) => ({
@@ -1992,6 +2003,7 @@ export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortS
     http_status: it.httpStatus,
     mcp_status: it.mcpStatus,
     business_credits: it.businessCredits ?? null,
+    counts_business_quota: it.countsBusinessQuota ?? false,
     result_status: it.resultStatus,
     error_message: it.errorMessage,
     created_at: it.createdAt,
@@ -2010,6 +2022,7 @@ export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot
       http_status: it.httpStatus,
       mcp_status: it.mcpStatus,
       business_credits: it.businessCredits ?? null,
+      counts_business_quota: it.countsBusinessQuota ?? false,
       result_status: it.resultStatus,
       error_message: it.errorMessage,
       created_at: it.createdAt,

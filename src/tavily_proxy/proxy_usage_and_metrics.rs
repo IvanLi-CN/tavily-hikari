@@ -945,6 +945,18 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn token_recent_logs_by_billing(
+        &self,
+        token_id: &str,
+        limit: usize,
+        before_id: Option<i64>,
+        billing_filter: TokenLogBillingFilter,
+    ) -> Result<Vec<TokenLogRecord>, ProxyError> {
+        self.key_store
+            .fetch_token_logs_by_billing(token_id, limit, before_id, billing_filter)
+            .await
+    }
+
     /// Check and update quota usage for a token. Returns the latest counts and verdict.
     pub async fn check_token_quota(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
         self.token_quota.check(token_id).await

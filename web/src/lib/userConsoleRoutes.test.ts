@@ -32,8 +32,11 @@ describe('userConsoleRoutes', () => {
 
   it('keeps token detail paths on the dedicated detail route', () => {
     expect(parseUserConsolePath('/console/tokens/a1b2')).toEqual({ name: 'token', id: 'a1b2' })
+    expect(parseUserConsolePath('/console/tokens/a1b2/logs')).toEqual({ name: 'tokenLogs', id: 'a1b2' })
     expect(parseUserConsolePath('/console/tokens/a%2Fb')).toEqual({ name: 'token', id: 'a/b' })
+    expect(parseUserConsolePath('/console/tokens/a%2Fb/logs')).toEqual({ name: 'tokenLogs', id: 'a/b' })
     expect(parseUserConsolePath('/console.html/tokens/a%2Fb')).toEqual({ name: 'token', id: 'a/b' })
+    expect(parseUserConsolePath('/console.html/tokens/a%2Fb/logs')).toEqual({ name: 'tokenLogs', id: 'a/b' })
   })
 
   it('falls back to the token landing section when token detail decoding fails', () => {
@@ -45,5 +48,6 @@ describe('userConsoleRoutes', () => {
     expect(userConsoleRouteToPath({ name: 'landing', section: 'dashboard' })).toBe('/console/dashboard')
     expect(userConsoleRouteToPath({ name: 'landing', section: 'tokens' })).toBe('/console/tokens')
     expect(userConsoleRouteToPath({ name: 'token', id: 'a/b' })).toBe('/console/tokens/a%2Fb')
+    expect(userConsoleRouteToPath({ name: 'tokenLogs', id: 'a/b' })).toBe('/console/tokens/a%2Fb/logs')
   })
 })

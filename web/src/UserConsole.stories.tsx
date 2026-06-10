@@ -210,49 +210,79 @@ interface ServerPublicTokenLogMock {
   httpStatus: number | null
   mcpStatus: number | null
   businessCredits: number | null
+  countsBusinessQuota: boolean
   resultStatus: string
   errorMessage: string | null
   createdAt: number
 }
 
-const tokenLogsSample: ServerPublicTokenLogMock[] = [
+const tokenLogTemplates: Array<Omit<ServerPublicTokenLogMock, 'id' | 'createdAt'>> = [
   {
-    id: 101,
     method: 'POST',
     path: '/api/tavily/search',
     query: 'q=rust',
     httpStatus: 200,
     mcpStatus: 200,
     businessCredits: 2,
+    countsBusinessQuota: true,
     resultStatus: 'success',
     errorMessage: null,
-    createdAt: 1_762_386_640,
   },
   {
-    id: 102,
     method: 'POST',
     path: '/mcp',
     query: null,
     httpStatus: 429,
     mcpStatus: 429,
     businessCredits: null,
+    countsBusinessQuota: true,
     resultStatus: 'quota_exhausted',
     errorMessage: 'Account hourly limit reached',
-    createdAt: 1_762_386_590,
   },
   {
-    id: 103,
+    method: 'POST',
+    path: '/mcp',
+    query: null,
+    httpStatus: 200,
+    mcpStatus: 200,
+    businessCredits: null,
+    countsBusinessQuota: false,
+    resultStatus: 'neutral',
+    errorMessage: null,
+  },
+  {
     method: 'POST',
     path: '/api/tavily/extract',
     query: null,
     httpStatus: 500,
     mcpStatus: 500,
     businessCredits: null,
+    countsBusinessQuota: true,
     resultStatus: 'error',
     errorMessage: 'upstream timeout',
-    createdAt: 1_762_386_520,
+  },
+  {
+    method: 'GET',
+    path: '/api/tavily/usage',
+    query: null,
+    httpStatus: 200,
+    mcpStatus: null,
+    businessCredits: null,
+    countsBusinessQuota: false,
+    resultStatus: 'success',
+    errorMessage: null,
   },
 ]
+
+const tokenLogsSample: ServerPublicTokenLogMock[] = Array.from({ length: 50 }, (_, index) => {
+  const template = tokenLogTemplates[index % tokenLogTemplates.length]
+  return {
+    ...template,
+    id: 150 - index,
+    query: template.query ? `${template.query}&sample=${index + 1}` : null,
+    createdAt: 1_762_386_640 - index * 37,
+  }
+})
 
 const announcementModalSample: Announcement = {
   id: 'ann-modal-01',
@@ -345,8 +375,8 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 function routePathFromView(view: ConsoleView, landingFocus: LandingFocus, routePathOverride?: string): string {
-  if (view === 'Token Detail') return TOKEN_DETAIL_PATH
   if (typeof routePathOverride === 'string') return routePathOverride
+  if (view === 'Token Detail') return TOKEN_DETAIL_PATH
   return userConsoleRouteToPath({
     name: 'landing',
     section: landingFocus === 'Token Focus' ? 'tokens' : 'dashboard',
@@ -551,7 +581,12 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
       }
 
       if (action === 'logs') {
-        return jsonResponse(tokenLogsSample)
+        const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10)
+        const billing = url.searchParams.get('billing') ?? 'all'
+        const source = billing === 'billable'
+          ? tokenLogsSample.filter((log) => log.countsBusinessQuota)
+          : tokenLogsSample
+        return jsonResponse(source.slice(0, Number.isFinite(limit) ? limit : 50))
       }
 
       return jsonResponse(tokenDetailSample)
@@ -1451,16 +1486,42 @@ export const TokenDetailOverview: Story = {
       throw new Error('Expected token detail logs table to render the Credits column between transport and result.')
     }
 
+    if (!canvasElement.textContent?.includes('Recent Requests (50)')) {
+      throw new Error('Expected token detail logs heading to advertise the 50-row recent request window.')
+    }
+
+    const initialRows = canvasElement.querySelectorAll('.user-console-logs-table tbody tr')
+    if (initialRows.length !== 50) {
+      throw new Error(`Expected token detail logs table to render 50 recent rows, got ${initialRows.length}.`)
+    }
+
     const creditedRows = Array.from(canvasElement.querySelectorAll('.user-console-log-credits'))
       .map((node) => node.textContent?.trim())
     if (!creditedRows.includes('2') || !creditedRows.includes('—')) {
       throw new Error('Expected token detail logs to render both charged and uncharged credit values.')
     }
+
+    const billableButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-console-log-filter-tabs .segmented-tab'))
+      .find((button) => button.textContent?.trim() === 'Quota usage')
+    if (billableButton == null) {
+      throw new Error('Expected token detail logs to render the quota-usage filter.')
+    }
+    billableButton.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const filteredRows = canvasElement.querySelectorAll('.user-console-logs-table tbody tr')
+    if (filteredRows.length === 0 || filteredRows.length >= initialRows.length) {
+      throw new Error('Expected quota-usage filter to reduce the recent request list to billable request kinds.')
+    }
+    const filteredText = canvasElement.querySelector('.user-console-logs-table')?.textContent ?? ''
+    if (filteredText.includes('/api/tavily/usage')) {
+      throw new Error('Expected quota-usage filter to exclude non-billable usage requests.')
+    }
   },
 }
 
 export const TokenDetailMobileCredits: Story = {
-  name: 'Token Detail Mobile Credits',
+  name: 'Token Detail Mobile Logs Entry',
   args: {
     consoleView: 'Token Detail',
     isAdmin: false,
@@ -1475,18 +1536,61 @@ export const TokenDetailMobileCredits: Story = {
     docs: {
       description: {
         story:
-          'Mobile token detail proof that recent request cards show charged credits without crowding status or error text.',
+          'Mobile token detail proof that recent requests collapse into a dedicated entry instead of crowding the detail page.',
       },
     },
   },
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 160))
 
+    const entry = canvasElement.querySelector<HTMLButtonElement>('.user-console-mobile-log-entry')
+    if (entry == null || entry.textContent?.includes('查看近期请求') !== true) {
+      throw new Error('Expected mobile token detail to render a recent-request entry button.')
+    }
+    if (entry.querySelector('.user-console-mobile-log-entry-icon') != null || entry.querySelector('.user-console-mobile-log-entry-action')?.textContent?.trim() !== '›') {
+      throw new Error('Expected mobile token detail request entry to look like a navigable row.')
+    }
+    if (entry.getAttribute('aria-label')?.includes('最近 50 条请求') !== true) {
+      throw new Error('Expected mobile token detail request entry to expose a concise accessible label.')
+    }
+    if (canvasElement.querySelector('.user-console-log-card') != null) {
+      throw new Error('Expected mobile token detail to keep request cards off the detail page.')
+    }
+  },
+}
+
+export const TokenLogsMobile: Story = {
+  name: 'Token Logs Mobile',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    tokenDetailPreview: 'Overview',
+    routePathOverride: `${TOKEN_DETAIL_PATH}/logs`,
+  },
+  globals: {
+    language: 'zh',
+  },
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+    docs: {
+      description: {
+        story:
+          'Mobile recent-request page proof that the dedicated log surface keeps the billing filter in the header row.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 160))
+
+    if (canvasElement.querySelector('[aria-label="近期请求额度筛选"]') == null) {
+      throw new Error('Expected mobile token logs page to expose the billing filter select.')
+    }
     const metaText = Array.from(canvasElement.querySelectorAll('.user-console-log-card-meta'))
       .map((node) => node.textContent ?? '')
       .join(' ')
     if (!metaText.includes('积分 2') || !metaText.includes('积分 —')) {
-      throw new Error('Expected mobile token request cards to render charged and uncharged credit values.')
+      throw new Error('Expected mobile token logs page to render charged and uncharged credit values.')
     }
   },
 }
