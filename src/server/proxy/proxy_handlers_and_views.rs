@@ -1820,6 +1820,7 @@ impl From<JobLog> for JobLogView {
             status: value.status,
             attempt: value.attempt,
             message: value.message,
+            queued_at: value.queued_at,
             started_at: value.started_at,
             finished_at: value.finished_at,
         }

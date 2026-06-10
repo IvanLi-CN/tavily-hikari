@@ -289,7 +289,8 @@ struct JobLogView {
     status: String,
     attempt: i64,
     message: Option<String>,
-    started_at: i64,
+    queued_at: i64,
+    started_at: Option<i64>,
     finished_at: Option<i64>,
 }
 

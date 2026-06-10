@@ -44,3 +44,14 @@
   on the in-process admin trigger path when the DB execution gate is busy.
 - Reduced the default SQLite pool concurrency from `5` to `3` after production evidence showed that
   more writer-capable connections amplified contention instead of absorbing it.
+
+## 2026-06-10
+
+- Replaced the owner-facing “shared execution gate decides whether manual maintenance is rejected”
+  model with a persisted maintenance queue on `scheduled_jobs`.
+- Added `queued` lifecycle semantics (`queued_at`, nullable `started_at`, coalesced representative
+  rows, startup abandon-all cleanup) plus a single in-process maintenance worker for DB-backed
+  maintenance jobs.
+- Scheduler loops now enqueue maintenance work instead of claiming-and-running inline; manual
+  trigger APIs now return the representative queued/running job instead of surfacing
+  `db_job_execution_busy`.

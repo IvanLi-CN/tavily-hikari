@@ -1739,11 +1739,12 @@ impl KeyStore {
                     j.status,
                     j.attempt,
                     j.message,
+                    j.queued_at,
                     j.started_at,
                     j.finished_at
                 FROM scheduled_jobs j
                 LEFT JOIN api_keys k ON k.id = j.key_id
-                ORDER BY j.started_at DESC, j.id DESC
+                ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
                 LIMIT ?"#,
         )
         .bind(limit)
@@ -1761,6 +1762,7 @@ impl KeyStore {
                     status: row.try_get("status")?,
                     attempt: row.try_get("attempt")?,
                     message: row.try_get::<Option<String>, _>("message")?,
+                    queued_at: row.try_get("queued_at")?,
                     started_at: row.try_get("started_at")?,
                     finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
                 })
@@ -1778,7 +1780,7 @@ impl KeyStore {
             r#"
             SELECT id, status, finished_at
             FROM scheduled_jobs
-            ORDER BY started_at DESC, id DESC
+            ORDER BY COALESCE(started_at, queued_at) DESC, id DESC
             LIMIT ?
             "#,
         )
@@ -1818,12 +1820,13 @@ impl KeyStore {
                 j.status,
                 j.attempt,
                 j.message,
+                j.queued_at,
                 j.started_at,
                 j.finished_at
             FROM scheduled_jobs j
             LEFT JOIN api_keys k ON k.id = j.key_id
             {}
-            ORDER BY j.started_at DESC, j.id DESC
+            ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
             LIMIT ? OFFSET ?
             "#,
             where_clause
@@ -1847,6 +1850,7 @@ impl KeyStore {
                     status: row.try_get("status")?,
                     attempt: row.try_get("attempt")?,
                     message: row.try_get::<Option<String>, _>("message")?,
+                    queued_at: row.try_get("queued_at")?,
                     started_at: row.try_get("started_at")?,
                     finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
                 })

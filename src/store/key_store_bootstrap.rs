@@ -1333,6 +1333,8 @@ impl KeyStore {
             .await?;
         }
 
+        self.ensure_scheduled_jobs_queue_schema().await?;
+
         self.ensure_meta_schema().await?;
 
         if request_kind_schema_changed {

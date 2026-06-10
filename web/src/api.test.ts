@@ -942,6 +942,7 @@ describe('admin user tag api helpers', () => {
                 status: 'error',
                 attempt: 1,
                 message: 'usage_http 401',
+                queuedAt: 1_773_344_450,
                 startedAt: 1_773_344_460,
                 finishedAt: 1_773_344_470,
               },
@@ -987,6 +988,7 @@ describe('admin user tag api helpers', () => {
       status: 'error',
       attempt: 1,
       message: 'usage_http 401',
+      queued_at: 1_773_344_450,
       started_at: 1_773_344_460,
       finished_at: 1_773_344_470,
     })

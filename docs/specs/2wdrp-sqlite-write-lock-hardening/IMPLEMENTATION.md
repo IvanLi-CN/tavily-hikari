@@ -53,12 +53,31 @@
   scheduled-job claim/finish semantics.
 - Request-log GC catch-up releases the DB job execution gate between cleanup windows so the
   scheduler delay does not block other DB-backed jobs.
+- `scheduled_jobs` now persists queue admission explicitly: `queued_at` is stored for every
+  maintenance row, `started_at` is nullable until the worker actually starts execution, and job list
+  APIs order by `COALESCE(started_at, queued_at)` so queued work remains visible.
+- Added queue-side primitives on top of `scheduled_jobs`: enqueue/coalesce, dequeue, mark-running,
+  lookup-by-id, and abandon-all-active semantics.
+- Scheduler loops now enqueue DB-backed maintenance work instead of trying to claim-and-run inline.
+  One in-process maintenance worker consumes queued jobs, preserves manual-first priority, and
+  reuses the existing per-job execution logic.
+- Request-log GC now requeues itself through the persisted queue when a bounded pass reports
+  `completed=false`, so backlog catch-up no longer depends on one scheduler loop keeping a running
+  row alive.
+- Manual `POST /api/jobs/trigger` now accepts/coalesces queue work and returns the representative
+  `job_id` instead of exposing `db_job_execution_busy`. Manual key quota sync still waits for a
+  result, but it now does so by enqueueing `quota_sync` and polling the representative job row to a
+  terminal state.
+- Service startup now abandons leftover `queued` and `running` maintenance rows from the previous
+  process lifetime before starting the new worker.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and
   `--run-until-complete` for deterministic low-resource validation against production-derived
   database samples.
 - Added `request_logs_gc_stats` as a read-only operational binary for daily growth vs
   `cleaned_bodies` analysis directly from SQLite.
 - Added local contention tests for quota subject lock acquisition and scheduled job start.
+- Added queue lifecycle tests for coalesced enqueue promotion, delayed `started_at` materialization,
+  and abandon-all-active restart cleanup semantics.
 - Added local contention coverage for forward-proxy startup subscription refresh and runtime
   snapshot persistence.
 - Added request-log GC coverage for old-row deletion, recent-row preservation, partial catch-up,

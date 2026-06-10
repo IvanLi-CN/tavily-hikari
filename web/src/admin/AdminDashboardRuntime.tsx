@@ -11465,13 +11465,15 @@ function AdminDashboard(): JSX.Element {
                   const jobStatusText = jobStatusLabel(String(j.status ?? ''))
                   const keyId = j.key_id
                   const keyGroup = j.key_group
+                  const queued = j.queued_at
                   const started: number | null = j.started_at ?? null
+                  const primaryTime = started ?? queued
                   const finished: number | null = j.finished_at ?? null
-                  const startedTimeLabel = formatTimestamp(started)
+                  const startedTimeLabel = formatTimestamp(primaryTime)
                   const startedDetail =
                     started != null
                       ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
-                      : jobsStrings.empty.none
+                      : `${formatTimestampWithMs(queued)} · ${formatRelativeTime(queued)}`
                   const isExpanded = expandedJobs.has(j.id)
                   const jobMessage: string | null = j.message ?? null
                   const messageLabel = isExpanded
@@ -11488,6 +11490,7 @@ function AdminDashboard(): JSX.Element {
                       : null
                   const startedSummary =
                     started != null ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}` : null
+                  const queuedSummary = `${formatTimestampWithMs(queued)} · ${formatRelativeTime(queued)}`
                   const finishedSummary =
                     finished != null ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}` : null
                   const rows: JSX.Element[] = []
@@ -11512,7 +11515,7 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td>{jobSourceText}</td>
                       <td>{j.attempt}</td>
-                      <td>{started ? startedTimeLabel : '—'}</td>
+                      <td>{startedTimeLabel}</td>
                       <td className="jobs-message-cell">
                         {jobMessage ? (
                           <button
@@ -11605,6 +11608,12 @@ function AdminDashboard(): JSX.Element {
                                   {startedSummary ?? jobsStrings.empty.none}
                                 </div>
                               </div>
+                              {started == null && (
+                                <div>
+                                  <div className="log-details-label">Queued</div>
+                                  <div className="log-details-value">{queuedSummary}</div>
+                                </div>
+                              )}
                               {finishedSummary && (
                                 <div>
                                   <div className="log-details-label">Finished</div>
@@ -11652,7 +11661,9 @@ function AdminDashboard(): JSX.Element {
           ) : (
             jobs.map((j) => {
               const jt = j.job_type
+              const queued = j.queued_at
               const started: number | null = j.started_at ?? null
+              const primaryTime = started ?? queued
               return (
                 <article key={j.id} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
@@ -11692,7 +11703,7 @@ function AdminDashboard(): JSX.Element {
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.started}</span>
-                    <strong>{started ? formatTimestamp(started) : '—'}</strong>
+                    <strong>{formatTimestamp(primaryTime)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.message}</span>

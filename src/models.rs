@@ -1405,8 +1405,26 @@ pub struct JobLog {
     pub status: String,
     pub attempt: i64,
     pub message: Option<String>,
-    pub started_at: i64,
+    pub queued_at: i64,
+    pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledJobEnqueueResult {
+    pub job_id: i64,
+    pub created: bool,
+    pub promoted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedScheduledJob {
+    pub id: i64,
+    pub job_type: String,
+    pub trigger_source: String,
+    pub key_id: Option<String>,
+    pub attempt: i64,
+    pub queued_at: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

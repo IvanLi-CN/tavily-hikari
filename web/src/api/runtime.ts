@@ -1537,7 +1537,8 @@ export interface JobLogView {
   status: string
   attempt: number
   message: string | null
-  started_at: number
+  queued_at: number
+  started_at: number | null
   finished_at: number | null
 }
 
@@ -1550,7 +1551,8 @@ interface ServerJobLogView {
   status: string
   attempt: number
   message: string | null
-  startedAt: number
+  queuedAt: number
+  startedAt: number | null
   finishedAt: number | null
 }
 
@@ -2711,6 +2713,7 @@ export function fetchJobs(
       status: item.status,
       attempt: item.attempt,
       message: item.message,
+      queued_at: item.queuedAt,
       started_at: item.startedAt,
       finished_at: item.finishedAt,
     })),

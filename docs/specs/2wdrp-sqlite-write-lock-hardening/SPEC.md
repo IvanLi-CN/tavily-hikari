@@ -4,7 +4,7 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-06-06
+- Last: 2026-06-10
 
 ## Background
 
@@ -54,8 +54,11 @@ source when a usable persisted runtime already exists.
   bounded backoff and must remain inside the existing lock timeout/lease budget.
 - Token billing and MCP session lock callers must retain the current fail-closed semantics if the
   bounded retry window is exhausted.
-- `scheduled_jobs` start/finish writes must retry transient SQLite write errors before surfacing a
-  background job logging failure.
+- `scheduled_jobs` must remain the persisted fact source for maintenance work, but it now needs a
+  first-class queued lifecycle: `queued` rows persist before execution, `queued_at` records queue
+  admission time, and `started_at` only records the actual execution start time.
+- `scheduled_jobs` enqueue/start/finish writes must retry transient SQLite write errors before
+  surfacing a background job logging failure.
 - LinuxDo OAuth account upsert/refresh calls must retry transient SQLite write errors at the proxy
   boundary so a short writer collision does not immediately fail user login/profile sync.
 - `forward_proxy` startup runtime snapshot persistence must retry transient SQLite write errors with
@@ -69,9 +72,9 @@ source when a usable persisted runtime already exists.
 - Scheduled job records must preserve the logical job type and record the trigger source separately
   as `scheduler`, `manual`, or `auto`. Manual runs must not be encoded by appending suffixes to
   `job_type`.
-- Manual scheduled-job triggers must use the same execution path as scheduler runs, reject duplicate
-  active runs of the same logical job, and mark stale `running` rows from prior process lifetimes as
-  abandoned before accepting new work.
+- Manual scheduled-job triggers must use the same execution path as scheduler runs, coalesce onto an
+  existing `queued`/`running` representative row of the same logical job, and return that
+  representative `job_id` instead of rejecting on a shared execution gate timeout.
 - `request_logs_gc` must not hold the SQLite write slot for an unbounded full-retention cleanup
   pass. It must delete old `request_logs` and `request_log_catalog_rollups` in bounded batches,
   yield between batches, report partial progress, and continue catch-up after a throttled delay when
@@ -82,11 +85,15 @@ source when a usable persisted runtime already exists.
 - Claiming `quota_sync` / `quota_sync/hot` must abandon stale `running` rows older than the
   configured timeout window inside the same claim transaction, so a stuck job does not block future
   sync attempts forever.
-- DB-backed scheduled and manual jobs that can write SQLite must also be serialized across logical
-  job types inside one process, so maintenance catch-up, quota sync, rollups, GC, and compaction do
-  not overlap as independent SQLite writers.
-- Request-log GC catch-up may reacquire that execution gate for each actual cleanup window, but it
-  must not keep the gate while sleeping or waiting for the next catch-up recheck.
+- DB-backed scheduled and manual maintenance jobs that can write SQLite must flow through one
+  persisted maintenance queue and one single-process worker. The worker may orchestrate remote I/O
+  phases outside the DB execution window, but only one maintenance job may hold the SQLite-writing
+  execution gate at a time.
+- Request-log GC catch-up must finish one bounded slice, persist its progress message, and requeue a
+  fresh `queued` row when more backlog remains instead of keeping one long-lived `running` row while
+  waiting for the next catch-up opportunity.
+- Service startup must abandon any leftover `queued` or `running` maintenance rows from the previous
+  process lifetime rather than implicitly resuming them after restart.
 - SQLite file size must converge after retention cleanup. The service must expose DB size/freelist
   telemetry, automatically trigger compaction when reclaimable space crosses the configured
   threshold, and provide a manual compaction trigger. Health checks must remain available while DB
@@ -116,10 +123,14 @@ source when a usable persisted runtime already exists.
 - With a large backlog of old request logs, one scheduler pass records bounded progress instead of
   running indefinitely; later catch-up passes eventually remove all rows older than the retention
   threshold.
-- Overlapping DB-backed maintenance jobs in one process run through a shared execution gate, so a
-  second job waits for the active DB job instead of competing for the SQLite writer slot.
-- Manual trigger API calls return a job id, job rows expose `trigger_source`, and duplicate active
-  manual triggers return a conflict instead of starting overlapping work.
+- Overlapping DB-backed maintenance jobs in one process run through one persisted queue and one
+  maintenance worker, so a second job is accepted/coalesced as `queued` instead of competing for the
+  SQLite writer slot.
+- Manual trigger API calls return a representative job id, job rows expose `trigger_source` plus
+  `queued_at`, and duplicate active manual triggers coalesce onto the existing queued/running row
+  instead of returning `db_job_execution_busy` or duplicate-running conflicts.
+- After restart, any leftover `queued` or `running` maintenance rows are marked `abandoned` with a
+  completion timestamp before new queue work is accepted.
 - With an upstream `/usage` endpoint that hangs past the quota-sync timeout budget, manual and
   scheduler-triggered quota sync runs finish as `error`, leave no long-lived `running` row behind,
   and do not write `api_key_quota_sync_samples` or `api_keys.quota_*`.
