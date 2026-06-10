@@ -297,7 +297,7 @@ export function createDashboardTodayMetrics({
       label: labels.upstreamExhausted,
       value: formatNumber(today.upstream_exhausted_key_count),
       valueNumber: today.upstream_exhausted_key_count,
-      subtitle: strings.todayAdded,
+      valueMeta: strings.todayAdded,
       comparison: buildTodayCountComparison({
         currentValue: today.upstream_exhausted_key_count,
         previousValue: yesterday.upstream_exhausted_key_count,

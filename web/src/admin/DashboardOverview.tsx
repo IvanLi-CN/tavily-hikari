@@ -267,12 +267,14 @@ function SummaryMetricCard({
         </div>
         <div className="dashboard-summary-card-value-row">
           <MetricValue value={metric.value} valueNumber={metric.valueNumber} compact={compact} />
-          {metric.valueMeta ? <div className="dashboard-summary-card-value-meta">{metric.valueMeta}</div> : null}
         </div>
         {metric.comparison ? (
-          <div className={`metric-delta metric-delta-${deltaTone}`}>
-            <span className="metric-delta-label">{metric.comparison.label}</span>
-            <span className="metric-delta-value">{metric.comparison.value}</span>
+          <div className="dashboard-summary-card-comparison-stack">
+            {metric.valueMeta ? <div className="dashboard-summary-card-value-meta">{metric.valueMeta}</div> : null}
+            <div className={`metric-delta metric-delta-${deltaTone}`}>
+              <span className="metric-delta-label">{metric.comparison.label}</span>
+              <span className="metric-delta-value">{metric.comparison.value}</span>
+            </div>
           </div>
         ) : metric.subtitle ? (
           <div className="metric-subtitle">{metric.subtitle}</div>

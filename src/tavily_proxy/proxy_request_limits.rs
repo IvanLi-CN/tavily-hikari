@@ -544,13 +544,15 @@ impl TavilyProxy {
         let previous_month_start = previous_local_month_start_utc_ts(now);
         let month_quota_charge_start = start_of_month(now.with_timezone(&Utc)).timestamp();
         let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
+        let today_elapsed = today_end.saturating_sub(today_start);
+        let yesterday_end = yesterday_start.saturating_add(today_elapsed);
 
         self.key_store
             .fetch_summary_windows(SummaryWindowBounds {
                 today_start,
                 today_end,
                 yesterday_start,
-                yesterday_end: today_start,
+                yesterday_end,
                 month_start,
                 month_quota_charge_start,
                 previous_month_start,

@@ -1120,15 +1120,15 @@ button:disabled {
 }
 
 .dashboard-summary-card-marker-primary {
-  border-color: hsl(var(--primary) / 0.42);
-  background: hsl(var(--primary) / 0.14);
-  color: hsl(var(--primary));
+  border-color: hsl(var(--primary) / 0.28);
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--primary) / 0.88);
 }
 
 .dashboard-summary-card-marker-secondary {
-  border-color: hsl(var(--secondary-foreground) / 0.18);
-  background: hsl(var(--secondary) / 0.42);
-  color: hsl(var(--foreground) / 0.9);
+  border-color: hsl(var(--secondary-foreground) / 0.14);
+  background: hsl(var(--secondary) / 0.16);
+  color: hsl(var(--foreground) / 0.76);
 }
 
 .dashboard-metric-value,
@@ -1180,6 +1180,33 @@ button:disabled {
 
 .dashboard-summary-card-compact .metric-value {
   font-size: clamp(1.3rem, 1.5vw, 1.6rem);
+}
+
+.dashboard-summary-card-comparison-stack {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.dashboard-summary-metrics .dashboard-summary-card .dashboard-summary-card-content {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.dashboard-summary-metrics .dashboard-summary-card .dashboard-summary-card-comparison-stack {
+  align-self: end;
+  justify-self: end;
+  justify-items: end;
+}
+
+.dashboard-summary-metrics .dashboard-summary-card .metric-delta {
+  justify-self: end;
+  gap: 5px;
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
 }
 
 .dashboard-quota-charge-card {
@@ -1254,29 +1281,40 @@ button:disabled {
   --metric-delta-value-color: hsl(var(--foreground));
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
   width: fit-content;
   max-width: 100%;
-  padding: 6px 10px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 9px;
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1;
   border: 1px solid var(--metric-delta-border);
   background: var(--metric-delta-bg);
   color: var(--metric-delta-label-color);
   box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.05);
+  overflow: hidden;
 }
 
 .metric-delta-label {
+  flex: 0 0 auto;
+  min-width: 0;
   color: var(--metric-delta-label-color);
+  white-space: nowrap;
 }
 
 .metric-delta-value {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--metric-delta-value-color);
   font-weight: 700;
   font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-delta-up,
@@ -1356,6 +1394,25 @@ button:disabled {
 
   .dashboard-summary-top-row {
     grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr);
+  }
+
+  .dashboard-summary-block-primary .dashboard-summary-block-content {
+    flex: 1;
+  }
+
+  .dashboard-summary-block-primary .dashboard-summary-section-stack {
+    flex: 1;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .dashboard-summary-block-primary .dashboard-today-grid {
+    align-content: stretch;
+    grid-template-rows: repeat(3, minmax(116px, 1fr));
+  }
+
+  .dashboard-summary-block-primary .dashboard-today-grid .dashboard-summary-card {
+    min-height: 0;
+    height: 100%;
   }
 
   .dashboard-summary-metrics-status {

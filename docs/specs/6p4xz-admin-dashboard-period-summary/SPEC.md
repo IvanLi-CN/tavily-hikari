@@ -31,6 +31,9 @@
   - `today`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`
   - `yesterday`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`，表示“昨日截至当前同一时刻”的对比窗口
   - `month`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`
+- `today_start` 使用服务端本地自然日 0 点；`today_end` 使用服务端当前时刻加一秒作为半开区间上界。
+- `yesterday_start` 使用服务端本地昨日 0 点；`yesterday_end` 使用 `yesterday_start + (today_end - today_start)` 推导，必须满足 `yesterday_end - yesterday_start = today_end - today_start`。
+- `yesterday` 窗口是半开区间 `[yesterday_start, yesterday_end)`；昨日同一日内进度之后的数据不得进入今日对比，即使这些数据落在截止时间所在的同一分钟内也必须排除。非 DST 切换日下，该边界等价于昨日同一时刻加一秒。
 - `quota_exhausted_count` 继续保持请求级语义，供请求日志、详情页和旧消费者使用；dashboard 的耗尽卡改读 `upstream_exhausted_key_count`。
 - 时间窗口边界统一使用服务端本地时区的日/月 bucket 口径，而不是浏览器时区。
 
@@ -44,6 +47,8 @@
 - 当 `today.total_requests = 0` 且 `yesterday.total_requests = 0` 时，`成功` / `错误` 的“较昨日同刻”显示 `0.0` 个百分点（或对应语言单位）并保持 `flat`。
 - `本月` 指标卡只显示月累计值与本月占比，不显示昨日比较；其中 `上游 Key 耗尽` 卡固定显示 `本月新增`，不再显示请求占比副标题。
 - `站点当前状态` 必须明确标注为当前快照，避免与期间窗口混淆。
+- 桌面端 `今日` 明细指标固定为两列三行网格；当 `今日` 主块与 `本月` 主块同高时，明细网格必须吃掉剩余高度并平均分配给三行卡片，避免主块底部出现无意义空白。
+- `今日` 明细小卡的占比 / 新增说明与“较昨日同刻”badge 必须作为同一组右下角信息展示；`主要` / `次要` marker 保持轻量半透明，避免遮挡背景趋势线。
 - 任意断点下都不得引入横向滚动。
 
 ## 验收标准
@@ -53,7 +58,7 @@
 - `今日` 的 `总请求数` 与 `上游 Key 耗尽` 继续显示较昨日同一时刻的数量差与方向，其中 `上游 Key 耗尽` 只统计系统自动标记 exhausted 的唯一上游 Key 数。
 - `本月` 的四项指标能正确显示月累计值；其中 `上游 Key 耗尽` 使用 `本月新增` 副标题且不再显示请求占比。
 - `站点当前状态` 保留 `剩余可用`、`活跃密钥`、`隔离中`、`已耗尽` 四项实时快照。
-- `GET /api/summary/windows` 在空窗口时返回 `0`，昨日对比窗口不会混入昨日稍后时段的数据，本月窗口累计到当前时刻，并继续向下游保留请求级 `quota_exhausted_count` 兼容字段。
+- `GET /api/summary/windows` 在空窗口时返回 `0`，`today` 与 `yesterday` 的窗口时长相同，昨日对比窗口不会混入昨日同刻之后的数据，包括截止分钟内的后续请求；本月窗口累计到当前时刻，并继续向下游保留请求级 `quota_exhausted_count` 兼容字段。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 全部通过。
 
 ## 成果展示
@@ -68,3 +73,6 @@
 
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `upstream exhausted lifecycle cards`; evidence_note: 验证今日/本月耗尽卡均展示 `上游 Key 耗尽`，并分别使用 `今日新增` / `本月新增` 副标题；耗尽卡不再复用请求级占比文案。
   ![管理仪表盘：上游 Key 耗尽新口径](./assets/dashboard-upstream-exhausted-key-cards.png)
+
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `yesterday same-time window and polished today metric grid`; evidence_note: 验证今日/昨日同刻窗口对齐、今日明细两列三行卡片均分主块剩余高度、右下角信息组对齐、长 badge 单行紧凑展示，以及 `主要` / `次要` marker 不遮挡背景趋势线。
+  ![管理仪表盘：昨日同刻窗口与今日明细卡片 polish](./assets/dashboard-yesterday-same-time-window.png)

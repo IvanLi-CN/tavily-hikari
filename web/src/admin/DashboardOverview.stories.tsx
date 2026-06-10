@@ -367,7 +367,7 @@ const summaryWindows: SummaryWindowsResponse = {
   today_start: Date.UTC(2026, 3, 7, 0, 0, 0) / 1000,
   today_end: Date.UTC(2026, 3, 7, 12, 0, 0) / 1000 + 1,
   yesterday_start: Date.UTC(2026, 3, 6, 0, 0, 0) / 1000,
-  yesterday_end: Date.UTC(2026, 3, 7, 0, 0, 0) / 1000,
+  yesterday_end: Date.UTC(2026, 3, 6, 12, 0, 0) / 1000 + 1,
   month_start: Date.UTC(2026, 3, 1, 0, 0, 0) / 1000,
   month_end: Date.UTC(2026, 3, 7, 12, 0, 0) / 1000 + 1,
   previous_month_start: Date.UTC(2026, 2, 1, 0, 0, 0) / 1000,
@@ -618,7 +618,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     id: 'today-upstream-exhausted',
     label: '上游 Key 耗尽',
     value: '42',
-    subtitle: '今日新增',
+    valueMeta: '今日新增',
     comparison: {
       label: '较昨日同刻',
       value: '+38 (950%)',

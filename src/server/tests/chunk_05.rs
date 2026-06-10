@@ -1323,9 +1323,10 @@
         let yesterday_start = local_previous_day_start(now);
         let month_start = local_month_start(now);
         let current_utc_ts = Local::now().with_timezone(&Utc).timestamp();
-        let today_window_anchor = (current_utc_ts - 5).max(today_start + 30);
+        let current_minute_start = current_utc_ts.div_euclid(60) * 60;
+        let today_window_anchor = (current_minute_start - 120).max(today_start + 30);
         let today_log_start = (today_window_anchor - 9).max(today_start);
-        let yesterday_window_anchor = today_window_anchor - 86_400;
+        let yesterday_window_anchor = yesterday_start + (today_window_anchor - today_start);
         let yesterday_log_start = (yesterday_window_anchor - 3).max(yesterday_start);
 
         let options = SqliteConnectOptions::new()

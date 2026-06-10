@@ -129,7 +129,10 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     assert_eq!(summary.today_start, today_start);
     assert_eq!(summary.today_end, now_ts.saturating_add(1));
     assert_eq!(summary.yesterday_start, yesterday_start);
-    assert_eq!(summary.yesterday_end, today_start);
+    assert_eq!(
+        summary.yesterday_end - summary.yesterday_start,
+        summary.today_end - summary.today_start
+    );
     assert_eq!(summary.month_start, local_month_start);
     assert_eq!(summary.month_end, summary.today_end);
     assert_eq!(summary.previous_month_start, previous_month_start);

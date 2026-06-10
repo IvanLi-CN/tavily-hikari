@@ -171,6 +171,14 @@ describe('dashboard request-value metric helpers', () => {
         tone: 'negative',
       },
     })
+
+    expect(metrics.find((metric) => metric.id === 'today-upstream-exhausted')).toMatchObject({
+      id: 'today-upstream-exhausted',
+      label: 'Upstream Keys Exhausted',
+      value: '0',
+      valueMeta: 'Added today',
+      subtitle: undefined,
+    })
   })
 
   it('builds 9 compact month cards with preserved lifecycle cards', () => {
