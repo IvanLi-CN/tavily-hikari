@@ -879,7 +879,7 @@ impl TavilyProxy {
         }
     }
 
-    pub(crate) async fn persist_forward_proxy_geo_candidates(
+    pub async fn persist_forward_proxy_geo_candidates(
         &self,
         candidates: &[ForwardProxyGeoCandidate],
     ) -> Result<(), ProxyError> {
@@ -1179,6 +1179,21 @@ impl TavilyProxy {
         geo_origin: &str,
         force_all: bool,
     ) -> Result<usize, ProxyError> {
+        let candidates = self
+            .resolve_forward_proxy_geo_refresh_candidates(geo_origin, force_all)
+            .await?;
+        let refreshed = candidates.len();
+        if !candidates.is_empty() {
+            self.persist_forward_proxy_geo_candidates(&candidates).await?;
+        }
+        Ok(refreshed)
+    }
+
+    pub async fn resolve_forward_proxy_geo_refresh_candidates(
+        &self,
+        geo_origin: &str,
+        force_all: bool,
+    ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let endpoints = {
             let manager = self.forward_proxy.lock().await;
             manager
@@ -1193,10 +1208,8 @@ impl TavilyProxy {
         } else {
             ForwardProxyGeoRefreshMode::LazyFillMissing
         };
-        let candidates = self
-            .resolve_forward_proxy_geo_candidates(geo_origin, endpoints, refresh_mode)
-            .await?;
-        Ok(candidates.len())
+        self.resolve_forward_proxy_geo_candidates(geo_origin, endpoints, refresh_mode)
+            .await
     }
 
     pub(crate) fn forward_proxy_geo_incomplete_retry_wait_secs(

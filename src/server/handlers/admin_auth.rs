@@ -41,6 +41,9 @@ struct TriggerJobResponse {
     job_id: i64,
     job_type: String,
     trigger_source: String,
+    status: String,
+    coalesced: bool,
+    promoted: bool,
 }
 
 fn manual_trigger_requires_key(job_type: &str) -> bool {
@@ -111,6 +114,35 @@ fn manual_trigger_key_id_error_response(
     }
 }
 
+fn scheduled_job_is_terminal(status: &str) -> bool {
+    !matches!(status, "queued" | "running")
+}
+
+async fn wait_for_scheduled_job_terminal(
+    state: &AppState,
+    job_id: i64,
+    timeout: Duration,
+) -> Result<JobLog, ProxyError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let Some(job) = state.proxy.scheduled_job_by_id(job_id).await? else {
+            return Err(ProxyError::Other(format!(
+                "scheduled job {job_id} disappeared before completion"
+            )));
+        };
+        if scheduled_job_is_terminal(&job.status) {
+            return Ok(job);
+        }
+        if Instant::now() >= deadline {
+            return Err(ProxyError::Other(format!(
+                "scheduled job {job_id} did not finish within {}s",
+                timeout.as_secs()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn list_jobs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -139,6 +171,7 @@ async fn list_jobs(
                     status: j.status,
                     attempt: j.attempt,
                     message: j.message,
+                    queued_at: j.queued_at,
                     started_at: j.started_at,
                     finished_at: j.finished_at,
                 })
@@ -196,56 +229,24 @@ async fn post_trigger_job(
         Err(err) => return Ok(manual_trigger_key_id_error_response(&job_type, err)),
     };
 
-    let claim = tokio::time::timeout(
-        Duration::from_secs(5),
-        claim_scheduled_job_with_gate(
-            state.as_ref(),
-            &job_type,
-            key_id.as_deref(),
-            TRIGGER_SOURCE_MANUAL,
-        ),
+    match enqueue_scheduled_job_result(
+        state.as_ref(),
+        &job_type,
+        key_id.as_deref(),
+        TRIGGER_SOURCE_MANUAL,
     )
-    .await;
-
-    let claim = match claim {
-        Ok(claim) => claim,
-        Err(_) => {
-            return Ok((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "error": "db_job_execution_busy",
-                    "detail": "another DB-backed maintenance job is active"
-                })),
-            )
-                .into_response());
-        }
-    };
-
-    match claim {
-        Ok(Some(claimed_job)) => {
-            let job_id = claimed_job.job_id;
-            let run_state = state.clone();
-            let run_job_type = job_type.clone();
-            let run_key_id = key_id.clone();
-            tokio::spawn(async move {
-                run_manual_claimed_job(run_state, run_job_type, run_key_id, claimed_job).await;
-            });
-            Ok((
-                StatusCode::ACCEPTED,
-                Json(TriggerJobResponse {
-                    job_id,
-                    job_type,
-                    trigger_source: TRIGGER_SOURCE_MANUAL.to_string(),
-                }),
-            )
-                .into_response())
-        }
-        Ok(None) => Ok((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "job_already_running",
-                "detail": format!("{job_type} is already running")
-            })),
+    .await
+    {
+        Ok(job) => Ok((
+            StatusCode::ACCEPTED,
+            Json(TriggerJobResponse {
+                job_id: job.job_id,
+                job_type,
+                trigger_source: job.trigger_source,
+                status: job.status,
+                coalesced: !job.created,
+                promoted: job.promoted,
+            }),
         )
             .into_response()),
         Err(err) => {
@@ -341,96 +342,87 @@ async fn run_manual_key_quota_sync(
     state: Arc<AppState>,
     key_id: &str,
 ) -> Result<(), ManualQuotaSyncError> {
-    let claim = tokio::time::timeout(
-        Duration::from_secs(5),
-        claim_scheduled_job_with_gate(
-            state.as_ref(),
-            "quota_sync",
-            Some(key_id),
-            TRIGGER_SOURCE_MANUAL,
-        ),
+    let job_id = enqueue_scheduled_job(
+        state.as_ref(),
+        "quota_sync",
+        Some(key_id),
+        TRIGGER_SOURCE_MANUAL,
     )
     .await
-    .map_err(|_| {
-        ManualQuotaSyncError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "db_job_execution_busy",
-            "another DB-backed maintenance job is active".to_string(),
-        )
-    })?
     .map_err(|err| {
-            ManualQuotaSyncError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "sync_failed",
-                err.to_string(),
-            )
-        })?;
+        ManualQuotaSyncError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "sync_failed",
+            err.to_string(),
+        )
+    })?;
 
-    let claimed_job = match claim {
-        Some(claimed_job) => claimed_job,
-        None => {
-            Err(ManualQuotaSyncError::new(
-                StatusCode::CONFLICT,
-                "job_already_running",
-                "quota_sync is already running for this key".to_string(),
-            ))?
-        }
-    };
-    let job_id = claimed_job.job_id;
-    let _job_execution_gate = claimed_job._job_execution_gate;
-    drop(_job_execution_gate);
+    let job = wait_for_scheduled_job_terminal(
+        state.as_ref(),
+        job_id,
+        Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS + 15),
+    )
+    .await
+    .map_err(|err| {
+        ManualQuotaSyncError::new(
+            StatusCode::BAD_GATEWAY,
+            "sync_failed",
+            err.to_string(),
+        )
+    })?;
 
-    match sync_key_quota_with_db_job_gate(state.as_ref(), key_id, "quota_sync/manual").await {
-        Ok((limit, remaining)) => {
-            let msg = format!("limit={limit} remaining={remaining}");
-            let _ = state
-                .proxy
-                .scheduled_job_finish(job_id, "success", Some(&msg))
-                .await;
-            Ok(())
-        }
-        Err(ProxyError::QuotaDataMissing { reason }) => {
-            let msg = format!("quota_data_missing: {reason}");
-            let _ = state
-                .proxy
-                .scheduled_job_finish(job_id, "error", Some(&msg))
-                .await;
-            Err(ManualQuotaSyncError::new(
-                StatusCode::BAD_REQUEST,
-                "quota_data_missing",
-                reason,
-            ))
-        }
-        Err(ProxyError::UsageHttp { status, body }) => {
-            let detail = format!("Tavily usage request failed with {status}: {body}");
-            let http_status = if status == reqwest::StatusCode::UNAUTHORIZED {
-                StatusCode::UNAUTHORIZED
-            } else if status == reqwest::StatusCode::FORBIDDEN {
-                StatusCode::FORBIDDEN
-            } else if status.is_client_error() {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
-            let _ = state
-                .proxy
-                .scheduled_job_finish(job_id, "error", Some(&detail))
-                .await;
-            Err(ManualQuotaSyncError::new(http_status, "usage_http", detail))
-        }
-        Err(err) => {
-            let reason = err.to_string();
-            let _ = state
-                .proxy
-                .scheduled_job_finish(job_id, "error", Some(&reason))
-                .await;
-            Err(ManualQuotaSyncError::new(
-                StatusCode::BAD_GATEWAY,
-                "sync_failed",
-                reason,
-            ))
-        }
+    if job.status == "success" {
+        return Ok(());
     }
+
+    let detail = job
+        .message
+        .clone()
+        .unwrap_or_else(|| format!("quota_sync failed with status {}", job.status));
+    if let Some(reason) = detail.strip_prefix("quota_data_missing: ") {
+        return Err(ManualQuotaSyncError::new(
+            StatusCode::BAD_REQUEST,
+            "quota_data_missing",
+            reason.to_string(),
+        ));
+    }
+    if let Some(rest) = detail.strip_prefix("usage_http ") {
+        let (status_text, body) = rest
+            .split_once(": ")
+            .map(|(status, body)| (status.trim(), body.to_string()))
+            .unwrap_or((rest.trim(), String::new()));
+        let status = status_text
+            .split_whitespace()
+            .next()
+            .unwrap_or(status_text)
+            .parse::<reqwest::StatusCode>()
+            .unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
+        let http_status = if status == reqwest::StatusCode::UNAUTHORIZED {
+            StatusCode::UNAUTHORIZED
+        } else if status == reqwest::StatusCode::FORBIDDEN {
+            StatusCode::FORBIDDEN
+        } else if status.is_client_error() {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        let detail = if body.is_empty() {
+            format!("Tavily usage request failed with {status}")
+        } else {
+            format!("Tavily usage request failed with {status}: {body}")
+        };
+        return Err(ManualQuotaSyncError::new(http_status, "usage_http", detail));
+    }
+
+    Err(ManualQuotaSyncError::new(
+        if job.status == "abandoned" {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::BAD_GATEWAY
+        },
+        "sync_failed",
+        detail,
+    ))
 }
 
 async fn delete_api_key_quarantine(

@@ -233,3 +233,236 @@
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[tokio::test]
+    async fn maintenance_worker_limits_remote_io_jobs_to_one_active_run() {
+        let db_path = temp_db_path("maintenance-worker-remote-io-slot");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-block-a".to_string(), "tvly-block-b".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let key_rows = fetch_api_key_rows(&pool).await;
+        let first_key_id = key_rows
+            .iter()
+            .find(|(_, secret)| secret == "tvly-block-a")
+            .map(|(id, _)| id.clone())
+            .expect("first blocking key id");
+        let second_key_id = key_rows
+            .iter()
+            .find(|(_, secret)| secret == "tvly-block-b")
+            .map(|(id, _)| id.clone())
+            .expect("second blocking key id");
+        let (upstream_addr, hits, release_tx) = spawn_usage_blocking_mock_server().await;
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: true,
+            usage_base: format!("http://{upstream_addr}"),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+        spawn_maintenance_worker(state.clone());
+
+        let first_job_id = enqueue_scheduled_job(
+            state.as_ref(),
+            "quota_sync",
+            Some(&first_key_id),
+            TRIGGER_SOURCE_SCHEDULER,
+        )
+        .await
+        .expect("enqueue first quota sync");
+        let second_job_id = enqueue_scheduled_job(
+            state.as_ref(),
+            "quota_sync",
+            Some(&second_key_id),
+            TRIGGER_SOURCE_SCHEDULER,
+        )
+        .await
+        .expect("enqueue second quota sync");
+
+        let running_snapshot_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let rows: Vec<(i64, String)> =
+                sqlx::query_as("SELECT id, status FROM scheduled_jobs ORDER BY id ASC")
+                    .fetch_all(&pool)
+                    .await
+                    .expect("fetch scheduled job statuses");
+            let running_count = rows.iter().filter(|(_, status)| status == "running").count();
+            let queued_count = rows.iter().filter(|(_, status)| status == "queued").count();
+            let first_status = rows
+                .iter()
+                .find(|(id, _)| *id == first_job_id)
+                .map(|(_, status)| status.as_str());
+            let second_status = rows
+                .iter()
+                .find(|(id, _)| *id == second_job_id)
+                .map(|(_, status)| status.as_str());
+            if hits.load(Ordering::SeqCst) == 1
+                && running_count == 1
+                && queued_count == 1
+                && first_status == Some("running")
+                && second_status == Some("queued")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < running_snapshot_deadline,
+                "expected one running quota job and one queued quota job, rows={rows:?}, hits={}",
+                hits.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        release_tx.send(true).expect("release blocking usage server");
+        let completion_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let rows: Vec<(i64, String)> =
+                sqlx::query_as("SELECT id, status FROM scheduled_jobs ORDER BY id ASC")
+                    .fetch_all(&pool)
+                    .await
+                    .expect("fetch completed scheduled job statuses");
+            if rows.iter().all(|(_, status)| status == "success") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < completion_deadline,
+                "expected both quota jobs to finish successfully, rows={rows:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    }
+
+    #[tokio::test]
+    async fn maintenance_worker_can_finish_request_logs_gc_while_quota_sync_waits_on_remote_io() {
+        let db_path = temp_db_path("maintenance-worker-request-logs-gc-during-quota-sync");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-block-a".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let key_id: String =
+            sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = 'tvly-block-a' LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("fetch blocking quota sync key id");
+        let (upstream_addr, hits, release_tx) = spawn_usage_blocking_mock_server().await;
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: true,
+            usage_base: format!("http://{upstream_addr}"),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+        spawn_maintenance_worker(state.clone());
+
+        let quota_job_id = enqueue_scheduled_job(
+            state.as_ref(),
+            "quota_sync",
+            Some(&key_id),
+            TRIGGER_SOURCE_SCHEDULER,
+        )
+        .await
+        .expect("enqueue blocking quota sync");
+
+        let quota_running_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let quota_job = state
+                .proxy
+                .scheduled_job_by_id(quota_job_id)
+                .await
+                .expect("fetch quota job")
+                .expect("quota job row");
+            if hits.load(Ordering::SeqCst) == 1 && quota_job.status == "running" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < quota_running_deadline,
+                "expected blocking quota sync job to enter running, status={}, hits={}",
+                quota_job.status,
+                hits.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let gc_job_id = enqueue_scheduled_job(
+            state.as_ref(),
+            "request_logs_gc",
+            None,
+            TRIGGER_SOURCE_MANUAL,
+        )
+        .await
+        .expect("enqueue request logs gc");
+        let gc_completion_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let quota_job = state
+                .proxy
+                .scheduled_job_by_id(quota_job_id)
+                .await
+                .expect("fetch quota job while gc runs")
+                .expect("quota job row while gc runs");
+            let gc_job = state
+                .proxy
+                .scheduled_job_by_id(gc_job_id)
+                .await
+                .expect("fetch request logs gc job")
+                .expect("request logs gc job row");
+            if quota_job.status == "running" && gc_job.status == "success" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < gc_completion_deadline,
+                "expected request_logs_gc to finish while quota sync remains running, quota_status={}, gc_status={}",
+                quota_job.status,
+                gc_job.status
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        release_tx.send(true).expect("release blocking usage server");
+        let quota_completion_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let quota_job = state
+                .proxy
+                .scheduled_job_by_id(quota_job_id)
+                .await
+                .expect("fetch quota job after release")
+                .expect("quota job row after release");
+            if quota_job.status == "success" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < quota_completion_deadline,
+                "expected quota sync to finish after release, status={}",
+                quota_job.status
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    }

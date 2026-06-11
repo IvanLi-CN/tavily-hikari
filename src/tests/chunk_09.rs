@@ -1,11 +1,18 @@
 async fn hold_sqlite_write_lock_for_test(
     pool: &SqlitePool,
 ) -> tokio::task::JoinHandle<()> {
+    hold_sqlite_write_lock_for_test_for(pool, Duration::from_millis(5_200)).await
+}
+
+async fn hold_sqlite_write_lock_for_test_for(
+    pool: &SqlitePool,
+    hold_for: Duration,
+) -> tokio::task::JoinHandle<()> {
     let mut immediate_conn = begin_immediate_sqlite_connection(pool)
         .await
         .expect("begin immediate transaction");
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(5_200)).await;
+        tokio::time::sleep(hold_for).await;
         sqlx::query("ROLLBACK")
             .execute(&mut *immediate_conn)
             .await
@@ -165,11 +172,20 @@ async fn scheduled_job_claim_abandons_stale_quota_sync_running_job() {
 
     sqlx::query(
         r#"
-        INSERT INTO scheduled_jobs (job_type, trigger_source, key_id, status, attempt, started_at)
-        VALUES ('quota_sync', 'scheduler', ?, 'running', 1, ?)
+        INSERT INTO scheduled_jobs (
+            job_type,
+            trigger_source,
+            key_id,
+            status,
+            attempt,
+            queued_at,
+            started_at
+        )
+        VALUES ('quota_sync', 'scheduler', ?, 'running', 1, ?, ?)
         "#,
     )
     .bind(&key_id)
+    .bind(stale_started_at)
     .bind(stale_started_at)
     .execute(&proxy.key_store.pool)
     .await
@@ -274,11 +290,20 @@ async fn scheduled_job_claim_abandons_stale_hot_quota_sync_running_job() {
 
     sqlx::query(
         r#"
-        INSERT INTO scheduled_jobs (job_type, trigger_source, key_id, status, attempt, started_at)
-        VALUES ('quota_sync/hot', 'scheduler', ?, 'running', 1, ?)
+        INSERT INTO scheduled_jobs (
+            job_type,
+            trigger_source,
+            key_id,
+            status,
+            attempt,
+            queued_at,
+            started_at
+        )
+        VALUES ('quota_sync/hot', 'scheduler', ?, 'running', 1, ?, ?)
         "#,
     )
     .bind(&key_id)
+    .bind(stale_started_at)
     .bind(stale_started_at)
     .execute(&proxy.key_store.pool)
     .await
@@ -338,10 +363,18 @@ async fn scheduled_job_claim_reclaims_only_quota_sync_job_types() {
 
     sqlx::query(
         r#"
-        INSERT INTO scheduled_jobs (job_type, trigger_source, status, attempt, started_at)
-        VALUES ('request_logs_gc', 'scheduler', 'running', 1, ?)
+        INSERT INTO scheduled_jobs (
+            job_type,
+            trigger_source,
+            status,
+            attempt,
+            queued_at,
+            started_at
+        )
+        VALUES ('request_logs_gc', 'scheduler', 'running', 1, ?, ?)
         "#,
     )
+    .bind(stale_started_at)
     .bind(stale_started_at)
     .execute(&proxy.key_store.pool)
     .await
@@ -392,6 +425,215 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
             .await
             .expect("count running jobs");
     assert_eq!(running_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_enqueue_coalesces_duplicate_queue_and_promotes_manual_source() {
+    let db_path = temp_db_path("scheduled-job-enqueue-coalesce");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let first = proxy
+        .scheduled_job_enqueue("request_logs_gc", "scheduler", None, 1)
+        .await
+        .expect("enqueue scheduler job");
+    assert!(first.created);
+    assert!(!first.promoted);
+
+    let second = proxy
+        .scheduled_job_enqueue("request_logs_gc", "manual", None, 1)
+        .await
+        .expect("enqueue manual duplicate");
+    assert_eq!(second.job_id, first.job_id);
+    assert!(!second.created);
+    assert!(second.promoted);
+    assert_eq!(second.status, "queued");
+    assert_eq!(second.trigger_source, "manual");
+
+    let queued_jobs = proxy
+        .fetch_queued_scheduled_jobs(10)
+        .await
+        .expect("list queued jobs");
+    assert_eq!(queued_jobs.len(), 1);
+    assert_eq!(queued_jobs[0].id, first.job_id);
+    assert_eq!(queued_jobs[0].trigger_source, "manual");
+
+    let row: (String, Option<i64>, i64) = sqlx::query_as(
+        "SELECT trigger_source, started_at, queued_at FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(first.job_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch queued row");
+    assert_eq!(row.0, "manual");
+    assert!(row.1.is_none());
+    assert!(row.2 > 0);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source() {
+    let db_path = temp_db_path("scheduled-job-enqueue-running-coalesce");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let running_job_id = proxy
+        .scheduled_job_claim("db_compaction", "scheduler", None, 1)
+        .await
+        .expect("claim scheduler compaction job")
+        .expect("scheduler compaction job created");
+
+    let manual = proxy
+        .scheduled_job_enqueue("db_compaction", "manual", None, 1)
+        .await
+        .expect("enqueue manual duplicate for running job");
+    assert_eq!(manual.job_id, running_job_id);
+    assert!(!manual.created);
+    assert!(manual.promoted);
+    assert_eq!(manual.status, "running");
+    assert_eq!(manual.trigger_source, "manual");
+
+    let row: (String, String) = sqlx::query_as(
+        "SELECT status, trigger_source FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(running_job_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch running row after manual coalesce");
+    assert_eq!(row.0, "running");
+    assert_eq!(row.1, "manual");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_enqueue_coalesces_running_manual_job_without_waiting_for_write_lock() {
+    let db_path = temp_db_path("scheduled-job-enqueue-running-manual-fast-path");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let running_job_id = proxy
+        .scheduled_job_claim("request_logs_gc", "manual", None, 1)
+        .await
+        .expect("claim manual gc job")
+        .expect("manual gc job created");
+    let release = hold_sqlite_write_lock_for_test_for(
+        &proxy.key_store.pool,
+        Duration::from_secs(12),
+    )
+    .await;
+
+    let started = Instant::now();
+    let manual = proxy
+        .scheduled_job_enqueue("request_logs_gc", "manual", None, 1)
+        .await
+        .expect("coalesce running manual job without write lock");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "expected fast-path coalesce, elapsed={:?}",
+        started.elapsed()
+    );
+    assert_eq!(manual.job_id, running_job_id);
+    assert!(!manual.created);
+    assert!(!manual.promoted);
+    assert_eq!(manual.status, "running");
+    assert_eq!(manual.trigger_source, "manual");
+
+    release.await.expect("release task");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_mark_running_sets_started_at_after_queue_time() {
+    let db_path = temp_db_path("scheduled-job-mark-running");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let queued = proxy
+        .scheduled_job_enqueue("db_compaction", "manual", None, 1)
+        .await
+        .expect("enqueue manual compaction");
+    let row = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("mark running")
+        .expect("queued row claimed by worker");
+    assert_eq!(row.status, "running");
+    assert!(row.started_at.is_some());
+    assert!(row.started_at.expect("started_at") >= row.queued_at);
+
+    let after: (String, i64, i64) = sqlx::query_as(
+        "SELECT status, queued_at, started_at FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(queued.job_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch running row");
+    assert_eq!(after.0, "running");
+    assert!(after.2 >= after.1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn abandon_active_scheduled_jobs_abandons_queued_and_running_rows() {
+    let db_path = temp_db_path("scheduled-job-abandon-active");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let queued = proxy
+        .scheduled_job_enqueue("request_logs_gc", "manual", None, 1)
+        .await
+        .expect("enqueue manual job");
+    let running = proxy
+        .scheduled_job_claim("db_compaction", "auto", None, 1)
+        .await
+        .expect("claim running job")
+        .expect("running job created");
+
+    let abandoned = proxy
+        .abandon_active_scheduled_jobs()
+        .await
+        .expect("abandon active jobs");
+    assert_eq!(abandoned, 2);
+
+    let rows: Vec<(i64, String, Option<i64>)> = sqlx::query_as(
+        "SELECT id, status, finished_at FROM scheduled_jobs ORDER BY id ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch abandoned rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, queued.job_id);
+    assert_eq!(rows[0].1, "abandoned");
+    assert!(rows[0].2.is_some());
+    assert_eq!(rows[1].0, running);
+    assert_eq!(rows[1].1, "abandoned");
+    assert!(rows[1].2.is_some());
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

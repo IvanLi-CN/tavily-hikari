@@ -44,3 +44,25 @@
   on the in-process admin trigger path when the DB execution gate is busy.
 - Reduced the default SQLite pool concurrency from `5` to `3` after production evidence showed that
   more writer-capable connections amplified contention instead of absorbing it.
+
+## 2026-06-10
+
+- Replaced the owner-facing “shared execution gate decides whether manual maintenance is rejected”
+  model with a persisted maintenance queue on `scheduled_jobs`.
+- Added `queued` lifecycle semantics (`queued_at`, nullable `started_at`, coalesced representative
+  rows, startup abandon-all cleanup) plus a single in-process maintenance worker for DB-backed
+  maintenance jobs.
+- Scheduler loops now enqueue maintenance work instead of claiming-and-running inline; manual
+  trigger APIs now return the representative queued/running job instead of surfacing
+  `db_job_execution_busy`.
+
+## 2026-06-11
+
+- Tightened the representative-row contract so a later manual trigger can promote an already
+  running scheduler row to `trigger_source=manual`, keeping `/api/jobs/trigger` and `/api/jobs`
+  aligned on the same representative instance.
+- Added queue-state hints (`status`, `coalesced`, `promoted`) to manual trigger responses so the
+  admin UI can say whether work was newly queued or attached to an existing active job.
+- Split `forward_proxy_geo_refresh` into a remote discovery phase plus a short DB persistence phase,
+  and let the maintenance worker keep one bounded remote-I/O slot instead of blocking the queue on
+  GEO I/O or fan-out starting multiple remote maintenance jobs at once.

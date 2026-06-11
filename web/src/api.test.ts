@@ -45,6 +45,7 @@ import {
   millisecondsUntilNextBrowserDayBoundary,
   parseUserTokenEventSnapshot,
   publishAnnouncement,
+  triggerJob,
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAnnouncement,
@@ -942,6 +943,7 @@ describe('admin user tag api helpers', () => {
                 status: 'error',
                 attempt: 1,
                 message: 'usage_http 401',
+                queuedAt: 1_773_344_450,
                 startedAt: 1_773_344_460,
                 finishedAt: 1_773_344_470,
               },
@@ -987,6 +989,7 @@ describe('admin user tag api helpers', () => {
       status: 'error',
       attempt: 1,
       message: 'usage_http 401',
+      queued_at: 1_773_344_450,
       started_at: 1_773_344_460,
       finished_at: 1_773_344_470,
     })
@@ -1021,6 +1024,40 @@ describe('admin user tag api helpers', () => {
 
     const [input] = fetchMock.mock.calls[0] as [string]
     expect(input).toBe('/api/jobs?page=1&per_page=10&group=geo')
+  })
+
+  it('normalizes manual trigger queue semantics for the jobs UI', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            jobId: 37701,
+            jobType: 'db_compaction',
+            triggerSource: 'manual',
+            status: 'running',
+            coalesced: true,
+            promoted: true,
+          }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const response = await triggerJob('db_compaction')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/jobs/trigger')
+    expect(init.method).toBe('POST')
+    expect(response).toEqual({
+      job_id: 37701,
+      job_type: 'db_compaction',
+      trigger_source: 'manual',
+      status: 'running',
+      coalesced: true,
+      promoted: true,
+    })
   })
 
   it('passes the operational class filter through to the admin logs API', async () => {

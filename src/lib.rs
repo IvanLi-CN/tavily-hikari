@@ -1351,7 +1351,7 @@ struct CountryIsBatchEntry {
 }
 
 #[derive(Debug, Clone)]
-struct ForwardProxyGeoCandidate {
+pub struct ForwardProxyGeoCandidate {
     endpoint: forward_proxy::ForwardProxyEndpoint,
     host_ips: Vec<String>,
     regions: Vec<String>,

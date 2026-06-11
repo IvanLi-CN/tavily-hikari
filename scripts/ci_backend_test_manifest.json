@@ -290,6 +290,7 @@
         "server::tests::health_",
         "server::tests::key_",
         "server::tests::db_",
+        "server::tests::maintenance_",
         "server::tests::manual_",
         "server::tests::observed_",
         "server::tests::proxy_",

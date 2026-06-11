@@ -1364,6 +1364,16 @@ export const EN: TranslationShape = {
           show: 'Show job details',
           hide: 'Hide job details',
         },
+        notices: {
+          queued: '{job} queued as a manual job.',
+          existingQueued: '{job} is already queued; using the existing queued job.',
+          existingRunning: '{job} is already running; using the active job.',
+        },
+        detailLabels: {
+          queued: 'Queued',
+          finished: 'Finished',
+          duration: 'Duration',
+        },
         sources: { scheduler: 'Scheduled', manual: 'Manual', auto: 'Auto' },
         types: {
           quota_sync: 'Sync quota',

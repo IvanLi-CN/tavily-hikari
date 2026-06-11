@@ -1502,11 +1502,14 @@ async fn spawn_keys_admin_server(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
     });
+    spawn_maintenance_worker(state.clone());
 
     let app = Router::new()
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
+        .route("/api/jobs", get(list_jobs))
+        .route("/api/jobs/trigger", post(post_trigger_job))
         .route(
             "/api/announcements",
             get(get_announcements).post(create_announcement),
@@ -1552,12 +1555,15 @@ async fn spawn_keys_admin_server_with_usage_base(
         usage_base,
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
     });
+    spawn_maintenance_worker(state.clone());
 
     let app = Router::new()
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
         .route("/api/keys/validate", post(post_validate_api_keys))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
+        .route("/api/jobs", get(list_jobs))
+        .route("/api/jobs/trigger", post(post_trigger_job))
         .route("/api/admin/login", post(post_admin_login))
         .with_state(state);
 
@@ -1590,11 +1596,14 @@ async fn spawn_keys_admin_server_with_geo_origin(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: geo_origin,
     });
+    spawn_maintenance_worker(state.clone());
 
     let app = Router::new()
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
+        .route("/api/jobs", get(list_jobs))
+        .route("/api/jobs/trigger", post(post_trigger_job))
         .route("/api/admin/login", post(post_admin_login))
         .with_state(state);
 
@@ -1628,12 +1637,15 @@ async fn spawn_keys_admin_server_with_usage_and_geo(
         usage_base,
         api_key_ip_geo_origin: geo_origin,
     });
+    spawn_maintenance_worker(state.clone());
 
     let app = Router::new()
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
         .route("/api/keys/validate", post(post_validate_api_keys))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
+        .route("/api/jobs", get(list_jobs))
+        .route("/api/jobs/trigger", post(post_trigger_job))
         .route("/api/admin/login", post(post_admin_login))
         .with_state(state);
 
@@ -1800,6 +1812,225 @@ async fn spawn_usage_timeout_mock_server() -> SocketAddr {
             .unwrap();
     });
     addr
+}
+
+async fn spawn_usage_blocking_mock_server(
+) -> (SocketAddr, Arc<AtomicUsize>, tokio::sync::watch::Sender<bool>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+    let app = Router::new().route(
+        "/usage",
+        get({
+            let hits = hits.clone();
+            let release_rx = release_rx.clone();
+            move |headers: HeaderMap| {
+                let hits = hits.clone();
+                let mut release_rx = release_rx.clone();
+                async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    assert!(
+                        matches!(auth, "Bearer tvly-block-a" | "Bearer tvly-block-b"),
+                        "unexpected blocking usage auth header: {auth}"
+                    );
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    if !*release_rx.borrow() {
+                        let _ = release_rx.changed().await;
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 10 },
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (addr, hits, release_tx)
+}
+
+async fn hold_sqlite_write_lock_for_manual_trigger_test(
+    db_path: &str,
+    hold_for: Duration,
+) -> tokio::task::JoinHandle<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(db_path)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("open db pool");
+    let mut immediate_conn = pool.acquire()
+        .await
+        .expect("acquire immediate connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *immediate_conn)
+        .await
+        .expect("begin immediate transaction");
+    tokio::spawn(async move {
+        tokio::time::sleep(hold_for).await;
+        sqlx::query("ROLLBACK")
+            .execute(&mut *immediate_conn)
+            .await
+            .expect("rollback immediate transaction");
+    })
+}
+
+#[tokio::test]
+async fn manual_jobs_trigger_coalesces_running_job_and_returns_representative_row() {
+    let db_path = temp_db_path("manual-jobs-trigger-coalesces-running");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let running_job_id = proxy
+        .scheduled_job_claim("db_compaction", "scheduler", None, 1)
+        .await
+        .expect("claim scheduler job")
+        .expect("scheduler job created");
+    let admin_addr = spawn_keys_admin_server(
+        proxy.clone(),
+        ForwardAuthConfig::new(None, None, None, None),
+        true,
+    )
+    .await;
+
+    let response = Client::new()
+        .post(format!("http://{admin_addr}/api/jobs/trigger"))
+        .json(&serde_json::json!({
+            "jobType": "db_compaction"
+        }))
+        .send()
+        .await
+        .expect("manual jobs trigger request");
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let body: Value = response.json().await.expect("parse trigger response");
+    assert_eq!(
+        body.get("jobId").and_then(|value| value.as_i64()),
+        Some(running_job_id)
+    );
+    assert_eq!(
+        body.get("triggerSource").and_then(|value| value.as_str()),
+        Some("manual")
+    );
+    assert_eq!(
+        body.get("status").and_then(|value| value.as_str()),
+        Some("running")
+    );
+    assert_eq!(
+        body.get("coalesced").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        body.get("promoted").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&db_str)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("open db pool");
+    let row: (String, String) = sqlx::query_as(
+        "SELECT status, trigger_source FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(running_job_id)
+    .fetch_one(&pool)
+    .await
+    .expect("fetch promoted running row");
+    assert_eq!(row.0, "running");
+    assert_eq!(row.1, "manual");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn manual_jobs_trigger_coalesces_running_manual_job_without_waiting_for_write_lock() {
+    let db_path = temp_db_path("manual-jobs-trigger-running-manual-fast-path");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let running_job_id = proxy
+        .scheduled_job_claim("request_logs_gc", "manual", None, 1)
+        .await
+        .expect("claim manual job")
+        .expect("manual job created");
+    let release = hold_sqlite_write_lock_for_manual_trigger_test(
+        &db_str,
+        Duration::from_secs(12),
+    )
+    .await;
+    let admin_addr = spawn_keys_admin_server(
+        proxy.clone(),
+        ForwardAuthConfig::new(None, None, None, None),
+        true,
+    )
+    .await;
+
+    let started = Instant::now();
+    let response = Client::new()
+        .post(format!("http://{admin_addr}/api/jobs/trigger"))
+        .json(&serde_json::json!({
+            "jobType": "request_logs_gc"
+        }))
+        .send()
+        .await
+        .expect("manual jobs trigger request");
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "expected fast-path coalesce, elapsed={:?}",
+        started.elapsed()
+    );
+
+    let body: Value = response.json().await.expect("parse trigger response");
+    assert_eq!(
+        body.get("jobId").and_then(|value| value.as_i64()),
+        Some(running_job_id)
+    );
+    assert_eq!(
+        body.get("triggerSource").and_then(|value| value.as_str()),
+        Some("manual")
+    );
+    assert_eq!(
+        body.get("status").and_then(|value| value.as_str()),
+        Some("running")
+    );
+    assert_eq!(
+        body.get("coalesced").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        body.get("promoted").and_then(|value| value.as_bool()),
+        Some(false)
+    );
+
+    release.await.expect("release task");
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]

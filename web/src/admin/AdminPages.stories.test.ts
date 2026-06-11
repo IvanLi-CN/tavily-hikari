@@ -110,7 +110,7 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('Run')
-    expect(markup).toContain('DB compaction is already running; manual trigger was not queued.')
+    expect(markup).toContain('DB compaction is already running; using the active job.')
     expect(markup).toContain('DB compaction')
     expect(markup).toContain('Auto')
     expect(markup).toContain('Manual')

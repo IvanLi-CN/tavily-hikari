@@ -1376,14 +1376,31 @@ export function fetchApiKeySecret(id: string, signal?: AbortSignal): Promise<Api
   return requestJson(`/api/keys/${encoded}/secret`, { signal })
 }
 
-export interface TriggerJobResponse { job_id: number; job_type: string; trigger_source: string }
-interface ServerTriggerJobResponse { jobId: number; jobType: string; triggerSource: string }
+export interface TriggerJobResponse {
+  job_id: number
+  job_type: string
+  trigger_source: string
+  status: string
+  coalesced: boolean
+  promoted: boolean
+}
+interface ServerTriggerJobResponse {
+  jobId: number
+  jobType: string
+  triggerSource: string
+  status?: string
+  coalesced?: boolean
+  promoted?: boolean
+}
 
 function normalizeTriggerJobResponse(data: ServerTriggerJobResponse): TriggerJobResponse {
   return {
     job_id: data.jobId,
     job_type: data.jobType,
     trigger_source: data.triggerSource,
+    status: data.status ?? 'queued',
+    coalesced: data.coalesced ?? false,
+    promoted: data.promoted ?? false,
   }
 }
 
@@ -1540,7 +1557,8 @@ export interface JobLogView {
   status: string
   attempt: number
   message: string | null
-  started_at: number
+  queued_at: number
+  started_at: number | null
   finished_at: number | null
 }
 
@@ -1553,7 +1571,8 @@ interface ServerJobLogView {
   status: string
   attempt: number
   message: string | null
-  startedAt: number
+  queuedAt: number
+  startedAt: number | null
   finishedAt: number | null
 }
 
@@ -2724,6 +2743,7 @@ export function fetchJobs(
       status: item.status,
       attempt: item.attempt,
       message: item.message,
+      queued_at: item.queuedAt,
       started_at: item.startedAt,
       finished_at: item.finishedAt,
     })),

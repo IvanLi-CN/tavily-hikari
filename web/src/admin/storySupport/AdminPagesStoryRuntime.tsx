@@ -931,6 +931,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'success',
     attempt: 1,
     message: 'database_bytes_before=16106127360 database_bytes_after=4294967296 reclaimable_bytes_before=10737418240 reclaimable_bytes_after=0',
+    queued_at: now - 8,
     started_at: now - 8,
     finished_at: now - 2,
   },
@@ -943,6 +944,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'error',
     attempt: 1,
     message: 'attempted=18 success=17 skipped=0 failure=1 first_failure=hhf0517: token upstream status 400: {"error":"invalid_grant"}',
+    queued_at: now - 30,
     started_at: now - 30,
     finished_at: now - 12,
   },
@@ -955,6 +957,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'success',
     attempt: 1,
     message: 'refreshed_candidates=11',
+    queued_at: now - 120,
     started_at: now - 120,
     finished_at: now - 90,
   },
@@ -967,6 +970,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'success',
     attempt: 1,
     message: 'Synced 125 keys',
+    queued_at: now - 240,
     started_at: now - 240,
     finished_at: now - 210,
   },
@@ -976,10 +980,11 @@ const MOCK_JOBS: JobLogView[] = [
     trigger_source: 'scheduler',
     key_id: 'U2vK',
     key_group: null,
-    status: 'running',
+    status: 'queued',
     attempt: 1,
-    message: 'Aggregating daily partitions',
-    started_at: now - 420,
+    message: 'Waiting for manual-first maintenance slot',
+    queued_at: now - 420,
+    started_at: null,
     finished_at: null,
   },
   {
@@ -991,6 +996,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'error',
     attempt: 3,
     message: 'Provider rejected usage API: HTTP 403',
+    queued_at: now - 1_620,
     started_at: now - 1_620,
     finished_at: now - 1_560,
   },
@@ -1003,6 +1009,7 @@ const MOCK_JOBS: JobLogView[] = [
     status: 'success',
     attempt: 1,
     message: 'Pruned 1,260 old log rows',
+    queued_at: now - 3_200,
     started_at: now - 3_200,
     finished_at: now - 3_090,
   },
@@ -4561,7 +4568,9 @@ function JobsPageCanvas(): JSX.Element {
   const [jobFilter, setJobFilter] = useState<JobGroup>('all')
   const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set([608]))
   const [jobTriggering, setJobTriggering] = useState<string | null>(null)
-  const [jobTriggerNotice, setJobTriggerNotice] = useState('DB compaction is already running; manual trigger was not queued.')
+  const [jobTriggerNotice, setJobTriggerNotice] = useState(
+    jobsStrings.notices.existingRunning.replace('{job}', adminJobTypeLabel('db_compaction', jobsStrings)),
+  )
   const jobGroupCounts = useMemo(() => countAdminJobGroups(MOCK_JOBS), [])
   const jobFilterOptions = useMemo(
     () => buildAdminJobFilterOptions(jobsStrings, jobGroupCounts),
@@ -4576,8 +4585,8 @@ function JobsPageCanvas(): JSX.Element {
     setJobTriggering(jobType)
     setJobTriggerNotice(
       jobType === 'db_compaction'
-        ? 'DB compaction is already running; manual trigger was not queued.'
-        : `${adminJobTypeLabel(jobType, jobsStrings)} queued as a manual job.`,
+        ? jobsStrings.notices.existingRunning.replace('{job}', adminJobTypeLabel(jobType, jobsStrings))
+        : jobsStrings.notices.queued.replace('{job}', adminJobTypeLabel(jobType, jobsStrings)),
     )
     window.setTimeout(() => setJobTriggering(null), 900)
   }
@@ -4685,7 +4694,7 @@ function JobsPageCanvas(): JSX.Element {
                       </td>
                       <td>{jobSourceLabel(job.trigger_source, jobsStrings)}</td>
                       <td>{job.attempt}</td>
-                      <td>{formatTimestamp(job.started_at)}</td>
+                      <td>{formatTimestamp(job.started_at ?? job.queued_at)}</td>
                       <td className="jobs-message-cell">
                         {hasMessage ? (
                           <button

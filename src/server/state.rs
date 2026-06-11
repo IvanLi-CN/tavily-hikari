@@ -16,6 +16,12 @@ struct AppState {
 static DB_MAINTENANCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
+static MAINTENANCE_WORKER_WAKES: OnceLock<
+    std::sync::Mutex<HashMap<usize, std::sync::Weak<tokio::sync::Notify>>>,
+> = OnceLock::new();
+static MAINTENANCE_REMOTE_IO_SLOTS: OnceLock<
+    std::sync::Mutex<HashMap<usize, std::sync::Weak<Semaphore>>>,
+> = OnceLock::new();
 
 fn db_maintenance_gate() -> &'static RwLock<()> {
     DB_MAINTENANCE_GATE.get_or_init(|| RwLock::new(()))
@@ -31,6 +37,39 @@ fn db_job_execution_gate_for_state(state: &AppState) -> Arc<Mutex<()>> {
     let gate = Arc::new(Mutex::new(()));
     gates.insert(key, Arc::downgrade(&gate));
     gate
+}
+
+fn maintenance_worker_wake_for_state(state: &AppState) -> Arc<tokio::sync::Notify> {
+    let key = state as *const AppState as usize;
+    let wakes = MAINTENANCE_WORKER_WAKES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut wakes = wakes.lock().expect("maintenance worker wake map lock");
+    if let Some(wake) = wakes.get(&key).and_then(std::sync::Weak::upgrade) {
+        return wake;
+    }
+    let wake = Arc::new(tokio::sync::Notify::new());
+    wakes.insert(key, Arc::downgrade(&wake));
+    wake
+}
+
+fn maintenance_remote_io_slot_for_state(state: &AppState) -> Arc<Semaphore> {
+    let key = state as *const AppState as usize;
+    let slots =
+        MAINTENANCE_REMOTE_IO_SLOTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut slots = slots.lock().expect("maintenance remote I/O slot map lock");
+    if let Some(slot) = slots.get(&key).and_then(std::sync::Weak::upgrade) {
+        return slot;
+    }
+    let slot = Arc::new(Semaphore::new(1));
+    slots.insert(key, Arc::downgrade(&slot));
+    slot
+}
+
+fn try_acquire_maintenance_remote_io_slot_for_state(
+    state: &AppState,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    maintenance_remote_io_slot_for_state(state)
+        .try_acquire_owned()
+        .ok()
 }
 
 async fn acquire_db_maintenance_read_gate() -> tokio::sync::RwLockReadGuard<'static, ()> {

@@ -53,12 +53,54 @@
   scheduled-job claim/finish semantics.
 - Request-log GC catch-up releases the DB job execution gate between cleanup windows so the
   scheduler delay does not block other DB-backed jobs.
+- `scheduled_jobs` now persists queue admission explicitly: `queued_at` is stored for every
+  maintenance row, `started_at` is nullable until the worker actually starts execution, and job list
+  APIs order by `COALESCE(started_at, queued_at)` so queued work remains visible.
+- Added queue-side primitives on top of `scheduled_jobs`: enqueue/coalesce, dequeue, mark-running,
+  lookup-by-id, and abandon-all-active semantics.
+- Scheduler loops now enqueue DB-backed maintenance work instead of trying to claim-and-run inline.
+  One in-process maintenance worker consumes queued jobs, preserves manual-first priority, and
+  reuses the existing per-job execution logic.
+- Remote-I/O maintenance families (`quota_sync*`, LinuxDo user sync, GEO refresh) now share one
+  worker-scoped remote slot. That keeps the queue from fan-out marking a burst of `/usage` or GEO
+  jobs as `running` all at once, while still allowing DB-only jobs such as `request_logs_gc` to
+  advance during a pending remote phase.
+- Coalesced active jobs now promote `trigger_source` even while the representative row is already
+  `running`, so a later manual trigger is visible in both the returned trigger response and the
+  persisted job row instead of being silently hidden behind the original scheduler source.
+- Same-priority duplicate manual triggers now take a read-only coalesce fast path before attempting
+  a write transaction. That keeps `POST /api/jobs/trigger` from returning transient SQLite
+  `database is locked` errors when a bounded GC slice is already running and the request only needs
+  to attach to the existing representative row.
+- Request-log GC now requeues itself through the persisted queue when a bounded pass reports
+  `completed=false`, so backlog catch-up no longer depends on one scheduler loop keeping a running
+  row alive.
+- Manual `POST /api/jobs/trigger` now accepts/coalesces queue work and returns the representative
+  `job_id` instead of exposing `db_job_execution_busy`. The response also exposes representative
+  queue hints (`status`, `coalesced`, `promoted`) so the admin UI can distinguish “newly queued”
+  from “already running/queued”. Manual key quota sync still waits for a result, but it now does so
+  by enqueueing `quota_sync` and polling the representative job row to a terminal state.
+- `forward_proxy_geo_refresh` now follows the same split-phase model as quota sync and LinuxDo
+  sync: remote trace/GEO discovery happens outside the DB execution gate, candidate persistence and
+  `scheduled_jobs` completion happen inside a short DB window, and the worker may continue with
+  other queued non-remote jobs while the single remote-I/O slot is in flight.
+- Service startup now abandons leftover `queued` and `running` maintenance rows from the previous
+  process lifetime before starting the new worker.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and
   `--run-until-complete` for deterministic low-resource validation against production-derived
   database samples.
 - Added `request_logs_gc_stats` as a read-only operational binary for daily growth vs
   `cleaned_bodies` analysis directly from SQLite.
 - Added local contention tests for quota subject lock acquisition and scheduled job start.
+- Added queue lifecycle tests for coalesced enqueue promotion, delayed `started_at` materialization,
+  and abandon-all-active restart cleanup semantics.
+- Added coverage for manual trigger coalescing on an already running representative row, including
+  the HTTP response hints returned by `/api/jobs/trigger`.
+- Added regression coverage for duplicate manual trigger coalescing while another connection holds
+  the SQLite writer slot, both at the store layer and through the owner-facing HTTP trigger route.
+- Added worker orchestration coverage that proves only one remote-I/O maintenance job enters
+  `running` at a time and that `request_logs_gc` can still complete while a quota-sync remote phase
+  is waiting on `/usage`.
 - Added local contention coverage for forward-proxy startup subscription refresh and runtime
   snapshot persistence.
 - Added request-log GC coverage for old-row deletion, recent-row preservation, partial catch-up,
@@ -73,6 +115,11 @@
 - `cargo fmt --all`
 - Targeted SQLite lock contention tests.
 - Existing billing/MCP/quota-sync tests relevant to the touched paths.
+- `cargo test --lib scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source -- --nocapture`
+- `cargo test --bin tavily-hikari manual_jobs_trigger_coalesces_running_job_and_returns_representative_row -- --nocapture`
+- `cargo test --bin tavily-hikari forward_proxy_geo_refresh_job_records_scheduled_job_and_skips_direct -- --nocapture`
+- `cd web && bun test ./src/api.test.ts ./src/admin/AdminPages.stories.test.ts`
+- `cd web && bun run build`
 - `cargo test`
 - `cargo clippy -- -D warnings`
 - Full `cargo test --locked --all-features`

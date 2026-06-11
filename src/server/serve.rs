@@ -53,12 +53,12 @@ pub async fn serve(
         usage_base: usage_base.clone(),
         api_key_ip_geo_origin,
     });
-    match state.proxy.abandon_running_scheduled_jobs().await {
+    match state.proxy.abandon_active_scheduled_jobs().await {
         Ok(count) if count > 0 => {
-            eprintln!("scheduled-jobs: abandoned {count} stale running jobs from previous process")
+            eprintln!("scheduled-jobs: abandoned {count} stale queued/running jobs from previous process")
         }
         Ok(_) => {}
-        Err(err) => eprintln!("scheduled-jobs: stale running cleanup warning: {err}"),
+        Err(err) => eprintln!("scheduled-jobs: stale queued/running cleanup warning: {err}"),
     }
     spawn_ha_standby_sync_task(state.clone());
     println!(
@@ -414,6 +414,7 @@ pub async fn serve(
     println!("Tavily proxy listening on http://{bound_addr}");
 
     // Spawn background schedulers
+    spawn_maintenance_worker(state.clone());
     spawn_quota_sync_scheduler(state.clone());
     spawn_token_usage_rollup_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());

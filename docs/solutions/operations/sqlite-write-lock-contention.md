@@ -64,12 +64,32 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Keep scheduled-job trigger provenance separate from logical job type. Use a dedicated
   `trigger_source` column for scheduler/manual/auto runs so filters, duplicate detection, and
   history remain stable as operators gain manual trigger buttons.
+- When DB-backed maintenance work starts contending with request-path writes, do not make
+  owner-facing manual operations fight for the same execution gate. Persist maintenance jobs as
+  `queued`, coalesce duplicate logical work onto one representative row, and let one maintenance
+  worker consume that queue.
+- If a later manual trigger attaches to an already active representative row, surface that fact
+  explicitly. Promoting the representative `trigger_source` and returning `status/coalesced` hints
+  keeps the admin UI from falsely implying that a new job was rejected or silently ignored.
+- When a later trigger can reuse an already active representative row without changing its
+  priority/source, do that coalescing through a read-only fast path. Requiring `BEGIN IMMEDIATE`
+  before checking the active row turns harmless duplicate manual triggers into transient HTTP 500s
+  whenever a bounded GC slice is holding SQLite's writer slot.
+- Keep `queued_at` separate from `started_at`. A queued job has been accepted but has not entered a
+  DB execution window yet; collapsing those timestamps makes queue delay invisible and breaks admin
+  diagnosis.
 - Treat SQLite file shrinkage as a separate maintenance concern. Row deletes and body nulling create
   free pages; size convergence requires freelist telemetry plus a controlled compaction job after
   retention cleanup has made space reclaimable.
-- Serialize DB-backed scheduled/manual maintenance jobs through an in-process execution gate when
-  they can write SQLite. Same-job duplicate claiming is not enough when different logical jobs, such
-  as retention GC, quota sync, rollups, and compaction, can all compete for the single writer slot.
+- Serialize DB-backed scheduled/manual maintenance jobs through one persisted queue plus one
+  in-process worker. Same-job duplicate claiming alone is not enough when different logical jobs,
+  such as retention GC, quota sync, rollups, and compaction, can all compete for the single writer
+  slot.
+- For maintenance jobs that mix remote I/O with SQLite writes, split those phases. Remote fetches
+  such as forward-proxy GEO refresh or quota `/usage` probes should not hold the SQLite-writing
+  execution gate, and they should not pin the queue worker when the remaining DB phase can be
+  resumed separately. At the same time, do not “solve” that by fan-out spawning every remote job:
+  keep a bounded remote-I/O slot so the queue cannot turn a backlog into an upstream stampede.
 - Keep `quota_sync` bounded. `/usage` fetches should have a hard timeout, the whole sync run should
   finish on a short wall-clock budget, and stale `quota_sync` / `quota_sync/hot` `running` rows
   should be abandoned during the next claim instead of waiting for a restart.
@@ -103,9 +123,9 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Automatic compaction should be threshold-gated and cooldown-limited. Triggering it on every GC
   pass can turn a cleanup backlog into a new writer-pressure loop.
 - Stale `scheduled_jobs.running` rows from a previous process lifetime are still an operational
-  restart concern. Claim-time stale abandonment should cover fresh quota-sync wedges, but a
-  controlled restart remains the cleanest way to let startup stale-job cleanup mark older global
-  maintenance rows abandoned before operators retry manual jobs.
+  restart concern. Claim-time stale abandonment should cover fresh quota-sync wedges, but the
+  broader maintenance queue should abandon every leftover `queued`/`running` row on startup instead
+  of implicitly resuming unknown partial work from an old process.
 - If a retention table has aggregate-maintenance triggers, validate large-copy cleanup with the
   triggers in mind. For `request_logs`, GC deletes expired rollup buckets separately and suppresses
   the per-row rollup delete trigger inside each batch transaction to avoid spending minutes per

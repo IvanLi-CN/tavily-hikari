@@ -502,6 +502,7 @@ function createDemoJobs() {
     status: index % 5 === 0 ? 'failed' : 'success',
     attempt: 1 + (index % 2),
     message: index % 5 === 0 ? 'Demo retry scheduled' : 'Demo job completed',
+    queuedAt: nowSeconds(-index * 1800 - 15),
     startedAt: nowSeconds(-index * 1800),
     finishedAt: nowSeconds(-index * 1800 + 12),
   }))
@@ -847,6 +848,7 @@ function serverJobToView(job: ReturnType<typeof createDemoJobs>[number]) {
     status: job.status,
     attempt: job.attempt,
     message: job.message,
+    queued_at: job.queuedAt,
     started_at: job.startedAt,
     finished_at: job.finishedAt,
   }

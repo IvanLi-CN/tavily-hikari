@@ -1269,6 +1269,16 @@ export interface AdminTranslationsShape {
       show: string
       hide: string
     }
+    notices: {
+      queued: string
+      existingQueued: string
+      existingRunning: string
+    }
+    detailLabels: {
+      queued: string
+      finished: string
+      duration: string
+    }
     sources?: Record<string, string>
     types?: Record<string, string>
   }

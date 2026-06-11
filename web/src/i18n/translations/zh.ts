@@ -1363,6 +1363,16 @@ export const ZH: TranslationShape = {
           show: '展开任务详情',
           hide: '收起任务详情',
         },
+        notices: {
+          queued: '{job} 已加入手动队列。',
+          existingQueued: '{job} 已在队列中，沿用现有排队任务。',
+          existingRunning: '{job} 正在运行中，沿用当前执行中的任务。',
+        },
+        detailLabels: {
+          queued: '排队时间',
+          finished: '完成时间',
+          duration: '耗时',
+        },
         sources: { scheduler: '定时', manual: '手动', auto: '自动' },
         types: {
           quota_sync: '同步额度',
