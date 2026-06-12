@@ -44,6 +44,13 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
     },
   ],
   [
+    'src/api.test.ts',
+    {
+      max: 1560,
+      reason: 'Shared API contract coverage now includes the user-console overview snapshot and events surface until the largest runtime suites are split out.',
+    },
+  ],
+  [
     'src/admin/SystemSettingsModule.tsx',
     {
       max: 1560,
@@ -76,6 +83,13 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
     {
       max: 3140,
       reason: 'User console runtime still carries the route-level shell while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
+    },
+  ],
+  [
+    'src/UserConsole.stories.tsx',
+    {
+      max: 1860,
+      reason: 'Console Storybook proof still keeps overview, recharge, failover, and token-detail acceptance states on one stable owner-facing story surface.',
     },
   ],
   [
