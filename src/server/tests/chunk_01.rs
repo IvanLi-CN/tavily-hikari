@@ -41,13 +41,75 @@
         hex
     }
 
+    fn sqlite_test_layout(database_path: &str) -> (String, Option<String>) {
+        let database_path = database_path.trim();
+        let path = std::path::Path::new(database_path);
+        let is_explicit_sqlite_file = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("db"))
+            .unwrap_or(false);
+        if is_explicit_sqlite_file {
+            let parent = path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("sqlite");
+            return (
+                database_path.to_string(),
+                Some(
+                    parent
+                        .join(format!("{stem}-observability.db"))
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+            );
+        }
+
+        let trimmed = database_path.trim_end_matches(std::path::MAIN_SEPARATOR);
+        let base = if trimmed.is_empty() {
+            database_path
+        } else {
+            trimmed
+        };
+        (
+            format!("{}{}core.db", base, std::path::MAIN_SEPARATOR),
+            Some(format!(
+                "{}{}observability.db",
+                base,
+                std::path::MAIN_SEPARATOR
+            )),
+        )
+    }
+
     async fn connect_sqlite_test_pool(db_str: &str) -> sqlx::SqlitePool {
+        let (core_database_path, observability_database_path) = sqlite_test_layout(db_str);
+        let observability_database_path = observability_database_path.clone();
+        let pool_options = if let Some(observability_database_path) = observability_database_path {
+            SqlitePoolOptions::new().after_connect(move |conn, _meta| {
+                let observability_database_path = observability_database_path.clone();
+                Box::pin(async move {
+                    let attach_sql = format!(
+                        "ATTACH DATABASE '{}' AS observability",
+                        observability_database_path.replace('\'', "''")
+                    );
+                    sqlx::query(&attach_sql).execute(conn).await?;
+                    Ok(())
+                })
+            })
+        } else {
+            SqlitePoolOptions::new()
+        };
+
         let options = SqliteConnectOptions::new()
-            .filename(db_str)
+            .filename(core_database_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
-        SqlitePoolOptions::new()
+        pool_options
             .min_connections(1)
             .max_connections(5)
             .connect_with(options)
@@ -55,14 +117,51 @@
             .expect("connect to sqlite")
     }
 
+    fn sqlite_test_observability_table(table: &str) -> bool {
+        matches!(
+            table,
+            "request_logs"
+                | "request_log_catalog_rollups"
+                | "api_key_usage_buckets"
+                | "dashboard_request_rollup_buckets"
+        )
+    }
+
+    fn sqlite_test_table_info_source(table: &str) -> String {
+        if sqlite_test_observability_table(table) {
+            format!("observability.pragma_table_info('{table}')")
+        } else {
+            format!("pragma_table_info('{table}')")
+        }
+    }
+
     async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
-        let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1");
+        let sql = format!(
+            "SELECT 1 FROM {} WHERE name = ? LIMIT 1",
+            sqlite_test_table_info_source(table)
+        );
         sqlx::query_scalar::<_, i64>(&sql)
             .bind(column)
             .fetch_optional(pool)
             .await
             .expect("probe sqlite column")
             .is_some()
+    }
+
+    async fn sqlite_column_not_null(
+        pool: &sqlx::SqlitePool,
+        table: &str,
+        column: &str,
+    ) -> Option<i64> {
+        let sql = format!(
+            r#"SELECT "notnull" FROM {} WHERE name = ? LIMIT 1"#,
+            sqlite_test_table_info_source(table)
+        );
+        sqlx::query_scalar::<_, i64>(&sql)
+            .bind(column)
+            .fetch_optional(pool)
+            .await
+            .expect("probe sqlite column notnull")
     }
 
     async fn fetch_api_key_rows(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
@@ -334,7 +433,7 @@
         fn set(key: &'static str, value: &str) -> Self {
             let lock = env_var_test_lock()
                 .lock()
-                .expect("env var test lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);

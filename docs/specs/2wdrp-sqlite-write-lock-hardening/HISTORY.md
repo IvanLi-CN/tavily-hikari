@@ -66,3 +66,13 @@
 - Split `forward_proxy_geo_refresh` into a remote discovery phase plus a short DB persistence phase,
   and let the maintenance worker keep one bounded remote-I/O slot instead of blocking the queue on
   GEO I/O or fan-out starting multiple remote maintenance jobs at once.
+
+## 2026-06-13
+
+- Finished the first dual-DB stabilization pass after the observability sidecar split exposed
+  follow-up drift in admin/test paths.
+- Server test helpers now attach the sibling observability DB and use observability-aware schema
+  probes, so migration/admin coverage exercises the same attached-database layout as production.
+- Admin request-log page reads now self-heal missing catalog rollups before serving totals/facets,
+  and auth-token log queries now qualify `auth_token_logs.*` columns explicitly after the
+  `billing_ledger` join split removed synchronous billing truth from the legacy history table.

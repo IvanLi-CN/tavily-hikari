@@ -2,21 +2,20 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io::{self, Write},
     path::Path,
-    time::Duration,
 };
 
 use clap::Parser;
 use dotenvy::dotenv;
 use serde::Serialize;
 use serde_json::Value;
-use sqlx::{
-    Row,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-};
+use sqlx::Row;
 use tavily_hikari::{
     DEFAULT_UPSTREAM, REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW,
     REQUEST_LOG_VISIBILITY_VISIBLE, TavilyProxy,
 };
+
+#[path = "support/sqlite_sidecar.rs"]
+mod sqlite_sidecar;
 
 const MAX_RETRY_GAP_SECS: i64 = 10;
 const FAILURE_KIND_TOOL_ARGUMENT_VALIDATION: &str = "tool_argument_validation";
@@ -116,16 +115,7 @@ fn normalize_request_body_without_include_usage(bytes: &[u8]) -> Option<(Value, 
 }
 
 async fn connect_sqlite_pool(db_path: &str) -> Result<sqlx::SqlitePool, sqlx::Error> {
-    let options = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(5)
-        .connect_with(options)
-        .await
+    sqlite_sidecar::connect_sqlite_pool(db_path, true, false, 5).await
 }
 
 async fn load_shadow_logs(
@@ -440,6 +430,7 @@ mod tests {
         RetryRepairCandidate, build_candidates, connect_sqlite_pool,
         normalize_request_body_without_include_usage, suppress_retry_shadows,
     };
+    use crate::sqlite_sidecar;
     use chrono::Utc;
     use nanoid::nanoid;
     use serde_json::{Value, json};
@@ -450,6 +441,13 @@ mod tests {
 
     fn temp_db_path(prefix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
+    }
+
+    fn cleanup_temp_db(db_str: &str) {
+        let _ = std::fs::remove_file(db_str);
+        if let Some(observability_db) = sqlite_sidecar::observability_database_path(db_str) {
+            let _ = std::fs::remove_file(observability_db);
+        }
     }
 
     async fn init_proxy_and_pool(prefix: &str) -> (TavilyProxy, sqlx::SqlitePool, String) {
@@ -711,6 +709,6 @@ mod tests {
         assert_eq!(row.try_get::<i64, _>("success_count").expect("success"), 1);
         assert_eq!(row.try_get::<i64, _>("error_count").expect("error"), 0);
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 }

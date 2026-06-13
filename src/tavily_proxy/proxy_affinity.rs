@@ -24,17 +24,9 @@ impl TavilyProxy {
             }
         };
         let local_guard = lock.lock_owned().await;
-        let lease = self
-            .key_store
-            .acquire_quota_subject_lock(
-                &subject,
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
-            )
-            .await?;
         Ok(Some(McpSessionInitGuard {
             _local: local_guard,
-            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
+            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), subject),
         }))
     }
 
@@ -58,17 +50,9 @@ impl TavilyProxy {
             }
         };
         let local_guard = lock.lock_owned().await;
-        let lease = self
-            .key_store
-            .acquire_quota_subject_lock(
-                &subject,
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
-            )
-            .await?;
         Ok(McpSessionRequestGuard {
             _local: local_guard,
-            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
+            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), subject),
         })
     }
 

@@ -84,6 +84,7 @@ impl TavilyProxy {
         user_id: &str,
         series: AdminUserUsageSeriesKind,
     ) -> Result<AdminUserUsageSeries, ProxyError> {
+        self.key_store.flush_request_stats_writes().await?;
         let now = Utc::now();
         let (
             metric_kind,

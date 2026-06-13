@@ -218,17 +218,7 @@
         );
 
         // Verify token logs contain a quota_exhausted entry with HTTP 429.
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .expect("connect to sqlite");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         let row = sqlx::query(
             r#"
@@ -551,17 +541,7 @@
         // the proxy attempts to charge credits.
         arrived.notified().await;
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .expect("connect to sqlite");
+        let pool = connect_sqlite_test_pool(&db_str).await;
         sqlx::query("DROP TABLE token_usage_buckets")
             .execute(&pool)
             .await
@@ -703,17 +683,7 @@
         let verdict = proxy.peek_token_quota(&token.id).await.expect("peek quota");
         assert_eq!(verdict.hourly_used, 0);
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .expect("connect to sqlite");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         let row = sqlx::query(
             r#"
@@ -1288,22 +1258,12 @@
         assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
 
         // Verify request_logs entry has success status, structured status, and redacted bodies.
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .expect("connect to sqlite");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         let row = sqlx::query(
             r#"
             SELECT request_body, response_body, result_status, tavily_status_code
-            FROM request_logs
+            FROM observability.request_logs
             ORDER BY id DESC
             LIMIT 1
             "#,

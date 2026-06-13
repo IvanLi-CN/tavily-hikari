@@ -1,4 +1,144 @@
 impl TavilyProxy {
+    fn spawn_request_stats_coalescer(&self) {
+        let store = self.key_store.clone();
+        let coalescer = self.key_store.request_stats_coalescer.clone();
+        tokio::spawn(async move {
+            loop {
+                let should_flush_now = {
+                    let state = coalescer.state.lock().await;
+                    state.shutdown
+                        || !state.pending_dashboard_rollups.is_empty()
+                        || !state.pending_api_key_usage.is_empty()
+                        || !state.pending_auth_token_activity.is_empty()
+                        || !state.pending_account_request_rollups.is_empty()
+                        || !state.pending_request_log_catalog.is_empty()
+                        || state.pending_dashboard_rollups.len()
+                            + state.pending_api_key_usage.len()
+                            + state.pending_auth_token_activity.len()
+                            + state.pending_account_request_rollups.len()
+                            + state.pending_request_log_catalog.len()
+                            >= RequestStatsCoalescer::MAX_PENDING_KEYS
+                };
+                if !should_flush_now {
+                    tokio::select! {
+                        _ = coalescer.wake.notified() => {}
+                        _ = tokio::time::sleep(RequestStatsCoalescer::FLUSH_INTERVAL) => {}
+                    }
+                }
+
+                let shutdown_after_flush = {
+                    let state = coalescer.state.lock().await;
+                    if state.pending_dashboard_rollups.is_empty()
+                        && state.pending_api_key_usage.is_empty()
+                        && state.pending_auth_token_activity.is_empty()
+                        && state.pending_account_request_rollups.is_empty()
+                        && state.pending_request_log_catalog.is_empty()
+                        && !state.shutdown
+                    {
+                        continue;
+                    }
+                    state.shutdown
+                };
+
+                if let Err(err) = store.flush_request_stats_writes().await {
+                    eprintln!("request stats persist warning: {err}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
+                {
+                    let state = coalescer.state.lock().await;
+                    if shutdown_after_flush
+                        && state.pending_dashboard_rollups.is_empty()
+                        && state.pending_api_key_usage.is_empty()
+                        && state.pending_auth_token_activity.is_empty()
+                        && state.pending_account_request_rollups.is_empty()
+                        && state.pending_request_log_catalog.is_empty()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_ha_state_coalescer(&self) {
+        let store = self.key_store.clone();
+        let coalescer = self.ha_state_coalescer.clone();
+        tokio::spawn(async move {
+            loop {
+                let should_flush_now = {
+                    let state = coalescer.state.lock().await;
+                    state.shutdown
+                        || state.pending_node_state.is_some()
+                        || state.pending_sync_watermarks.len() >= HaStateCoalescer::MAX_PENDING_KEYS
+                };
+                if !should_flush_now {
+                    tokio::select! {
+                        _ = coalescer.wake.notified() => {}
+                        _ = tokio::time::sleep(HaStateCoalescer::FLUSH_INTERVAL) => {}
+                    }
+                }
+
+                let (pending_node_state, pending_sync_watermarks, shutdown_after_flush) = {
+                    let mut state = coalescer.state.lock().await;
+                    if state.pending_node_state.is_none()
+                        && state.pending_sync_watermarks.is_empty()
+                        && !state.shutdown
+                    {
+                        continue;
+                    }
+                    state.flushing = true;
+                    (
+                        state.pending_node_state.take(),
+                        state.pending_sync_watermarks.drain().collect::<Vec<_>>(),
+                        state.shutdown,
+                    )
+                };
+
+                for pending in pending_sync_watermarks {
+                    let (name, watermark) = pending;
+                    if let Err(err) = store
+                        .persist_ha_sync_watermark(
+                            &name,
+                            watermark.source_node_id.as_deref(),
+                            watermark.target_node_id.as_deref(),
+                            watermark.watermark,
+                            watermark.detail.as_deref(),
+                        )
+                        .await
+                    {
+                        eprintln!("HA sync watermark persist warning: {err}");
+                    }
+                }
+
+                if let Some(pending) = pending_node_state
+                    && let Err(err) = store
+                        .persist_ha_node_state(
+                            &pending.node_id,
+                            pending.role,
+                            pending.edgeone_origin.as_deref(),
+                            pending.message.as_deref(),
+                        )
+                        .await
+                {
+                    eprintln!("HA node state persist warning: {err}");
+                }
+
+                {
+                    let mut state = coalescer.state.lock().await;
+                    state.flushing = false;
+                    coalescer.flushed.notify_waiters();
+                    if shutdown_after_flush
+                        && state.pending_node_state.is_none()
+                        && state.pending_sync_watermarks.is_empty()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     pub async fn persist_ha_node_state(
         &self,
         node_id: &str,
@@ -6,9 +146,10 @@ impl TavilyProxy {
         edgeone_origin: Option<&str>,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
-        self.key_store
-            .persist_ha_node_state(node_id, role, edgeone_origin, message)
-            .await
+        self.ha_state_coalescer
+            .enqueue_node_state(node_id, role, edgeone_origin, message)
+            .await;
+        Ok(())
     }
 
     pub async fn get_persisted_ha_node_role(&self) -> Result<Option<HaNodeRole>, ProxyError> {
@@ -23,13 +164,23 @@ impl TavilyProxy {
         watermark: i64,
         detail: Option<&str>,
     ) -> Result<(), ProxyError> {
-        self.key_store
-            .persist_ha_sync_watermark(name, source_node_id, target_node_id, watermark, detail)
-            .await
+        self.ha_state_coalescer
+            .enqueue_sync_watermark(name, source_node_id, target_node_id, watermark, detail)
+            .await;
+        Ok(())
     }
 
     pub async fn get_ha_sync_watermark(&self, name: &str) -> Result<Option<i64>, ProxyError> {
+        if let Some(pending) = self.ha_state_coalescer.pending_sync_watermark(name).await {
+            return Ok(Some(pending.watermark));
+        }
         self.key_store.get_ha_sync_watermark(name).await
+    }
+
+    pub async fn flush_ha_state_writes(&self) -> Result<(), ProxyError> {
+        self.ha_state_coalescer.wake.notify_one();
+        self.ha_state_coalescer.wait_until_flushed().await;
+        Ok(())
     }
 
     pub async fn export_ha_baseline_ndjson(

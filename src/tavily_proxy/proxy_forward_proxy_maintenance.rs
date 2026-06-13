@@ -143,10 +143,10 @@ impl TavilyProxy {
         let mut fetched = HashMap::new();
         let mut fetched_any_subscription = false;
 
-        let results = futures_util::stream::iter(subscription_urls.iter().cloned().map(
-            |subscription_url| {
-                let subscription_client = subscription_client.clone();
-                async move {
+        let results = futures_util::stream::iter(subscription_urls.iter().map(|subscription_url| {
+            let subscription_url = subscription_url.clone();
+            let subscription_client = subscription_client.clone();
+            async move {
                 let urls = forward_proxy::fetch_subscription_proxy_urls(
                     &subscription_client,
                     &subscription_url,
@@ -156,9 +156,8 @@ impl TavilyProxy {
                 )
                 .await;
                 (subscription_url, urls)
-                }
-            },
-        ))
+            }
+        }))
         .buffer_unordered(FORWARD_PROXY_STARTUP_SUBSCRIPTION_FETCH_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
@@ -1926,18 +1925,13 @@ impl TavilyProxy {
             }
         };
         let local_guard = lock.lock_owned().await;
-        let lease = self
-            .key_store
-            .acquire_quota_subject_lock(
-                billing_subject,
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
-                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
-            )
-            .await?;
         Ok(TokenBillingGuard {
             billing_subject: billing_subject.to_string(),
             _local: local_guard,
-            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
+            _subject_lock: QuotaSubjectLockGuard::new(
+                self.key_store.clone(),
+                billing_subject.to_string(),
+            ),
         })
 }
 

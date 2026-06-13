@@ -1,10 +1,10 @@
 use clap::Parser;
 use serde::Serialize;
-use sqlx::{
-    Row,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-};
-use std::{path::PathBuf, str::FromStr};
+use sqlx::Row;
+use std::path::PathBuf;
+
+#[path = "support/sqlite_sidecar.rs"]
+mod sqlite_sidecar;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,14 +50,7 @@ struct Summary {
 }
 
 async fn connect_sqlite_pool(db_path: &str) -> Result<sqlx::SqlitePool, sqlx::Error> {
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path))?
-        .create_if_missing(false)
-        .journal_mode(SqliteJournalMode::Wal)
-        .read_only(true);
-    SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
+    sqlite_sidecar::connect_sqlite_pool(db_path, false, true, 1).await
 }
 
 async fn fetch_request_log_rows(

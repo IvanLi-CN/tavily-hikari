@@ -53,27 +53,32 @@ impl KeyStore {
         let limit = limit.clamp(1, 500) as i64;
         let mut builder = QueryBuilder::new(
             r#"
-            SELECT id, api_key_id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
-                   request_kind_key, request_kind_label, request_kind_detail,
-                   counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
-                   key_effect_summary, binding_effect_code, binding_effect_summary,
-                   selection_effect_code, selection_effect_summary,
-                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
-                   upstream_operation, fallback_reason, created_at
+            SELECT auth_token_logs.id, auth_token_logs.api_key_id, auth_token_logs.method, auth_token_logs.path, auth_token_logs.query, auth_token_logs.http_status, auth_token_logs.mcp_status,
+                   CASE
+                       WHEN COALESCE(bl.billing_state, auth_token_logs.billing_state) = 'charged'
+                       THEN COALESCE(bl.business_credits, auth_token_logs.business_credits)
+                       ELSE NULL
+                   END AS business_credits,
+                   auth_token_logs.request_kind_key, auth_token_logs.request_kind_label, auth_token_logs.request_kind_detail,
+                   auth_token_logs.counts_business_quota, auth_token_logs.result_status, auth_token_logs.error_message, auth_token_logs.failure_kind, auth_token_logs.key_effect_code,
+                   auth_token_logs.key_effect_summary, auth_token_logs.binding_effect_code, auth_token_logs.binding_effect_summary,
+                   auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
+                   auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
+                   auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
             FROM auth_token_logs
-            WHERE token_id =
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            WHERE auth_token_logs.token_id =
             "#,
         );
         builder.push_bind(token_id);
         if let Some(bid) = before_id {
-            builder.push(" AND id < ");
+            builder.push(" AND auth_token_logs.id < ");
             builder.push_bind(bid);
         }
         if billing_filter == TokenLogBillingFilter::Billable {
-            builder.push(" AND counts_business_quota = 1");
+            builder.push(" AND auth_token_logs.counts_business_quota = 1");
         }
-        builder.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        builder.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
         builder.push_bind(limit);
         let rows = builder.build().fetch_all(&self.pool).await?;
 
@@ -391,50 +396,58 @@ impl KeyStore {
         let page_size = page_size.clamp(1, 200);
         let query_limit = page_size + 1;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
-        let stored_request_kind_sql = "request_kind_key";
+        let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_request_kind_sql = token_log_request_kind_key_sql(
+            "auth_token_logs.path",
+            "auth_token_logs.request_kind_key",
+        );
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
             stored_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
             &legacy_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
         let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
         let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
-            SELECT id, api_key_id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
-                   request_kind_key,
-                   request_kind_label,
-                   request_kind_detail,
-                   counts_business_quota,
-                   result_status, error_message, failure_kind, key_effect_code,
-                   key_effect_summary, binding_effect_code, binding_effect_summary,
-                   selection_effect_code, selection_effect_summary,
-                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
-                   upstream_operation, fallback_reason, created_at
+            SELECT auth_token_logs.id, auth_token_logs.api_key_id, auth_token_logs.method, auth_token_logs.path, auth_token_logs.query, auth_token_logs.http_status, auth_token_logs.mcp_status,
+                   CASE
+                       WHEN COALESCE(bl.billing_state, auth_token_logs.billing_state) = 'charged'
+                       THEN COALESCE(bl.business_credits, auth_token_logs.business_credits)
+                       ELSE NULL
+                   END AS business_credits,
+                   auth_token_logs.request_kind_key,
+                   auth_token_logs.request_kind_label,
+                   auth_token_logs.request_kind_detail,
+                   auth_token_logs.counts_business_quota,
+                   auth_token_logs.result_status, auth_token_logs.error_message, auth_token_logs.failure_kind, auth_token_logs.key_effect_code,
+                   auth_token_logs.key_effect_summary, auth_token_logs.binding_effect_code, auth_token_logs.binding_effect_summary,
+                   auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
+                   auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
+                   auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
             FROM auth_token_logs
-            WHERE token_id =
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            WHERE auth_token_logs.token_id =
             "#
             .to_string(),
         );
         rows_query.push_bind(token_id);
-        rows_query.push(" AND created_at >= ");
+        rows_query.push(" AND auth_token_logs.created_at >= ");
         rows_query.push_bind(since);
         if let Some(until) = until {
-            rows_query.push(" AND created_at < ");
+            rows_query.push(" AND auth_token_logs.created_at < ");
             rows_query.push_bind(until);
         }
         if let Some(result_status) = result_status {
@@ -460,7 +473,7 @@ impl KeyStore {
             rows_query.push_bind(selection_effect_code);
         }
         if let Some(key_id) = key_id {
-            rows_query.push(" AND api_key_id = ");
+            rows_query.push(" AND auth_token_logs.api_key_id = ");
             rows_query.push_bind(key_id);
         }
         if !normalized_request_kinds.is_empty() {
@@ -483,13 +496,20 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        Self::push_desc_cursor_clause(&mut rows_query, "created_at", "id", cursor, direction, true);
+        Self::push_desc_cursor_clause(
+            &mut rows_query,
+            "auth_token_logs.created_at",
+            "auth_token_logs.id",
+            cursor,
+            direction,
+            true,
+        );
         match direction {
             RequestLogsCursorDirection::Older => {
-                rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+                rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
             }
             RequestLogsCursorDirection::Newer => {
-                rows_query.push(" ORDER BY created_at ASC, id ASC LIMIT ");
+                rows_query.push(" ORDER BY auth_token_logs.created_at ASC, auth_token_logs.id ASC LIMIT ");
             }
         }
         rows_query.push_bind(query_limit);
@@ -569,34 +589,38 @@ impl KeyStore {
         let page = page.max(1) as i64;
         let offset = (page - 1) * per_page;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
-        let stored_request_kind_sql = "request_kind_key";
+        let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_request_kind_sql = token_log_request_kind_key_sql(
+            "auth_token_logs.path",
+            "auth_token_logs.request_kind_key",
+        );
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
             stored_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
             &legacy_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
         let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
-        let mut total_query =
-            QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ");
+        let mut total_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM auth_token_logs WHERE auth_token_logs.token_id = ",
+        );
         total_query.push_bind(token_id);
-        total_query.push(" AND created_at >= ");
+        total_query.push(" AND auth_token_logs.created_at >= ");
         total_query.push_bind(since);
         if let Some(until) = until {
-            total_query.push(" AND created_at < ");
+            total_query.push(" AND auth_token_logs.created_at < ");
             total_query.push_bind(until);
         }
         if let Some(result_status) = result_status {
@@ -610,19 +634,19 @@ impl KeyStore {
             );
         }
         if let Some(key_effect_code) = key_effect_code {
-            total_query.push(" AND key_effect_code = ");
+            total_query.push(" AND auth_token_logs.key_effect_code = ");
             total_query.push_bind(key_effect_code);
         }
         if let Some(binding_effect_code) = binding_effect_code {
-            total_query.push(" AND binding_effect_code = ");
+            total_query.push(" AND auth_token_logs.binding_effect_code = ");
             total_query.push_bind(binding_effect_code);
         }
         if let Some(selection_effect_code) = selection_effect_code {
-            total_query.push(" AND selection_effect_code = ");
+            total_query.push(" AND auth_token_logs.selection_effect_code = ");
             total_query.push_bind(selection_effect_code);
         }
         if let Some(key_id) = key_id {
-            total_query.push(" AND api_key_id = ");
+            total_query.push(" AND auth_token_logs.api_key_id = ");
             total_query.push_bind(key_id);
         }
         if !normalized_request_kinds.is_empty() {
@@ -652,27 +676,32 @@ impl KeyStore {
 
         let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
-            SELECT id, api_key_id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
-                   request_kind_key,
-                   request_kind_label,
-                   request_kind_detail,
-                   counts_business_quota,
-                   result_status, error_message, failure_kind, key_effect_code,
-                   key_effect_summary, binding_effect_code, binding_effect_summary,
-                   selection_effect_code, selection_effect_summary,
-                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
-                   upstream_operation, fallback_reason, created_at
+            SELECT auth_token_logs.id, auth_token_logs.api_key_id, auth_token_logs.method, auth_token_logs.path, auth_token_logs.query, auth_token_logs.http_status, auth_token_logs.mcp_status,
+                   CASE
+                       WHEN COALESCE(bl.billing_state, auth_token_logs.billing_state) = 'charged'
+                       THEN COALESCE(bl.business_credits, auth_token_logs.business_credits)
+                       ELSE NULL
+                   END AS business_credits,
+                   auth_token_logs.request_kind_key,
+                   auth_token_logs.request_kind_label,
+                   auth_token_logs.request_kind_detail,
+                   auth_token_logs.counts_business_quota,
+                   auth_token_logs.result_status, auth_token_logs.error_message, auth_token_logs.failure_kind, auth_token_logs.key_effect_code,
+                   auth_token_logs.key_effect_summary, auth_token_logs.binding_effect_code, auth_token_logs.binding_effect_summary,
+                   auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
+                   auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
+                   auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
             FROM auth_token_logs
-            WHERE token_id =
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            WHERE auth_token_logs.token_id =
             "#
             .to_string(),
         );
         rows_query.push_bind(token_id);
-        rows_query.push(" AND created_at >= ");
+        rows_query.push(" AND auth_token_logs.created_at >= ");
         rows_query.push_bind(since);
         if let Some(until) = until {
-            rows_query.push(" AND created_at < ");
+            rows_query.push(" AND auth_token_logs.created_at < ");
             rows_query.push_bind(until);
         }
         if let Some(result_status) = result_status {
@@ -686,19 +715,19 @@ impl KeyStore {
             );
         }
         if let Some(key_effect_code) = key_effect_code {
-            rows_query.push(" AND key_effect_code = ");
+            rows_query.push(" AND auth_token_logs.key_effect_code = ");
             rows_query.push_bind(key_effect_code);
         }
         if let Some(binding_effect_code) = binding_effect_code {
-            rows_query.push(" AND binding_effect_code = ");
+            rows_query.push(" AND auth_token_logs.binding_effect_code = ");
             rows_query.push_bind(binding_effect_code);
         }
         if let Some(selection_effect_code) = selection_effect_code {
-            rows_query.push(" AND selection_effect_code = ");
+            rows_query.push(" AND auth_token_logs.selection_effect_code = ");
             rows_query.push_bind(selection_effect_code);
         }
         if let Some(key_id) = key_id {
-            rows_query.push(" AND api_key_id = ");
+            rows_query.push(" AND auth_token_logs.api_key_id = ");
             rows_query.push_bind(key_id);
         }
         if !normalized_request_kinds.is_empty() {
@@ -721,7 +750,7 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
         rows_query.push_bind(per_page);
         rows_query.push(" OFFSET ");
         rows_query.push_bind(offset);
@@ -812,26 +841,36 @@ impl KeyStore {
         require_non_empty: bool,
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
-        let stored_request_kind_sql = "request_kind_key";
+        let column_expr = match column_expr {
+            "api_key_id" => "auth_token_logs.api_key_id",
+            "key_effect_code" => "auth_token_logs.key_effect_code",
+            "binding_effect_code" => "auth_token_logs.binding_effect_code",
+            "selection_effect_code" => "auth_token_logs.selection_effect_code",
+            _ => column_expr,
+        };
+        let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_request_kind_sql = token_log_request_kind_key_sql(
+            "auth_token_logs.path",
+            "auth_token_logs.request_kind_key",
+        );
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
             stored_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
             &legacy_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
         let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT {column_expr} AS value, COUNT(*) AS count FROM auth_token_logs"
         ));
@@ -876,26 +915,29 @@ impl KeyStore {
         until: Option<i64>,
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
-        let stored_request_kind_sql = "request_kind_key";
+        let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
-        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_request_kind_sql = token_log_request_kind_key_sql(
+            "auth_token_logs.path",
+            "auth_token_logs.request_kind_key",
+        );
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
             stored_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
             &legacy_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
         let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "
@@ -944,7 +986,7 @@ impl KeyStore {
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64, i64, i64);
-        let stored_request_kind_sql = "request_kind_key";
+        let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let canonical_request_kind_predicate_sql =
             canonical_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_predicate_sql =
@@ -956,28 +998,31 @@ impl KeyStore {
                 {stored_request_kind_sql} AS request_kind_key,
                 {stored_label_sql} AS request_kind_label,
                 COUNT(*) AS request_count,
-                MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
-                MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
+                MAX(CASE WHEN auth_token_logs.counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                MAX(CASE WHEN auth_token_logs.counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
             FROM auth_token_logs
             "
         ));
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
             stored_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_request_kind_sql = token_log_request_kind_key_sql(
+            "auth_token_logs.path",
+            "auth_token_logs.request_kind_key",
+        );
         let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
             &legacy_request_kind_sql,
-            "counts_business_quota",
-            "result_status",
-            "COALESCE(failure_kind, '')",
+            "auth_token_logs.counts_business_quota",
+            "auth_token_logs.result_status",
+            "COALESCE(auth_token_logs.failure_kind, '')",
         );
         let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
         let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
         Self::push_token_logs_catalog_filters(
             &mut stored_query,
             token_id,
@@ -1007,8 +1052,8 @@ impl KeyStore {
                 {legacy_request_kind_sql} AS request_kind_key,
                 {legacy_label_sql} AS request_kind_label,
                 COUNT(*) AS request_count,
-                MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
-                MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
+                MAX(CASE WHEN auth_token_logs.counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                MAX(CASE WHEN auth_token_logs.counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
             FROM auth_token_logs
             "
         ));
@@ -1819,6 +1864,7 @@ impl KeyStore {
         &self,
         include_quarantine_detail: bool,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let query = format!(
             "{} ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
             Self::api_key_metrics_query(include_quarantine_detail),
@@ -1834,6 +1880,7 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let limit = limit.clamp(1, 50) as i64;
         let statuses = vec![STATUS_EXHAUSTED.to_string()];
         let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
@@ -1886,6 +1933,7 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -1959,6 +2007,7 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let mut builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(true));
         builder.push(" AND ak.id = ");
         builder.push_bind(key_id);

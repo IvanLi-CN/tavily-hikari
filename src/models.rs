@@ -2237,7 +2237,7 @@ where
     let invalid_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
-        FROM auth_token_logs
+        FROM billing_ledger
         WHERE billing_state = ?
           AND COALESCE(business_credits, 0) > 0
           AND created_at >= ?
@@ -2281,7 +2281,7 @@ where
         SELECT
             COUNT(*) AS charged_rows,
             COALESCE(SUM(business_credits), 0) AS charged_credits
-        FROM auth_token_logs
+        FROM billing_ledger
         WHERE billing_state = ?
           AND COALESCE(business_credits, 0) > 0
           AND created_at >= ?
@@ -2310,7 +2310,7 @@ where
             billing_subject,
             COALESCE(SUM(business_credits), 0) AS total_credits,
             COUNT(*) AS charged_rows
-        FROM auth_token_logs
+        FROM billing_ledger
         WHERE billing_state = ?
           AND COALESCE(business_credits, 0) > 0
           AND created_at >= ?

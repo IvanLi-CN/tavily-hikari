@@ -349,17 +349,7 @@
             .await
             .expect("mark gamma exhausted");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open db pool");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         for (key_id, last_used_at) in [
             (&alpha_active_id, 500_i64),
@@ -761,17 +751,7 @@
         let quarantined_key_id = rows[0].id.clone();
         let temporary_isolated_key_id = rows[1].id.clone();
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open db pool");
+        let pool = connect_sqlite_test_pool(&db_str).await;
         sqlx::query(
             r#"INSERT INTO api_key_quarantines
                (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
@@ -968,17 +948,7 @@
             .await
             .expect("finish job");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open db pool");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         sqlx::query("UPDATE api_keys SET status = 'exhausted', status_changed_at = ? WHERE id = ?")
             .bind(Utc::now().timestamp())
@@ -1002,7 +972,7 @@
         {
             sqlx::query(
                 r#"
-                INSERT INTO request_logs (
+                INSERT INTO observability.request_logs (
                     api_key_id,
                     auth_token_id,
                     method,
@@ -1174,17 +1144,7 @@
             .await
             .expect("create access token");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open db pool");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         sqlx::query("DROP TABLE scheduled_jobs")
             .execute(&pool)
@@ -1329,17 +1289,7 @@
         let yesterday_window_anchor = yesterday_start + (today_window_anchor - today_start);
         let yesterday_log_start = (yesterday_window_anchor - 3).max(yesterday_start);
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open db pool");
+        let pool = connect_sqlite_test_pool(&db_str).await;
 
         sqlx::query(
             r#"
@@ -1381,7 +1331,7 @@
 
         sqlx::query(
             r#"
-            INSERT INTO api_key_usage_buckets (
+            INSERT INTO observability.api_key_usage_buckets (
                 api_key_id,
                 bucket_start,
                 bucket_secs,
@@ -1408,7 +1358,7 @@
         for offset in 0..8_i64 {
             sqlx::query(
                 r#"
-                INSERT INTO request_logs (
+                INSERT INTO observability.request_logs (
                     api_key_id,
                     auth_token_id,
                     method,
@@ -1434,7 +1384,7 @@
         }
         sqlx::query(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 api_key_id,
                 auth_token_id,
                 method,

@@ -64,6 +64,7 @@ pub const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 pub const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
 pub const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
 const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 5_000;
+const XRAY_LOCAL_SOCKS_READY_TIMEOUT_MS: u64 = 15_000;
 
 include!("forward_proxy/settings_and_endpoints.rs");
 include!("forward_proxy/manager.rs");

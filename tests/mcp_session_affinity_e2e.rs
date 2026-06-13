@@ -55,6 +55,10 @@ impl Drop for BackendGuard {
         let _ = std::fs::remove_file(&self.db_path);
         let _ = std::fs::remove_file(format!("{}-wal", self.db_path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", self.db_path.display()));
+        let observability_db_path = sqlite_observability_db_path(&self.db_path);
+        let _ = std::fs::remove_file(&observability_db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", observability_db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", observability_db_path.display()));
     }
 }
 
@@ -115,17 +119,39 @@ async fn wait_for_health(port: u16) {
 }
 
 async fn connect_sqlite_test_pool(db_path: &Path) -> sqlx::SqlitePool {
+    let observability_db_path = sqlite_observability_db_path(db_path);
     let options = SqliteConnectOptions::new()
         .filename(db_path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
     SqlitePoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            let observability_db_path = observability_db_path.clone();
+            Box::pin(async move {
+                let attach_sql = format!(
+                    "ATTACH DATABASE '{}' AS observability",
+                    observability_db_path.to_string_lossy().replace('\'', "''")
+                );
+                sqlx::query(&attach_sql).execute(conn).await?;
+                Ok(())
+            })
+        })
         .min_connections(1)
         .max_connections(5)
         .connect_with(options)
         .await
         .expect("connect sqlite pool")
+}
+
+fn sqlite_observability_db_path(db_path: &Path) -> PathBuf {
+    let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("sqlite");
+    parent.join(format!("{stem}-observability.db"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1124,7 +1150,7 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     let (request_key_effect, request_failure_kind): (String, String) = sqlx::query_as(
         r#"
         SELECT key_effect_code, failure_kind
-        FROM request_logs
+        FROM observability.request_logs
         ORDER BY id DESC
         LIMIT 1
         "#,
@@ -1159,7 +1185,7 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     ) = sqlx::query_as(
         r#"
         SELECT api_key_id, key_effect_code, selection_effect_code
-        FROM request_logs
+        FROM observability.request_logs
         WHERE request_kind_key = 'mcp:initialize'
         ORDER BY id DESC
         LIMIT 1

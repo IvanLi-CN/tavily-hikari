@@ -128,29 +128,6 @@ async fn replace_account_usage_rollup_records(
 }
 
 impl KeyStore {
-    pub(crate) async fn record_account_request_rollup_for_user_id(
-        &self,
-        user_id: Option<&str>,
-        created_at: i64,
-    ) -> Result<(), ProxyError> {
-        let Some(user_id) = user_id else {
-            return Ok(());
-        };
-        let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
-        upsert_account_usage_rollup_executor(
-            &self.pool,
-            user_id,
-            AccountUsageRollupMetricKind::RequestCount,
-            AccountUsageRollupBucketKind::FiveMinute,
-            bucket_start,
-            1,
-            created_at,
-        )
-        .await?;
-
-        Ok(())
-    }
-
     pub(crate) async fn record_account_business_credit_rollups(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -310,15 +287,38 @@ impl KeyStore {
 
         let business_rows = sqlx::query_as::<_, (String, i64, i64)>(
             r#"
-            SELECT billing_subject, created_at, COALESCE(business_credits, 0) AS business_credits
-            FROM auth_token_logs
-            WHERE billing_state = ?
-              AND COALESCE(business_credits, 0) > 0
-              AND billing_subject LIKE 'account:%'
-              AND created_at >= ?
-            ORDER BY created_at ASC, id ASC
+            WITH charged_rows AS (
+                SELECT
+                    bl.auth_token_log_id AS source_log_id,
+                    bl.billing_subject,
+                    bl.created_at,
+                    COALESCE(bl.business_credits, 0) AS business_credits
+                FROM billing_ledger bl
+                WHERE bl.billing_state = ?
+                  AND COALESCE(bl.business_credits, 0) > 0
+                  AND bl.billing_subject LIKE 'account:%'
+                  AND bl.created_at >= ?
+                UNION ALL
+                SELECT
+                    atl.id AS source_log_id,
+                    atl.billing_subject,
+                    atl.created_at,
+                    COALESCE(atl.business_credits, 0) AS business_credits
+                FROM auth_token_logs atl
+                LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = atl.id
+                WHERE bl.auth_token_log_id IS NULL
+                  AND atl.billing_state = ?
+                  AND COALESCE(atl.business_credits, 0) > 0
+                  AND atl.billing_subject LIKE 'account:%'
+                  AND atl.created_at >= ?
+            )
+            SELECT billing_subject, created_at, business_credits
+            FROM charged_rows
+            ORDER BY created_at ASC, source_log_id ASC
             "#,
         )
+        .bind(BILLING_STATE_CHARGED)
+        .bind(monthly_coverage_start.min(business_backfill_start))
         .bind(BILLING_STATE_CHARGED)
         .bind(monthly_coverage_start.min(business_backfill_start))
         .fetch_all(&self.pool)

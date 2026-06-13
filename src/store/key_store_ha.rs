@@ -39,11 +39,11 @@ const HA_BASELINE_TABLES: &[&str] = &[
     "api_key_quarantines",
     "api_key_quota_sync_samples",
     "api_key_transient_backoffs",
-    "api_key_usage_buckets",
     "api_key_user_usage_buckets",
     "api_keys",
     "auth_token_quota",
     "auth_tokens",
+    "billing_ledger",
     "forward_proxy_key_affinity",
     "forward_proxy_node_overrides",
     "forward_proxy_settings",
@@ -676,12 +676,15 @@ impl KeyStore {
     }
 
     pub(crate) async fn table_exists(&self, table: &str) -> Result<bool, ProxyError> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
-        )
-        .bind(table)
-        .fetch_one(&self.pool)
-        .await?
+        let sql = if is_observability_table(table) {
+            "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = ?)"
+        } else {
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)"
+        };
+        Ok(sqlx::query_scalar::<_, i64>(sql)
+            .bind(table)
+            .fetch_one(&self.pool)
+            .await?
             != 0)
     }
 
@@ -728,7 +731,11 @@ impl KeyStore {
     }
 
     async fn table_columns(&self, table: &str) -> Result<Vec<String>, ProxyError> {
-        let sql = format!("PRAGMA table_info({})", quote_sqlite_identifier(table));
+        let sql = if is_observability_table(table) {
+            format!("SELECT name FROM observability.pragma_table_info('{}')", table)
+        } else {
+            format!("SELECT name FROM pragma_table_info('{}')", table)
+        };
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| row.try_get::<String, _>("name").map_err(ProxyError::from))
@@ -748,7 +755,7 @@ impl KeyStore {
             let old_json = ha_trigger_json_object("OLD", &columns);
             let new_resource_id = ha_trigger_resource_id("NEW", &columns);
             let old_resource_id = ha_trigger_resource_id("OLD", &columns);
-            let table_ident = quote_sqlite_identifier(table);
+            let table_ident = sqlite_qualified_table_name(table);
             let table_lit = quote_sqlite_string(table);
             let meta_filter = if *table == "meta" {
                 Some(format!("key IN ({})", ha_meta_key_list_sql()))
@@ -890,6 +897,11 @@ fn ha_trigger_resource_id(alias: &str, columns: &[String]) -> String {
         format!(
             "COALESCE(CAST({alias}.{} AS TEXT), CAST({alias}.rowid AS TEXT))",
             quote_sqlite_identifier("id")
+        )
+    } else if columns.iter().any(|column| column == "auth_token_log_id") {
+        format!(
+            "COALESCE(CAST({alias}.{} AS TEXT), CAST({alias}.rowid AS TEXT))",
+            quote_sqlite_identifier("auth_token_log_id")
         )
     } else {
         format!("CAST({alias}.rowid AS TEXT)")

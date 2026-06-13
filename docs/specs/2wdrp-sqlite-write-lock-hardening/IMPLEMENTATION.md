@@ -84,6 +84,59 @@
   sync: remote trace/GEO discovery happens outside the DB execution gate, candidate persistence and
   `scheduled_jobs` completion happen inside a short DB window, and the worker may continue with
   other queued non-remote jobs while the single remote-I/O slot is in flight.
+- Online billing-subject serialization no longer uses `quota_subject_locks` as the request-path
+  mutex. The hot path now uses an in-process subject guard, keeping fail-closed billing semantics
+  while removing acquire/refresh/release writes for every billable request.
+- Added `billing_ledger` as the synchronous billing truth source. Pending/charged state,
+  `billing_subject`, `business_credits`, request linkage, and settlement metadata are backfilled
+  from `auth_token_logs` at startup and then maintained in `billing_ledger` on every new pending
+  billing record and settlement.
+- Pending-billing readers and rollups that previously scanned `auth_token_logs.billing_state` now
+  read from `billing_ledger`, while `auth_token_logs.billing_state` is still mirrored for backward
+  compatibility with existing admin/history surfaces.
+- HA baseline capture now includes `billing_ledger`, so recovery/export paths preserve the new
+  billing truth table.
+- Added an in-process HA state coalescer. `persist_ha_node_state` and
+  `persist_ha_sync_watermark` now merge writes inside a `1s / 100 keys` window, and owner-facing
+  reads that require immediate consistency explicitly flush before returning.
+- Added a request-stats coalescer for request-derived rollups. Hot-path `request_logs` inserts now
+  synchronously write only the `request_logs` row itself, then enqueue:
+  - dashboard request rollup deltas,
+  - API-key usage bucket deltas,
+  - request-log catalog rollup deltas,
+  - auth-token `total_requests/last_used_at` deltas,
+  - account request-rate (`account_usage_rollup_buckets` five-minute) deltas.
+- Request-derived rollups now flush in one background batcher (`1s / 100 pending keys`) instead of
+  issuing synchronous rollup writes per request. Owner-facing summary, key-metrics, and request-log
+  catalog reads flush that coalescer before reading.
+- Request observability tables now attach through a per-core sibling sidecar SQLite file
+  (`<core-stem>-observability.db`) in the new layout. `request_logs`, `api_key_usage_buckets`,
+  `dashboard_request_rollup_buckets`, and `request_log_catalog_rollups` are created in that
+  sidecar, and startup migrates legacy single-DB `request_logs` state into the sidecar before
+  dropping the old main-DB table.
+- Server/admin test helpers now mirror that sidecar layout instead of opening only the core DB
+  file. SQLite schema assertions for `request_logs` and the other observability tables now probe
+  `observability.pragma_table_info(...)`, which keeps migration and admin-route coverage aligned
+  with the production attached-database layout.
+- Auth-token list/admin-token/user-token reads and admin rate-5m usage series now also flush the
+  request-stats coalescer before reading, so owner-facing token activity and request-rate charts
+  stay current without putting those derived writes back on the request hot path.
+- `request_log_catalog_rollups` no longer relies on per-request SQLite triggers for normal hot-path
+  inserts. Owner-facing catalog reads keep a narrow rebuild-on-read fallback for legacy/manual SQL
+  mutations so admin surfaces can self-heal if rollups were emptied or bypassed.
+- `/api/logs` page reads now also ensure request-log catalog rollups are available before reading
+  totals/facets, so an empty or bypassed rollup table does not make the admin logs surface show an
+  empty total while visible `request_logs` rows still exist in the observability sidecar.
+- The request-log GC path no longer drops/recreates the catalog delete trigger per batch, because
+  the catalog rollup table is now maintained by the request-stats coalescer plus explicit rebuilds.
+- SQLite attached-database trigger limits mean observability sidecar tables no longer participate
+  in HA outbox trigger replication. Those tables are now treated as rebuildable/eventually
+  consistent owner-facing views; the HA baseline remains focused on core truth tables such as
+  `billing_ledger`, bindings, quota state, and control-plane facts.
+- Auth-token log page/detail queries that join `billing_ledger` now qualify `auth_token_logs.*`
+  columns explicitly and avoid unnecessary billing joins in count/facet queries. That removes the
+  `ambiguous column name` regressions that appeared once synchronous billing truth moved out of
+  `auth_token_logs` and the admin token-log surfaces began reading mixed ledger/history data.
 - Service startup now abandons leftover `queued` and `running` maintenance rows from the previous
   process lifetime before starting the new worker.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and
@@ -105,6 +158,15 @@
   snapshot persistence.
 - Added request-log GC coverage for old-row deletion, recent-row preservation, partial catch-up,
   catalog rollup cleanup, and transient SQLite write-lock retry.
+- Added request-stats coverage proving summary/key-metric reads flush pending coalesced deltas
+  before returning.
+- Added request-stats coverage proving auth-token activity reads and admin rate-5m usage-series
+  reads flush pending coalesced deltas before returning.
+- Added request-log catalog coverage proving catalog reads still self-heal after direct SQL
+  `request_logs` mutations and rollup rebuild scenarios.
+- Added server-level regression coverage proving the admin logs page still returns rows/totals from
+  the sidecar-backed `request_logs` layout and that token-log detail/page reads remain stable after
+  the `billing_ledger` join split.
 - Added process-level DB job execution gate coverage that proves overlapping jobs serialize before
   entering their write windows.
 - Added startup-order coverage for restored subscription runtime with a slow subscription endpoint,
@@ -118,6 +180,9 @@
 - `cargo test --lib scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source -- --nocapture`
 - `cargo test --bin tavily-hikari manual_jobs_trigger_coalesces_running_job_and_returns_representative_row -- --nocapture`
 - `cargo test --bin tavily-hikari forward_proxy_geo_refresh_job_records_scheduled_job_and_skips_direct -- --nocapture`
+- `cargo test --lib tests::request_log_catalog_rollup_feeds_catalog_and_legacy_page -- --nocapture`
+- `cargo test --bin tavily-hikari admin_logs_endpoint_returns_unfiltered_and_filtered_pages -- --nocapture`
+- `cargo test --bin tavily-hikari token_log_details_return_linked_bodies_and_page_results_keep_null_payloads -- --nocapture`
 - `cd web && bun test ./src/api.test.ts ./src/admin/AdminPages.stories.test.ts`
 - `cd web && bun run build`
 - `cargo test`

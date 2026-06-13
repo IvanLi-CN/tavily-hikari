@@ -1,3 +1,12 @@
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct QuotaSubjectDbLease {
+    pub(crate) subject: String,
+    pub(crate) owner: String,
+    pub(crate) ttl: Duration,
+}
+
 impl KeyStore {
     const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -733,6 +742,8 @@ impl KeyStore {
         note: Option<&str>,
         preferred_token_id: Option<&str>,
     ) -> Result<AuthTokenSecret, ProxyError> {
+        let retry_deadline = Instant::now() + Duration::from_secs(5);
+        let mut retry_attempt = 0usize;
         let preferred_token_id = preferred_token_id
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -744,7 +755,24 @@ impl KeyStore {
         {
             for _ in 0..4 {
                 let now = Utc::now().timestamp();
-                let mut tx = self.pool.begin().await?;
+                let mut tx = match self.pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        let err = ProxyError::Database(err);
+                        if sleep_before_sqlite_transient_write_retry(
+                            "ensure user token binding preferred begin",
+                            retry_attempt,
+                            retry_deadline,
+                            &err,
+                        )
+                        .await
+                        {
+                            retry_attempt += 1;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
 
                 let owner = sqlx::query_as::<_, (String,)>(
                     r#"SELECT user_id
@@ -774,10 +802,42 @@ impl KeyStore {
                         .await;
                         match touch {
                             Ok(_) => {
-                                tx.commit().await?;
+                                if let Err(err) = tx.commit().await {
+                                    let err = ProxyError::Database(err);
+                                    if sleep_before_sqlite_transient_write_retry(
+                                        "ensure user token binding preferred touch commit",
+                                        retry_attempt,
+                                        retry_deadline,
+                                        &err,
+                                    )
+                                    .await
+                                    {
+                                        retry_attempt += 1;
+                                        continue;
+                                    }
+                                    return Err(err);
+                                }
                                 self.cache_token_binding(preferred_token_id, Some(user_id))
                                     .await;
                                 return Ok(preferred_secret);
+                            }
+                            Err(sqlx::Error::Database(db_err))
+                                if db_err.message().contains("database is locked") =>
+                            {
+                                tx.rollback().await.ok();
+                                let err = ProxyError::Database(sqlx::Error::Database(db_err));
+                                if sleep_before_sqlite_transient_write_retry(
+                                    "ensure user token binding preferred touch",
+                                    retry_attempt,
+                                    retry_deadline,
+                                    &err,
+                                )
+                                .await
+                                {
+                                    retry_attempt += 1;
+                                    continue;
+                                }
+                                return Err(err);
                             }
                             Err(err) => {
                                 tx.rollback().await.ok();
@@ -801,7 +861,21 @@ impl KeyStore {
 
                         match result {
                             Ok(_) => {
-                                tx.commit().await?;
+                                if let Err(err) = tx.commit().await {
+                                    let err = ProxyError::Database(err);
+                                    if sleep_before_sqlite_transient_write_retry(
+                                        "ensure user token binding preferred insert commit",
+                                        retry_attempt,
+                                        retry_deadline,
+                                        &err,
+                                    )
+                                    .await
+                                    {
+                                        retry_attempt += 1;
+                                        continue;
+                                    }
+                                    return Err(err);
+                                }
                                 self.cache_token_binding(preferred_token_id, Some(user_id))
                                     .await;
                                 return Ok(preferred_secret);
@@ -809,6 +883,24 @@ impl KeyStore {
                             Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
                                 tx.rollback().await.ok();
                                 continue;
+                            }
+                            Err(sqlx::Error::Database(db_err))
+                                if db_err.message().contains("database is locked") =>
+                            {
+                                tx.rollback().await.ok();
+                                let err = ProxyError::Database(sqlx::Error::Database(db_err));
+                                if sleep_before_sqlite_transient_write_retry(
+                                    "ensure user token binding preferred insert",
+                                    retry_attempt,
+                                    retry_deadline,
+                                    &err,
+                                )
+                                .await
+                                {
+                                    retry_attempt += 1;
+                                    continue;
+                                }
+                                return Err(err);
                             }
                             Err(err) => {
                                 tx.rollback().await.ok();
@@ -830,7 +922,24 @@ impl KeyStore {
         let note = note.unwrap_or("").trim().to_string();
 
         for _ in 0..4 {
-            let mut tx = self.pool.begin().await?;
+            let mut tx = match self.pool.begin().await {
+                Ok(tx) => tx,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        "ensure user token binding begin",
+                        retry_attempt,
+                        retry_deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
             if let Some((token_id, secret)) = sqlx::query_as::<_, (String, String)>(
                 r#"SELECT b.token_id, t.secret
                    FROM user_token_bindings b
@@ -900,7 +1009,21 @@ impl KeyStore {
 
             match inserted_binding {
                 Ok(_) => {
-                    tx.commit().await?;
+                    if let Err(err) = tx.commit().await {
+                        let err = ProxyError::Database(err);
+                        if sleep_before_sqlite_transient_write_retry(
+                            "ensure user token binding commit",
+                            retry_attempt,
+                            retry_deadline,
+                            &err,
+                        )
+                        .await
+                        {
+                            retry_attempt += 1;
+                            continue;
+                        }
+                        return Err(err);
+                    }
                     self.cache_token_binding(&token_id, Some(user_id)).await;
                     return Ok(AuthTokenSecret {
                         id: token_id.clone(),
@@ -910,6 +1033,24 @@ impl KeyStore {
                 Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
                     tx.rollback().await.ok();
                     continue;
+                }
+                Err(sqlx::Error::Database(db_err))
+                    if db_err.message().contains("database is locked") =>
+                {
+                    tx.rollback().await.ok();
+                    let err = ProxyError::Database(sqlx::Error::Database(db_err));
+                    if sleep_before_sqlite_transient_write_retry(
+                        "ensure user token binding insert",
+                        retry_attempt,
+                        retry_deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
                 }
                 Err(err) => {
                     tx.rollback().await.ok();
@@ -1188,16 +1329,9 @@ impl KeyStore {
         .bind(request_user_id.as_deref())
         .execute(&self.pool)
         .await?;
-
-        sqlx::query(
-            "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ? AND deleted_at IS NULL",
-        )
-        .bind(created_at)
-        .bind(token_id)
-        .execute(&self.pool)
-        .await?;
-        self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
-            .await?;
+        self.request_stats_coalescer
+            .enqueue_auth_token_activity(token_id, request_user_id.as_deref(), created_at)
+            .await;
         Ok(())
     }
 
@@ -1334,14 +1468,51 @@ impl KeyStore {
         .await?;
 
         sqlx::query(
-            "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ? AND deleted_at IS NULL",
+            r#"
+            INSERT INTO billing_ledger (
+                auth_token_log_id,
+                token_id,
+                billing_subject,
+                billing_state,
+                business_credits,
+                request_user_id,
+                api_key_id,
+                request_log_id,
+                result_status,
+                created_at,
+                settled_at,
+                error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            ON CONFLICT(auth_token_log_id) DO UPDATE SET
+                token_id = excluded.token_id,
+                billing_subject = excluded.billing_subject,
+                billing_state = excluded.billing_state,
+                business_credits = excluded.business_credits,
+                request_user_id = excluded.request_user_id,
+                api_key_id = excluded.api_key_id,
+                request_log_id = excluded.request_log_id,
+                result_status = excluded.result_status,
+                created_at = excluded.created_at,
+                settled_at = NULL,
+                error_message = excluded.error_message
+            "#,
         )
-        .bind(created_at)
+        .bind(log_id)
         .bind(token_id)
+        .bind(billing_subject)
+        .bind(billing_state)
+        .bind(business_credits)
+        .bind(request_user_id.as_deref())
+        .bind(api_key_id)
+        .bind(request_log_id)
+        .bind(result_status)
+        .bind(created_at)
+        .bind(error_message)
         .execute(&self.pool)
         .await?;
-        self.record_account_request_rollup_for_user_id(request_user_id.as_deref(), created_at)
-            .await?;
+        self.request_stats_coalescer
+            .enqueue_auth_token_activity(token_id, request_user_id.as_deref(), created_at)
+            .await;
         Ok(log_id)
     }
 
@@ -1430,10 +1601,10 @@ impl KeyStore {
     ) -> Result<Vec<i64>, ProxyError> {
         sqlx::query_scalar(
             r#"
-            SELECT id
-            FROM auth_token_logs
+            SELECT auth_token_log_id
+            FROM billing_ledger
             WHERE billing_state = ? AND billing_subject = ? AND COALESCE(business_credits, 0) > 0
-            ORDER BY id ASC
+            ORDER BY auth_token_log_id ASC
             "#,
         )
         .bind(BILLING_STATE_PENDING)
@@ -1450,7 +1621,7 @@ impl KeyStore {
         sqlx::query_scalar(
             r#"
             SELECT DISTINCT billing_subject
-            FROM auth_token_logs
+            FROM billing_ledger
             WHERE billing_state = ?
               AND token_id = ?
               AND billing_subject IS NOT NULL
@@ -1469,6 +1640,33 @@ impl KeyStore {
         &self,
         log_id: i64,
     ) -> Result<PendingBillingSettleOutcome, ProxyError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut retry_attempt = 0usize;
+        loop {
+            match self.apply_pending_billing_log_once(log_id).await {
+                Ok(outcome) => return Ok(outcome),
+                Err(err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        "apply_pending_billing_log",
+                        retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    async fn apply_pending_billing_log_once(
+        &self,
+        log_id: i64,
+    ) -> Result<PendingBillingSettleOutcome, ProxyError> {
         let mut tx = self.pool.begin().await?;
         #[cfg(test)]
         let force_claim_miss = {
@@ -1483,13 +1681,21 @@ impl KeyStore {
         } else {
             sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>, String, Option<i64>)>(
                 r#"
-                UPDATE auth_token_logs
-                SET billing_state = ?
-                WHERE id = ? AND billing_state = ?
-                RETURNING COALESCE(business_credits, 0), billing_subject, created_at, api_key_id, result_status, request_log_id
+                SELECT
+                    COALESCE(business_credits, 0),
+                    billing_subject,
+                    COALESCE(
+                        (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                        billing_ledger.created_at
+                    ),
+                    api_key_id,
+                    result_status,
+                    request_log_id
+                FROM billing_ledger
+                WHERE auth_token_log_id = ? AND billing_state = ?
+                LIMIT 1
                 "#,
             )
-            .bind(BILLING_STATE_CHARGED)
             .bind(log_id)
             .bind(BILLING_STATE_PENDING)
             .fetch_optional(&mut *tx)
@@ -1500,7 +1706,7 @@ impl KeyStore {
             claimed
         else {
             let billing_state = sqlx::query_scalar::<_, String>(
-                "SELECT billing_state FROM auth_token_logs WHERE id = ? LIMIT 1",
+                "SELECT billing_state FROM billing_ledger WHERE auth_token_log_id = ? LIMIT 1",
             )
             .bind(log_id)
             .fetch_optional(&mut *tx)
@@ -1532,6 +1738,40 @@ impl KeyStore {
         };
 
         if credits <= 0 {
+            let updated = sqlx::query(
+                r#"
+                UPDATE billing_ledger
+                SET billing_state = ?,
+                    created_at = COALESCE(
+                        (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                        billing_ledger.created_at
+                    ),
+                    settled_at = ?,
+                    error_message = NULL
+                WHERE auth_token_log_id = ? AND billing_state = ?
+                "#,
+            )
+            .bind(BILLING_STATE_CHARGED)
+            .bind(Utc::now().timestamp())
+            .bind(log_id)
+            .bind(BILLING_STATE_PENDING)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() == 0 {
+                tx.rollback().await.ok();
+                return Ok(PendingBillingSettleOutcome::RetryLater);
+            }
+            sqlx::query(
+                r#"
+                UPDATE auth_token_logs
+                SET billing_state = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(BILLING_STATE_CHARGED)
+            .bind(log_id)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             return Ok(PendingBillingSettleOutcome::Charged);
         }
@@ -1563,27 +1803,6 @@ impl KeyStore {
             .bind(credits)
             .bind(request_log_id)
             .execute(&mut *tx)
-            .await?;
-
-            let credit_counts = DashboardRequestRollupCounts {
-                local_estimated_credits: credits,
-                ..DashboardRequestRollupCounts::default()
-            };
-            Self::upsert_dashboard_request_rollup_bucket(
-                &mut tx,
-                minute_bucket,
-                SECS_PER_MINUTE,
-                credit_counts,
-                charge_ts,
-            )
-            .await?;
-            Self::upsert_dashboard_request_rollup_bucket(
-                &mut tx,
-                day_bucket,
-                SECS_PER_DAY,
-                credit_counts,
-                charge_ts,
-            )
             .await?;
         }
 
@@ -1793,7 +2012,44 @@ impl KeyStore {
             });
         }
 
+        let updated = sqlx::query(
+            r#"
+            UPDATE billing_ledger
+            SET billing_state = ?,
+                created_at = COALESCE(
+                    (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                    billing_ledger.created_at
+                ),
+                settled_at = ?,
+                error_message = NULL
+            WHERE auth_token_log_id = ? AND billing_state = ?
+            "#,
+        )
+        .bind(BILLING_STATE_CHARGED)
+        .bind(Utc::now().timestamp())
+        .bind(log_id)
+        .bind(BILLING_STATE_PENDING)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            tx.rollback().await.ok();
+            return Ok(PendingBillingSettleOutcome::RetryLater);
+        }
+        sqlx::query(
+            r#"
+            UPDATE auth_token_logs
+            SET billing_state = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(BILLING_STATE_CHARGED)
+        .bind(log_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
+        self.request_stats_coalescer
+            .enqueue_dashboard_credit_rollups(charge_ts, credits)
+            .await;
         Ok(PendingBillingSettleOutcome::Charged)
     }
 
@@ -1802,6 +2058,23 @@ impl KeyStore {
         log_id: i64,
         message: &str,
     ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE billing_ledger
+            SET error_message = CASE
+                WHEN error_message IS NULL OR error_message = '' THEN ?
+                WHEN error_message = ? THEN error_message
+                ELSE error_message || ' | ' || ?
+            END
+            WHERE auth_token_log_id = ?
+            "#,
+        )
+        .bind(message)
+        .bind(message)
+        .bind(message)
+        .bind(log_id)
+        .execute(&self.pool)
+        .await?;
         sqlx::query(
             r#"
             UPDATE auth_token_logs
@@ -1822,6 +2095,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn acquire_quota_subject_lock(
         &self,
         subject: &str,
@@ -1935,6 +2209,8 @@ impl KeyStore {
         }
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) async fn refresh_quota_subject_lock(
         &self,
         lease: &QuotaSubjectDbLease,
@@ -1981,6 +2257,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn release_quota_subject_lock(
         &self,
         lease: &QuotaSubjectDbLease,

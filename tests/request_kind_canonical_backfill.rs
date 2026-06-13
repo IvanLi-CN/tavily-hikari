@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -19,17 +19,50 @@ fn temp_db_path(prefix: &str) -> PathBuf {
 }
 
 async fn connect_sqlite_test_pool(db_path: &str) -> sqlx::SqlitePool {
+    let observability_db_path = sqlite_observability_db_path(Path::new(db_path));
     let options = SqliteConnectOptions::new()
         .filename(db_path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
     SqlitePoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            let observability_db_path = observability_db_path.clone();
+            Box::pin(async move {
+                let attach_sql = format!(
+                    "ATTACH DATABASE '{}' AS observability",
+                    observability_db_path.to_string_lossy().replace('\'', "''")
+                );
+                sqlx::query(&attach_sql).execute(conn).await?;
+                Ok(())
+            })
+        })
         .min_connections(1)
         .max_connections(1)
         .connect_with(options)
         .await
         .expect("open sqlite pool")
+}
+
+fn sqlite_observability_db_path(db_path: &Path) -> PathBuf {
+    let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("sqlite");
+    parent.join(format!("{stem}-observability.db"))
+}
+
+fn cleanup_sqlite_files(db_path: &Path) {
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+    let observability_db_path = sqlite_observability_db_path(db_path);
+    let _ = std::fs::remove_file(&observability_db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", observability_db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", observability_db_path.display()));
 }
 
 fn run_backfill(db_path: &str, batch_size: i64) {
@@ -51,8 +84,11 @@ fn run_backfill(db_path: &str, batch_size: i64) {
 }
 
 async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
+    let (schema, table_name) = table
+        .split_once('.')
+        .map_or(("main", table), |(schema, table)| (schema, table));
     sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1"
+        "SELECT 1 FROM {schema}.pragma_table_info('{table_name}') WHERE name = ? LIMIT 1"
     ))
     .bind(column)
     .fetch_optional(pool)
@@ -85,7 +121,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
 
     let request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             auth_token_id,
             method,
@@ -173,7 +209,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
     let request_row = sqlx::query(
         r#"
         SELECT request_kind_key, request_kind_label, request_kind_detail
-        FROM request_logs
+        FROM observability.request_logs
         WHERE id = ?
         "#,
     )
@@ -233,7 +269,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
     let request_snapshot = sqlx::query(
         r#"
         SELECT request_kind_key, request_kind_label, request_kind_detail
-        FROM request_logs
+        FROM observability.request_logs
         WHERE id = ?
         "#,
     )
@@ -258,7 +294,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
     let request_row_again = sqlx::query(
         r#"
         SELECT request_kind_key, request_kind_label, request_kind_detail
-        FROM request_logs
+        FROM observability.request_logs
         WHERE id = ?
         "#,
     )
@@ -290,7 +326,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
             request_row_again
                 .try_get::<Option<String>, _>(column)
                 .expect("second request column"),
-            "request_logs {column} should stay stable across reruns",
+            "observability.request_logs {column} should stay stable across reruns",
         );
         assert_eq!(
             token_snapshot
@@ -303,7 +339,7 @@ async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
         );
     }
 
-    let _ = std::fs::remove_file(db_path);
+    cleanup_sqlite_files(&db_path);
 }
 
 #[tokio::test]
@@ -330,7 +366,7 @@ async fn request_kind_backfill_resumes_from_meta_cursor() {
 
     let first_request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id, auth_token_id, method, path, status_code, tavily_status_code,
             result_status, request_kind_key, request_kind_label, failure_kind,
             key_effect_code, request_body, response_body, forwarded_headers, dropped_headers, visibility, created_at
@@ -350,7 +386,7 @@ async fn request_kind_backfill_resumes_from_meta_cursor() {
     .expect("insert first request log");
     let second_request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id, auth_token_id, method, path, status_code, tavily_status_code,
             result_status, request_kind_key, request_kind_label, failure_kind,
             key_effect_code, request_body, response_body, forwarded_headers, dropped_headers, visibility, created_at
@@ -423,13 +459,13 @@ async fn request_kind_backfill_resumes_from_meta_cursor() {
     run_backfill(&db_str, 1);
 
     let first_request_kind: String =
-        sqlx::query_scalar("SELECT request_kind_key FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_kind_key FROM observability.request_logs WHERE id = ?")
             .bind(first_request_log_id)
             .fetch_one(&pool)
             .await
             .expect("first request kind");
     let second_request_kind: String =
-        sqlx::query_scalar("SELECT request_kind_key FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_kind_key FROM observability.request_logs WHERE id = ?")
             .bind(second_request_log_id)
             .fetch_one(&pool)
             .await
@@ -452,5 +488,5 @@ async fn request_kind_backfill_resumes_from_meta_cursor() {
     assert_eq!(first_token_kind, "mcp:tool:acme-first");
     assert_eq!(second_token_kind, "mcp:third-party-tool");
 
-    let _ = std::fs::remove_file(db_path);
+    cleanup_sqlite_files(&db_path);
 }

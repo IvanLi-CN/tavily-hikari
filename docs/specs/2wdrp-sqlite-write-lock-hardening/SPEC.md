@@ -18,6 +18,11 @@ misrouting. Billing, MCP session serialization, quota sync, scheduled job loggin
 upserts, and rollups all share the same SQLite database and can briefly compete for the single
 writer slot.
 
+After the first maintenance-queue hardening, the remaining production noise shifted toward request
+hot-path writes: billing-subject lock rows, request-log derived rollups, and HA runtime snapshots.
+The topic now also covers shrinking those synchronous hot-path write windows without weakening
+billing correctness.
+
 Forward-proxy startup also participates in this same lock budget: it refreshes subscription-backed
 endpoints, syncs xray state, and persists runtime snapshots before the HTTP server reports itself
 ready. That startup path can amplify a short writer collision into a slow first healthy when the
@@ -35,6 +40,8 @@ source when a usable persisted runtime already exists.
   errors when the existing bounded wait budget can absorb the contention.
 - Preserve quota ledger correctness, pending billing replay, session affinity, research key pinning,
   and API rebalance behavior.
+- Remove avoidable request hot-path SQLite writes that do not need to be synchronous truth, while
+  preserving fail-closed billing semantics and owner-facing observability.
 - Make background job bookkeeping tolerate transient lock pressure without amplifying request-path
   failures.
 - Keep forward-proxy startup from turning short SQLite writer contention into a long readiness
@@ -111,6 +118,20 @@ source when a usable persisted runtime already exists.
   `request_logs` table or generating a large WAL. Large backlogs are expected to catch up over
   repeated bounded windows.
 - Retry logs may include operation, attempt, backoff, and final error context.
+- Request-path billing-subject serialization may rely on an in-process guard for the current
+  single-process active node, instead of persisting a SQLite lock row for every request.
+- Pending/charged billing truth may move to a dedicated `billing_ledger` table as long as pending
+  replay, settlement idempotency, and admin/history compatibility remain intact.
+- Request-derived dashboard/API-key/catalog rollups may be buffered in-memory and flushed in bounded
+  windows, provided owner-facing reads flush or self-heal before returning stale results.
+- The same bounded in-memory buffering model may also cover other request-derived observability
+  counters such as auth-token activity and account request-rate buckets, provided billing truth
+  stays synchronous and owner-facing reads flush before returning.
+- Observability-heavy tables may live in a separate attached SQLite file when they are not required
+  for synchronous billing truth. In that layout, `request_logs`, request-derived rollups, and other
+  rebuildable observability tables are allowed to be eventually consistent and are not required to
+  participate in HA outbox trigger replication; rebuild/export paths remain the recovery mechanism
+  for those derived views.
 
 ## Acceptance
 

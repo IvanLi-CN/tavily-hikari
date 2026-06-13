@@ -142,6 +142,426 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
 
     let _ = std::fs::remove_file(db_path);
 }
+#[tokio::test]
+async fn observability_tables_live_in_sidecar_database() {
+    let db_path = temp_db_path("observability-sidecar-layout");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let observability_path = proxy
+        .sqlite_observability_database_path()
+        .expect("observability sidecar path")
+        .to_string();
+    assert!(
+        observability_path.ends_with("-observability.db"),
+        "observability sidecar should be a sibling file scoped to the core db path"
+    );
+    assert_ne!(
+        std::path::Path::new(&observability_path).file_name().and_then(|value| value.to_str()),
+        Some("observability.db"),
+        "observability sidecar must not collapse every explicit sqlite db onto one shared file"
+    );
+
+    let tables = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT name
+        FROM observability.sqlite_master
+        WHERE type = 'table'
+          AND name IN (
+            'request_logs',
+            'api_key_usage_buckets',
+            'dashboard_request_rollup_buckets',
+            'request_log_catalog_rollups'
+          )
+        ORDER BY name ASC
+        "#,
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("list observability tables");
+    assert_eq!(
+        tables,
+        vec![
+            "api_key_usage_buckets".to_string(),
+            "dashboard_request_rollup_buckets".to_string(),
+            "request_log_catalog_rollups".to_string(),
+            "request_logs".to_string(),
+        ]
+    );
+
+    let main_tables = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name IN (
+            'request_logs',
+            'api_key_usage_buckets',
+            'dashboard_request_rollup_buckets',
+            'request_log_catalog_rollups'
+          )
+        "#,
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("list main tables");
+    assert!(main_tables.is_empty(), "main database should not own observability tables");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let observability_path = std::path::PathBuf::from(observability_path);
+    let _ = std::fs::remove_file(&observability_path);
+    let _ = std::fs::remove_file(observability_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(observability_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn legacy_single_db_request_logs_migrate_to_observability_sidecar() {
+    let db_path = temp_db_path("observability-sidecar-legacy-migration");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let mut conn = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true),
+    )
+        .await
+        .expect("open legacy sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE api_keys (
+            id TEXT PRIMARY KEY,
+            api_key TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            last_used_at INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create api_keys");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_key_id TEXT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            status_code INTEGER,
+            error_message TEXT,
+            result_status TEXT NOT NULL DEFAULT 'success',
+            request_body BLOB,
+            response_body BLOB,
+            visibility TEXT NOT NULL DEFAULT 'visible',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create legacy request_logs");
+    sqlx::query(
+        r#"
+        CREATE TABLE auth_token_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_id TEXT NOT NULL,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            http_status INTEGER,
+            mcp_status INTEGER,
+            request_kind_key TEXT,
+            request_kind_label TEXT,
+            request_kind_detail TEXT,
+            result_status TEXT NOT NULL,
+            error_message TEXT,
+            failure_kind TEXT,
+            key_effect_code TEXT NOT NULL DEFAULT 'none',
+            key_effect_summary TEXT,
+            binding_effect_code TEXT NOT NULL DEFAULT 'none',
+            binding_effect_summary TEXT,
+            selection_effect_code TEXT NOT NULL DEFAULT 'none',
+            selection_effect_summary TEXT,
+            gateway_mode TEXT,
+            experiment_variant TEXT,
+            proxy_session_id TEXT,
+            routing_subject_hash TEXT,
+            upstream_operation TEXT,
+            fallback_reason TEXT,
+            counts_business_quota INTEGER NOT NULL DEFAULT 1,
+            billing_subject TEXT,
+            billing_state TEXT NOT NULL DEFAULT 'none',
+            business_credits INTEGER,
+            request_user_id TEXT,
+            api_key_id TEXT,
+            request_log_id INTEGER REFERENCES request_logs(id),
+            created_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create legacy auth_token_logs");
+    sqlx::query("INSERT INTO api_keys (id, api_key, created_at, last_used_at) VALUES ('k1', 'tvly-legacy-sidecar', 1, 1)")
+        .execute(&mut conn)
+        .await
+        .expect("insert api key");
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            method,
+            path,
+            query,
+            status_code,
+            error_message,
+            result_status,
+            request_body,
+            response_body,
+            visibility,
+            created_at
+        ) VALUES (?, 'POST', '/api/tavily/search', 'q=legacy', 200, NULL, 'success', X'7B7D', X'7B7D', 'visible', 1710000000)
+        "#,
+    )
+    .bind("k1")
+    .execute(&mut conn)
+    .await
+    .expect("insert legacy request log");
+    let legacy_request_log_id: i64 =
+        sqlx::query_scalar("SELECT id FROM request_logs LIMIT 1")
+            .fetch_one(&mut conn)
+            .await
+            .expect("fetch legacy request log id");
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            request_kind_key,
+            request_kind_label,
+            request_kind_detail,
+            result_status,
+            error_message,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
+            gateway_mode,
+            experiment_variant,
+            proxy_session_id,
+            routing_subject_hash,
+            upstream_operation,
+            fallback_reason,
+            counts_business_quota,
+            billing_subject,
+            billing_state,
+            business_credits,
+            request_user_id,
+            api_key_id,
+            request_log_id,
+            created_at
+        ) VALUES ('tok-legacy', 'POST', '/api/tavily/search', NULL, 200, NULL, 'api:search', 'API | search', NULL, 'success', NULL, NULL, 'none', NULL, 'none', NULL, 'none', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 'account:user-1', 'charged', 3, 'user-1', 'k1', ?, 1710000001)
+        "#,
+    )
+    .bind(legacy_request_log_id)
+    .execute(&mut conn)
+    .await
+    .expect("insert legacy auth token log");
+    drop(conn);
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let observability_path = proxy
+        .sqlite_observability_database_path()
+        .expect("observability sidecar path")
+        .to_string();
+
+    let main_request_logs_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
+    )
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("check main request_logs")
+    .is_some();
+    assert!(
+        !main_request_logs_exists,
+        "legacy main request_logs should be removed after migration"
+    );
+
+    let migrated_row = sqlx::query_as::<_, (i64, String, String, String)>(
+        r#"
+        SELECT id, api_key_id, path, visibility
+        FROM observability.request_logs
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch migrated request log");
+    assert_eq!(migrated_row.0, legacy_request_log_id);
+    assert_eq!(migrated_row.1, "k1");
+    assert_eq!(migrated_row.2, "/api/tavily/search");
+    assert_eq!(migrated_row.3, "visible");
+
+    let fk_targets = sqlx::query_scalar::<_, String>("PRAGMA foreign_key_list(auth_token_logs)")
+        .fetch_all(&proxy.key_store.pool)
+        .await
+        .expect("list auth_token_logs foreign keys");
+    assert!(
+        !fk_targets.iter().any(|table| table == "request_logs"),
+        "auth_token_logs should no longer keep a request_logs foreign key after migration"
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            request_kind_key,
+            request_kind_label,
+            request_kind_detail,
+            result_status,
+            error_message,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
+            gateway_mode,
+            experiment_variant,
+            proxy_session_id,
+            routing_subject_hash,
+            upstream_operation,
+            fallback_reason,
+            counts_business_quota,
+            billing_subject,
+            billing_state,
+            business_credits,
+            request_user_id,
+            api_key_id,
+            request_log_id,
+            created_at
+        ) VALUES ('tok-after-migration', 'POST', '/api/tavily/search', NULL, 200, NULL, 'api:search', 'API | search', NULL, 'success', NULL, NULL, 'none', NULL, 'none', NULL, 'none', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 'account:user-1', 'charged', 3, 'user-1', 'k1', ?, 1710000002)
+        "#,
+    )
+    .bind(legacy_request_log_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert auth token log after migration");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let observability_path = std::path::PathBuf::from(observability_path);
+    let _ = std::fs::remove_file(&observability_path);
+    let _ = std::fs::remove_file(observability_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(observability_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn request_stats_coalescer_flushes_summary_and_key_metrics_on_read() {
+    let db_path = temp_db_path("request-stats-coalescer-summary-flush");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-stats-coalescer-summary".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let now_ts = Utc::now().timestamp();
+
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES
+            (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', 'api:search', 'API | search', NULL, NULL, '[]', '[]', 'visible', ?),
+            (?, NULL, 'GET', '/api/tavily/search', NULL, 500, 500, 'boom', 'error', 'api:search', 'API | search', NULL, NULL, '[]', '[]', 'visible', ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(now_ts - 2)
+    .bind(&key_id)
+    .bind(now_ts - 1)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert request logs without rebuild");
+
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(Some(&key_id), now_ts - 2, OUTCOME_SUCCESS)
+        .await;
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(Some(&key_id), now_ts - 1, OUTCOME_ERROR)
+        .await;
+
+    let summary = proxy.summary().await.expect("summary");
+    assert_eq!(summary.total_requests, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.error_count, 1);
+
+    let key_summary = proxy
+        .key_store
+        .fetch_key_summary_since(&key_id, now_ts - SECS_PER_DAY)
+        .await
+        .expect("key summary");
+    assert_eq!(key_summary.total_requests, 2);
+    assert_eq!(key_summary.success_count, 1);
+    assert_eq!(key_summary.error_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
 
 #[tokio::test]
 async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_bucket() {
@@ -200,6 +620,36 @@ async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_b
     assert_eq!(summary.month.success_count, 0);
     assert_eq!(summary.month.error_count, 0);
     assert_eq!(summary.month.quota_exhausted_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
+    let db_path = temp_db_path("request-stats-coalescer-token-activity-flush");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("request-stats-token-activity"))
+        .await
+        .expect("create token");
+    let created_at = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .request_stats_coalescer
+        .enqueue_auth_token_activity(&token.id, None, created_at)
+        .await;
+
+    let tokens = proxy.list_access_tokens().await.expect("list access tokens");
+    let refreshed = tokens
+        .into_iter()
+        .find(|candidate| candidate.id == token.id)
+        .expect("refreshed token");
+    assert_eq!(refreshed.total_requests, 1);
+    assert_eq!(refreshed.last_used_at, Some(created_at));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1169,7 +1619,7 @@ async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are
         .expect("disable foreign keys for legacy bucket rewrite");
     sqlx::query(
         r#"
-        CREATE TABLE api_key_usage_buckets_legacy (
+        CREATE TABLE observability.api_key_usage_buckets_legacy (
             api_key_id TEXT NOT NULL,
             bucket_start INTEGER NOT NULL,
             bucket_secs INTEGER NOT NULL,
@@ -1178,8 +1628,7 @@ async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are
             error_count INTEGER NOT NULL,
             quota_exhausted_count INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            PRIMARY KEY (api_key_id, bucket_start, bucket_secs),
-            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            PRIMARY KEY (api_key_id, bucket_start, bucket_secs)
         )
         "#,
     )
@@ -1188,7 +1637,7 @@ async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are
     .expect("create legacy usage bucket table");
     sqlx::query(
         r#"
-        INSERT INTO api_key_usage_buckets_legacy (
+        INSERT INTO observability.api_key_usage_buckets_legacy (
             api_key_id,
             bucket_start,
             bucket_secs,
@@ -1207,17 +1656,17 @@ async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are
             error_count,
             quota_exhausted_count,
             updated_at
-        FROM api_key_usage_buckets
+        FROM observability.api_key_usage_buckets
         "#,
     )
     .execute(&mut *conn)
     .await
     .expect("copy usage buckets into legacy schema");
-    sqlx::query("DROP TABLE api_key_usage_buckets")
+    sqlx::query("DROP TABLE observability.api_key_usage_buckets")
         .execute(&mut *conn)
         .await
         .expect("drop current usage bucket table");
-    sqlx::query("ALTER TABLE api_key_usage_buckets_legacy RENAME TO api_key_usage_buckets")
+    sqlx::query("ALTER TABLE observability.api_key_usage_buckets_legacy RENAME TO api_key_usage_buckets")
         .execute(&mut *conn)
         .await
         .expect("rename legacy usage bucket table");
@@ -2573,382 +3022,6 @@ async fn rollup_token_usage_stats_keeps_legacy_timestamp_cursor_monotonic() {
         .expect("summary after second rollup");
     assert_eq!(summary.total_requests, 2);
     assert_eq!(summary.success_count, 2);
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn heal_orphan_auth_tokens_from_logs_creates_soft_deleted_token() {
-    let db_path = temp_db_path("heal-orphan");
-    let db_str = db_path.to_string_lossy().to_string();
-
-    // Initialize schema.
-    let store = KeyStore::new(&db_str).await.expect("keystore created");
-
-    // Insert an auth_token_logs entry for a token id that does not exist in auth_tokens.
-    let orphan_token_id = "ZZZZ";
-    sqlx::query(
-        r#"
-        INSERT INTO auth_token_logs (
-            token_id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
-        ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1234567890)
-        "#,
-    )
-    .bind(orphan_token_id)
-    .execute(&store.pool)
-    .await
-    .expect("insert orphan log");
-
-    // Clear healer meta key so that we can invoke the healer path again for this test.
-    sqlx::query("DELETE FROM meta WHERE key = ?")
-        .bind(META_KEY_HEAL_ORPHAN_TOKENS_V1)
-        .execute(&store.pool)
-        .await
-        .expect("delete meta gate");
-
-    // Run healer directly.
-    store
-        .heal_orphan_auth_tokens_from_logs()
-        .await
-        .expect("heal orphan tokens");
-
-    // Verify that a soft-deleted auth_tokens row was created for the orphan id.
-    let (enabled, total_requests, deleted_at): (i64, i64, Option<i64>) =
-        sqlx::query_as("SELECT enabled, total_requests, deleted_at FROM auth_tokens WHERE id = ?")
-            .bind(orphan_token_id)
-            .fetch_one(&store.pool)
-            .await
-            .expect("restored token row");
-
-    assert_eq!(enabled, 0, "restored token should be disabled");
-    assert_eq!(
-        total_requests, 1,
-        "restored token should count orphan log entries"
-    );
-    assert!(
-        deleted_at.is_some(),
-        "restored token should be marked soft-deleted"
-    );
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn published_announcement_update_archives_previous_version() {
-    let db_path = temp_db_path("announcement-published-update-archives");
-    let db_str = db_path.to_string_lossy().to_string();
-    let store = KeyStore::new(&db_str).await.expect("keystore created");
-
-    let draft = store
-        .create_announcement(AnnouncementMutation {
-            title: "Initial notice".to_string(),
-            body: "Initial body".to_string(),
-            display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
-        })
-        .await
-        .expect("create announcement");
-    assert_eq!(draft.status, ANNOUNCEMENT_STATUS_DRAFT);
-    assert!(
-        store
-            .list_user_active_announcements()
-            .await
-            .expect("list active before publish")
-            .is_empty()
-    );
-
-    let published = store
-        .publish_announcement(&draft.id)
-        .await
-        .expect("publish announcement")
-        .expect("published announcement exists");
-    assert_eq!(published.status, ANNOUNCEMENT_STATUS_PUBLISHED);
-    assert!(published.published_at.is_some());
-
-    let revised = store
-        .update_announcement(
-            &published.id,
-            AnnouncementMutation {
-                title: "Updated notice".to_string(),
-                body: "Updated body".to_string(),
-                display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
-            },
-        )
-        .await
-        .expect("update published announcement")
-        .expect("updated announcement exists");
-    assert_ne!(revised.id, published.id);
-    assert_eq!(revised.status, ANNOUNCEMENT_STATUS_PUBLISHED);
-    assert_eq!(revised.title, "Updated notice");
-
-    let archived = store
-        .get_announcement(&published.id)
-        .await
-        .expect("load previous announcement")
-        .expect("previous announcement exists");
-    assert_eq!(archived.status, ANNOUNCEMENT_STATUS_ARCHIVED);
-    assert!(archived.archived_at.is_some());
-
-    let active = store
-        .list_user_active_announcements()
-        .await
-        .expect("list active announcements");
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0].id, revised.id);
-
-    let history = store
-        .list_user_announcement_history()
-        .await
-        .expect("list announcement history");
-    assert!(history.iter().any(|item| item.id == revised.id));
-    assert!(history.iter().any(|item| item.id == published.id));
-
-    let draft_only = store
-        .create_announcement(AnnouncementMutation {
-            title: "Draft-only notice".to_string(),
-            body: "Never published".to_string(),
-            display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
-        })
-        .await
-        .expect("create draft-only announcement");
-    let archived_draft = store
-        .archive_announcement(&draft_only.id)
-        .await
-        .expect("archive draft-only announcement")
-        .expect("archived draft exists");
-    assert_eq!(archived_draft.status, ANNOUNCEMENT_STATUS_ARCHIVED);
-
-    let history_after_draft_archive = store
-        .list_user_announcement_history()
-        .await
-        .expect("list announcement history after draft archive");
-    assert!(!history_after_draft_archive
-        .iter()
-        .any(|item| item.id == archived_draft.id));
-
-    let archived_revised = store
-        .archive_announcement(&revised.id)
-        .await
-        .expect("archive revised announcement")
-        .expect("archived revised announcement exists");
-    assert_eq!(archived_revised.status, ANNOUNCEMENT_STATUS_ARCHIVED);
-
-    let edited_archived = store
-        .update_announcement(
-            &archived_revised.id,
-            AnnouncementMutation {
-                title: "Edited archived notice".to_string(),
-                body: "Edited archived body".to_string(),
-                display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
-            },
-        )
-        .await
-        .expect("edit archived announcement")
-        .expect("edited archived announcement creates draft");
-    assert_ne!(edited_archived.id, archived_revised.id);
-    assert_eq!(edited_archived.status, ANNOUNCEMENT_STATUS_DRAFT);
-
-    let archived_revised_after_edit = store
-        .get_announcement(&archived_revised.id)
-        .await
-        .expect("load archived revised after edit")
-        .expect("archived revised still exists after edit");
-    assert_eq!(archived_revised_after_edit.status, ANNOUNCEMENT_STATUS_ARCHIVED);
-    assert_eq!(archived_revised_after_edit.title, archived_revised.title);
-
-    let history_after_archived_edit = store
-        .list_user_announcement_history()
-        .await
-        .expect("list announcement history after archived edit");
-    assert!(!history_after_archived_edit
-        .iter()
-        .any(|item| item.id == edited_archived.id));
-
-    let republished = store
-        .publish_announcement(&archived_revised.id)
-        .await
-        .expect("republish archived announcement")
-        .expect("republished announcement exists");
-    assert_ne!(republished.id, archived_revised.id);
-    assert_eq!(republished.status, ANNOUNCEMENT_STATUS_PUBLISHED);
-    assert_eq!(republished.title, archived_revised.title);
-
-    let archived_revised_after_republish = store
-        .get_announcement(&archived_revised.id)
-        .await
-        .expect("load archived revised after republish")
-        .expect("archived revised still exists");
-    assert_eq!(archived_revised_after_republish.status, ANNOUNCEMENT_STATUS_ARCHIVED);
-
-    let active_after_republish = store
-        .list_user_active_announcements()
-        .await
-        .expect("list active after republish");
-    assert_eq!(active_after_republish.len(), 1);
-    assert_eq!(active_after_republish[0].id, republished.id);
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn active_announcements_use_insert_order_for_same_second_ties() {
-    let db_path = temp_db_path("announcement-active-same-second-order");
-    let db_str = db_path.to_string_lossy().to_string();
-    let store = KeyStore::new(&db_str).await.expect("keystore created");
-    let same_second = 1_764_300_000_i64;
-
-    sqlx::query(
-        r#"
-        INSERT INTO announcements (
-            id, title, body, display_kind, status,
-            created_at, updated_at, published_at, archived_at
-        ) VALUES
-            ('zzzzzzzz', 'Older modal', 'Older body', 'modal', 'published', ?, ?, ?, NULL),
-            ('22222222', 'Newer modal', 'Newer body', 'modal', 'published', ?, ?, ?, NULL)
-        "#,
-    )
-    .bind(same_second)
-    .bind(same_second)
-    .bind(same_second)
-    .bind(same_second)
-    .bind(same_second)
-    .bind(same_second)
-    .execute(&store.pool)
-    .await
-    .expect("insert same-second announcements");
-
-    let active = store
-        .list_user_active_announcements()
-        .await
-        .expect("list active announcements");
-
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0].id, "22222222");
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn ticker_announcements_may_omit_body_but_modal_announcements_may_not() {
-    let db_path = temp_db_path("announcement-ticker-empty-body");
-    let db_str = db_path.to_string_lossy().to_string();
-    let store = KeyStore::new(&db_str).await.expect("keystore created");
-
-    let ticker = store
-        .create_announcement(AnnouncementMutation {
-            title: "Ticker without details".to_string(),
-            body: "   ".to_string(),
-            display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
-        })
-        .await
-        .expect("create ticker without body");
-    assert_eq!(ticker.body, "");
-
-    let modal = store
-        .create_announcement(AnnouncementMutation {
-            title: "Modal without details".to_string(),
-            body: "   ".to_string(),
-            display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
-        })
-        .await;
-    assert!(modal.is_err(), "modal announcements still require body content");
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn oauth_login_state_is_single_use() {
-    let db_path = temp_db_path("oauth-state-single-use");
-    let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
-
-    let state = proxy
-        .create_oauth_login_state("linuxdo", Some("/"), 120)
-        .await
-        .expect("create oauth state");
-    let first = proxy
-        .consume_oauth_login_state("linuxdo", &state)
-        .await
-        .expect("consume oauth state first");
-    let second = proxy
-        .consume_oauth_login_state("linuxdo", &state)
-        .await
-        .expect("consume oauth state second");
-
-    assert_eq!(first, Some(Some("/".to_string())));
-    assert_eq!(second, None, "oauth state must be single-use");
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn oauth_login_state_binding_hash_must_match() {
-    let db_path = temp_db_path("oauth-state-binding-hash");
-    let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
-
-    let state = proxy
-        .create_oauth_login_state_with_binding("linuxdo", Some("/"), 120, Some("nonce-hash-a"))
-        .await
-        .expect("create oauth state");
-
-    let wrong_hash = proxy
-        .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-b"))
-        .await
-        .expect("consume oauth state with wrong hash");
-    assert_eq!(wrong_hash, None, "wrong hash must not consume oauth state");
-
-    let matched = proxy
-        .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-a"))
-        .await
-        .expect("consume oauth state with matching hash");
-    assert_eq!(matched, Some(Some("/".to_string())));
-
-    let reused = proxy
-        .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-a"))
-        .await
-        .expect("consume oauth state reused");
-    assert_eq!(reused, None, "oauth state must remain single-use");
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn oauth_login_state_payload_carries_bind_token_id() {
-    let db_path = temp_db_path("oauth-state-bind-token-id");
-    let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
-
-    let state = proxy
-        .create_oauth_login_state_with_binding_and_token(
-            "linuxdo",
-            Some("/console"),
-            120,
-            Some("nonce-hash-a"),
-            Some("a1b2"),
-        )
-        .await
-        .expect("create oauth state");
-
-    let payload = proxy
-        .consume_oauth_login_state_with_binding_and_token("linuxdo", &state, Some("nonce-hash-a"))
-        .await
-        .expect("consume oauth state")
-        .expect("payload exists");
-
-    assert_eq!(payload.redirect_to.as_deref(), Some("/console"));
-    assert_eq!(payload.bind_token_id.as_deref(), Some("a1b2"));
-
-    let consumed_again = proxy
-        .consume_oauth_login_state_with_binding_and_token("linuxdo", &state, Some("nonce-hash-a"))
-        .await
-        .expect("consume oauth state second");
-    assert!(consumed_again.is_none(), "state must remain single-use");
 
     let _ = std::fs::remove_file(db_path);
 }

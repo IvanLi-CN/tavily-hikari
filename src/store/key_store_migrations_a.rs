@@ -2513,10 +2513,14 @@ impl KeyStore {
         table: &str,
         column: &str,
     ) -> Result<bool, ProxyError> {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1",
-        )
-        .bind(table)
+        let query = if is_observability_table(table) {
+            format!(
+                "SELECT 1 FROM observability.pragma_table_info('{table}') WHERE name = ? LIMIT 1"
+            )
+        } else {
+            format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1")
+        };
+        let exists = sqlx::query_scalar::<_, i64>(&query)
         .bind(column)
         .fetch_optional(&self.pool)
         .await?;
@@ -2528,10 +2532,14 @@ impl KeyStore {
         table: &str,
         column: &str,
     ) -> Result<bool, ProxyError> {
-        let not_null = sqlx::query_scalar::<_, i64>(
-            r#"SELECT "notnull" FROM pragma_table_info(?) WHERE name = ? LIMIT 1"#,
-        )
-        .bind(table)
+        let query = if is_observability_table(table) {
+            format!(
+                r#"SELECT "notnull" FROM observability.pragma_table_info('{table}') WHERE name = ? LIMIT 1"#
+            )
+        } else {
+            format!(r#"SELECT "notnull" FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1"#)
+        };
+        let not_null = sqlx::query_scalar::<_, i64>(&query)
         .bind(column)
         .fetch_optional(&self.pool)
         .await?;

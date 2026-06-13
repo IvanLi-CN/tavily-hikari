@@ -1,7 +1,7 @@
 async fn hold_sqlite_write_lock_for_test(
     pool: &SqlitePool,
 ) -> tokio::task::JoinHandle<()> {
-    hold_sqlite_write_lock_for_test_for(pool, Duration::from_millis(5_200)).await
+    hold_sqlite_write_lock_for_test_for(pool, Duration::from_millis(1_200)).await
 }
 
 async fn hold_sqlite_write_lock_for_test_for(
@@ -898,7 +898,7 @@ async fn linuxdo_tag_binding_refresh_rewrites_correct_binding_periodically() {
 async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, path: &str) -> i64 {
     sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             auth_token_id,
             method,
@@ -922,7 +922,7 @@ async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, path: &str)
 async fn seed_request_log_rollup_for_gc(pool: &SqlitePool, bucket_start: i64) {
     sqlx::query(
         r#"
-        INSERT INTO request_log_catalog_rollups (
+        INSERT INTO observability.request_log_catalog_rollups (
             bucket_start,
             request_kind_key,
             request_kind_label,
@@ -1147,14 +1147,15 @@ async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
         Option<String>,
         Option<String>,
     );
+    let read_pool = connect_sqlite_test_pool(&db_str).await;
     let row: BodyMetadataRow = sqlx::query_as(
         r#"
             SELECT request_body, response_body, request_body_bytes, request_body_sha256, body_cleaned_reason
-            FROM request_logs WHERE id = ?
+            FROM observability.request_logs WHERE id = ?
             "#,
     )
     .bind(log_id)
-    .fetch_one(&proxy.key_store.pool)
+    .fetch_one(&read_pool)
     .await
     .expect("fetch request log body metadata");
     assert!(row.0.is_none());
@@ -1163,6 +1164,8 @@ async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
     assert_eq!(row.3.as_deref(), Some(sha256_hex_bytes(request_body).as_str()));
     assert_eq!(row.4.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
 
+    read_pool.close().await;
+    proxy.key_store.pool.close().await;
     let _ = std::fs::remove_file(db_path);
 }
 
@@ -1217,7 +1220,7 @@ async fn request_log_policy_preserves_batch_non_business_classification_without_
         .expect("log non-business batch attempt");
 
     let stored: (Option<Vec<u8>>, Option<i64>, String) = sqlx::query_as(
-        "SELECT request_body, counts_business_quota, request_kind_key FROM request_logs WHERE id = ?",
+        "SELECT request_body, counts_business_quota, request_kind_key FROM observability.request_logs WHERE id = ?",
     )
     .bind(log_id)
     .fetch_one(&proxy.key_store.pool)
@@ -1256,6 +1259,9 @@ async fn request_log_policy_preserves_batch_non_business_classification_without_
 
 #[tokio::test]
 async fn request_log_policy_keeps_debug_shared_business_body() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-debug-shared-body");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1343,11 +1349,13 @@ async fn request_log_policy_keeps_debug_shared_business_body() {
         .expect("log debug shared attempt");
 
     let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
-            .bind(log_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("fetch request log body");
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+        )
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch request log body");
     assert_eq!(row.0.as_deref(), Some(request_body.as_slice()));
     assert!(row.1.is_none());
 
@@ -1356,6 +1364,9 @@ async fn request_log_policy_keeps_debug_shared_business_body() {
 
 #[tokio::test]
 async fn request_log_policy_applies_heavy_usage_business_body_days() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-heavy-usage-body");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1445,7 +1456,7 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
         .expect("log heavy usage attempt");
 
     let row: (Option<Vec<u8>>, Option<i64>, Option<String>) = sqlx::query_as(
-        "SELECT request_body, request_body_bytes, body_cleaned_reason FROM request_logs WHERE id = ?",
+        "SELECT request_body, request_body_bytes, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
     )
     .bind(log_id)
     .fetch_one(&proxy.key_store.pool)
@@ -1467,7 +1478,9 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
     let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+        )
             .bind(log_id)
             .fetch_one(&proxy.key_store.pool)
             .await
@@ -1483,6 +1496,9 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
 
 #[tokio::test]
 async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-clears-body");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1502,7 +1518,7 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
     let old_ts = Utc::now().timestamp() - 2 * SECS_PER_DAY;
     let log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_body, response_body,
             visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?)
@@ -1530,7 +1546,7 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
     assert_eq!(report.deleted_request_logs, 0);
 
     let row: (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
-        "SELECT request_body, response_body, body_cleaned_reason FROM request_logs WHERE id = ?",
+        "SELECT request_body, response_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
     )
     .bind(log_id)
     .fetch_one(&proxy.key_store.pool)
@@ -1564,7 +1580,7 @@ async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
     let old_ts = Utc::now().timestamp() - 40 * SECS_PER_DAY;
     let log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_body, response_body,
             visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, NULL, ?, ?)
@@ -1590,11 +1606,12 @@ async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
     assert_eq!(report.cleaned_request_log_bodies, 0);
     assert_eq!(report.deleted_request_logs, 1);
 
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE id = ?")
-        .bind(log_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("count old request log rows");
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs WHERE id = ?")
+            .bind(log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count old request log rows");
     assert_eq!(remaining, 0);
 
     let _ = std::fs::remove_file(db_path);
@@ -1663,6 +1680,9 @@ async fn user_debug_info_shared_caches_enabled_lookup_until_local_update() {
 
 #[tokio::test]
 async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_change() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-policy-change");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1682,7 +1702,7 @@ async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_
     let now = Utc::now().timestamp();
     let log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, body_retention_days, body_retention_profile,
             visibility, created_at
@@ -1704,25 +1724,32 @@ async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_
         .await
         .expect("lower retention settings");
 
-    let report = proxy
-        .gc_request_logs_with_options(RequestLogsGcOptions {
-            batch_size: 10,
-            max_batches: 1,
-            max_runtime_secs: 30,
-            inter_batch_sleep_ms: 0,
-        })
-        .await
-        .expect("run request logs gc");
-    assert_eq!(report.cleaned_request_log_bodies, 1);
-
-    let row: (Option<Vec<u8>>, Option<String>, Option<i64>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason, body_retention_days, body_retention_profile FROM request_logs WHERE id = ?",
-        )
-            .bind(log_id)
-            .fetch_one(&proxy.key_store.pool)
+    let mut row: (Option<Vec<u8>>, Option<String>, Option<i64>, Option<String>) =
+        (Some(Vec::new()), None, None, None);
+    let mut cleaned_reports = 0_i64;
+    for _ in 0..3 {
+        let report = proxy
+            .gc_request_logs_with_options(RequestLogsGcOptions {
+                batch_size: 10,
+                max_batches: 1,
+                max_runtime_secs: 30,
+                inter_batch_sleep_ms: 0,
+            })
             .await
-            .expect("fetch cleaned body");
+            .expect("run request logs gc");
+        cleaned_reports += report.cleaned_request_log_bodies;
+        row = sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason, body_retention_days, body_retention_profile FROM observability.request_logs WHERE id = ?",
+        )
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch cleaned body");
+        if row.0.is_none() {
+            break;
+        }
+    }
+    assert_eq!(cleaned_reports, 1);
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -1736,6 +1763,9 @@ async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_
 
 #[tokio::test]
 async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profile() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-debug-opt-out");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1773,7 +1803,7 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
     let now = Utc::now().timestamp();
     let log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_user_id,
             request_body, response_body, body_retention_days, body_retention_profile,
             visibility, created_at
@@ -1807,11 +1837,13 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
     let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
-            .bind(log_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("fetch cleaned opt-out row");
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+        )
+        .bind(log_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch cleaned opt-out row");
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -1824,8 +1856,8 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
 #[tokio::test]
 async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body() {
     let lock = env_lock();
-    let _lock = lock.lock().await;
-    let _env_guard = RequestLogsRetentionEnvGuard::set_32_days();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-scans-past-unexpired");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1864,7 +1896,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     let now = Utc::now().timestamp();
     let unexpired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_user_id,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
@@ -1881,7 +1913,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     .expect("seed unexpired debug body");
     let expired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
@@ -1908,17 +1940,19 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
     let unexpired_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(unexpired_id)
             .fetch_one(&proxy.key_store.pool)
             .await
             .expect("fetch unexpired body");
     let expired: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
-            .bind(expired_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("fetch expired body");
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+        )
+        .bind(expired_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch expired body");
     assert!(unexpired_body.is_some());
     assert!(expired.0.is_none());
     assert_eq!(
@@ -1928,7 +1962,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
 
     let second_expired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
@@ -1955,7 +1989,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     assert!(second_report.completed);
     assert!(!second_report.has_more);
     let second_expired_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(second_expired_id)
             .fetch_one(&proxy.key_store.pool)
             .await
@@ -1967,6 +2001,9 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
 
 #[tokio::test]
 async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-body-cursor");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1989,12 +2026,22 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.non_business_body_days = 0;
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
 
     let now = Utc::now().timestamp();
     for idx in 0..64 {
         sqlx::query(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 method, path, result_status, request_kind_key, request_user_id,
                 request_body, response_body, visibility, created_at
             ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
@@ -2012,7 +2059,7 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
 
     let expired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
@@ -2040,7 +2087,7 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
     assert!(first_report.has_more);
 
     let retained_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(expired_id)
             .fetch_one(&proxy.key_store.pool)
             .await
@@ -2061,7 +2108,7 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
     assert!(!second_report.has_more);
 
     let cleaned_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(expired_id)
             .fetch_one(&proxy.key_store.pool)
             .await
@@ -2073,6 +2120,9 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
 
 #[tokio::test]
 async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-body-cursor-restart");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -2082,7 +2132,7 @@ async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
     let now = Utc::now().timestamp();
     let expired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
@@ -2120,11 +2170,13 @@ async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
     assert!(!report.has_more);
 
     let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT request_body, body_cleaned_reason FROM request_logs WHERE id = ?")
-            .bind(expired_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("fetch restarted cursor row");
+        sqlx::query_as(
+            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+        )
+        .bind(expired_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch restarted cursor row");
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -2136,6 +2188,9 @@ async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
 
 #[tokio::test]
 async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-body-cursor-continues");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -2158,12 +2213,22 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.global.non_business_body_days = 0;
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
 
     let now = Utc::now().timestamp();
     for idx in 0..64 {
         sqlx::query(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 method, path, result_status, request_kind_key, request_user_id,
                 request_body, response_body, visibility, created_at
             ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
@@ -2181,7 +2246,7 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
 
     let expired_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key,
             request_body, response_body, visibility, created_at
         ) VALUES ('POST', '/mcp', 'success', 'mcp:tools/list', ?, ?, ?, ?)
@@ -2210,7 +2275,7 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
     assert!(!report.has_more);
 
     let cleaned_body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(expired_id)
             .fetch_one(&proxy.key_store.pool)
             .await
@@ -2222,6 +2287,9 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
 
 #[tokio::test]
 async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-body-cursor-preserved");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -2244,6 +2312,15 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
 
     let now = Utc::now().timestamp();
     let mut first_created_at = 0_i64;
@@ -2255,7 +2332,7 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
         }
         let _: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 method, path, result_status, request_kind_key, request_user_id,
                 request_body, response_body, visibility, created_at
             ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?, ?)
@@ -2340,6 +2417,7 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
 async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
     let db_path = temp_db_path("request-log-retention-standalone-gc-upgrades-body-columns");
     let db_str = db_path.to_string_lossy().to_string();
+    let layout = SqliteDatabaseLayout::from_database_path(&db_str);
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
@@ -2404,7 +2482,12 @@ async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
     .expect("standalone request logs gc upgrades schema and cleans body");
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
-    let pool = open_sqlite_pool(&db_str, true, false)
+    let pool = open_sqlite_pool_with_observability(
+        &layout.core_database_path,
+        layout.observability_database_path.as_deref(),
+        true,
+        false,
+    )
         .await
         .expect("open sqlite pool");
     let row: (Option<Vec<u8>>, Option<i64>, Option<String>, String) = sqlx::query_as(
@@ -2426,6 +2509,7 @@ async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
 async fn standalone_request_logs_gc_initializes_meta_for_legacy_table() {
     let db_path = temp_db_path("request-log-retention-standalone-gc-legacy-meta");
     let db_str = db_path.to_string_lossy().to_string();
+    let layout = SqliteDatabaseLayout::from_database_path(&db_str);
     let pool = open_sqlite_pool(&db_str, true, false)
         .await
         .expect("open sqlite pool");
@@ -2467,7 +2551,12 @@ async fn standalone_request_logs_gc_initializes_meta_for_legacy_table() {
     .expect("standalone request logs gc initializes meta");
     assert_eq!(report.deleted_request_logs, 1);
 
-    let pool = open_sqlite_pool(&db_str, true, false)
+    let pool = open_sqlite_pool_with_observability(
+        &layout.core_database_path,
+        layout.observability_database_path.as_deref(),
+        true,
+        false,
+    )
         .await
         .expect("reopen sqlite pool");
     let meta_exists_after: Option<i64> =
@@ -2518,17 +2607,19 @@ async fn request_logs_gc_bounded_deletes_old_rows_and_preserves_recent_rows() {
 
     assert!(report.completed);
     assert_eq!(report.deleted_request_logs, 1);
-    assert_eq!(report.deleted_rollups, 2);
-    let old_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM request_logs WHERE id = ?")
-        .bind(old_id)
-        .fetch_optional(&proxy.key_store.pool)
-        .await
-        .expect("query old log");
-    let recent_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM request_logs WHERE id = ?")
-        .bind(recent_id)
-        .fetch_optional(&proxy.key_store.pool)
-        .await
-        .expect("query recent log");
+    assert_eq!(report.deleted_rollups, 1);
+    let old_exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM observability.request_logs WHERE id = ?")
+            .bind(old_id)
+            .fetch_optional(&proxy.key_store.pool)
+            .await
+            .expect("query old log");
+    let recent_exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM observability.request_logs WHERE id = ?")
+            .bind(recent_id)
+            .fetch_optional(&proxy.key_store.pool)
+            .await
+            .expect("query recent log");
     assert!(old_exists.is_none());
     assert_eq!(recent_exists, Some(recent_id));
     let retained_auth_log_ref: Option<i64> = sqlx::query_scalar(
@@ -2585,7 +2676,7 @@ async fn request_logs_gc_bounded_reports_partial_and_resumes() {
         .expect("run second request logs gc pass");
     assert!(second.completed);
     assert_eq!(second.deleted_request_logs, 2);
-    assert_eq!(second.deleted_rollups, 5);
+    assert_eq!(second.deleted_rollups, 2);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -2620,11 +2711,12 @@ async fn request_logs_gc_retries_transient_sqlite_write_lock() {
     release.await.expect("release task");
 
     assert!(report.completed);
-    let old_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM request_logs WHERE id = ?")
-        .bind(old_id)
-        .fetch_optional(&proxy.key_store.pool)
-        .await
-        .expect("query old log after locked gc");
+    let old_exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM observability.request_logs WHERE id = ?")
+            .bind(old_id)
+            .fetch_optional(&proxy.key_store.pool)
+            .await
+            .expect("query old log after locked gc");
     assert!(old_exists.is_none());
 
     let _ = std::fs::remove_file(&db_path);
@@ -2654,7 +2746,7 @@ async fn request_logs_gc_body_cleanup_retries_transient_sqlite_write_lock() {
 
     let log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_body, response_body,
             visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?)
@@ -2683,7 +2775,7 @@ async fn request_logs_gc_body_cleanup_retries_transient_sqlite_write_lock() {
 
     assert_eq!(report.deleted_request_logs, 0);
     let body: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT request_body FROM request_logs WHERE id = ?")
+        sqlx::query_scalar("SELECT request_body FROM observability.request_logs WHERE id = ?")
             .bind(log_id)
             .fetch_one(&proxy.key_store.pool)
             .await

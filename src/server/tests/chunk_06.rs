@@ -1115,17 +1115,7 @@
         .await
         .expect("upgrade proxy");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let upgraded_pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open upgraded db pool");
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
 
         let created_at =
             sqlx::query_scalar::<_, i64>("SELECT created_at FROM api_keys WHERE id = ? LIMIT 1")
@@ -1534,13 +1524,8 @@
             "migration should preserve all request_log references"
         );
 
-        let api_key_column_still_exists = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT 1 FROM pragma_table_info('request_logs') WHERE name = 'api_key' LIMIT 1",
-        )
-        .fetch_optional(&upgraded_pool)
-        .await
-        .expect("probe api_key column")
-        .is_some();
+        let api_key_column_still_exists =
+            sqlite_column_exists(&upgraded_pool, "request_logs", "api_key").await;
         assert!(
             !api_key_column_still_exists,
             "legacy api_key column should be removed after rebuild"
@@ -1677,13 +1662,8 @@
 
         let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
 
-        let api_key_column_still_exists = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT 1 FROM pragma_table_info('request_logs') WHERE name = 'api_key' LIMIT 1",
-        )
-        .fetch_optional(&upgraded_pool)
-        .await
-        .expect("probe rollback api_key column")
-        .is_some();
+        let api_key_column_still_exists =
+            sqlite_column_exists(&upgraded_pool, "request_logs", "api_key").await;
         assert!(
             api_key_column_still_exists,
             "failed migration should leave the legacy request_logs schema intact"
@@ -1979,12 +1959,9 @@
 
         let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
 
-        let api_key_not_null: i64 = sqlx::query_scalar(
-            r#"SELECT "notnull" FROM pragma_table_info('request_logs') WHERE name = 'api_key_id'"#,
-        )
-        .fetch_one(&upgraded_pool)
-        .await
-        .expect("read api_key_id notnull");
+        let api_key_not_null = sqlite_column_not_null(&upgraded_pool, "request_logs", "api_key_id")
+            .await
+            .expect("read api_key_id notnull");
         assert_eq!(
             api_key_not_null, 0,
             "api_key_id should be nullable after migration"
@@ -2149,21 +2126,11 @@
         .await
         .expect("first upgrade");
 
-        let options = SqliteConnectOptions::new()
-            .filename(&db_str)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        let upgraded_pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open upgraded db pool");
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
 
         sqlx::query(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
                 error_message, result_status, request_body, response_body, forwarded_headers,
                 dropped_headers, created_at

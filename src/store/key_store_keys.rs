@@ -140,6 +140,7 @@ impl KeyStore {
         key_id: &str,
         since: i64,
     ) -> Result<ProxySummary, ProxyError> {
+        self.flush_request_stats_writes().await?;
         // `api_key_usage_buckets.bucket_start` is aligned to *server-local midnight* (stored as UTC ts).
         // Callers might pass `since` aligned to UTC midnight (e.g. from browser). Normalize so daily
         // bucket queries remain correct under non-UTC server timezones.
@@ -1038,7 +1039,6 @@ impl KeyStore {
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (key_id) REFERENCES api_keys(id),
                 FOREIGN KEY (auth_token_id) REFERENCES auth_tokens(id),
-                FOREIGN KEY (request_log_id) REFERENCES request_logs(id),
                 FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id)
             )
             "#,
@@ -1090,8 +1090,7 @@ impl KeyStore {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (key_id, scope),
-                FOREIGN KEY (key_id) REFERENCES api_keys(id),
-                FOREIGN KEY (source_request_log_id) REFERENCES request_logs(id)
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
             )
             "#,
         )
@@ -1287,6 +1286,7 @@ impl KeyStore {
     // Using ThreadRng for simplicity
 
     pub(crate) async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -1336,6 +1336,7 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<AuthToken>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let limit = limit.clamp(1, 100) as i64;
         let rows = sqlx::query_as::<
             _,
@@ -1485,6 +1486,7 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Vec<AuthToken>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let rows = sqlx::query_as::<
             _,
             (

@@ -330,16 +330,20 @@ async fn post_admin_ha_promote(
         .insert_ha_failover_operation(&operation)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    state
-        .proxy
-        .persist_ha_node_state(
-            &status.node_id,
-            status.role,
-            status.edgeone_origin.as_deref(),
-            status.message.as_deref(),
-        )
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    async {
+        state
+            .proxy
+            .persist_ha_node_state(
+                &status.node_id,
+                status.role,
+                status.edgeone_origin.as_deref(),
+                status.message.as_deref(),
+            )
+            .await?;
+        state.proxy.flush_ha_state_writes().await
+    }
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     for (idx, entry) in audit_entries.iter().enumerate() {
         state
             .proxy
@@ -373,16 +377,20 @@ async fn post_admin_ha_finalize(
         .finalize_failover()
         .await
         .map_err(|err| (StatusCode::CONFLICT, err))?;
-    state
-        .proxy
-        .persist_ha_node_state(
-            &status.node_id,
-            status.role,
-            status.edgeone_origin.as_deref(),
-            status.message.as_deref(),
-        )
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    async {
+        state
+            .proxy
+            .persist_ha_node_state(
+                &status.node_id,
+                status.role,
+                status.edgeone_origin.as_deref(),
+                status.message.as_deref(),
+            )
+            .await?;
+        state.proxy.flush_ha_state_writes().await
+    }
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(Json(status))
 }
 
@@ -442,16 +450,20 @@ async fn post_admin_ha_recovery_import(
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     }
     let status = state.ha.status().await;
-    state
-        .proxy
-        .persist_ha_node_state(
-            &status.node_id,
-            status.role,
-            status.edgeone_origin.as_deref(),
-            status.message.as_deref(),
-        )
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    async {
+        state
+            .proxy
+            .persist_ha_node_state(
+                &status.node_id,
+                status.role,
+                status.edgeone_origin.as_deref(),
+                status.message.as_deref(),
+            )
+            .await?;
+        state.proxy.flush_ha_state_writes().await
+    }
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(Json(tavily_hikari::HaRecoveryImportResult {
         batch_id: batch,
         source_node_id: source,

@@ -234,13 +234,6 @@ impl KeyStore {
             .transpose()
             .unwrap_or_else(|_| Some("[]".to_string()));
 
-        let bucket_start = local_day_bucket_start_utc_ts(created_at);
-        let (bucket_success, bucket_error, bucket_quota_exhausted) = match entry.outcome {
-            OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64),
-            OUTCOME_ERROR => (0_i64, 1_i64, 0_i64),
-            OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 1_i64),
-            _ => (0_i64, 0_i64, 0_i64),
-        };
         let request_value_bucket =
             request_value_bucket_for_request_log(&request_kind.key, Some(entry.request_body));
         let counts_business_quota =
@@ -270,25 +263,6 @@ impl KeyStore {
                 created_at,
             },
         );
-        let (
-            bucket_valuable_success,
-            bucket_valuable_failure,
-            bucket_other_success,
-            bucket_other_failure,
-            bucket_unknown,
-        ) = match request_value_bucket {
-            RequestValueBucket::Valuable => match entry.outcome {
-                OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 1_i64, 0_i64, 0_i64, 0_i64),
-                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-            },
-            RequestValueBucket::Other => match entry.outcome {
-                OUTCOME_SUCCESS => (0_i64, 0_i64, 1_i64, 0_i64, 0_i64),
-                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 0_i64, 1_i64, 0_i64),
-                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
-            },
-            RequestValueBucket::Unknown => (0_i64, 0_i64, 0_i64, 0_i64, 1_i64),
-        };
         let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
             &request_kind.key,
             Some(entry.request_body),
@@ -297,13 +271,26 @@ impl KeyStore {
             0,
             counts_business_quota,
         );
-        let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
-
-        let mut tx = self.pool.begin().await?;
-
+        let request_log_catalog_key = (entry.outcome != OUTCOME_UNKNOWN
+            && request_kind.key.trim() != "api:unknown-path")
+            .then(|| {
+                Self::request_log_catalog_rollup_key_for_request(
+                    created_at,
+                    &request_kind.key,
+                    &request_kind.label,
+                    counts_business_quota,
+                    entry.outcome,
+                    failure_kind.as_deref(),
+                    entry.key_effect_code,
+                    entry.binding_effect_code,
+                    entry.selection_effect_code,
+                    entry.auth_token_id,
+                    entry.key_id,
+                )
+            });
         let request_log_id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO request_logs (
+            INSERT INTO observability.request_logs (
                 api_key_id,
                 auth_token_id,
                 request_user_id,
@@ -356,7 +343,7 @@ impl KeyStore {
         )
         .bind(entry.key_id)
         .bind(entry.auth_token_id)
-        .bind(request_user_id)
+        .bind(request_user_id.as_deref())
         .bind(entry.method.as_str())
         .bind(entry.path)
         .bind(entry.query)
@@ -400,77 +387,18 @@ impl KeyStore {
         .bind(client_ip_trusted)
         .bind(ip_headers_json)
         .bind(created_at)
-        .fetch_one(&mut *tx)
+        .fetch_one(&self.pool)
         .await?;
-
-        // Daily API-key rollup bucket (bucket_secs=86400, aligned to local midnight).
-        if let Some(key_id) = entry.key_id {
-            sqlx::query(
-                r#"
-                INSERT INTO api_key_usage_buckets (
-                    api_key_id,
-                    bucket_start,
-                    bucket_secs,
-                    total_requests,
-                    success_count,
-                    error_count,
-                    quota_exhausted_count,
-                    valuable_success_count,
-                    valuable_failure_count,
-                    other_success_count,
-                    other_failure_count,
-                    unknown_count,
-                    updated_at
-                ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(api_key_id, bucket_start, bucket_secs)
-                DO UPDATE SET
-                    total_requests = total_requests + 1,
-                    success_count = success_count + excluded.success_count,
-                    error_count = error_count + excluded.error_count,
-                    quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
-                    valuable_success_count =
-                        valuable_success_count + excluded.valuable_success_count,
-                    valuable_failure_count =
-                        valuable_failure_count + excluded.valuable_failure_count,
-                    other_success_count = other_success_count + excluded.other_success_count,
-                    other_failure_count = other_failure_count + excluded.other_failure_count,
-                    unknown_count = unknown_count + excluded.unknown_count,
-                    updated_at = excluded.updated_at
-                "#,
+        self.request_stats_coalescer
+            .enqueue_request_log_rollups(
+                entry.key_id,
+                entry.auth_token_id.unwrap_or_default(),
+                request_user_id.as_deref(),
+                created_at,
+                dashboard_rollup_counts,
+                request_log_catalog_key,
             )
-            .bind(key_id)
-            .bind(bucket_start)
-            .bind(bucket_success)
-            .bind(bucket_error)
-            .bind(bucket_quota_exhausted)
-            .bind(bucket_valuable_success)
-            .bind(bucket_valuable_failure)
-            .bind(bucket_other_success)
-            .bind(bucket_other_failure)
-            .bind(bucket_unknown)
-            .bind(created_at)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        Self::upsert_dashboard_request_rollup_bucket(
-            &mut tx,
-            minute_bucket_start,
-            SECS_PER_MINUTE,
-            dashboard_rollup_counts,
-            created_at,
-        )
-        .await?;
-        Self::upsert_dashboard_request_rollup_bucket(
-            &mut tx,
-            bucket_start,
-            SECS_PER_DAY,
-            dashboard_rollup_counts,
-            created_at,
-        )
-        .await?;
-
-        tx.commit().await?;
+            .await;
         Ok(request_log_id)
     }
 

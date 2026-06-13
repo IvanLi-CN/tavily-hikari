@@ -1991,12 +1991,15 @@
         let request_row = sqlx::query(
             r#"
             SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
-            FROM request_logs
+            FROM observability.request_logs
             WHERE path = '/mcp'
+              AND proxy_session_id = ?
+              AND upstream_operation = 'http_search'
             ORDER BY id DESC
             LIMIT 1
             "#,
         )
+        .bind(&proxy_session_id)
         .fetch_one(&pool)
         .await
         .expect("fetch latest request log");
@@ -2027,10 +2030,13 @@
             r#"
             SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
             FROM auth_token_logs
+            WHERE proxy_session_id = ?
+              AND upstream_operation = 'http_search'
             ORDER BY id DESC
             LIMIT 1
             "#,
         )
+        .bind(&proxy_session_id)
         .fetch_one(&pool)
         .await
         .expect("fetch latest token log");

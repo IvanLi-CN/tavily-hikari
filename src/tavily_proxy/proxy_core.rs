@@ -452,6 +452,7 @@ impl TavilyProxy {
         let system_settings = key_store.get_system_settings().await?;
         token_request_limit.set_request_limit(system_settings.request_rate_limit);
         let forward_proxy_clients = forward_proxy::ForwardProxyClientPool::new()?;
+        let ha_state_coalescer = HaStateCoalescer::default();
         let mut proxy = Self {
             client: forward_proxy_clients.direct_client(),
             forward_proxy_clients,
@@ -484,12 +485,15 @@ impl TavilyProxy {
             dashboard_hourly_request_window_cache: Arc::new(Mutex::new(
                 DashboardHourlyRequestWindowCacheState::default(),
             )),
-            token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
+            ha_state_coalescer,
+            token_billing_locks: shared_token_billing_locks(),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
             health_readiness_grace_until: Instant::now() + options.health_readiness_grace_period,
         };
+        proxy.spawn_ha_state_coalescer();
+        proxy.spawn_request_stats_coalescer();
         eprintln!("forward-proxy startup: initializing runtime graph");
         let runtime_init_started = Instant::now();
         proxy.initialize_forward_proxy_runtime().await?;

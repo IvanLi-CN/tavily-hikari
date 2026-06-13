@@ -85,6 +85,7 @@ impl KeyStore {
         per_page: i64,
         filters: &AdminTokenListFilters,
     ) -> Result<(Vec<AuthToken>, i64), ProxyError> {
+        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -130,6 +131,7 @@ impl KeyStore {
         &self,
         filters: &AdminTokenListFilters,
     ) -> Result<Vec<AuthToken>, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()

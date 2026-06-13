@@ -1,13 +1,626 @@
 impl KeyStore {
+    async fn main_table_exists(&self, table: &str) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    async fn table_has_foreign_key_to(
+        &self,
+        table: &str,
+        parent_table: &str,
+    ) -> Result<bool, ProxyError> {
+        if !self.main_table_exists(table).await? {
+            return Ok(false);
+        }
+
+        let rows = sqlx::query(&format!("PRAGMA foreign_key_list({table})"))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().any(|row| {
+            row.try_get::<String, _>("table")
+                .map(|value| value == parent_table)
+                .unwrap_or(false)
+        }))
+    }
+
+    fn legacy_request_logs_select_exprs(source_columns: &HashSet<String>) -> Vec<(&'static str, String)> {
+        let has = |column: &str| source_columns.contains(column);
+        let source = |column: &str| format!("legacy.{column}");
+        let nullable_source = |column: &str| {
+            if has(column) {
+                source(column)
+            } else {
+                "NULL".to_string()
+            }
+        };
+
+        vec![
+            ("id", "legacy.id".to_string()),
+            (
+                "api_key_id",
+                if has("api_key_id") {
+                    source("api_key_id")
+                } else if has("api_key") {
+                    "(SELECT id FROM api_keys WHERE api_keys.api_key = legacy.api_key LIMIT 1)"
+                        .to_string()
+                } else {
+                    "NULL".to_string()
+                },
+            ),
+            ("auth_token_id", nullable_source("auth_token_id")),
+            ("request_user_id", nullable_source("request_user_id")),
+            ("method", source("method")),
+            ("path", source("path")),
+            ("query", nullable_source("query")),
+            ("status_code", nullable_source("status_code")),
+            ("tavily_status_code", nullable_source("tavily_status_code")),
+            ("error_message", nullable_source("error_message")),
+            (
+                "result_status",
+                if has("result_status") {
+                    source("result_status")
+                } else {
+                    "'unknown'".to_string()
+                },
+            ),
+            ("request_kind_key", nullable_source("request_kind_key")),
+            ("request_kind_label", nullable_source("request_kind_label")),
+            ("request_kind_detail", nullable_source("request_kind_detail")),
+            ("counts_business_quota", nullable_source("counts_business_quota")),
+            ("business_credits", nullable_source("business_credits")),
+            ("failure_kind", nullable_source("failure_kind")),
+            (
+                "key_effect_code",
+                if has("key_effect_code") {
+                    source("key_effect_code")
+                } else {
+                    "'none'".to_string()
+                },
+            ),
+            ("key_effect_summary", nullable_source("key_effect_summary")),
+            (
+                "binding_effect_code",
+                if has("binding_effect_code") {
+                    source("binding_effect_code")
+                } else {
+                    "'none'".to_string()
+                },
+            ),
+            (
+                "binding_effect_summary",
+                nullable_source("binding_effect_summary"),
+            ),
+            (
+                "selection_effect_code",
+                if has("selection_effect_code") {
+                    source("selection_effect_code")
+                } else {
+                    "'none'".to_string()
+                },
+            ),
+            (
+                "selection_effect_summary",
+                nullable_source("selection_effect_summary"),
+            ),
+            ("gateway_mode", nullable_source("gateway_mode")),
+            ("experiment_variant", nullable_source("experiment_variant")),
+            ("proxy_session_id", nullable_source("proxy_session_id")),
+            ("routing_subject_hash", nullable_source("routing_subject_hash")),
+            ("upstream_operation", nullable_source("upstream_operation")),
+            ("fallback_reason", nullable_source("fallback_reason")),
+            ("request_body", nullable_source("request_body")),
+            ("response_body", nullable_source("response_body")),
+            ("request_body_bytes", nullable_source("request_body_bytes")),
+            ("response_body_bytes", nullable_source("response_body_bytes")),
+            ("request_body_sha256", nullable_source("request_body_sha256")),
+            ("response_body_sha256", nullable_source("response_body_sha256")),
+            ("body_retention_days", nullable_source("body_retention_days")),
+            ("body_retention_profile", nullable_source("body_retention_profile")),
+            ("body_cleaned_reason", nullable_source("body_cleaned_reason")),
+            ("body_cleaned_at", nullable_source("body_cleaned_at")),
+            ("forwarded_headers", nullable_source("forwarded_headers")),
+            ("dropped_headers", nullable_source("dropped_headers")),
+            ("remote_addr", nullable_source("remote_addr")),
+            ("client_ip", nullable_source("client_ip")),
+            ("client_ip_source", nullable_source("client_ip_source")),
+            (
+                "client_ip_trusted",
+                if has("client_ip_trusted") {
+                    source("client_ip_trusted")
+                } else {
+                    "0".to_string()
+                },
+            ),
+            ("ip_headers", nullable_source("ip_headers")),
+            (
+                "visibility",
+                if has("visibility") {
+                    source("visibility")
+                } else {
+                    format!("'{}'", REQUEST_LOG_VISIBILITY_VISIBLE)
+                },
+            ),
+            ("created_at", source("created_at")),
+        ]
+    }
+
+    async fn copy_legacy_request_logs_into_observability(&self) -> Result<(), ProxyError> {
+        if !self.main_table_exists("request_logs").await? {
+            return Ok(());
+        }
+
+        let source_columns = sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('request_logs')")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if source_columns.is_empty() {
+            return Ok(());
+        }
+
+        let select_exprs = Self::legacy_request_logs_select_exprs(&source_columns);
+        let target_columns = select_exprs
+            .iter()
+            .map(|(column, _)| *column)
+            .collect::<Vec<_>>();
+        let source_exprs = select_exprs
+            .iter()
+            .map(|(_, expr)| expr.as_str())
+            .collect::<Vec<_>>();
+
+        let copy_sql = format!(
+            r#"
+            INSERT INTO observability.request_logs ({})
+            SELECT {}
+            FROM main.request_logs AS legacy
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM observability.request_logs AS obs
+                WHERE obs.id = legacy.id
+            )
+            ORDER BY legacy.id ASC
+            "#,
+            target_columns.join(", "),
+            source_exprs.join(", "),
+        );
+        sqlx::query(&copy_sql).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn rebuild_billing_ledger_without_request_log_foreign_key(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if !self.main_table_exists("billing_ledger").await? {
+            return Ok(());
+        }
+
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+        let rebuild_result = async {
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+            sqlx::query("DROP TABLE IF EXISTS billing_ledger_new")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE billing_ledger_new (
+                    auth_token_log_id INTEGER PRIMARY KEY,
+                    token_id TEXT NOT NULL,
+                    billing_subject TEXT,
+                    billing_state TEXT NOT NULL DEFAULT 'none',
+                    business_credits INTEGER,
+                    request_user_id TEXT,
+                    api_key_id TEXT,
+                    request_log_id INTEGER,
+                    result_status TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    settled_at INTEGER,
+                    error_message TEXT,
+                    FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id) ON DELETE CASCADE
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO billing_ledger_new (
+                    auth_token_log_id,
+                    token_id,
+                    billing_subject,
+                    billing_state,
+                    business_credits,
+                    request_user_id,
+                    api_key_id,
+                    request_log_id,
+                    result_status,
+                    created_at,
+                    settled_at,
+                    error_message
+                )
+                SELECT
+                    auth_token_log_id,
+                    token_id,
+                    billing_subject,
+                    billing_state,
+                    business_credits,
+                    request_user_id,
+                    api_key_id,
+                    request_log_id,
+                    result_status,
+                    created_at,
+                    settled_at,
+                    error_message
+                FROM billing_ledger
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("DROP TABLE billing_ledger")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("ALTER TABLE billing_ledger_new RENAME TO billing_ledger")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+        let reenable = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+        rebuild_result?;
+        reenable?;
+        self.ensure_billing_ledger_indexes().await?;
+        Ok(())
+    }
+
+    async fn rebuild_api_key_maintenance_records_without_request_log_foreign_key(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if !self.main_table_exists("api_key_maintenance_records").await? {
+            return Ok(());
+        }
+
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+        let rebuild_result = async {
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+            sqlx::query("DROP TABLE IF EXISTS api_key_maintenance_records_new")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE api_key_maintenance_records_new (
+                    id TEXT PRIMARY KEY,
+                    key_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    operation_code TEXT NOT NULL,
+                    operation_summary TEXT NOT NULL,
+                    reason_code TEXT,
+                    reason_summary TEXT,
+                    reason_detail TEXT,
+                    request_log_id INTEGER,
+                    auth_token_log_id INTEGER,
+                    auth_token_id TEXT,
+                    actor_user_id TEXT,
+                    actor_display_name TEXT,
+                    status_before TEXT,
+                    status_after TEXT,
+                    quarantine_before INTEGER NOT NULL DEFAULT 0,
+                    quarantine_after INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (key_id) REFERENCES api_keys(id),
+                    FOREIGN KEY (auth_token_id) REFERENCES auth_tokens(id),
+                    FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id)
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO api_key_maintenance_records_new (
+                    id,
+                    key_id,
+                    source,
+                    operation_code,
+                    operation_summary,
+                    reason_code,
+                    reason_summary,
+                    reason_detail,
+                    request_log_id,
+                    auth_token_log_id,
+                    auth_token_id,
+                    actor_user_id,
+                    actor_display_name,
+                    status_before,
+                    status_after,
+                    quarantine_before,
+                    quarantine_after,
+                    created_at
+                )
+                SELECT
+                    id,
+                    key_id,
+                    source,
+                    operation_code,
+                    operation_summary,
+                    reason_code,
+                    reason_summary,
+                    reason_detail,
+                    request_log_id,
+                    auth_token_log_id,
+                    auth_token_id,
+                    actor_user_id,
+                    actor_display_name,
+                    status_before,
+                    status_after,
+                    quarantine_before,
+                    quarantine_after,
+                    created_at
+                FROM api_key_maintenance_records
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("DROP TABLE api_key_maintenance_records")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                "ALTER TABLE api_key_maintenance_records_new RENAME TO api_key_maintenance_records",
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+        let reenable = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+        rebuild_result?;
+        reenable?;
+        self.ensure_api_key_maintenance_records_schema().await?;
+        Ok(())
+    }
+
+    async fn rebuild_api_key_transient_backoffs_without_request_log_foreign_key(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if !self.main_table_exists("api_key_transient_backoffs").await? {
+            return Ok(());
+        }
+
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+        let rebuild_result = async {
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+            sqlx::query("DROP TABLE IF EXISTS api_key_transient_backoffs_new")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE api_key_transient_backoffs_new (
+                    key_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    cooldown_until INTEGER NOT NULL,
+                    retry_after_secs INTEGER NOT NULL,
+                    reason_code TEXT,
+                    source_request_log_id INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (key_id, scope),
+                    FOREIGN KEY (key_id) REFERENCES api_keys(id)
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO api_key_transient_backoffs_new (
+                    key_id,
+                    scope,
+                    cooldown_until,
+                    retry_after_secs,
+                    reason_code,
+                    source_request_log_id,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                    key_id,
+                    scope,
+                    cooldown_until,
+                    retry_after_secs,
+                    reason_code,
+                    source_request_log_id,
+                    created_at,
+                    updated_at
+                FROM api_key_transient_backoffs
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("DROP TABLE api_key_transient_backoffs")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                "ALTER TABLE api_key_transient_backoffs_new RENAME TO api_key_transient_backoffs",
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+        let reenable = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+        rebuild_result?;
+        reenable?;
+        self.ensure_api_key_transient_backoffs_schema().await?;
+        Ok(())
+    }
+
+    async fn rebuild_request_log_soft_reference_tables_if_needed(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if self
+            .table_has_foreign_key_to("auth_token_logs", "request_logs")
+            .await?
+        {
+            self.rebuild_auth_token_logs_table(
+                AuthTokenLogsRebuildMode::DropLegacyRequestKindColumns,
+            )
+            .await?;
+            self.ensure_auth_token_logs_indexes().await?;
+        }
+        if self
+            .table_has_foreign_key_to("billing_ledger", "request_logs")
+            .await?
+        {
+            self.rebuild_billing_ledger_without_request_log_foreign_key()
+                .await?;
+        }
+        if self
+            .table_has_foreign_key_to("api_key_maintenance_records", "request_logs")
+            .await?
+        {
+            self.rebuild_api_key_maintenance_records_without_request_log_foreign_key()
+                .await?;
+        }
+        if self
+            .table_has_foreign_key_to("api_key_transient_backoffs", "request_logs")
+            .await?
+        {
+            self.rebuild_api_key_transient_backoffs_without_request_log_foreign_key()
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_legacy_observability_tables_to_sidecar(&self) -> Result<(), ProxyError> {
+        if self.observability_database_path.is_none() {
+            return Ok(());
+        }
+
+        let legacy_request_logs = self.main_table_exists("request_logs").await?;
+        let legacy_api_key_usage_buckets = self.main_table_exists("api_key_usage_buckets").await?;
+        let legacy_dashboard_rollups = self
+            .main_table_exists("dashboard_request_rollup_buckets")
+            .await?;
+        let legacy_catalog_rollups = self
+            .main_table_exists("request_log_catalog_rollups")
+            .await?;
+
+        if legacy_request_logs {
+            self.rebuild_request_log_soft_reference_tables_if_needed()
+                .await?;
+            self.copy_legacy_request_logs_into_observability().await?;
+            let mut conn = self.pool.acquire().await?;
+            self.ensure_request_logs_rebuild_references_valid(
+                &mut conn,
+                "request_logs schema migration produced invalid preserved references",
+            )
+            .await?;
+            drop(conn);
+            sqlx::query("DROP TABLE request_logs")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if legacy_api_key_usage_buckets {
+            sqlx::query("DROP TABLE api_key_usage_buckets")
+                .execute(&self.pool)
+                .await?;
+            self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 0)
+                .await?;
+            self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE, 0)
+                .await?;
+        }
+        if legacy_dashboard_rollups {
+            sqlx::query("DROP TABLE dashboard_request_rollup_buckets")
+                .execute(&self.pool)
+                .await?;
+            self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 0)
+                .await?;
+        }
+        if legacy_catalog_rollups {
+            sqlx::query("DROP TABLE request_log_catalog_rollups")
+                .execute(&self.pool)
+                .await?;
+            self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 0)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_billing_ledger_indexes(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_billing_ledger_state_subject
+               ON billing_ledger(billing_state, billing_subject, auth_token_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_billing_ledger_token_state
+               ON billing_ledger(token_id, billing_state, auth_token_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_billing_ledger_charged_window
+               ON billing_ledger(billing_state, created_at, auth_token_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn new(database_path: &str) -> Result<Self, ProxyError> {
+        let layout = SqliteDatabaseLayout::from_database_path(database_path);
         let store = Self {
-            database_path: database_path.to_string(),
-            pool: open_sqlite_pool(database_path, true, false).await?,
+            database_path: layout.core_database_path.clone(),
+            observability_database_path: layout.observability_database_path.clone(),
+            pool: open_sqlite_pool_with_observability(
+                &layout.core_database_path,
+                layout.observability_database_path.as_deref(),
+                true,
+                false,
+            )
+            .await?,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
+            request_stats_coalescer: RequestStatsCoalescer::default(),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
@@ -20,58 +633,31 @@ impl KeyStore {
     pub(crate) async fn open_for_request_logs_gc(
         database_path: &str,
     ) -> Result<Self, ProxyError> {
+        let layout = SqliteDatabaseLayout::from_database_path(database_path);
         let store = Self {
-            database_path: database_path.to_string(),
-            pool: open_sqlite_pool(database_path, true, false).await?,
+            database_path: layout.core_database_path.clone(),
+            observability_database_path: layout.observability_database_path.clone(),
+            pool: open_sqlite_pool_with_observability(
+                &layout.core_database_path,
+                layout.observability_database_path.as_deref(),
+                true,
+                false,
+            )
+            .await?,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
+            request_stats_coalescer: RequestStatsCoalescer::default(),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
-        store.ensure_meta_schema().await?;
-        store.ensure_users_debug_info_shared_column().await?;
-        store.upgrade_request_logs_schema().await?;
-        store.ensure_request_logs_gc_support_indexes().await?;
-        Ok(store)
-    }
-
-    pub(crate) async fn initialize_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS api_keys (
-                id TEXT PRIMARY KEY,
-                api_key TEXT NOT NULL UNIQUE,
-                group_name TEXT,
-                registration_ip TEXT,
-                registration_region TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at INTEGER NOT NULL DEFAULT 0,
-                status_changed_at INTEGER,
-                last_used_at INTEGER NOT NULL DEFAULT 0,
-                quota_limit INTEGER,
-                quota_remaining INTEGER,
-                quota_synced_at INTEGER,
-                deleted_at INTEGER
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        self.upgrade_api_keys_schema().await?;
-        self.ensure_api_key_quarantines_schema().await?;
-        self.ensure_api_key_maintenance_records_schema().await?;
-        self.ensure_api_key_quota_sync_samples_schema().await?;
-        self.ensure_api_key_low_quota_depletions_schema().await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS request_logs (
+            CREATE TABLE IF NOT EXISTS observability.request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 api_key_id TEXT,
                 auth_token_id TEXT,
@@ -119,67 +705,135 @@ impl KeyStore {
                 client_ip_trusted INTEGER NOT NULL DEFAULT 0,
                 ip_headers TEXT,
                 visibility TEXT NOT NULL DEFAULT 'visible',
-                created_at INTEGER NOT NULL,
-                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&store.pool)
+        .await?;
+        store.ensure_meta_schema().await?;
+        store.ensure_users_debug_info_shared_column().await?;
+        store.migrate_legacy_observability_tables_to_sidecar().await?;
+        store.upgrade_request_logs_schema().await?;
+        store.ensure_request_logs_gc_support_indexes().await?;
+        Ok(store)
+    }
+
+    pub(crate) async fn initialize_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                group_name TEXT,
+                registration_ip TEXT,
+                registration_region TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
             )
             "#,
         )
         .execute(&self.pool)
         .await?;
 
-        let mut request_kind_schema_changed = self.upgrade_request_logs_schema().await?;
+        self.upgrade_api_keys_schema().await?;
+        self.ensure_api_key_quarantines_schema().await?;
+        self.ensure_api_key_maintenance_records_schema().await?;
+        self.ensure_api_key_quota_sync_samples_schema().await?;
+        self.ensure_api_key_low_quota_depletions_schema().await?;
 
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key_id TEXT,
+                auth_token_id TEXT,
+                request_user_id TEXT,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                tavily_status_code INTEGER,
+                error_message TEXT,
+                result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                counts_business_quota INTEGER,
+                business_credits INTEGER,
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
+                binding_effect_code TEXT NOT NULL DEFAULT 'none',
+                binding_effect_summary TEXT,
+                selection_effect_code TEXT NOT NULL DEFAULT 'none',
+                selection_effect_summary TEXT,
+                gateway_mode TEXT,
+                experiment_variant TEXT,
+                proxy_session_id TEXT,
+                routing_subject_hash TEXT,
+                upstream_operation TEXT,
+                fallback_reason TEXT,
+                request_body BLOB,
+                response_body BLOB,
+                request_body_bytes INTEGER,
+                response_body_bytes INTEGER,
+                request_body_sha256 TEXT,
+                response_body_sha256 TEXT,
+                body_retention_days INTEGER,
+                body_retention_profile TEXT,
+                body_cleaned_reason TEXT,
+                body_cleaned_at INTEGER,
+                forwarded_headers TEXT,
+                dropped_headers TEXT,
+                remote_addr TEXT,
+                client_ip TEXT,
+                client_ip_source TEXT,
+                client_ip_trusted INTEGER NOT NULL DEFAULT 0,
+                ip_headers TEXT,
+                visibility TEXT NOT NULL DEFAULT 'visible',
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        let mut request_kind_schema_changed = false;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_auth_token_time
                ON request_logs(auth_token_id, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_time
                ON request_logs(created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_visibility_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_visibility_time
                ON request_logs(visibility, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_key_time
                ON request_logs(api_key_id, created_at DESC)"#,
         )
         .execute(&self.pool)
         .await?;
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_request_kind_time
-               ON request_logs(request_kind_key, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_effect_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_key_effect_time
                ON request_logs(key_effect_code, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_binding_effect_time
-               ON request_logs(binding_effect_code, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_selection_effect_time
-               ON request_logs(selection_effect_code, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_user_ip_time
-               ON request_logs(request_user_id, client_ip, created_at DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -189,7 +843,7 @@ impl KeyStore {
         // API key usage rollups (for statistics that must not depend on request_logs retention).
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS api_key_usage_buckets (
+            CREATE TABLE IF NOT EXISTS observability.api_key_usage_buckets (
                 api_key_id TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL,
                 bucket_secs INTEGER NOT NULL,
@@ -204,8 +858,7 @@ impl KeyStore {
                 other_failure_count INTEGER NOT NULL DEFAULT 0,
                 unknown_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
-                PRIMARY KEY (api_key_id, bucket_start, bucket_secs),
-                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+                PRIMARY KEY (api_key_id, bucket_start, bucket_secs)
             )
             "#,
         )
@@ -217,7 +870,7 @@ impl KeyStore {
             .await?;
 
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_api_key_usage_buckets_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_api_key_usage_buckets_time
                ON api_key_usage_buckets(bucket_start DESC)"#,
         )
         .execute(&self.pool)
@@ -225,7 +878,7 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS dashboard_request_rollup_buckets (
+            CREATE TABLE IF NOT EXISTS observability.dashboard_request_rollup_buckets (
                 bucket_start INTEGER NOT NULL,
                 bucket_secs INTEGER NOT NULL,
                 total_requests INTEGER NOT NULL,
@@ -256,7 +909,7 @@ impl KeyStore {
             .await?;
 
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_dashboard_request_rollup_buckets_scope_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_dashboard_request_rollup_buckets_scope_time
                ON dashboard_request_rollup_buckets(bucket_secs, bucket_start DESC)"#,
         )
         .execute(&self.pool)
@@ -772,13 +1425,36 @@ impl KeyStore {
                 billing_state TEXT NOT NULL DEFAULT 'none',
                 request_user_id TEXT,
                 api_key_id TEXT,
-                request_log_id INTEGER REFERENCES request_logs(id),
+                request_log_id INTEGER,
                 created_at INTEGER NOT NULL
             )
             "#,
         )
         .execute(&self.pool)
         .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS billing_ledger (
+                auth_token_log_id INTEGER PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                billing_subject TEXT,
+                billing_state TEXT NOT NULL DEFAULT 'none',
+                business_credits INTEGER,
+                request_user_id TEXT,
+                api_key_id TEXT,
+                request_log_id INTEGER,
+                result_status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                settled_at INTEGER,
+                error_message TEXT,
+                FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.ensure_billing_ledger_indexes().await?;
 
         // Upgrade: add mcp_status column if missing
         if !self
@@ -955,7 +1631,7 @@ impl KeyStore {
             .await?
         {
             sqlx::query(
-                "ALTER TABLE auth_token_logs ADD COLUMN request_log_id INTEGER REFERENCES request_logs(id)",
+                "ALTER TABLE auth_token_logs ADD COLUMN request_log_id INTEGER",
             )
             .execute(&self.pool)
             .await?;
@@ -972,8 +1648,9 @@ impl KeyStore {
             request_kind_schema_changed = true;
         }
 
+        self.backfill_billing_ledger_from_auth_token_logs().await?;
+
         self.ensure_auth_token_logs_indexes().await?;
-        self.migrate_log_effect_buckets().await?;
 
         sqlx::query(
             r#"
@@ -1007,6 +1684,8 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        self.migrate_legacy_observability_tables_to_sidecar().await?;
 
         sqlx::query(
             r#"
@@ -1336,6 +2015,9 @@ impl KeyStore {
         self.ensure_scheduled_jobs_queue_schema().await?;
 
         self.ensure_meta_schema().await?;
+        request_kind_schema_changed |= self.upgrade_request_logs_schema().await?;
+        self.ensure_request_logs_read_indexes().await?;
+        self.migrate_log_effect_buckets().await?;
 
         if request_kind_schema_changed {
             self.reset_request_kind_canonical_migration_v1_markers()
@@ -1552,6 +2234,62 @@ impl KeyStore {
             }
         }
 
+        Ok(())
+    }
+
+    async fn backfill_billing_ledger_from_auth_token_logs(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO billing_ledger (
+                auth_token_log_id,
+                token_id,
+                billing_subject,
+                billing_state,
+                business_credits,
+                request_user_id,
+                api_key_id,
+                request_log_id,
+                result_status,
+                created_at,
+                settled_at,
+                error_message
+            )
+            SELECT
+                atl.id,
+                atl.token_id,
+                atl.billing_subject,
+                atl.billing_state,
+                atl.business_credits,
+                atl.request_user_id,
+                atl.api_key_id,
+                atl.request_log_id,
+                atl.result_status,
+                atl.created_at,
+                CASE
+                    WHEN atl.billing_state = 'charged' THEN atl.created_at
+                    ELSE NULL
+                END,
+                atl.error_message
+            FROM auth_token_logs atl
+            WHERE atl.billing_state <> 'none'
+               OR atl.billing_subject IS NOT NULL
+               OR atl.business_credits IS NOT NULL
+            ON CONFLICT(auth_token_log_id) DO UPDATE SET
+                token_id = excluded.token_id,
+                billing_subject = excluded.billing_subject,
+                billing_state = excluded.billing_state,
+                business_credits = excluded.business_credits,
+                request_user_id = excluded.request_user_id,
+                api_key_id = excluded.api_key_id,
+                request_log_id = excluded.request_log_id,
+                result_status = excluded.result_status,
+                created_at = excluded.created_at,
+                settled_at = excluded.settled_at,
+                error_message = excluded.error_message
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1898,6 +2636,23 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn ensure_request_logs_read_indexes(&self) -> Result<(), ProxyError> {
+        for sql in [
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_request_kind_time
+               ON request_logs(request_kind_key, created_at DESC, id DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_binding_effect_time
+               ON request_logs(binding_effect_code, created_at DESC, id DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_selection_effect_time
+               ON request_logs(selection_effect_code, created_at DESC, id DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_user_ip_time
+               ON request_logs(request_user_id, client_ip, created_at DESC)"#,
+        ] {
+            sqlx::query(sql).execute(&self.pool).await?;
+        }
+
         Ok(())
     }
 }

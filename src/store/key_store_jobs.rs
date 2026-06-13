@@ -280,33 +280,47 @@ impl KeyStore {
         let started_at = Utc::now().timestamp();
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut retry_attempt = 0usize;
-        let res = loop {
-            match sqlx::query(
-                r#"
-                INSERT INTO scheduled_jobs (
-                    job_type,
-                    trigger_source,
-                    key_id,
-                    status,
-                    attempt,
-                    queued_at,
-                    started_at
+        loop {
+            let result = async {
+                let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+                if let Some((job_id, status, _current_trigger_source)) =
+                    Self::scheduled_job_lookup_active_locked(&mut conn, job_type, key_id).await?
+                    && status == "running"
+                {
+                    sqlx::query("COMMIT").execute(&mut *conn).await?;
+                    return Ok::<i64, ProxyError>(job_id);
+                }
+
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO scheduled_jobs (
+                        job_type,
+                        trigger_source,
+                        key_id,
+                        status,
+                        attempt,
+                        queued_at,
+                        started_at
+                    )
+                    VALUES (?, ?, ?, 'running', ?, ?, ?)
+                    "#,
                 )
-                VALUES (?, ?, ?, 'running', ?, ?, ?)
-                "#,
-            )
-            .bind(job_type)
-            .bind(trigger_source)
-            .bind(key_id)
-            .bind(attempt)
-            .bind(started_at)
-            .bind(started_at)
-            .execute(&self.pool)
-            .await
-            {
-                Ok(res) => break res,
+                .bind(job_type)
+                .bind(trigger_source)
+                .bind(key_id)
+                .bind(attempt)
+                .bind(started_at)
+                .bind(started_at)
+                .execute(&mut *conn)
+                .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(res.last_insert_rowid())
+            }
+            .await;
+
+            match result {
+                Ok(job_id) => return Ok(job_id),
                 Err(err) => {
-                    let err = ProxyError::Database(err);
                     if sleep_before_sqlite_transient_write_retry(
                         "scheduled job start",
                         retry_attempt,
@@ -322,7 +336,6 @@ impl KeyStore {
                 }
             }
         };
-        Ok(res.last_insert_rowid())
     }
 
     async fn abandon_stale_quota_sync_job_locked(

@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     io::{self, Write},
     path::Path,
-    time::Duration,
 };
 
 use chrono::{Datelike, TimeZone, Utc};
@@ -10,11 +9,11 @@ use clap::Parser;
 use dotenvy::dotenv;
 use serde::Serialize;
 use serde_json::Value;
-use sqlx::{
-    Connection, Row, SqliteConnection,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-};
+use sqlx::{Row, SqliteConnection};
 use tavily_hikari::{MonthlyQuotaRebaseReport, ProxyError};
+
+#[path = "support/sqlite_sidecar.rs"]
+mod sqlite_sidecar;
 
 const FAILURE_KIND_MCP_METHOD_405: &str = "mcp_method_405";
 const REQUEST_KIND_KEY: &str = "mcp:session-delete-unsupported";
@@ -109,31 +108,13 @@ struct MonthlyRebaseEntry {
 }
 
 async fn connect_sqlite_pool(db_path: &str) -> Result<sqlx::SqlitePool, sqlx::Error> {
-    let options = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(5)
-        .connect_with(options)
-        .await
+    sqlite_sidecar::connect_sqlite_pool(db_path, true, false, 5).await
 }
 
 async fn connect_immediate_sqlite_connection(
     db_path: &str,
 ) -> Result<SqliteConnection, sqlx::Error> {
-    let options = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let mut connection = SqliteConnection::connect_with(&options).await?;
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut connection)
-        .await?;
-    Ok(connection)
+    sqlite_sidecar::connect_immediate_sqlite_connection(db_path, true).await
 }
 
 async fn read_meta_i64(
@@ -1131,6 +1112,7 @@ mod tests {
         rebase_touched_business_quota_months, repair_month_start, request_log_needs_update,
         touched_months,
     };
+    use crate::sqlite_sidecar;
     use chrono::{Datelike, TimeZone, Utc};
     use nanoid::nanoid;
     use sqlx::Row;
@@ -1138,6 +1120,13 @@ mod tests {
 
     fn temp_db_path(prefix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
+    }
+
+    fn cleanup_temp_db(db_str: &str) {
+        let _ = std::fs::remove_file(db_str);
+        if let Some(observability_db) = sqlite_sidecar::observability_database_path(db_str) {
+            let _ = std::fs::remove_file(observability_db);
+        }
     }
 
     async fn init_proxy_and_pool(prefix: &str) -> (TavilyProxy, sqlx::SqlitePool, String) {
@@ -1508,7 +1497,7 @@ mod tests {
         assert_eq!(report.token_usage_stats_rows_rebuilt, 0);
         assert_eq!(report.touched_months.len(), 1);
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 
     #[tokio::test]
@@ -1583,7 +1572,7 @@ mod tests {
         assert_eq!(request_candidates.len(), 1);
         assert_eq!(request_candidates[0].id, request_log_id);
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 
     #[tokio::test]
@@ -1742,7 +1731,7 @@ mod tests {
                 .expect("read month quota after repair");
         assert_eq!(month_count_after, 0);
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 
     #[tokio::test]
@@ -1853,7 +1842,7 @@ mod tests {
             BILLING_STATE_NONE
         );
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 
     #[tokio::test]
@@ -1926,7 +1915,7 @@ mod tests {
         assert_eq!(auth_candidates.len(), 1);
         assert_eq!(auth_candidates[0].id, auth_log_id);
 
-        let _ = std::fs::remove_file(db_str);
+        cleanup_temp_db(&db_str);
     }
 
     #[tokio::test]

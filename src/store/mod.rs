@@ -1,6 +1,5 @@
 use crate::analysis::*;
 use crate::models::*;
-use crate::tavily_proxy::QuotaSubjectDbLease;
 use crate::*;
 use sqlx::Row;
 
@@ -162,8 +161,8 @@ fn subtract_summary_window_metrics(
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct DashboardRequestRollupCounts {
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DashboardRequestRollupCounts {
     total_requests: i64,
     success_count: i64,
     error_count: i64,
@@ -206,6 +205,22 @@ pub(crate) async fn open_sqlite_pool(
     create_if_missing: bool,
     read_only: bool,
 ) -> Result<SqlitePool, ProxyError> {
+    let layout = SqliteDatabaseLayout::from_database_path(database_path);
+    open_sqlite_pool_with_observability(
+        &layout.core_database_path,
+        layout.observability_database_path.as_deref(),
+        create_if_missing,
+        read_only,
+    )
+    .await
+}
+
+pub(crate) async fn open_sqlite_pool_with_observability(
+    database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+) -> Result<SqlitePool, ProxyError> {
     let mut options = SqliteConnectOptions::new()
         .filename(database_path)
         .create_if_missing(create_if_missing)
@@ -215,12 +230,104 @@ pub(crate) async fn open_sqlite_pool(
         options = options.journal_mode(SqliteJournalMode::Wal);
     }
 
-    SqlitePoolOptions::new()
+    let observability_database_path = observability_database_path.map(str::to_string);
+    let mut pool_options = SqlitePoolOptions::new()
         .min_connections(1)
-        .max_connections(SQLITE_POOL_MAX_CONNECTIONS_DEFAULT)
+        .max_connections(SQLITE_POOL_MAX_CONNECTIONS_DEFAULT);
+    if let Some(observability_database_path) = observability_database_path {
+        pool_options = pool_options.after_connect(move |conn, _meta| {
+            let observability_database_path = observability_database_path.clone();
+            Box::pin(async move {
+                let attach_sql = format!(
+                    "ATTACH DATABASE '{}' AS observability",
+                    observability_database_path.replace('\'', "''")
+                );
+                conn.execute(attach_sql.as_str()).await?;
+                Ok(())
+            })
+        });
+    }
+
+    pool_options
         .connect_with(options)
         .await
         .map_err(ProxyError::Database)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SqliteDatabaseLayout {
+    pub(crate) core_database_path: String,
+    pub(crate) observability_database_path: Option<String>,
+}
+
+impl SqliteDatabaseLayout {
+    pub(crate) fn from_database_path(database_path: &str) -> Self {
+        let database_path = database_path.trim();
+        let path = std::path::Path::new(database_path);
+        let is_explicit_sqlite_file = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("db"))
+            .unwrap_or(false);
+        if is_explicit_sqlite_file {
+            return Self {
+                core_database_path: database_path.to_string(),
+                observability_database_path: Some(sqlite_sidecar_path(
+                    database_path,
+                    "observability.db",
+                )),
+            };
+        }
+
+        let trimmed = database_path.trim_end_matches(std::path::MAIN_SEPARATOR);
+        let base = if trimmed.is_empty() {
+            database_path
+        } else {
+            trimmed
+        };
+        Self {
+            core_database_path: format!("{}{}core.db", base, std::path::MAIN_SEPARATOR),
+            observability_database_path: Some(format!(
+                "{}{}observability.db",
+                base,
+                std::path::MAIN_SEPARATOR
+            )),
+        }
+    }
+}
+
+fn sqlite_sidecar_path(database_path: &str, file_name: &str) -> String {
+    let path = std::path::Path::new(database_path);
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("sqlite");
+    let sidecar_name = if let Some((base, ext)) = file_name.rsplit_once('.') {
+        format!("{stem}-{base}.{ext}")
+    } else {
+        format!("{stem}-{file_name}")
+    };
+    parent.join(sidecar_name).to_string_lossy().to_string()
+}
+
+pub(crate) fn is_observability_table(table: &str) -> bool {
+    matches!(
+        table,
+        "request_logs"
+            | "api_key_usage_buckets"
+            | "dashboard_request_rollup_buckets"
+            | "request_log_catalog_rollups"
+    )
+}
+
+pub(crate) fn sqlite_qualified_table_name(table: &str) -> String {
+    if is_observability_table(table) {
+        format!("observability.{}", quote_sqlite_identifier(table))
+    } else {
+        quote_sqlite_identifier(table)
+    }
 }
 
 pub(crate) async fn begin_immediate_sqlite_connection(
@@ -274,7 +381,7 @@ pub(crate) struct ApiKeyTransientBackoffArm<'a> {
 }
 
 const REQUEST_LOGS_REBUILT_SCHEMA_SQL: &str = r#"
-CREATE TABLE request_logs_new (
+CREATE TABLE observability.request_logs_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     api_key_id TEXT,
     auth_token_id TEXT,
@@ -322,8 +429,7 @@ CREATE TABLE request_logs_new (
     client_ip_trusted INTEGER NOT NULL DEFAULT 0,
     ip_headers TEXT,
     visibility TEXT NOT NULL DEFAULT 'visible',
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+    created_at INTEGER NOT NULL
 )
 "#;
 
@@ -360,7 +466,7 @@ CREATE TABLE auth_token_logs_new (
     billing_state TEXT NOT NULL DEFAULT 'none',
     request_user_id TEXT,
     api_key_id TEXT,
-    request_log_id INTEGER REFERENCES request_logs(id),
+    request_log_id INTEGER,
     created_at INTEGER NOT NULL
 )
 "#;
@@ -1424,9 +1530,262 @@ pub(crate) struct UserDebugInfoSharedCacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ApiKeyUsageBucketDelta {
+    pub(crate) total_requests: i64,
+    pub(crate) success_count: i64,
+    pub(crate) error_count: i64,
+    pub(crate) quota_exhausted_count: i64,
+    pub(crate) valuable_success_count: i64,
+    pub(crate) valuable_failure_count: i64,
+    pub(crate) other_success_count: i64,
+    pub(crate) other_failure_count: i64,
+    pub(crate) unknown_count: i64,
+}
+
+impl ApiKeyUsageBucketDelta {
+    pub(crate) fn add(&mut self, other: Self) {
+        self.total_requests += other.total_requests;
+        self.success_count += other.success_count;
+        self.error_count += other.error_count;
+        self.quota_exhausted_count += other.quota_exhausted_count;
+        self.valuable_success_count += other.valuable_success_count;
+        self.valuable_failure_count += other.valuable_failure_count;
+        self.other_success_count += other.other_success_count;
+        self.other_failure_count += other.other_failure_count;
+        self.unknown_count += other.unknown_count;
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        self.total_requests == 0
+            && self.success_count == 0
+            && self.error_count == 0
+            && self.quota_exhausted_count == 0
+            && self.valuable_success_count == 0
+            && self.valuable_failure_count == 0
+            && self.other_success_count == 0
+            && self.other_failure_count == 0
+            && self.unknown_count == 0
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AuthTokenActivityDelta {
+    pub(crate) total_requests_delta: i64,
+    pub(crate) last_used_at: Option<i64>,
+}
+
+impl AuthTokenActivityDelta {
+    pub(crate) fn add_request(&mut self, created_at: i64) {
+        self.total_requests_delta += 1;
+        self.last_used_at = Some(
+            self.last_used_at
+                .map_or(created_at, |current| current.max(created_at)),
+        );
+    }
+
+    pub(crate) fn add(&mut self, other: Self) {
+        self.total_requests_delta += other.total_requests_delta;
+        if let Some(last_used_at) = other.last_used_at {
+            self.last_used_at = Some(
+                self.last_used_at
+                    .map_or(last_used_at, |current| current.max(last_used_at)),
+            );
+        }
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        self.total_requests_delta == 0 && self.last_used_at.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct RequestLogCatalogRollupKey {
+    pub(crate) bucket_start: i64,
+    pub(crate) request_kind_key: String,
+    pub(crate) request_kind_label: String,
+    pub(crate) result_bucket: String,
+    pub(crate) key_effect_code: String,
+    pub(crate) binding_effect_code: String,
+    pub(crate) selection_effect_code: String,
+    pub(crate) auth_token_id: String,
+    pub(crate) api_key_id: String,
+    pub(crate) operational_class: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RequestStatsCoalescerState {
+    pub(crate) pending_dashboard_rollups: HashMap<(i64, i64), DashboardRequestRollupCounts>,
+    pub(crate) pending_api_key_usage: HashMap<(String, i64), ApiKeyUsageBucketDelta>,
+    pub(crate) pending_auth_token_activity: HashMap<String, AuthTokenActivityDelta>,
+    pub(crate) pending_account_request_rollups: HashMap<(String, i64), i64>,
+    pub(crate) pending_request_log_catalog: HashMap<RequestLogCatalogRollupKey, i64>,
+    pub(crate) flushing: bool,
+    pub(crate) shutdown: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestStatsCoalescer {
+    pub(crate) state: Arc<Mutex<RequestStatsCoalescerState>>,
+    pub(crate) wake: Arc<Notify>,
+    pub(crate) flushed: Arc<Notify>,
+}
+
+impl Default for RequestStatsCoalescer {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RequestStatsCoalescerState::default())),
+            wake: Arc::new(Notify::new()),
+            flushed: Arc::new(Notify::new()),
+        }
+    }
+}
+
+impl RequestStatsCoalescer {
+    pub(crate) const MAX_PENDING_KEYS: usize = 100;
+    pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+    pub(crate) async fn enqueue_request_log_rollups(
+        &self,
+        api_key_id: Option<&str>,
+        auth_token_id: &str,
+        request_user_id: Option<&str>,
+        created_at: i64,
+        dashboard_counts: DashboardRequestRollupCounts,
+        request_log_catalog_key: Option<RequestLogCatalogRollupKey>,
+    ) {
+        {
+            let mut state = self.state.lock().await;
+            let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+            let day_bucket_start = local_day_bucket_start_utc_ts(created_at);
+            state
+                .pending_dashboard_rollups
+                .entry((minute_bucket_start, SECS_PER_MINUTE))
+                .or_default()
+                .add(dashboard_counts);
+            state
+                .pending_dashboard_rollups
+                .entry((day_bucket_start, SECS_PER_DAY))
+                .or_default()
+                .add(dashboard_counts);
+            if let Some(api_key_id) = api_key_id {
+                state
+                    .pending_api_key_usage
+                    .entry((api_key_id.to_string(), day_bucket_start))
+                    .or_default()
+                    .add(ApiKeyUsageBucketDelta {
+                        total_requests: dashboard_counts.total_requests,
+                        success_count: dashboard_counts.success_count,
+                        error_count: dashboard_counts.error_count,
+                        quota_exhausted_count: dashboard_counts.quota_exhausted_count,
+                        valuable_success_count: dashboard_counts.valuable_success_count,
+                        valuable_failure_count: dashboard_counts.valuable_failure_count,
+                        other_success_count: dashboard_counts.other_success_count,
+                        other_failure_count: dashboard_counts.other_failure_count,
+                        unknown_count: dashboard_counts.unknown_count,
+                    });
+            }
+            Self::enqueue_auth_token_activity_locked(
+                &mut state,
+                auth_token_id,
+                request_user_id,
+                created_at,
+            );
+            if let Some(request_log_catalog_key) = request_log_catalog_key {
+                *state
+                    .pending_request_log_catalog
+                    .entry(request_log_catalog_key)
+                    .or_default() += 1;
+            }
+        }
+        self.wake.notify_one();
+    }
+
+    pub(crate) async fn enqueue_auth_token_activity(
+        &self,
+        auth_token_id: &str,
+        request_user_id: Option<&str>,
+        created_at: i64,
+    ) {
+        {
+            let mut state = self.state.lock().await;
+            Self::enqueue_auth_token_activity_locked(
+                &mut state,
+                auth_token_id,
+                request_user_id,
+                created_at,
+            );
+        }
+        self.wake.notify_one();
+    }
+
+    fn enqueue_auth_token_activity_locked(
+        state: &mut RequestStatsCoalescerState,
+        auth_token_id: &str,
+        request_user_id: Option<&str>,
+        created_at: i64,
+    ) {
+        state
+            .pending_auth_token_activity
+            .entry(auth_token_id.to_string())
+            .or_default()
+            .add_request(created_at);
+        if let Some(user_id) = request_user_id {
+            let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+            *state
+                .pending_account_request_rollups
+                .entry((user_id.to_string(), bucket_start))
+                .or_default() += 1;
+        }
+    }
+
+    pub(crate) async fn enqueue_dashboard_credit_rollups(&self, created_at: i64, credits: i64) {
+        if credits <= 0 {
+            return;
+        }
+        {
+            let mut state = self.state.lock().await;
+            let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+            let day_bucket_start = local_day_bucket_start_utc_ts(created_at);
+            for key in [
+                (minute_bucket_start, SECS_PER_MINUTE),
+                (day_bucket_start, SECS_PER_DAY),
+            ] {
+                state
+                    .pending_dashboard_rollups
+                    .entry(key)
+                    .or_default()
+                    .local_estimated_credits += credits;
+            }
+        }
+        self.wake.notify_one();
+    }
+
+    pub(crate) async fn wait_until_flushed(&self) {
+        loop {
+            let notified = {
+                let state = self.state.lock().await;
+                if !state.flushing
+                    && state.pending_dashboard_rollups.is_empty()
+                    && state.pending_api_key_usage.is_empty()
+                    && state.pending_auth_token_activity.is_empty()
+                    && state.pending_account_request_rollups.is_empty()
+                    && state.pending_request_log_catalog.is_empty()
+                    && !state.shutdown
+                {
+                    return;
+                }
+                self.flushed.clone().notified_owned()
+            };
+            notified.await;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct KeyStore {
     pub(crate) database_path: String,
+    pub(crate) observability_database_path: Option<String>,
     pub(crate) pool: SqlitePool,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:
@@ -1434,6 +1793,7 @@ pub(crate) struct KeyStore {
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
     pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
+    pub(crate) request_stats_coalescer: RequestStatsCoalescer,
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
@@ -1459,6 +1819,7 @@ include!("key_store_alerts.rs");
 include!("key_store_announcements.rs");
 include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_request_logs_summary_windows.rs");
 include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");

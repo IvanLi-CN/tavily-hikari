@@ -33,7 +33,7 @@ impl KeyStore {
         mode: RequestLogsRebuildMode,
     ) -> Result<(), ProxyError> {
         sqlx::query("BEGIN IMMEDIATE").execute(&mut **conn).await?;
-        sqlx::query("DROP TABLE IF EXISTS request_logs_new")
+        sqlx::query("DROP TABLE IF EXISTS observability.request_logs_new")
             .execute(&mut **conn)
             .await?;
         sqlx::query(REQUEST_LOGS_REBUILT_SCHEMA_SQL)
@@ -44,7 +44,7 @@ impl KeyStore {
             RequestLogsRebuildMode::DropLegacyApiKeyColumn => {
                 sqlx::query(
                     r#"
-                    INSERT INTO request_logs_new (
+                    INSERT INTO observability.request_logs_new (
                         id,
                         api_key_id,
                         auth_token_id,
@@ -131,7 +131,7 @@ impl KeyStore {
                         NULL AS ip_headers,
                         ? AS visibility,
                         created_at
-                    FROM request_logs
+                    FROM observability.request_logs
                     "#,
                 )
                 .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
@@ -141,7 +141,7 @@ impl KeyStore {
             RequestLogsRebuildMode::RelaxApiKeyIdNullability => {
                 sqlx::query(
                     r#"
-                    INSERT INTO request_logs_new (
+                    INSERT INTO observability.request_logs_new (
                         id,
                         api_key_id,
                         auth_token_id,
@@ -228,7 +228,7 @@ impl KeyStore {
                         ip_headers,
                         visibility,
                         created_at
-                    FROM request_logs
+                    FROM observability.request_logs
                     "#,
                 )
                 .execute(&mut **conn)
@@ -237,7 +237,7 @@ impl KeyStore {
             RequestLogsRebuildMode::DropLegacyRequestKindColumns => {
                 sqlx::query(
                     r#"
-                    INSERT INTO request_logs_new (
+                    INSERT INTO observability.request_logs_new (
                         id,
                         api_key_id,
                         auth_token_id,
@@ -336,7 +336,7 @@ impl KeyStore {
                         ip_headers,
                         visibility,
                         created_at
-                    FROM request_logs
+                    FROM observability.request_logs
                     "#,
                 )
                 .execute(&mut **conn)
@@ -344,10 +344,10 @@ impl KeyStore {
             }
         }
 
-        sqlx::query("DROP TABLE request_logs")
+        sqlx::query("DROP TABLE observability.request_logs")
             .execute(&mut **conn)
             .await?;
-        sqlx::query("ALTER TABLE request_logs_new RENAME TO request_logs")
+        sqlx::query("ALTER TABLE observability.request_logs_new RENAME TO request_logs")
             .execute(&mut **conn)
             .await?;
 
@@ -518,64 +518,7 @@ impl KeyStore {
             return Err(ProxyError::Other(format!("{context}: {details}")));
         }
 
-        self.ensure_auth_token_logs_child_reference_integrity(
-            conn,
-            "api_key_maintenance_records",
-            context,
-        )
-        .await
-    }
-
-    async fn ensure_auth_token_logs_child_reference_integrity(
-        &self,
-        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
-        table: &str,
-        context: &str,
-    ) -> Result<(), ProxyError> {
-        let table_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        )
-        .bind(table)
-        .fetch_optional(&mut **conn)
-        .await?;
-        if table_exists.is_none() {
-            return Ok(());
-        }
-
-        let has_auth_token_log_id = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM pragma_table_info(?) WHERE name = 'auth_token_log_id' LIMIT 1",
-        )
-        .bind(table)
-        .fetch_optional(&mut **conn)
-        .await?;
-        if has_auth_token_log_id.is_none() {
-            return Ok(());
-        }
-
-        let query = format!(
-            "SELECT rowid, auth_token_log_id FROM {table} \
-             WHERE auth_token_log_id IS NOT NULL \
-               AND NOT EXISTS (SELECT 1 FROM auth_token_logs WHERE auth_token_logs.id = {table}.auth_token_log_id) \
-             ORDER BY rowid ASC LIMIT 5"
-        );
-        let rows = sqlx::query(&query).fetch_all(&mut **conn).await?;
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let details = rows
-            .into_iter()
-            .map(|row| {
-                let rowid = row.try_get::<i64, _>("rowid").unwrap_or_default();
-                let auth_token_log_id = row
-                    .try_get::<i64, _>("auth_token_log_id")
-                    .unwrap_or_default();
-                format!("{table}[rowid={rowid}] -> auth_token_logs[id={auth_token_log_id}]")
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-
-        Err(ProxyError::Other(format!("{context}: {details}")))
+        Ok(())
     }
 
     async fn ensure_auth_token_logs_indexes(&self) -> Result<(), ProxyError> {
@@ -640,30 +583,6 @@ impl KeyStore {
         conn: &mut sqlx::pool::PoolConnection<Sqlite>,
         context: &str,
     ) -> Result<(), ProxyError> {
-        let rows = sqlx::query("PRAGMA foreign_key_check('request_logs')")
-            .fetch_all(&mut **conn)
-            .await?;
-        if !rows.is_empty() {
-            let details = rows
-                .into_iter()
-                .take(5)
-                .map(|row| {
-                    let table = row
-                        .try_get::<String, _>(0)
-                        .unwrap_or_else(|_| "<unknown-table>".to_string());
-                    let rowid = row.try_get::<i64, _>(1).unwrap_or_default();
-                    let parent = row
-                        .try_get::<String, _>(2)
-                        .unwrap_or_else(|_| "<unknown-parent>".to_string());
-                    let fk_index = row.try_get::<i64, _>(3).unwrap_or_default();
-                    format!("{table}[rowid={rowid}] -> {parent} (fk#{fk_index})")
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-
-            return Err(ProxyError::Other(format!("{context}: {details}")));
-        }
-
         self.ensure_request_logs_child_reference_integrity(conn, "auth_token_logs", context)
             .await?;
         self.ensure_request_logs_child_reference_integrity(
@@ -703,7 +622,7 @@ impl KeyStore {
         let query = format!(
             "SELECT rowid, request_log_id FROM {table} \
              WHERE request_log_id IS NOT NULL \
-               AND NOT EXISTS (SELECT 1 FROM request_logs WHERE request_logs.id = {table}.request_log_id) \
+               AND NOT EXISTS (SELECT 1 FROM observability.request_logs WHERE observability.request_logs.id = {table}.request_log_id) \
              ORDER BY rowid ASC LIMIT 5"
         );
         let rows = sqlx::query(&query).fetch_all(&mut **conn).await?;
@@ -866,7 +785,7 @@ impl KeyStore {
                     SELECT MIN(candidate_ts)
                     FROM (
                         SELECT MIN(r.created_at) AS candidate_ts
-                        FROM request_logs r
+                        FROM observability.request_logs r
                         WHERE r.api_key_id = api_keys.id
                         UNION ALL
                         SELECT MIN(q.created_at) AS candidate_ts
@@ -1144,7 +1063,7 @@ impl KeyStore {
     pub(crate) async fn upgrade_request_logs_schema(&self) -> Result<bool, ProxyError> {
         if !self.request_logs_column_exists("result_status").await? {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN result_status TEXT NOT NULL DEFAULT 'unknown'",
+                "ALTER TABLE observability.request_logs ADD COLUMN result_status TEXT NOT NULL DEFAULT 'unknown'",
             )
             .execute(&self.pool)
             .await?;
@@ -1154,39 +1073,39 @@ impl KeyStore {
             .request_logs_column_exists("tavily_status_code")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN tavily_status_code INTEGER")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN tavily_status_code INTEGER")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("forwarded_headers").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN forwarded_headers TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN forwarded_headers TEXT")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("dropped_headers").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN dropped_headers TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN dropped_headers TEXT")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("failure_kind").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN failure_kind TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN failure_kind TEXT")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("visibility").await? {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'",
+                "ALTER TABLE observability.request_logs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'",
             )
             .execute(&self.pool)
             .await?;
         }
 
         sqlx::query(
-            "UPDATE request_logs
+            "UPDATE observability.request_logs
              SET visibility = ?
              WHERE visibility IS NULL OR TRIM(visibility) = ''",
         )
@@ -1196,7 +1115,7 @@ impl KeyStore {
 
         if !self.request_logs_column_exists("key_effect_code").await? {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE observability.request_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
             )
             .execute(&self.pool)
             .await?;
@@ -1206,7 +1125,7 @@ impl KeyStore {
             .request_logs_column_exists("key_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN key_effect_summary TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN key_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1216,7 +1135,7 @@ impl KeyStore {
             .await?
         {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN binding_effect_code TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE observability.request_logs ADD COLUMN binding_effect_code TEXT NOT NULL DEFAULT 'none'",
             )
             .execute(&self.pool)
             .await?;
@@ -1226,7 +1145,7 @@ impl KeyStore {
             .request_logs_column_exists("binding_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN binding_effect_summary TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN binding_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1236,7 +1155,7 @@ impl KeyStore {
             .await?
         {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN selection_effect_code TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE observability.request_logs ADD COLUMN selection_effect_code TEXT NOT NULL DEFAULT 'none'",
             )
             .execute(&self.pool)
             .await?;
@@ -1246,7 +1165,7 @@ impl KeyStore {
             .request_logs_column_exists("selection_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN selection_effect_summary TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN selection_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1254,79 +1173,79 @@ impl KeyStore {
         for (column, sql) in [
             (
                 "gateway_mode",
-                "ALTER TABLE request_logs ADD COLUMN gateway_mode TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN gateway_mode TEXT",
             ),
             (
                 "experiment_variant",
-                "ALTER TABLE request_logs ADD COLUMN experiment_variant TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN experiment_variant TEXT",
             ),
             (
                 "proxy_session_id",
-                "ALTER TABLE request_logs ADD COLUMN proxy_session_id TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN proxy_session_id TEXT",
             ),
             (
                 "routing_subject_hash",
-                "ALTER TABLE request_logs ADD COLUMN routing_subject_hash TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN routing_subject_hash TEXT",
             ),
             (
                 "upstream_operation",
-                "ALTER TABLE request_logs ADD COLUMN upstream_operation TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN upstream_operation TEXT",
             ),
             (
                 "fallback_reason",
-                "ALTER TABLE request_logs ADD COLUMN fallback_reason TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN fallback_reason TEXT",
             ),
             (
                 "request_user_id",
-                "ALTER TABLE request_logs ADD COLUMN request_user_id TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN request_user_id TEXT",
             ),
             (
                 "remote_addr",
-                "ALTER TABLE request_logs ADD COLUMN remote_addr TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN remote_addr TEXT",
             ),
             (
                 "client_ip",
-                "ALTER TABLE request_logs ADD COLUMN client_ip TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN client_ip TEXT",
             ),
             (
                 "client_ip_source",
-                "ALTER TABLE request_logs ADD COLUMN client_ip_source TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN client_ip_source TEXT",
             ),
             (
                 "ip_headers",
-                "ALTER TABLE request_logs ADD COLUMN ip_headers TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN ip_headers TEXT",
             ),
             (
                 "request_body_bytes",
-                "ALTER TABLE request_logs ADD COLUMN request_body_bytes INTEGER",
+                "ALTER TABLE observability.request_logs ADD COLUMN request_body_bytes INTEGER",
             ),
             (
                 "response_body_bytes",
-                "ALTER TABLE request_logs ADD COLUMN response_body_bytes INTEGER",
+                "ALTER TABLE observability.request_logs ADD COLUMN response_body_bytes INTEGER",
             ),
             (
                 "request_body_sha256",
-                "ALTER TABLE request_logs ADD COLUMN request_body_sha256 TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN request_body_sha256 TEXT",
             ),
             (
                 "response_body_sha256",
-                "ALTER TABLE request_logs ADD COLUMN response_body_sha256 TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN response_body_sha256 TEXT",
             ),
             (
                 "body_retention_days",
-                "ALTER TABLE request_logs ADD COLUMN body_retention_days INTEGER",
+                "ALTER TABLE observability.request_logs ADD COLUMN body_retention_days INTEGER",
             ),
             (
                 "body_retention_profile",
-                "ALTER TABLE request_logs ADD COLUMN body_retention_profile TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN body_retention_profile TEXT",
             ),
             (
                 "body_cleaned_reason",
-                "ALTER TABLE request_logs ADD COLUMN body_cleaned_reason TEXT",
+                "ALTER TABLE observability.request_logs ADD COLUMN body_cleaned_reason TEXT",
             ),
             (
                 "body_cleaned_at",
-                "ALTER TABLE request_logs ADD COLUMN body_cleaned_at INTEGER",
+                "ALTER TABLE observability.request_logs ADD COLUMN body_cleaned_at INTEGER",
             ),
         ] {
             if !self.request_logs_column_exists(column).await? {
@@ -1336,7 +1255,7 @@ impl KeyStore {
 
         if !self.request_logs_column_exists("client_ip_trusted").await? {
             sqlx::query(
-                "ALTER TABLE request_logs ADD COLUMN client_ip_trusted INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE observability.request_logs ADD COLUMN client_ip_trusted INTEGER NOT NULL DEFAULT 0",
             )
             .execute(&self.pool)
             .await?;
@@ -1356,16 +1275,16 @@ impl KeyStore {
         let has_api_keys_table = self.table_exists("api_keys").await?;
 
         if !self.request_logs_column_exists("api_key_id").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN api_key_id TEXT")
                 .execute(&self.pool)
                 .await?;
 
             if has_legacy_api_key_column && has_api_keys_table {
                 sqlx::query(
                     r#"
-                    UPDATE request_logs
+                    UPDATE observability.request_logs
                     SET api_key_id = (
-                        SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
+                        SELECT id FROM api_keys WHERE api_keys.api_key = observability.request_logs.api_key
                     )
                     "#,
                 )
@@ -1390,19 +1309,19 @@ impl KeyStore {
         }
 
         if !self.request_logs_column_exists("request_body").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_body BLOB")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_body BLOB")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("response_body").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN response_body BLOB")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN response_body BLOB")
                 .execute(&self.pool)
                 .await?;
         }
 
         if !self.request_logs_column_exists("auth_token_id").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN auth_token_id TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN auth_token_id TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1422,7 +1341,7 @@ impl KeyStore {
         let mut request_kind_schema_changed = false;
 
         if !self.request_logs_column_exists("request_kind_key").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_key TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
             request_kind_schema_changed = true;
@@ -1432,7 +1351,7 @@ impl KeyStore {
             .request_logs_column_exists("request_kind_label")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_label TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
             request_kind_schema_changed = true;
@@ -1442,14 +1361,14 @@ impl KeyStore {
             .request_logs_column_exists("request_kind_detail")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_detail TEXT")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
             request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("business_credits").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN business_credits INTEGER")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN business_credits INTEGER")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1458,7 +1377,7 @@ impl KeyStore {
             .request_logs_column_exists("counts_business_quota")
             .await?
         {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN counts_business_quota INTEGER")
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN counts_business_quota INTEGER")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1531,7 +1450,7 @@ impl KeyStore {
         column: &str,
     ) -> Result<bool, ProxyError> {
         let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM pragma_table_info('request_logs') WHERE name = ? LIMIT 1",
+            "SELECT 1 FROM observability.pragma_table_info('request_logs') WHERE name = ? LIMIT 1",
         )
         .bind(column)
         .fetch_optional(&self.pool)

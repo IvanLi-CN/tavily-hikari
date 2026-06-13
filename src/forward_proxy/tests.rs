@@ -7,9 +7,16 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::{
-        path::PathBuf,
+        path::{Path, PathBuf},
+        sync::{Arc, OnceLock},
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    fn fake_xray_test_lock() -> Arc<tokio::sync::Mutex<()>> {
+        static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+        LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
 
     #[test]
     fn derive_probe_url_uses_public_probe_endpoint() {
@@ -172,6 +179,7 @@ rule-providers:
 
         let key_store = crate::store::KeyStore {
             database_path: db_path.to_string_lossy().into_owned(),
+            observability_database_path: None,
             pool: pool.clone(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             account_quota_resolution_cache: tokio::sync::RwLock::new(
@@ -182,6 +190,7 @@ rule-providers:
             user_debug_info_shared_cache: tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             ),
+            request_stats_coalescer: crate::store::RequestStatsCoalescer::default(),
             admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: tokio::sync::Mutex::new(std::collections::HashSet::new()),
@@ -356,6 +365,14 @@ rule-providers:
     }
 
     fn write_fake_xray_binary_with_api_failure(prefix: &str, fail_command: Option<&str>) -> String {
+        write_fake_xray_binary_with_dynamic_api_failure(prefix, fail_command, None)
+    }
+
+    fn write_fake_xray_binary_with_dynamic_api_failure(
+        prefix: &str,
+        fail_command: Option<&str>,
+        fail_command_file: Option<&Path>,
+    ) -> String {
         let path = std::env::temp_dir().join(format!(
             "{prefix}-fake-xray-{}-{}.py",
             std::process::id(),
@@ -372,10 +389,12 @@ import time
 from pathlib import Path
 
 FAIL_COMMAND = "__FAIL_COMMAND__"
+FAIL_COMMAND_FILE = "__FAIL_COMMAND_FILE__"
 
 def state_path_for_server(server: str) -> Path:
     port = server.rsplit(":", 1)[1]
-    return Path(f"/tmp/fake-xray-{port}.json")
+    script_tag = Path(__file__).stem
+    return Path(f"/tmp/{script_tag}-state-{port}.json")
 
 def load_json(path: Path):
     if not path.exists():
@@ -515,7 +534,13 @@ def parse_server(args):
     return server, positionals
 
 def api_mode(command: str, args) -> int:
-    if FAIL_COMMAND and command == FAIL_COMMAND:
+    fail_command = FAIL_COMMAND
+    if FAIL_COMMAND_FILE:
+        try:
+            fail_command = Path(FAIL_COMMAND_FILE).read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            fail_command = ""
+    if fail_command and command == fail_command:
         print(f"forced api failure for {command}", file=sys.stderr)
         return 1
     server, positionals = parse_server(args)
@@ -566,7 +591,13 @@ def main():
 if __name__ == "__main__":
     raise SystemExit(main())
 "#
-        .replace("__FAIL_COMMAND__", fail_command.unwrap_or(""));
+        .replace("__FAIL_COMMAND__", fail_command.unwrap_or(""))
+        .replace(
+            "__FAIL_COMMAND_FILE__",
+            &fail_command_file
+                .map(|path| path.to_string_lossy().replace('\\', "\\\\"))
+                .unwrap_or_default(),
+        );
         fs::write(&path, script).expect("write fake xray script");
         #[cfg(unix)]
         {
@@ -1061,6 +1092,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_reuses_single_shared_process_and_hot_swaps_changed_handles() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-hot-swap");
         let mut supervisor =
             XraySupervisor::new(write_fake_xray_binary("shared-xray-hot-swap"), runtime_dir);
@@ -1110,6 +1143,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_drains_retired_handles_until_last_lease_releases() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-drain");
         let mut supervisor =
             XraySupervisor::new(write_fake_xray_binary("shared-xray-drain"), runtime_dir);
@@ -1158,6 +1193,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_retiring_handle_stays_leaseable_for_selected_plan() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-plan-drain");
         let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
             write_fake_xray_binary("shared-xray-plan-drain"),
@@ -1217,6 +1254,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn forward_proxy_relay_lease_acquire_waits_for_supervisor_mutex_reset() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-lease-fast-path");
         let supervisor = Arc::new(Mutex::new(XraySupervisor::new(
             write_fake_xray_binary("shared-xray-lease-fast-path"),
@@ -1270,6 +1309,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn tavily_proxy_send_plan_reaps_retired_handles_after_plan_drop() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-plan-drop");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");
@@ -1339,6 +1380,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_validation_handles_cleanup_idle_shared_process() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-validate-temp");
         let mut supervisor = XraySupervisor::new(
             write_fake_xray_binary("shared-xray-validate-temp"),
@@ -1378,6 +1421,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_failed_temp_handle_creation_cleans_up_shared_process() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-temp-failure");
         let mut supervisor = XraySupervisor::new(
             write_fake_xray_binary_with_api_failure("shared-xray-temp-failure", Some("ado")),
@@ -1404,6 +1449,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn validation_endpoint_holds_first_lease_before_reap() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-validation-lease");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");
@@ -1450,6 +1497,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn tavily_proxy_probe_failure_releases_validation_lease() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-probe-failure");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");
@@ -1493,6 +1542,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn tavily_proxy_recorded_validation_attempts_are_probe_only() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-validation-attempts-are-probe");
         let db_path = root_dir.join("proxy.db");
         let db_path_str = db_path
@@ -1548,6 +1599,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn xray_supervisor_clears_cached_relay_urls_after_shared_process_exit() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-dead-process");
         let mut supervisor = XraySupervisor::new(
             write_fake_xray_binary("shared-xray-dead-process"),
@@ -1595,6 +1648,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn tavily_proxy_save_and_revalidate_keep_shared_xray_pid() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-flow");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");
@@ -1674,6 +1729,8 @@ if __name__ == "__main__":
     #[tokio::test]
     async fn startup_restores_persisted_subscription_nodes_and_prewarms_xray_when_subscription_down()
     {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-startup-restore-xray");
         let db_path = root_dir.join("proxy.db");
         let share_link = sample_vless_share_link("restore-sub.example.com", "Restore Sub");
@@ -1774,11 +1831,15 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn shared_xray_cleanup_failure_keeps_retired_handle_retriable() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-cleanup-retriable");
+        let fail_command_file = runtime_dir.join("fail-command");
         let mut supervisor = XraySupervisor::new(
-            write_fake_xray_binary_with_api_failure(
+            write_fake_xray_binary_with_dynamic_api_failure(
                 "shared-xray-cleanup-retriable",
-                Some("rmrules"),
+                None,
+                Some(&fail_command_file),
             ),
             runtime_dir,
         );
@@ -1797,6 +1858,7 @@ if __name__ == "__main__":
             .clone()
             .expect("endpoint url after initial sync");
 
+        fs::write(&fail_command_file, "rmrules").expect("enable fake xray rmrules failure");
         let mut changed = vec![subscription_vless_endpoint(
             "node-a",
             "changed.example.com",
@@ -1819,7 +1881,7 @@ if __name__ == "__main__":
             "failed cleanup should retire the stale relay without exposing it to new selections"
         );
 
-        supervisor.binary = write_fake_xray_binary("shared-xray-cleanup-retriable-recovered");
+        fs::write(&fail_command_file, "").expect("disable fake xray rmrules failure");
         supervisor.reap_retired_handles_now().await;
         let recovered_snapshot = supervisor.debug_snapshot().await;
         assert_eq!(recovered_snapshot.active_endpoint_handles, 1);
@@ -1829,6 +1891,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn retired_handle_cleanup_does_not_restart_shared_process_after_crash() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let runtime_dir = temp_runtime_dir("shared-xray-cleanup-no-restart");
         let mut supervisor = XraySupervisor::new(
             write_fake_xray_binary("shared-xray-cleanup-no-restart"),
@@ -1885,6 +1949,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn send_plan_recovers_after_shared_xray_exit() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-recover");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");
@@ -1965,6 +2031,8 @@ if __name__ == "__main__":
 
     #[tokio::test]
     async fn send_plan_recovers_after_shared_xray_exit_with_held_supervisor_mutex() {
+        let lock = fake_xray_test_lock();
+        let _fake_xray_lock = lock.lock().await;
         let root_dir = temp_runtime_dir("proxy-shared-xray-recover-held-lock");
         let db_path = root_dir.join("proxy.db");
         let runtime_dir = root_dir.join("xray-runtime");

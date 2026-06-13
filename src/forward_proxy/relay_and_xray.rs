@@ -862,7 +862,6 @@ impl XraySupervisor {
         write_xray_runtime_json(&config_paths[1], &outbound_config)?;
         write_xray_runtime_json(&config_paths[2], &rules_config)?;
         self.ensure_shared_process_started().await?;
-        local_port_reservation.release();
 
         if let Err(err) = self
             .run_shared_api_command("ado", &[config_paths[1].clone()], &[])
@@ -872,6 +871,9 @@ impl XraySupervisor {
             self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
+        // Hold the listener reservation until the inbound is about to be
+        // attached so parallel tests cannot steal the selected local relay port.
+        local_port_reservation.release();
         if let Err(err) = self
             .run_shared_api_command("adi", &[config_paths[0].clone()], &[])
             .await
@@ -924,7 +926,7 @@ impl XraySupervisor {
         }
         if let Err(err) = wait_for_local_socks_ready(
             local_port,
-            Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
+            Duration::from_millis(XRAY_LOCAL_SOCKS_READY_TIMEOUT_MS),
         )
         .await
         {
@@ -1062,7 +1064,6 @@ impl XraySupervisor {
             "outbounds": [{ "tag": "direct", "protocol": "freedom" }]
         });
         write_xray_runtime_json(&config_path, &config)?;
-        api_port_reservation.release();
 
         let mut child = Command::new(&self.binary)
             .arg("run")
@@ -1078,6 +1079,9 @@ impl XraySupervisor {
                     self.binary
                 ))
             })?;
+        // Release only after the child is spawned so another parallel test
+        // cannot bind the chosen API port between allocation and exec.
+        api_port_reservation.release();
 
         if let Err(err) = wait_for_xray_api_ready(
             &mut child,

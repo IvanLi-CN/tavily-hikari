@@ -45,7 +45,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
     time::{Duration, Instant},
 };
@@ -66,6 +66,9 @@ use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use url::form_urlencoded;
+
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 pub type ForwardProxyProgressCallback = dyn Fn(ForwardProxyProgressEvent) + Send + Sync;
 
@@ -717,11 +720,18 @@ const ACCOUNT_QUOTA_RESOLUTION_CACHE_TTL_SECS: u64 = 5;
 const ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES: usize = 10_000;
 const ADMIN_REQUEST_LOGS_CATALOG_CACHE_TTL_SECS: i64 = 30;
 const ADMIN_HEAVY_READ_CONCURRENCY: usize = 1;
-// Keep the lease TTL below the acquisition wait so a crashed holder can be recovered
-// by the next in-flight request instead of blocking the subject for minutes.
+// Test-only coverage still exercises the legacy SQLite subject-lock helper retry path.
+#[cfg(test)]
+#[allow(dead_code)]
 const QUOTA_SUBJECT_LOCK_TTL_SECS: u64 = 20;
+#[cfg(test)]
+#[allow(dead_code)]
 const QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS: u64 = 30;
+#[cfg(test)]
+#[allow(dead_code)]
 const QUOTA_SUBJECT_LOCK_REFRESH_SECS: u64 = 5;
+#[cfg(test)]
+#[allow(dead_code)]
 const QUOTA_SUBJECT_LOCK_REFRESH_RETRY_SECS: u64 = 1;
 
 const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 32;
@@ -739,6 +749,7 @@ const BILLING_STATE_NONE: &str = "none";
 const BILLING_STATE_PENDING: &str = "pending";
 const BILLING_STATE_CHARGED: &str = "charged";
 
+#[cfg(test)]
 static QUOTA_SUBJECT_LOCK_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 const GRANULARITY_MINUTE: &str = "minute";

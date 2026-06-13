@@ -1,6 +1,6 @@
 use std::{
     net::{SocketAddr, TcpListener as StdTcpListener},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -31,17 +31,39 @@ fn reserve_local_port() -> u16 {
 }
 
 async fn connect_sqlite_test_pool(db_path: &str) -> sqlx::SqlitePool {
+    let observability_db_path = sqlite_observability_db_path(Path::new(db_path));
     let options = SqliteConnectOptions::new()
         .filename(db_path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
     SqlitePoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            let observability_db_path = observability_db_path.clone();
+            Box::pin(async move {
+                let attach_sql = format!(
+                    "ATTACH DATABASE '{}' AS observability",
+                    observability_db_path.to_string_lossy().replace('\'', "''")
+                );
+                sqlx::query(&attach_sql).execute(conn).await?;
+                Ok(())
+            })
+        })
         .min_connections(1)
         .max_connections(5)
         .connect_with(options)
         .await
         .expect("connect sqlite pool")
+}
+
+fn sqlite_observability_db_path(db_path: &Path) -> PathBuf {
+    let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("sqlite");
+    parent.join(format!("{stem}-observability.db"))
 }
 
 struct ProxyProcess {
@@ -129,7 +151,7 @@ async fn fetch_latest_token_log_credits(pool: &sqlx::SqlitePool, token_id: &str)
 
 async fn fetch_latest_request_body(pool: &sqlx::SqlitePool, token_id: &str) -> Value {
     let row = sqlx::query(
-        "SELECT request_body FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT request_body FROM observability.request_logs WHERE auth_token_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(token_id)
     .fetch_one(pool)
@@ -143,7 +165,7 @@ async fn fetch_latest_request_body(pool: &sqlx::SqlitePool, token_id: &str) -> V
 }
 
 async fn fetch_request_log_count(pool: &sqlx::SqlitePool, token_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE auth_token_id = ?")
+    sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs WHERE auth_token_id = ?")
         .bind(token_id)
         .fetch_one(pool)
         .await
@@ -309,6 +331,7 @@ async fn mcp_search_with_underscore_tool_forwards_without_usage_and_bills() {
     assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 2);
 
+    let _ = std::fs::remove_file(sqlite_observability_db_path(&db_path));
     let _ = std::fs::remove_file(db_path);
 }
 
@@ -364,6 +387,7 @@ async fn mcp_search_with_underscore_tool_uses_missing_usage_fallback() {
     assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 2);
 
+    let _ = std::fs::remove_file(sqlite_observability_db_path(&db_path));
     let _ = std::fs::remove_file(db_path);
 }
 
@@ -423,5 +447,6 @@ async fn mcp_extract_with_underscore_tool_skips_missing_usage_charge_without_sha
     assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 0);
 
+    let _ = std::fs::remove_file(sqlite_observability_db_path(&db_path));
     let _ = std::fs::remove_file(db_path);
 }

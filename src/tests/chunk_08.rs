@@ -17,6 +17,64 @@ async fn system_settings_safe_defaults_disable_rollouts() {
 }
 
 #[tokio::test]
+async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
+    let db_path = temp_db_path("request-stats-coalescer-rate5m-flush");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "rate5m-flush".to_string(),
+            username: Some("rate5m_flush".to_string()),
+            name: Some("Rate5m Flush".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    let now = Utc::now();
+    let current_bucket_start =
+        now.timestamp() - now.timestamp().rem_euclid(SECS_PER_FIVE_MINUTES);
+    let chart_start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(chart_start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+    proxy
+        .key_store
+        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, chart_start)
+        .await
+        .expect("set rate5m coverage");
+
+    proxy
+        .key_store
+        .request_stats_coalescer
+        .enqueue_auth_token_activity("rate5m-flush-token", Some(&user.user_id), current_bucket_start + 30)
+        .await;
+
+    let series = proxy
+        .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::Rate5m)
+        .await
+        .expect("load rate5m series");
+    let current_bucket = series
+        .points
+        .iter()
+        .find(|point| point.bucket_start == current_bucket_start)
+        .expect("current bucket point");
+    assert_eq!(current_bucket.value, Some(1));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn account_usage_rollup_rebuild_backfills_full_month_chart_horizon() {
     let db_path = temp_db_path("account-usage-rollup-month-chart-horizon");
     let db_str = db_path.to_string_lossy().to_string();

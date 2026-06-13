@@ -1,4 +1,446 @@
+struct RequestLogCatalogRollupKeyParts<'a> {
+    created_at: i64,
+    request_kind_key: &'a str,
+    request_kind_label: &'a str,
+    result_bucket: &'a str,
+    key_effect_code: &'a str,
+    binding_effect_code: &'a str,
+    selection_effect_code: &'a str,
+    auth_token_id: Option<&'a str>,
+    api_key_id: Option<&'a str>,
+    operational_class: &'a str,
+}
+
 impl KeyStore {
+    fn request_log_catalog_rollup_key_from_parts(
+        parts: RequestLogCatalogRollupKeyParts<'_>,
+    ) -> RequestLogCatalogRollupKey {
+        RequestLogCatalogRollupKey {
+            bucket_start: parts.created_at,
+            request_kind_key: parts.request_kind_key.trim().to_string(),
+            request_kind_label: parts.request_kind_label.trim().to_string(),
+            result_bucket: parts.result_bucket.trim().to_string(),
+            key_effect_code: parts.key_effect_code.trim().to_string(),
+            binding_effect_code: parts.binding_effect_code.trim().to_string(),
+            selection_effect_code: parts.selection_effect_code.trim().to_string(),
+            auth_token_id: parts.auth_token_id.unwrap_or_default().trim().to_string(),
+            api_key_id: parts.api_key_id.unwrap_or_default().trim().to_string(),
+            operational_class: parts.operational_class.trim().to_string(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn request_log_catalog_rollup_key_for_request(
+        created_at: i64,
+        request_kind_key: &str,
+        request_kind_label: &str,
+        counts_business_quota: bool,
+        result_status: &str,
+        failure_kind: Option<&str>,
+        key_effect_code: &str,
+        binding_effect_code: &str,
+        selection_effect_code: &str,
+        auth_token_id: Option<&str>,
+        api_key_id: Option<&str>,
+    ) -> RequestLogCatalogRollupKey {
+        let operational_class = operational_class_for_token_log(
+            request_kind_key,
+            result_status,
+            failure_kind,
+            counts_business_quota,
+        );
+        let result_bucket = match operational_class {
+            OPERATIONAL_CLASS_NEUTRAL => OPERATIONAL_CLASS_NEUTRAL,
+            OUTCOME_QUOTA_EXHAUSTED => OUTCOME_QUOTA_EXHAUSTED,
+            OUTCOME_SUCCESS => OUTCOME_SUCCESS,
+            _ => OUTCOME_ERROR,
+        };
+        Self::request_log_catalog_rollup_key_from_parts(RequestLogCatalogRollupKeyParts {
+            created_at,
+            request_kind_key,
+            request_kind_label,
+            result_bucket,
+            key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
+            auth_token_id,
+            api_key_id,
+            operational_class,
+        })
+    }
+
+    async fn upsert_request_log_catalog_rollup_delta(
+        tx: &mut Transaction<'_, Sqlite>,
+        key: &RequestLogCatalogRollupKey,
+        request_count_delta: i64,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        if request_count_delta == 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO request_log_catalog_rollups (
+                bucket_start,
+                request_kind_key,
+                request_kind_label,
+                result_bucket,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                auth_token_id,
+                api_key_id,
+                operational_class,
+                request_count,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(
+                bucket_start,
+                request_kind_key,
+                request_kind_label,
+                result_bucket,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                auth_token_id,
+                api_key_id,
+                operational_class
+            ) DO UPDATE SET
+                request_count = request_log_catalog_rollups.request_count + excluded.request_count,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(key.bucket_start)
+        .bind(&key.request_kind_key)
+        .bind(&key.request_kind_label)
+        .bind(&key.result_bucket)
+        .bind(&key.key_effect_code)
+        .bind(&key.binding_effect_code)
+        .bind(&key.selection_effect_code)
+        .bind(&key.auth_token_id)
+        .bind(&key.api_key_id)
+        .bind(&key.operational_class)
+        .bind(request_count_delta)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM request_log_catalog_rollups
+            WHERE bucket_start = ?
+              AND request_kind_key = ?
+              AND request_kind_label = ?
+              AND result_bucket = ?
+              AND key_effect_code = ?
+              AND binding_effect_code = ?
+              AND selection_effect_code = ?
+              AND auth_token_id = ?
+              AND api_key_id = ?
+              AND operational_class = ?
+              AND request_count <= 0
+            "#,
+        )
+        .bind(key.bucket_start)
+        .bind(&key.request_kind_key)
+        .bind(&key.request_kind_label)
+        .bind(&key.result_bucket)
+        .bind(&key.key_effect_code)
+        .bind(&key.binding_effect_code)
+        .bind(&key.selection_effect_code)
+        .bind(&key.auth_token_id)
+        .bind(&key.api_key_id)
+        .bind(&key.operational_class)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn upsert_api_key_usage_bucket_delta(
+        tx: &mut Transaction<'_, Sqlite>,
+        key_id: &str,
+        bucket_start: i64,
+        delta: ApiKeyUsageBucketDelta,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        if delta.is_zero() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_usage_buckets (
+                api_key_id,
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                updated_at
+            ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(api_key_id, bucket_start, bucket_secs)
+            DO UPDATE SET
+                total_requests = api_key_usage_buckets.total_requests + excluded.total_requests,
+                success_count = api_key_usage_buckets.success_count + excluded.success_count,
+                error_count = api_key_usage_buckets.error_count + excluded.error_count,
+                quota_exhausted_count = api_key_usage_buckets.quota_exhausted_count + excluded.quota_exhausted_count,
+                valuable_success_count = api_key_usage_buckets.valuable_success_count + excluded.valuable_success_count,
+                valuable_failure_count = api_key_usage_buckets.valuable_failure_count + excluded.valuable_failure_count,
+                other_success_count = api_key_usage_buckets.other_success_count + excluded.other_success_count,
+                other_failure_count = api_key_usage_buckets.other_failure_count + excluded.other_failure_count,
+                unknown_count = api_key_usage_buckets.unknown_count + excluded.unknown_count,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(key_id)
+        .bind(bucket_start)
+        .bind(delta.total_requests)
+        .bind(delta.success_count)
+        .bind(delta.error_count)
+        .bind(delta.quota_exhausted_count)
+        .bind(delta.valuable_success_count)
+        .bind(delta.valuable_failure_count)
+        .bind(delta.other_success_count)
+        .bind(delta.other_failure_count)
+        .bind(delta.unknown_count)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn upsert_auth_token_activity_delta(
+        tx: &mut Transaction<'_, Sqlite>,
+        token_id: &str,
+        delta: AuthTokenActivityDelta,
+    ) -> Result<(), ProxyError> {
+        if delta.is_zero() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE auth_tokens
+            SET total_requests = total_requests + ?,
+                last_used_at = CASE
+                    WHEN ? IS NULL THEN last_used_at
+                    WHEN last_used_at IS NULL OR last_used_at < ? THEN ?
+                    ELSE last_used_at
+                END
+            WHERE id = ? AND deleted_at IS NULL
+            "#,
+        )
+        .bind(delta.total_requests_delta)
+        .bind(delta.last_used_at)
+        .bind(delta.last_used_at)
+        .bind(delta.last_used_at)
+        .bind(token_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn flush_request_stats_writes(&self) -> Result<(), ProxyError> {
+        loop {
+            let pending = {
+                let mut state = self.request_stats_coalescer.state.lock().await;
+                if state.flushing {
+                    None
+                } else if state.pending_dashboard_rollups.is_empty()
+                    && state.pending_api_key_usage.is_empty()
+                    && state.pending_auth_token_activity.is_empty()
+                    && state.pending_account_request_rollups.is_empty()
+                    && state.pending_request_log_catalog.is_empty()
+                {
+                    return Ok(());
+                } else {
+                    state.flushing = true;
+                    Some((
+                        std::mem::take(&mut state.pending_dashboard_rollups),
+                        std::mem::take(&mut state.pending_api_key_usage),
+                        std::mem::take(&mut state.pending_auth_token_activity),
+                        std::mem::take(&mut state.pending_account_request_rollups),
+                        std::mem::take(&mut state.pending_request_log_catalog),
+                    ))
+                }
+            };
+
+            let Some((
+                pending_dashboard_rollups,
+                pending_api_key_usage,
+                pending_auth_token_activity,
+                pending_account_request_rollups,
+                pending_request_log_catalog,
+            )) = pending
+            else {
+                self.request_stats_coalescer.wait_until_flushed().await;
+                continue;
+            };
+
+            let mut pending_dashboard_rollups = pending_dashboard_rollups;
+            let mut pending_api_key_usage = pending_api_key_usage;
+            let mut pending_auth_token_activity = pending_auth_token_activity;
+            let mut pending_account_request_rollups = pending_account_request_rollups;
+            let mut pending_request_log_catalog = pending_request_log_catalog;
+            let updated_at = Utc::now().timestamp();
+            let result = async {
+                let mut tx = self.pool.begin().await?;
+
+                let mut dashboard_entries = pending_dashboard_rollups
+                    .drain()
+                    .collect::<Vec<_>>();
+                dashboard_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                for ((bucket_start, bucket_secs), counts) in dashboard_entries {
+                    Self::upsert_dashboard_request_rollup_bucket(
+                        &mut tx,
+                        bucket_start,
+                        bucket_secs,
+                        counts,
+                        updated_at,
+                    )
+                    .await?;
+                }
+
+                let mut api_key_usage_entries =
+                    pending_api_key_usage.drain().collect::<Vec<_>>();
+                api_key_usage_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                for ((key_id, bucket_start), delta) in api_key_usage_entries {
+                    Self::upsert_api_key_usage_bucket_delta(
+                        &mut tx,
+                        &key_id,
+                        bucket_start,
+                        delta,
+                        updated_at,
+                    )
+                    .await?;
+                }
+
+                let mut auth_token_activity_entries =
+                    pending_auth_token_activity.drain().collect::<Vec<_>>();
+                auth_token_activity_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                for (token_id, delta) in auth_token_activity_entries {
+                    Self::upsert_auth_token_activity_delta(&mut tx, &token_id, delta).await?;
+                }
+
+                let mut account_request_rollup_entries =
+                    pending_account_request_rollups.drain().collect::<Vec<_>>();
+                account_request_rollup_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                for ((user_id, bucket_start), delta) in account_request_rollup_entries {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO account_usage_rollup_buckets (
+                            user_id,
+                            metric_kind,
+                            bucket_kind,
+                            bucket_start,
+                            value,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
+                        DO UPDATE SET
+                            value = account_usage_rollup_buckets.value + excluded.value,
+                            updated_at = excluded.updated_at
+                        "#,
+                    )
+                    .bind(&user_id)
+                    .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
+                    .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
+                    .bind(bucket_start)
+                    .bind(delta)
+                    .bind(updated_at)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                let mut request_log_catalog_entries =
+                    pending_request_log_catalog.drain().collect::<Vec<_>>();
+                request_log_catalog_entries.sort_by(|left, right| left.0.cmp(&right.0));
+                for (key, request_count_delta) in request_log_catalog_entries {
+                    Self::upsert_request_log_catalog_rollup_delta(
+                        &mut tx,
+                        &key,
+                        request_count_delta,
+                        updated_at,
+                    )
+                    .await?;
+                }
+
+                tx.commit().await?;
+                Ok::<_, ProxyError>(())
+            }
+            .await;
+
+            let mut state = self.request_stats_coalescer.state.lock().await;
+            state.flushing = false;
+            if let Err(err) = result {
+                for (key, counts) in pending_dashboard_rollups {
+                    state.pending_dashboard_rollups.entry(key).or_default().add(counts);
+                }
+                for (key, delta) in pending_api_key_usage {
+                    state.pending_api_key_usage.entry(key).or_default().add(delta);
+                }
+                for (token_id, delta) in pending_auth_token_activity {
+                    state
+                        .pending_auth_token_activity
+                        .entry(token_id)
+                        .or_default()
+                        .add(delta);
+                }
+                for (key, delta) in pending_account_request_rollups {
+                    *state.pending_account_request_rollups.entry(key).or_default() += delta;
+                }
+                for (key, delta) in pending_request_log_catalog {
+                    *state.pending_request_log_catalog.entry(key).or_default() += delta;
+                }
+                self.request_stats_coalescer.flushed.notify_waiters();
+                return Err(err);
+            }
+            self.request_stats_coalescer.flushed.notify_waiters();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_request_stats_rollup_for_test(
+        &self,
+        api_key_id: Option<&str>,
+        created_at: i64,
+        outcome: &str,
+    ) {
+        let mut counts = DashboardRequestRollupCounts {
+            total_requests: 1,
+            api_billable: 1,
+            ..DashboardRequestRollupCounts::default()
+        };
+        match outcome {
+            OUTCOME_SUCCESS => {
+                counts.success_count = 1;
+                counts.valuable_success_count = 1;
+            }
+            OUTCOME_ERROR => {
+                counts.error_count = 1;
+                counts.valuable_failure_count = 1;
+            }
+            OUTCOME_QUOTA_EXHAUSTED => {
+                counts.quota_exhausted_count = 1;
+                counts.valuable_failure_count = 1;
+            }
+            _ => {
+                counts.unknown_count = 1;
+            }
+        }
+        self.request_stats_coalescer
+            .enqueue_request_log_rollups(api_key_id, "test-auth-token", None, created_at, counts, None)
+            .await;
+    }
+
     async fn migrate_log_effect_buckets(&self) -> Result<(), ProxyError> {
         let binding_codes = [
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
@@ -200,6 +642,24 @@ impl KeyStore {
         }
     }
 
+    fn push_effective_request_kind_filter_clause<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        effective_request_kind_sql: &str,
+        request_kinds: &[String],
+    ) {
+        builder.push("(");
+        builder.push(effective_request_kind_sql.to_string());
+        builder.push(" IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for request_kind in request_kinds {
+                separated.push_bind(request_kind.clone());
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push(")");
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn push_token_logs_catalog_filters<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
@@ -216,28 +676,28 @@ impl KeyStore {
         legacy_result_bucket_sql: &'a str,
     ) {
         let normalized_request_kinds = Self::normalize_request_kind_filters(filters.request_kinds);
-        builder.push(" WHERE token_id = ");
+        builder.push(" WHERE auth_token_logs.token_id = ");
         builder.push_bind(token_id);
-        builder.push(" AND created_at >= ");
+        builder.push(" AND auth_token_logs.created_at >= ");
         builder.push_bind(since);
         if let Some(until) = until {
-            builder.push(" AND created_at < ");
+            builder.push(" AND auth_token_logs.created_at < ");
             builder.push_bind(until);
         }
         if let Some(key_effect_code) = filters.key_effect_code {
-            builder.push(" AND key_effect_code = ");
+            builder.push(" AND auth_token_logs.key_effect_code = ");
             builder.push_bind(key_effect_code);
         }
         if let Some(binding_effect_code) = filters.binding_effect_code {
-            builder.push(" AND binding_effect_code = ");
+            builder.push(" AND auth_token_logs.binding_effect_code = ");
             builder.push_bind(binding_effect_code);
         }
         if let Some(selection_effect_code) = filters.selection_effect_code {
-            builder.push(" AND selection_effect_code = ");
+            builder.push(" AND auth_token_logs.selection_effect_code = ");
             builder.push_bind(selection_effect_code);
         }
         if let Some(key_id) = filters.key_id {
-            builder.push(" AND api_key_id = ");
+            builder.push(" AND auth_token_logs.api_key_id = ");
             builder.push_bind(key_id);
         }
         if !normalized_request_kinds.is_empty() {
@@ -340,50 +800,6 @@ impl KeyStore {
         "bucket_start, request_kind_key, request_kind_label, result_bucket, key_effect_code, binding_effect_code, selection_effect_code, auth_token_id, api_key_id, operational_class"
     }
 
-    fn request_log_catalog_rollup_has_canonical_kind(prefix: &str) -> String {
-        canonical_request_kind_stored_predicate_sql(&format!("{prefix}request_kind_key"))
-    }
-
-    fn request_log_catalog_rollup_pk_match(exprs: &[String]) -> String {
-        [
-            ("bucket_start", &exprs[0]),
-            ("request_kind_key", &exprs[1]),
-            ("request_kind_label", &exprs[2]),
-            ("result_bucket", &exprs[3]),
-            ("key_effect_code", &exprs[4]),
-            ("binding_effect_code", &exprs[5]),
-            ("selection_effect_code", &exprs[6]),
-            ("auth_token_id", &exprs[7]),
-            ("api_key_id", &exprs[8]),
-            ("operational_class", &exprs[9]),
-        ]
-        .into_iter()
-        .map(|(column, expr)| format!("{column} = {expr}"))
-        .collect::<Vec<_>>()
-        .join(" AND ")
-    }
-
-    fn request_log_catalog_rollup_delete_trigger_sql() -> String {
-        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
-        format!(
-            r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_delete
-            AFTER DELETE ON request_logs
-            WHEN OLD.visibility = 'visible' AND {}
-            BEGIN
-                UPDATE request_log_catalog_rollups
-                SET request_count = request_count - 1,
-                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
-                WHERE {};
-                DELETE FROM request_log_catalog_rollups
-                WHERE request_count <= 0;
-            END
-            "#,
-            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
-            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
-        )
-    }
-
     fn push_request_log_catalog_rollup_filters<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,
@@ -445,7 +861,7 @@ impl KeyStore {
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<i64, ProxyError> {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT COALESCE(SUM(request_count), 0) FROM request_log_catalog_rollups",
+            "SELECT COALESCE(SUM(request_count), 0) FROM observability.request_log_catalog_rollups",
         );
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         query
@@ -453,6 +869,180 @@ impl KeyStore {
             .fetch_one(&self.pool)
             .await
             .map_err(ProxyError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn request_logs_exist_for_filters(
+        &self,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+        request_kinds: &[String],
+        result_status: Option<&str>,
+        key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
+        auth_token_id: Option<&str>,
+        key_id: Option<&str>,
+        operational_class: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
+        let stored_request_kind_sql = "request_kind_key";
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
+        );
+        let stored_counts_business_quota_sql = format!(
+            "COALESCE(counts_business_quota, {})",
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+        );
+        let stored_operational_class_case_sql = request_log_operational_class_case_sql(
+            stored_request_kind_sql,
+            &stored_counts_business_quota_sql,
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
+        let legacy_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+        let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
+            &legacy_request_kind_sql,
+            &legacy_counts_business_quota_sql,
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT 1 FROM observability.request_logs");
+        let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since);
+        let mut has_where = has_where;
+        if let Some(key_effect_code) = key_effect_code {
+            query.push(if has_where {
+                " AND key_effect_code = "
+            } else {
+                " WHERE key_effect_code = "
+            });
+            query.push_bind(key_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(binding_effect_code) = binding_effect_code {
+            query.push(if has_where {
+                " AND binding_effect_code = "
+            } else {
+                " WHERE binding_effect_code = "
+            });
+            query.push_bind(binding_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(selection_effect_code) = selection_effect_code {
+            query.push(if has_where {
+                " AND selection_effect_code = "
+            } else {
+                " WHERE selection_effect_code = "
+            });
+            query.push_bind(selection_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(auth_token_id) = auth_token_id {
+            query.push(if has_where {
+                " AND auth_token_id = "
+            } else {
+                " WHERE auth_token_id = "
+            });
+            query.push_bind(auth_token_id.to_string());
+            has_where = true;
+        }
+        if let Some(key_id) = key_id {
+            query.push(if has_where {
+                " AND api_key_id = "
+            } else {
+                " WHERE api_key_id = "
+            });
+            query.push_bind(key_id.to_string());
+            has_where = true;
+        }
+        if !normalized_request_kinds.is_empty() {
+            query.push(if has_where { " AND " } else { " WHERE " });
+            Self::push_effective_request_kind_filter_clause(
+                &mut query,
+                &effective_request_kind_sql,
+                &normalized_request_kinds,
+            );
+        }
+        if let Some(result_status) = result_status {
+            query.push(" AND ");
+            Self::push_result_bucket_filter_clause(
+                &mut query,
+                result_status,
+                &legacy_request_kind_predicate_sql,
+                &stored_result_bucket_sql,
+                &legacy_result_bucket_sql,
+            );
+        }
+        if let Some(operational_class) = operational_class {
+            query.push(" AND ");
+            Self::push_operational_class_filter_clause(
+                &mut query,
+                operational_class,
+                &legacy_request_kind_predicate_sql,
+                &stored_operational_class_case_sql,
+                &legacy_operational_class_case_sql,
+            );
+        }
+        query.push(" LIMIT 1");
+        Ok(query.build().fetch_optional(&self.pool).await?.is_some())
+    }
+
+    async fn ensure_request_log_catalog_rollups_available(
+        &self,
+        since: Option<i64>,
+    ) -> Result<(), ProxyError> {
+        let rollup_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM observability.request_log_catalog_rollups WHERE bucket_start >= ?",
+        )
+        .bind(since.unwrap_or(0))
+        .fetch_one(&self.pool)
+        .await?;
+        if rollup_count > 0 {
+            return Ok(());
+        }
+
+        let visible_count = if let Some(since) = since {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM observability.request_logs WHERE visibility = ? AND created_at >= ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(since)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM observability.request_logs WHERE visibility = ?")
+                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+                .fetch_one(&self.pool)
+                .await?
+        };
+        if visible_count == 0 {
+            return Ok(());
+        }
+
+        self.rebuild_request_log_catalog_rollups().await?;
+        let retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
+            .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
+            retention_days,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn fetch_request_log_request_kind_options(
@@ -463,7 +1053,7 @@ impl KeyStore {
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64);
         let mut legacy_query = QueryBuilder::<Sqlite>::new(
-            "SELECT request_kind_key, request_kind_label, SUM(request_count) AS request_count FROM request_log_catalog_rollups",
+            "SELECT request_kind_key, request_kind_label, SUM(request_count) AS request_count FROM observability.request_log_catalog_rollups",
         );
         Self::push_request_log_catalog_rollup_filters(
             &mut legacy_query,
@@ -524,7 +1114,7 @@ impl KeyStore {
             _ => unreachable!("unsupported request log rollup facet column"),
         };
         let mut query = QueryBuilder::<Sqlite>::new(format!(
-            "SELECT {column_expr} AS value, SUM(request_count) AS count FROM request_log_catalog_rollups"
+            "SELECT {column_expr} AS value, SUM(request_count) AS count FROM observability.request_log_catalog_rollups"
         ));
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         if require_non_empty {
@@ -557,7 +1147,7 @@ impl KeyStore {
             SELECT
                 result_bucket AS value,
                 SUM(request_count) AS count
-            FROM request_log_catalog_rollups
+            FROM observability.request_log_catalog_rollups
             ",
         );
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
@@ -575,7 +1165,7 @@ impl KeyStore {
             .map_err(ProxyError::from)
     }
 
-    pub(crate) async fn fetch_request_logs_catalog(
+    async fn load_request_logs_catalog(
         &self,
         scoped_key_id: Option<&str>,
         since: Option<i64>,
@@ -584,21 +1174,6 @@ impl KeyStore {
         include_key_facets: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
-        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
-        let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
-            Self::request_logs_catalog_cache_key(
-                scoped_key_id,
-                since,
-                include_token_facets,
-                include_key_facets,
-            )
-        });
-        if let Some(cache_key) = cache_key.as_deref()
-            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
-        {
-            return Ok(cached);
-        }
-
         let request_kind_options = self
             .fetch_request_log_request_kind_options(scoped_key_id, since, filters)
             .await?;
@@ -651,7 +1226,7 @@ impl KeyStore {
             Vec::new()
         };
 
-        let catalog = RequestLogsCatalog {
+        Ok(RequestLogsCatalog {
             retention_days,
             request_kind_options,
             facets: RequestLogPageFacets {
@@ -662,7 +1237,76 @@ impl KeyStore {
                 tokens,
                 keys,
             },
-        };
+        })
+    }
+
+    pub(crate) async fn fetch_request_logs_catalog(
+        &self,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+        retention_days: i64,
+        include_token_facets: bool,
+        include_key_facets: bool,
+        filters: RequestLogsCatalogFilters<'_>,
+    ) -> Result<RequestLogsCatalog, ProxyError> {
+        self.flush_request_stats_writes().await?;
+        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
+        self.ensure_request_log_catalog_rollups_available(since)
+            .await?;
+        let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
+            Self::request_logs_catalog_cache_key(
+                scoped_key_id,
+                since,
+                include_token_facets,
+                include_key_facets,
+            )
+        });
+        if let Some(cache_key) = cache_key.as_deref()
+            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
+        {
+            return Ok(cached);
+        }
+
+        let mut catalog = self
+            .load_request_logs_catalog(
+                scoped_key_id,
+                since,
+                retention_days,
+                include_token_facets,
+                include_key_facets,
+                filters,
+            )
+            .await?;
+
+        if catalog.request_kind_options.is_empty()
+            && catalog.facets.results.is_empty()
+            && self
+                .request_logs_exist_for_filters(
+                    scoped_key_id,
+                    since,
+                    filters.request_kinds,
+                    filters.result_status,
+                    filters.key_effect_code,
+                    filters.binding_effect_code,
+                    filters.selection_effect_code,
+                    filters.auth_token_id,
+                    filters.key_id,
+                    filters.operational_class,
+                )
+                .await?
+        {
+            self.rebuild_request_log_catalog_rollups().await?;
+            catalog = self
+                .load_request_logs_catalog(
+                    scoped_key_id,
+                    since,
+                    retention_days,
+                    include_token_facets,
+                    include_key_facets,
+                    filters,
+                )
+                .await?;
+        }
         if let Some(cache_key) = cache_key {
             self.cache_request_logs_catalog(cache_key, &catalog).await;
         }
@@ -804,14 +1448,14 @@ impl KeyStore {
                 {effective_request_kind_protocol_group_sql} AS request_kind_protocol_group,
                 {effective_request_kind_billing_group_sql} AS request_kind_billing_group,
                 created_at
-            FROM request_logs
+            FROM observability.request_logs
             "#
         ));
         let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
         Self::push_request_logs_filters(
             &mut items_query,
             RequestLogFilterParams {
-                request_kinds: &normalized_request_kinds,
+                request_kinds: &[],
                 result_status: None,
                 key_effect_code,
                 binding_effect_code,
@@ -824,6 +1468,14 @@ impl KeyStore {
                 has_where,
             },
         );
+        if !normalized_request_kinds.is_empty() {
+            items_query.push(" AND ");
+            Self::push_effective_request_kind_filter_clause(
+                &mut items_query,
+                &effective_request_kind_sql,
+                &normalized_request_kinds,
+            );
+        }
         if let Some(result_status) = result_status {
             items_query.push(" AND ");
             Self::push_result_bucket_filter_clause(
@@ -950,6 +1602,8 @@ impl KeyStore {
             .acquire()
             .await
             .expect("admin heavy read semaphore is never closed");
+        self.ensure_request_log_catalog_rollups_available(since)
+            .await?;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
         let stored_request_kind_sql = "request_kind_key";
         let legacy_request_kind_predicate_sql =
@@ -1084,14 +1738,14 @@ impl KeyStore {
                 {effective_request_kind_protocol_group_sql} AS request_kind_protocol_group,
                 {effective_request_kind_billing_group_sql} AS request_kind_billing_group,
                 created_at
-            FROM request_logs
+            FROM observability.request_logs
             "#
         ));
         let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
         Self::push_request_logs_filters(
             &mut items_query,
             RequestLogFilterParams {
-                request_kinds: &normalized_request_kinds,
+                request_kinds: &[],
                 result_status: None,
                 key_effect_code,
                 binding_effect_code,
@@ -1104,6 +1758,14 @@ impl KeyStore {
                 has_where,
             },
         );
+        if !normalized_request_kinds.is_empty() {
+            items_query.push(" AND ");
+            Self::push_effective_request_kind_filter_clause(
+                &mut items_query,
+                &effective_request_kind_sql,
+                &normalized_request_kinds,
+            );
+        }
         if let Some(result_status) = result_status {
             items_query.push(" AND ");
             Self::push_result_bucket_filter_clause(
@@ -1222,7 +1884,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS request_log_catalog_rollups (
+            CREATE TABLE IF NOT EXISTS observability.request_log_catalog_rollups (
                 bucket_start INTEGER NOT NULL,
                 request_kind_key TEXT NOT NULL,
                 request_kind_label TEXT NOT NULL,
@@ -1254,15 +1916,15 @@ impl KeyStore {
         .await?;
 
         for sql in [
-            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_kind_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_kind_time
                ON request_log_catalog_rollups(request_kind_key, bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_result_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_result_time
                ON request_log_catalog_rollups(result_bucket, bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_token_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_token_time
                ON request_log_catalog_rollups(auth_token_id, bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_key_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_key_time
                ON request_log_catalog_rollups(api_key_id, bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS idx_request_log_catalog_rollups_operational_time
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_operational_time
                ON request_log_catalog_rollups(operational_class, bucket_start DESC)"#,
         ] {
             sqlx::query(sql).execute(&self.pool).await?;
@@ -1289,7 +1951,7 @@ impl KeyStore {
             legacy_request_kind_stored_predicate_sql("request_kind_key");
         let canonical_insert_trigger = format!(
             r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_canonical_request_kind_insert
+            CREATE TRIGGER IF NOT EXISTS observability.trg_request_logs_canonical_request_kind_insert
             AFTER INSERT ON request_logs
             WHEN {legacy_new_request_kind_predicate_sql}
             BEGIN
@@ -1308,7 +1970,7 @@ impl KeyStore {
 
         let canonical_update_trigger = format!(
             r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_canonical_request_kind_update
+            CREATE TRIGGER IF NOT EXISTS observability.trg_request_logs_canonical_request_kind_update
             AFTER UPDATE OF path, request_body, request_kind_key ON request_logs
             WHEN {legacy_new_request_kind_predicate_sql}
             BEGIN
@@ -1325,105 +1987,19 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
 
-        let insert_exprs = Self::request_log_catalog_rollup_exprs("NEW.");
-        let insert_trigger = format!(
-            r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_insert
-            AFTER INSERT ON request_logs
-            WHEN NEW.visibility = 'visible' AND {}
-            BEGIN
-                INSERT INTO request_log_catalog_rollups (
-                    {},
-                    request_count,
-                    updated_at
-                )
-                VALUES (
-                    {},
-                    1,
-                    CAST(strftime('%s', 'now') AS INTEGER)
-                )
-                ON CONFLICT({}) DO UPDATE SET
-                    request_count = request_count + 1,
-                    updated_at = excluded.updated_at;
-            END
-            "#,
-            Self::request_log_catalog_rollup_has_canonical_kind("NEW."),
-            Self::request_log_catalog_rollup_columns(),
-            insert_exprs.join(", "),
-            Self::request_log_catalog_rollup_columns(),
-        );
-        sqlx::query(&insert_trigger).execute(&self.pool).await?;
-
-        let delete_trigger = Self::request_log_catalog_rollup_delete_trigger_sql();
-        sqlx::query(&delete_trigger).execute(&self.pool).await?;
-
-        let update_columns = "
-            visibility,
-            created_at,
-            request_kind_key,
-            request_kind_label,
-            result_status,
-            business_credits,
-            failure_kind,
-            key_effect_code,
-            binding_effect_code,
-            selection_effect_code,
-            auth_token_id,
-            api_key_id,
-            path,
-            request_body
-        ";
-        let delete_exprs = Self::request_log_catalog_rollup_exprs("OLD.");
-        let update_delete_trigger = format!(
-            r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_update_old
-            AFTER UPDATE OF {update_columns} ON request_logs
-            WHEN OLD.visibility = 'visible' AND {}
-            BEGIN
-                UPDATE request_log_catalog_rollups
-                SET request_count = request_count - 1,
-                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
-                WHERE {};
-                DELETE FROM request_log_catalog_rollups
-                WHERE request_count <= 0;
-            END
-            "#,
-            Self::request_log_catalog_rollup_has_canonical_kind("OLD."),
-            Self::request_log_catalog_rollup_pk_match(&delete_exprs),
-        );
-        sqlx::query(&update_delete_trigger)
-            .execute(&self.pool)
-            .await?;
-
-        let update_insert_trigger = format!(
-            r#"
-            CREATE TRIGGER IF NOT EXISTS trg_request_logs_catalog_rollup_update_new
-            AFTER UPDATE OF {update_columns} ON request_logs
-            WHEN NEW.visibility = 'visible' AND {}
-            BEGIN
-                INSERT INTO request_log_catalog_rollups (
-                    {},
-                    request_count,
-                    updated_at
-                )
-                VALUES (
-                    {},
-                    1,
-                    CAST(strftime('%s', 'now') AS INTEGER)
-                )
-                ON CONFLICT({}) DO UPDATE SET
-                    request_count = request_count + 1,
-                    updated_at = excluded.updated_at;
-            END
-            "#,
-            Self::request_log_catalog_rollup_has_canonical_kind("NEW."),
-            Self::request_log_catalog_rollup_columns(),
-            insert_exprs.join(", "),
-            Self::request_log_catalog_rollup_columns(),
-        );
-        sqlx::query(&update_insert_trigger)
-            .execute(&self.pool)
-            .await?;
+        for trigger in [
+            "trg_request_logs_catalog_rollup_insert",
+            "trg_request_logs_catalog_rollup_delete",
+            "trg_request_logs_catalog_rollup_update_old",
+            "trg_request_logs_catalog_rollup_update_new",
+        ] {
+            sqlx::query(&format!("DROP TRIGGER IF EXISTS observability.{trigger}"))
+                .execute(&self.pool)
+                .await?;
+            sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+                .execute(&self.pool)
+                .await?;
+        }
 
         Ok(())
     }
@@ -1442,7 +2018,7 @@ impl KeyStore {
             legacy_request_kind_stored_predicate_sql("request_kind_key");
         let canonicalize_legacy_rows_sql = format!(
             r#"
-            UPDATE request_logs
+            UPDATE observability.request_logs
             SET request_kind_key = request_kind_key
             WHERE visibility = 'visible'
               AND created_at >= ?
@@ -1453,12 +2029,12 @@ impl KeyStore {
             .bind(since)
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM request_log_catalog_rollups")
+        sqlx::query("DELETE FROM observability.request_log_catalog_rollups")
             .execute(&self.pool)
             .await?;
         let rebuild_sql = format!(
             r#"
-            INSERT INTO request_log_catalog_rollups (
+            INSERT INTO observability.request_log_catalog_rollups (
                 {},
                 request_count,
                 updated_at
@@ -1467,7 +2043,7 @@ impl KeyStore {
                 {},
                 COUNT(*) AS request_count,
                 CAST(strftime('%s', 'now') AS INTEGER) AS updated_at
-            FROM request_logs
+            FROM observability.request_logs
             WHERE visibility = 'visible'
               AND created_at >= ?
               AND {canonical_request_kind_predicate_sql}
@@ -1949,6 +2525,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let totals_row = sqlx::query(
             r#"
             SELECT
@@ -2034,7 +2611,7 @@ impl KeyStore {
         sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT MIN(created_at)
-            FROM request_logs
+            FROM observability.request_logs
             WHERE visibility = ?
               AND created_at >= ?
             "#,
@@ -2065,7 +2642,7 @@ impl KeyStore {
                 SELECT
                     result_status,
                     ({request_value_bucket_case_sql}) AS request_value_bucket
-                FROM request_logs
+                FROM observability.request_logs
                 WHERE visibility = ?
                   AND created_at >= ?
                   AND created_at < ?
@@ -2336,7 +2913,7 @@ impl KeyStore {
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0)
-            FROM request_logs
+            FROM observability.request_logs
             WHERE visibility = ?
               AND created_at >= ?
               AND created_at < ?
@@ -2357,6 +2934,7 @@ impl KeyStore {
         day_start: i64,
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
+        self.flush_request_stats_writes().await?;
         let now = Utc::now().timestamp();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)
@@ -2454,455 +3032,6 @@ impl KeyStore {
         );
 
         Ok(month_metrics)
-    }
-
-    pub(crate) async fn fetch_summary_windows(
-        &self,
-        bounds: SummaryWindowBounds,
-    ) -> Result<SummaryWindows, ProxyError> {
-        let SummaryWindowBounds {
-            today_start,
-            today_end,
-            today_period_end,
-            yesterday_start,
-            yesterday_end,
-            month_start,
-            month_quota_charge_start,
-            month_period_end,
-            previous_month_start,
-            previous_month_end,
-        } = bounds;
-        let mut tx = self.pool.begin().await?;
-        let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        let now_ts = today_end.saturating_sub(1);
-        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
-        let hot_stale_before = now_ts.saturating_sub(15 * 60);
-        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
-        let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut tx,
-            SECS_PER_MINUTE,
-            today_start,
-            Some(today_end),
-        )
-        .await?;
-        let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut tx,
-            SECS_PER_MINUTE,
-            yesterday_start,
-            Some(yesterday_end),
-        )
-        .await?;
-        let month_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut tx,
-            month_start,
-            today_start,
-            today_end,
-        )
-        .await?;
-        let month_charge_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut tx,
-            month_quota_charge_start,
-            today_start,
-            today_end,
-        )
-        .await?;
-
-        let lifecycle_row = sqlx::query(
-            r#"
-            SELECT
-                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS today_upstream_exhausted_key_count,
-                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS yesterday_upstream_exhausted_key_count,
-                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS month_upstream_exhausted_key_count
-            FROM api_key_maintenance_records
-            WHERE source = ?
-              AND operation_code = ?
-              AND reason_code = ?
-              AND created_at >= ?
-              AND created_at < ?
-            "#,
-        )
-        .bind(today_start)
-        .bind(today_end)
-        .bind(yesterday_start)
-        .bind(yesterday_end)
-        .bind(month_start)
-        .bind(today_end)
-        .bind(MAINTENANCE_SOURCE_SYSTEM)
-        .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .bind(yesterday_start.min(month_start))
-        .bind(today_end)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let month_lifecycle_row = sqlx::query(
-            r#"
-            SELECT
-                (
-                    SELECT COALESCE(COUNT(*), 0)
-                    FROM api_keys
-                    WHERE created_at >= ?
-                ) AS month_new_keys,
-                (
-                    SELECT COALESCE(COUNT(*), 0)
-                    FROM api_key_quarantines
-                    WHERE created_at >= ?
-                ) AS month_new_quarantines
-            "#,
-        )
-        .bind(month_start)
-        .bind(month_start)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let sample_rows = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                INNER JOIN (
-                    SELECT key_id, MAX(captured_at) AS captured_at
-                    FROM api_key_quota_sync_samples
-                    WHERE captured_at < ?
-                      AND key_id IN (SELECT key_id FROM sampled_keys)
-                    GROUP BY key_id
-                ) latest
-                    ON latest.key_id = s.key_id
-                   AND latest.captured_at = s.captured_at
-            )
-            SELECT key_id, quota_remaining, captured_at
-            FROM window_rows
-            UNION ALL
-            SELECT key_id, quota_remaining, captured_at
-            FROM baseline_rows
-            ORDER BY key_id ASC, captured_at ASC
-            "#,
-        )
-        .bind(sample_window_start)
-        .bind(today_end)
-        .bind(sample_window_start)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let stale_key_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(COUNT(*), 0)
-            FROM api_keys
-            WHERE deleted_at IS NULL
-              AND status <> ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_quarantines aq
-                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
-              )
-              AND CASE
-                  WHEN last_used_at >= ? THEN (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-                  )
-                  ELSE (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-                  )
-              END
-            "#,
-        )
-        .bind(STATUS_EXHAUSTED)
-        .bind(hot_active_since)
-        .bind(hot_stale_before)
-        .bind(cold_stale_before)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-
-        let mut today_charge = QuotaChargeAccumulator::default();
-        let mut yesterday_charge = QuotaChargeAccumulator::default();
-        let mut month_charge = QuotaChargeAccumulator::default();
-        let mut today_sampled_keys = std::collections::HashSet::new();
-        let mut yesterday_sampled_keys = std::collections::HashSet::new();
-        let mut month_sampled_keys = std::collections::HashSet::new();
-        let mut current_key: Option<String> = None;
-        let mut previous_sample: Option<QuotaSyncSampleRow> = None;
-
-        for row in sample_rows {
-            let key_id: String = row.try_get("key_id")?;
-            if current_key.as_deref() != Some(key_id.as_str()) {
-                current_key = Some(key_id.clone());
-                previous_sample = None;
-            }
-
-            let sample = QuotaSyncSampleRow {
-                quota_remaining: row.try_get("quota_remaining")?,
-                captured_at: row.try_get("captured_at")?,
-            };
-            let delta = previous_sample
-                .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
-                .unwrap_or(0);
-
-            if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
-                month_charge.upstream_actual_credits += delta;
-                month_sampled_keys.insert(key_id.clone());
-                if month_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    month_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-            if sample.captured_at >= today_start && sample.captured_at < today_end {
-                today_charge.upstream_actual_credits += delta;
-                today_sampled_keys.insert(key_id.clone());
-                if today_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    today_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-            if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
-                yesterday_charge.upstream_actual_credits += delta;
-                yesterday_sampled_keys.insert(key_id.clone());
-                if yesterday_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    yesterday_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-
-            previous_sample = Some(sample);
-        }
-
-        today_charge.sampled_key_count = today_sampled_keys.len() as i64;
-        today_charge.stale_key_count = stale_key_count;
-        yesterday_charge.sampled_key_count = yesterday_sampled_keys.len() as i64;
-        yesterday_charge.stale_key_count = stale_key_count;
-        month_charge.sampled_key_count = month_sampled_keys.len() as i64;
-        month_charge.stale_key_count = stale_key_count;
-
-        Ok(SummaryWindows {
-            today: SummaryWindowMetrics {
-                upstream_exhausted_key_count: lifecycle_row
-                    .try_get("today_upstream_exhausted_key_count")?,
-                quota_charge: SummaryQuotaCharge {
-                    upstream_actual_credits: today_charge.upstream_actual_credits,
-                    sampled_key_count: today_charge.sampled_key_count,
-                    stale_key_count: today_charge.stale_key_count,
-                    latest_sync_at: today_charge.latest_sync_at,
-                    ..today_metrics.quota_charge
-                },
-                ..today_metrics
-            },
-            yesterday: SummaryWindowMetrics {
-                upstream_exhausted_key_count: lifecycle_row
-                    .try_get("yesterday_upstream_exhausted_key_count")?,
-                quota_charge: SummaryQuotaCharge {
-                    upstream_actual_credits: yesterday_charge.upstream_actual_credits,
-                    sampled_key_count: yesterday_charge.sampled_key_count,
-                    stale_key_count: yesterday_charge.stale_key_count,
-                    latest_sync_at: yesterday_charge.latest_sync_at,
-                    ..yesterday_metrics.quota_charge
-                },
-                ..yesterday_metrics
-            },
-            month: SummaryWindowMetrics {
-                upstream_exhausted_key_count: lifecycle_row
-                    .try_get("month_upstream_exhausted_key_count")?,
-                new_keys: month_lifecycle_row.try_get("month_new_keys")?,
-                new_quarantines: month_lifecycle_row.try_get("month_new_quarantines")?,
-                quota_charge: SummaryQuotaCharge {
-                    local_estimated_credits: month_charge_metrics
-                        .quota_charge
-                        .local_estimated_credits,
-                    upstream_actual_credits: month_charge.upstream_actual_credits,
-                    sampled_key_count: month_charge.sampled_key_count,
-                    stale_key_count: month_charge.stale_key_count,
-                    latest_sync_at: month_charge.latest_sync_at,
-                },
-                ..month_metrics
-            },
-            today_start,
-            today_end,
-            today_period_end,
-            yesterday_start,
-            yesterday_end,
-            month_start,
-            month_end: today_end,
-            month_period_end,
-            previous_month_start,
-            previous_month_end,
-        })
-    }
-
-    pub(crate) async fn fetch_dashboard_hourly_request_window(
-        &self,
-        current_hour_start: i64,
-        bucket_seconds: i64,
-        visible_buckets: i64,
-        retained_buckets: i64,
-    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        if bucket_seconds <= 0 || visible_buckets <= 0 || retained_buckets <= 0 {
-            return Ok(DashboardHourlyRequestWindow {
-                bucket_seconds,
-                visible_buckets,
-                retained_buckets,
-                buckets: Vec::new(),
-            });
-        }
-
-        let series_start = current_hour_start
-            .saturating_sub(bucket_seconds.saturating_mul(retained_buckets.saturating_sub(1)));
-        let range_end = current_hour_start.saturating_add(bucket_seconds);
-        let hour_alignment_offset = current_hour_start.rem_euclid(bucket_seconds);
-        let rows = sqlx::query(
-            r#"
-            WITH RECURSIVE hour_series(bucket_start) AS (
-                SELECT ? AS bucket_start
-                UNION ALL
-                SELECT bucket_start + ?
-                FROM hour_series
-                WHERE bucket_start + ? <= ?
-            ),
-            aggregated AS (
-                SELECT
-                    ((bucket_start - ?) / ?) * ? + ? AS hour_bucket_start,
-                    COALESCE(SUM(other_success_count), 0) AS secondary_success,
-                    COALESCE(SUM(valuable_success_count), 0) AS primary_success,
-                    COALESCE(SUM(other_failure_count), 0) AS secondary_failure,
-                    COALESCE(SUM(valuable_failure_429_count), 0) AS primary_failure_429,
-                    COALESCE(
-                        SUM(
-                            CASE
-                                WHEN valuable_failure_count > valuable_failure_429_count
-                                    THEN valuable_failure_count - valuable_failure_429_count
-                                ELSE 0
-                            END
-                        ),
-                        0
-                    ) AS primary_failure_other,
-                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
-                    COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable,
-                    COALESCE(SUM(mcp_billable), 0) AS mcp_billable,
-                    COALESCE(SUM(api_non_billable), 0) AS api_non_billable,
-                    COALESCE(SUM(api_billable), 0) AS api_billable
-                FROM dashboard_request_rollup_buckets
-                WHERE bucket_secs = ?
-                  AND bucket_start >= ?
-                  AND bucket_start < ?
-                GROUP BY hour_bucket_start
-            )
-            SELECT
-                hour_series.bucket_start,
-                COALESCE(aggregated.secondary_success, 0) AS secondary_success,
-                COALESCE(aggregated.primary_success, 0) AS primary_success,
-                COALESCE(aggregated.secondary_failure, 0) AS secondary_failure,
-                COALESCE(aggregated.primary_failure_429, 0) AS primary_failure_429,
-                COALESCE(aggregated.primary_failure_other, 0) AS primary_failure_other,
-                COALESCE(aggregated.unknown_count, 0) AS unknown_count,
-                COALESCE(aggregated.mcp_non_billable, 0) AS mcp_non_billable,
-                COALESCE(aggregated.mcp_billable, 0) AS mcp_billable,
-                COALESCE(aggregated.api_non_billable, 0) AS api_non_billable,
-                COALESCE(aggregated.api_billable, 0) AS api_billable
-            FROM hour_series
-            LEFT JOIN aggregated ON aggregated.hour_bucket_start = hour_series.bucket_start
-            ORDER BY hour_series.bucket_start ASC
-            "#,
-        )
-        .bind(series_start)
-        .bind(bucket_seconds)
-        .bind(bucket_seconds)
-        .bind(current_hour_start)
-        .bind(hour_alignment_offset)
-        .bind(bucket_seconds)
-        .bind(bucket_seconds)
-        .bind(hour_alignment_offset)
-        .bind(SECS_PER_MINUTE)
-        .bind(series_start)
-        .bind(range_end)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let buckets = rows
-            .into_iter()
-            .map(|row| {
-                Ok(DashboardHourlyRequestBucket {
-                    bucket_start: row.try_get("bucket_start")?,
-                    secondary_success: row.try_get("secondary_success")?,
-                    primary_success: row.try_get("primary_success")?,
-                    secondary_failure: row.try_get("secondary_failure")?,
-                    primary_failure_429: row.try_get("primary_failure_429")?,
-                    primary_failure_other: row.try_get("primary_failure_other")?,
-                    unknown: row.try_get("unknown_count")?,
-                    mcp_non_billable: row.try_get("mcp_non_billable")?,
-                    mcp_billable: row.try_get("mcp_billable")?,
-                    api_non_billable: row.try_get("api_non_billable")?,
-                    api_billable: row.try_get("api_billable")?,
-                })
-            })
-            .collect::<Result<Vec<_>, sqlx::Error>>()?;
-
-        Ok(DashboardHourlyRequestWindow {
-            bucket_seconds,
-            visible_buckets,
-            retained_buckets,
-            buckets,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn fetch_success_breakdown(
-        &self,
-        month_since: i64,
-        day_start: i64,
-        day_end: i64,
-    ) -> Result<SuccessBreakdown, ProxyError> {
-        let month_request_log_floor = self
-            .fetch_visible_request_log_floor_since(month_since)
-            .await?;
-        let bucket_month_success = self
-            .fetch_utc_month_gap_bucket_metrics(
-                month_since,
-                month_request_log_floor,
-                Utc::now().timestamp(),
-            )
-            .await?
-            .success_count;
-        let scan_floor = month_since.min(day_start);
-        let row = sqlx::query(
-            r#"
-            SELECT
-              COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS daily_success
-            FROM request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
-            "#,
-        )
-        .bind(month_since)
-        .bind(OUTCOME_SUCCESS)
-        .bind(day_start)
-        .bind(day_end)
-        .bind(OUTCOME_SUCCESS)
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(scan_floor)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(SuccessBreakdown {
-            monthly_success: bucket_month_success + row.try_get::<i64, _>("monthly_success")?,
-            daily_success: row.try_get("daily_success")?,
-        })
     }
 
 }

@@ -1562,6 +1562,60 @@ async fn insert_charged_business_log(
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert charged business log");
+
+    sqlx::query(
+        r#"
+        INSERT INTO billing_ledger (
+            auth_token_log_id,
+            token_id,
+            billing_subject,
+            billing_state,
+            business_credits,
+            request_user_id,
+            api_key_id,
+            request_log_id,
+            result_status,
+            created_at,
+            settled_at,
+            error_message
+        )
+        SELECT
+            id,
+            token_id,
+            billing_subject,
+            billing_state,
+            business_credits,
+            NULL,
+            NULL,
+            NULL,
+            result_status,
+            created_at,
+            created_at,
+            error_message
+        FROM auth_token_logs
+        WHERE token_id = ? AND created_at = ? AND billing_state = ?
+        ORDER BY id DESC
+        LIMIT 1
+        ON CONFLICT(auth_token_log_id) DO UPDATE SET
+            token_id = excluded.token_id,
+            billing_subject = excluded.billing_subject,
+            billing_state = excluded.billing_state,
+            business_credits = excluded.business_credits,
+            request_user_id = excluded.request_user_id,
+            api_key_id = excluded.api_key_id,
+            request_log_id = excluded.request_log_id,
+            result_status = excluded.result_status,
+            created_at = excluded.created_at,
+            settled_at = excluded.settled_at,
+            error_message = excluded.error_message
+        "#,
+    )
+    .bind(token_id)
+    .bind(created_at)
+    .bind(BILLING_STATE_CHARGED)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mirror charged business log into billing ledger");
 }
 
 async fn current_month_charged_stats(pool: &SqlitePool) -> (i64, i64) {

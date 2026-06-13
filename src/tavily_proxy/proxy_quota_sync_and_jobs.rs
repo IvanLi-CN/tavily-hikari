@@ -541,6 +541,10 @@ impl TavilyProxy {
         &self.key_store.database_path
     }
 
+    pub fn sqlite_observability_database_path(&self) -> Option<&str> {
+        self.key_store.observability_database_path.as_deref()
+    }
+
     pub async fn scheduled_job_finish(
         &self,
         job_id: i64,

@@ -771,17 +771,7 @@ async fn pending_billing_request_log_metadata_persists_binding_and_selection_eff
         .await
         .expect("record pending billing with subject metadata");
 
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(&db_str)
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
+    let pool = connect_sqlite_test_pool(&db_str).await;
 
     for (log_id, expected_binding, expected_selection) in [
         (
@@ -840,17 +830,7 @@ async fn startup_migration_preserves_legacy_mcp_session_retry_key_effects() {
         .expect("create token");
     drop(proxy);
 
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(&db_str)
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
+    let pool = connect_sqlite_test_pool(&db_str).await;
 
     let now = Utc::now().timestamp();
     sqlx::query(
@@ -898,17 +878,7 @@ async fn startup_migration_preserves_legacy_mcp_session_retry_key_effects() {
             .await
             .expect("proxy reopened for migration");
 
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(&db_str)
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("reopen sqlite pool");
+    let pool = connect_sqlite_test_pool(&db_str).await;
 
     let request_row = sqlx::query(
         "SELECT key_effect_code, key_effect_summary FROM request_logs ORDER BY id DESC LIMIT 1",
@@ -979,6 +949,8 @@ async fn startup_migration_preserves_legacy_mcp_session_retry_key_effects() {
 
 #[tokio::test]
 async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
+    let _guard = env_lock().lock_owned().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-catalog-rollup-feeds-page");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -988,7 +960,7 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
 
     sqlx::query(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             auth_token_id,
             method,
             path,
@@ -1159,7 +1131,7 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
     assert_eq!(since_page.items[0].auth_token_id.as_deref(), Some("rollup-token-c"));
 
     sqlx::query(
-        "UPDATE request_logs SET key_effect_code = ? WHERE auth_token_id = 'rollup-token-a'",
+        "UPDATE observability.request_logs SET key_effect_code = ? WHERE auth_token_id = 'rollup-token-a'",
     )
     .bind(KEY_EFFECT_MARKED_EXHAUSTED)
     .execute(&proxy.key_store.pool)
@@ -1206,7 +1178,7 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
         request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
     sqlx::query(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             auth_token_id,
             method,
             path,
@@ -1226,18 +1198,18 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
         )
         "#,
     )
-    .bind(retention_since - 60)
+    .bind(retention_since - (40 * 24 * 60 * 60))
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert older retained row outside rollup window");
 
-    sqlx::query("DROP TRIGGER IF EXISTS trg_request_logs_canonical_request_kind_update")
+    sqlx::query("DROP TRIGGER IF EXISTS observability.trg_request_logs_canonical_request_kind_update")
         .execute(&proxy.key_store.pool)
         .await
         .expect("simulate database before legacy canonicalization trigger");
     sqlx::query(
         r#"
-        UPDATE request_logs
+        UPDATE observability.request_logs
         SET request_kind_key = 'mcp:tools/call',
             request_kind_label = 'MCP | tools/call',
             request_kind_detail = NULL
@@ -1247,7 +1219,7 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("simulate retained legacy request kind before rollup rebuild");
-    sqlx::query("DELETE FROM request_log_catalog_rollups")
+    sqlx::query("DELETE FROM observability.request_log_catalog_rollups")
         .execute(&proxy.key_store.pool)
         .await
         .expect("simulate stale missing catalog rollup after retention change");
@@ -1908,6 +1880,14 @@ async fn settle_pending_billing_attempt_is_idempotent_across_instances() {
             .await
             .expect("read billing state");
     assert_eq!(billing_state, BILLING_STATE_CHARGED);
+    let ledger_state: String = sqlx::query_scalar(
+        "SELECT billing_state FROM billing_ledger WHERE auth_token_log_id = ? LIMIT 1",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy_b.key_store.pool)
+    .await
+    .expect("read ledger billing state");
+    assert_eq!(ledger_state, BILLING_STATE_CHARGED);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1957,6 +1937,14 @@ async fn pending_billing_claim_miss_is_retry_later_until_next_replay() {
             .await
             .expect("read pending billing state");
     assert_eq!(billing_state, BILLING_STATE_PENDING);
+    let ledger_state: String = sqlx::query_scalar(
+        "SELECT billing_state FROM billing_ledger WHERE auth_token_log_id = ? LIMIT 1",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read pending ledger billing state");
+    assert_eq!(ledger_state, BILLING_STATE_PENDING);
 
     let verdict = proxy.peek_token_quota(&token.id).await.expect("peek quota");
     assert_eq!(verdict.hourly_used, 0);
@@ -1974,6 +1962,14 @@ async fn pending_billing_claim_miss_is_retry_later_until_next_replay() {
             .await
             .expect("read charged billing state");
     assert_eq!(billing_state, BILLING_STATE_CHARGED);
+    let ledger_state: String = sqlx::query_scalar(
+        "SELECT billing_state FROM billing_ledger WHERE auth_token_log_id = ? LIMIT 1",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read charged ledger billing state");
+    assert_eq!(ledger_state, BILLING_STATE_CHARGED);
 
     let verdict = proxy
         .peek_token_quota(&token.id)
