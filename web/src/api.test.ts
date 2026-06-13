@@ -38,11 +38,13 @@ import {
   fetchUserAnnouncementHistory,
   fetchUserAnnouncements,
   fetchUserDashboard,
+  fetchUserDashboardOverview,
   postUserLogout,
   fetchUserTokenDetail,
   fetchUserTokenLogs,
   fetchUserTokens,
   millisecondsUntilNextBrowserDayBoundary,
+  parseUserDashboardOverviewEventSnapshot,
   parseUserTokenEventSnapshot,
   publishAnnouncement,
   triggerJob,
@@ -176,6 +178,7 @@ describe('admin user tag api helpers', () => {
     await fetchPublicMetrics(todayWindow)
     await fetchTokenMetrics('th-a1b2-secretsecret', todayWindow)
     await fetchUserDashboard(todayWindow)
+    await fetchUserDashboardOverview(todayWindow)
     await fetchUserTokens(todayWindow)
     await fetchUserTokenDetail('a1b2', todayWindow)
 
@@ -189,9 +192,12 @@ describe('admin user tag api helpers', () => {
       '/api/user/dashboard?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
     expect((fetchMock.mock.calls[3] as [string])[0]).toBe(
-      '/api/user/tokens?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+      '/api/user/dashboard/overview?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
     expect((fetchMock.mock.calls[4] as [string])[0]).toBe(
+      '/api/user/tokens?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[5] as [string])[0]).toBe(
       '/api/user/tokens/a1b2?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
   })
@@ -229,6 +235,60 @@ describe('admin user tag api helpers', () => {
     expect(userLogs[0]?.business_credits).toBe(7)
     expect(snapshot.logs[0]?.business_credits).toBe(7)
     expect(publicLogs[0]?.business_credits).toBeUndefined()
+  })
+
+  it('parses user dashboard overview snapshots with nullable future slots', () => {
+    const snapshot = parseUserDashboardOverviewEventSnapshot(JSON.stringify({
+      summary: {
+        debugInfoShared: true,
+        requestRate: { used: 6, limit: 60, windowMinutes: 5, scope: 'user' },
+        hourlyAnyUsed: 6,
+        hourlyAnyLimit: 60,
+        quotaHourlyUsed: 12,
+        quotaHourlyLimit: 100,
+        quotaDailyUsed: 42,
+        quotaDailyLimit: 500,
+        quotaMonthlyUsed: 420,
+        quotaMonthlyLimit: 5000,
+        dailySuccess: 33,
+        dailyFailure: 1,
+        monthlySuccess: 512,
+        lastActivity: null,
+        recharge: {
+          currentMonthStart: 1_776_000_000,
+          currentEntitlementCredits: 1000,
+          effectiveUntilMonthStart: null,
+        },
+      },
+      progress: {
+        requestRate: {
+          used: 6,
+          limit: 60,
+          points: [
+            { bucketStart: 1, value: 2, limitValue: 60 },
+            { bucketStart: 2, value: 6, limitValue: 60 },
+          ],
+        },
+        quotaHourly: {
+          used: 12,
+          limit: 100,
+          points: [
+            { bucketStart: 1, value: 4, limitValue: 100 },
+            { bucketStart: 2, value: null, limitValue: 100 },
+          ],
+        },
+        quotaDaily: { used: 42, limit: 500, points: [] },
+        quotaMonthly: { used: 420, limit: 5000, points: [] },
+      },
+    }))
+
+    expect(snapshot.summary.debugInfoShared).toBe(true)
+    expect(snapshot.progress.requestRate.points[1]).toMatchObject({
+      bucketStart: 2,
+      value: 6,
+      limitValue: 60,
+    })
+    expect(snapshot.progress.quotaHourly.points[1]?.value).toBeNull()
   })
 
   it('treats user logout 204 and 401 as successful sign-out responses', async () => {

@@ -2,6 +2,14 @@
   scroll-margin-top: 28px;
 }
 
+.user-console-landing-rail .user-console-recharge-section {
+  margin-top: 0;
+  height: 100%;
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
 .user-console-recharge-header {
   gap: 12px;
 }
@@ -11,11 +19,13 @@
   grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
   gap: 18px;
   align-items: stretch;
+  min-height: 0;
 }
 
 .user-console-recharge-main,
 .user-console-recharge-orders {
   min-width: 0;
+  min-height: 0;
 }
 
 .user-console-recharge-main {
@@ -63,14 +73,23 @@
 }
 
 .user-console-recharge-controls {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
   gap: 12px;
 }
 
 .user-console-recharge-field {
+  flex: 1 1 0;
+  min-width: 0;
   display: grid;
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.user-console-recharge-field > span {
+  line-height: 1.15;
 }
 
 .user-console-recharge-test-price {
@@ -143,6 +162,15 @@
   min-width: 0;
 }
 
+.user-console-recharge-amount {
+  min-width: 0;
+}
+
+.user-console-recharge-amount span,
+.user-console-recharge-amount strong {
+  white-space: nowrap;
+}
+
 .user-console-recharge-actions {
   display: flex;
   grid-column: 2 / span 2;
@@ -170,9 +198,25 @@
 }
 
 .user-console-recharge-orders {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto 1fr;
   gap: 8px;
+}
+
+.user-console-recharge-orders-panel {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  align-content: start;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border) / 0.62);
+  background:
+    linear-gradient(180deg, hsl(var(--muted) / 0.18) 0%, hsl(var(--card) / 0.86) 100%);
+  padding: 10px;
+}
+
+.user-console-recharge-orders-panel > .empty-state {
+  min-height: 100%;
 }
 
 .user-console-recharge-orders > .empty-state {
@@ -192,8 +236,11 @@
 
 .user-console-recharge-orders ul {
   display: grid;
+  align-content: start;
   gap: 8px;
   margin: 0;
+  height: 100%;
+  min-height: 0;
   padding: 0;
   list-style: none;
 }
@@ -205,7 +252,7 @@
   gap: 10px;
   border-radius: 10px;
   border: 1px solid hsl(var(--border) / 0.72);
-  background: hsl(var(--muted) / 0.22);
+  background: hsl(var(--card) / 0.84);
   padding: 9px 10px;
 }
 
@@ -349,10 +396,170 @@
   background: hsl(var(--muted) / 0.2);
 }
 
-@media (max-width: 767px) {
-  .user-console-recharge-grid,
-  .user-console-recharge-controls {
+@media (min-width: 1280px) {
+  .user-console-landing-rail .user-console-recharge-section {
+    align-self: stretch;
+  }
+
+  .user-console-landing-rail .user-console-recharge-grid {
     grid-template-columns: 1fr;
+    gap: 14px;
+    height: 100%;
+    grid-template-rows: auto 1fr;
+  }
+
+  .user-console-landing-rail .user-console-recharge-main {
+    gap: 14px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-orders ul {
+    height: 100%;
+  }
+
+  .user-console-landing-rail .user-console-recharge-orders-panel {
+    min-height: 100%;
+  }
+
+  .user-console-landing-rail .user-console-recharge-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .user-console-landing-rail .user-console-recharge-summary > div {
+    display: grid;
+    gap: 4px;
+    align-items: start;
+    border-radius: 14px;
+    border: 1px solid hsl(var(--border) / 0.72);
+    background: hsl(var(--muted) / 0.18);
+    padding: 10px 12px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-test-price {
+    grid-column: 1 / -1;
+  }
+
+  .user-console-landing-rail .user-console-recharge-controls {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-field {
+    flex: 1 1 0;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-field > span {
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .user-console-landing-rail .user-console-recharge-stepper {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    gap: 6px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-stepper .btn,
+  .user-console-landing-rail .user-console-recharge-stepper button {
+    width: 34px;
+    min-height: 34px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-readonly {
+    min-height: 34px;
+    font-size: 0.94rem;
+  }
+
+  .user-console-landing-rail .user-console-recharge-delta {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-delta-pill {
+    display: grid;
+    align-items: start;
+    justify-content: flex-start;
+    gap: 3px;
+    padding: 8px 10px;
+  }
+
+  .user-console-landing-rail .user-console-recharge-delta-pill strong {
+    font-size: 0.92rem;
+  }
+
+  .user-console-landing-rail .user-console-recharge-checkout {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px 12px;
+    padding-top: 8px;
+    border-top: 1px solid hsl(var(--border) / 0.48);
+  }
+
+  .user-console-landing-rail .user-console-recharge-amount {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 0;
+    gap: 12px;
+    border-radius: 14px;
+    border: 1px solid hsl(var(--border) / 0.68);
+    background: hsl(var(--muted) / 0.16);
+    padding: 10px 12px;
+    white-space: nowrap;
+  }
+
+  .user-console-landing-rail .user-console-recharge-amount span {
+    flex: 0 0 auto;
+  }
+
+  .user-console-landing-rail .user-console-recharge-amount strong {
+    flex: 0 0 auto;
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .user-console-landing-rail .user-console-recharge-actions {
+    grid-column: auto;
+    justify-content: flex-end;
+    flex-direction: row;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .user-console-landing-rail .user-console-recharge-checkout .btn,
+  .user-console-landing-rail .user-console-recharge-checkout button {
+    width: auto;
+  }
+}
+
+@media (max-width: 767px) {
+  .user-console-recharge-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .user-console-recharge-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .user-console-recharge-field {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+
+  .user-console-recharge-field > span {
+    white-space: normal;
   }
 
   .user-console-recharge-summary {

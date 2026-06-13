@@ -1823,6 +1823,9 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
 
 #[tokio::test]
 async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body() {
+    let lock = env_lock();
+    let _lock = lock.lock().await;
+    let _env_guard = RequestLogsRetentionEnvGuard::set_32_days();
     let db_path = temp_db_path("request-log-retention-gc-scans-past-unexpired");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1845,6 +1848,18 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 32;
+    settings.request_log_retention.global.business_body_days = 7;
+    settings.request_log_retention.global.non_business_body_days = 0;
+    settings.request_log_retention.debug_shared.business_body_days = 14;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save retention settings");
 
     let now = Utc::now().timestamp();
     let unexpired_id: i64 = sqlx::query_scalar(
@@ -1923,7 +1938,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     .bind(br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.as_slice())
     .bind(br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#.as_slice())
     .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-    .bind(now + 1)
+    .bind(now + SECS_PER_MINUTE)
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("seed another expired non-business body");

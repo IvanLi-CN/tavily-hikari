@@ -237,9 +237,23 @@ export default function RollingNumber({ value, loading, className }: RollingNumb
   const prefersReducedMotion = usePrefersReducedMotion()
 
   useIsomorphicLayoutEffect(() => {
-    if (probeRef.current) {
-      const height = probeRef.current.getBoundingClientRect().height
+    const probe = probeRef.current
+    if (!probe) return
+
+    const measure = () => {
+      const height = probe.getBoundingClientRect().height
       if (height > 0) setDigitHeight(height)
+    }
+
+    measure()
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    resizeObserver?.observe(probe)
+    window.addEventListener('resize', measure)
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', measure)
     }
   }, [])
 
@@ -256,7 +270,11 @@ export default function RollingNumber({ value, loading, className }: RollingNumb
   }, [value])
 
   return (
-    <span className={`rolling-number${className ? ' ' + className : ''}`} aria-label={formatted} role="text">
+    <span
+      className={`rolling-number${className ? ' ' + className : ''}`}
+      aria-label={formatted}
+      role="text"
+    >
       <span className="rn-probe" ref={probeRef} aria-hidden="true">
         0
       </span>

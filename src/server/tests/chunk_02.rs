@@ -2369,6 +2369,8 @@ async fn spawn_user_oauth_server_with_options(
         .route("/api/profile", get(get_profile))
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))
+        .route("/api/user/dashboard/overview", get(get_user_dashboard_overview))
+        .route("/api/user/dashboard/events", get(sse_user_dashboard))
         .route("/api/user/announcements", get(get_user_announcements))
         .route(
             "/api/user/announcements/history",

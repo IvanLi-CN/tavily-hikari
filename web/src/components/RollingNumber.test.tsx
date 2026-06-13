@@ -21,6 +21,8 @@ let root: Root | null = null
 let container: HTMLDivElement | null = null
 let reducedMotion = false
 let animationFrameQueue: Array<FrameRequestCallback> = []
+let probeHeight = 20
+let originalGetBoundingClientRect: typeof HTMLElement.prototype.getBoundingClientRect | null = null
 
 function installMatchMediaMock(): void {
   Object.defineProperty(window, 'matchMedia', {
@@ -63,6 +65,33 @@ function installAnimationFrameMock(): void {
   })
 }
 
+function createRect(height: number): DOMRect {
+  return {
+    x: 0,
+    y: 0,
+    width: 10,
+    height,
+    top: 0,
+    right: 10,
+    bottom: height,
+    left: 0,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
+function installBoundingClientRectMock(): void {
+  originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+
+  Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+    configurable: true,
+    writable: true,
+    value: function getBoundingClientRectMock(this: HTMLElement): DOMRect {
+      if (this.classList.contains('rn-probe')) return createRect(probeHeight)
+      return createRect(16)
+    },
+  })
+}
+
 async function flushAnimationFrame(): Promise<void> {
   const queued = [...animationFrameQueue]
   animationFrameQueue = []
@@ -90,8 +119,10 @@ function digitColumns(): HTMLElement[] {
 
 beforeEach(() => {
   reducedMotion = false
+  probeHeight = 20
   installMatchMediaMock()
   installAnimationFrameMock()
+  installBoundingClientRectMock()
 })
 
 afterEach(async () => {
@@ -104,6 +135,16 @@ afterEach(async () => {
   root = null
   container = null
   document.body.innerHTML = ''
+
+  if (originalGetBoundingClientRect) {
+    Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      writable: true,
+      value: originalGetBoundingClientRect,
+    })
+  }
+
+  originalGetBoundingClientRect = null
 })
 
 describe('buildRollingCells', () => {
@@ -205,5 +246,24 @@ describe('RollingNumber DOM rendering', () => {
     expect(columns.map((column) => column.dataset.rnSteps)).toEqual(['1', '1', '1'])
     expect(columns.map((column) => Number(column.dataset.rnStartIndex))).toEqual([20, 20, 20])
     expect(columns.map((column) => Number(column.dataset.rnEndIndex))).toEqual([19, 19, 19])
+  })
+
+  it('re-measures digit height after resize so animated columns keep the correct offset', async () => {
+    await renderRollingNumber(65_777)
+
+    probeHeight = 30
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    await renderRollingNumber(66_876)
+    await flushAnimationFrame()
+
+    const columns = digitColumns()
+    const animatedColumn = columns[2]
+    const animatedStrip = animatedColumn?.querySelector<HTMLElement>('.rn-strip')
+
+    expect(animatedColumn?.style.height).toBe('30px')
+    expect(animatedStrip?.style.transform).toBe('translateY(-840px)')
   })
 })

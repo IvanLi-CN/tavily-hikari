@@ -1,7 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { Announcement, Profile, RechargeConfig, RechargeOrder, RequestRate, RequestRateScope, UserDashboard, UserTokenSummary } from './api'
+import type {
+  Announcement,
+  Profile,
+  RechargeConfig,
+  RechargeOrder,
+  RequestRate,
+  RequestRateScope,
+  UserDashboard,
+  UserDashboardOverview,
+  UserTokenSummary,
+} from './api'
 import UserConsole from './UserConsole'
 import {
   DropdownMenu,
@@ -18,7 +28,7 @@ type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
 type PushStatusPreview = 'Live' | 'Reconnecting' | 'Unsupported'
 type AnnouncementPreview = 'Active' | 'Ticker Bodyless' | 'Closed' | 'History Open' | 'None'
-type RechargePreview = 'normal' | 'test-price'
+type RechargePreview = 'normal' | 'test-price' | 'disabled' | 'hidden'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
 type GuideRevealMode = 'none' | 'landing-guide' | 'detail-guide'
@@ -93,6 +103,47 @@ const dashboardSample: UserDashboard = {
   },
 }
 
+function createOverviewPoints(values: Array<number | null>, limit: number) {
+  return values.map((value, index) => ({
+    bucketStart: 1_762_041_600 + index * 300,
+    displayBucketStart: null,
+    value,
+    limitValue: limit,
+  }))
+}
+
+const dashboardOverviewSample: UserDashboardOverview = {
+  summary: dashboardSample,
+  progress: {
+    requestRate: {
+      used: dashboardSample.requestRate.used,
+      limit: dashboardSample.requestRate.limit,
+      points: createOverviewPoints([8, 10, 9, 15, 14, 16, 21, 23, 29, 35, 42, 58], dashboardSample.requestRate.limit),
+    },
+    quotaHourly: {
+      used: dashboardSample.quotaHourlyUsed,
+      limit: dashboardSample.quotaHourlyLimit,
+      points: createOverviewPoints([7, 12, 18, 24, 31, 40, 52, 63, 72, 82, null, null], dashboardSample.quotaHourlyLimit),
+    },
+    quotaDaily: {
+      used: dashboardSample.quotaDailyUsed,
+      limit: dashboardSample.quotaDailyLimit,
+      points: createOverviewPoints(
+        [11, 19, 28, 36, 49, 63, 78, 92, 108, 126, 145, 169, 194, 228, 264, 302, 356, null, null, null, null, null, null, null],
+        dashboardSample.quotaDailyLimit,
+      ),
+    },
+    quotaMonthly: {
+      used: dashboardSample.quotaMonthlyUsed,
+      limit: dashboardSample.quotaMonthlyLimit,
+      points: createOverviewPoints(
+        [130, 248, 364, 508, 672, 821, 983, 1_156, 1_344, 1_525, 1_711, 1_904, 2_118, 2_347, 2_589, 2_846, 3_124, 3_411, 3_762, 4_120, null, null, null, null, null, null, null, null, null, null],
+        dashboardSample.quotaMonthlyLimit,
+      ),
+    },
+  },
+}
+
 const rechargeConfigSample: RechargeConfig = {
   visible: true,
   enabled: true,
@@ -119,6 +170,17 @@ const rechargeTestPriceConfigSample: RechargeConfig = {
   defaultCredits: 1,
   testPriceEnabled: true,
   currentEntitlementCredits: 1,
+}
+
+const rechargeDisabledConfigSample: RechargeConfig = {
+  ...rechargeConfigSample,
+  enabled: false,
+}
+
+const rechargeHiddenConfigSample: RechargeConfig = {
+  ...rechargeConfigSample,
+  visible: false,
+  enabled: false,
 }
 
 const rechargeOrdersSample: RechargeOrder[] = [
@@ -507,10 +569,21 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
       return jsonResponse(dashboardSample)
     }
 
+    if (url.pathname === '/api/user/dashboard/overview') {
+      return jsonResponse(dashboardOverviewSample)
+    }
+
     if (url.pathname === '/api/user/recharge/config') {
-      return jsonResponse(state.rechargePreview === 'test-price'
-        ? rechargeTestPriceConfigSample
-        : rechargeConfigSample)
+      switch (state.rechargePreview) {
+        case 'test-price':
+          return jsonResponse(rechargeTestPriceConfigSample)
+        case 'disabled':
+          return jsonResponse(rechargeDisabledConfigSample)
+        case 'hidden':
+          return jsonResponse(rechargeHiddenConfigSample)
+        default:
+          return jsonResponse(rechargeConfigSample)
+      }
     }
 
     if (url.pathname === '/api/user/recharge/orders') {
@@ -1086,6 +1159,7 @@ export const ConsoleHome: Story = {
       '.user-console-announcements-trigger',
       '.user-console-account-trigger',
       '.user-console-landing-stack',
+      '.user-console-landing-rail',
       '.user-console-recharge-section',
     ]) {
       if (canvasElement.querySelector(selector) == null) {
@@ -1137,6 +1211,66 @@ export const ConsoleHomeRechargeTestPrice: Story = {
   },
   globals: {
     language: 'zh',
+  },
+}
+
+export const ConsoleHomeRechargeDisabled: Story = {
+  name: 'Console Home Recharge Disabled',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    rechargePreview: 'disabled',
+  },
+  globals: {
+    language: 'zh',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const section = canvasElement.querySelector('.user-console-recharge-section')
+    if (section == null) {
+      throw new Error('Expected disabled recharge proof to keep the recharge section visible.')
+    }
+
+    const content = section.textContent ?? ''
+    if (!content.includes('不可用')) {
+      throw new Error('Expected disabled recharge proof to render the unavailable badge.')
+    }
+    if (!content.includes('当前服务尚未配置充值功能。')) {
+      throw new Error('Expected disabled recharge proof to render the disabled-state copy.')
+    }
+    if (content.includes('创建订单')) {
+      throw new Error('Expected disabled recharge proof to hide the active recharge form.')
+    }
+  },
+}
+
+export const ConsoleHomeRechargeHidden: Story = {
+  name: 'Console Home Recharge Hidden',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    rechargePreview: 'hidden',
+  },
+  globals: {
+    language: 'zh',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    if (canvasElement.querySelector('.user-console-recharge-section') != null) {
+      throw new Error('Expected hidden recharge proof to remove the recharge section entirely.')
+    }
+
+    const landingStack = canvasElement.querySelector('.user-console-landing-stack')
+    if (!(landingStack instanceof HTMLElement)) {
+      throw new Error('Expected hidden recharge proof to keep the landing stack visible.')
+    }
+    if (landingStack.classList.contains('has-rail')) {
+      throw new Error('Expected hidden recharge proof to remove the landing rail layout class.')
+    }
   },
 }
 

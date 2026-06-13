@@ -3,6 +3,7 @@ const ACCOUNT_USAGE_ROLLUP_METRIC_BUSINESS_CREDITS: &str = "business_credits";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_FIVE_MINUTE: &str = "five_minute";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_HOUR: &str = "hour";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_DAY: &str = "day";
+const ACCOUNT_USAGE_ROLLUP_BUCKET_UTC_DAY: &str = "utc_day";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_MONTH: &str = "month";
 const ACCOUNT_USAGE_ROLLUP_INSERT_CHUNK_SIZE: usize = 400;
 
@@ -26,6 +27,7 @@ pub(crate) enum AccountUsageRollupBucketKind {
     FiveMinute,
     Hour,
     Day,
+    UtcDay,
     Month,
 }
 
@@ -35,6 +37,7 @@ impl AccountUsageRollupBucketKind {
             Self::FiveMinute => ACCOUNT_USAGE_ROLLUP_BUCKET_FIVE_MINUTE,
             Self::Hour => ACCOUNT_USAGE_ROLLUP_BUCKET_HOUR,
             Self::Day => ACCOUNT_USAGE_ROLLUP_BUCKET_DAY,
+            Self::UtcDay => ACCOUNT_USAGE_ROLLUP_BUCKET_UTC_DAY,
             Self::Month => ACCOUNT_USAGE_ROLLUP_BUCKET_MONTH,
         }
     }
@@ -159,8 +162,10 @@ impl KeyStore {
             return Ok(());
         }
 
+        let five_minute_bucket = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
         let hour_bucket = created_at - created_at.rem_euclid(SECS_PER_HOUR);
         let day_bucket = local_day_bucket_start_utc_ts(created_at);
+        let utc_day_bucket = utc_day_bucket_start_utc_ts(created_at);
         let month_bucket = Utc
             .timestamp_opt(created_at, 0)
             .single()
@@ -169,8 +174,10 @@ impl KeyStore {
             .timestamp();
 
         for (bucket_kind, bucket_start) in [
+            (AccountUsageRollupBucketKind::FiveMinute, five_minute_bucket),
             (AccountUsageRollupBucketKind::Hour, hour_bucket),
             (AccountUsageRollupBucketKind::Day, day_bucket),
+            (AccountUsageRollupBucketKind::UtcDay, utc_day_bucket),
             (AccountUsageRollupBucketKind::Month, month_bucket),
         ] {
             upsert_account_usage_rollup_executor(
@@ -317,8 +324,10 @@ impl KeyStore {
         .fetch_all(&self.pool)
         .await?;
 
+        let mut five_minute_rollups: HashMap<(String, i64), i64> = HashMap::new();
         let mut hourly_rollups: HashMap<(String, i64), i64> = HashMap::new();
         let mut daily_rollups: HashMap<(String, i64), i64> = HashMap::new();
+        let mut utc_daily_rollups: HashMap<(String, i64), i64> = HashMap::new();
         let mut monthly_rollups: HashMap<(String, i64), i64> = HashMap::new();
 
         for (billing_subject, created_at, credits) in business_rows {
@@ -330,11 +339,21 @@ impl KeyStore {
             }
             let user_id = user_id.to_string();
             if created_at >= business_backfill_start {
+                let five_minute_bucket = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+                *five_minute_rollups
+                    .entry((user_id.clone(), five_minute_bucket))
+                    .or_default() += credits;
+
                 let hour_bucket = created_at - created_at.rem_euclid(SECS_PER_HOUR);
                 *hourly_rollups.entry((user_id.clone(), hour_bucket)).or_default() += credits;
 
                 let day_bucket = local_day_bucket_start_utc_ts(created_at);
                 *daily_rollups.entry((user_id.clone(), day_bucket)).or_default() += credits;
+
+                let utc_day_bucket = utc_day_bucket_start_utc_ts(created_at);
+                *utc_daily_rollups
+                    .entry((user_id.clone(), utc_day_bucket))
+                    .or_default() += credits;
             }
 
             if created_at >= monthly_coverage_start {
@@ -347,6 +366,20 @@ impl KeyStore {
                 *monthly_rollups.entry((user_id, month_bucket)).or_default() += credits;
             }
         }
+
+        let mut five_minute_records: Vec<AccountUsageRollupRecord> = five_minute_rollups
+            .into_iter()
+            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                user_id,
+                bucket_start,
+                value,
+            })
+            .collect();
+        five_minute_records.sort_by(|left, right| {
+            left.user_id
+                .cmp(&right.user_id)
+                .then_with(|| left.bucket_start.cmp(&right.bucket_start))
+        });
 
         let mut hourly_records: Vec<AccountUsageRollupRecord> = hourly_rollups
             .into_iter()
@@ -371,6 +404,20 @@ impl KeyStore {
             })
             .collect();
         daily_records.sort_by(|left, right| {
+            left.user_id
+                .cmp(&right.user_id)
+                .then_with(|| left.bucket_start.cmp(&right.bucket_start))
+        });
+
+        let mut utc_daily_records: Vec<AccountUsageRollupRecord> = utc_daily_rollups
+            .into_iter()
+            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                user_id,
+                bucket_start,
+                value,
+            })
+            .collect();
+        utc_daily_records.sort_by(|left, right| {
             left.user_id
                 .cmp(&right.user_id)
                 .then_with(|| left.bucket_start.cmp(&right.bucket_start))
@@ -406,7 +453,12 @@ impl KeyStore {
         .execute(&mut *tx)
         .await?;
 
-        for bucket_kind in [AccountUsageRollupBucketKind::Hour, AccountUsageRollupBucketKind::Day] {
+        for bucket_kind in [
+            AccountUsageRollupBucketKind::FiveMinute,
+            AccountUsageRollupBucketKind::Hour,
+            AccountUsageRollupBucketKind::Day,
+            AccountUsageRollupBucketKind::UtcDay,
+        ] {
             sqlx::query(
                 r#"
                 DELETE FROM account_usage_rollup_buckets
@@ -447,6 +499,14 @@ impl KeyStore {
         replace_account_usage_rollup_records(
             &mut tx,
             AccountUsageRollupMetricKind::BusinessCredits,
+            AccountUsageRollupBucketKind::FiveMinute,
+            &five_minute_records,
+            now_ts,
+        )
+        .await?;
+        replace_account_usage_rollup_records(
+            &mut tx,
+            AccountUsageRollupMetricKind::BusinessCredits,
             AccountUsageRollupBucketKind::Hour,
             &hourly_records,
             now_ts,
@@ -457,6 +517,14 @@ impl KeyStore {
             AccountUsageRollupMetricKind::BusinessCredits,
             AccountUsageRollupBucketKind::Day,
             &daily_records,
+            now_ts,
+        )
+        .await?;
+        replace_account_usage_rollup_records(
+            &mut tx,
+            AccountUsageRollupMetricKind::BusinessCredits,
+            AccountUsageRollupBucketKind::UtcDay,
+            &utc_daily_records,
             now_ts,
         )
         .await?;

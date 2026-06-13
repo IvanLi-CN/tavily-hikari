@@ -25,12 +25,12 @@
 
 .user-console-tokens-table th:nth-child(2),
 .user-console-tokens-table td:nth-child(2) {
-  width: 44%;
+  width: 42%;
 }
 
 .user-console-tokens-table th:nth-child(3),
 .user-console-tokens-table td:nth-child(3) {
-  width: 24%;
+  width: 27%;
 }
 
 .user-console-tokens-table th:nth-child(4),
@@ -135,6 +135,49 @@
 
 .user-console-tokens-table .table-actions button {
   white-space: nowrap;
+}
+
+.user-console-tokens-section .user-console-tokens-table td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.user-console-tokens-section .user-console-tokens-table tbody tr:not(:last-child) td {
+  border-bottom: 1px solid hsl(var(--border) / 0.4);
+}
+
+.user-console-tokens-section .user-console-cell-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.user-console-tokens-section .user-console-cell-item {
+  display: grid;
+  align-items: start;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border) / 0.58);
+  background: hsl(var(--muted) / 0.14);
+  padding: 8px 10px;
+  border-bottom-style: solid;
+}
+
+.user-console-tokens-section .user-console-cell-item:last-child {
+  padding-bottom: 8px;
+}
+
+.user-console-tokens-section .user-console-cell-item span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.user-console-tokens-section .user-console-cell-item strong {
+  font-size: 0.86rem;
+  line-height: 1.25;
 }
 
 .user-console-log-stack {

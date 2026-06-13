@@ -124,6 +124,242 @@ async fn account_usage_rollup_rebuild_backfills_full_month_chart_horizon() {
 }
 
 #[tokio::test]
+async fn user_dashboard_overview_request_rate_progress_tracks_live_window() {
+    let db_path = temp_db_path("user-dashboard-overview-request-rate-progress");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "overview-request-rate-progress".to_string(),
+            username: Some("overview_request_rate_progress".to_string()),
+            name: Some("Overview Request Rate Progress".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("overview-request-rate-progress"))
+        .await
+        .expect("bind token");
+
+    for _ in 0..3 {
+        proxy
+            .check_token_hourly_requests(&token.id)
+            .await
+            .expect("record live request");
+    }
+
+    let overview = proxy
+        .user_dashboard_overview(&user.user_id, None)
+        .await
+        .expect("load user dashboard overview");
+
+    assert_eq!(overview.summary.request_rate.used, 3);
+    assert_eq!(overview.progress.request_rate.used, 3);
+    assert_eq!(
+        overview.progress.request_rate.points.len(),
+        (request_rate_limit_window_secs() / 5) as usize
+    );
+    assert_eq!(
+        overview
+            .progress
+            .request_rate
+            .points
+            .last()
+            .and_then(|point| point.value),
+        Some(3)
+    );
+    assert_eq!(
+        overview
+            .progress
+            .request_rate
+            .points
+            .last()
+            .and_then(|point| point.limit_value),
+        Some(request_rate_limit())
+    );
+    assert!(overview
+        .progress
+        .request_rate
+        .points
+        .windows(2)
+        .all(|window| window[0].value.unwrap_or(0) <= window[1].value.unwrap_or(0)));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_month_days() {
+    let db_path = temp_db_path("user-dashboard-overview-quota-progress");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "overview-quota-progress".to_string(),
+            username: Some("overview_quota_progress".to_string()),
+            name: Some("Overview Quota Progress".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("overview-quota-progress"))
+        .await
+        .expect("bind token");
+
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 120, 900, 9_000)
+        .await
+        .expect("set custom quota");
+
+    let now_ts = Utc::now().timestamp();
+    let current_hour_start = now_ts - now_ts.rem_euclid(SECS_PER_HOUR);
+    let current_five_minute_start = now_ts - now_ts.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let current_utc_day_start = utc_day_bucket_start_utc_ts(now_ts);
+    let current_local_day_start = local_day_bucket_start_utc_ts(now_ts);
+    let first_charge_at = current_hour_start;
+    let latest_charge_at = current_five_minute_start.saturating_add(1).min(now_ts);
+
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(current_hour_start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+
+    for (created_at, credits) in [(first_charge_at, 2_i64), (latest_charge_at, 3_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                result_status,
+                error_message,
+                created_at,
+                counts_business_quota,
+                business_credits,
+                billing_subject,
+                billing_state,
+                request_user_id
+            ) VALUES (?, 'POST', '/api/tavily/search', NULL, 200, 200, ?, NULL, ?, 1, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(OUTCOME_SUCCESS)
+        .bind(created_at)
+        .bind(credits)
+        .bind(format!("account:{}", user.user_id))
+        .bind(BILLING_STATE_CHARGED)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert charged quota log");
+    }
+
+    proxy
+        .key_store
+        .rebuild_account_usage_rollup_buckets_v1()
+        .await
+        .expect("rebuild account usage rollups");
+
+    let utc_day_values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &user.user_id,
+            AccountUsageRollupMetricKind::BusinessCredits,
+            AccountUsageRollupBucketKind::UtcDay,
+            current_utc_day_start,
+            current_utc_day_start + SECS_PER_DAY,
+        )
+        .await
+        .expect("load utc-day rollups");
+    assert_eq!(utc_day_values.get(&current_utc_day_start), Some(&5));
+
+    let local_day_values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &user.user_id,
+            AccountUsageRollupMetricKind::BusinessCredits,
+            AccountUsageRollupBucketKind::Day,
+            current_local_day_start,
+            shift_local_day_start_utc_ts(current_local_day_start, 1),
+        )
+        .await
+        .expect("load local-day rollups");
+    assert_eq!(local_day_values.get(&current_local_day_start), Some(&5));
+
+    let overview = proxy
+        .user_dashboard_overview(&user.user_id, None)
+        .await
+        .expect("load user dashboard overview");
+
+    let hourly_current_index = overview
+        .progress
+        .quota_hourly
+        .points
+        .iter()
+        .rposition(|point| point.value.is_some())
+        .expect("hourly current point");
+    assert_eq!(
+        overview.progress.quota_hourly.points[hourly_current_index].value,
+        Some(5)
+    );
+    assert!(overview.progress.quota_hourly.points[hourly_current_index + 1..]
+        .iter()
+        .all(|point| point.value.is_none()));
+
+    let daily_current_index = overview
+        .progress
+        .quota_daily
+        .points
+        .iter()
+        .rposition(|point| point.value.is_some())
+        .expect("daily current point");
+    assert_eq!(
+        overview.progress.quota_daily.points[daily_current_index].value,
+        Some(5)
+    );
+    assert!(overview.progress.quota_daily.points[daily_current_index + 1..]
+        .iter()
+        .all(|point| point.value.is_none()));
+
+    let monthly_current_index = overview
+        .progress
+        .quota_monthly
+        .points
+        .iter()
+        .rposition(|point| point.value.is_some())
+        .expect("monthly current point");
+    assert_eq!(
+        overview.progress.quota_monthly.points[monthly_current_index].value,
+        Some(5)
+    );
+    assert!(overview.progress.quota_monthly.points[monthly_current_index + 1..]
+        .iter()
+        .all(|point| point.value.is_none()));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn account_limit_snapshot_backfill_preserves_history_for_existing_custom_request_limit() {
     let db_path = temp_db_path("account-limit-snapshot-backfill-custom-request-gap");
     let db_str = db_path.to_string_lossy().to_string();

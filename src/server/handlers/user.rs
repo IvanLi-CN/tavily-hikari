@@ -764,6 +764,102 @@ struct UserDashboardView {
     recharge: RechargeSummaryView,
 }
 
+impl From<tavily_hikari::UserDashboardSummary> for UserDashboardView {
+    fn from(summary: tavily_hikari::UserDashboardSummary) -> Self {
+        Self {
+            debug_info_shared: summary.debug_info_shared,
+            request_rate: summary.request_rate,
+            hourly_any_used: summary.hourly_any_used,
+            hourly_any_limit: summary.hourly_any_limit,
+            quota_hourly_used: summary.quota_hourly_used,
+            quota_hourly_limit: summary.quota_hourly_limit,
+            quota_daily_used: summary.quota_daily_used,
+            quota_daily_limit: summary.quota_daily_limit,
+            quota_monthly_used: summary.quota_monthly_used,
+            quota_monthly_limit: summary.quota_monthly_limit,
+            daily_success: summary.daily_success,
+            daily_failure: summary.daily_failure,
+            monthly_success: summary.monthly_success,
+            last_activity: summary.last_activity,
+            recharge: summary.recharge.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDashboardOverviewSeriesPointView {
+    bucket_start: i64,
+    display_bucket_start: Option<i64>,
+    value: Option<i64>,
+    limit_value: Option<i64>,
+}
+
+impl From<tavily_hikari::UserDashboardOverviewSeriesPoint> for UserDashboardOverviewSeriesPointView {
+    fn from(point: tavily_hikari::UserDashboardOverviewSeriesPoint) -> Self {
+        Self {
+            bucket_start: point.bucket_start,
+            display_bucket_start: point.display_bucket_start,
+            value: point.value,
+            limit_value: point.limit_value,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDashboardProgressCardView {
+    used: i64,
+    limit: i64,
+    points: Vec<UserDashboardOverviewSeriesPointView>,
+}
+
+impl From<tavily_hikari::UserDashboardProgressCard> for UserDashboardProgressCardView {
+    fn from(card: tavily_hikari::UserDashboardProgressCard) -> Self {
+        Self {
+            used: card.used,
+            limit: card.limit,
+            points: card.points.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDashboardOverviewProgressView {
+    request_rate: UserDashboardProgressCardView,
+    quota_hourly: UserDashboardProgressCardView,
+    quota_daily: UserDashboardProgressCardView,
+    quota_monthly: UserDashboardProgressCardView,
+}
+
+impl From<tavily_hikari::UserDashboardOverviewProgress> for UserDashboardOverviewProgressView {
+    fn from(progress: tavily_hikari::UserDashboardOverviewProgress) -> Self {
+        Self {
+            request_rate: progress.request_rate.into(),
+            quota_hourly: progress.quota_hourly.into(),
+            quota_daily: progress.quota_daily.into(),
+            quota_monthly: progress.quota_monthly.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDashboardOverviewView {
+    summary: UserDashboardView,
+    progress: UserDashboardOverviewProgressView,
+}
+
+impl From<tavily_hikari::UserDashboardOverviewSnapshot> for UserDashboardOverviewView {
+    fn from(snapshot: tavily_hikari::UserDashboardOverviewSnapshot) -> Self {
+        Self {
+            summary: snapshot.summary.into(),
+            progress: snapshot.progress.into(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UserDebugInfoSharingPayload {
@@ -932,6 +1028,21 @@ fn parse_user_today_window_query(
         .map_err(|message| (StatusCode::BAD_REQUEST, message))
 }
 
+async fn build_user_dashboard_overview_snapshot_event(
+    state: &Arc<AppState>,
+    user_id: &str,
+    daily_window: Option<tavily_hikari::TimeRangeUtc>,
+) -> Option<(Event, String)> {
+    let overview = state
+        .proxy
+        .user_dashboard_overview(user_id, daily_window)
+        .await
+        .ok()?;
+    let payload: UserDashboardOverviewView = overview.into();
+    let json = serde_json::to_string(&payload).ok()?;
+    Some((Event::default().event("snapshot").data(json.clone()), json))
+}
+
 async fn get_user_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -952,23 +1063,33 @@ async fn get_user_dashboard(
             eprintln!("get user dashboard error: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "failed to load dashboard".to_string())
         })?;
-    Ok(Json(UserDashboardView {
-        debug_info_shared: summary.debug_info_shared,
-        request_rate: summary.request_rate.clone(),
-        hourly_any_used: summary.hourly_any_used,
-        hourly_any_limit: summary.hourly_any_limit,
-        quota_hourly_used: summary.quota_hourly_used,
-        quota_hourly_limit: summary.quota_hourly_limit,
-        quota_daily_used: summary.quota_daily_used,
-        quota_daily_limit: summary.quota_daily_limit,
-        quota_monthly_used: summary.quota_monthly_used,
-        quota_monthly_limit: summary.quota_monthly_limit,
-        daily_success: summary.daily_success,
-        daily_failure: summary.daily_failure,
-        monthly_success: summary.monthly_success,
-        last_activity: summary.last_activity,
-        recharge: summary.recharge.into(),
-    }))
+    Ok(Json(summary.into()))
+}
+
+async fn get_user_dashboard_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Json<UserDashboardOverviewView>, (StatusCode, String)> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    };
+    let daily_window = parse_user_today_window_query(&query)?;
+    let overview = state
+        .proxy
+        .user_dashboard_overview(&user_session.user.user_id, daily_window)
+        .await
+        .map_err(|err| {
+            eprintln!("get user dashboard overview error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load dashboard overview".to_string(),
+            )
+        })?;
+    Ok(Json(overview.into()))
 }
 
 async fn put_user_debug_info_sharing(
@@ -1832,6 +1953,48 @@ async fn get_user_token_logs(
     };
     let logs = build_user_token_logs_view(&state, &id, limit, billing_filter, language).await?;
     Ok(Json(logs))
+}
+
+async fn sse_user_dashboard(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let daily_window = parse_user_today_window_query(&query).map_err(|(status, _)| status)?;
+    let user_id = user_session.user.user_id.clone();
+    let state = state.clone();
+    let stream = stream! {
+        let mut last_snapshot_json: Option<String> = None;
+        if let Some((event, snapshot_json)) =
+            build_user_dashboard_overview_snapshot_event(&state, &user_id, daily_window).await
+        {
+            last_snapshot_json = Some(snapshot_json);
+            yield Ok(event);
+        }
+        loop {
+            match build_user_dashboard_overview_snapshot_event(&state, &user_id, daily_window).await {
+                Some((event, snapshot_json)) if last_snapshot_json.as_deref() != Some(snapshot_json.as_str()) => {
+                    last_snapshot_json = Some(snapshot_json);
+                    yield Ok(event);
+                }
+                Some(_) => {
+                    yield Ok(Event::default().event("ping").data("{}"));
+                }
+                None => {
+                    yield Ok(Event::default().event("ping").data("{}"));
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
 async fn sse_user_token(

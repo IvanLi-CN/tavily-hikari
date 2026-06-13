@@ -32,15 +32,22 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3330,
-      reason: 'API barrel still carries admin settings and user-list contracts until the proxy API surface is split out.',
+      max: 3400,
+      reason: 'API barrel still carries admin settings, user-list contracts, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
     'src/api/demo.ts',
     {
-      max: 1610,
-      reason: 'Demo API fixtures now cover active-user default filtering states for real-shell admin evidence.',
+      max: 1820,
+      reason: 'Demo API fixtures now cover user-console overview snapshots, SSE proof states, and recharge availability evidence on the shared demo shell.',
+    },
+  ],
+  [
+    'src/api.test.ts',
+    {
+      max: 1560,
+      reason: 'Shared API contract coverage now includes the user-console overview snapshot and events surface until the largest runtime suites are split out.',
     },
   ],
   [
@@ -74,8 +81,15 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3100,
-      reason: 'User console runtime still carries the route-level shell; token reset dialogs/actions have been split out as the next extraction step.',
+      max: 3140,
+      reason: 'User console runtime still carries the route-level shell while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
+    },
+  ],
+  [
+    'src/UserConsole.stories.tsx',
+    {
+      max: 1860,
+      reason: 'Console Storybook proof still keeps overview, recharge, failover, and token-detail acceptance states on one stable owner-facing story surface.',
     },
   ],
   [

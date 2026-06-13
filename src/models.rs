@@ -1617,6 +1617,35 @@ pub struct AdminUserUsageSeries {
     pub points: Vec<AdminUserUsageSeriesPoint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDashboardOverviewSeriesPoint {
+    pub bucket_start: i64,
+    pub display_bucket_start: Option<i64>,
+    pub value: Option<i64>,
+    pub limit_value: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDashboardProgressCard {
+    pub used: i64,
+    pub limit: i64,
+    pub points: Vec<UserDashboardOverviewSeriesPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDashboardOverviewProgress {
+    pub request_rate: UserDashboardProgressCard,
+    pub quota_hourly: UserDashboardProgressCard,
+    pub quota_daily: UserDashboardProgressCard,
+    pub quota_monthly: UserDashboardProgressCard,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserDashboardOverviewSnapshot {
+    pub summary: UserDashboardSummary,
+    pub progress: UserDashboardOverviewProgress,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeRangeUtc {
     pub start: i64,
@@ -2795,6 +2824,10 @@ pub(crate) fn local_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
         return 0;
     };
     start_of_local_day_utc_ts(utc_dt.with_timezone(&Local))
+}
+
+pub(crate) fn utc_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
+    created_at_utc_ts - created_at_utc_ts.rem_euclid(SECS_PER_DAY)
 }
 
 pub(crate) fn next_local_day_start_utc_ts(current_day_start_utc_ts: i64) -> i64 {

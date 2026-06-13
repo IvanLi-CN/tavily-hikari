@@ -1,6 +1,9 @@
 import type {
   RequestRate,
   UserDashboard,
+  UserDashboardOverview,
+  UserDashboardOverviewSeriesPoint,
+  UserDashboardProgressCard,
   UserTokenSummary,
 } from './runtime'
 import type { RechargeConfig, RechargeOrder } from './recharge'
@@ -120,6 +123,28 @@ function normalizeRequestRate(value: unknown, fallback: RequestRate): RequestRat
   }
 }
 
+function normalizeUserDashboardOverviewSeriesPoint(
+  value: unknown,
+): UserDashboardOverviewSeriesPoint {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    bucketStart: readNumber(source, 'bucketStart', 'bucket_start'),
+    displayBucketStart: readNullableNumber(source, 'displayBucketStart', 'display_bucket_start'),
+    value: readNullableNumber(source, 'value', 'value'),
+    limitValue: readNullableNumber(source, 'limitValue', 'limit_value'),
+  }
+}
+
+function normalizeUserDashboardProgressCard(value: unknown): UserDashboardProgressCard {
+  const source = isRecordLike(value) ? value : {}
+  const points = Array.isArray(source.points) ? source.points : []
+  return {
+    used: readNumber(source, 'used', 'used'),
+    limit: readNumber(source, 'limit', 'limit'),
+    points: points.map(normalizeUserDashboardOverviewSeriesPoint),
+  }
+}
+
 export function normalizeUserDashboard(value: unknown): UserDashboard {
   const source = isRecordLike(value) ? value : {}
   const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
@@ -145,6 +170,20 @@ export function normalizeUserDashboard(value: unknown): UserDashboard {
     monthlySuccess: readNumber(source, 'monthlySuccess', 'monthly_success'),
     lastActivity: readNullableNumber(source, 'lastActivity', 'last_activity'),
     recharge: normalizeRechargeSummary(source.recharge),
+  }
+}
+
+export function normalizeUserDashboardOverview(value: unknown): UserDashboardOverview {
+  const source = isRecordLike(value) ? value : {}
+  const progress = isRecordLike(source.progress) ? source.progress : {}
+  return {
+    summary: normalizeUserDashboard(source.summary),
+    progress: {
+      requestRate: normalizeUserDashboardProgressCard(progress.requestRate ?? progress.request_rate),
+      quotaHourly: normalizeUserDashboardProgressCard(progress.quotaHourly ?? progress.quota_hourly),
+      quotaDaily: normalizeUserDashboardProgressCard(progress.quotaDaily ?? progress.quota_daily),
+      quotaMonthly: normalizeUserDashboardProgressCard(progress.quotaMonthly ?? progress.quota_monthly),
+    },
   }
 }
 

@@ -466,3 +466,164 @@
         let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
         let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     }
+
+    #[tokio::test]
+    async fn revoking_user_sessions_does_not_break_builtin_admin_session() {
+        let db_path = temp_db_path("user-session-revoke-vs-admin-session");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-revoke-user".to_string(),
+                username: Some("linuxdo_revoke".to_string()),
+                name: Some("LinuxDO Revoke".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed oauth account");
+        let _user_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:linuxdo_revoke"))
+            .await
+            .expect("ensure user token");
+        let user_session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+
+        let user_addr = spawn_user_oauth_server(proxy.clone()).await;
+        let admin_password = "pw-user-revoke-admin";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy.clone(), admin_password).await;
+        let client = Client::new();
+
+        let user_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", user_session.token);
+        let before_user_resp = client
+            .get(format!("http://{}/api/user/token", user_addr))
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user token before revoke");
+        assert_eq!(before_user_resp.status(), reqwest::StatusCode::OK);
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let admin_before_resp = client
+            .post(format!("http://{}/api/keys/batch", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .json(&serde_json::json!({ "api_keys": ["k-user-revoke-admin"] }))
+            .send()
+            .await
+            .expect("admin endpoint before revoke");
+        assert_eq!(admin_before_resp.status(), reqwest::StatusCode::OK);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+        sqlx::query("UPDATE user_sessions SET revoked_at = ? WHERE revoked_at IS NULL")
+            .bind(Utc::now().timestamp())
+            .execute(&pool)
+            .await
+            .expect("revoke user sessions");
+
+        let after_user_resp = client
+            .get(format!("http://{}/api/user/token", user_addr))
+            .header(reqwest::header::COOKIE, user_cookie)
+            .send()
+            .await
+            .expect("user token after revoke");
+        assert_eq!(after_user_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let admin_after_resp = client
+            .post(format!("http://{}/api/keys/batch", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .json(&serde_json::json!({ "api_keys": ["k-user-revoke-admin-2"] }))
+            .send()
+            .await
+            .expect("admin endpoint after revoke");
+        assert_eq!(admin_after_resp.status(), reqwest::StatusCode::OK);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn public_token_log_view_keeps_original_field_shape_and_appends_guidance() {
+        let record = TokenLogRecord {
+            id: 1,
+            key_id: Some("MZli".to_string()),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query: Some("token=secret".to_string()),
+            http_status: Some(200),
+            mcp_status: Some(429),
+            business_credits: None,
+            request_kind_key: "mcp:search".to_string(),
+            request_kind_label: "MCP | search".to_string(),
+            request_kind_detail: None,
+            counts_business_quota: true,
+            result_status: "error".to_string(),
+            error_message: Some("Search failed".to_string()),
+            failure_kind: Some("upstream_rate_limited_429".to_string()),
+            key_effect_code: "none".to_string(),
+            key_effect_summary: None,
+            binding_effect_code: "none".to_string(),
+            binding_effect_summary: None,
+            selection_effect_code: "none".to_string(),
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
+            created_at: 1_700_000_000,
+        };
+        let view = PublicTokenLogView::from_record(record.clone(), UiLanguage::En);
+
+        let json = serde_json::to_value(&view).expect("serialize public token log view");
+        let object = json
+            .as_object()
+            .expect("public token log should serialize to object");
+        assert!(object.get("failureKind").is_none());
+        assert!(object.get("keyEffectCode").is_none());
+        assert!(object.get("keyEffectSummary").is_none());
+        assert!(object.get("businessCredits").is_none());
+        assert!(
+            object
+                .get("errorMessage")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.contains("Suggested handling: Tavily is rate limiting")),
+        );
+
+        let zh_view = PublicTokenLogView::from_record(record, UiLanguage::Zh);
+        assert!(
+            serde_json::to_value(&zh_view)
+                .ok()
+                .and_then(|value| value
+                    .get("errorMessage")
+                    .and_then(|inner| inner.as_str())
+                    .map(str::to_string))
+                .is_some_and(|value| value.contains("建议：这是 Tavily 限流")),
+        );
+    }

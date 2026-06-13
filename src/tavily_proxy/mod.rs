@@ -530,6 +530,7 @@ include!("proxy_request_limits.rs");
 include!("proxy_alerts.rs");
 include!("proxy_announcements.rs");
 include!("proxy_admin_user_usage_series.rs");
+include!("proxy_user_dashboard_overview.rs");
 include!("proxy_quota_sync_and_jobs.rs");
 include!("proxy_forward_proxy_maintenance.rs");
 include!("proxy_ha.rs");
@@ -1153,6 +1154,13 @@ impl TokenRequestLimit {
             .collect())
     }
 
+    pub(crate) async fn recent_timestamps_for_user(&self, user_id: &str) -> Vec<i64> {
+        let subject = RequestRateSubject::user(user_id);
+        self.backend
+            .recent_timestamps(&subject, Utc::now().timestamp(), self.window_secs)
+            .await
+    }
+
     #[cfg(test)]
     pub(crate) async fn debug_memory_subject_count(&self) -> usize {
         self.backend.debug_subject_count().await
@@ -1226,6 +1234,21 @@ impl RequestRateLimitBackend {
             Self::Memory(backend) => {
                 backend
                     .snapshot_many(subjects, now_ts, request_limit, window_minutes, window_secs)
+                    .await
+            }
+        }
+    }
+
+    async fn recent_timestamps(
+        &self,
+        subject: &RequestRateSubject,
+        now_ts: i64,
+        window_secs: i64,
+    ) -> Vec<i64> {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .recent_timestamps(subject, now_ts, window_secs)
                     .await
             }
         }
@@ -1360,6 +1383,25 @@ impl MemoryRequestRateLimitBackend {
         {
             queue.pop_front();
         }
+    }
+
+    async fn recent_timestamps(
+        &self,
+        subject: &RequestRateSubject,
+        now_ts: i64,
+        window_secs: i64,
+    ) -> Vec<i64> {
+        let mut state = self.state.lock().await;
+        Self::maybe_gc(&mut state, now_ts, window_secs);
+        let Some(queue) = state.entries.get_mut(&subject.key) else {
+            return Vec::new();
+        };
+        Self::prune_queue(queue, now_ts, window_secs);
+        let values = queue.iter().copied().collect();
+        if queue.is_empty() {
+            state.entries.remove(&subject.key);
+        }
+        values
     }
 
     #[cfg(test)]

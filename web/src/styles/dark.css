@@ -109,31 +109,46 @@
   display: inline-flex;
   align-items: flex-end;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+  letter-spacing: 0;
 }
 .rolling-number .rn-visual {
   display: inline-flex;
   align-items: flex-end;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 .rolling-number .rn-probe {
   position: absolute;
   visibility: hidden;
   height: 1em;
   line-height: 1em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 .rolling-number .rn-sep {
-  padding: 0 1px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.06em;
+  font-variant-numeric: tabular-nums;
 }
 .rolling-number .rn-col {
   position: relative;
   overflow: hidden;
-  width: 0.62em; /* tighter monospace width */
   height: 1em;
+  width: 0.62em;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 .rolling-number .rn-strip {
   display: flex;
   flex-direction: column;
   transition: transform 420ms cubic-bezier(0.25, 0.8, 0.25, 1);
   will-change: transform;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 .rolling-number .rn-col.rn-down .rn-strip {
   transition: transform 420ms cubic-bezier(0.25, 0.8, 0.25, 1);
@@ -142,6 +157,8 @@
   display: block;
   height: 1em;
   line-height: 1em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 /* Token leaderboard */
 .token-leaderboard-panel {

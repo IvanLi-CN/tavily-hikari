@@ -262,6 +262,199 @@ function demoRechargeConfig() {
   }
 }
 
+function demoUserDashboardSummary(now = Date.now()) {
+  const tokenSummaries = demoUserTokenSummaries(now)
+  const pulse = demoPulse(now)
+  const requestRateUsed = 42 + (pulse % 4)
+  const requestRateLimit = 180
+  const quotaHourlyUsed = tokenSummaries.reduce((total, token) => total + token.quotaHourlyUsed, 0)
+  const quotaHourlyLimit = tokenSummaries.reduce((total, token) => total + token.quotaHourlyLimit, 0)
+  const quotaDailyUsed = tokenSummaries.reduce((total, token) => total + token.quotaDailyUsed, 0)
+  const quotaDailyLimit = tokenSummaries.reduce((total, token) => total + token.quotaDailyLimit, 0)
+  const quotaMonthlyUsed = tokenSummaries.reduce((total, token) => total + token.quotaMonthlyUsed, 0)
+  const quotaMonthlyLimit = tokenSummaries.reduce((total, token) => total + token.quotaMonthlyLimit, 0)
+  const dailySuccess = tokenSummaries.reduce((total, token) => total + token.dailySuccess, 0)
+  const dailyFailure = tokenSummaries.reduce((total, token) => total + token.dailyFailure, 0)
+  const monthlySuccess = tokenSummaries.reduce((total, token) => total + token.monthlySuccess, 0)
+  const lastActivity = tokenSummaries.reduce<number | null>(
+    (latest, token) => latest == null || (token.lastUsedAt ?? 0) > latest ? token.lastUsedAt ?? latest : latest,
+    null,
+  )
+
+  return {
+    debugInfoShared: false,
+    requestRate: {
+      used: requestRateUsed,
+      limit: requestRateLimit,
+      windowMinutes: 5,
+      scope: 'user',
+    },
+    hourlyAnyUsed: requestRateUsed,
+    hourlyAnyLimit: requestRateLimit,
+    quotaHourlyUsed,
+    quotaHourlyLimit,
+    quotaDailyUsed,
+    quotaDailyLimit,
+    quotaMonthlyUsed,
+    quotaMonthlyLimit,
+    dailySuccess,
+    dailyFailure,
+    monthlySuccess,
+    lastActivity,
+    recharge: demoRechargeSummary(),
+  }
+}
+
+function createOverviewPoints(
+  values: Array<number | null>,
+  limit: number,
+  bucketSeconds: number,
+  offset = 0,
+) {
+  const start = monthStartSeconds() + offset
+  return values.map((value, index) => ({
+    bucketStart: start + index * bucketSeconds,
+    displayBucketStart: null,
+    value,
+    limitValue: limit,
+  }))
+}
+
+function demoUserDashboardOverview(now = Date.now()) {
+  const summary = demoUserDashboardSummary(now)
+  return {
+    summary,
+    progress: {
+      requestRate: {
+        used: summary.requestRate.used,
+        limit: summary.requestRate.limit,
+        points: createOverviewPoints(
+          [8, 10, 9, 15, 14, 16, 21, 23, 29, 35, 42, summary.requestRate.used],
+          summary.requestRate.limit,
+          300,
+        ),
+      },
+      quotaHourly: {
+        used: summary.quotaHourlyUsed,
+        limit: summary.quotaHourlyLimit,
+        points: createOverviewPoints(
+          [7, 12, 18, 24, 31, 40, 52, 63, 72, summary.quotaHourlyUsed, null, null],
+          summary.quotaHourlyLimit,
+          300,
+        ),
+      },
+      quotaDaily: {
+        used: summary.quotaDailyUsed,
+        limit: summary.quotaDailyLimit,
+        points: createOverviewPoints(
+          [
+            11,
+            19,
+            28,
+            36,
+            49,
+            63,
+            78,
+            92,
+            108,
+            126,
+            145,
+            169,
+            194,
+            228,
+            264,
+            302,
+            summary.quotaDailyUsed,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ],
+          summary.quotaDailyLimit,
+          3600,
+        ),
+      },
+      quotaMonthly: {
+        used: summary.quotaMonthlyUsed,
+        limit: summary.quotaMonthlyLimit,
+        points: createOverviewPoints(
+          [
+            130,
+            248,
+            364,
+            508,
+            672,
+            821,
+            983,
+            1_156,
+            1_344,
+            1_525,
+            1_711,
+            1_904,
+            2_118,
+            2_347,
+            2_589,
+            2_846,
+            3_124,
+            3_411,
+            3_762,
+            summary.quotaMonthlyUsed,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ],
+          summary.quotaMonthlyLimit,
+          86400,
+        ),
+      },
+    },
+  }
+}
+
+function demoUserTokenSummaryFromToken(
+  token: (typeof demoState.tokens)[number],
+  now = Date.now(),
+) {
+  const pulse = demoPulse(now)
+  const hourlyUsed = token.quota_hourly_used + (token.id === DEMO_TOKEN_ID ? pulse % 3 : 0)
+  const dailyUsed = token.quota_daily_used + (token.id === DEMO_TOKEN_ID ? (pulse % 4) * 2 : 0)
+  const monthlyUsed = token.quota_monthly_used + (token.id === DEMO_TOKEN_ID ? (pulse % 5) * 12 : 0)
+  const dailyFailure = token.id === DEMO_TOKEN_ID ? 18 + (pulse % 3) : 0
+
+  return {
+    tokenId: token.id,
+    enabled: token.enabled,
+    note: token.note,
+    lastUsedAt: token.last_used_at,
+    requestRate: { used: 0, limit: 60, windowMinutes: 5, scope: 'token' },
+    hourlyAnyUsed: 0,
+    hourlyAnyLimit: 60,
+    quotaHourlyUsed: hourlyUsed,
+    quotaHourlyLimit: token.quota_hourly_limit,
+    quotaDailyUsed: dailyUsed,
+    quotaDailyLimit: token.quota_daily_limit,
+    quotaMonthlyUsed: monthlyUsed,
+    quotaMonthlyLimit: token.quota_monthly_limit,
+    dailySuccess: dailyUsed,
+    dailyFailure,
+    monthlySuccess: monthlyUsed,
+  }
+}
+
+function demoUserTokenSummaries(now = Date.now()) {
+  return demoState.tokens.map((token) => demoUserTokenSummaryFromToken(token, now))
+}
+
 function createDemoAuthToken(id: string, note: string | null, createdAt = nowSeconds()) {
   return {
     id,
@@ -1102,6 +1295,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/summary') return jsonResponse(demoSummary())
   if (path === '/api/summary/windows') return jsonResponse(demoSummaryWindows())
   if (path === '/api/dashboard/overview') return jsonResponse(demoDashboardOverview())
+  if (path === '/api/user/dashboard/overview') return jsonResponse(demoUserDashboardOverview())
   if (path === '/api/public/metrics') return jsonResponse({ monthlySuccess: 23710, dailySuccess: 714 })
   if (path === '/api/token/metrics') return jsonResponse({
     monthlySuccess: 8400,
@@ -1126,22 +1320,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   }
   if (path === '/api/user/logout') return noContentResponse()
   if (path === '/api/user/token') return jsonResponse({ token: DEMO_TOKEN })
-  if (path === '/api/user/dashboard') return jsonResponse({
-    requestRate: { used: 42, limit: 180, windowMinutes: 5, scope: 'user' },
-    hourlyAnyUsed: 42,
-    hourlyAnyLimit: 180,
-    quotaHourlyUsed: 42,
-    quotaHourlyLimit: 180,
-    quotaDailyUsed: 388,
-    quotaDailyLimit: 1600,
-    quotaMonthlyUsed: 8400,
-    quotaMonthlyLimit: 24000,
-    dailySuccess: 388,
-    dailyFailure: 18,
-    monthlySuccess: 8400,
-    lastActivity: nowSeconds(-120),
-    recharge: demoRechargeSummary(),
-  })
+  if (path === '/api/user/dashboard') return jsonResponse(demoUserDashboardSummary())
   if (path === '/api/user/recharge/config') return jsonResponse(demoRechargeConfig())
   if (path === '/api/user/recharge/orders') {
     if (method === 'POST') return handleCreateDemoRechargeOrder(init)
@@ -1164,7 +1343,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
     const order = demoState.rechargeOrders.find((item) => item.outTradeNo === outTradeNo)
     return order ? jsonResponse(order) : jsonResponse({ message: 'Demo recharge order not found' }, 404)
   }
-  if (path === '/api/user/tokens') return jsonResponse(demoState.tokens)
+  if (path === '/api/user/tokens') return jsonResponse(demoUserTokenSummaries())
   if (path.startsWith('/api/user/tokens/')) return handleUserTokenRoute(path, url)
   if (path === '/api/user/announcements') return jsonResponse({ items: demoUserActiveAnnouncements(demoState.announcements) })
   if (path === '/api/user/announcements/history') return jsonResponse({ items: demoUserAnnouncementHistory(demoState.announcements) })
@@ -1255,7 +1434,7 @@ function handleUserTokenRoute(path: string, url: URL): Response {
   if (path.endsWith('/secret')) return jsonResponse({ token: demoState.tokenSecrets.get(token.id) ?? DEMO_TOKEN })
   if (path.endsWith('/logs')) return jsonResponse(publicTokenLogs(demoState.logs.filter((log) => log.auth_token_id === token.id)))
   if (path.endsWith('/events')) return textResponse('demo event stream is provided by the browser demo runtime\n')
-  return jsonResponse(token)
+  return jsonResponse(demoUserTokenSummaryFromToken(token))
 }
 
 function handleKeyRoute(path: string, url: URL, method: string): Response {
@@ -1518,6 +1697,14 @@ class DemoEventSource {
       }, 6000)
       return
     }
+    if (path === '/api/user/dashboard/events') {
+      this.emit('snapshot', demoUserDashboardOverview())
+      this.refreshTimer = window.setInterval(() => {
+        if (this.readyState !== DemoEventSource.OPEN) return
+        this.emit('snapshot', demoUserDashboardOverview())
+      }, 6000)
+      return
+    }
     if (path === '/api/public/events') {
       this.emit('metrics', {
         public: { monthlySuccess: 23710, dailySuccess: 714 },
@@ -1557,7 +1744,7 @@ class DemoEventSource {
       const tokenId = decodeURIComponent(path.split('/')[4] ?? DEMO_TOKEN_ID)
       const token = demoState.tokens.find((item) => item.id === tokenId) ?? demoState.tokens[0]
       const logs = demoState.logs.filter((log) => log.auth_token_id === token.id)
-      this.emit('snapshot', { token, logs: publicTokenLogs(logs) })
+      this.emit('snapshot', { token: demoUserTokenSummaryFromToken(token), logs: publicTokenLogs(logs) })
       return
     }
     if (path.startsWith('/api/tokens/')) {

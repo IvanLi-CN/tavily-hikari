@@ -7,6 +7,7 @@
 @import '@milkdown/crepe/theme/common/style.css';
 @import '@milkdown/crepe/theme/frame.css';
 @import './styles/user-console.css';
+@import './styles/user-console-overview.css';
 @import './styles/user-console-announcements.css';
 @import './styles/user-console-recharge.css';
 @import './styles/user-console-recent-requests.css';

@@ -13,7 +13,12 @@ import type {
   UpdateSystemSettingsPayload,
 } from './systemSettingsTypes'
 import type { AuthToken, AuthTokenSecret } from './tokens'
-import { normalizeUserDashboard, normalizeUserTokenSummary, normalizeUserTokenSummaryList } from './userConsoleNormalization'
+import {
+  normalizeUserDashboard,
+  normalizeUserDashboardOverview,
+  normalizeUserTokenSummary,
+  normalizeUserTokenSummaryList,
+} from './userConsoleNormalization'
 
 export interface Summary {
   total_requests: number
@@ -1933,6 +1938,31 @@ export interface UserDashboardRechargeSummary {
   currentMonthStart: number; currentEntitlementCredits: number; effectiveUntilMonthStart: number | null
 }
 
+export interface UserDashboardOverviewSeriesPoint {
+  bucketStart: number
+  displayBucketStart: number | null
+  value: number | null
+  limitValue: number | null
+}
+
+export interface UserDashboardProgressCard {
+  used: number
+  limit: number
+  points: UserDashboardOverviewSeriesPoint[]
+}
+
+export interface UserDashboardOverviewProgress {
+  requestRate: UserDashboardProgressCard
+  quotaHourly: UserDashboardProgressCard
+  quotaDaily: UserDashboardProgressCard
+  quotaMonthly: UserDashboardProgressCard
+}
+
+export interface UserDashboardOverview {
+  summary: UserDashboard
+  progress: UserDashboardOverviewProgress
+}
+
 export interface UserTokenSummary {
   tokenId: string; enabled: boolean; note: string | null; lastUsedAt: number | null
   requestRate: RequestRate
@@ -1954,6 +1984,16 @@ export function fetchUserDashboard(todayWindow?: TodayWindowRange, signal?: Abor
   appendTodayWindowRange(params, todayWindow)
   const url = `/api/user/dashboard${params.toString() ? `?${params.toString()}` : ''}`
   return requestJson<unknown>(url, { signal }).then(normalizeUserDashboard)
+}
+
+export function fetchUserDashboardOverview(
+  todayWindow?: TodayWindowRange,
+  signal?: AbortSignal,
+): Promise<UserDashboardOverview> {
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const url = `/api/user/dashboard/overview${params.toString() ? `?${params.toString()}` : ''}`
+  return requestJson<unknown>(url, { signal }).then(normalizeUserDashboardOverview)
 }
 
 export function updateUserDebugInfoSharing(shared: boolean): Promise<{ debugInfoShared: boolean }> {
@@ -2003,6 +2043,13 @@ export function buildUserTokenEventsUrl(id: string, todayWindow?: TodayWindowRan
 
 export type UserTokenLogsBillingFilter = 'all' | 'billable'
 
+export function buildUserDashboardEventsUrl(todayWindow?: TodayWindowRange): string {
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const query = params.toString()
+  return `/api/user/dashboard/events${query ? `?${query}` : ''}`
+}
+
 export async function fetchUserTokenLogs(
   id: string,
   limit = 50,
@@ -2047,6 +2094,10 @@ export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot
       created_at: it.createdAt,
     })),
   }
+}
+
+export function parseUserDashboardOverviewEventSnapshot(raw: string): UserDashboardOverview {
+  return normalizeUserDashboardOverview(JSON.parse(raw) as unknown)
 }
 
 export interface ProbeMcpResponse {

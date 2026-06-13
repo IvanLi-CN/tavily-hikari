@@ -302,7 +302,7 @@ export default function RechargePanel({
                 ))}
               </div>
               <div className="user-console-recharge-checkout">
-                <div>
+                <div className="user-console-recharge-amount">
                   <span>{text.amount}</span>
                   <strong>{formatRechargeMoney(amount)} LDC</strong>
                 </div>
@@ -333,23 +333,25 @@ export default function RechargePanel({
 
         <div className="user-console-recharge-orders">
           <h3>{text.orders}</h3>
-          {orders.length === 0 ? (
-            <p className="empty-state">{text.noOrders}</p>
-          ) : (
-            <ul>
-              {orders.slice(0, 3).map((order) => (
-                <li key={order.outTradeNo}>
-                  <div>
-                    <strong>{formatNumber(order.credits)} × {order.months}</strong>
-                    <span>{order.money} LDC · {formatTimestamp(order.createdAt)}</span>
-                  </div>
-                  <StatusBadge tone={rechargeStatusTone(order.status)}>
-                    {text.status[order.status] ?? order.status}
-                  </StatusBadge>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="user-console-recharge-orders-panel">
+            {orders.length === 0 ? (
+              <p className="empty-state">{text.noOrders}</p>
+            ) : (
+              <ul>
+                {orders.slice(0, 3).map((order) => (
+                  <li key={order.outTradeNo}>
+                    <div>
+                      <strong>{formatNumber(order.credits)} × {order.months}</strong>
+                      <span>{order.money} LDC · {formatTimestamp(order.createdAt)}</span>
+                    </div>
+                    <StatusBadge tone={rechargeStatusTone(order.status)}>
+                      {text.status[order.status] ?? order.status}
+                    </StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       </div>
       {viewportMode === 'small' ? (

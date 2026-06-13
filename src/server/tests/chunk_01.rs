@@ -21,7 +21,7 @@
     use tavily_hikari::{
         DEFAULT_UPSTREAM, ForwardProxySettings, effective_auth_token_log_retention_days,
         effective_request_logs_retention_days, effective_token_hourly_limit,
-        request_rate_limit, request_rate_limit_window_minutes,
+        request_rate_limit, request_rate_limit_window_minutes, request_rate_limit_window_secs,
     };
     use tokio::net::TcpListener;
     use tokio::sync::Notify;

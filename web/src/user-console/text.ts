@@ -66,7 +66,7 @@ export const EN = {
     dailyDelta: 'Daily',
     monthlyDelta: 'Monthly',
     testPrice: 'Test pricing is enabled: adds one 1 LDC option for 1 credit in 1 month.',
-    amount: 'Payment amount',
+    amount: 'Pay',
     preview: 'Preview',
     previewTitle: 'Order impact preview',
     previewDescription: 'Review how this recharge changes quota by month before creating an order.',
@@ -92,6 +92,11 @@ export const EN = {
   tokens: {
     title: 'Token List',
     description: 'Copy tokens, review quota windows, and open recent request details.',
+    summary: {
+      total: 'Tokens',
+      enabled: 'Enabled',
+      dailySuccess: 'Daily Success',
+    },
     loading: 'Loading token list…',
     empty: 'No token available for this account.',
     copy: 'Copy',
@@ -356,7 +361,7 @@ export const ZH = {
     dailyDelta: '日',
     monthlyDelta: '月',
     testPrice: '测试价格已开启：额外提供 1 LDC 购买 1 个自然月的 1 积分。',
-    amount: '支付金额',
+    amount: '应付',
     preview: '预览',
     previewTitle: '订单影响预览',
     previewDescription: '创建订单前，查看本次充值会如何影响每个月的额度。',
@@ -382,6 +387,11 @@ export const ZH = {
   tokens: {
     title: 'Token 列表',
     description: '复制 Token、查看配额窗口，并进入详情检查最近请求。',
+    summary: {
+      total: 'Token 数',
+      enabled: '启用中',
+      dailySuccess: '今日成功',
+    },
     loading: 'Token 列表加载中…',
     empty: '当前账户暂无 Token。',
     copy: '复制',

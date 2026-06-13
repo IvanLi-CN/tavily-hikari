@@ -39,6 +39,13 @@ impl TavilyProxy {
         self.token_request_limit.snapshot_many(token_ids).await
     }
 
+    pub(crate) async fn user_request_rate_recent_timestamps(
+        &self,
+        user_id: &str,
+    ) -> Vec<i64> {
+        self.token_request_limit.recent_timestamps_for_user(user_id).await
+    }
+
     #[cfg(test)]
     pub(crate) async fn debug_token_request_limiter_subject_count(&self) -> usize {
         self.token_request_limit.debug_memory_subject_count().await

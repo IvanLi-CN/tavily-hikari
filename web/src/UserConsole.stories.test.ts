@@ -66,6 +66,14 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Console Home Admin',
       args: { consoleView: 'Console Home', isAdmin: true, landingFocus: 'Overview Focus' },
     })
+    expect(userConsoleStories.ConsoleHomeRechargeDisabled).toMatchObject({
+      name: 'Console Home Recharge Disabled',
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Overview Focus', rechargePreview: 'disabled' },
+    })
+    expect(userConsoleStories.ConsoleHomeRechargeHidden).toMatchObject({
+      name: 'Console Home Recharge Hidden',
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Overview Focus', rechargePreview: 'hidden' },
+    })
     expect(userConsoleStories.ConsoleHomeAdminMobile).toMatchObject({
       name: 'Console Home Admin Mobile',
       args: { consoleView: 'Console Home', isAdmin: true, landingFocus: 'Overview Focus' },
