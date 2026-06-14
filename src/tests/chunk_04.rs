@@ -1063,6 +1063,75 @@ fn dashboard_month_series_bucket_iteration_uses_successor_boundaries() {
 }
 
 #[tokio::test]
+async fn dashboard_rollup_bucket_metrics_can_use_non_86400_second_day_bounds() {
+    let db_path = temp_db_path("dashboard-rollup-variable-day-bounds");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-rollup-variable-day-bounds".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let mut tx = proxy.key_store.pool.begin().await.expect("begin tx");
+
+    sqlx::query(
+        r#"
+        INSERT INTO dashboard_request_rollup_buckets (
+            bucket_start,
+            bucket_secs,
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
+            valuable_success_count,
+            valuable_failure_count,
+            valuable_failure_429_count,
+            other_success_count,
+            other_failure_count,
+            unknown_count,
+            mcp_non_billable,
+            mcp_billable,
+            api_non_billable,
+            api_billable,
+            local_estimated_credits,
+            updated_at
+        ) VALUES
+            (1000, 86400, 10, 8, 2, 0, 8, 2, 0, 0, 0, 0, 0, 0, 0, 10, 0, 1060),
+            (83800, 86400, 99, 80, 19, 0, 80, 19, 0, 0, 0, 0, 0, 0, 0, 99, 0, 83860)
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("insert rollup buckets");
+
+    let exact = KeyStore::fetch_dashboard_rollup_bucket_metrics_in_range_tx(
+        &mut tx,
+        SECS_PER_DAY,
+        1000,
+        83800,
+    )
+    .await
+    .expect("fetch variable-width bucket");
+    let widened = KeyStore::fetch_dashboard_rollup_bucket_metrics_in_range_tx(
+        &mut tx,
+        SECS_PER_DAY,
+        1000,
+        1000 + SECS_PER_DAY,
+    )
+    .await
+    .expect("fetch fixed-width bucket");
+
+    assert_eq!(exact.total_requests, 10);
+    assert_eq!(widened.total_requests, 109);
+
+    tx.rollback().await.expect("rollback tx");
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn rollup_rebuilds_preserve_cleaned_batch_business_classification() {
     let db_path = temp_db_path("rollup-rebuild-cleaned-batch-classification");
     let db_str = db_path.to_string_lossy().to_string();

@@ -2511,8 +2511,13 @@ impl KeyStore {
                     )
                     .await?
                 } else {
-                    Self::fetch_dashboard_rollup_bucket_metrics_tx(tx, SECS_PER_DAY, bucket_start)
-                        .await?
+                    Self::fetch_dashboard_rollup_bucket_metrics_in_range_tx(
+                        tx,
+                        SECS_PER_DAY,
+                        bucket_start,
+                        bucket_end,
+                    )
+                    .await?
                 };
                 add_summary_window_metrics(&mut running_total, &bucket_metrics);
                 DashboardMonthSeriesPoint {
