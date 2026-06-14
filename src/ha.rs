@@ -57,11 +57,141 @@ impl HaNodeRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HaSourceKind {
+    Direct,
+    OriginGroup,
+}
+
+impl HaSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::OriginGroup => "origin_group",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "direct" | "ip_domain" | "ip-domain" | "ip/域名" => Some(Self::Direct),
+            "origin_group" | "origin-group" | "group" => Some(Self::OriginGroup),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaSourceSettings {
+    pub source_kind: HaSourceKind,
+    pub direct_origin_scheme: Option<OriginScheme>,
+    pub direct_origin_host: Option<String>,
+    pub direct_origin_port: Option<u16>,
+    pub origin_group_id: Option<String>,
+}
+
+impl HaSourceSettings {
+    fn direct(origin: PublicOrigin) -> Self {
+        Self {
+            source_kind: HaSourceKind::Direct,
+            direct_origin_scheme: Some(origin.scheme),
+            direct_origin_host: Some(origin.host),
+            direct_origin_port: Some(origin.port),
+            origin_group_id: None,
+        }
+    }
+
+    pub fn origin_group(group_id: String) -> Self {
+        Self {
+            source_kind: HaSourceKind::OriginGroup,
+            direct_origin_scheme: None,
+            direct_origin_host: None,
+            direct_origin_port: None,
+            origin_group_id: Some(group_id),
+        }
+    }
+
+    pub fn target_label(&self) -> Option<String> {
+        match self.source_kind {
+            HaSourceKind::Direct => self
+                .direct_origin_host
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .zip(self.direct_origin_port)
+                .map(|(host, port)| format!("{host}:{port}")),
+            HaSourceKind::OriginGroup => self
+                .origin_group_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        }
+    }
+
+    pub fn validate(&self) -> Result<Self, String> {
+        match self.source_kind {
+            HaSourceKind::Direct => {
+                let scheme = self.direct_origin_scheme.unwrap_or(OriginScheme::Https);
+                let host = self
+                    .direct_origin_host
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "direct origin host is required".to_string())?;
+                let port = self
+                    .direct_origin_port
+                    .ok_or_else(|| "direct origin port is required".to_string())?;
+                if port == 0 {
+                    return Err("direct origin port must be greater than 0".to_string());
+                }
+                Ok(Self {
+                    source_kind: HaSourceKind::Direct,
+                    direct_origin_scheme: Some(scheme),
+                    direct_origin_host: Some(host.to_string()),
+                    direct_origin_port: Some(port),
+                    origin_group_id: None,
+                })
+            }
+            HaSourceKind::OriginGroup => {
+                let group_id = self
+                    .origin_group_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "origin group id is required".to_string())?;
+                Ok(Self {
+                    source_kind: HaSourceKind::OriginGroup,
+                    direct_origin_scheme: None,
+                    direct_origin_host: None,
+                    direct_origin_port: None,
+                    origin_group_id: Some(group_id.to_string()),
+                })
+            }
+        }
+    }
+
+    pub fn effective_target(&self) -> Option<String> {
+        self.target_label()
+    }
+}
+
+pub fn parse_ha_source_kind(raw: &str) -> Option<HaSourceKind> {
+    HaSourceKind::parse(raw)
+}
+
+pub fn parse_origin_scheme(raw: &str) -> Option<OriginScheme> {
+    OriginScheme::parse(raw)
+}
+
 #[derive(Clone, Debug)]
 pub struct HaConfig {
     pub mode: HaMode,
     pub node_id: String,
     pub database_path: Option<String>,
+    pub source_kind: Option<HaSourceKind>,
+    pub source_origin_group_id: Option<String>,
     pub node_public_scheme: Option<String>,
     pub node_public_host: Option<String>,
     pub node_public_port: Option<u16>,
@@ -84,6 +214,8 @@ impl Default for HaConfig {
             mode: HaMode::Single,
             node_id: "single".to_string(),
             database_path: None,
+            source_kind: None,
+            source_origin_group_id: None,
             node_public_scheme: None,
             node_public_host: None,
             node_public_port: None,
@@ -105,7 +237,7 @@ impl Default for HaConfig {
 impl HaConfig {
     pub fn active_standby_ready(&self) -> bool {
         self.mode == HaMode::ActiveStandby
-            && self.configured_node_origin().ok().flatten().is_some()
+            && self.configured_source_settings().ok().flatten().is_some()
             && self
                 .edgeone_zone_id
                 .as_deref()
@@ -123,6 +255,44 @@ impl HaConfig {
                 .as_deref()
                 .is_some_and(|v| !v.is_empty())
     }
+
+    pub fn configured_source_settings(&self) -> Result<Option<HaSourceSettings>, String> {
+        let source_kind = self.source_kind.unwrap_or_else(|| {
+            if self
+                .source_origin_group_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            {
+                HaSourceKind::OriginGroup
+            } else {
+                HaSourceKind::Direct
+            }
+        });
+
+        match source_kind {
+            HaSourceKind::Direct => {
+                Ok(self.configured_node_origin()?.map(HaSourceSettings::direct))
+            }
+            HaSourceKind::OriginGroup => Ok(self
+                .source_origin_group_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|group_id| HaSourceSettings::origin_group(group_id.to_string()))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaSourceSettingsView {
+    pub source_kind: HaSourceKind,
+    pub direct_origin_scheme: Option<OriginScheme>,
+    pub direct_origin_host: Option<String>,
+    pub direct_origin_port: Option<u16>,
+    pub origin_group_id: Option<String>,
+    pub target: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -138,6 +308,15 @@ pub struct HaStatusView {
     pub edgeone_domain: Option<String>,
     pub edgeone_origin: Option<String>,
     pub edgeone_expected_origin: Option<String>,
+    pub edgeone_current_target: Option<String>,
+    pub edgeone_expected_target: Option<String>,
+    pub edgeone_current_source_kind: Option<HaSourceKind>,
+    pub edgeone_expected_source_kind: Option<HaSourceKind>,
+    pub edgeone_current_origin_group_id: Option<String>,
+    pub edgeone_expected_origin_group_id: Option<String>,
+    pub ha_source_defaults: Option<HaSourceSettingsView>,
+    pub ha_source_override: Option<HaSourceSettingsView>,
+    pub ha_source_effective: Option<HaSourceSettingsView>,
     pub edgeone_api_configured: bool,
     pub last_edgeone_check_at: Option<i64>,
     pub last_sync_at: Option<i64>,
@@ -192,6 +371,7 @@ pub struct EdgeOneAuditEntry {
 struct HaRuntimeState {
     role: HaNodeRole,
     edgeone_origin: Option<String>,
+    source_settings: Option<HaSourceSettings>,
     last_edgeone_check_at: Option<i64>,
     last_sync_at: Option<i64>,
     recovery_status: Option<String>,
@@ -218,6 +398,7 @@ impl HaRuntime {
             state: Arc::new(RwLock::new(HaRuntimeState {
                 role: initial_role,
                 edgeone_origin: None,
+                source_settings: None,
                 last_edgeone_check_at: None,
                 last_sync_at: None,
                 recovery_status: None,
@@ -231,17 +412,17 @@ impl HaRuntime {
         if self.config.mode == HaMode::Single {
             return Ok(());
         }
-        match self.edgeone.describe_current_origin().await {
-            Ok(origin) => {
+        match self.edgeone.describe_current_target().await {
+            Ok(target) => {
                 let now = Utc::now().timestamp();
-                let role = if self.is_self_origin(origin.as_deref()) {
+                let role = if self.is_self_target(target.as_ref()) {
                     HaNodeRole::FullMaster
                 } else {
                     HaNodeRole::Standby
                 };
                 let mut state = self.state.write().await;
                 state.role = role;
-                state.edgeone_origin = origin;
+                state.edgeone_origin = target.as_ref().map(|target| target.target());
                 state.last_edgeone_check_at = Some(now);
                 state.message = None;
                 Ok(())
@@ -255,7 +436,99 @@ impl HaRuntime {
     }
 
     pub fn edgeone_authority_enabled(&self) -> bool {
-        self.config.mode != HaMode::Single && self.config.active_standby_ready()
+        self.config.mode != HaMode::Single
+            && self.config.active_standby_ready()
+            && self.effective_source_settings().ok().flatten().is_some()
+    }
+
+    pub async fn set_local_source_settings(
+        &self,
+        settings: Option<HaSourceSettings>,
+    ) -> Result<(), String> {
+        let mut state = self.state.write().await;
+        state.source_settings = settings;
+        Ok(())
+    }
+
+    pub async fn set_local_source_settings_from_view(
+        &self,
+        settings: Option<HaSourceSettingsView>,
+    ) -> Result<(), String> {
+        let settings = settings.map(|view| match view.source_kind {
+            HaSourceKind::Direct => HaSourceSettings {
+                source_kind: HaSourceKind::Direct,
+                direct_origin_scheme: view.direct_origin_scheme,
+                direct_origin_host: view.direct_origin_host,
+                direct_origin_port: view.direct_origin_port,
+                origin_group_id: None,
+            },
+            HaSourceKind::OriginGroup => HaSourceSettings {
+                source_kind: HaSourceKind::OriginGroup,
+                direct_origin_scheme: None,
+                direct_origin_host: None,
+                direct_origin_port: None,
+                origin_group_id: view.origin_group_id,
+            },
+        });
+        self.set_local_source_settings(settings).await
+    }
+
+    pub async fn apply_local_source_settings_to_edgeone(
+        &self,
+        settings: HaSourceSettings,
+    ) -> Result<(HaStatusView, Vec<EdgeOneAuditEntry>), String> {
+        if self.config.mode == HaMode::Single {
+            return Ok((self.status().await, Vec::new()));
+        }
+        let current_role = self.role().await;
+        if !matches!(
+            current_role,
+            HaNodeRole::FullMaster | HaNodeRole::ProvisionalMaster
+        ) {
+            return Err("save and switch requires active or provisional master role".to_string());
+        }
+        let audit = self.edgeone.modify_target_with_audit(&settings).await?;
+        let mut state = self.state.write().await;
+        state.edgeone_origin = settings.effective_target();
+        state.last_edgeone_check_at = Some(Utc::now().timestamp());
+        state.message = match current_role {
+            HaNodeRole::FullMaster => {
+                Some("EdgeOne origin switched to the configured source".to_string())
+            }
+            HaNodeRole::ProvisionalMaster => Some(
+                "EdgeOne origin switched to the configured source; finalize required".to_string(),
+            ),
+            HaNodeRole::Standby | HaNodeRole::Recovery => None,
+        };
+        drop(state);
+        Ok((self.status().await, vec![audit]))
+    }
+
+    pub async fn local_source_settings(&self) -> Option<HaSourceSettings> {
+        self.state.read().await.source_settings.clone()
+    }
+
+    fn effective_source_settings(&self) -> Result<Option<HaSourceSettings>, String> {
+        let runtime_override = self
+            .state
+            .try_read()
+            .ok()
+            .and_then(|state| state.source_settings.clone());
+        if runtime_override.is_some() {
+            return Ok(runtime_override);
+        }
+        self.config.configured_source_settings()
+    }
+
+    fn source_settings_view(settings: &HaSourceSettings) -> HaSourceSettingsView {
+        HaSourceSettingsView {
+            source_kind: settings.source_kind,
+            direct_origin_scheme: settings.direct_origin_scheme,
+            direct_origin_host: settings.direct_origin_host.clone(),
+            direct_origin_port: settings.direct_origin_port,
+            origin_group_id: settings.origin_group_id.clone(),
+            target: settings.effective_target(),
+        }
     }
 
     pub async fn refresh_authoritative_role(&self) -> Result<HaStatusView, String> {
@@ -263,18 +536,18 @@ impl HaRuntime {
             return Ok(self.status().await);
         }
 
-        let origin = match self.edgeone.describe_current_origin().await {
-            Ok(origin) => origin,
+        let target = match self.edgeone.describe_current_target().await {
+            Ok(target) => target,
             Err(err) => {
                 let mut state = self.state.write().await;
                 state.message = Some(format!("EdgeOne authority refresh failed: {err}"));
                 return Err(err);
             }
         };
-        let self_is_origin = self.is_self_origin(origin.as_deref());
+        let self_is_origin = self.is_self_target(target.as_ref());
         let now = Utc::now().timestamp();
         let mut state = self.state.write().await;
-        state.edgeone_origin = origin.clone();
+        state.edgeone_origin = target.as_ref().map(|target| target.target());
         state.last_edgeone_check_at = Some(now);
         match (self_is_origin, state.role) {
             (true, HaNodeRole::Standby | HaNodeRole::Recovery) => {
@@ -290,13 +563,16 @@ impl HaRuntime {
             (true, HaNodeRole::ProvisionalMaster) => {}
             (false, HaNodeRole::FullMaster | HaNodeRole::ProvisionalMaster) => {
                 state.role = HaNodeRole::Recovery;
-                let detail = origin
-                    .as_deref()
-                    .map(|origin| {
-                        format!("EdgeOne origin moved to {origin}; recovery import required")
+                let detail = target
+                    .as_ref()
+                    .map(|target| {
+                        format!(
+                            "EdgeOne target moved to {}; recovery import required",
+                            target.target()
+                        )
                     })
                     .unwrap_or_else(|| {
-                        "EdgeOne origin no longer points to this node; recovery import required"
+                        "EdgeOne target no longer points to this node; recovery import required"
                             .to_string()
                     });
                 state.recovery_status = Some(detail.clone());
@@ -316,6 +592,14 @@ impl HaRuntime {
         let sync_lag_seconds = state
             .last_sync_at
             .map(|last| Utc::now().timestamp().saturating_sub(last));
+        let source_defaults = self.config.configured_source_settings().ok().flatten();
+        let source_override = state.source_settings.clone();
+        let source_effective = source_override.clone().or_else(|| source_defaults.clone());
+        let expected_origin = self.config.canonical_expected_origin().or_else(|| {
+            source_effective
+                .as_ref()
+                .and_then(|settings| settings.target_label())
+        });
         HaStatusView {
             mode: self.config.mode,
             node_id: self.config.node_id.clone(),
@@ -332,14 +616,52 @@ impl HaRuntime {
             allows_full_writes: state.role.allows_full_writes(),
             edgeone_domain: self.config.edgeone_domain.clone(),
             edgeone_origin: state.edgeone_origin.clone(),
-            edgeone_expected_origin: self.config.canonical_expected_origin(),
-            edgeone_api_configured: self.config.active_standby_ready(),
+            edgeone_expected_origin: expected_origin,
+            edgeone_current_target: state.edgeone_origin.clone(),
+            edgeone_expected_target: source_effective
+                .as_ref()
+                .and_then(HaSourceSettings::target_label),
+            edgeone_current_source_kind: source_override
+                .as_ref()
+                .map(|settings| settings.source_kind)
+                .or_else(|| {
+                    source_defaults
+                        .as_ref()
+                        .map(|settings| settings.source_kind)
+                }),
+            edgeone_expected_source_kind: source_effective
+                .as_ref()
+                .map(|settings| settings.source_kind),
+            edgeone_current_origin_group_id: source_override
+                .as_ref()
+                .and_then(|settings| settings.origin_group_id.clone()),
+            edgeone_expected_origin_group_id: source_effective
+                .as_ref()
+                .and_then(|settings| settings.origin_group_id.clone()),
+            ha_source_defaults: source_defaults.as_ref().map(Self::source_settings_view),
+            ha_source_override: source_override.as_ref().map(Self::source_settings_view),
+            ha_source_effective: source_effective.as_ref().map(Self::source_settings_view),
+            edgeone_api_configured: self.config.active_standby_ready()
+                && source_effective.is_some()
+                && self
+                    .config
+                    .edgeone_zone_id
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty()),
             last_edgeone_check_at: state.last_edgeone_check_at,
             last_sync_at: state.last_sync_at,
             sync_lag_seconds,
             recovery_status: state.recovery_status.clone(),
             message: state.message.clone(),
         }
+    }
+
+    pub async fn set_local_source_settings_view(
+        &self,
+        settings: Option<HaSourceSettingsView>,
+    ) -> Result<HaStatusView, String> {
+        self.set_local_source_settings_from_view(settings).await?;
+        Ok(self.status().await)
     }
 
     pub fn database_path(&self) -> Option<PathBuf> {
@@ -413,46 +735,40 @@ impl HaRuntime {
             return Ok((self.status().await, Vec::new()));
         }
         let mut audit = Vec::new();
-        let target_origin = self
-            .config
-            .configured_node_origin()?
-            .ok_or_else(|| "NODE_PUBLIC_HOST is required for HA promote".to_string())?;
+        let target_settings = self
+            .effective_source_settings()?
+            .ok_or_else(|| "HA source settings are required for promote".to_string())?;
         if !force && self.role().await != HaNodeRole::Standby {
             return Err("promote requires standby role unless force is set".to_string());
         }
         if !force {
-            let (current, entry) = self.edgeone.describe_current_origin_with_audit().await?;
+            let (current, entry) = self.edgeone.describe_current_target_with_audit().await?;
             audit.push(entry);
-            if self.is_self_origin(current.as_deref()) {
+            if self.is_self_target(current.as_ref()) {
                 let mut state = self.state.write().await;
-                state.edgeone_origin = current;
+                state.edgeone_origin = current.as_ref().map(|target| target.target());
                 state.last_edgeone_check_at = Some(Utc::now().timestamp());
-            } else if let Some(expected) = self.config.configured_expected_origin()?
-                && !current
-                    .as_deref()
-                    .and_then(|current| PublicOrigin::parse(current, expected.scheme).ok())
-                    .is_some_and(|current| current.equivalent_to(&expected))
-            {
+            } else if !self.is_expected_target(current.as_ref(), &target_settings) {
                 return Err(format!(
-                    "EdgeOne origin is {:?}, expected {}; refusing promote without force",
-                    current,
-                    expected.authority()
-                ));
-            } else if self.config.configured_expected_origin()?.is_none() {
-                return Err(format!(
-                    "EdgeOne origin is {:?}, expected origin is not configured; refusing promote without force",
-                    current
+                    "EdgeOne target is {:?}, expected {}; refusing promote without force",
+                    current.as_ref().map(|target| target.target()),
+                    target_settings
+                        .effective_target()
+                        .unwrap_or_else(|| "<unknown>".to_string())
                 ));
             }
         }
         let entry = self
             .edgeone
-            .modify_origin_with_audit(&target_origin)
+            .modify_target_with_audit(&target_settings)
             .await?;
         audit.push(entry);
+        let target_label = target_settings
+            .effective_target()
+            .ok_or_else(|| "HA source settings target is required for promote".to_string())?;
         let mut state = self.state.write().await;
         state.role = HaNodeRole::ProvisionalMaster;
-        state.edgeone_origin = Some(target_origin.authority());
+        state.edgeone_origin = Some(target_label);
         state.last_edgeone_check_at = Some(Utc::now().timestamp());
         state.message = Some("promoted by EdgeOne origin switch; finalize required".to_string());
         drop(state);
@@ -478,11 +794,64 @@ impl HaRuntime {
         self.status().await
     }
 
-    fn is_self_origin(&self, origin: Option<&str>) -> bool {
-        match (origin, self.config.configured_node_origin().ok().flatten()) {
-            (Some(current), Some(self_origin)) => PublicOrigin::parse(current, self_origin.scheme)
-                .ok()
-                .is_some_and(|current| current.equivalent_to(&self_origin)),
+    fn is_self_target(&self, target: Option<&EdgeOneTarget>) -> bool {
+        match (target, self.effective_source_settings().ok().flatten()) {
+            (Some(current), Some(expected)) => current.matches_source_settings(&expected),
+            _ => false,
+        }
+    }
+
+    fn is_expected_target(
+        &self,
+        target: Option<&EdgeOneTarget>,
+        expected: &HaSourceSettings,
+    ) -> bool {
+        match target {
+            Some(current) => current.matches_source_settings(expected),
+            None => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EdgeOneTarget {
+    source_kind: HaSourceKind,
+    direct_origin: Option<PublicOrigin>,
+    origin_group_id: Option<String>,
+}
+
+impl EdgeOneTarget {
+    fn target(&self) -> String {
+        match self.source_kind {
+            HaSourceKind::Direct => self
+                .direct_origin
+                .as_ref()
+                .map(PublicOrigin::authority)
+                .unwrap_or_else(|| "<unknown>".to_string()),
+            HaSourceKind::OriginGroup => self
+                .origin_group_id
+                .as_deref()
+                .unwrap_or("<unknown>")
+                .to_string(),
+        }
+    }
+
+    fn matches_source_settings(&self, expected: &HaSourceSettings) -> bool {
+        match (self.source_kind, expected.source_kind) {
+            (HaSourceKind::Direct, HaSourceKind::Direct) => {
+                self.direct_origin.as_ref().is_some_and(|current| {
+                    expected.direct_origin_scheme.unwrap_or(OriginScheme::Https) == current.scheme
+                        && expected
+                            .direct_origin_host
+                            .as_deref()
+                            .is_some_and(|host| host.eq_ignore_ascii_case(&current.host))
+                        && expected.direct_origin_port == Some(current.port)
+                })
+            }
+            (HaSourceKind::OriginGroup, HaSourceKind::OriginGroup) => {
+                self.origin_group_id.as_deref().map(str::trim)
+                    == expected.origin_group_id.as_deref().map(str::trim)
+            }
             _ => false,
         }
     }
@@ -506,15 +875,15 @@ impl EdgeOneClient {
         }
     }
 
-    async fn describe_current_origin(&self) -> Result<Option<String>, String> {
-        self.describe_current_origin_with_audit()
+    async fn describe_current_target(&self) -> Result<Option<EdgeOneTarget>, String> {
+        self.describe_current_target_with_audit()
             .await
             .map(|(origin, _audit)| origin)
     }
 
-    async fn describe_current_origin_with_audit(
+    async fn describe_current_target_with_audit(
         &self,
-    ) -> Result<(Option<String>, EdgeOneAuditEntry), String> {
+    ) -> Result<(Option<EdgeOneTarget>, EdgeOneAuditEntry), String> {
         if !self.config.active_standby_ready() {
             return Ok((
                 None,
@@ -540,18 +909,19 @@ impl EdgeOneClient {
             .await?;
         let origin_detail = value.pointer("/Response/AccelerationDomains/0/OriginDetail");
         Ok((
-            origin_detail
-                .and_then(|detail| {
-                    origin_detail_to_public_origin(detail, self.config.configured_origin_scheme())
-                })
-                .map(|origin| origin.authority()),
+            origin_detail.and_then(|detail| {
+                origin_detail_to_edgeone_target(
+                    detail,
+                    self.config.configured_source_settings().ok().flatten(),
+                )
+            }),
             audit,
         ))
     }
 
-    async fn modify_origin_with_audit(
+    async fn modify_target_with_audit(
         &self,
-        target_origin: &PublicOrigin,
+        target_settings: &HaSourceSettings,
     ) -> Result<EdgeOneAuditEntry, String> {
         if !self.config.active_standby_ready() {
             return Err("EdgeOne credentials and domain configuration are required".to_string());
@@ -559,19 +929,41 @@ impl EdgeOneClient {
         let mut payload = json!({
             "ZoneId": self.config.edgeone_zone_id.as_deref().unwrap_or_default(),
             "DomainName": self.config.edgeone_domain.as_deref().unwrap_or_default(),
-            "OriginProtocol": target_origin.scheme.edgeone_value(),
-            "OriginInfo": {
-                "OriginType": "ip_domain",
-                "Origin": target_origin.host,
-                "BackupOrigin": ""
-            }
         });
-        match target_origin.scheme {
-            OriginScheme::Http => payload["HttpOriginPort"] = json!(target_origin.port),
-            OriginScheme::Https => payload["HttpsOriginPort"] = json!(target_origin.port),
-            OriginScheme::Follow => {
-                payload["HttpOriginPort"] = json!(target_origin.port);
-                payload["HttpsOriginPort"] = json!(target_origin.port);
+        match target_settings.source_kind {
+            HaSourceKind::Direct => {
+                let scheme = target_settings
+                    .direct_origin_scheme
+                    .unwrap_or(OriginScheme::Https);
+                let host = target_settings
+                    .direct_origin_host
+                    .as_deref()
+                    .unwrap_or_default();
+                let port = target_settings
+                    .direct_origin_port
+                    .unwrap_or_else(|| scheme.default_port());
+                payload["OriginProtocol"] = json!(scheme.edgeone_value());
+                payload["OriginInfo"] = json!({
+                    "OriginType": "ip_domain",
+                    "Origin": host,
+                    "BackupOrigin": ""
+                });
+                match scheme {
+                    OriginScheme::Http => payload["HttpOriginPort"] = json!(port),
+                    OriginScheme::Https => payload["HttpsOriginPort"] = json!(port),
+                    OriginScheme::Follow => {
+                        payload["HttpOriginPort"] = json!(port);
+                        payload["HttpsOriginPort"] = json!(port);
+                    }
+                }
+            }
+            HaSourceKind::OriginGroup => {
+                payload["OriginProtocol"] = json!("HTTPS");
+                payload["OriginInfo"] = json!({
+                    "OriginType": "ORIGIN_GROUP",
+                    "Origin": target_settings.origin_group_id.as_deref().unwrap_or_default(),
+                    "BackupOrigin": ""
+                });
             }
         }
         let (_value, audit) = self
@@ -655,34 +1047,42 @@ impl EdgeOneClient {
     }
 }
 
-fn origin_detail_to_public_origin(
+fn origin_detail_to_edgeone_target(
     origin_detail: &Value,
-    default_scheme: OriginScheme,
-) -> Option<PublicOrigin> {
+    defaults: Option<HaSourceSettings>,
+) -> Option<EdgeOneTarget> {
     let origin = origin_detail.get("Origin")?.as_str()?.trim();
     if origin.is_empty() {
         return None;
+    }
+    let origin_type = origin_detail
+        .get("OriginInfo")
+        .and_then(|info| info.get("OriginType"))
+        .and_then(Value::as_str)
+        .or_else(|| origin_detail.get("OriginType").and_then(Value::as_str))
+        .unwrap_or("ip_domain");
+    if origin_type.eq_ignore_ascii_case("ORIGIN_GROUP") {
+        return Some(EdgeOneTarget {
+            source_kind: HaSourceKind::OriginGroup,
+            direct_origin: None,
+            origin_group_id: Some(origin.to_string()),
+        });
     }
     let scheme = origin_detail
         .get("OriginProtocol")
         .and_then(Value::as_str)
         .and_then(OriginScheme::parse)
-        .unwrap_or(default_scheme);
-    let port = match scheme {
-        OriginScheme::Http => origin_detail.get("HttpOriginPort").and_then(Value::as_i64),
-        OriginScheme::Https => origin_detail.get("HttpsOriginPort").and_then(Value::as_i64),
-        OriginScheme::Follow => origin_detail
-            .get("HttpsOriginPort")
-            .or_else(|| origin_detail.get("HttpOriginPort"))
-            .and_then(Value::as_i64),
-    }
-    .and_then(|port| u16::try_from(port).ok())
-    .filter(|port| *port > 0)
-    .unwrap_or_else(|| scheme.default_port());
-    Some(PublicOrigin {
-        scheme,
-        host: origin.to_string(),
-        port,
+        .or_else(|| {
+            defaults
+                .as_ref()
+                .and_then(|settings| settings.direct_origin_scheme)
+        })
+        .unwrap_or(OriginScheme::Https);
+    let direct_origin = origin_detail_to_public_origin(origin_detail, scheme)?;
+    Some(EdgeOneTarget {
+        source_kind: HaSourceKind::Direct,
+        direct_origin: Some(direct_origin),
+        origin_group_id: None,
     })
 }
 
@@ -738,8 +1138,8 @@ fn encode_hex(data: &[u8]) -> String {
     out
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OriginScheme {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OriginScheme {
     Http,
     Https,
     Follow,
@@ -779,6 +1179,7 @@ struct PublicOrigin {
 }
 
 impl PublicOrigin {
+    #[cfg(test)]
     fn parse(raw: &str, default_scheme: OriginScheme) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -801,6 +1202,7 @@ impl PublicOrigin {
         format!("{}:{}", self.host, self.port)
     }
 
+    #[cfg(test)]
     fn equivalent_to(&self, other: &Self) -> bool {
         self.scheme == other.scheme
             && self.host.eq_ignore_ascii_case(&other.host)
@@ -823,6 +1225,35 @@ fn split_origin_host_port(origin: &str, scheme: OriginScheme) -> Result<(String,
         return Err(format!("origin port out of range: {origin}"));
     }
     Ok((host.to_string(), port))
+}
+
+fn origin_detail_to_public_origin(
+    detail: &Value,
+    default_scheme: OriginScheme,
+) -> Option<PublicOrigin> {
+    let origin = detail.get("Origin")?.as_str()?.trim();
+    if origin.is_empty() {
+        return None;
+    }
+    let scheme = detail
+        .get("OriginProtocol")
+        .and_then(Value::as_str)
+        .and_then(OriginScheme::parse)
+        .unwrap_or(default_scheme);
+    let (host, inferred_port) = split_origin_host_port(origin, scheme).ok()?;
+    let detail_port = match scheme {
+        OriginScheme::Http => detail.get("HttpOriginPort").and_then(Value::as_i64),
+        OriginScheme::Https => detail.get("HttpsOriginPort").and_then(Value::as_i64),
+        OriginScheme::Follow => detail
+            .get("HttpsOriginPort")
+            .or_else(|| detail.get("HttpOriginPort"))
+            .and_then(Value::as_i64),
+    }
+    .and_then(|port| u16::try_from(port).ok())
+    .filter(|port| *port > 0)
+    .unwrap_or(inferred_port);
+    let port = detail_port;
+    Some(PublicOrigin { scheme, host, port })
 }
 
 impl HaConfig {
@@ -874,7 +1305,12 @@ impl HaConfig {
             .ok()
             .flatten()
             .map(|origin| origin.authority())
-            .or_else(|| self.edgeone_expected_origin_host.clone())
+            .or_else(|| {
+                self.configured_source_settings()
+                    .ok()
+                    .flatten()
+                    .and_then(|settings| settings.target_label())
+            })
     }
 }
 
@@ -979,6 +1415,66 @@ mod tests {
                 .expect("origin")
                 .authority(),
             "gz.ivanli.cc:443"
+        );
+    }
+
+    #[test]
+    fn configured_source_settings_support_origin_group_defaults() {
+        let config = HaConfig {
+            source_kind: Some(HaSourceKind::OriginGroup),
+            source_origin_group_id: Some("eo-group-123".to_string()),
+            ..HaConfig::default()
+        };
+        let settings = config
+            .configured_source_settings()
+            .expect("source settings parse")
+            .expect("source settings");
+        assert_eq!(settings.source_kind, HaSourceKind::OriginGroup);
+        assert_eq!(settings.origin_group_id.as_deref(), Some("eo-group-123"));
+        assert_eq!(settings.target_label().as_deref(), Some("eo-group-123"));
+    }
+
+    #[test]
+    fn active_standby_ready_accepts_origin_group_defaults_without_node_public_origin() {
+        let config = HaConfig {
+            mode: HaMode::ActiveStandby,
+            source_kind: Some(HaSourceKind::OriginGroup),
+            source_origin_group_id: Some("eo-group-123".to_string()),
+            edgeone_zone_id: Some("zone-123".to_string()),
+            edgeone_domain: Some("api.example.com".to_string()),
+            edgeone_secret_id: Some("sid".to_string()),
+            edgeone_secret_key: Some("skey".to_string()),
+            ..HaConfig::default()
+        };
+        assert!(config.active_standby_ready());
+    }
+
+    #[test]
+    fn canonical_expected_origin_falls_back_to_default_source_target() {
+        let config = HaConfig {
+            source_kind: Some(HaSourceKind::OriginGroup),
+            source_origin_group_id: Some("eo-group-123".to_string()),
+            ..HaConfig::default()
+        };
+        assert_eq!(
+            config.canonical_expected_origin().as_deref(),
+            Some("eo-group-123")
+        );
+    }
+
+    #[test]
+    fn canonical_expected_origin_prefers_explicit_expected_direct_origin() {
+        let config = HaConfig {
+            source_kind: Some(HaSourceKind::OriginGroup),
+            source_origin_group_id: Some("eo-group-123".to_string()),
+            edgeone_expected_origin_host: Some("gz.ivanli.cc".to_string()),
+            edgeone_expected_origin_port: Some(58087),
+            edgeone_expected_origin_scheme: Some("https".to_string()),
+            ..HaConfig::default()
+        };
+        assert_eq!(
+            config.canonical_expected_origin().as_deref(),
+            Some("gz.ivanli.cc:58087")
         );
     }
 

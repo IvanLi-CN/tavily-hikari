@@ -6,6 +6,17 @@ struct HaPromoteRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct HaSourceSettingsRequest {
+    source_kind: tavily_hikari::HaSourceKind,
+    direct_origin_scheme: Option<tavily_hikari::OriginScheme>,
+    direct_origin_host: Option<String>,
+    direct_origin_port: Option<u16>,
+    origin_group_id: Option<String>,
+    apply_to_edgeone: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HaRecoveryImportRequest {
     batch_id: Option<String>,
     source_node_id: Option<String>,
@@ -55,6 +66,92 @@ async fn get_admin_ha_status(
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     Ok(Json(state.ha.status().await))
+}
+
+async fn put_admin_ha_source_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<HaSourceSettingsRequest>,
+) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    let settings = tavily_hikari::HaSourceSettings {
+        source_kind: payload.source_kind,
+        direct_origin_scheme: payload.direct_origin_scheme,
+        direct_origin_host: payload.direct_origin_host,
+        direct_origin_port: payload.direct_origin_port,
+        origin_group_id: payload.origin_group_id,
+    }
+    .validate()
+    .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
+    let status = if payload.apply_to_edgeone.unwrap_or(false) {
+        state
+            .ha
+            .set_local_source_settings(Some(settings.clone()))
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        let (status, audit_entries) = state
+            .ha
+            .apply_local_source_settings_to_edgeone(settings.clone())
+            .await
+            .map_err(|err| (StatusCode::CONFLICT, err))?;
+        state
+            .proxy
+            .persist_ha_node_state(
+                &status.node_id,
+                status.role,
+                status.edgeone_origin.as_deref(),
+                status.ha_source_effective.as_ref(),
+                status.message.as_deref(),
+            )
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        for (idx, entry) in audit_entries.iter().enumerate() {
+            state
+                .proxy
+                .insert_ha_edgeone_audit_log(
+                    &format!("ha-source-settings-{}-{idx}", nanoid::nanoid!(8)),
+                    &entry.action,
+                    entry.request_json.as_deref(),
+                    entry.response_json.as_deref(),
+                    &entry.status,
+                    entry.message.as_deref(),
+                )
+                .await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        }
+        status
+    } else {
+        let status = state
+            .ha
+            .set_local_source_settings_view(Some(tavily_hikari::HaSourceSettingsView {
+                source_kind: settings.source_kind,
+                direct_origin_scheme: settings.direct_origin_scheme,
+                direct_origin_host: settings.direct_origin_host.clone(),
+                direct_origin_port: settings.direct_origin_port,
+                origin_group_id: settings.origin_group_id.clone(),
+                target: settings.effective_target(),
+            }))
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        state
+            .proxy
+            .persist_ha_node_state(
+                &status.node_id,
+                status.role,
+                status.edgeone_origin.as_deref(),
+                status.ha_source_effective.as_ref(),
+                status.message.as_deref(),
+            )
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        status
+    };
+
+    Ok(Json(status))
 }
 
 async fn get_admin_ha_snapshot(
@@ -321,7 +418,7 @@ async fn post_admin_ha_promote(
         operation_kind: "promote".to_string(),
         target_node_id: Some(status.node_id.clone()),
         from_origin: before.edgeone_origin,
-        to_origin: status.node_public_origin.clone(),
+        to_origin: status.edgeone_current_target.clone(),
         status: "provisional_master".to_string(),
         message: status.message.clone(),
     };
@@ -336,6 +433,7 @@ async fn post_admin_ha_promote(
             &status.node_id,
             status.role,
             status.edgeone_origin.as_deref(),
+            status.ha_source_effective.as_ref(),
             status.message.as_deref(),
         )
         .await
@@ -379,6 +477,7 @@ async fn post_admin_ha_finalize(
             &status.node_id,
             status.role,
             status.edgeone_origin.as_deref(),
+            status.ha_source_effective.as_ref(),
             status.message.as_deref(),
         )
         .await
@@ -448,6 +547,7 @@ async fn post_admin_ha_recovery_import(
             &status.node_id,
             status.role,
             status.edgeone_origin.as_deref(),
+            status.ha_source_effective.as_ref(),
             status.message.as_deref(),
         )
         .await

@@ -2605,7 +2605,7 @@ export default function UserConsole(): JSX.Element {
       {consoleLoggedOut && <AccessStatePanel state="logged_out" text={text} onHome={goHome} />}
       {consoleNeedsLogin && <AccessStatePanel state="login_required" text={text} onHome={goHome} />}
 
-      <HaStatusBanner status={haStatus} audience="user" />
+      <HaStatusBanner status={haStatus} audience="user" strings={useTranslate().admin.systemSettings.ha} language={language} />
 
       {!consoleEmptyState && error && <section className="surface error-banner">{error}</section>}
 

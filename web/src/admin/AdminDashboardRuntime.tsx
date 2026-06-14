@@ -26,6 +26,7 @@ import AdminCompactIntro from '../components/AdminCompactIntro'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 import NotFoundFallbackPreview from '../components/NotFoundFallbackPreview'
 import HaStatusBanner from '../components/HaStatusBanner'
+import HaSourceSettingsDialog from './HaSourceSettingsDialog'
 import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components/AdminSidebarUtility'
 import { Button } from '../components/ui/button'
 import {
@@ -1882,6 +1883,7 @@ function AdminDashboard(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [haStatus, setHaStatus] = useState<HaStatus | null>(null)
   const [haBusy, setHaBusy] = useState(false)
+  const [haSourceDialogOpen, setHaSourceDialogOpen] = useState(false)
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const secretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
@@ -8443,6 +8445,11 @@ function AdminDashboard(): JSX.Element {
     }
   }, [])
 
+  const handleHaSourceSettingsSaved = useCallback((nextStatus: HaStatus) => {
+    setHaStatus(nextStatus)
+    setHaSourceDialogOpen(false)
+  }, [])
+
   const isSystemSettingsHaRoute =
     route.name === 'module' && route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
   const adminHaCompactAlert = isSystemSettingsHaRoute ? null : (
@@ -8462,10 +8469,13 @@ function AdminDashboard(): JSX.Element {
     <HaStatusBanner
       status={haStatus}
       audience="admin"
+      strings={systemSettingsStrings.ha}
+      language={language}
       adminVariant="panel"
       busy={haBusy}
       onPromote={handlePromoteHaNode}
       onFinalize={handleFinalizeHaFailover}
+      onConfigureSource={() => setHaSourceDialogOpen(true)}
     />
   )
 
@@ -12057,6 +12067,13 @@ function AdminDashboard(): JSX.Element {
       {showSystemSettingsHa && (
         <section className="admin-settings-ha-page">
           {adminHaPanel}
+          <HaSourceSettingsDialog
+            open={haSourceDialogOpen}
+            status={haStatus}
+            strings={systemSettingsStrings.ha}
+            onOpenChange={setHaSourceDialogOpen}
+            onSaved={handleHaSourceSettingsSaved}
+          />
         </section>
       )}
 

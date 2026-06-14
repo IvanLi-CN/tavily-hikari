@@ -1,15 +1,20 @@
-import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck } from 'lucide-react'
+import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck, Settings2 } from 'lucide-react'
 
 import type { HaStatus } from '../api'
+import type { AdminTranslations } from '../i18n'
+import { useLanguage, useTranslate } from '../i18n'
 import { Button } from './ui/button'
 import { StatusBadge, type StatusTone } from './StatusBadge'
 
 interface HaStatusBannerProps {
   status: HaStatus | null
   audience: 'admin' | 'user'
+  strings?: AdminTranslations['systemSettings']['ha']
+  language?: 'en' | 'zh'
   adminVariant?: 'panel' | 'compact'
   onPromote?: () => void
   onFinalize?: () => void
+  onConfigureSource?: () => void
   busy?: boolean
   compactHref?: string
   compactTitle?: string
@@ -18,24 +23,31 @@ interface HaStatusBannerProps {
   onCompactClick?: () => void
 }
 
-function roleLabel(role: HaStatus['role']): string {
-  if (role === 'full_master') return 'Full master'
-  if (role === 'provisional_master') return 'Provisional master'
-  if (role === 'standby') return 'Standby'
-  return 'Recovery'
-}
-
 function formatTimestamp(value: number | null): string {
-  if (value == null) return 'Unknown'
+  if (value == null) return '—'
   return new Date(value * 1000).toLocaleString()
 }
 
-function formatLag(value: number | null): string {
-  if (value == null) return 'Unknown'
-  if (value < 60) return `${value}s`
+function formatLag(value: number | null, language: 'en' | 'zh'): string {
+  if (value == null) return '—'
+  if (value < 60) return language === 'zh' ? `${value}秒` : `${value}s`
   const minutes = Math.floor(value / 60)
   const seconds = value % 60
+  if (language === 'zh') return seconds === 0 ? `${minutes}分` : `${minutes}分${seconds}秒`
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
+}
+
+function roleLabel(role: HaStatus['role'], strings: AdminTranslations['systemSettings']['ha']): string {
+  if (role === 'full_master') return strings.roleFullMaster
+  if (role === 'provisional_master') return strings.roleProvisionalMaster
+  if (role === 'standby') return strings.roleStandby
+  return strings.roleRecovery
+}
+
+function sourceKindLabel(kind: string | null, strings: AdminTranslations['systemSettings']['ha']): string {
+  if (kind === 'direct') return strings.sourceKindDirect
+  if (kind === 'origin_group') return strings.sourceKindOriginGroup
+  return '—'
 }
 
 interface HaNodeRow {
@@ -49,52 +61,47 @@ interface HaNodeRow {
   lastSync: string
   promotedAt: string
   actionKind: 'promote' | 'finalize' | 'serving' | 'blocked' | 'remote'
+  canConfigureSource?: boolean
 }
 
-function localHealth(status: HaStatus): Pick<HaNodeRow, 'health' | 'healthTone'> {
-  if (status.role === 'full_master') return { health: 'Serving writes', healthTone: 'success' }
-  if (status.role === 'provisional_master') return { health: 'Finalize required', healthTone: 'warning' }
-  if (status.role === 'standby') return { health: 'Ready standby', healthTone: 'info' }
-  return { health: 'Recovery required', healthTone: 'error' }
-}
-
-function localActionKind(status: HaStatus): HaNodeRow['actionKind'] {
-  if (status.role === 'standby') return 'promote'
-  if (status.role === 'provisional_master') return 'finalize'
-  if (status.role === 'full_master') return 'serving'
-  return 'blocked'
-}
-
-function remoteRole(status: HaStatus, origin: string): string {
-  if (status.edgeoneOrigin === origin) return 'Active master'
-  if (status.edgeoneExpectedOrigin === origin) return 'Expected master'
-  return 'Peer'
-}
-
-function remoteHealth(status: HaStatus, origin: string): Pick<HaNodeRow, 'health' | 'healthTone'> {
-  if (status.edgeoneOrigin === origin) return { health: 'Serving EdgeOne', healthTone: 'success' }
-  if (status.edgeoneExpectedOrigin === origin) return { health: 'Not routed', healthTone: 'warning' }
-  return { health: 'Configured', healthTone: 'neutral' }
-}
-
-function buildNodeRows(status: HaStatus): HaNodeRow[] {
-  const localOrigin = status.nodePublicOrigin ?? 'Unknown'
-  const local = localHealth(status)
+function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSettings']['ha']): HaNodeRow[] {
   const rows: HaNodeRow[] = [
     {
       key: 'local',
       nodeId: status.nodeId,
-      relation: 'This admin node',
-      role: roleLabel(status.role),
-      origin: localOrigin,
-      health: local.health,
-      healthTone: local.healthTone,
+      relation: strings.thisAdminNodeLabel,
+      role: roleLabel(status.role, strings),
+      origin: status.edgeoneCurrentTarget ?? status.nodePublicOrigin ?? '—',
+      health:
+        status.role === 'full_master'
+          ? strings.healthServingWrites
+          : status.role === 'provisional_master'
+            ? strings.healthFinalizeRequired
+            : status.role === 'standby'
+              ? strings.healthReadyStandby
+              : strings.healthRecoveryRequired,
+      healthTone:
+        status.role === 'full_master'
+          ? 'success'
+          : status.role === 'provisional_master'
+            ? 'warning'
+            : status.role === 'standby'
+              ? 'info'
+              : 'error',
       lastSync: formatTimestamp(status.lastSyncAt),
       promotedAt:
         status.role === 'full_master' || status.role === 'provisional_master'
           ? formatTimestamp(status.lastEdgeoneCheckAt)
-          : 'N/A',
-      actionKind: localActionKind(status),
+          : '—',
+      actionKind:
+        status.role === 'standby'
+          ? 'promote'
+          : status.role === 'provisional_master'
+            ? 'finalize'
+            : status.role === 'full_master'
+              ? 'serving'
+              : 'blocked',
+      canConfigureSource: true,
     },
   ]
 
@@ -103,17 +110,31 @@ function buildNodeRows(status: HaStatus): HaNodeRow[] {
     .filter((origin): origin is string => Boolean(origin && origin !== status.nodePublicOrigin))
 
   for (const origin of Array.from(new Set(remoteOrigins))) {
-    const health = remoteHealth(status, origin)
     rows.push({
       key: `remote-${origin}`,
       nodeId: origin === status.edgeoneExpectedOrigin ? 'configured-peer' : 'edgeone-origin',
-      relation: origin === status.edgeoneExpectedOrigin ? 'Configured peer' : 'EdgeOne target',
-      role: remoteRole(status, origin),
+      relation: origin === status.edgeoneExpectedOrigin ? strings.configuredPeerLabel : strings.edgeoneTargetLabel,
+      role:
+        status.edgeoneOrigin === origin
+          ? strings.roleFullMaster
+          : status.edgeoneExpectedOrigin === origin
+            ? strings.roleStandby
+            : strings.roleRecovery,
       origin,
-      health: health.health,
-      healthTone: health.healthTone,
-      lastSync: origin === status.edgeoneExpectedOrigin ? formatTimestamp(status.lastSyncAt) : 'Unknown',
-      promotedAt: status.edgeoneOrigin === origin ? formatTimestamp(status.lastEdgeoneCheckAt) : 'N/A',
+      health:
+        status.edgeoneOrigin === origin
+          ? strings.healthServingEdgeone
+          : status.edgeoneExpectedOrigin === origin
+            ? strings.healthNotRouted
+            : strings.healthConfigured,
+      healthTone:
+        status.edgeoneOrigin === origin
+          ? 'success'
+          : status.edgeoneExpectedOrigin === origin
+            ? 'warning'
+            : 'neutral',
+      lastSync: origin === status.edgeoneExpectedOrigin ? formatTimestamp(status.lastSyncAt) : '—',
+      promotedAt: status.edgeoneOrigin === origin ? formatTimestamp(status.lastEdgeoneCheckAt) : '—',
       actionKind: 'remote',
     })
   }
@@ -122,16 +143,18 @@ function buildNodeRows(status: HaStatus): HaNodeRow[] {
 }
 
 function adminNeedsAttention(status: HaStatus): boolean {
-  return status.mode !== 'single'
-    && (status.degraded || status.role !== 'full_master' || !status.allowsFullWrites)
+  return status.mode !== 'single' && (status.degraded || status.role !== 'full_master' || !status.allowsFullWrites)
 }
 
 export default function HaStatusBanner({
   status,
   audience,
+  strings,
+  language,
   adminVariant = 'panel',
   onPromote,
   onFinalize,
+  onConfigureSource,
   busy = false,
   compactHref,
   compactTitle,
@@ -139,26 +162,36 @@ export default function HaStatusBanner({
   compactActionLabel,
   onCompactClick,
 }: HaStatusBannerProps): JSX.Element | null {
+  const fallbackStrings = useTranslate().admin.systemSettings.ha
+  const fallbackLanguage = useLanguage().language
   const admin = audience === 'admin'
   if (!status || status.mode === 'single' || (!admin && !status.degraded)) return null
+  const labels = strings ?? fallbackStrings
+  const lang = language ?? fallbackLanguage
 
-  const title = status.role === 'provisional_master'
-    ? 'Failover is active but not finalized'
-    : status.role === 'standby'
-      ? 'This node is in standby'
-      : status.role === 'recovery'
-        ? 'This node is in recovery'
-        : 'This node is the active master'
-  const detail = status.role === 'provisional_master'
-    ? 'API and MCP traffic can continue. Registration, recharge, and configuration writes stay disabled until an administrator finalizes failover.'
-    : status.role === 'standby'
-      ? 'This node is syncing and should not handle external writes. Promote only when the current EdgeOne origin is unhealthy.'
-      : status.role === 'recovery'
-        ? 'Only mergeable usage, log, event, and payment notification data should be imported from this node.'
-        : 'Full business writes are enabled on this node. Standby nodes should continue receiving snapshots.'
+  const title =
+    status.role === 'provisional_master'
+      ? labels.panelTitle
+      : status.role === 'standby'
+        ? labels.panelTitle
+        : status.role === 'recovery'
+          ? labels.panelTitle
+          : labels.panelTitle
+  const detail =
+    status.role === 'provisional_master'
+      ? labels.panelDescriptionProvisionalMaster
+      : status.role === 'standby'
+        ? labels.panelDescriptionStandby
+        : status.role === 'recovery'
+          ? labels.panelDescriptionRecovery
+          : labels.panelDescriptionFullMaster
   const toneClass = status.role === 'full_master' ? 'ha-status-banner-active' : ''
-  const rows = buildNodeRows(status)
-  const authorityLabel = status.allowsFullWrites ? 'Full writes' : status.allowsBasicBusiness ? 'Basic traffic' : 'Writes blocked'
+  const rows = buildNodeRows(status, labels)
+  const authorityLabel = status.allowsFullWrites
+    ? labels.authorityFullWrites
+    : status.allowsBasicBusiness
+      ? labels.authorityBasicTraffic
+      : labels.authorityWritesBlocked
   const authorityTone: StatusTone = status.allowsFullWrites ? 'success' : status.allowsBasicBusiness ? 'warning' : 'neutral'
 
   if (admin && adminVariant === 'compact') {
@@ -170,8 +203,8 @@ export default function HaStatusBanner({
             <CircleAlert size={20} strokeWidth={2.4} />
           </div>
           <div className="ha-status-banner-copy">
-            <div className="ha-status-banner-title">{compactTitle ?? title}</div>
-            <p>{compactDescription ?? detail}</p>
+            <div className="ha-status-banner-title">{compactTitle ?? labels.compactTitle}</div>
+            <p>{compactDescription ?? labels.compactDescription}</p>
           </div>
           {compactHref && compactActionLabel && (
             <Button asChild size="sm" variant="outline" className="ha-status-banner-action">
@@ -198,8 +231,8 @@ export default function HaStatusBanner({
       <section className="ha-node-panel" aria-labelledby="ha-node-panel-title">
         <div className="ha-node-panel-head">
           <div className="ha-node-panel-title-group">
-            <div className="ha-node-panel-kicker">High availability</div>
-            <h2 id="ha-node-panel-title">HA service nodes</h2>
+            <div className="ha-node-panel-kicker">{labels.panelKicker}</div>
+            <h2 id="ha-node-panel-title">{title}</h2>
             <p>{detail}</p>
           </div>
           <div className="ha-node-panel-state">
@@ -207,29 +240,31 @@ export default function HaStatusBanner({
           </div>
         </div>
 
-        <dl className="ha-status-summary" aria-label="HA routing summary">
-          <div><dt>EdgeOne domain</dt><dd>{status.edgeoneDomain ?? 'Unknown'}</dd></div>
-          <div><dt>Current origin</dt><dd>{status.edgeoneOrigin ?? 'Unknown'}</dd></div>
-          <div><dt>Expected origin</dt><dd>{status.edgeoneExpectedOrigin ?? 'Unknown'}</dd></div>
-          <div><dt>Sync lag</dt><dd>{formatLag(status.syncLagSeconds)}</dd></div>
-          <div><dt>EdgeOne API</dt><dd>{status.edgeoneApiConfigured ? 'Configured' : 'Not configured'}</dd></div>
-          <div><dt>Recovery</dt><dd>{status.recoveryStatus ?? 'None'}</dd></div>
+        <dl className="ha-status-summary" aria-label={labels.title}>
+          <div><dt>{labels.summaryEdgeoneDomain}</dt><dd>{status.edgeoneDomain ?? '—'}</dd></div>
+          <div><dt>{labels.summaryCurrentOrigin}</dt><dd>{status.edgeoneCurrentTarget ?? status.edgeoneOrigin ?? '—'}</dd></div>
+          <div><dt>{labels.summaryExpectedOrigin}</dt><dd>{status.edgeoneExpectedOrigin ?? '—'}</dd></div>
+          <div><dt>{labels.summaryCurrentSource}</dt><dd>{sourceKindLabel(status.edgeoneCurrentSourceKind, labels)}</dd></div>
+          <div><dt>{labels.summaryExpectedSource}</dt><dd>{sourceKindLabel(status.edgeoneExpectedSourceKind, labels)}</dd></div>
+          <div><dt>{labels.summarySyncLag}</dt><dd>{formatLag(status.syncLagSeconds, lang)}</dd></div>
+          <div><dt>{labels.summaryEdgeoneApi}</dt><dd>{status.edgeoneApiConfigured ? labels.healthServingEdgeone : labels.healthNotRouted}</dd></div>
+          <div><dt>{labels.summaryRecovery}</dt><dd>{status.recoveryStatus ?? '—'}</dd></div>
         </dl>
 
-        <div className="ha-node-list" aria-label="HA service nodes">
+        <div className="ha-node-list" aria-label={labels.nodeInventoryTitle}>
           <div className="ha-node-list-title">
             <Server size={18} aria-hidden="true" />
-            <span>Node inventory</span>
+            <span>{labels.nodeInventoryTitle}</span>
           </div>
-          <div className="ha-node-grid" role="table" aria-label="HA service node status">
+          <div className="ha-node-grid" role="table" aria-label={labels.nodeInventoryTitle}>
             <div className="ha-node-grid-row ha-node-grid-head" role="row">
-              <div role="columnheader">Node</div>
-              <div role="columnheader">Role</div>
-              <div role="columnheader">Origin</div>
-              <div role="columnheader">Health</div>
-              <div role="columnheader">Last sync</div>
-              <div role="columnheader">Promoted at</div>
-              <div role="columnheader">Action</div>
+              <div role="columnheader">{labels.nodeHeader}</div>
+              <div role="columnheader">{labels.roleHeader}</div>
+              <div role="columnheader">{labels.originHeader}</div>
+              <div role="columnheader">{labels.healthHeader}</div>
+              <div role="columnheader">{labels.lastSyncHeader}</div>
+              <div role="columnheader">{labels.promotedAtHeader}</div>
+              <div role="columnheader">{labels.actionHeader}</div>
             </div>
             {rows.map((row) => (
               <div className="ha-node-grid-row" role="row" key={row.key}>
@@ -243,6 +278,19 @@ export default function HaStatusBanner({
                 <div role="cell">{row.lastSync}</div>
                 <div role="cell">{row.promotedAt}</div>
                 <div role="cell" className="ha-node-action">
+                  {row.canConfigureSource && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="ha-node-action-button"
+                      onClick={onConfigureSource}
+                      disabled={busy || !onConfigureSource}
+                    >
+                      <Settings2 className="h-4 w-4" aria-hidden="true" />
+                      {labels.configureSource}
+                    </Button>
+                  )}
                   {row.actionKind === 'promote' && onPromote && (
                     <Button
                       type="button"
@@ -253,7 +301,7 @@ export default function HaStatusBanner({
                       disabled={busy}
                     >
                       <Crown className="h-4 w-4" aria-hidden="true" />
-                      Promote to master
+                      {labels.promoteToMaster}
                     </Button>
                   )}
                   {row.actionKind === 'finalize' && onFinalize && (
@@ -266,17 +314,17 @@ export default function HaStatusBanner({
                       disabled={busy}
                     >
                       <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                      Finalize master
+                      {labels.finalizeMaster}
                     </Button>
                   )}
                   {row.actionKind === 'serving' && (
-                    <span className="ha-node-action-note">Serving</span>
+                    <span className="ha-node-action-note">{labels.actionServing}</span>
                   )}
                   {row.actionKind === 'blocked' && (
-                    <span className="ha-node-action-note">Recover first</span>
+                    <span className="ha-node-action-note">{labels.actionRecoverFirst}</span>
                   )}
                   {row.actionKind === 'remote' && (
-                    <span className="ha-node-action-note">Use that node admin</span>
+                    <span className="ha-node-action-note">{labels.actionUseThatNodeAdmin}</span>
                   )}
                 </div>
               </div>

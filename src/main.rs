@@ -233,6 +233,14 @@ struct Cli {
     #[arg(long, env = "NODE_ID", default_value = "single")]
     node_id: String,
 
+    /// Default HA source kind for this instance: direct or origin_group.
+    #[arg(long, env = "HA_SOURCE_KIND")]
+    ha_source_kind: Option<String>,
+
+    /// Default EdgeOne origin group id for this instance.
+    #[arg(long, env = "HA_SOURCE_ORIGIN_GROUP_ID")]
+    ha_source_origin_group_id: Option<String>,
+
     /// Public EdgeOne origin scheme for this node: http, https, or follow.
     #[arg(long, env = "NODE_PUBLIC_SCHEME")]
     node_public_scheme: Option<String>,
@@ -483,6 +491,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mode: HaMode::parse(&cli.ha_mode),
         node_id: cli.node_id.trim().to_string(),
         database_path: Some(cli.db_path.clone()),
+        source_kind: cli
+            .ha_source_kind
+            .as_deref()
+            .and_then(tavily_hikari::parse_ha_source_kind),
+        source_origin_group_id: trim_optional(cli.ha_source_origin_group_id),
         node_public_scheme: trim_optional(cli.node_public_scheme),
         node_public_host: trim_optional(cli.node_public_host),
         node_public_port: cli.node_public_port,

@@ -1689,6 +1689,7 @@ async fn spawn_ha_admin_server(
         .route("/api/admin/ha/baseline", get(get_admin_ha_baseline))
         .route("/api/admin/ha/events", get(get_admin_ha_events))
         .route("/api/admin/ha/events/ack", post(post_admin_ha_events_ack))
+        .route("/api/admin/ha/source", put(put_admin_ha_source_settings))
         .route("/api/admin/ha/promote", post(post_admin_ha_promote))
         .route("/api/admin/ha/recovery/import", post(post_admin_ha_recovery_import))
         .with_state(state);

@@ -4,11 +4,16 @@ impl TavilyProxy {
         node_id: &str,
         role: HaNodeRole,
         edgeone_origin: Option<&str>,
+        source_settings: Option<&HaSourceSettingsView>,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
         self.key_store
-            .persist_ha_node_state(node_id, role, edgeone_origin, message)
+            .persist_ha_node_state(node_id, role, edgeone_origin, source_settings, message)
             .await
+    }
+
+    pub async fn get_ha_source_settings(&self) -> Result<Option<HaSourceSettings>, ProxyError> {
+        self.key_store.get_ha_source_settings().await
     }
 
     pub async fn get_persisted_ha_node_role(&self) -> Result<Option<HaNodeRole>, ProxyError> {

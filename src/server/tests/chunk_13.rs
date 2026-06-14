@@ -1393,6 +1393,52 @@ async fn ha_promote_records_edgeone_request_response_audit() {
 }
 
 #[tokio::test]
+async fn ha_source_endpoint_persists_origin_group_settings() {
+    let db_path = temp_db_path("ha-source-origin-group");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-source-origin-group".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-source-group".to_string(),
+        database_path: Some(db_str.clone()),
+        ..tavily_hikari::HaConfig::default()
+    });
+    let addr = spawn_ha_admin_server(proxy, ha, true).await;
+
+    let response = Client::new()
+        .put(format!("http://{addr}/api/admin/ha/source"))
+        .json(&serde_json::json!({
+            "sourceKind": "origin_group",
+            "originGroupId": "eo-group-api-test",
+            "applyToEdgeone": false
+        }))
+        .send()
+        .await
+        .expect("source settings response");
+    let status = response.status();
+    let body = response.text().await.expect("source settings body text");
+    assert!(
+        status.is_success(),
+        "source settings request should succeed, got {status}: {body}"
+    );
+    let response: Value = serde_json::from_str(&body).expect("source settings body");
+
+    assert_eq!(response["haSourceOverride"]["sourceKind"], "origin_group");
+    assert_eq!(response["haSourceOverride"]["originGroupId"], "eo-group-api-test");
+    assert_eq!(response["haSourceEffective"]["target"], "eo-group-api-test");
+    assert_eq!(response["edgeoneExpectedOrigin"], "eo-group-api-test");
+    assert_eq!(response["edgeoneExpectedSourceKind"], "origin_group");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_recovery_import_is_idempotent_and_keeps_importer_active() {
     let db_path = temp_db_path("ha-recovery-idempotent");
     let db_str = db_path.to_string_lossy().to_string();

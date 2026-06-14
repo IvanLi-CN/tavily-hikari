@@ -1333,7 +1333,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
 
   if (path === '/api/version') return jsonResponse(demoState.version)
   if (path === '/api/profile') return jsonResponse(demoState.profile)
-  const haResponse = handleDemoHaRoute(path, method, demoState)
+  const haResponse = handleDemoHaRoute(path, method, demoState, await readJsonBody(init))
   if (haResponse) return haResponse
   if (path === '/api/summary') return jsonResponse(demoSummary())
   if (path === '/api/summary/windows') return jsonResponse(demoSummaryWindows())

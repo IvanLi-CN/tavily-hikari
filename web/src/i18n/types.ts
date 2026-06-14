@@ -565,7 +565,83 @@ export interface AdminTranslationsShape {
     description: string
     helpLabel: string
     subnav: { general: string; highAvailability: string }
-    ha: { title: string; description: string; compactTitle: string; compactDescription: string; viewSettings: string }
+    ha: {
+      title: string
+      description: string
+      compactTitle: string
+      compactDescription: string
+      viewSettings: string
+      panelKicker: string
+      panelTitle: string
+      panelDescriptionFullMaster: string
+      panelDescriptionProvisionalMaster: string
+      panelDescriptionStandby: string
+      panelDescriptionRecovery: string
+      authorityFullWrites: string
+      authorityBasicTraffic: string
+      authorityWritesBlocked: string
+      roleFullMaster: string
+      roleProvisionalMaster: string
+      roleStandby: string
+      roleRecovery: string
+      summaryEdgeoneDomain: string
+      summaryCurrentOrigin: string
+      summaryExpectedOrigin: string
+      summaryCurrentSource: string
+      summaryExpectedSource: string
+      summarySyncLag: string
+      summaryEdgeoneApi: string
+      summaryRecovery: string
+      nodeInventoryTitle: string
+      nodeHeader: string
+      roleHeader: string
+      originHeader: string
+      healthHeader: string
+      lastSyncHeader: string
+      promotedAtHeader: string
+      actionHeader: string
+      thisAdminNodeLabel: string
+      configuredPeerLabel: string
+      edgeoneTargetLabel: string
+      healthServingWrites: string
+      healthFinalizeRequired: string
+      healthReadyStandby: string
+      healthRecoveryRequired: string
+      healthServingEdgeone: string
+      healthNotRouted: string
+      healthConfigured: string
+      actionServing: string
+      actionRecoverFirst: string
+      actionUseThatNodeAdmin: string
+      configureSource: string
+      promoteToMaster: string
+      finalizeMaster: string
+      sourceDialogTitle: string
+      sourceDialogDescription: string
+      sourceKindLabel: string
+      sourceKindDirect: string
+      sourceKindOriginGroup: string
+      sourceSelectedLabel: string
+      sourceSelectedDirectLabel: string
+      sourceSelectedOriginGroupLabel: string
+      sourceSelectedHint: string
+      sourceSchemeLabel: string
+      sourceHostLabel: string
+      sourcePortLabel: string
+      sourceGroupIdLabel: string
+      sourceDirectHint: string
+      sourceGroupHint: string
+      sourceSave: string
+      sourceSaveAndApply: string
+      sourceSaving: string
+      sourceSaved: string
+      sourceApplied: string
+      sourceSaveFailed: string
+      sourceInvalidDirectHost: string
+      sourceInvalidDirectPort: string
+      sourceInvalidOriginGroup: string
+      sourceDialogCancel: string
+    }
     form: {
       title: string
       description: string

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { createElement } from 'react'
 
-import { LanguageProvider } from '../i18n'
+import { LanguageProvider, translations } from '../i18n'
 import { ThemeProvider } from '../theme'
 import { TooltipProvider } from '../components/ui/tooltip'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -251,7 +251,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-nav-item-icon')
     expect(markup).toContain('<svg')
     expect(markup).toContain('活跃用户 12 / 总用户 30')
-    expect(markup).not.toContain('HA service nodes')
+    expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.panelTitle)
   })
 
   it('renders the system settings HA page with node inventory and active child nav', () => {
@@ -268,9 +268,9 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(markup).toContain('高可用')
     expect(markup).toContain('admin-nav-subitem-active')
-    expect(markup).toContain('HA service nodes')
-    expect(markup).toContain('Node inventory')
-    expect(markup).toContain('Promote to master')
+    expect(markup).toContain(translations.zh.admin.systemSettings.ha.panelTitle)
+    expect(markup).toContain(translations.zh.admin.systemSettings.ha.nodeInventoryTitle)
+    expect(markup).toContain(translations.zh.admin.systemSettings.ha.promoteToMaster)
   })
 
   it('renders abnormal HA attention on dashboard without the full node panel', () => {
@@ -287,8 +287,8 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(markup).toContain('高可用状态需要关注')
     expect(markup).toContain('查看 HA 设置')
-    expect(markup).not.toContain('Node inventory')
-    expect(markup).not.toContain('Promote to master')
+    expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.nodeInventoryTitle)
+    expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.promoteToMaster)
   })
 
   it('renders the user detail story with compact card fallbacks for tokens and quota breakdown', () => {

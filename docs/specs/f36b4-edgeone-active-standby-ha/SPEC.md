@@ -2,7 +2,7 @@
 
 ## Summary
 
-Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从负载均衡。任一时刻只有一个实例处理完整业务，EdgeOne 当前源站 `IP:port` 是 active master 的权威标识。standby 持续同步 active 的 SQLite 数据；active 故障时，standby 通过 EdgeOne API 切换源站到自己，先进入 `provisional_master`，恢复基础 API/MCP 服务，再由管理员确认后进入 `full_master`。
+Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从负载均衡。任一时刻只有一个实例处理完整业务，EdgeOne 当前源站 `IP:port` 或源站组 ID 是 active master 的权威标识。standby 持续同步 active 的 SQLite 数据；active 故障时，standby 通过 EdgeOne API 切换源站到自己，先进入 `provisional_master`，恢复基础 API/MCP 服务，再由管理员确认后进入 `full_master`。
 
 ## Goals
 
@@ -49,6 +49,8 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 
 - `GET /api/admin/ha/status` 返回当前节点状态、EdgeOne 源站、同步水位、recovery 状态。
 - `GET /api/ha/status` 返回可公开给用户控制台的降级摘要，不包含 secret 或 expected origin。
+- `GET /api/admin/ha/status` 还要返回当前/预期源站类型、本地默认源站、本地覆盖源站和当前 EdgeOne target。
+- `PUT /api/admin/ha/source` 保存当前服务节点私有源站配置，可在 `IP/域名` 与 `源站组` 间切换，并可选择保存后立即应用到 EdgeOne。
 - `GET`/`PUT /api/admin/ha/snapshot` 是废弃接口，必须返回 `410 Gone`，不得读写 SQLite 数据库文件。
 - `GET /api/admin/ha/baseline` 仅内部或管理员认证可调用，在 active/provisional 节点输出 zstd NDJSON 状态基线，并在响应头返回 high watermark。
 - `GET /api/admin/ha/events?after=<seq>&limit=<n>` 仅内部或管理员认证可调用，输出 `after` 之后的 zstd NDJSON outbox 事件。
@@ -61,6 +63,8 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 
 - `HA_MODE=single|active_standby`
 - `NODE_ID`
+- `HA_SOURCE_KIND=direct|origin_group`
+- `HA_SOURCE_ORIGIN_GROUP_ID`
 - `NODE_PUBLIC_SCHEME=http|https|follow`
 - `NODE_PUBLIC_HOST`
 - `NODE_PUBLIC_PORT`
@@ -69,6 +73,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - `EDGEONE_EXPECTED_ORIGIN_SCHEME=http|https|follow`
 - `EDGEONE_EXPECTED_ORIGIN_HOST`
 - `EDGEONE_EXPECTED_ORIGIN_PORT`
+- 节点私有源站保存值优先于 Env/CLI 默认值，但只作用于当前实例，不参与 HA 同步。`EDGEONE_EXPECTED_ORIGIN_*` 仍只表示直连预期源站。
 - `EDGEONE_SECRET_ID`
 - `EDGEONE_SECRET_KEY`
 - `HA_SYNC_SOURCE_URL`（standby 拉取 active 的内部 URL）
@@ -79,6 +84,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 
 - 用户控制台在 failover、provisional、recovery、同步滞后时显示降级警告。
 - 管理员控制台的完整 HA 服务节点管理面板只出现在系统设置的高可用二级界面，包含节点清单、角色、源站、健康状态、同步水位、promote/finalize 操作和 EdgeOne 当前源站摘要。
+- HA 管理页还要提供当前节点源站配置入口，允许在 `IP/域名` 与 `源站组` 之间切换，并在 active/provisional 时支持保存后切换 EdgeOne 到此源站。
 - 管理员业务页面在 `full_master` 正常态不得显示 HA 面板；在 failover、standby、recovery 或写入受限时，只显示紧凑异常提示并链接到系统设置的高可用界面，不直接执行 promote/finalize。
 - `provisional_master` 阶段必须明确提示注册、充值和配置写入仍被禁用。
 
@@ -107,6 +113,30 @@ PR: include
 PR: include
 
 ![System settings HA service-node page on mobile](./assets/ha-settings-page-mobile.png)
+
+PR: include
+
+![System settings HA source configuration entry on desktop](./assets/ha-settings-origin-panel.png)
+
+PR: include
+
+![System settings HA action buttons contained in the table](./assets/ha-action-buttons-contained.png)
+
+PR: include
+
+![HA source settings dialog using an EdgeOne origin group](./assets/ha-source-dialog-polished.png)
+
+PR: include
+
+![HA source settings dialog using a direct IP/domain origin](./assets/ha-source-dialog-direct-polished.png)
+
+PR: include
+
+![HA source settings dialog using an EdgeOne origin group with selected-source summary](./assets/ha-source-dialog-origin-group-polished.png)
+
+PR: include
+
+![HA source settings dialog on a standby node with save-only action](./assets/ha-source-dialog-standby-save-only.png)
 
 ## Acceptance
 

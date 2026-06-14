@@ -23,3 +23,7 @@ Production validation showed that full SQLite snapshot sync is unsafe for the cu
 ## Admin IA Revision
 
 The full HA node inventory is an operations setting, not global business-page chrome. Admin business pages stay silent in normal `full_master` state and show only a compact attention link during abnormal HA states; promote/finalize remains confined to the System Settings high-availability subpage.
+
+## Source Settings Revision
+
+The admin HA page now treats the current instance source as a private, per-node setting that can be switched between direct `IP/域名` and `源站组`. The stored value overrides the Env/CLI default for this instance only, and active/provisional operators can apply the saved source directly to EdgeOne from the same page. Startup defaults now accept `HA_SOURCE_KIND` and `HA_SOURCE_ORIGIN_GROUP_ID`, while `EDGEONE_EXPECTED_ORIGIN_*` remains a direct-origin compatibility input.

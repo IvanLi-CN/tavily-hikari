@@ -214,7 +214,8 @@
 
 .ha-node-grid {
   display: grid;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid hsl(var(--border) / 0.72);
   border-radius: 8px;
   background: hsl(var(--card) / 0.78);
@@ -229,7 +230,7 @@
     minmax(142px, 0.9fr)
     minmax(142px, 0.95fr)
     minmax(142px, 0.95fr)
-    minmax(212px, 1.05fr);
+    minmax(238px, max-content);
   min-height: 58px;
   border-top: 1px solid hsl(var(--border) / 0.58);
 }
@@ -275,12 +276,19 @@
 }
 
 .ha-node-action {
+  display: grid !important;
+  grid-auto-flow: row;
+  align-content: center;
   justify-content: flex-start;
+  gap: 8px;
+  overflow-wrap: normal !important;
 }
 
 .ha-node-action-button {
-  min-width: 178px;
-  padding-inline: 20px;
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: 14px;
 }
 
 .ha-status-message {
@@ -298,6 +306,113 @@
 .ha-status-message svg {
   flex: 0 0 auto;
   margin-top: 1px;
+}
+
+.ha-source-kind-tabs {
+  justify-self: start;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  overflow: visible;
+  padding: 2px;
+  gap: 2px;
+  border-color: hsl(var(--border) / 0.78);
+  background: linear-gradient(180deg, hsl(var(--card) / 0.96), hsl(var(--muted) / 0.36));
+  box-shadow:
+    inset 0 1px 0 hsl(var(--background) / 0.86),
+    inset 0 -1px 0 hsl(var(--border) / 0.38),
+    0 8px 18px -18px hsl(var(--foreground) / 0.18);
+}
+
+.ha-source-kind-tabs .segmented-tab {
+  min-height: 2.25rem;
+  padding-inline: 12px;
+  border-color: transparent;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  box-shadow: none;
+}
+
+.ha-source-kind-tabs .segmented-tabs-select-trigger {
+  width: auto;
+  min-width: 176px;
+}
+
+.ha-source-kind-field {
+  justify-items: start;
+}
+
+.ha-source-kind-tabs .segmented-tab:hover:not(.is-active) {
+  border-color: hsl(var(--border) / 0.72);
+  background: hsl(var(--background) / 0.58);
+  color: hsl(var(--foreground));
+  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.78);
+}
+
+.ha-source-kind-tabs .segmented-tab.is-active {
+  border-color: hsl(var(--border) / 0.94);
+  background: linear-gradient(180deg, hsl(var(--background) / 0.98), hsl(var(--card) / 0.9));
+  color: hsl(var(--foreground));
+  box-shadow:
+    inset 0 1px 0 hsl(var(--background) / 0.92),
+    0 1px 2px hsl(var(--foreground) / 0.06);
+}
+
+.dark .ha-source-kind-tabs {
+  border-color: hsl(var(--border) / 0.84);
+  background: linear-gradient(180deg, hsl(var(--card) / 0.88), hsl(var(--muted) / 0.52));
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.08),
+    inset 0 -1px 0 hsl(var(--border) / 0.44),
+    0 10px 20px -20px hsl(var(--foreground) / 0.34);
+}
+
+.dark .ha-source-kind-tabs .segmented-tab {
+  color: hsl(var(--foreground) / 0.78);
+}
+
+.dark .ha-source-kind-tabs .segmented-tab:hover:not(.is-active) {
+  border-color: hsl(var(--border) / 0.82);
+  background: hsl(var(--foreground) / 0.06);
+  color: hsl(var(--foreground) / 0.94);
+}
+
+.dark .ha-source-kind-tabs .segmented-tab.is-active {
+  border-color: hsl(var(--border) / 0.96);
+  background: linear-gradient(180deg, hsl(var(--card) / 0.94), hsl(var(--muted) / 0.62));
+  color: hsl(var(--foreground) / 0.98);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.12),
+    0 1px 2px hsl(var(--foreground) / 0.08);
+}
+
+.ha-source-selection-card {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, hsl(var(--muted) / 0.22), hsl(var(--card) / 0.72)),
+    hsl(var(--card));
+  padding: 11px 12px;
+}
+
+.ha-source-selection-preview {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border) / 0.64);
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.36);
+  color: hsl(var(--foreground));
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1180px) {

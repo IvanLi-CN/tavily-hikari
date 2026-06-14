@@ -7,6 +7,7 @@
 - Added runtime EdgeOne authority refresh so a running old active enters `recovery` when the origin moves away, and an externally pointed standby only becomes `provisional_master` until administrator finalize.
 - Replaced SQLite snapshot export/import with deprecated `410 Gone` responses so HA cannot transfer full database files.
 - Added admin/internal endpoints for HA status, zstd NDJSON state baseline, zstd NDJSON outbox events, event acknowledgement, promote, finalize, and recovery import.
+- Added per-node HA source settings persistence and admin API so the current instance can store a private source override, switch between direct origin and source group, and optionally apply the saved source to EdgeOne immediately. The startup config now also accepts `HA_SOURCE_KIND` and `HA_SOURCE_ORIGIN_GROUP_ID` as per-node defaults, while `EDGEONE_EXPECTED_ORIGIN_*` stays direct-origin only.
 - Added standby pull-based sync controlled by `HA_SYNC_SOURCE_URL`, `HA_INTERNAL_TOKEN`, and `HA_SYNC_INTERVAL_SECS`; active nodes no longer push snapshots.
 - Added `ha_outbox` and peer watermark storage so standby nodes can apply small, whitelisted state changes by seq.
 - Added recovery batch idempotency, HA sync watermarks, failover operation persistence, EdgeOne request/response audit persistence, and node state persistence.
@@ -15,6 +16,7 @@
 - Added basic-business fencing for external Tavily HTTP API, MCP root/subpaths, and Tavily usage routes; `standby` and `recovery` return 503 before auth/quota/upstream work.
 - Restricted non-force promote to `standby` callers so an active node cannot demote itself through an accidental promote operation.
 - Added HA schema tables for node state, sync watermarks, failover operations, recovery batches, and EdgeOne audit logs.
+- Extended HA node state storage with direct-origin and source-group columns so the current instance can override the Env/CLI default source without joining HA sync.
 - Recovery import now rejects request/auth-token log payloads and accepts only mergeable ledger-style payloads, keeping the importing new master in its current active role.
 
 ## Frontend
@@ -26,6 +28,7 @@
 - Added promote/finalize actions for degraded admin states inside the HA settings page only.
 - Added user console banner for degraded HA states.
 - Added Storybook scenarios for provisional, standby, full master, recovery, compact admin attention, System Settings high availability, and user degraded states.
+- Added i18n-backed HA service-node copy for zh/en, plus a source-configuration dialog on the System Settings high-availability page and Storybook/tests that no longer hardcode English text.
 
 ## Validation
 

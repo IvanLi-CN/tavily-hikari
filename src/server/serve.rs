@@ -28,12 +28,24 @@ pub async fn serve(
         eprintln!("HA persisted role lookup warning: {err}");
         None
     });
+    let persisted_ha_source_settings = proxy.get_ha_source_settings().await.unwrap_or_else(|err| {
+        eprintln!("HA source settings lookup warning: {err}");
+        None
+    });
     let startup_ha_status = reconcile_ha_startup_role(&ha, previous_ha_role).await;
+    if let Some(settings) = persisted_ha_source_settings.as_ref()
+        && let Err(err) = ha
+            .set_local_source_settings(Some(settings.clone()))
+            .await
+    {
+        eprintln!("HA source settings restore warning: {err}");
+    }
     if let Err(err) = proxy
         .persist_ha_node_state(
             &startup_ha_status.node_id,
             startup_ha_status.role,
             startup_ha_status.edgeone_origin.as_deref(),
+            startup_ha_status.ha_source_effective.as_ref(),
             startup_ha_status.message.as_deref(),
         )
         .await
@@ -176,6 +188,7 @@ pub async fn serve(
         .route("/api/admin/login", post(post_admin_login))
         .route("/api/admin/logout", post(post_admin_logout))
         .route("/api/admin/ha/status", get(get_admin_ha_status))
+        .route("/api/admin/ha/source", put(put_admin_ha_source_settings))
         .route(
             "/api/admin/ha/snapshot",
             get(get_admin_ha_snapshot)
@@ -661,6 +674,7 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                             &status.node_id,
                             status.role,
                             status.edgeone_origin.as_deref(),
+                            status.ha_source_effective.as_ref(),
                             status.message.as_deref(),
                         )
                         .await

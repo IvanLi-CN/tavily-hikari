@@ -1225,6 +1225,17 @@ export function fetchDashboardOverview(signal?: AbortSignal): Promise<DashboardO
 
 export type HaMode = 'single' | 'active_standby'
 export type HaNodeRole = 'full_master' | 'provisional_master' | 'standby' | 'recovery'
+export type HaSourceKind = 'direct' | 'origin_group'
+export type HaSourceScheme = 'http' | 'https' | 'follow'
+
+export interface HaSourceSettings {
+  sourceKind: HaSourceKind
+  directOriginScheme: HaSourceScheme | null
+  directOriginHost: string | null
+  directOriginPort: number | null
+  originGroupId: string | null
+  target: string | null
+}
 
 export interface HaStatus {
   mode: HaMode
@@ -1237,6 +1248,15 @@ export interface HaStatus {
   edgeoneDomain: string | null
   edgeoneOrigin: string | null
   edgeoneExpectedOrigin: string | null
+  edgeoneCurrentTarget: string | null
+  edgeoneExpectedTarget: string | null
+  edgeoneCurrentSourceKind: HaSourceKind | null
+  edgeoneExpectedSourceKind: HaSourceKind | null
+  edgeoneCurrentOriginGroupId: string | null
+  edgeoneExpectedOriginGroupId: string | null
+  haSourceDefaults: HaSourceSettings | null
+  haSourceOverride: HaSourceSettings | null
+  haSourceEffective: HaSourceSettings | null
   edgeoneApiConfigured: boolean
   lastEdgeoneCheckAt: number | null
   lastSyncAt: number | null
@@ -1247,6 +1267,25 @@ export interface HaStatus {
 
 export function fetchAdminHaStatus(signal?: AbortSignal): Promise<HaStatus> {
   return requestJson('/api/admin/ha/status', { signal })
+}
+
+export interface UpdateHaSourceSettingsPayload {
+  sourceKind: HaSourceKind
+  directOriginScheme?: HaSourceScheme | null
+  directOriginHost?: string | null
+  directOriginPort?: number | null
+  originGroupId?: string | null
+  applyToEdgeone?: boolean
+}
+
+export function updateAdminHaSourceSettings(
+  payload: UpdateHaSourceSettingsPayload,
+): Promise<HaStatus> {
+  return requestJson('/api/admin/ha/source', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }
 
 export function fetchPublicHaStatus(signal?: AbortSignal): Promise<HaStatus> {

@@ -18,8 +18,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13206,
-      reason: 'Legacy admin dashboard runtime remains as a compatibility shell while active-user list filtering lands before a larger extraction pass.',
+      max: 13223,
+      reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings and active-user list filtering land before a larger extraction pass.',
     },
   ],
   [
@@ -32,8 +32,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3402,
-      reason: 'API barrel still carries admin settings, user-list contracts, and user-console overview APIs until the proxy API surface is split out.',
+      max: 3441,
+      reason: 'API barrel still carries HA source settings, admin settings, user-list contracts, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
@@ -74,8 +74,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/types.ts',
     {
-      max: 1522,
-      reason: 'Admin jobs maintenance translation types remain in the shared catalog contract.',
+      max: 1598,
+      reason: 'HA source settings and admin jobs maintenance translation types remain in the shared catalog contract.',
     },
   ],
   [

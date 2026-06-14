@@ -1563,6 +1563,11 @@ impl KeyStore {
                 node_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 edgeone_origin TEXT,
+                ha_source_kind TEXT,
+                ha_direct_origin_scheme TEXT,
+                ha_direct_origin_host TEXT,
+                ha_direct_origin_port INTEGER,
+                ha_origin_group_id TEXT,
                 message TEXT,
                 updated_at INTEGER NOT NULL
             )
@@ -1574,6 +1579,29 @@ impl KeyStore {
             sqlx::query("ALTER TABLE ha_node_state ADD COLUMN message TEXT")
                 .execute(&self.pool)
                 .await?;
+        }
+        for (column, ddl) in [
+            ("ha_source_kind", "ALTER TABLE ha_node_state ADD COLUMN ha_source_kind TEXT"),
+            (
+                "ha_direct_origin_scheme",
+                "ALTER TABLE ha_node_state ADD COLUMN ha_direct_origin_scheme TEXT",
+            ),
+            (
+                "ha_direct_origin_host",
+                "ALTER TABLE ha_node_state ADD COLUMN ha_direct_origin_host TEXT",
+            ),
+            (
+                "ha_direct_origin_port",
+                "ALTER TABLE ha_node_state ADD COLUMN ha_direct_origin_port INTEGER",
+            ),
+            (
+                "ha_origin_group_id",
+                "ALTER TABLE ha_node_state ADD COLUMN ha_origin_group_id TEXT",
+            ),
+        ] {
+            if !self.table_column_exists("ha_node_state", column).await? {
+                sqlx::query(ddl).execute(&self.pool).await?;
+            }
         }
 
         sqlx::query(

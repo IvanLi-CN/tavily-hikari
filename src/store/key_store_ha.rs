@@ -91,18 +91,48 @@ impl KeyStore {
         node_id: &str,
         role: HaNodeRole,
         edgeone_origin: Option<&str>,
+        source_settings: Option<&HaSourceSettingsView>,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
+        let (source_kind, direct_origin_scheme, direct_origin_host, direct_origin_port, origin_group_id) =
+            match source_settings {
+                Some(settings) => match settings.source_kind {
+                    HaSourceKind::Direct => (
+                        Some(settings.source_kind.as_str().to_string()),
+                        settings
+                            .direct_origin_scheme
+                            .map(|scheme| format!("{scheme:?}").to_ascii_lowercase()),
+                        settings.direct_origin_host.clone(),
+                        settings.direct_origin_port.map(i64::from),
+                        None,
+                    ),
+                    HaSourceKind::OriginGroup => (
+                        Some(settings.source_kind.as_str().to_string()),
+                        None,
+                        None,
+                        None,
+                        settings.origin_group_id.clone(),
+                    ),
+                },
+                None => (None, None, None, None, None),
+            };
         sqlx::query(
             r#"
             INSERT INTO ha_node_state (
-                id, node_id, role, edgeone_origin, message, updated_at
+                id, node_id, role, edgeone_origin, ha_source_kind,
+                ha_direct_origin_scheme, ha_direct_origin_host, ha_direct_origin_port,
+                ha_origin_group_id, message, updated_at
             )
-            VALUES ('local', ?, ?, ?, ?, ?)
+            VALUES ('local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 node_id = excluded.node_id,
                 role = excluded.role,
                 edgeone_origin = excluded.edgeone_origin,
+                ha_source_kind = excluded.ha_source_kind,
+                ha_direct_origin_scheme = excluded.ha_direct_origin_scheme,
+                ha_direct_origin_host = excluded.ha_direct_origin_host,
+                ha_direct_origin_port = excluded.ha_direct_origin_port,
+                ha_origin_group_id = excluded.ha_origin_group_id,
                 message = excluded.message,
                 updated_at = excluded.updated_at
             "#,
@@ -110,11 +140,56 @@ impl KeyStore {
         .bind(node_id)
         .bind(role.as_str())
         .bind(edgeone_origin)
+        .bind(source_kind)
+        .bind(direct_origin_scheme)
+        .bind(direct_origin_host)
+        .bind(direct_origin_port)
+        .bind(origin_group_id)
         .bind(message)
         .bind(Utc::now().timestamp())
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub(crate) async fn get_ha_source_settings(
+        &self,
+    ) -> Result<Option<HaSourceSettings>, ProxyError> {
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>)>(
+            r#"
+            SELECT ha_source_kind, ha_direct_origin_scheme, ha_direct_origin_host,
+                   ha_direct_origin_port, ha_origin_group_id
+              FROM ha_node_state
+             WHERE id = 'local'
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((source_kind, direct_origin_scheme, direct_origin_host, direct_origin_port, origin_group_id)) = row else {
+            return Ok(None);
+        };
+        let Some(source_kind) = source_kind.as_deref().and_then(parse_ha_source_kind) else {
+            return Ok(None);
+        };
+        let settings = match source_kind {
+            HaSourceKind::Direct => Some(HaSourceSettings {
+                source_kind,
+                direct_origin_scheme: direct_origin_scheme
+                    .as_deref()
+                    .and_then(parse_origin_scheme),
+                direct_origin_host,
+                direct_origin_port: direct_origin_port.and_then(|port| u16::try_from(port).ok()),
+                origin_group_id: None,
+            }),
+            HaSourceKind::OriginGroup => Some(HaSourceSettings {
+                source_kind,
+                direct_origin_scheme: None,
+                direct_origin_host: None,
+                direct_origin_port: None,
+                origin_group_id,
+            }),
+        };
+        Ok(settings)
     }
 
     pub(crate) async fn get_persisted_ha_node_role(&self) -> Result<Option<HaNodeRole>, ProxyError> {
