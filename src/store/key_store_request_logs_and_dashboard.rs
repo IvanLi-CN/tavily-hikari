@@ -2456,6 +2456,28 @@ impl KeyStore {
         Ok(month_metrics)
     }
 
+    pub(crate) fn collect_bucket_ranges<F>(
+        range_start: i64,
+        range_end: i64,
+        mut next_bucket_start: F,
+    ) -> Vec<(i64, i64)>
+    where
+        F: FnMut(i64) -> i64,
+    {
+        let mut ranges = Vec::new();
+        let mut bucket_start = range_start;
+        while bucket_start < range_end {
+            let bucket_end = next_bucket_start(bucket_start);
+            let clamped_bucket_end = bucket_end.min(range_end);
+            if clamped_bucket_end <= bucket_start {
+                break;
+            }
+            ranges.push((bucket_start, clamped_bucket_end));
+            bucket_start = clamped_bucket_end;
+        }
+        ranges
+    }
+
     async fn fetch_dashboard_month_series_points_tx(
         tx: &mut Transaction<'_, Sqlite>,
         range_start: i64,
@@ -2470,8 +2492,9 @@ impl KeyStore {
         let mut running_total = SummaryWindowMetrics::default();
         let current_local_day_start = local_day_bucket_start_utc_ts(now_cutoff.saturating_sub(1));
 
-        for bucket_start in (range_start..range_end).step_by(SECS_PER_DAY as usize) {
-            let bucket_end = next_local_day_start_utc_ts(bucket_start).min(range_end);
+        for (bucket_start, bucket_end) in
+            Self::collect_bucket_ranges(range_start, range_end, next_local_day_start_utc_ts)
+        {
             let point = if bucket_start >= now_cutoff {
                 DashboardMonthSeriesPoint {
                     bucket_start,

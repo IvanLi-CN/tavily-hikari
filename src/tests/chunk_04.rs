@@ -1036,6 +1036,32 @@ async fn dashboard_month_series_uses_full_natural_month_axis_and_previous_month_
     let _ = std::fs::remove_file(db_path);
 }
 
+#[test]
+fn dashboard_month_series_bucket_iteration_uses_successor_boundaries() {
+    let ranges = KeyStore::collect_bucket_ranges(1_000, 1_000 + 23 * 3_600 + 24 * 3_600 + 25 * 3_600, |start| {
+        match start {
+            1_000 => 1_000 + 23 * 3_600,
+            value if value == 1_000 + 23 * 3_600 => value + 24 * 3_600,
+            value => value + 25 * 3_600,
+        }
+    });
+
+    assert_eq!(
+        ranges,
+        vec![
+            (1_000, 1_000 + 23 * 3_600),
+            (
+                1_000 + 23 * 3_600,
+                1_000 + 23 * 3_600 + 24 * 3_600,
+            ),
+            (
+                1_000 + 23 * 3_600 + 24 * 3_600,
+                1_000 + 23 * 3_600 + 24 * 3_600 + 25 * 3_600,
+            ),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn rollup_rebuilds_preserve_cleaned_batch_business_classification() {
     let db_path = temp_db_path("rollup-rebuild-cleaned-batch-classification");
