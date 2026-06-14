@@ -1186,6 +1186,14 @@ fn dashboard_month_series_bucket_iteration_uses_successor_boundaries() {
     );
 }
 
+#[test]
+fn dashboard_month_series_bucket_population_hides_only_future_or_non_current_truncation() {
+    assert!(KeyStore::should_populate_dashboard_month_series_bucket(100, 200, 200, 300));
+    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(200, 300, 200, 100));
+    assert!(KeyStore::should_populate_dashboard_month_series_bucket(100, 250, 200, 100));
+    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(100, 250, 200, 50));
+}
+
 #[tokio::test]
 async fn dashboard_rollup_bucket_metrics_can_use_non_86400_second_day_bounds() {
     let db_path = temp_db_path("dashboard-rollup-variable-day-bounds");

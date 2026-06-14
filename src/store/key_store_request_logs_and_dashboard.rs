@@ -2478,6 +2478,21 @@ impl KeyStore {
         ranges
     }
 
+    pub(crate) fn should_populate_dashboard_month_series_bucket(
+        bucket_start: i64,
+        bucket_end: i64,
+        now_cutoff: i64,
+        current_partial_bucket_start: i64,
+    ) -> bool {
+        if bucket_start >= now_cutoff {
+            return false;
+        }
+        if bucket_end > now_cutoff && bucket_start != current_partial_bucket_start {
+            return false;
+        }
+        true
+    }
+
     async fn fetch_dashboard_month_lifecycle_daily_counts_tx(
         tx: &mut Transaction<'_, Sqlite>,
         range_start: i64,
@@ -2588,7 +2603,12 @@ impl KeyStore {
         for (bucket_start, bucket_end) in
             Self::collect_bucket_ranges(range_start, range_end, next_local_day_start_utc_ts)
         {
-            let point = if bucket_start >= now_cutoff {
+            let point = if !Self::should_populate_dashboard_month_series_bucket(
+                bucket_start,
+                bucket_end,
+                now_cutoff,
+                current_local_day_start,
+            ) {
                 DashboardMonthSeriesPoint {
                     bucket_start,
                     display_bucket_start: Some(bucket_start),
