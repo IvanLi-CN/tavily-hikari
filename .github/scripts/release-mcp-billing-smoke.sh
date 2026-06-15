@@ -337,72 +337,7 @@ if [[ "${UPSTREAM_ERROR_HTTP}" != "429" ]]; then
   exit 1
 fi
 
-python3 - "${DB_PATH}" "${TOKEN_ID}" <<'PY'
-import json
-import pathlib
-import sqlite3
-import sys
-
-db_path = pathlib.Path(sys.argv[1])
-token_id = sys.argv[2]
-conn = sqlite3.connect(db_path)
-request_rows = conn.execute(
-    """
-    SELECT request_body, result_status, failure_kind, request_kind_key
-    FROM request_logs
-    WHERE auth_token_id = ?
-    ORDER BY id DESC
-    """,
-    (token_id,),
-).fetchall()
-if not request_rows:
-    raise SystemExit("missing request_logs row for smoke token")
-
-success_search_rows = []
-cleaned_body_rows = 0
-for request_body_raw, result_status, failure_kind, request_kind_key in request_rows:
-    if request_body_raw is None:
-        cleaned_body_rows += 1
-        continue
-    request_body = json.loads(request_body_raw.decode())
-    request_id = request_body.get("id")
-    if request_id == "release-smoke-search":
-        success_search_rows.append((request_body, result_status, failure_kind))
-
-if cleaned_body_rows < 1:
-    raise SystemExit(
-        "expected at least one request_logs row with a cleaned or omitted body under release smoke retention policy"
-    )
-
-if len(success_search_rows) != 1:
-    raise SystemExit(
-        f"expected exactly one successful MCP search request_logs row for smoke token, got {len(success_search_rows)}"
-    )
-
-request_body, result_status, failure_kind = success_search_rows[0]
-if request_body["params"]["arguments"].get("include_usage") is not None:
-    raise SystemExit(f"include_usage must not be forwarded for MCP smoke: {request_body}")
-if result_status != "success" or failure_kind is not None:
-    raise SystemExit(
-        f"unexpected request_logs outcome for MCP smoke search: result={result_status} failure={failure_kind}"
-    )
-
-token_log_row = conn.execute(
-    "SELECT business_credits FROM auth_token_logs WHERE token_id = ? AND request_kind_key = 'mcp:search' AND result_status = 'success' ORDER BY id DESC LIMIT 1",
-    (token_id,),
-).fetchone()
-if token_log_row is None or token_log_row[0] is None or token_log_row[0] <= 0:
-    raise SystemExit(f"missing charged credits for smoke token: {token_log_row}")
-
-month_row = conn.execute(
-    "SELECT COALESCE(month_count, 0) FROM auth_token_quota WHERE token_id = ? LIMIT 1",
-    (token_id,),
-).fetchone()
-if month_row is None or month_row[0] < token_log_row[0]:
-    raise SystemExit(
-        f"token monthly quota did not increase with billed credits: month_row={month_row} charged={token_log_row}"
-    )
-PY
+python3 ./.github/scripts/release_smoke_sqlite_check.py "${DB_PATH}" "${TOKEN_ID}"
 
 ADMIN_LOGS_JSON="$({
   curl -fsS "${PROXY_BASE_URL}/api/logs?page=1&per_page=20"

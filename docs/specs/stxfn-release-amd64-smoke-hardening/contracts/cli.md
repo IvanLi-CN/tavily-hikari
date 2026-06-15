@@ -23,6 +23,8 @@ The script is invoked from the release workflow and reads configuration from env
 
 - Start `mock_tavily`, wait for `/admin/state`, and pre-seed a test key.
 - Start the release image container, wait for `/health`, then execute the existing MCP billing smoke flow.
+- Delegate SQLite billing/log assertions to `.github/scripts/release_smoke_sqlite_check.py`.
+- The SQLite helper must resolve `request_logs` against the current sidecar layout: prefer the sibling `*-observability.db` attachment and `observability.request_logs`, but fall back to `main.request_logs` for legacy single-DB or backfill-compatible trees.
 - On any failure, dump mock log, port state, Docker state/logs, and data-dir context before exiting non-zero.
 - Always clean up the mock process and smoke container on exit.
 

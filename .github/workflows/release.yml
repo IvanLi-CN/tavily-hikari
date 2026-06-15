@@ -248,16 +248,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          helper_path=".github/scripts/release-mcp-billing-smoke.sh"
-          if [[ -x "${helper_path}" ]]; then
-            exit 0
+          git fetch --no-tags --depth=1 origin main
+          force_restore=0
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            force_restore=1
           fi
 
-          echo "restoring ${helper_path} from origin/main for backfill ${RELEASE_HEAD_SHA}"
-          git fetch --no-tags --depth=1 origin main
-          mkdir -p "$(dirname "${helper_path}")"
-          git show FETCH_HEAD:"${helper_path}" > "${helper_path}"
-          chmod +x "${helper_path}"
+          for helper_path in \
+            ".github/scripts/release-mcp-billing-smoke.sh" \
+            ".github/scripts/release_smoke_sqlite_check.py"
+          do
+            if [[ "${force_restore}" != "1" && ( -x "${helper_path}" || -f "${helper_path}" ) ]]; then
+              continue
+            fi
+            echo "restoring ${helper_path} from origin/main for backfill ${RELEASE_HEAD_SHA}"
+            mkdir -p "$(dirname "${helper_path}")"
+            git show FETCH_HEAD:"${helper_path}" > "${helper_path}"
+            chmod +x "${helper_path}"
+          done
 
       - name: Install Rust native dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
