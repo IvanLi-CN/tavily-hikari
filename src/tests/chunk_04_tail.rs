@@ -142,6 +142,177 @@ async fn large_legacy_single_db_request_logs_stay_in_core_database_for_startup()
 }
 
 #[tokio::test]
+async fn legacy_request_logs_backfill_uses_main_schema_when_sidecar_table_already_exists() {
+    let db_path = temp_db_path("observability-sidecar-preseeded-request-logs");
+    let db_str = db_path.to_string_lossy().to_string();
+    let layout = SqliteDatabaseLayout::from_database_path(&db_str);
+    let observability_path = layout
+        .observability_database_path
+        .clone()
+        .expect("sidecar path");
+
+    let mut conn = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true),
+    )
+    .await
+    .expect("open legacy sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE api_keys (
+            id TEXT PRIMARY KEY,
+            api_key TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            last_used_at INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create api_keys");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_key_id TEXT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create legacy request_logs");
+    sqlx::query(
+        "INSERT INTO api_keys (id, api_key, created_at, last_used_at) VALUES ('k1', 'tvly-preseeded-sidecar', 1, 1)",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert api key");
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (api_key_id, method, path, created_at)
+        VALUES ('k1', 'POST', '/api/tavily/search', 1710000000)
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert legacy request log");
+    drop(conn);
+
+    let mut observability_conn = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&observability_path)
+            .create_if_missing(true),
+    )
+    .await
+    .expect("open preseeded sidecar sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_key_id TEXT,
+            auth_token_id TEXT,
+            request_user_id TEXT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            status_code INTEGER,
+            tavily_status_code INTEGER,
+            error_message TEXT,
+            result_status TEXT NOT NULL DEFAULT 'unknown',
+            request_kind_key TEXT,
+            request_kind_label TEXT,
+            request_kind_detail TEXT,
+            counts_business_quota INTEGER,
+            business_credits INTEGER,
+            failure_kind TEXT,
+            key_effect_code TEXT NOT NULL DEFAULT 'none',
+            key_effect_summary TEXT,
+            binding_effect_code TEXT NOT NULL DEFAULT 'none',
+            binding_effect_summary TEXT,
+            selection_effect_code TEXT NOT NULL DEFAULT 'none',
+            selection_effect_summary TEXT,
+            gateway_mode TEXT,
+            experiment_variant TEXT,
+            proxy_session_id TEXT,
+            routing_subject_hash TEXT,
+            upstream_operation TEXT,
+            fallback_reason TEXT,
+            request_body BLOB,
+            response_body BLOB,
+            request_body_bytes INTEGER,
+            response_body_bytes INTEGER,
+            request_body_sha256 TEXT,
+            response_body_sha256 TEXT,
+            body_retention_days INTEGER,
+            body_retention_profile TEXT,
+            body_cleaned_reason TEXT,
+            body_cleaned_at INTEGER,
+            forwarded_headers TEXT,
+            dropped_headers TEXT,
+            remote_addr TEXT,
+            client_ip TEXT,
+            client_ip_source TEXT,
+            client_ip_trusted INTEGER NOT NULL DEFAULT 0,
+            ip_headers TEXT,
+            visibility TEXT NOT NULL DEFAULT 'visible',
+            created_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&mut observability_conn)
+    .await
+    .expect("create preseeded sidecar request_logs");
+    drop(observability_conn);
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let migrated_row = sqlx::query_as::<_, (String, String, Option<String>)>(
+        r#"
+        SELECT api_key_id, path, proxy_session_id
+        FROM observability.request_logs
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch migrated request log");
+    assert_eq!(migrated_row.0, "k1");
+    assert_eq!(migrated_row.1, "/api/tavily/search");
+    assert_eq!(
+        migrated_row.2, None,
+        "backfill should use the legacy main schema instead of probing sidecar-only columns"
+    );
+
+    let main_request_logs_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
+    )
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("check main request_logs after preseeded migration")
+    .is_some();
+    assert!(
+        !main_request_logs_exists,
+        "legacy main request_logs should still be removed after migrating into a preseeded sidecar"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(&observability_path);
+    let _ = std::fs::remove_file(format!("{observability_path}-shm"));
+    let _ = std::fs::remove_file(format!("{observability_path}-wal"));
+}
+
+#[tokio::test]
 async fn heal_orphan_auth_tokens_from_logs_creates_soft_deleted_token() {
     let db_path = temp_db_path("heal-orphan");
     let db_str = db_path.to_string_lossy().to_string();

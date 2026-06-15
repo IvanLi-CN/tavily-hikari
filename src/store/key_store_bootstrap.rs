@@ -154,7 +154,9 @@ impl KeyStore {
             return Ok(());
         }
 
-        let source_columns = sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('request_logs')")
+        let source_columns = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM pragma_table_info('request_logs', 'main')",
+        )
             .fetch_all(&self.pool)
             .await?
             .into_iter()
