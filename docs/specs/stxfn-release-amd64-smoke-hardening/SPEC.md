@@ -4,7 +4,7 @@
 
 - Status: 部分完成（3/4）
 - Created: 2026-04-07
-- Last: 2026-04-07
+- Last: 2026-06-15
 
 ## 背景 / 问题陈述
 
@@ -51,8 +51,9 @@
 - smoke 脚本必须支持动态选择 mock/proxy 端口，并允许通过环境变量覆盖以便复现故障。
 - mock 或 proxy 启动失败时，脚本必须输出足够诊断信息（至少含 mock log、Docker 容器状态/日志、端口监听信息、数据目录状态）。
 - 成功路径必须保持现有 smoke 断言：mock readiness、proxy `/health`、token 创建、MCP search、406/429、SQLite 账单与请求日志断言。
+- SQLite 账单 / 日志断言必须对 observability sidecar 友好：优先读取 `observability.request_logs`，若当前布局仍是 legacy 单库或 backfill 恢复到了只含 `main.request_logs` 的旧代码树，则自动回退到 `main.request_logs`。
 - 修复合入后，必须通过 `workflow_dispatch(head_sha=a37b6be54db2f114a0987293c9eca9e1281f21f1)` 成功回填 `v0.36.7` release。
-- 当 release workflow 回填到不包含新 helper 的旧提交时，job 必须先恢复缺失 helper，再执行 smoke gate。
+- 当 release workflow 回填到不包含新 helper 的旧提交时，job 必须先恢复缺失 helper，再执行 smoke gate；恢复列表至少要覆盖 `release-mcp-billing-smoke.sh` 与新增的 SQLite 校验 helper。
 
 ### SHOULD
 
@@ -170,6 +171,7 @@ None
 - 2026-04-07: 创建 spec，冻结“只修 release harness、不改 PR 门禁、回填 `v0.36.7`”的执行合同。
 - 2026-04-07: 完成脚本抽离、动态端口与失败诊断加固；本地占口失败演练与 shared testbox 完整 smoke rehearsal 已通过，等待 PR/merge/backfill。
 - 2026-04-07: 回填 run 暴露旧提交缺失新 smoke helper 的兼容性问题；补充 workflow 在 backfill checkout 后自动恢复 helper 的约束与验证。
+- 2026-06-15: smoke 脚本的 SQLite 断言改为 sidecar-aware，并把 backfill helper 恢复扩展到新增的 SQLite 校验 helper，避免 `request_logs` 读错数据库布局。
 
 ## 参考（References）
 
