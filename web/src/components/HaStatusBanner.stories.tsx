@@ -414,7 +414,7 @@ export const SourceDialogSubmitFailure: Story = {
     const text = documentRoot.body.textContent ?? ''
     for (const expected of [
       translations.zh.admin.systemSettings.ha.sourceApplyFailedTitle,
-      translations.zh.admin.systemSettings.ha.sourceSubmitFailedDescription,
+      translations.zh.admin.systemSettings.ha.sourceSubmitFailedDirectDescription,
       translations.zh.admin.systemSettings.ha.sourceTechnicalDetailsLabel,
     ]) {
       if (!text.includes(expected)) {

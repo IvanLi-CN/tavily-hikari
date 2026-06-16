@@ -35,7 +35,7 @@
 ## Visual Evidence
 
 - Storybook canvas: `Components/HaStatusBanner/SourceDialogSubmitFailure`
-  - evidence_note: The submit-failure story now actively triggers the failed `保存并切换 EdgeOne 到此源站` path and renders the formal destructive alert with the friendly apply-failure title, operator guidance, and collapsed technical-details disclosure. The captured dialog screenshot is stored at `docs/specs/f36b4-edgeone-active-standby-ha/assets/ha-source-dialog-submit-failure-alert.png`, measured `672x922`, and bound to `7dfaaa12cc75a1063ea2852126b2f8f14f761de8`. `trim_whitespace.py` ran but returned `ambiguous_border`, so the final evidence intentionally kept the original crop.
+  - evidence_note: The submit-failure story now actively triggers the failed `保存并切换 EdgeOne 到此源站` path and renders the formal destructive alert with a stronger clay-native error peak, mode-specific recovery guidance, auto-focus on the failure region, a clearer raw-response disclosure, and de-emphasized footer actions while the failure is present. The captured dialog screenshot is stored at `docs/specs/f36b4-edgeone-active-standby-ha/assets/ha-source-dialog-submit-failure-alert.png`, measured `672x952`, and bound to `60388584700da855bb1e015402aab9baa4951314`. `trim_whitespace.py` re-ran and reported `no_meaningful_whitespace`, so the original crop remained canonical.
 
 ## Validation
 
