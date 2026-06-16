@@ -54,7 +54,12 @@ async fn post_validate_api_keys(
         return Ok((StatusCode::BAD_REQUEST, body).into_response());
     }
 
-    let region_by_ip = resolve_registration_regions(&state.api_key_ip_geo_origin, &geo_lookup_ips).await;
+    let region_by_ip = resolve_registration_regions(
+        &state.api_key_ip_geo_origin,
+        &geo_lookup_ips,
+        state.proxy.backend_time(),
+    )
+    .await;
     let mut results = Vec::<ValidateKeyResult>::with_capacity(trimmed.len());
     let mut pending = Vec::<(usize, String, Option<String>, Option<String>)>::new();
     let mut seen = HashSet::<String>::new();
@@ -205,9 +210,13 @@ async fn create_api_key(
         .as_deref()
         .and_then(normalize_global_registration_ip);
     let registration_region = if let Some(registration_ip) = registration_ip.as_ref() {
-        resolve_registration_regions(&state.api_key_ip_geo_origin, std::slice::from_ref(registration_ip))
-            .await
-            .remove(registration_ip)
+        resolve_registration_regions(
+            &state.api_key_ip_geo_origin,
+            std::slice::from_ref(registration_ip),
+            state.proxy.backend_time(),
+        )
+        .await
+        .remove(registration_ip)
     } else {
         None
     };
@@ -313,7 +322,12 @@ async fn create_api_keys_batch(
 
     let mut results = Vec::with_capacity(trimmed.len());
     let mut seen = HashSet::<String>::new();
-    let region_by_ip = resolve_registration_regions(&state.api_key_ip_geo_origin, &geo_lookup_ips).await;
+    let region_by_ip = resolve_registration_regions(
+        &state.api_key_ip_geo_origin,
+        &geo_lookup_ips,
+        state.proxy.backend_time(),
+    )
+    .await;
     let maintenance_actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
 
     for item in trimmed {

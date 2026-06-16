@@ -414,7 +414,11 @@ async fn post_admin_ha_promote(
         .await;
     let (status, audit_entries) = result.map_err(|err| (StatusCode::CONFLICT, err))?;
     let operation = tavily_hikari::HaFailoverOperationRecord {
-        operation_id: format!("promote-{}-{}", status.node_id, Utc::now().timestamp()),
+        operation_id: format!(
+            "promote-{}-{}",
+            status.node_id,
+            state.proxy.backend_time().now_ts()
+        ),
         operation_kind: "promote".to_string(),
         target_node_id: Some(status.node_id.clone()),
         from_origin: before.edgeone_origin,

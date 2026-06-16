@@ -63,7 +63,7 @@ impl TavilyProxy {
         &self,
         token_id: &str,
     ) -> Result<Option<TokenQuotaVerdict>, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let verdict = self.token_quota.snapshot_for_token(token_id, now).await?;
         Ok(Some(verdict))
     }
@@ -424,7 +424,7 @@ impl TavilyProxy {
                     status_after: after.status,
                     quarantine_before: before.quarantined,
                     quarantine_after: after.quarantined,
-                    created_at: Utc::now().timestamp(),
+                    created_at: self.backend_time.now_ts(),
                 })
                 .await?;
         }
@@ -444,7 +444,8 @@ impl TavilyProxy {
             let waiter = {
                 let mut cache = self.summary_windows_cache.lock().await;
                 if let Some(cached) = cache.cached.as_ref()
-                    && cached.generated_at.elapsed() < SUMMARY_WINDOWS_CACHE_TTL
+                    && self.backend_time.instant_now().saturating_duration_since(cached.generated_at)
+                        < SUMMARY_WINDOWS_CACHE_TTL
                 {
                     return Ok(cached.value.clone());
                 }
@@ -462,12 +463,12 @@ impl TavilyProxy {
             }
 
             let mut load_guard = SummaryWindowsLoadGuard::new(self.summary_windows_cache.clone());
-            let summary = self.summary_windows_at(Local::now()).await;
+            let summary = self.summary_windows_at(self.backend_time.local_now()).await;
             let mut cache = self.summary_windows_cache.lock().await;
             cache.loading = false;
             if let Ok(value) = summary.as_ref() {
                 cache.cached = Some(CachedSummaryWindows {
-                    generated_at: Instant::now(),
+                    generated_at: self.backend_time.instant_now(),
                     value: value.clone(),
                 });
             }
@@ -486,7 +487,11 @@ impl TavilyProxy {
             let waiter = {
                 let mut cache = self.dashboard_hourly_request_window_cache.lock().await;
                 if let Some(cached) = cache.cached.as_ref()
-                    && cached.generated_at.elapsed() < DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL
+                    && self
+                        .backend_time
+                        .instant_now()
+                        .saturating_duration_since(cached.generated_at)
+                        < DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL
                 {
                     return Ok(cached.value.clone());
                 }
@@ -506,12 +511,14 @@ impl TavilyProxy {
             let mut load_guard = DashboardHourlyRequestWindowLoadGuard::new(
                 self.dashboard_hourly_request_window_cache.clone(),
             );
-            let window = self.dashboard_hourly_request_window_at(Utc::now()).await;
+            let window = self
+                .dashboard_hourly_request_window_at(self.backend_time.now_utc())
+                .await;
             let mut cache = self.dashboard_hourly_request_window_cache.lock().await;
             cache.loading = false;
             if let Ok(value) = window.as_ref() {
                 cache.cached = Some(CachedDashboardHourlyRequestWindow {
-                    generated_at: Instant::now(),
+                    generated_at: self.backend_time.instant_now(),
                     value: value.clone(),
                 });
             }
@@ -584,7 +591,7 @@ impl TavilyProxy {
         &self,
         daily_window: Option<TimeRangeUtc>,
     ) -> Result<SuccessBreakdown, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
         let resolved_daily_window =
             daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
@@ -603,7 +610,7 @@ impl TavilyProxy {
         token_id: &str,
         daily_window: Option<TimeRangeUtc>,
     ) -> Result<(i64, i64, i64), ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
         let resolved_daily_window =
             daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
@@ -637,13 +644,13 @@ impl TavilyProxy {
         proxy_session_id: &str,
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
         self.key_store
-            .get_active_mcp_session(proxy_session_id, Utc::now().timestamp())
+            .get_active_mcp_session(proxy_session_id, self.backend_time.now_ts())
             .await
     }
 
     pub async fn token_has_active_mcp_session(&self, token_id: &str) -> Result<bool, ProxyError> {
         self.key_store
-            .has_active_mcp_sessions_for_token(token_id, Utc::now().timestamp())
+            .has_active_mcp_sessions_for_token(token_id, self.backend_time.now_ts())
             .await
     }
 
@@ -652,7 +659,7 @@ impl TavilyProxy {
         token_id: &str,
     ) -> Result<bool, ProxyError> {
         self.key_store
-            .has_active_non_rebalance_mcp_session_for_token(token_id, Utc::now().timestamp())
+            .has_active_non_rebalance_mcp_session_for_token(token_id, self.backend_time.now_ts())
             .await
     }
 
@@ -661,7 +668,7 @@ impl TavilyProxy {
         token_id: &str,
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
         self.key_store
-            .get_latest_active_mcp_session_for_token(token_id, Utc::now().timestamp())
+            .get_latest_active_mcp_session_for_token(token_id, self.backend_time.now_ts())
             .await
     }
 
@@ -674,7 +681,7 @@ impl TavilyProxy {
         protocol_version: Option<&str>,
         last_event_id: Option<&str>,
     ) -> Result<String, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let proxy_session_id = nanoid!(24);
         self.key_store
             .create_or_replace_mcp_session(&McpSessionBinding {
@@ -709,7 +716,7 @@ impl TavilyProxy {
         protocol_version: Option<&str>,
         last_event_id: Option<&str>,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .touch_mcp_session(
                 proxy_session_id,
@@ -727,7 +734,7 @@ impl TavilyProxy {
         upstream_session_id: &str,
         protocol_version: Option<&str>,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .update_mcp_session_upstream_identity(
                 proxy_session_id,
@@ -745,7 +752,7 @@ impl TavilyProxy {
         rate_limited_until: i64,
         reason: Option<&str>,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .mark_mcp_session_rate_limited(
                 proxy_session_id,
@@ -761,7 +768,7 @@ impl TavilyProxy {
         &self,
         proxy_session_id: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .clear_mcp_session_rate_limit(proxy_session_id, now, now + MCP_SESSION_RETENTION_SECS)
             .await

@@ -1,4 +1,5 @@
 use crate::analysis::*;
+use crate::backend_time::BackendTime;
 use crate::models::*;
 use crate::*;
 use sqlx::Connection;
@@ -41,6 +42,7 @@ pub(crate) fn sqlite_transient_write_retry_delay(attempt: usize) -> Duration {
 }
 
 pub(crate) async fn sleep_before_sqlite_transient_write_retry(
+    backend_time: &BackendTime,
     operation: &str,
     attempt: usize,
     deadline: Instant,
@@ -50,7 +52,7 @@ pub(crate) async fn sleep_before_sqlite_transient_write_retry(
         return false;
     }
 
-    let now = Instant::now();
+    let now = backend_time.instant_now();
     if now >= deadline {
         return false;
     }
@@ -62,7 +64,7 @@ pub(crate) async fn sleep_before_sqlite_transient_write_retry(
         attempt + 1,
         backoff.as_millis()
     );
-    tokio::time::sleep(backoff).await;
+    backend_time.sleep(backoff).await;
     true
 }
 
@@ -473,6 +475,46 @@ pub(crate) async fn begin_immediate_sqlite_connection(
         return Err(ProxyError::Database(err));
     }
     Ok(conn)
+}
+
+pub(crate) async fn begin_immediate_sqlite_connection_with_retry(
+    pool: &SqlitePool,
+    backend_time: &BackendTime,
+    operation: &str,
+    retry_window: Duration,
+) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
+    let deadline = backend_time.instant_now() + retry_window;
+    let mut attempt = 0;
+    loop {
+        match begin_immediate_sqlite_connection(pool).await {
+            Ok(conn) => return Ok(conn),
+            Err(err)
+                if sleep_before_sqlite_transient_write_retry(
+                    backend_time,
+                    operation,
+                    attempt,
+                    deadline,
+                    &err,
+                )
+                .await =>
+            {
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+pub(crate) async fn begin_immediate_sqlite_connection_for_monthly_quota_rebase(
+    pool: &SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
+    begin_immediate_sqlite_connection_with_retry(
+        pool,
+        &BackendTime::system(),
+        "rebase_current_month_business_quota_with_pool",
+        Duration::from_secs(5),
+    )
+    .await
 }
 
 pub(crate) async fn begin_read_snapshot_sqlite_connection(
@@ -1112,6 +1154,7 @@ async fn backfill_request_log_request_kinds_with_pool(
     dry_run: bool,
     migration_state_key: Option<&str>,
     upper_bound_id: Option<i64>,
+    backend_time: &BackendTime,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
@@ -1178,10 +1221,11 @@ async fn backfill_request_log_request_kinds_with_pool(
                     Err(err) => {
                         let err = ProxyError::Database(err);
                         if is_transient_sqlite_write_error(&err) {
-                            tokio::time::sleep(Duration::from_millis(
-                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                            ))
-                            .await;
+                            backend_time
+                                .sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
                             continue;
                         }
                         return Err(err);
@@ -1218,7 +1262,7 @@ async fn backfill_request_log_request_kinds_with_pool(
                             &mut tx,
                             migration_state_key,
                             &current_request_kind_canonical_migration_running_state(
-                                Utc::now().timestamp(),
+                                backend_time.now_ts(),
                             )
                             .as_meta_value(),
                         )
@@ -1234,10 +1278,11 @@ async fn backfill_request_log_request_kinds_with_pool(
                         Err(err) => {
                             let err = ProxyError::Database(err);
                             if is_transient_sqlite_write_error(&err) {
-                                tokio::time::sleep(Duration::from_millis(
-                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                                ))
-                                .await;
+                                backend_time
+                                    .sleep(Duration::from_millis(
+                                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                    ))
+                                    .await;
                                 continue;
                             }
                             return Err(err);
@@ -1247,10 +1292,11 @@ async fn backfill_request_log_request_kinds_with_pool(
                         let retry = is_transient_sqlite_write_error(&err);
                         let _ = tx.rollback().await;
                         if retry {
-                            tokio::time::sleep(Duration::from_millis(
-                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                            ))
-                            .await;
+                            backend_time
+                                .sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
                             continue;
                         }
                         return Err(err);
@@ -1283,6 +1329,7 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
     dry_run: bool,
     migration_state_key: Option<&str>,
     upper_bound_id: Option<i64>,
+    backend_time: &BackendTime,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
@@ -1351,10 +1398,11 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                     Err(err) => {
                         let err = ProxyError::Database(err);
                         if is_transient_sqlite_write_error(&err) {
-                            tokio::time::sleep(Duration::from_millis(
-                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                            ))
-                            .await;
+                            backend_time
+                                .sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
                             continue;
                         }
                         return Err(err);
@@ -1391,7 +1439,7 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                             &mut tx,
                             migration_state_key,
                             &current_request_kind_canonical_migration_running_state(
-                                Utc::now().timestamp(),
+                                backend_time.now_ts(),
                             )
                             .as_meta_value(),
                         )
@@ -1407,10 +1455,11 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                         Err(err) => {
                             let err = ProxyError::Database(err);
                             if is_transient_sqlite_write_error(&err) {
-                                tokio::time::sleep(Duration::from_millis(
-                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                                ))
-                                .await;
+                                backend_time
+                                    .sleep(Duration::from_millis(
+                                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                    ))
+                                    .await;
                                 continue;
                             }
                             return Err(err);
@@ -1420,10 +1469,11 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                         let retry = is_transient_sqlite_write_error(&err);
                         let _ = tx.rollback().await;
                         if retry {
-                            tokio::time::sleep(Duration::from_millis(
-                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                            ))
-                            .await;
+                            backend_time
+                                .sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
                             continue;
                         }
                         return Err(err);
@@ -1456,6 +1506,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
     dry_run: bool,
     migration_state_key: Option<&str>,
     upper_bounds: Option<RequestKindCanonicalBackfillUpperBounds>,
+    backend_time: &BackendTime,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let batch_size = batch_size.max(1);
     let request_logs = backfill_request_log_request_kinds_with_pool(
@@ -1464,6 +1515,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
         dry_run,
         migration_state_key,
         upper_bounds.map(|upper_bounds| upper_bounds.request_logs),
+        backend_time,
     )
     .await?;
     let auth_token_logs = backfill_auth_token_log_request_kinds_with_pool(
@@ -1472,6 +1524,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
         dry_run,
         migration_state_key,
         upper_bounds.map(|upper_bounds| upper_bounds.auth_token_logs),
+        backend_time,
     )
     .await?;
 
@@ -1486,6 +1539,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
 pub(crate) async fn run_request_user_id_backfill_with_pool(
     pool: &SqlitePool,
     batch_size: i64,
+    backend_time: &BackendTime,
 ) -> Result<RequestUserIdBackfillReport, ProxyError> {
     let batch_size = batch_size.max(1);
     let cursor_before =
@@ -1494,7 +1548,8 @@ pub(crate) async fn run_request_user_id_backfill_with_pool(
     let upper_bound = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM request_logs")
         .fetch_one(pool)
         .await?;
-    let stable_before = Utc::now()
+    let stable_before = backend_time
+        .now_utc()
         .timestamp()
         .saturating_sub(REQUEST_USER_ID_BACKFILL_STABILITY_GRACE_SECS);
 
@@ -1568,10 +1623,11 @@ pub(crate) async fn run_request_user_id_backfill_with_pool(
             Err(err) => {
                 let err = ProxyError::Database(err);
                 if is_transient_sqlite_write_error(&err) {
-                    tokio::time::sleep(Duration::from_millis(
-                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                    ))
-                    .await;
+                    backend_time
+                        .sleep(Duration::from_millis(
+                            REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                        ))
+                        .await;
                     continue;
                 }
                 return Err(err);
@@ -1618,10 +1674,11 @@ pub(crate) async fn run_request_user_id_backfill_with_pool(
                 Err(err) => {
                     let err = ProxyError::Database(err);
                     if is_transient_sqlite_write_error(&err) {
-                        tokio::time::sleep(Duration::from_millis(
-                            REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                        ))
-                        .await;
+                        backend_time
+                            .sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
                         continue;
                     }
                     return Err(err);
@@ -1631,10 +1688,11 @@ pub(crate) async fn run_request_user_id_backfill_with_pool(
                 let retry = is_transient_sqlite_write_error(&err);
                 let _ = tx.rollback().await;
                 if retry {
-                    tokio::time::sleep(Duration::from_millis(
-                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                    ))
-                    .await;
+                    backend_time
+                        .sleep(Duration::from_millis(
+                            REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                        ))
+                        .await;
                     continue;
                 }
                 return Err(err);
@@ -1655,13 +1713,13 @@ pub(crate) async fn run_request_user_id_backfill_with_pool(
 #[derive(Debug, Clone)]
 pub(crate) struct RequestLogsCatalogCacheEntry {
     value: RequestLogsCatalog,
-    expires_at: Instant,
+    expires_at: i64,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct UserDebugInfoSharedCacheEntry {
     shared: bool,
-    expires_at: Instant,
+    expires_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1939,6 +1997,7 @@ pub(crate) struct KeyStore {
     pub(crate) database_path: String,
     pub(crate) observability_database_path: Option<String>,
     pub(crate) pool: SqlitePool,
+    pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:
         RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
@@ -1973,6 +2032,7 @@ include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_dashboard_month_series.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_request_logs_summary_windows.rs");
+include!("key_store_meta.rs");
 include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");

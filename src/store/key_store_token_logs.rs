@@ -229,7 +229,7 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
     ) -> Result<TokenSummary, ProxyError> {
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let end_exclusive = until.unwrap_or(now_ts);
         if end_exclusive <= since {
             return Ok(TokenSummary {
@@ -1146,7 +1146,7 @@ impl KeyStore {
         hours: i64,
     ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
         let hours = hours.clamp(1, 168); // up to 7 days
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let current_bucket = now_ts - (now_ts % SECS_PER_HOUR);
         let window_start = current_bucket - (hours - 1) * SECS_PER_HOUR;
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
@@ -1304,7 +1304,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn reset_monthly(&self) -> Result<(), ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
 
         let now_ts = now.timestamp();
@@ -1329,7 +1329,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn mark_quota_exhausted(&self, key: &str) -> Result<bool, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
             UPDATE api_keys
@@ -1349,7 +1349,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn restore_active_status(&self, key: &str) -> Result<bool, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
             UPDATE api_keys
@@ -1374,7 +1374,7 @@ impl KeyStore {
         reason_summary: &str,
         reason_detail: &str,
     ) -> Result<bool, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let quarantine_id = nanoid!(12);
         let insert_result = sqlx::query(
             r#"
@@ -1420,7 +1420,7 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<bool, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
             UPDATE api_key_quarantines
@@ -1552,7 +1552,9 @@ impl KeyStore {
                         "api key upsert transient sqlite error (api_key_preview={}, attempt={}, backoff={}ms): {}",
                         key_preview, retry_idx, backoff_ms, err
                     );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    self.backend_time
+                        .sleep(Duration::from_millis(backoff_ms))
+                        .await;
                 }
                 Err(err) => return Err(err),
             }
@@ -1569,7 +1571,7 @@ impl KeyStore {
         hint_only_proxy_affinity: bool,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
         let mut tx = self.pool.begin().await?;
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
 
         let operation_result: Result<(String, ApiKeyUpsertStatus), ProxyError> = async {
             if let Some((id, deleted_at, existing_group, existing_registration_ip, existing_registration_region)) =
@@ -1712,7 +1714,7 @@ impl KeyStore {
 
     // Admin ops: soft-delete by ID (mark deleted_at)
     pub(crate) async fn soft_delete_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
             .bind(now)
             .bind(key_id)
@@ -1722,7 +1724,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn disable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             UPDATE api_keys
@@ -1739,7 +1741,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn enable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             UPDATE api_keys

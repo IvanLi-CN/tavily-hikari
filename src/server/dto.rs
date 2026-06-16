@@ -1271,7 +1271,7 @@ async fn get_key_metrics(
         since
     } else {
         // fallback by period
-        let now = chrono::Local::now();
+        let now = state.proxy.backend_time().local_now();
         let local_midnight_ts = |date: chrono::NaiveDate| -> i64 {
             let naive = date.and_hms_opt(0, 0, 0).expect("valid midnight");
             match chrono::Local.from_local_datetime(&naive) {
@@ -1647,16 +1647,17 @@ async fn get_token_metrics(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let now = state.proxy.backend_time().now_utc();
     let since = q
         .since
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_since(q.period.as_deref()));
+        .unwrap_or_else(|| default_since_at(now, q.period.as_deref()));
     let until = q
         .until
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_until(q.period.as_deref(), since));
+        .unwrap_or_else(|| default_until_at(now, q.period.as_deref(), since));
 
     state
         .proxy
@@ -1797,16 +1798,17 @@ async fn get_token_logs_page(
     }
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(20).clamp(1, 200);
+    let now = state.proxy.backend_time().now_utc();
     let since = q
         .since
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_since(Some("month")));
+        .unwrap_or_else(|| default_since_at(now, Some("month")));
     let until = q
         .until
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_until(Some("month"), since));
+        .unwrap_or_else(|| default_until_at(now, Some("month"), since));
     if until <= since {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1924,16 +1926,17 @@ async fn get_token_logs_list(
         return Err(StatusCode::FORBIDDEN);
     }
     let page_size = q.limit.unwrap_or(20).clamp(1, 200);
+    let now = state.proxy.backend_time().now_utc();
     let since = q
         .since
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_since(Some("month")));
+        .unwrap_or_else(|| default_since_at(now, Some("month")));
     let until = q
         .until
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_until(Some("month"), since));
+        .unwrap_or_else(|| default_until_at(now, Some("month"), since));
     if until <= since {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1994,16 +1997,17 @@ async fn get_token_logs_catalog(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let now = state.proxy.backend_time().now_utc();
     let since = q
         .since
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_since(Some("month")));
+        .unwrap_or_else(|| default_since_at(now, Some("month")));
     let until = q
         .until
         .as_deref()
         .and_then(parse_iso_timestamp)
-        .unwrap_or_else(|| default_until(Some("month"), since));
+        .unwrap_or_else(|| default_until_at(now, Some("month"), since));
     if until <= since {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -2140,7 +2144,7 @@ async fn get_token_usage_series(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let until = q
         .until
         .as_deref()
@@ -2197,7 +2201,7 @@ async fn get_token_leaderboard(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let now = Utc::now();
+    let now = state.proxy.backend_time().now_utc();
     let day_since = start_of_day_dt(now).timestamp();
     let month_since = start_of_month_dt(now).timestamp();
 

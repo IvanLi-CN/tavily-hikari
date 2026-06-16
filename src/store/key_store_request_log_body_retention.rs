@@ -64,7 +64,7 @@ impl KeyStore {
         threshold_percent: i64,
         additional_usage: i64,
     ) -> Result<bool, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let current_hour = now_ts - now_ts.rem_euclid(SECS_PER_HOUR);
         let rolling_hour_start = current_hour.saturating_sub(23 * SECS_PER_HOUR);
@@ -179,7 +179,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
-        let created_at = Utc::now().timestamp();
+        let created_at = self.backend_time.now_ts();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
         let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
             if entry.outcome == OUTCOME_ERROR {

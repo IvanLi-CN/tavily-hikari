@@ -515,7 +515,7 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
             {
                 eprintln!("HA standby sync failed: {err}");
             }
-            tokio::time::sleep(interval).await;
+            state.proxy.backend_time().sleep(interval).await;
         }
     });
 }
@@ -671,7 +671,11 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
     }
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            state
+                .proxy
+                .backend_time()
+                .sleep(std::time::Duration::from_secs(5))
+                .await;
             match state.ha.refresh_authoritative_role().await {
                 Ok(status) => {
                     if let Err(err) = async {

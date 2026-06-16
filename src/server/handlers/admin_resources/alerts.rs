@@ -18,17 +18,14 @@ fn normalize_alert_type_filter(value: Option<&str>) -> Result<Option<&str>, Stat
 }
 
 fn resolve_alert_query_window(
+    now_ts: i64,
     since: Option<&str>,
     until: Option<&str>,
 ) -> Result<(Option<i64>, Option<i64>), StatusCode> {
     let mut parsed_since = parse_alert_timestamp_filter(since)?;
     let parsed_until = parse_alert_timestamp_filter(until)?;
     if parsed_since.is_none() && parsed_until.is_none() {
-        parsed_since = Some(
-            Utc::now()
-                .timestamp()
-                .saturating_sub(ALERTS_DEFAULT_WINDOW_HOURS * 3600),
-        );
+        parsed_since = Some(now_ts.saturating_sub(ALERTS_DEFAULT_WINDOW_HOURS * 3600));
     }
     if let (Some(since), Some(until)) = (parsed_since, parsed_until)
         && since > until
@@ -72,7 +69,11 @@ async fn get_alert_events(
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let alert_type = normalize_alert_type_filter(q.alert_type.as_deref())?;
-    let (since, until) = resolve_alert_query_window(q.since.as_deref(), q.until.as_deref())?;
+    let (since, until) = resolve_alert_query_window(
+        state.proxy.backend_time().now_ts(),
+        q.since.as_deref(),
+        q.until.as_deref(),
+    )?;
 
     state
         .proxy
@@ -110,7 +111,11 @@ async fn get_alert_groups(
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let alert_type = normalize_alert_type_filter(q.alert_type.as_deref())?;
-    let (since, until) = resolve_alert_query_window(q.since.as_deref(), q.until.as_deref())?;
+    let (since, until) = resolve_alert_query_window(
+        state.proxy.backend_time().now_ts(),
+        q.since.as_deref(),
+        q.until.as_deref(),
+    )?;
 
     state
         .proxy

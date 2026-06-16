@@ -387,7 +387,7 @@ impl KeyStore {
         let recharge_credits = self
             .sum_linuxdo_credit_recharge_entitlements_for_month(
                 user_id,
-                start_of_local_month_utc_ts(Local::now()),
+                start_of_local_month_utc_ts(self.backend_time.local_now()),
             )
             .await?;
         let effective = build_account_quota_resolution_with_recharge(
@@ -410,7 +410,7 @@ impl KeyStore {
             return Ok(());
         }
 
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         if self.fetch_latest_request_rate_limit_snapshot().await?.is_none() {
             let configured_limit = self.get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1).await?;
             let coverage_start = self

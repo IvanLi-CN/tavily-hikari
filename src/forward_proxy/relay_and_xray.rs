@@ -125,16 +125,66 @@ pub struct ForwardProxyClientPool {
 }
 
 impl ForwardProxyClientPool {
-    pub fn new() -> Result<Self, ProxyError> {
-        let direct_client = Client::builder()
+    fn build_direct_client() -> Result<Client, ProxyError> {
+        Client::builder()
             .pool_idle_timeout(Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(ProxyError::Http)?;
+            .map_err(ProxyError::Http)
+    }
+
+    #[cfg(test)]
+    fn process_shared_direct_client() -> Result<Client, ProxyError> {
+        static DIRECT_CLIENT: std::sync::LazyLock<Result<Client, String>> =
+            std::sync::LazyLock::new(|| {
+                ForwardProxyClientPool::build_direct_client().map_err(|err| err.to_string())
+            });
+
+        DIRECT_CLIENT
+            .as_ref()
+            .map(|client| client.clone())
+            .map_err(|message| ProxyError::Other(message.clone()))
+    }
+
+    #[cfg(not(test))]
+    fn process_shared_direct_client() -> Result<Client, ProxyError> {
+        Self::build_direct_client()
+    }
+
+    #[cfg(test)]
+    fn process_shared_proxy_clients() -> Arc<RwLock<HashMap<String, Client>>> {
+        static CLIENTS: std::sync::OnceLock<Arc<RwLock<HashMap<String, Client>>>> =
+            std::sync::OnceLock::new();
+        CLIENTS
+            .get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
+            .clone()
+    }
+
+    #[cfg(not(test))]
+    fn process_shared_proxy_clients() -> Arc<RwLock<HashMap<String, Client>>> {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
+
+    #[cfg(test)]
+    fn process_shared_egress_clients() -> Arc<RwLock<HashMap<String, Client>>> {
+        static CLIENTS: std::sync::OnceLock<Arc<RwLock<HashMap<String, Client>>>> =
+            std::sync::OnceLock::new();
+        CLIENTS
+            .get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
+            .clone()
+    }
+
+    #[cfg(not(test))]
+    fn process_shared_egress_clients() -> Arc<RwLock<HashMap<String, Client>>> {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
+
+    pub fn new() -> Result<Self, ProxyError> {
+        let direct_client = Self::process_shared_direct_client()?;
         Ok(Self {
             direct_client,
-            clients: Arc::new(RwLock::new(HashMap::new())),
-            egress_clients: Arc::new(RwLock::new(HashMap::new())),
+            clients: Self::process_shared_proxy_clients(),
+            egress_clients: Self::process_shared_egress_clients(),
         })
     }
 
@@ -534,10 +584,11 @@ pub struct XraySupervisorReadinessSnapshot {
     pub active_endpoint_handles: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct XraySupervisor {
     pub binary: String,
     pub runtime_dir: PathBuf,
+    backend_time: BackendTime,
     shared: Option<SharedXrayProcess>,
     active_endpoint_handles: HashMap<String, String>,
     handles: HashMap<String, Arc<SharedXrayRelayHandle>>,
@@ -548,9 +599,14 @@ pub struct XraySupervisor {
 
 impl XraySupervisor {
     pub fn new(binary: String, runtime_dir: PathBuf) -> Self {
+        Self::new_with_time(binary, runtime_dir, BackendTime::system())
+    }
+
+    pub fn new_with_time(binary: String, runtime_dir: PathBuf, backend_time: BackendTime) -> Self {
         Self {
             binary,
             runtime_dir,
+            backend_time,
             shared: None,
             active_endpoint_handles: HashMap::new(),
             handles: HashMap::new(),
@@ -924,10 +980,12 @@ impl XraySupervisor {
             self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
-        if let Err(err) = wait_for_local_socks_ready(
-            local_port,
-            Duration::from_millis(XRAY_LOCAL_SOCKS_READY_TIMEOUT_MS),
-        )
+        if let Err(err) =
+            wait_for_local_socks_ready(
+                &self.backend_time,
+                local_port,
+                Duration::from_millis(XRAY_LOCAL_SOCKS_READY_TIMEOUT_MS),
+            )
         .await
         {
             let rule_cleanup = self
@@ -1083,11 +1141,13 @@ impl XraySupervisor {
         // cannot bind the chosen API port between allocation and exec.
         api_port_reservation.release();
 
-        if let Err(err) = wait_for_xray_api_ready(
-            &mut child,
-            api_port,
-            Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
-        )
+        if let Err(err) =
+            wait_for_xray_api_ready(
+                &self.backend_time,
+                &mut child,
+                api_port,
+                Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
+            )
         .await
         {
             let _ = terminate_child_process(&mut child, Duration::from_secs(2)).await;

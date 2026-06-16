@@ -720,7 +720,7 @@ impl KeyStore {
         .await?;
 
         if legacy_deleted.is_some() {
-            let now = Utc::now().timestamp();
+            let now = self.backend_time.now_ts();
             sqlx::query(
                 r#"UPDATE api_keys
                    SET deleted_at = COALESCE(status_changed_at, ?)

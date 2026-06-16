@@ -1,5 +1,6 @@
 mod admin_token_filters;
 mod analysis;
+mod backend_time;
 mod forward_proxy;
 mod ha;
 mod linuxdo_credit_recharge;
@@ -25,6 +26,7 @@ pub use analysis::{
     token_request_kind_billing_group_for_request, token_request_kind_billing_group_for_request_log,
     token_request_kind_billing_group_for_token_log, token_request_kind_protocol_group,
 };
+pub use backend_time::*;
 pub use forward_proxy::{
     ForwardProxyErrorStatsResponse, ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse,
     ForwardProxyLiveStatsResponse, ForwardProxyNodeStateUpdateResponse,
@@ -47,7 +49,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -65,6 +67,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+use tokio::time::Instant;
 use url::form_urlencoded;
 
 #[cfg(test)]
@@ -262,10 +265,23 @@ pub async fn run_request_logs_gc_once(
     database_path: &str,
     options: RequestLogsGcOptions,
 ) -> Result<RequestLogsGcReport, ProxyError> {
-    let key_store = crate::store::KeyStore::open_for_request_logs_gc(database_path).await?;
+    run_request_logs_gc_once_with_time(database_path, options, BackendTime::system()).await
+}
+
+pub(crate) async fn run_request_logs_gc_once_with_time(
+    database_path: &str,
+    options: RequestLogsGcOptions,
+    backend_time: BackendTime,
+) -> Result<RequestLogsGcReport, ProxyError> {
+    let key_store =
+        crate::store::KeyStore::open_for_request_logs_gc_with_time(database_path, backend_time)
+            .await?;
     let settings = key_store.get_system_settings().await?;
     let retention_days = settings.request_log_retention.max_log_retention_days;
-    let threshold = configured_request_logs_retention_threshold_utc_ts(retention_days);
+    let threshold = configured_request_logs_retention_threshold_utc_ts_at(
+        retention_days,
+        key_store.backend_time.local_now(),
+    );
     key_store
         .delete_old_request_logs_bounded(
             threshold,
@@ -877,8 +893,16 @@ pub async fn run_request_kind_canonical_backfill(
     dry_run: bool,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let pool = store::open_sqlite_pool(database_path, true, false).await?;
-    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None, None)
-        .await
+    let backend_time = BackendTime::system();
+    store::run_request_kind_canonical_backfill_with_pool(
+        &pool,
+        batch_size,
+        dry_run,
+        None,
+        None,
+        &backend_time,
+    )
+    .await
 }
 
 pub async fn run_request_user_id_backfill(
@@ -886,7 +910,8 @@ pub async fn run_request_user_id_backfill(
     batch_size: i64,
 ) -> Result<RequestUserIdBackfillReport, ProxyError> {
     let pool = store::open_sqlite_pool(database_path, true, false).await?;
-    store::run_request_user_id_backfill_with_pool(&pool, batch_size).await
+    let backend_time = BackendTime::system();
+    store::run_request_user_id_backfill_with_pool(&pool, batch_size, &backend_time).await
 }
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
@@ -1546,7 +1571,11 @@ fn format_registration_region(country: &str, subdivision: &str, city: &str) -> O
     }
 }
 
-async fn resolve_registration_regions(origin: &str, ips: &[String]) -> HashMap<String, String> {
+async fn resolve_registration_regions(
+    origin: &str,
+    ips: &[String],
+    backend_time: &BackendTime,
+) -> HashMap<String, String> {
     let pending = ips
         .iter()
         .filter_map(|ip| normalize_ip_string(ip))
@@ -1581,14 +1610,14 @@ async fn resolve_registration_regions(origin: &str, ips: &[String]) -> HashMap<S
                         && attempt == 0 =>
                 {
                     attempt += 1;
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    backend_time.sleep(Duration::from_millis(250)).await;
                     continue;
                 }
                 Ok(response) => break response,
                 Err(err) if attempt == 0 => {
                     attempt += 1;
                     eprintln!("api key geo lookup request error, retrying once: {err}");
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    backend_time.sleep(Duration::from_millis(250)).await;
                 }
                 Err(err) => {
                     eprintln!("api key geo lookup request error: {err}");
@@ -1916,11 +1945,11 @@ impl QuotaSubject {
 #[derive(Debug, Clone)]
 struct TokenBindingCacheEntry {
     user_id: Option<String>,
-    expires_at: Instant,
+    expires_at: i64,
 }
 
 #[derive(Debug, Clone)]
 struct AccountQuotaResolutionCacheEntry {
     resolution: AccountQuotaResolution,
-    expires_at: Instant,
+    expires_at: i64,
 }

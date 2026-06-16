@@ -120,7 +120,7 @@ impl TavilyProxy {
         routing_subject_hash: Option<&str>,
         fallback_reason: Option<&str>,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .create_or_replace_mcp_session(&McpSessionBinding {
                 proxy_session_id: proxy_session_id.to_string(),
@@ -153,7 +153,7 @@ impl TavilyProxy {
         routing_subject_hash: Option<&str>,
         fallback_reason: Option<&str>,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .update_mcp_session_rebalance_metadata(
                 proxy_session_id,
@@ -965,7 +965,7 @@ impl TavilyProxy {
     /// Read-only snapshot of the current business quota usage for a token (hour/day/month).
     /// This does NOT increment any counters.
     pub async fn peek_token_quota(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         self.token_quota.snapshot_for_token(token_id, now).await
     }
 
@@ -975,7 +975,7 @@ impl TavilyProxy {
         &self,
         billing_subject: &str,
     ) -> Result<TokenQuotaVerdict, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         self.token_quota
             .snapshot_for_billing_subject(billing_subject, now)
             .await

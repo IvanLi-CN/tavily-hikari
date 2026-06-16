@@ -623,7 +623,7 @@ async fn get_linuxdo_callback(
             eprintln!("upsert linuxdo oauth account error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let sync_attempted_at = Utc::now().timestamp();
+    let sync_attempted_at = state.proxy.backend_time().now_ts();
     if let Err(err) = persist_linuxdo_refresh_token_best_effort(
         state.as_ref(),
         &provider_user_id,
@@ -1406,7 +1406,7 @@ async fn post_user_recharge_order(
     else {
         return Err((StatusCode::BAD_REQUEST, "invalid credits or months".to_string()));
     };
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let out_trade_no = format!("ldc_{}", nanoid!(24));
     let order_name = format!("Tavily Hikari {} credits x {} month(s)", payload.credits, payload.months);
     let mut order = tavily_hikari::LinuxDoCreditRechargeOrder {
@@ -1476,12 +1476,13 @@ async fn post_user_recharge_order(
             eprintln!("linuxdo credit create order transport error: {err}");
             let proxy = state.proxy.clone();
             let out_trade_no = out_trade_no.clone();
+            let failed_at = state.proxy.backend_time().now_ts();
             tokio::spawn(async move {
                 let _ = proxy
                     .fail_linuxdo_credit_recharge_order(
                         &out_trade_no,
                         "payment upstream transport error",
-                        Utc::now().timestamp(),
+                        failed_at,
                     )
                     .await;
             });
@@ -1496,7 +1497,7 @@ async fn post_user_recharge_order(
             .fail_linuxdo_credit_recharge_order(
                 &out_trade_no,
                 &format!("payment upstream returned {status}"),
-                Utc::now().timestamp(),
+                state.proxy.backend_time().now_ts(),
             )
             .await
             .ok();
@@ -1512,12 +1513,13 @@ async fn post_user_recharge_order(
                 let out_trade_no = out_trade_no.clone();
                 let message = message.to_string();
                 let stored_message = message.clone();
+                let failed_at = state.proxy.backend_time().now_ts();
                 tokio::spawn(async move {
                     let _ = proxy
                         .fail_linuxdo_credit_recharge_order(
                             &out_trade_no,
                             &stored_message,
-                            Utc::now().timestamp(),
+                            failed_at,
                         )
                         .await;
                 });
@@ -1526,11 +1528,15 @@ async fn post_user_recharge_order(
         )?;
     state
         .proxy
-        .set_linuxdo_credit_recharge_payment_url(&out_trade_no, &payment_url, Utc::now().timestamp())
+        .set_linuxdo_credit_recharge_payment_url(
+            &out_trade_no,
+            &payment_url,
+            state.proxy.backend_time().now_ts(),
+        )
         .await
         .map_err(|err| map_recharge_error("persist recharge payment url", err))?;
     order.payment_url = Some(payment_url.clone());
-    order.updated_at = Utc::now().timestamp();
+    order.updated_at = state.proxy.backend_time().now_ts();
     Ok(Json(CreateRechargeOrderResponse {
         order: RechargeOrderView::from(order),
         payment_url,
@@ -1587,7 +1593,7 @@ async fn get_linuxdo_credit_notify(
             out_trade_no,
             trade_no,
             &notify_payload,
-            Utc::now().timestamp(),
+            state.proxy.backend_time().now_ts(),
         )
         .await
         .map_err(|err| map_recharge_error("apply recharge notify", err))?;
@@ -1991,7 +1997,7 @@ async fn sse_user_dashboard(
                     yield Ok(Event::default().event("ping").data("{}"));
                 }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(5)).await;
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
@@ -2046,7 +2052,7 @@ async fn sse_user_token(
                     yield Ok(Event::default().event("ping").data("{}"));
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(2)).await;
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))

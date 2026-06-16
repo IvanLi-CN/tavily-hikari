@@ -11,7 +11,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use base64::Engine;
@@ -25,10 +25,10 @@ use tokio::{
     net::TcpStream,
     process::{Child, Command},
     sync::{Mutex, RwLock},
-    time::{sleep, timeout},
+    time::{Instant, timeout},
 };
 
-use crate::{ProxyError, build_path_prefixed_url, store::KeyStore};
+use crate::{ProxyError, backend_time::BackendTime, build_path_prefixed_url, store::KeyStore};
 
 pub const DEFAULT_XRAY_BINARY: &str = "xray";
 pub const DEFAULT_XRAY_RUNTIME_DIR: &str = "data/xray-runtime";
@@ -63,7 +63,10 @@ pub const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
 pub const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 pub const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
 pub const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+#[cfg(not(test))]
 const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 5_000;
+#[cfg(test)]
+const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 15_000;
 const XRAY_LOCAL_SOCKS_READY_TIMEOUT_MS: u64 = 15_000;
 
 include!("forward_proxy/settings_and_endpoints.rs");

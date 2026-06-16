@@ -370,8 +370,13 @@ pub fn resolve_client_ip_info(
 #[cfg(test)]
 mod client_ip_tests;
 mod dashboard_month_series;
+mod monthly_quota_rebase;
 
 pub use dashboard_month_series::{DashboardMonthSeries, DashboardMonthSeriesPoint};
+pub(crate) use monthly_quota_rebase::{
+    maybe_rebase_current_month_business_quota_with_pool,
+    rebase_current_month_business_quota_with_pool,
+};
 
 #[derive(Debug)]
 pub(crate) struct ApiKeyLease {
@@ -1995,7 +2000,7 @@ pub async fn rebase_current_month_business_quota(
     let pool = open_sqlite_pool(database_path, false, false).await?;
     rebase_current_month_business_quota_with_pool(
         &pool,
-        now,
+        move || now,
         META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
         true,
     )
@@ -2650,130 +2655,6 @@ pub(crate) async fn audit_business_quota_ledger_with_pool(
     result
 }
 
-pub(crate) async fn rebase_current_month_business_quota_with_pool(
-    pool: &SqlitePool,
-    now: chrono::DateTime<Utc>,
-    meta_key: &str,
-    update_meta: bool,
-) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
-    let mut conn = begin_immediate_sqlite_connection(pool).await?;
-    let locked_now = Utc::now();
-    let windows = BillingLedgerWindows::from_now(if locked_now > now { locked_now } else { now });
-
-    let result = async {
-        ensure_charged_subjects_are_valid(
-            &mut *conn,
-            windows.month_window_start,
-            windows.generated_at,
-        )
-        .await?;
-
-        let previous_rebase_month_start = get_meta_i64_executor(&mut *conn, meta_key).await?;
-        let (current_month_charged_rows, current_month_charged_credits) =
-            fetch_current_month_charged_totals(
-                &mut *conn,
-                windows.month_window_start,
-                windows.generated_at,
-            )
-            .await?;
-        let rebased_subjects = fetch_charged_ledger_window(
-            &mut *conn,
-            windows.month_window_start,
-            windows.generated_at,
-        )
-        .await?;
-
-        let cleared_token_rows =
-            sqlx::query("UPDATE auth_token_quota SET month_start = ?, month_count = 0")
-                .bind(windows.month_window_start)
-                .execute(&mut *conn)
-                .await?
-                .rows_affected() as i64;
-        let cleared_account_rows =
-            sqlx::query("UPDATE account_monthly_quota SET month_start = ?, month_count = 0")
-                .bind(windows.month_window_start)
-                .execute(&mut *conn)
-                .await?
-                .rows_affected() as i64;
-
-        let mut rebased_token_subjects = 0_usize;
-        let mut rebased_account_subjects = 0_usize;
-        for (billing_subject, total_credits, _row_count) in rebased_subjects.iter() {
-            match QuotaSubject::from_billing_subject(billing_subject)? {
-                QuotaSubject::Token(token_id) => {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO auth_token_quota (token_id, month_start, month_count)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(token_id) DO UPDATE SET
-                            month_start = excluded.month_start,
-                            month_count = excluded.month_count
-                        "#,
-                    )
-                    .bind(&token_id)
-                    .bind(windows.month_window_start)
-                    .bind(*total_credits)
-                    .execute(&mut *conn)
-                    .await?;
-                    rebased_token_subjects += 1;
-                }
-                QuotaSubject::Account(user_id) => {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO account_monthly_quota (user_id, month_start, month_count)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(user_id) DO UPDATE SET
-                            month_start = excluded.month_start,
-                            month_count = excluded.month_count
-                        "#,
-                    )
-                    .bind(&user_id)
-                    .bind(windows.month_window_start)
-                    .bind(*total_credits)
-                    .execute(&mut *conn)
-                    .await?;
-                    rebased_account_subjects += 1;
-                }
-            }
-        }
-
-        let meta_updated =
-            update_meta && previous_rebase_month_start != Some(windows.month_window_start);
-        if update_meta {
-            set_meta_i64_executor(&mut *conn, meta_key, windows.month_window_start).await?;
-        }
-
-        Ok(MonthlyQuotaRebaseReport {
-            current_month_start: windows.month_window_start,
-            previous_rebase_month_start,
-            current_month_charged_rows,
-            current_month_charged_credits,
-            rebased_subject_count: rebased_subjects.len(),
-            rebased_token_subjects,
-            rebased_account_subjects,
-            cleared_token_rows,
-            cleared_account_rows,
-            meta_updated,
-        })
-    }
-    .await;
-
-    let report = match result {
-        Ok(report) => report,
-        Err(err) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(err);
-        }
-    };
-
-    if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-        return Err(ProxyError::Database(err));
-    }
-
-    Ok(report)
-}
-
 pub(crate) fn local_date_start_utc_ts(
     date: chrono::NaiveDate,
     fallback_now: chrono::DateTime<Local>,
@@ -2925,16 +2806,21 @@ pub fn parse_explicit_today_window(
 
 #[allow(dead_code)]
 pub(crate) fn request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
-    let days = retention_days.max(REQUEST_LOGS_MIN_RETENTION_DAYS);
-    configured_request_logs_retention_threshold_utc_ts(days)
+    configured_request_logs_retention_threshold_utc_ts_at(
+        retention_days.max(REQUEST_LOGS_MIN_RETENTION_DAYS),
+        BackendTime::system().local_now(),
+    )
 }
 
-pub(crate) fn configured_request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
+pub(crate) fn configured_request_logs_retention_threshold_utc_ts_at(
+    retention_days: i64,
+    now: chrono::DateTime<Local>,
+) -> i64 {
     let days = retention_days.max(0);
     if days == 0 {
-        return Local::now().with_timezone(&Utc).timestamp();
+        return now.with_timezone(&Utc).timestamp();
     }
-    let today = Local::now().date_naive();
+    let today = now.date_naive();
     let keep_from_date = today
         .checked_sub_days(chrono::Days::new((days - 1) as u64))
         .unwrap_or(today);
@@ -2944,7 +2830,7 @@ pub(crate) fn configured_request_logs_retention_threshold_utc_ts(retention_days:
     match Local.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
         chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
-        chrono::LocalResult::None => Local::now().with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::None => now.with_timezone(&Utc).timestamp(),
     }
 }
 

@@ -1771,7 +1771,7 @@ async fn billing_ledger_audit_detects_bound_token_month_residue_and_rebase_prese
 
     let rebase_report = rebase_current_month_business_quota_with_pool(
         &proxy.key_store.pool,
-        Utc::now(),
+        Utc::now,
         META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
         true,
     )
@@ -2002,7 +2002,7 @@ async fn monthly_quota_rebase_startup_gate_runs_once_and_manual_rebase_remains_i
 
     let manual_rebase_report = rebase_current_month_business_quota_with_pool(
         &proxy_third.key_store.pool,
-        Utc::now(),
+        Utc::now,
         META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
         true,
     )

@@ -1,4 +1,15 @@
 impl KeyStore {
+    #[cfg(test)]
+    async fn acquire_test_schema_init_guard() -> tokio::sync::OwnedSemaphorePermit {
+        static LOCK: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test schema init semaphore closed")
+    }
+
     async fn main_table_exists(&self, table: &str) -> Result<bool, ProxyError> {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
@@ -615,7 +626,17 @@ impl KeyStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn new(database_path: &str) -> Result<Self, ProxyError> {
+        Self::new_with_time(database_path, BackendTime::system()).await
+    }
+
+    pub(crate) async fn new_with_time(
+        database_path: &str,
+        backend_time: BackendTime,
+    ) -> Result<Self, ProxyError> {
+        #[cfg(test)]
+        let _schema_init_guard = Self::acquire_test_schema_init_guard().await;
         let layout = SqliteDatabaseLayout::from_database_path(database_path);
         let pool = open_sqlite_pool_with_observability(
             &layout.core_database_path,
@@ -638,6 +659,7 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             pool,
+            backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
@@ -656,6 +678,15 @@ impl KeyStore {
     pub(crate) async fn open_for_request_logs_gc(
         database_path: &str,
     ) -> Result<Self, ProxyError> {
+        Self::open_for_request_logs_gc_with_time(database_path, BackendTime::system()).await
+    }
+
+    pub(crate) async fn open_for_request_logs_gc_with_time(
+        database_path: &str,
+        backend_time: BackendTime,
+    ) -> Result<Self, ProxyError> {
+        #[cfg(test)]
+        let _schema_init_guard = Self::acquire_test_schema_init_guard().await;
         let layout = SqliteDatabaseLayout::from_database_path(database_path);
         let pool = open_sqlite_pool_with_observability(
             &layout.core_database_path,
@@ -678,6 +709,7 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             pool,
+            backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
@@ -2061,7 +2093,7 @@ impl KeyStore {
             self.backfill_api_key_created_at().await?;
             self.set_meta_i64(
                 META_KEY_API_KEY_CREATED_AT_BACKFILL_V1,
-                Utc::now().timestamp(),
+                self.backend_time.now_ts(),
             )
             .await?;
         }
@@ -2176,7 +2208,7 @@ impl KeyStore {
             {
                 self.set_meta_i64(
                     META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1,
-                    Utc::now().timestamp(),
+                    self.backend_time.now_ts(),
                 )
                 .await?;
             }
@@ -2198,7 +2230,7 @@ impl KeyStore {
                 self.backfill_account_quota_inherits_defaults_v1().await?;
                 self.set_meta_i64(
                     META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1,
-                    Utc::now().timestamp(),
+                    self.backend_time.now_ts(),
                 )
                 .await?;
             }
@@ -2209,7 +2241,7 @@ impl KeyStore {
             {
                 self.set_meta_i64(
                     META_KEY_ACCOUNT_QUOTA_ZERO_BASE_CUTOVER_V1,
-                    Utc::now().timestamp(),
+                    self.backend_time.now_ts(),
                 )
                 .await?;
             }
@@ -2228,7 +2260,10 @@ impl KeyStore {
                 .is_none()
             {
                 self.force_user_relogin_v1().await?;
-                self.set_meta_i64(META_KEY_FORCE_USER_RELOGIN_V1, Utc::now().timestamp())
+                self.set_meta_i64(
+                    META_KEY_FORCE_USER_RELOGIN_V1,
+                    self.backend_time.now_ts(),
+                )
                     .await?;
             }
             self.seed_linuxdo_system_tags().await?;
@@ -2240,7 +2275,7 @@ impl KeyStore {
                 self.backfill_linuxdo_system_tag_default_deltas_v1().await?;
                 self.set_meta_i64(
                     META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1,
-                    Utc::now().timestamp(),
+                    self.backend_time.now_ts(),
                 )
                 .await?;
             }
@@ -2248,25 +2283,19 @@ impl KeyStore {
                 .await?;
             self.backfill_linuxdo_user_tag_bindings().await?;
             self.sync_account_quota_limits_with_defaults().await?;
-            if self
-                .get_meta_i64(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
-                .await?
-                != Some(start_of_month(Utc::now()).timestamp())
+            match maybe_rebase_current_month_business_quota_with_pool(
+                &self.pool,
+                || self.backend_time.now_utc(),
+                META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+                true,
+            )
+            .await
             {
-                match rebase_current_month_business_quota_with_pool(
-                    &self.pool,
-                    Utc::now(),
-                    META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
-                    true,
-                )
-                .await
-                {
-                    Ok(_) => {}
-                    Err(err) if is_invalid_current_month_billing_subject_error(&err) => {
-                        eprintln!("startup monthly quota rebase skipped: {err}");
-                    }
-                    Err(err) => return Err(err),
+                Ok(_) => {}
+                Err(err) if is_invalid_current_month_billing_subject_error(&err) => {
+                    eprintln!("startup monthly quota rebase skipped: {err}");
                 }
+                Err(err) => return Err(err),
             }
         }
 

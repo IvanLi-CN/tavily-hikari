@@ -1,10 +1,15 @@
 {
   "coverage_targets": {
     "lib": {
-      "list_args": ["--lib"]
+      "list_args": [
+        "--lib"
+      ]
     },
     "bin-main": {
-      "list_args": ["--bin", "tavily-hikari"]
+      "list_args": [
+        "--bin",
+        "tavily-hikari"
+      ]
     },
     "bin-support": {
       "list_args": [
@@ -35,19 +40,34 @@
       ]
     },
     "integration:mcp_billing_regression": {
-      "list_args": ["--test", "mcp_billing_regression"]
+      "list_args": [
+        "--test",
+        "mcp_billing_regression"
+      ]
     },
     "integration:mcp_session_affinity_e2e": {
-      "list_args": ["--test", "mcp_session_affinity_e2e"]
+      "list_args": [
+        "--test",
+        "mcp_session_affinity_e2e"
+      ]
     },
     "integration:request_kind_canonical_backfill": {
-      "list_args": ["--test", "request_kind_canonical_backfill"]
+      "list_args": [
+        "--test",
+        "request_kind_canonical_backfill"
+      ]
     },
     "integration:rust_source_line_budgets": {
-      "list_args": ["--test", "rust_source_line_budgets"]
+      "list_args": [
+        "--test",
+        "rust_source_line_budgets"
+      ]
     },
     "integration:server_http_contract": {
-      "list_args": ["--test", "server_http_contract"]
+      "list_args": [
+        "--test",
+        "server_http_contract"
+      ]
     }
   },
   "shards": [
@@ -56,11 +76,15 @@
       "kind": "lib",
       "name": "Lib Core",
       "coverage_target": "lib",
-      "run_args": ["--lib"],
+      "run_args": [
+        "--lib"
+      ],
+      "serial_prefixes": [
+        "tavily_proxy::tests::"
+      ],
       "include_prefixes": [
         "affinity_tests::",
         "analysis::tests::",
-        "forward_proxy::tests::",
         "ha::tests::",
         "models::client_ip_tests::",
         "tavily_proxy::tests::",
@@ -74,11 +98,32 @@
       ]
     },
     {
+      "id": "lib-forward-proxy",
+      "kind": "lib",
+      "name": "Lib Forward Proxy",
+      "coverage_target": "lib",
+      "run_args": [
+        "--lib"
+      ],
+      "serial_prefixes": [
+        "forward_proxy::tests::"
+      ],
+      "include_prefixes": [
+        "forward_proxy::tests::"
+      ]
+    },
+    {
       "id": "lib-request-rollup",
       "kind": "lib",
       "name": "Lib Request Rollup",
       "coverage_target": "lib",
-      "run_args": ["--lib"],
+      "run_args": [
+        "--lib"
+      ],
+      "filtered_test_threads": 2,
+      "serial_prefixes": [
+        "tests::request_"
+      ],
       "include_prefixes": [
         "tests::request_",
         "tests::summary_",
@@ -106,7 +151,9 @@
       "kind": "lib",
       "name": "Lib Affinity Domain",
       "coverage_target": "lib",
-      "run_args": ["--lib"],
+      "run_args": [
+        "--lib"
+      ],
       "include_prefixes": [
         "tests::add_",
         "tests::select_",
@@ -126,7 +173,9 @@
       "kind": "lib",
       "name": "Lib Account User",
       "coverage_target": "lib",
-      "run_args": ["--lib"],
+      "run_args": [
+        "--lib"
+      ],
       "include_prefixes": [
         "tests::account_",
         "tests::linuxdo_",
@@ -169,7 +218,9 @@
       "kind": "lib",
       "name": "Lib Misc",
       "coverage_target": "lib",
-      "run_args": ["--lib"],
+      "run_args": [
+        "--lib"
+      ],
       "include_prefixes": [
         "tests::abandon_",
         "tests::abandoned_",
@@ -220,15 +271,22 @@
       "kind": "bin",
       "name": "Bin Admin API",
       "coverage_target": "bin-main",
-      "run_args": ["--bin", "tavily-hikari"],
+      "run_args": [
+        "--bin",
+        "tavily-hikari"
+      ],
+      "serial_prefixes": [
+        "server::tests::token_"
+      ],
+      "filtered_process_workers": 2,
       "include_prefixes": [
+        "server::tests::admin_",
+        "server::tests::api_",
         "server::admin_resources_tests::",
         "server::dto_tests::",
         "server::manual_trigger_tests::",
         "server::db_maintenance_gate_tests::",
         "server::version_detection_tests::",
-        "server::tests::admin_",
-        "server::tests::api_",
         "server::tests::user_",
         "server::tests::profile_",
         "server::tests::token_",
@@ -244,7 +302,10 @@
       "kind": "bin",
       "name": "Bin Tavily HTTP",
       "coverage_target": "bin-main",
-      "run_args": ["--bin", "tavily-hikari"],
+      "run_args": [
+        "--bin",
+        "tavily-hikari"
+      ],
       "include_prefixes": [
         "server::avatar_url_tests::",
         "server::spa_404_tests::",
@@ -258,15 +319,27 @@
       "kind": "bin",
       "name": "Bin MCP Core",
       "coverage_target": "bin-main",
-      "run_args": ["--bin", "tavily-hikari"],
-      "include_prefixes": ["server::tests::mcp_"]
+      "run_args": [
+        "--bin",
+        "tavily-hikari"
+      ],
+      "include_prefixes": [
+        "server::tests::mcp_"
+      ]
     },
     {
       "id": "bin-linuxdo-forward",
       "kind": "bin",
       "name": "Bin LinuxDo Forward",
       "coverage_target": "bin-main",
-      "run_args": ["--bin", "tavily-hikari"],
+      "run_args": [
+        "--bin",
+        "tavily-hikari"
+      ],
+      "serial_prefixes": [
+        "server::tests::post_",
+        "server::tests::builtin_"
+      ],
       "include_prefixes": [
         "server::tests::linuxdo_",
         "server::tests::forward_",
@@ -286,18 +359,21 @@
       "kind": "bin",
       "name": "Bin HA Rest",
       "coverage_target": "bin-main",
-      "run_args": ["--bin", "tavily-hikari"],
+      "run_args": [
+        "--bin",
+        "tavily-hikari"
+      ],
       "include_prefixes": [
+        "server::tests::manual_",
         "server::tests::ha_",
+        "server::tests::startup_",
+        "server::tests::maintenance_",
+        "server::tests::summary_",
         "server::tests::health_",
         "server::tests::key_",
         "server::tests::db_",
-        "server::tests::maintenance_",
-        "server::tests::manual_",
         "server::tests::observed_",
-        "server::tests::proxy_",
-        "server::tests::startup_",
-        "server::tests::summary_"
+        "server::tests::proxy_"
       ]
     },
     {
@@ -305,35 +381,50 @@
       "kind": "integration",
       "name": "Integration MCP Billing Regression",
       "coverage_target": "integration:mcp_billing_regression",
-      "run_args": ["--test", "mcp_billing_regression"]
+      "run_args": [
+        "--test",
+        "mcp_billing_regression"
+      ]
     },
     {
       "id": "integration-mcp-session-affinity",
       "kind": "integration",
       "name": "Integration MCP Session Affinity",
       "coverage_target": "integration:mcp_session_affinity_e2e",
-      "run_args": ["--test", "mcp_session_affinity_e2e"]
+      "run_args": [
+        "--test",
+        "mcp_session_affinity_e2e"
+      ]
     },
     {
       "id": "integration-request-kind-backfill",
       "kind": "integration",
       "name": "Integration Request Kind Backfill",
       "coverage_target": "integration:request_kind_canonical_backfill",
-      "run_args": ["--test", "request_kind_canonical_backfill"]
+      "run_args": [
+        "--test",
+        "request_kind_canonical_backfill"
+      ]
     },
     {
       "id": "integration-rust-source-line-budgets",
       "kind": "integration",
       "name": "Integration Rust Source Line Budgets",
       "coverage_target": "integration:rust_source_line_budgets",
-      "run_args": ["--test", "rust_source_line_budgets"]
+      "run_args": [
+        "--test",
+        "rust_source_line_budgets"
+      ]
     },
     {
       "id": "integration-server-http-contract",
       "kind": "integration",
       "name": "Integration Server HTTP Contract",
       "coverage_target": "integration:server_http_contract",
-      "run_args": ["--test", "server_http_contract"]
+      "run_args": [
+        "--test",
+        "server_http_contract"
+      ]
     }
   ]
 }

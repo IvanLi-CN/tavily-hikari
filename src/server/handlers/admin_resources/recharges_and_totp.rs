@@ -275,10 +275,14 @@ async fn post_admin_totp_confirm(
             "admin TOTP is already bound; use reset with current TOTP".to_string(),
         ));
     }
-    if !check_totp_code(&payload.secret, &payload.code)? {
+    if !check_totp_code(
+        &payload.secret,
+        &payload.code,
+        state.proxy.backend_time().now_ts(),
+    )? {
         return Err((StatusCode::BAD_REQUEST, "invalid TOTP code".to_string()));
     }
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let (ciphertext, nonce) = encrypt_admin_totp_secret(state.as_ref(), &payload.secret)?;
     state
         .proxy
@@ -295,10 +299,14 @@ async fn post_admin_totp_reset(
 ) -> Result<Json<AdminTotpStatusResponse>, (StatusCode, String)> {
     ensure_totp_management_allowed(state.as_ref(), &headers).await?;
     verify_admin_totp_for_sensitive_action(state.as_ref(), &payload.current_code).await?;
-    if !check_totp_code(&payload.secret, &payload.code)? {
+    if !check_totp_code(
+        &payload.secret,
+        &payload.code,
+        state.proxy.backend_time().now_ts(),
+    )? {
         return Err((StatusCode::BAD_REQUEST, "invalid new TOTP code".to_string()));
     }
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let (ciphertext, nonce) = encrypt_admin_totp_secret(state.as_ref(), &payload.secret)?;
     state
         .proxy
@@ -352,7 +360,10 @@ async fn refund_admin_recharge_order(
     };
     let order = match state
         .proxy
-        .reserve_linuxdo_credit_recharge_order_refund(&out_trade_no, Utc::now().timestamp())
+        .reserve_linuxdo_credit_recharge_order_refund(
+            &out_trade_no,
+            state.proxy.backend_time().now_ts(),
+        )
         .await
     {
         Ok(order) => order,
@@ -393,7 +404,7 @@ async fn refund_admin_recharge_order(
                 .release_linuxdo_credit_recharge_order_refund_reservation(
                     &out_trade_no,
                     &message,
-                    Utc::now().timestamp(),
+                    state.proxy.backend_time().now_ts(),
                 )
                 .await;
             return Err(err);
@@ -454,7 +465,7 @@ async fn finalize_admin_refund_from_external_success(
             next_status,
             &marker.refund_actor,
             &marker.response,
-            Utc::now().timestamp(),
+            state.proxy.backend_time().now_ts(),
             revoke_entitlements,
         )
         .await
@@ -500,7 +511,10 @@ async fn finalize_admin_refund_from_external_success_with_retry(
     let mut last_error = None;
     for delay_ms in [0, 50, 200] {
         if delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            state.proxy
+                .backend_time()
+                .sleep(Duration::from_millis(delay_ms))
+                .await;
         }
         match finalize_admin_refund_from_external_success(
             state.clone(),
@@ -536,7 +550,10 @@ async fn persist_refund_external_success_marker_with_retry(
     let mut last_error = None;
     for delay_ms in [0, 50, 200] {
         if delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            state.proxy
+                .backend_time()
+                .sleep(Duration::from_millis(delay_ms))
+                .await;
         }
         match state
             .proxy
@@ -544,7 +561,7 @@ async fn persist_refund_external_success_marker_with_retry(
                 out_trade_no,
                 actor_display,
                 &marker_payload,
-                Utc::now().timestamp(),
+                state.proxy.backend_time().now_ts(),
             )
             .await
         {
@@ -701,7 +718,7 @@ async fn admin_totp_status_response(
             && !state.dev_open_admin,
         recharge_feature_enabled: settings.recharge_feature_enabled,
         missing_crypto_key: !state.linuxdo_oauth.has_refresh_token_crypt_key(),
-        locked_until: (locked_until > Utc::now().timestamp()).then_some(locked_until),
+        locked_until: (locked_until > state.proxy.backend_time().now_ts()).then_some(locked_until),
         issuer: ADMIN_TOTP_ISSUER,
         account_name: ADMIN_TOTP_ACCOUNT,
     })
@@ -717,7 +734,7 @@ async fn verify_admin_totp_for_sensitive_action(
             "DEV_OPEN_ADMIN cannot execute sensitive recharge actions".to_string(),
         ));
     }
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let (fail_count, locked_until) = state
         .proxy
         .get_admin_totp_failure_state()
@@ -735,7 +752,7 @@ async fn verify_admin_totp_for_sensitive_action(
         return Err((StatusCode::FORBIDDEN, "admin TOTP is not bound".to_string()));
     };
     let secret = decrypt_admin_totp_secret(state, &ciphertext, &nonce)?;
-    if check_totp_code(&secret, code)? {
+    if check_totp_code(&secret, code, now)? {
         state
             .proxy
             .clear_admin_totp_failures()
@@ -781,13 +798,13 @@ fn build_totp(secret: &str) -> Result<totp_rs::TOTP, (StatusCode, String)> {
     .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))
 }
 
-fn check_totp_code(secret: &str, code: &str) -> Result<bool, (StatusCode, String)> {
+fn check_totp_code(secret: &str, code: &str, now_ts: i64) -> Result<bool, (StatusCode, String)> {
     let normalized = code.trim();
     if normalized.len() != 6 || !normalized.chars().all(|ch| ch.is_ascii_digit()) {
         return Ok(false);
     }
     let totp = build_totp(secret)?;
-    Ok(totp.check(normalized, Utc::now().timestamp() as u64))
+    Ok(totp.check(normalized, now_ts as u64))
 }
 
 fn encrypt_admin_totp_secret(

@@ -1040,7 +1040,14 @@ async fn select_proxy_affinity_marks_trace_without_region_as_retriable_trace_cac
         .lock()
         .await
         .remove(&proxy_url);
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    sqlx::query(
+        "UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?",
+    )
+    .bind(first_row.3)
+    .bind(&proxy_url)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("preserve trace cache timestamp");
 
     let (_second_record, second_preview) = proxy
         .select_proxy_affinity_preview_for_registration_with_hint(
@@ -1337,7 +1344,14 @@ async fn force_refresh_replaces_stale_trace_with_negative_placeholder() {
         .lock()
         .await
         .remove(&proxy_url);
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    sqlx::query(
+        "UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?",
+    )
+    .bind(first_row.3 - 1)
+    .bind(&proxy_url)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("force later timestamp after failed refresh");
 
     proxy
         .refresh_forward_proxy_geo_metadata(&geo_origin, true)
@@ -1355,7 +1369,7 @@ async fn force_refresh_replaces_stale_trace_with_negative_placeholder() {
     assert_eq!(second_row.1, "[]");
     assert_eq!(second_row.2, "[]");
     assert!(
-        second_row.3 > first_row.3,
+        second_row.3 >= first_row.3,
         "force refresh failures should replace stale trace data with a fresh negative placeholder timestamp"
     );
 
@@ -2397,4 +2411,3 @@ async fn add_or_undelete_key_with_hint_only_proxy_affinity_rebuilds_when_primary
 
     let _ = std::fs::remove_file(db_path);
 }
-

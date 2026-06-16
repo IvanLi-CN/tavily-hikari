@@ -295,6 +295,7 @@ pub async fn load_forward_proxy_disabled_node_keys(
 
 pub async fn set_forward_proxy_nodes_disabled(
     pool: &SqlitePool,
+    backend_time: &BackendTime,
     proxy_keys: &[String],
     disabled: bool,
 ) -> Result<HashMap<String, Option<i64>>, ProxyError> {
@@ -305,7 +306,7 @@ pub async fn set_forward_proxy_nodes_disabled(
     let mut tx = pool.begin().await?;
     for proxy_key in proxy_keys {
         if disabled {
-            let disabled_at = Utc::now().timestamp();
+            let disabled_at = backend_time.now_ts();
             sqlx::query(
                 r#"
                 INSERT INTO forward_proxy_node_overrides (proxy_key, disabled_at, updated_at)
@@ -764,6 +765,7 @@ async fn save_forward_proxy_affinity(
 
 pub async fn load_forward_proxy_key_affinity(
     pool: &SqlitePool,
+    backend_time: &BackendTime,
     key_id: &str,
 ) -> Result<Option<ForwardProxyAffinityRecord>, ProxyError> {
     Ok(load_forward_proxy_affinity(pool, key_id)
@@ -771,7 +773,7 @@ pub async fn load_forward_proxy_key_affinity(
         .map(|record| ForwardProxyAffinityRecord {
             primary_proxy_key: record.primary_proxy_key,
             secondary_proxy_key: record.secondary_proxy_key,
-            updated_at: Utc::now().timestamp(),
+            updated_at: backend_time.now_ts(),
         }))
 }
 
@@ -796,13 +798,14 @@ pub async fn sync_manager_runtime_to_store(
     manager: &ForwardProxyManager,
 ) -> Result<(), ProxyError> {
     let snapshot = manager.snapshot_runtime();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = key_store.backend_time.deadline_after(Duration::from_secs(10));
     let mut retry_attempt = 0usize;
     loop {
         match persist_forward_proxy_runtime_snapshot(&key_store.pool, snapshot.clone()).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 if crate::store::sleep_before_sqlite_transient_write_retry(
+                    &key_store.backend_time,
                     "forward proxy runtime snapshot sync",
                     retry_attempt,
                     deadline,
@@ -946,9 +949,10 @@ pub(crate) struct ForwardProxyWindowStatsSetCacheEntry {
 async fn query_forward_proxy_window_stats_set_cached(
     pool: &SqlitePool,
     cache: &RwLock<Option<ForwardProxyWindowStatsSetCacheEntry>>,
+    backend_time: &BackendTime,
     now_epoch: i64,
 ) -> Result<Vec<HashMap<String, ForwardProxyAttemptWindowStats>>, ProxyError> {
-    let now = Instant::now();
+    let now = backend_time.instant_now();
     if let Some(cached) = cache.read().await.as_ref()
         && cached.expires_at > now
     {
@@ -956,7 +960,7 @@ async fn query_forward_proxy_window_stats_set_cached(
     }
 
     let mut cache = cache.write().await;
-    let now = Instant::now();
+    let now = backend_time.instant_now();
     if let Some(cached) = cache.as_ref()
         && cached.expires_at > now
     {
@@ -966,8 +970,9 @@ async fn query_forward_proxy_window_stats_set_cached(
     let value = query_forward_proxy_window_stats_set(pool, now_epoch).await?;
     *cache = Some(ForwardProxyWindowStatsSetCacheEntry {
         value: value.clone(),
-        expires_at: Instant::now()
-            + Duration::from_secs(FORWARD_PROXY_WINDOW_STATS_CACHE_TTL_SECS),
+        expires_at: backend_time.deadline_after(Duration::from_secs(
+            FORWARD_PROXY_WINDOW_STATS_CACHE_TTL_SECS,
+        )),
     });
     Ok(value)
 }

@@ -411,8 +411,8 @@ const DEV_OPEN_ADMIN_REQUEST_TOKEN_ID: &str = "dev";
 
 #[derive(Clone, Debug)]
 struct BuiltinAdminSession {
-    issued_at: Instant,
-    expires_at: Instant,
+    issued_at: tokio::time::Instant,
+    expires_at: tokio::time::Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -421,15 +421,31 @@ struct BuiltinAdminAuth {
     password: Option<String>,
     password_hash: Option<String>,
     sessions: Arc<std::sync::RwLock<HashMap<String, BuiltinAdminSession>>>,
+    backend_time: tavily_hikari::BackendTime,
 }
 
 impl BuiltinAdminAuth {
     fn new(enabled: bool, password: Option<String>, password_hash: Option<String>) -> Self {
+        Self::new_with_time(
+            enabled,
+            password,
+            password_hash,
+            tavily_hikari::BackendTime::system(),
+        )
+    }
+
+    fn new_with_time(
+        enabled: bool,
+        password: Option<String>,
+        password_hash: Option<String>,
+        backend_time: tavily_hikari::BackendTime,
+    ) -> Self {
         Self {
             enabled,
             password,
             password_hash,
             sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            backend_time,
         }
     }
 
@@ -444,7 +460,7 @@ impl BuiltinAdminAuth {
         let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
             return false;
         };
-        let now = Instant::now();
+        let now = self.backend_time.instant_now();
         let Ok(mut sessions) = self.sessions.write() else {
             return false;
         };
@@ -479,8 +495,9 @@ impl BuiltinAdminAuth {
         if !self.enabled {
             return;
         }
-        let now = Instant::now();
-        let expires_at = now + Duration::from_secs(BUILTIN_ADMIN_SESSION_MAX_AGE_SECS);
+        let now = self.backend_time.instant_now();
+        let expires_at =
+            now + std::time::Duration::from_secs(BUILTIN_ADMIN_SESSION_MAX_AGE_SECS);
         if let Ok(mut sessions) = self.sessions.write() {
             sessions.retain(|_, session| session.expires_at > now);
             sessions.insert(
@@ -494,7 +511,7 @@ impl BuiltinAdminAuth {
             // Bound memory usage: if too many sessions accumulate, evict oldest.
             if sessions.len() > BUILTIN_ADMIN_SESSION_MAX_COUNT {
                 let over = sessions.len() - BUILTIN_ADMIN_SESSION_MAX_COUNT;
-                let mut issued: Vec<(String, Instant)> = sessions
+                let mut issued: Vec<(String, tokio::time::Instant)> = sessions
                     .iter()
                     .map(|(k, v)| (k.clone(), v.issued_at))
                     .collect();
@@ -693,8 +710,7 @@ fn parse_iso_timestamp(value: &str) -> Option<i64> {
         .ok()
 }
 
-fn default_since(period: Option<&str>) -> i64 {
-    let now = Utc::now();
+fn default_since_at(now: DateTime<Utc>, period: Option<&str>) -> i64 {
     match period {
         Some("day") => now
             .date_naive()
@@ -721,8 +737,8 @@ fn default_since(period: Option<&str>) -> i64 {
     }
 }
 
-fn default_until(period: Option<&str>, since: i64) -> i64 {
-    let base = DateTime::<Utc>::from_timestamp(since, 0).unwrap_or_else(Utc::now);
+fn default_until_at(now: DateTime<Utc>, period: Option<&str>, since: i64) -> i64 {
+    let base = DateTime::<Utc>::from_timestamp(since, 0).unwrap_or(now);
     match period {
         Some("day") => (base + ChronoDuration::days(1)).timestamp(),
         Some("week") => (base + ChronoDuration::days(7)).timestamp(),

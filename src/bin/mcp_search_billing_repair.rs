@@ -534,7 +534,7 @@ mod tests {
     use nanoid::nanoid;
     use serde_json::{Value, json};
     use sqlx::Row;
-    use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
+    use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy, rebase_current_month_business_quota};
 
     fn temp_db_path(prefix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
@@ -884,6 +884,180 @@ mod tests {
             .await
             .expect("repair candidates rerun");
         assert!(repaired_again.is_empty());
+        cleanup_temp_db(&db_str);
+    }
+
+    #[tokio::test]
+    async fn historical_search_repair_rebases_current_month_not_historical_month() {
+        let (_proxy, pool, db_str) =
+            init_proxy_and_pool("mcp-search-repair-historical-month").await;
+        let now = Utc::now();
+        let current_month_start = Utc
+            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+            .single()
+            .expect("current month start")
+            .timestamp();
+        let historical = if now.month() == 1 {
+            Utc.with_ymd_and_hms(now.year() - 1, 12, 15, 12, 0, 0)
+                .single()
+                .expect("previous december")
+        } else {
+            Utc.with_ymd_and_hms(now.year(), now.month() - 1, 15, 12, 0, 0)
+                .single()
+                .expect("previous month")
+        };
+        let historical_month_start = Utc
+            .with_ymd_and_hms(historical.year(), historical.month(), 1, 0, 0, 0)
+            .single()
+            .expect("historical month start")
+            .timestamp();
+
+        insert_api_key(&pool, "key-historical").await;
+        insert_token(&pool, "tok-historical", historical.timestamp()).await;
+        insert_token(&pool, "tok-current", now.timestamp()).await;
+
+        let historical_auth_log =
+            insert_auth_search_log(&pool, "tok-historical", historical.timestamp()).await;
+        insert_request_search_log(
+            &pool,
+            "key-historical",
+            "tok-historical",
+            historical.timestamp(),
+            json!({
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily_search",
+                    "arguments": {
+                        "query": "historical repair regression"
+                    }
+                }
+            }),
+        )
+        .await;
+
+        sqlx::query(
+            "INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                http_status,
+                request_kind_key,
+                request_kind_label,
+                result_status,
+                counts_business_quota,
+                business_credits,
+                billing_state,
+                billing_subject,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', 200, 'mcp:search', 'MCP | search', 'success', 1, 5, 'charged', ?, ?)",
+        )
+        .bind("tok-current")
+        .bind("token:tok-current")
+        .bind(now.timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed current charged auth log");
+
+        sqlx::query(
+            "INSERT INTO auth_token_quota (token_id, month_start, month_count)
+             VALUES (?, ?, ?)
+             ON CONFLICT(token_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count",
+        )
+        .bind("tok-current")
+        .bind(current_month_start)
+        .bind(5_i64)
+        .execute(&pool)
+        .await
+        .expect("seed current month quota");
+
+        sqlx::query(
+            "INSERT INTO auth_token_quota (token_id, month_start, month_count)
+             VALUES (?, ?, ?)
+             ON CONFLICT(token_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count",
+        )
+        .bind("tok-historical")
+        .bind(historical_month_start)
+        .bind(9_i64)
+        .execute(&pool)
+        .await
+        .expect("seed historical month quota");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reopened for repair");
+        let (candidates, skipped_tokens) = load_candidates(
+            &pool,
+            historical.timestamp() - 1,
+            historical.timestamp() + 1,
+            Some("tok-historical"),
+        )
+        .await
+        .expect("load historical candidates");
+        assert!(skipped_tokens.is_empty());
+
+        let repaired_log_ids = repair_candidates(&proxy, &pool, &candidates)
+            .await
+            .expect("repair historical candidates");
+        assert_eq!(repaired_log_ids, vec![historical_auth_log]);
+
+        rebase_current_month_business_quota(&db_str, historical)
+            .await
+            .expect("current-month rebase after historical repair");
+
+        let repaired_auth_row = sqlx::query(
+            "SELECT business_credits, billing_state, billing_subject
+             FROM auth_token_logs WHERE id = ?",
+        )
+        .bind(historical_auth_log)
+        .fetch_one(&pool)
+        .await
+        .expect("read repaired auth log");
+        assert_eq!(
+            repaired_auth_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .expect("business credits"),
+            Some(1)
+        );
+        assert_eq!(
+            repaired_auth_row
+                .try_get::<String, _>("billing_state")
+                .expect("billing state"),
+            "charged"
+        );
+        assert_eq!(
+            repaired_auth_row
+                .try_get::<Option<String>, _>("billing_subject")
+                .expect("billing subject")
+                .as_deref(),
+            Some("token:tok-historical")
+        );
+
+        let current_month_row: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
+        )
+        .bind("tok-current")
+        .fetch_one(&pool)
+        .await
+        .expect("read current month row");
+        assert_eq!(current_month_row, (current_month_start, 5));
+
+        let historical_row: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
+        )
+        .bind("tok-historical")
+        .fetch_one(&pool)
+        .await
+        .expect("read historical row");
+        assert_eq!(
+            historical_row,
+            (current_month_start, 0),
+            "historical repair must still rebase the current month instead of rewriting an older month"
+        );
+
         cleanup_temp_db(&db_str);
     }
 }

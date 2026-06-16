@@ -21,17 +21,18 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         loop {
             match self
-                .try_claim_request_kind_canonical_migration_v1(Utc::now().timestamp())
+                .try_claim_request_kind_canonical_migration_v1(self.backend_time.now_ts())
                 .await?
             {
                 RequestKindCanonicalMigrationClaim::AlreadyDone(_) => return Ok(()),
                 RequestKindCanonicalMigrationClaim::Claimed => break,
                 RequestKindCanonicalMigrationClaim::RunningElsewhere(_)
                 | RequestKindCanonicalMigrationClaim::RetryLater => {
-                    tokio::time::sleep(Duration::from_millis(
-                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
-                    ))
-                    .await;
+                    self.backend_time
+                        .sleep(Duration::from_millis(
+                            REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                        ))
+                        .await;
                 }
             }
         }
@@ -50,18 +51,19 @@ impl KeyStore {
             false,
             Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
             Some(upper_bounds),
+            &self.backend_time,
         )
         .await
         {
             Ok(_) => {
                 self.finish_request_kind_canonical_migration_v1(
-                    RequestKindCanonicalMigrationState::Done(Utc::now().timestamp()),
+                    RequestKindCanonicalMigrationState::Done(self.backend_time.now_ts()),
                 )
                 .await
             }
             Err(err) => {
                 self.finish_request_kind_canonical_migration_v1(
-                    RequestKindCanonicalMigrationState::Failed(Utc::now().timestamp()),
+                    RequestKindCanonicalMigrationState::Failed(self.backend_time.now_ts()),
                 )
                 .await?;
                 Err(err)
@@ -70,7 +72,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn ensure_dev_open_admin_token(&self) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO auth_tokens (
@@ -166,7 +168,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn force_user_relogin_v1(&self) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query("UPDATE user_sessions SET revoked_at = ? WHERE revoked_at IS NULL")
             .bind(now)
             .execute(&self.pool)
@@ -181,7 +183,7 @@ impl KeyStore {
     pub(crate) async fn backfill_api_key_usage_bucket_request_value_counts_v2(
         &self,
     ) -> Result<(), ProxyError> {
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let mut read_conn = self.pool.acquire().await?;
         let mut tx = self.pool.begin().await?;
 
@@ -365,7 +367,7 @@ impl KeyStore {
     pub(crate) async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
         // Rebuild buckets from request_logs to preserve cumulative statistics after retention.
         // This is safe to rerun because we clear and recompute deterministically.
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let mut read_conn = self.pool.acquire().await?;
         let mut tx = self.pool.begin().await?;
 
@@ -667,7 +669,7 @@ impl KeyStore {
         start: Option<i64>,
         end: Option<i64>,
     ) -> Result<(), ProxyError> {
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
         match (start, end) {
@@ -1038,7 +1040,7 @@ impl KeyStore {
             return Ok(());
         }
 
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
 
         sqlx::query(
             r#"
@@ -1081,7 +1083,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn backfill_account_quota_v1(&self) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let hourly_any_limit = effective_token_hourly_request_limit();
         let hourly_limit = effective_token_hourly_limit();
         let daily_limit = effective_token_daily_limit();
@@ -1264,7 +1266,7 @@ impl KeyStore {
         } else {
             (0_i64, credits)
         };
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO api_key_user_usage_buckets (

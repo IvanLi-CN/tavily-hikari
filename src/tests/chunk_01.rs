@@ -897,8 +897,43 @@ fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
 }
 
 fn temp_db_path(prefix: &str) -> PathBuf {
-    let file = format!("{}-{}.db", prefix, nanoid!(8));
-    std::env::temp_dir().join(file)
+    static CLEANUP_ONCE: OnceLock<()> = OnceLock::new();
+    CLEANUP_ONCE.get_or_init(cleanup_stale_test_db_dirs);
+    let dir = std::env::temp_dir().join(format!(
+        "tavily-hikari-libtestdb-{}-{}",
+        std::process::id(),
+        nanoid!(8)
+    ));
+    std::fs::create_dir_all(&dir).expect("create lib test temp dir");
+    dir.join(format!("{prefix}.db"))
+}
+
+fn cleanup_stale_test_db_dirs() {
+    let tmp_dir = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(pid_part) = name
+            .strip_prefix("tavily-hikari-libtestdb-")
+            .and_then(|suffix| suffix.split('-').next())
+        else {
+            continue;
+        };
+        let Ok(pid) = pid_part.parse::<u32>() else {
+            continue;
+        };
+        let is_live = unsafe { libc::kill(pid as i32, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if pid == std::process::id() || is_live {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 fn sqlite_test_layout(database_path: &str) -> SqliteDatabaseLayout {
@@ -2330,6 +2365,7 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         database_path: db_path.to_string_lossy().into_owned(),
         observability_database_path: sqlite_test_layout(&db_str).observability_database_path,
         pool,
+        backend_time: BackendTime::system(),
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: RwLock::new(std::collections::HashMap::new()),
         request_logs_catalog_cache: RwLock::new(std::collections::HashMap::new()),
@@ -2499,6 +2535,7 @@ async fn request_kind_backfill_batch_retries_after_transient_write_lock() {
             request_logs: request_upper_bound,
             auth_token_logs: token_upper_bound,
         }),
+        &proxy.key_store.backend_time,
     )
     .await
     .expect("backfill should retry after transient busy");
@@ -2677,6 +2714,7 @@ async fn request_kind_database_migration_uses_persisted_upper_bounds() {
             request_logs: request_log_id,
             auth_token_logs: token_log_id,
         }),
+        &proxy.key_store.backend_time,
     )
     .await
     .expect("run bounded request-kind backfill");

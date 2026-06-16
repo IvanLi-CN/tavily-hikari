@@ -135,7 +135,7 @@ impl TavilyProxy {
         let ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
         let verdicts = self.token_quota.snapshot_many(&ids).await?;
         let token_bindings = self.key_store.list_user_bindings_for_tokens(&ids).await?;
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % 60);
         let local_now = now.with_timezone(&Local);
@@ -325,13 +325,14 @@ impl TavilyProxy {
         &self,
         profile: &OAuthAccountProfile,
     ) -> Result<UserIdentity, ProxyError> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = self.backend_time.deadline_after(Duration::from_secs(5));
         let mut attempt = 0usize;
         loop {
             match self.key_store.upsert_oauth_account(profile).await {
                 Ok(identity) => return Ok(identity),
                 Err(err) => {
                     if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
                         "oauth account upsert",
                         attempt,
                         deadline,
@@ -353,13 +354,14 @@ impl TavilyProxy {
         &self,
         profile: &OAuthAccountProfile,
     ) -> Result<UserIdentity, ProxyError> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = self.backend_time.deadline_after(Duration::from_secs(5));
         let mut attempt = 0usize;
         loop {
             match self.key_store.refresh_oauth_account_profile(profile).await {
                 Ok(identity) => return Ok(identity),
                 Err(err) => {
                     if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
                         "oauth account profile refresh",
                         attempt,
                         deadline,
@@ -383,7 +385,7 @@ impl TavilyProxy {
         refresh_token_ciphertext: &str,
         refresh_token_nonce: &str,
     ) -> Result<UserIdentity, ProxyError> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = self.backend_time.deadline_after(Duration::from_secs(5));
         let mut attempt = 0usize;
         loop {
             match self
@@ -398,6 +400,7 @@ impl TavilyProxy {
                 Ok(identity) => return Ok(identity),
                 Err(err) => {
                     if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
                         "oauth account profile refresh token update",
                         attempt,
                         deadline,
@@ -596,7 +599,7 @@ impl TavilyProxy {
             return Ok(HashMap::new());
         }
 
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
         let server_daily_window = server_local_day_window_utc(now.with_timezone(&Local));
         let resolved_daily_window = daily_window.unwrap_or(server_daily_window);
@@ -715,7 +718,7 @@ impl TavilyProxy {
         &self,
         token_ids: &[String],
     ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
-        let daily_window = server_local_day_window_utc(Local::now());
+        let daily_window = server_local_day_window_utc(self.backend_time.local_now());
         self.key_store
             .fetch_token_log_metrics_bulk(token_ids, daily_window.start, daily_window.end)
             .await
@@ -770,7 +773,10 @@ impl TavilyProxy {
     ) -> Result<HashMap<String, i64>, ProxyError> {
         self.backfill_current_month_broken_key_subjects().await?;
         self.key_store
-            .fetch_monthly_broken_counts_for_users(user_ids, start_of_month(Utc::now()).timestamp())
+            .fetch_monthly_broken_counts_for_users(
+                user_ids,
+                start_of_month(self.backend_time.now_utc()).timestamp(),
+            )
             .await
     }
 
@@ -782,7 +788,7 @@ impl TavilyProxy {
         self.key_store
             .fetch_monthly_broken_counts_for_tokens(
                 token_ids,
-                start_of_month(Utc::now()).timestamp(),
+                start_of_month(self.backend_time.now_utc()).timestamp(),
             )
             .await
     }
@@ -795,7 +801,7 @@ impl TavilyProxy {
         self.key_store
             .list_monthly_broken_subjects_for_tokens(
                 token_ids,
-                start_of_month(Utc::now()).timestamp(),
+                start_of_month(self.backend_time.now_utc()).timestamp(),
             )
             .await
     }
@@ -813,7 +819,7 @@ impl TavilyProxy {
                 user_id,
                 page,
                 per_page,
-                start_of_month(Utc::now()).timestamp(),
+                start_of_month(self.backend_time.now_utc()).timestamp(),
             )
             .await
     }
@@ -831,7 +837,7 @@ impl TavilyProxy {
                 token_id,
                 page,
                 per_page,
-                start_of_month(Utc::now()).timestamp(),
+                start_of_month(self.backend_time.now_utc()).timestamp(),
             )
             .await
     }
@@ -855,7 +861,7 @@ impl TavilyProxy {
         &self,
         request: AdminUserSortedPageRequest<'_>,
     ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
         let server_daily_window = server_local_day_window_utc(now.with_timezone(&Local));
         let minute_bucket = now.timestamp() - (now.timestamp() % SECS_PER_MINUTE);
@@ -1117,7 +1123,7 @@ impl TavilyProxy {
         self.key_store
             .linuxdo_credit_recharge_summary_for_user(
                 user_id,
-                start_of_local_month_utc_ts(Local::now()),
+                start_of_local_month_utc_ts(self.backend_time.local_now()),
             )
             .await
     }
@@ -1127,7 +1133,10 @@ impl TavilyProxy {
         user_id: &str,
     ) -> Result<LinuxDoCreditRechargeAdminAudit, ProxyError> {
         self.key_store
-            .linuxdo_credit_recharge_admin_audit(user_id, start_of_local_month_utc_ts(Local::now()))
+            .linuxdo_credit_recharge_admin_audit(
+                user_id,
+                start_of_local_month_utc_ts(self.backend_time.local_now()),
+            )
             .await
     }
 

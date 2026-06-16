@@ -123,7 +123,7 @@ async fn wait_for_scheduled_job_terminal(
     job_id: i64,
     timeout: Duration,
 ) -> Result<JobLog, ProxyError> {
-    let deadline = Instant::now() + timeout;
+    let deadline = state.proxy.backend_time().deadline_after(timeout);
     loop {
         let Some(job) = state.proxy.scheduled_job_by_id(job_id).await? else {
             return Err(ProxyError::Other(format!(
@@ -133,13 +133,17 @@ async fn wait_for_scheduled_job_terminal(
         if scheduled_job_is_terminal(&job.status) {
             return Ok(job);
         }
-        if Instant::now() >= deadline {
+        if state.proxy.backend_time().instant_now() >= deadline {
             return Err(ProxyError::Other(format!(
                 "scheduled job {job_id} did not finish within {}s",
                 timeout.as_secs()
             )));
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        state
+            .proxy
+            .backend_time()
+            .sleep(Duration::from_millis(250))
+            .await;
     }
 }
 

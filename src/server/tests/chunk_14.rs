@@ -63,6 +63,7 @@
         .await
         .expect("insert request log");
 
+        let created_at = Utc::now().timestamp();
         let token_log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -97,13 +98,15 @@
         .fetch_one(&pool)
         .await
         .expect("insert token log");
+        pool.close().await;
+        drop(pool);
 
         let addr = spawn_admin_tokens_server(proxy, true).await;
         let client = Client::new();
 
         let page_resp = client
             .get(format!(
-                "http://{}/api/tokens/{}/logs/page?page=1&per_page=20&since=0",
+                "http://{}/api/tokens/{}/logs/page?page=1&per_page=200&since=1970-01-01T00:00:00Z&until=2100-01-01T00:00:00Z",
                 addr, token.id
             ))
             .send()
@@ -195,6 +198,7 @@
             .id;
 
         let pool = connect_sqlite_test_pool(&db_str).await;
+        let created_at = Utc::now().timestamp();
         let token_log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -224,10 +228,12 @@
         )
         .bind(&token.id)
         .bind(&key_id)
-        .bind(3_000_i64)
+        .bind(created_at)
         .fetch_one(&pool)
         .await
         .expect("insert token log without request link");
+        pool.close().await;
+        drop(pool);
 
         let addr = spawn_admin_tokens_server(proxy, true).await;
         let client = Client::new();

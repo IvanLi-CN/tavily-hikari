@@ -567,6 +567,32 @@
         let _ = std::fs::remove_file(db_path);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn builtin_admin_session_expiry_stays_monotonic_when_wall_clock_moves_backwards() {
+        let admin = BuiltinAdminAuth::new(true, Some("pw".to_string()), None);
+
+        let token = admin.login("pw").expect("admin login token");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}")
+                .parse()
+                .expect("cookie header"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        tokio::time::advance(Duration::from_secs(60 * 60 * 24)).await;
+        assert!(admin.is_admin(&headers));
+
+        tokio::time::advance(Duration::from_secs(
+            BUILTIN_ADMIN_SESSION_MAX_AGE_SECS - 60 * 60 * 24,
+        ))
+        .await;
+        assert!(!admin.is_admin(&headers));
+    }
+
     #[test]
     fn public_token_log_view_keeps_original_field_shape_and_appends_guidance() {
         let record = TokenLogRecord {

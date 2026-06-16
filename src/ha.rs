@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
+
+use crate::BackendTime;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -383,16 +384,21 @@ pub struct HaRuntime {
     config: Arc<HaConfig>,
     state: Arc<RwLock<HaRuntimeState>>,
     edgeone: EdgeOneClient,
+    backend_time: BackendTime,
 }
 
 impl HaRuntime {
     pub fn new(config: HaConfig) -> Self {
+        Self::new_with_time(config, BackendTime::system())
+    }
+
+    pub fn new_with_time(config: HaConfig, backend_time: BackendTime) -> Self {
         let initial_role = if config.mode == HaMode::Single {
             HaNodeRole::FullMaster
         } else {
             HaNodeRole::Standby
         };
-        let edgeone = EdgeOneClient::new(config.clone());
+        let edgeone = EdgeOneClient::new_with_time(config.clone(), backend_time.clone());
         Self {
             config: Arc::new(config),
             state: Arc::new(RwLock::new(HaRuntimeState {
@@ -405,6 +411,7 @@ impl HaRuntime {
                 message: None,
             })),
             edgeone,
+            backend_time,
         }
     }
 
@@ -414,7 +421,7 @@ impl HaRuntime {
         }
         match self.edgeone.describe_current_target().await {
             Ok(target) => {
-                let now = Utc::now().timestamp();
+                let now = self.backend_time.now_ts();
                 let role = if self.is_self_target(target.as_ref()) {
                     HaNodeRole::FullMaster
                 } else {
@@ -490,7 +497,7 @@ impl HaRuntime {
         let audit = self.edgeone.modify_target_with_audit(&settings).await?;
         let mut state = self.state.write().await;
         state.edgeone_origin = settings.effective_target();
-        state.last_edgeone_check_at = Some(Utc::now().timestamp());
+        state.last_edgeone_check_at = Some(self.backend_time.now_ts());
         state.message = match current_role {
             HaNodeRole::FullMaster => {
                 Some("EdgeOne origin switched to the configured source".to_string())
@@ -545,7 +552,7 @@ impl HaRuntime {
             }
         };
         let self_is_origin = self.is_self_target(target.as_ref());
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let mut state = self.state.write().await;
         state.edgeone_origin = target.as_ref().map(|target| target.target());
         state.last_edgeone_check_at = Some(now);
@@ -591,7 +598,7 @@ impl HaRuntime {
         let state = self.state.read().await;
         let sync_lag_seconds = state
             .last_sync_at
-            .map(|last| Utc::now().timestamp().saturating_sub(last));
+            .map(|last| self.backend_time.now_ts().saturating_sub(last));
         let source_defaults = self.config.configured_source_settings().ok().flatten();
         let source_override = state.source_settings.clone();
         let source_effective = source_override.clone().or_else(|| source_defaults.clone());
@@ -747,7 +754,7 @@ impl HaRuntime {
             if self.is_self_target(current.as_ref()) {
                 let mut state = self.state.write().await;
                 state.edgeone_origin = current.as_ref().map(|target| target.target());
-                state.last_edgeone_check_at = Some(Utc::now().timestamp());
+                state.last_edgeone_check_at = Some(self.backend_time.now_ts());
             } else if !self.is_expected_target(current.as_ref(), &target_settings) {
                 return Err(format!(
                     "EdgeOne target is {:?}, expected {}; refusing promote without force",
@@ -769,7 +776,7 @@ impl HaRuntime {
         let mut state = self.state.write().await;
         state.role = HaNodeRole::ProvisionalMaster;
         state.edgeone_origin = Some(target_label);
-        state.last_edgeone_check_at = Some(Utc::now().timestamp());
+        state.last_edgeone_check_at = Some(self.backend_time.now_ts());
         state.message = Some("promoted by EdgeOne origin switch; finalize required".to_string());
         drop(state);
         Ok((self.status().await, audit))
@@ -865,13 +872,15 @@ pub fn sha256_hex_bytes(value: &[u8]) -> String {
 struct EdgeOneClient {
     config: HaConfig,
     http: reqwest::Client,
+    backend_time: BackendTime,
 }
 
 impl EdgeOneClient {
-    fn new(config: HaConfig) -> Self {
+    fn new_with_time(config: HaConfig, backend_time: BackendTime) -> Self {
         Self {
             config,
             http: reqwest::Client::new(),
+            backend_time,
         }
     }
 
@@ -984,7 +993,7 @@ impl EdgeOneClient {
             .unwrap_or(endpoint)
             .trim_end_matches('/');
         let body = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
-        let timestamp = Utc::now().timestamp();
+        let timestamp = self.backend_time.now_ts();
         let auth = tc3_authorization(
             self.config.edgeone_secret_id.as_deref().unwrap_or_default(),
             self.config

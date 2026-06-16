@@ -188,8 +188,19 @@
         let usage_base = format!("http://{}", upstream_addr);
         let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
 
-        // Ensure the selected key's last_used_at differs from untouched keys (second-level granularity).
-        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query("UPDATE api_keys SET last_used_at = ? WHERE api_key = ?")
+            .bind(2)
+            .bind("tvly-http-research-key-a")
+            .execute(&pool)
+            .await
+            .expect("seed hotter key a");
+        sqlx::query("UPDATE api_keys SET last_used_at = ? WHERE api_key = ?")
+            .bind(1)
+            .bind("tvly-http-research-key-b")
+            .execute(&pool)
+            .await
+            .expect("seed colder key b");
 
         let client = Client::new();
         let create_resp = client

@@ -1281,9 +1281,13 @@ async fn request_user_id_backfill_runs_in_resumable_batches() {
         .await
         .expect("clear request user snapshots");
 
-    let first = crate::store::run_request_user_id_backfill_with_pool(&proxy.key_store.pool, 2)
-        .await
-        .expect("run first request user id backfill batch");
+    let first = crate::store::run_request_user_id_backfill_with_pool(
+        &proxy.key_store.pool,
+        2,
+        &proxy.key_store.backend_time,
+    )
+    .await
+    .expect("run first request user id backfill batch");
     assert_eq!(first.rows_scanned, 2);
     assert_eq!(first.rows_updated, 2);
     assert_eq!(first.cursor_after, 2);
@@ -1301,9 +1305,13 @@ async fn request_user_id_backfill_runs_in_resumable_batches() {
     .expect("count filled request logs after first batch");
     assert_eq!(filled_after_first, 2);
 
-    let second = crate::store::run_request_user_id_backfill_with_pool(&proxy.key_store.pool, 2)
-        .await
-        .expect("run second request user id backfill batch");
+    let second = crate::store::run_request_user_id_backfill_with_pool(
+        &proxy.key_store.pool,
+        2,
+        &proxy.key_store.backend_time,
+    )
+    .await
+    .expect("run second request user id backfill batch");
     assert_eq!(second.cursor_before, 2);
     assert_eq!(second.rows_scanned, 1);
     assert_eq!(second.rows_updated, 1);

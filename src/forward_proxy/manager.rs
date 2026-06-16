@@ -3,13 +3,32 @@ impl ForwardProxyManager {
         settings: ForwardProxySettings,
         runtime_rows: Vec<ForwardProxyRuntimeState>,
     ) -> Self {
-        Self::new_with_settings_updated_at(settings, 0, runtime_rows)
+        Self::new_with_settings_updated_at_and_time(
+            settings,
+            0,
+            runtime_rows,
+            BackendTime::system(),
+        )
     }
 
     pub fn new_with_settings_updated_at(
         settings: ForwardProxySettings,
         settings_updated_at: i64,
         runtime_rows: Vec<ForwardProxyRuntimeState>,
+    ) -> Self {
+        Self::new_with_settings_updated_at_and_time(
+            settings,
+            settings_updated_at,
+            runtime_rows,
+            BackendTime::system(),
+        )
+    }
+
+    pub fn new_with_settings_updated_at_and_time(
+        settings: ForwardProxySettings,
+        settings_updated_at: i64,
+        runtime_rows: Vec<ForwardProxyRuntimeState>,
+        backend_time: BackendTime,
     ) -> Self {
         let runtime = runtime_rows
             .into_iter()
@@ -23,9 +42,10 @@ impl ForwardProxyManager {
             selection_counter: 0,
             requests_since_probe: 0,
             probe_in_flight: false,
-            last_probe_at: Utc::now().timestamp() - FORWARD_PROXY_PROBE_INTERVAL_SECS,
+            last_probe_at: backend_time.now_ts() - FORWARD_PROXY_PROBE_INTERVAL_SECS,
             last_subscription_refresh_at: None,
             settings_updated_at,
+            backend_time,
             window_stats_cache: Arc::new(RwLock::new(None)),
         };
         manager.rebuild_endpoints(Vec::new());
@@ -57,13 +77,13 @@ impl ForwardProxyManager {
 
     pub fn apply_settings(&mut self, settings: ForwardProxySettings) {
         self.settings = settings;
-        self.settings_updated_at = Utc::now().timestamp();
+        self.settings_updated_at = self.backend_time.now_ts();
         self.rebuild_endpoints(Vec::new());
     }
 
     pub fn update_settings_only(&mut self, settings: ForwardProxySettings) {
         self.settings = settings;
-        self.settings_updated_at = Utc::now().timestamp();
+        self.settings_updated_at = self.backend_time.now_ts();
     }
 
     pub fn apply_subscription_refresh(
@@ -78,7 +98,7 @@ impl ForwardProxyManager {
             ));
         }
         self.rebuild_endpoints(subscription_endpoints);
-        self.last_subscription_refresh_at = Some(Utc::now().timestamp());
+        self.last_subscription_refresh_at = Some(self.backend_time.now_ts());
     }
 
     pub fn restore_persisted_subscription_endpoints(&mut self) -> usize {
@@ -162,7 +182,10 @@ impl ForwardProxyManager {
                     };
                 }
                 std::collections::hash_map::Entry::Vacant(vacant) => {
-                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(endpoint));
+                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint_at(
+                        endpoint,
+                        self.backend_time.now_ts(),
+                    ));
                 }
             }
         }
@@ -245,7 +268,7 @@ impl ForwardProxyManager {
         }
 
         if !fetched_subscriptions.is_empty() {
-            self.last_subscription_refresh_at = Some(Utc::now().timestamp());
+            self.last_subscription_refresh_at = Some(self.backend_time.now_ts());
         }
 
         if settings.insert_direct {
@@ -281,7 +304,10 @@ impl ForwardProxyManager {
                     };
                 }
                 std::collections::hash_map::Entry::Vacant(vacant) => {
-                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(endpoint));
+                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint_at(
+                        endpoint,
+                        self.backend_time.now_ts(),
+                    ));
                 }
             }
         }
@@ -458,7 +484,7 @@ impl ForwardProxyManager {
         };
         let interval =
             i64::try_from(self.settings.subscription_update_interval_secs).unwrap_or(i64::MAX);
-        (Utc::now().timestamp() - last_refresh_at) >= interval
+        (self.backend_time.now_ts() - last_refresh_at) >= interval
     }
 
     pub fn should_probe_penalized_proxy(&self) -> bool {
@@ -470,7 +496,7 @@ impl ForwardProxyManager {
             return false;
         }
         self.requests_since_probe >= FORWARD_PROXY_PROBE_EVERY_REQUESTS
-            || (Utc::now().timestamp() - self.last_probe_at) >= FORWARD_PROXY_PROBE_INTERVAL_SECS
+            || (self.backend_time.now_ts() - self.last_probe_at) >= FORWARD_PROXY_PROBE_INTERVAL_SECS
     }
 
     pub fn mark_probe_started(&mut self) -> Option<SelectedForwardProxy> {
@@ -493,13 +519,13 @@ impl ForwardProxyManager {
             .cloned()?;
         self.probe_in_flight = true;
         self.requests_since_probe = 0;
-        self.last_probe_at = Utc::now().timestamp();
+        self.last_probe_at = self.backend_time.now_ts();
         Some(SelectedForwardProxy::from_endpoint(&selected))
     }
 
     pub fn mark_probe_finished(&mut self) {
         self.probe_in_flight = false;
-        self.last_probe_at = Utc::now().timestamp();
+        self.last_probe_at = self.backend_time.now_ts();
     }
 
     pub fn rank_candidates_for_subject(

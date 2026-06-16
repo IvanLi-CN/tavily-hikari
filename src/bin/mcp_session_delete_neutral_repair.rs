@@ -1106,7 +1106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::{
         AuthTokenLogCandidate, BILLING_STATE_NONE, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2,
-        REQUEST_KIND_KEY, REQUEST_KIND_LABEL, RepairExecutionSummary, apply_auth_token_log_updates,
+        META_KEY_TOKEN_USAGE_ROLLUP_TS, REQUEST_KIND_KEY, REQUEST_KIND_LABEL,
+        RepairExecutionSummary, TOKEN_USAGE_STATS_BUCKET_SECS, apply_auth_token_log_updates,
         apply_request_log_updates, build_report, connect_sqlite_pool, execute_apply_repair,
         load_auth_token_log_candidates, load_request_log_candidates,
         rebase_touched_business_quota_months, repair_month_start, request_log_needs_update,
@@ -1115,8 +1116,7 @@ mod tests {
     use crate::sqlite_sidecar;
     use chrono::{Datelike, TimeZone, Utc};
     use nanoid::nanoid;
-    use sqlx::Row;
-    use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
+    use sqlx::{Connection, Row};
 
     fn temp_db_path(prefix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
@@ -1127,16 +1127,6 @@ mod tests {
         if let Some(observability_db) = sqlite_sidecar::observability_database_path(db_str) {
             let _ = std::fs::remove_file(observability_db);
         }
-    }
-
-    async fn init_proxy_and_pool(prefix: &str) -> (TavilyProxy, sqlx::SqlitePool, String) {
-        let db_path = temp_db_path(prefix);
-        let db_str = db_path.to_string_lossy().to_string();
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-            .await
-            .expect("proxy created");
-        let pool = connect_sqlite_pool(&db_str).await.expect("sqlite pool");
-        (proxy, pool, db_str)
     }
 
     async fn init_pool_with_schema(prefix: &str) -> (sqlx::SqlitePool, String) {
@@ -1173,13 +1163,81 @@ mod tests {
         .expect("create auth_tokens schema");
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS auth_token_quota (
+                token_id TEXT PRIMARY KEY,
+                month_start INTEGER NOT NULL,
+                month_count INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create auth_token_quota schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS account_monthly_quota (
+                user_id TEXT PRIMARY KEY,
+                month_start INTEGER NOT NULL,
+                month_count INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create account_monthly_quota schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usage_stats (
+                token_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                system_failure_count INTEGER NOT NULL,
+                external_failure_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                PRIMARY KEY (token_id, bucket_start, bucket_secs)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create token_usage_stats schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create meta schema");
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key_id TEXT,
+                auth_token_id TEXT,
+                method TEXT NOT NULL DEFAULT 'DELETE',
+                path TEXT NOT NULL DEFAULT '/mcp',
+                query TEXT,
                 status_code INTEGER,
                 tavily_status_code INTEGER,
                 error_message TEXT,
+                result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                business_credits INTEGER,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
+                request_body BLOB,
                 response_body BLOB,
-                failure_kind TEXT
+                failure_kind TEXT,
+                forwarded_headers TEXT,
+                dropped_headers TEXT,
+                created_at INTEGER NOT NULL
             )
             "#,
         )
@@ -1248,6 +1306,122 @@ mod tests {
         .await
         .expect("insert auth token");
         token_id
+    }
+
+    async fn rollup_token_usage_stats(db_str: &str) -> i64 {
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(db_str)
+            .create_if_missing(false)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let mut connection = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .expect("connect sqlite");
+        let last_log_id =
+            super::read_meta_i64(&mut connection, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+                .await
+                .expect("read rollup cursor")
+                .unwrap_or(0);
+        let (max_log_id, max_created_at): (Option<i64>, Option<i64>) = sqlx::query_as(
+            r#"
+            SELECT
+                MAX(id) AS max_log_id,
+                MAX(created_at) AS max_created_at
+            FROM auth_token_logs
+            WHERE counts_business_quota = 1
+              AND id > ?
+            "#,
+        )
+        .bind(last_log_id)
+        .fetch_one(&mut connection)
+        .await
+        .expect("read max log id");
+        let Some(max_log_id) = max_log_id else {
+            return 0;
+        };
+
+        let affected = sqlx::query(
+            r#"
+            INSERT INTO token_usage_stats (
+                token_id,
+                bucket_start,
+                bucket_secs,
+                success_count,
+                system_failure_count,
+                external_failure_count,
+                quota_exhausted_count
+            )
+            SELECT
+                token_id,
+                (created_at / ?) * ? AS bucket_start,
+                ? AS bucket_secs,
+                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
+                             AND (
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS system_failure_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
+                             AND NOT (
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS external_failure_count,
+                SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+            FROM auth_token_logs
+            WHERE counts_business_quota = 1
+              AND id > ? AND id <= ?
+            GROUP BY token_id, bucket_start
+            ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
+                success_count = token_usage_stats.success_count + excluded.success_count,
+                system_failure_count =
+                    token_usage_stats.system_failure_count + excluded.system_failure_count,
+                external_failure_count =
+                    token_usage_stats.external_failure_count + excluded.external_failure_count,
+                quota_exhausted_count =
+                    token_usage_stats.quota_exhausted_count + excluded.quota_exhausted_count
+            "#,
+        )
+        .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+        .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+        .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+        .bind(last_log_id)
+        .bind(max_log_id)
+        .execute(&mut connection)
+        .await
+        .expect("rollup token usage stats")
+        .rows_affected() as i64;
+        super::write_meta_i64(
+            &mut connection,
+            META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2,
+            max_log_id,
+        )
+        .await
+        .expect("write rollup cursor");
+        if let Some(ts) = max_created_at {
+            let legacy_ts = super::read_meta_i64(&mut connection, META_KEY_TOKEN_USAGE_ROLLUP_TS)
+                .await
+                .expect("read legacy ts");
+            super::write_meta_i64(
+                &mut connection,
+                META_KEY_TOKEN_USAGE_ROLLUP_TS,
+                legacy_ts.map_or(ts, |old| old.max(ts)),
+            )
+            .await
+            .expect("write legacy ts");
+        }
+        affected
     }
 
     async fn seed_session_delete_misclassified_logs(
@@ -1448,14 +1622,11 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_detects_candidates_without_writing() {
-        let (proxy, pool, db_str) = init_proxy_and_pool("session-delete-repair-dry-run").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-dry-run"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-dry-run").await;
+        let token = seed_access_token_row(&pool, "session-delete-repair-dry-run").await;
         let created_at = Utc::now().timestamp();
         let (request_log_id, auth_log_id) =
-            seed_session_delete_misclassified_logs(&pool, &token.id, created_at).await;
+            seed_session_delete_misclassified_logs(&pool, &token, created_at).await;
 
         let request_candidates = load_request_log_candidates(&pool)
             .await
@@ -1502,12 +1673,9 @@ mod tests {
 
     #[tokio::test]
     async fn request_candidates_match_error_text_without_response_body() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-error-text-request").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-error-text-request"))
-            .await
-            .expect("create token");
+        let (pool, db_str) =
+            init_pool_with_schema("session-delete-repair-error-text-request").await;
+        let token = seed_access_token_row(&pool, "session-delete-repair-error-text-request").await;
         let created_at = Utc::now().timestamp();
 
         let request_log_id: i64 = sqlx::query_scalar(
@@ -1560,7 +1728,7 @@ mod tests {
             RETURNING id
             "#,
         )
-        .bind(&token.id)
+        .bind(&token)
         .bind(created_at)
         .fetch_one(&pool)
         .await
@@ -1577,15 +1745,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_updates_rows_and_rebuilds_derived_usage() {
-        let (proxy, pool, db_str) = init_proxy_and_pool("session-delete-repair-apply").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-apply"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-apply").await;
+        let token = seed_access_token_row(&pool, "session-delete-repair-apply").await;
         let created_at = Utc::now().timestamp();
         let current_month_start = current_month_start(created_at);
         let (request_log_id, auth_log_id) =
-            seed_session_delete_misclassified_logs(&pool, &token.id, created_at).await;
+            seed_session_delete_misclassified_logs(&pool, &token, created_at).await;
 
         sqlx::query(
             r#"
@@ -1596,20 +1761,17 @@ mod tests {
                 month_count = excluded.month_count
             "#,
         )
-        .bind(&token.id)
+        .bind(&token)
         .bind(current_month_start)
         .bind(2_i64)
         .execute(&pool)
         .await
         .expect("seed month quota");
 
-        proxy
-            .rollup_token_usage_stats()
-            .await
-            .expect("rollup token usage stats");
+        rollup_token_usage_stats(&db_str).await;
         let stats_before: Option<(i64,)> =
             sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&token.id)
+                .bind(&token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read usage stats before repair");
@@ -1717,7 +1879,7 @@ mod tests {
 
         let stats_after: Option<(i64,)> =
             sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&token.id)
+                .bind(&token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read usage stats after repair");
@@ -1725,7 +1887,7 @@ mod tests {
 
         let month_count_after: i64 =
             sqlx::query_scalar("SELECT month_count FROM auth_token_quota WHERE token_id = ?")
-                .bind(&token.id)
+                .bind(&token)
                 .fetch_one(&pool)
                 .await
                 .expect("read month quota after repair");
@@ -1920,13 +2082,10 @@ mod tests {
 
     #[tokio::test]
     async fn apply_is_idempotent_after_first_repair() {
-        let (proxy, pool, db_str) = init_proxy_and_pool("session-delete-repair-idempotent").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-idempotent"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-idempotent").await;
+        let token = seed_access_token_row(&pool, "session-delete-repair-idempotent").await;
         let created_at = Utc::now().timestamp();
-        seed_session_delete_misclassified_logs(&pool, &token.id, created_at).await;
+        seed_session_delete_misclassified_logs(&pool, &token, created_at).await;
 
         let first_request_candidates = load_request_log_candidates(&pool)
             .await
@@ -1982,23 +2141,16 @@ mod tests {
 
     #[tokio::test]
     async fn apply_repair_rolls_back_when_derived_rebuild_fails() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-atomic-rollback").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-atomic-rollback"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-atomic-rollback").await;
+        let token = seed_access_token_row(&pool, "session-delete-repair-atomic-rollback").await;
         let created_at = Utc::now().timestamp();
         let (request_log_id, auth_log_id) =
-            seed_session_delete_misclassified_logs(&pool, &token.id, created_at).await;
+            seed_session_delete_misclassified_logs(&pool, &token, created_at).await;
 
-        proxy
-            .rollup_token_usage_stats()
-            .await
-            .expect("initial rollup");
+        rollup_token_usage_stats(&db_str).await;
         let stats_before_failure: Option<(i64,)> =
             sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&token.id)
+                .bind(&token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read usage stats before rollback");
@@ -2052,7 +2204,7 @@ mod tests {
             )
             "#,
         )
-        .bind(&token.id)
+        .bind(&token)
         .bind(created_at)
         .execute(&pool)
         .await
@@ -2127,7 +2279,7 @@ mod tests {
 
         let stats_after_failure: Option<(i64,)> =
             sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&token.id)
+                .bind(&token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read usage stats after rollback");
@@ -2138,26 +2290,18 @@ mod tests {
 
     #[tokio::test]
     async fn apply_repair_rebuilds_usage_stats_without_tail_double_counting() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-rollup-cursor").await;
-        let repaired_token = proxy
-            .create_access_token(Some("session-delete-repair-rollup-cursor-primary"))
-            .await
-            .expect("create repaired token");
-        let unaffected_token = proxy
-            .create_access_token(Some("session-delete-repair-rollup-cursor-tail"))
-            .await
-            .expect("create unaffected token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-rollup-cursor").await;
+        let repaired_token =
+            seed_access_token_row(&pool, "session-delete-repair-rollup-cursor-primary").await;
+        let unaffected_token =
+            seed_access_token_row(&pool, "session-delete-repair-rollup-cursor-tail").await;
         let created_at = Utc::now().timestamp();
-        seed_session_delete_misclassified_logs(&pool, &repaired_token.id, created_at).await;
+        seed_session_delete_misclassified_logs(&pool, &repaired_token, created_at).await;
 
-        proxy
-            .rollup_token_usage_stats()
-            .await
-            .expect("initial rollup");
+        rollup_token_usage_stats(&db_str).await;
 
         let tail_log_id =
-            seed_billable_search_auth_log(&pool, &unaffected_token.id, created_at + 1).await;
+            seed_billable_search_auth_log(&pool, &unaffected_token, created_at + 1).await;
 
         let request_candidates = load_request_log_candidates(&pool)
             .await
@@ -2185,7 +2329,7 @@ mod tests {
 
         let repaired_stats: Option<(i64,)> =
             sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&repaired_token.id)
+                .bind(&repaired_token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read repaired token stats");
@@ -2193,21 +2337,18 @@ mod tests {
 
         let tail_stats_before: Option<(i64,)> =
             sqlx::query_as("SELECT success_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&unaffected_token.id)
+                .bind(&unaffected_token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read tail stats before follow-up rollup");
         assert_eq!(tail_stats_before, Some((1,)));
 
-        let rollup = proxy
-            .rollup_token_usage_stats()
-            .await
-            .expect("follow-up rollup");
-        assert_eq!(rollup.0, 0);
+        let rollup = rollup_token_usage_stats(&db_str).await;
+        assert_eq!(rollup, 0);
 
         let tail_stats_after: Option<(i64,)> =
             sqlx::query_as("SELECT success_count FROM token_usage_stats WHERE token_id = ?")
-                .bind(&unaffected_token.id)
+                .bind(&unaffected_token)
                 .fetch_optional(&pool)
                 .await
                 .expect("read tail stats after follow-up rollup");
@@ -2218,16 +2359,10 @@ mod tests {
 
     #[tokio::test]
     async fn historical_month_rebase_preserves_newer_quota_rows() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-historical-rebase").await;
-        let old_token = proxy
-            .create_access_token(Some("session-delete-repair-old-month"))
-            .await
-            .expect("create old token");
-        let current_token = proxy
-            .create_access_token(Some("session-delete-repair-current-month"))
-            .await
-            .expect("create current token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-historical-rebase").await;
+        let old_token = seed_access_token_row(&pool, "session-delete-repair-old-month").await;
+        let current_token =
+            seed_access_token_row(&pool, "session-delete-repair-current-month").await;
 
         let now = Utc::now();
         let current_start = current_month_start(now.timestamp());
@@ -2236,7 +2371,7 @@ mod tests {
         let old_created_at = previous_start + 12 * 60 * 60;
         let current_created_at = now.timestamp();
 
-        seed_session_delete_misclassified_logs(&pool, &old_token.id, old_created_at).await;
+        seed_session_delete_misclassified_logs(&pool, &old_token, old_created_at).await;
 
         sqlx::query(
             r#"
@@ -2247,7 +2382,7 @@ mod tests {
                 month_count = excluded.month_count
             "#,
         )
-        .bind(&old_token.id)
+        .bind(&old_token)
         .bind(previous_start)
         .bind(2_i64)
         .execute(&pool)
@@ -2303,8 +2438,8 @@ mod tests {
             )
             "#,
         )
-        .bind(&current_token.id)
-        .bind(format!("token:{}", current_token.id))
+        .bind(&current_token)
+        .bind(format!("token:{current_token}"))
         .bind(current_created_at)
         .execute(&pool)
         .await
@@ -2319,7 +2454,7 @@ mod tests {
                 month_count = excluded.month_count
             "#,
         )
-        .bind(&current_token.id)
+        .bind(&current_token)
         .bind(current_start)
         .bind(5_i64)
         .execute(&pool)
@@ -2361,7 +2496,7 @@ mod tests {
         let old_month_row: (i64, i64) = sqlx::query_as(
             "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
         )
-        .bind(&old_token.id)
+        .bind(&old_token)
         .fetch_one(&pool)
         .await
         .expect("read previous month quota");
@@ -2370,7 +2505,7 @@ mod tests {
         let current_month_row: (i64, i64) = sqlx::query_as(
             "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
         )
-        .bind(&current_token.id)
+        .bind(&current_token)
         .fetch_one(&pool)
         .await
         .expect("read current month quota");

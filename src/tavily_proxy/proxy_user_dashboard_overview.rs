@@ -87,7 +87,7 @@ impl TavilyProxy {
         daily_window: Option<TimeRangeUtc>,
     ) -> Result<UserDashboardOverviewSnapshot, ProxyError> {
         let summary = self.user_dashboard_summary(user_id, daily_window).await?;
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let user_created_at = self.key_store.fetch_user_created_at(user_id).await?;
 

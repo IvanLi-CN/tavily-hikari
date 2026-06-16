@@ -142,8 +142,12 @@ impl KeyStore {
         &self,
         input: AnnouncementMutation,
     ) -> Result<Announcement, ProxyError> {
-        self.insert_announcement_with_status(input, ANNOUNCEMENT_STATUS_DRAFT, Utc::now().timestamp())
-            .await
+        self.insert_announcement_with_status(
+            input,
+            ANNOUNCEMENT_STATUS_DRAFT,
+            self.backend_time.now_ts(),
+        )
+        .await
     }
 
     pub(crate) async fn list_announcements(&self) -> Result<Vec<Announcement>, ProxyError> {
@@ -173,7 +177,7 @@ impl KeyStore {
         input: AnnouncementMutation,
     ) -> Result<Option<Announcement>, ProxyError> {
         let input = normalize_announcement_mutation(input)?;
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query(
             r#"
@@ -317,7 +321,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn publish_announcement(&self, id: &str) -> Result<Option<Announcement>, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query(
             r#"
@@ -411,7 +415,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn archive_announcement(&self, id: &str) -> Result<Option<Announcement>, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let updated = sqlx::query(
             r#"UPDATE announcements
                   SET status = ?, updated_at = ?, archived_at = COALESCE(archived_at, ?)

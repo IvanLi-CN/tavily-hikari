@@ -73,14 +73,14 @@ async fn sse_token(
                     yield Ok(keep);
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(2)).await;
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
 async fn build_token_snapshot_event(state: &Arc<AppState>, id: &str) -> Option<Event> {
-    let now = Utc::now();
+    let now = state.proxy.backend_time().now_utc();
     let month_start = Utc
         .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
         .single()?
@@ -145,7 +145,7 @@ async fn wait_for_mcp_session_retry_window(
         let Some(session) = state.proxy.get_active_mcp_session(proxy_session_id).await? else {
             return Err(ProxyError::PinnedMcpSessionUnavailable);
         };
-        let now = Utc::now().timestamp();
+        let now = state.proxy.backend_time().now_ts();
         let Some(rate_limited_until) = session.rate_limited_until else {
             return Ok(waited);
         };
@@ -155,7 +155,7 @@ async fn wait_for_mcp_session_retry_window(
 
         waited = true;
         let wait_secs = (rate_limited_until - now).max(0) as u64;
-        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+        state.proxy.backend_time().sleep(Duration::from_secs(wait_secs)).await;
     }
 }
 
@@ -221,7 +221,7 @@ async fn proxy_mcp_follow_up_with_retry(
         return Ok(first_response);
     }
 
-    let now = Utc::now().timestamp();
+    let now = state.proxy.backend_time().now_ts();
     let retry_after_secs = mcp_session_retry_after_secs(&first_response.headers, now);
     let rate_limited_until = now + retry_after_secs;
     state
@@ -240,12 +240,16 @@ async fn proxy_mcp_follow_up_with_retry(
     )
     .await;
 
-    tokio::time::sleep(Duration::from_secs(retry_after_secs.max(0) as u64)).await;
+    state
+        .proxy
+        .backend_time()
+        .sleep(Duration::from_secs(retry_after_secs.max(0) as u64))
+        .await;
 
     let mut retry_response = state.proxy.proxy_request(proxy_request).await?;
     let retry_analysis = analyze_mcp_attempt(retry_response.status, &retry_response.body);
     if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE) {
-        let now = Utc::now().timestamp();
+        let now = state.proxy.backend_time().now_ts();
         let retry_after_secs = mcp_session_retry_after_secs(&retry_response.headers, now);
         let rate_limited_until = now + retry_after_secs;
         state

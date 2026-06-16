@@ -1,3 +1,5 @@
+use tokio::time::Instant;
+
 async fn spawn_mock_mcp_upstream_for_tavily_search_failed_status_string(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {

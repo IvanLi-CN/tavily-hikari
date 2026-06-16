@@ -341,7 +341,7 @@ impl KeyStore {
         .await?;
         self.record_request_rate_limit_snapshot_at(
             settings.request_rate_limit,
-            Utc::now().timestamp(),
+            self.backend_time.now_ts(),
         )
         .await?;
         let saved_settings = SystemSettings {

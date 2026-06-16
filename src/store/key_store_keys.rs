@@ -1,9 +1,9 @@
 impl KeyStore {
-    fn admin_user_activity_since(scope: AdminUserActivityScope) -> Option<i64> {
+    fn admin_user_activity_since(&self, scope: AdminUserActivityScope) -> Option<i64> {
         match scope {
             AdminUserActivityScope::All => None,
             AdminUserActivityScope::Active90d => {
-                Some(Utc::now().timestamp() - ADMIN_ACTIVE_USERS_WINDOW_SECS)
+                Some(self.backend_time.now_ts() - ADMIN_ACTIVE_USERS_WINDOW_SECS)
             }
         }
     }
@@ -112,7 +112,7 @@ impl KeyStore {
     pub(crate) async fn get_admin_user_list_stats(&self) -> Result<AdminUserListStats, ProxyError> {
         let total_users = self.count_total_users().await?;
         let active_users_90d = self
-            .count_active_users_since(Utc::now().timestamp() - ADMIN_ACTIVE_USERS_WINDOW_SECS)
+            .count_active_users_since(self.backend_time.now_ts() - ADMIN_ACTIVE_USERS_WINDOW_SECS)
             .await?;
         Ok(AdminUserListStats {
             active_users_90d,
@@ -291,7 +291,7 @@ impl KeyStore {
     pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
         let mut tx = self.pool.begin().await?;
 
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
 
         for key in keys {
             // If key exists, undelete by clearing deleted_at
@@ -354,8 +354,8 @@ impl KeyStore {
     pub(crate) async fn acquire_key(&self) -> Result<ApiKeyLease, ProxyError> {
         self.reset_monthly().await?;
 
-        let now = Utc::now().timestamp();
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
@@ -474,8 +474,8 @@ impl KeyStore {
     ) -> Result<ApiKeyLease, ProxyError> {
         self.reset_monthly().await?;
 
-        let now = Utc::now().timestamp();
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
@@ -544,7 +544,7 @@ impl KeyStore {
         &self,
     ) -> Result<Vec<String>, ProxyError> {
         self.reset_monthly().await?;
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let active = sqlx::query_scalar::<_, String>(
             r#"
@@ -677,8 +677,8 @@ impl KeyStore {
         status: &str,
         allow_low_quota_depleted: bool,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
-        let now = Utc::now().timestamp();
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let lease = sqlx::query_as::<_, (String, String)>(
             r#"
@@ -724,7 +724,7 @@ impl KeyStore {
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
         self.reset_monthly().await?;
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_scalar(
@@ -781,7 +781,7 @@ impl KeyStore {
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
         self.reset_monthly().await?;
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_scalar(
@@ -837,7 +837,7 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<bool, ProxyError> {
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
         let exists = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT 1
@@ -873,7 +873,7 @@ impl KeyStore {
             return Ok(false);
         }
 
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
         sqlx::query(
             r#"
@@ -906,8 +906,8 @@ impl KeyStore {
     ) -> Result<ApiKeyLease, ProxyError> {
         self.reset_monthly().await?;
 
-        let now = Utc::now().timestamp();
-        let month_start = start_of_month(Utc::now()).timestamp();
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
         let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_as::<_, (String, String)>(
@@ -978,7 +978,7 @@ impl KeyStore {
         token_id: &str,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO research_requests (
@@ -1215,7 +1215,7 @@ impl KeyStore {
             .bind(&id)
             .bind(&secret)
             .bind(note.unwrap_or(""))
-            .bind(Utc::now().timestamp())
+            .bind(self.backend_time.now_ts())
             .execute(&self.pool)
             .await;
 
@@ -1258,7 +1258,7 @@ impl KeyStore {
                 .bind(&secret)
                 .bind(note.unwrap_or(""))
                 .bind(group)
-                .bind(Utc::now().timestamp())
+                .bind(self.backend_time.now_ts())
                 .execute(&mut *tx)
                 .await;
 
@@ -1399,7 +1399,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query("UPDATE auth_tokens SET enabled = 0, deleted_at = ? WHERE id = ?")
             .bind(now)
             .bind(id)
@@ -1601,7 +1601,7 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Option<String>, ProxyError> {
-        let now = Instant::now();
+        let now = self.backend_time.now_ts();
         if let Some(cached) = {
             let cache = self.token_binding_cache.read().await;
             cache.get(token_id).cloned()
@@ -1630,18 +1630,18 @@ impl KeyStore {
 
     pub(crate) async fn cache_token_binding(&self, token_id: &str, user_id: Option<&str>) {
         let mut cache = self.token_binding_cache.write().await;
+        let now = self.backend_time.now_ts();
         cache.insert(
             token_id.to_string(),
             TokenBindingCacheEntry {
                 user_id: user_id.map(str::to_string),
-                expires_at: Instant::now() + Duration::from_secs(TOKEN_BINDING_CACHE_TTL_SECS),
+                expires_at: now + TOKEN_BINDING_CACHE_TTL_SECS as i64,
             },
         );
 
         if cache.len() <= TOKEN_BINDING_CACHE_MAX_ENTRIES {
             return;
         }
-        let now = Instant::now();
         cache.retain(|_, entry| entry.expires_at > now);
         if cache.len() <= TOKEN_BINDING_CACHE_MAX_ENTRIES {
             return;
@@ -1657,7 +1657,7 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Option<AccountQuotaResolution> {
-        let now = Instant::now();
+        let now = self.backend_time.now_ts();
         if let Some(cached) = {
             let cache = self.account_quota_resolution_cache.read().await;
             cache.get(user_id).cloned()
@@ -1674,19 +1674,18 @@ impl KeyStore {
         resolution: &AccountQuotaResolution,
     ) {
         let mut cache = self.account_quota_resolution_cache.write().await;
+        let now = self.backend_time.now_ts();
         cache.insert(
             user_id.to_string(),
             AccountQuotaResolutionCacheEntry {
                 resolution: resolution.clone(),
-                expires_at: Instant::now()
-                    + Duration::from_secs(ACCOUNT_QUOTA_RESOLUTION_CACHE_TTL_SECS),
+                expires_at: now + ACCOUNT_QUOTA_RESOLUTION_CACHE_TTL_SECS as i64,
             },
         );
 
         if cache.len() <= ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES {
             return;
         }
-        let now = Instant::now();
         cache.retain(|_, entry| entry.expires_at > now);
         if cache.len() <= ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES {
             return;
@@ -1721,7 +1720,7 @@ impl KeyStore {
     }
 
     async fn cached_request_logs_catalog(&self, cache_key: &str) -> Option<RequestLogsCatalog> {
-        let now = Instant::now();
+        let now = self.backend_time.now_ts();
         if let Some(cached) = {
             let cache = self.request_logs_catalog_cache.read().await;
             cache.get(cache_key).cloned()
@@ -1734,15 +1733,14 @@ impl KeyStore {
 
     async fn cache_request_logs_catalog(&self, cache_key: String, value: &RequestLogsCatalog) {
         let mut cache = self.request_logs_catalog_cache.write().await;
+        let now = self.backend_time.now_ts();
         cache.insert(
             cache_key,
             RequestLogsCatalogCacheEntry {
                 value: value.clone(),
-                expires_at: Instant::now()
-                    + Duration::from_secs(ADMIN_REQUEST_LOGS_CATALOG_CACHE_TTL_SECS as u64),
+                expires_at: now + ADMIN_REQUEST_LOGS_CATALOG_CACHE_TTL_SECS,
             },
         );
-        let now = Instant::now();
         cache.retain(|_, entry| entry.expires_at > now);
     }
 
@@ -1784,7 +1782,7 @@ impl KeyStore {
             .filter(|value| !value.is_empty())
             .map(|value| format!("%{value}%"));
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
-        let active_since = Self::admin_user_activity_since(activity_scope);
+        let active_since = self.admin_user_activity_since(activity_scope);
 
         let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM users u WHERE ");
         Self::push_admin_user_filters(&mut count_builder, tag_id, search.as_deref(), active_since);
@@ -1836,7 +1834,7 @@ impl KeyStore {
             .filter(|value| !value.is_empty())
             .map(|value| format!("%{value}%"));
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
-        let active_since = Self::admin_user_activity_since(activity_scope);
+        let active_since = self.admin_user_activity_since(activity_scope);
         let mut builder = QueryBuilder::<Sqlite>::new("");
         Self::push_admin_user_listing_select(&mut builder);
         Self::push_admin_user_filters(&mut builder, tag_id, search.as_deref(), active_since);
@@ -2025,7 +2023,7 @@ impl KeyStore {
         user_id: &str,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
@@ -2079,7 +2077,7 @@ impl KeyStore {
         user_id: Option<&str>,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO token_primary_api_key_affinity (
@@ -2138,7 +2136,7 @@ impl KeyStore {
         project_id_hash: &str,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO http_project_api_key_affinity (
@@ -2580,7 +2578,7 @@ impl KeyStore {
         proxy_session_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2603,7 +2601,7 @@ impl KeyStore {
         upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2627,7 +2625,7 @@ impl KeyStore {
         upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             UPDATE mcp_sessions

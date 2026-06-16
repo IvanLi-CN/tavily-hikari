@@ -471,6 +471,10 @@ pub struct ForwardProxyRuntimeGeoMetadataUpdate {
 
 impl ForwardProxyRuntimeState {
     pub fn default_for_endpoint(endpoint: &ForwardProxyEndpoint) -> Self {
+        Self::default_for_endpoint_at(endpoint, BackendTime::system().now_ts())
+    }
+
+    pub fn default_for_endpoint_at(endpoint: &ForwardProxyEndpoint, updated_at: i64) -> Self {
         Self {
             proxy_key: endpoint.key.clone(),
             display_name: endpoint.display_name.clone(),
@@ -500,7 +504,7 @@ impl ForwardProxyRuntimeState {
             success_ema: 0.65,
             latency_ema_ms: None,
             consecutive_failures: 0,
-            updated_at: Utc::now().timestamp(),
+            updated_at,
         }
     }
 
@@ -612,5 +616,6 @@ pub struct ForwardProxyManager {
     pub last_probe_at: i64,
     pub last_subscription_refresh_at: Option<i64>,
     pub settings_updated_at: i64,
+    pub(crate) backend_time: BackendTime,
     pub(crate) window_stats_cache: Arc<RwLock<Option<ForwardProxyWindowStatsSetCacheEntry>>>,
 }

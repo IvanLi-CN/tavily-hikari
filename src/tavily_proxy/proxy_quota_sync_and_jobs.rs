@@ -48,7 +48,7 @@ impl TavilyProxy {
                 return Err(err);
             }
         };
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .record_quota_sync_sample(key_id, limit, remaining, now, source)
             .await?;
@@ -98,7 +98,7 @@ impl TavilyProxy {
         remaining: i64,
         source: &str,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .record_quota_sync_sample(key_id, limit, remaining, now, source)
             .await?;
@@ -181,7 +181,7 @@ impl TavilyProxy {
         let before = self.key_store.fetch_key_state_snapshot(&key_id).await?;
         let changed = self.key_store.mark_quota_exhausted(api_key).await?;
         if changed {
-            let created_at = Utc::now().timestamp();
+            let created_at = self.backend_time.now_ts();
             let after = self.key_store.fetch_key_state_snapshot(&key_id).await?;
             self.key_store
                 .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
@@ -324,7 +324,9 @@ impl TavilyProxy {
                         "token usage rollup transient sqlite error (attempt={}, backoff={}ms): {}",
                         retry_idx, backoff_ms, err
                     );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    self.backend_time
+                        .sleep(Duration::from_millis(backoff_ms))
+                        .await;
                 }
                 Err(err) => return Err(err),
             }
@@ -353,7 +355,9 @@ impl TavilyProxy {
                         "token usage rebuild transient sqlite error (attempt={}, backoff={}ms): {}",
                         retry_idx, backoff_ms, err
                     );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    self.backend_time
+                        .sleep(Duration::from_millis(backoff_ms))
+                        .await;
                 }
                 Err(err) => return Err(err),
             }
@@ -364,7 +368,7 @@ impl TavilyProxy {
     /// This uses a fixed retention window and never looks at token status,
     /// to avoid impacting auditability.
     pub async fn gc_auth_token_logs(&self) -> Result<i64, ProxyError> {
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let threshold = now_ts - AUTH_TOKEN_LOG_RETENTION_SECS;
         self.key_store.delete_old_auth_token_logs(threshold).await
     }
@@ -399,7 +403,10 @@ impl TavilyProxy {
     ) -> Result<RequestLogsGcReport, ProxyError> {
         let settings = self.key_store.get_system_settings().await?;
         let retention_days = settings.request_log_retention.max_log_retention_days;
-        let threshold = configured_request_logs_retention_threshold_utc_ts(retention_days);
+        let threshold = configured_request_logs_retention_threshold_utc_ts_at(
+            retention_days,
+            self.backend_time.local_now(),
+        );
         self.key_store
             .delete_old_request_logs_bounded(
                 threshold,
@@ -411,7 +418,7 @@ impl TavilyProxy {
     }
 
     pub async fn gc_mcp_sessions(&self) -> Result<i64, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         self.key_store
             .delete_stale_mcp_sessions(now, now - MCP_SESSION_RETENTION_SECS)
             .await
@@ -419,7 +426,7 @@ impl TavilyProxy {
 
     pub async fn gc_mcp_session_init_backoffs(&self) -> Result<i64, ProxyError> {
         self.key_store
-            .delete_expired_api_key_transient_backoffs(Utc::now().timestamp())
+            .delete_expired_api_key_transient_backoffs(self.backend_time.now_ts())
             .await
     }
 

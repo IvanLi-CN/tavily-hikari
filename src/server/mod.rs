@@ -26,7 +26,9 @@ use axum::{
     routing::{any, delete, get, patch, post, put},
 };
 use base64::Engine as _;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
+#[cfg(test)]
+use chrono::Local;
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
 use futures_util::stream as futures_stream;
 use futures_util::{Stream, StreamExt};
 use nanoid::nanoid;
@@ -61,7 +63,7 @@ struct SummarySig {
     recent_alerts_counts: Vec<(String, i64)>,
     recent_alerts_top_groups: Vec<(String, i64, i64)>,
 }
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tavily_hikari::{
     AdminTokenEnabledFilter, AdminTokenListFilters, AdminTokenOwnerFilter, AdminUserIdentity,
     AdminUserSortedPageRequest, AdminUserUsageSeriesKind, ApiKeyMetrics, ApiKeyStickyNode,

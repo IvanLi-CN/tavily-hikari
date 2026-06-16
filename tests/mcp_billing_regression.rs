@@ -19,6 +19,9 @@ use sqlx::{
 };
 use tokio::net::TcpListener;
 
+#[path = "common/support_binaries.rs"]
+mod support_binaries;
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
 }
@@ -78,18 +81,21 @@ impl Drop for ProxyProcess {
 }
 
 fn spawn_proxy_process(db_path: &str, upstream: &str, port: u16) -> ProxyProcess {
-    let child = Command::new(env!("CARGO_BIN_EXE_tavily-hikari"))
-        .env("TAVILY_API_KEYS", "tvly-test-key")
-        .env("TAVILY_UPSTREAM", upstream)
-        .env("TAVILY_USAGE_BASE", upstream.trim_end_matches("/mcp"))
-        .env("PROXY_BIND", "127.0.0.1")
-        .env("PROXY_PORT", port.to_string())
-        .env("PROXY_DB_PATH", db_path)
-        .env("DEV_OPEN_ADMIN", "true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn tavily-hikari");
+    let child = Command::new(support_binaries::resolve_support_binary(
+        "TAVILY_HIKARI_TEST_BIN",
+        env!("CARGO_BIN_EXE_tavily-hikari"),
+    ))
+    .env("TAVILY_API_KEYS", "tvly-test-key")
+    .env("TAVILY_UPSTREAM", upstream)
+    .env("TAVILY_USAGE_BASE", upstream.trim_end_matches("/mcp"))
+    .env("PROXY_BIND", "127.0.0.1")
+    .env("PROXY_PORT", port.to_string())
+    .env("PROXY_DB_PATH", db_path)
+    .env("DEV_OPEN_ADMIN", "true")
+    .stdout(Stdio::null())
+    .stderr(Stdio::inherit())
+    .spawn()
+    .expect("spawn tavily-hikari");
 
     ProxyProcess { child }
 }

@@ -85,7 +85,7 @@ impl TavilyProxy {
         series: AdminUserUsageSeriesKind,
     ) -> Result<AdminUserUsageSeries, ProxyError> {
         self.key_store.flush_request_stats_writes().await?;
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let (
             metric_kind,
             bucket_kind,

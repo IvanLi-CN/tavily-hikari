@@ -146,7 +146,7 @@ impl KeyStore {
         .bind(direct_origin_port)
         .bind(origin_group_id)
         .bind(message)
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -226,7 +226,7 @@ impl KeyStore {
         .bind(source_node_id)
         .bind(target_node_id)
         .bind(watermark)
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .bind(detail)
         .execute(&self.pool)
         .await?;
@@ -245,7 +245,7 @@ impl KeyStore {
                 "schemaVersion": HA_BASELINE_SCHEMA_VERSION,
                 "kind": "baseline_start",
                 "nodeId": node_id,
-                "generatedAt": Utc::now().timestamp(),
+                "generatedAt": self.backend_time.now_ts(),
                 "highWatermark": high_watermark,
                 "encoding": "zstd-ndjson"
             }))
@@ -594,7 +594,7 @@ impl KeyStore {
         )
         .bind(peer_node_id)
         .bind(acked_seq.max(0))
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -630,7 +630,7 @@ impl KeyStore {
         .bind(resource_id)
         .bind(op)
         .bind(payload_json)
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .bind(checksum)
         .execute(&self.pool)
         .await?;
@@ -641,7 +641,7 @@ impl KeyStore {
         &self,
         record: &HaFailoverOperationRecord,
     ) -> Result<(), ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
             INSERT INTO ha_failover_operations (
@@ -692,7 +692,7 @@ impl KeyStore {
         .bind(response_json)
         .bind(status)
         .bind(message)
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -705,7 +705,7 @@ impl KeyStore {
         event_count: i64,
         checksum: &str,
     ) -> Result<bool, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let result = sqlx::query(
             r#"
             INSERT OR IGNORE INTO ha_recovery_batches (
@@ -739,7 +739,7 @@ impl KeyStore {
         )
         .bind(status)
         .bind(event_count)
-        .bind(Utc::now().timestamp())
+        .bind(self.backend_time.now_ts())
         .bind(batch_id)
         .execute(&self.pool)
         .await?;
@@ -805,24 +805,36 @@ impl KeyStore {
             .collect()
     }
 
-    async fn table_columns(&self, table: &str) -> Result<Vec<String>, ProxyError> {
-        let sql = if is_observability_table(table) {
-            format!("SELECT name FROM pragma_table_info('{}', 'observability')", table)
-        } else {
-            format!("SELECT name FROM pragma_table_info('{}')", table)
-        };
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+    async fn table_columns_on_conn(
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        table: &str,
+    ) -> Result<Vec<String>, ProxyError> {
+        let sql = format!("PRAGMA table_info({})", quote_sqlite_identifier(table));
+        let rows = sqlx::query(&sql).fetch_all(&mut **conn).await?;
         rows.into_iter()
             .map(|row| row.try_get::<String, _>("name").map_err(ProxyError::from))
             .collect()
     }
 
+    async fn table_columns(&self, table: &str) -> Result<Vec<String>, ProxyError> {
+        let mut conn = self.pool.acquire().await?;
+        Self::table_columns_on_conn(&mut conn, table).await
+    }
+
     pub(crate) async fn ensure_ha_outbox_triggers(&self) -> Result<(), ProxyError> {
+        let mut conn = self.pool.acquire().await?;
         for table in HA_BASELINE_TABLES {
-            if !self.table_exists(table).await? {
+            let table_exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            )
+            .bind(table)
+            .fetch_one(&mut *conn)
+            .await?
+                != 0;
+            if !table_exists {
                 continue;
             }
-            let columns = self.table_columns(table).await?;
+            let columns = Self::table_columns_on_conn(&mut conn, table).await?;
             if columns.is_empty() {
                 continue;
             }
@@ -869,14 +881,14 @@ impl KeyStore {
                     END
                     "#
                 );
-                sqlx::query(&sql).execute(&self.pool).await?;
+                sqlx::query(&sql).execute(&mut *conn).await?;
             }
         }
         Ok(())
     }
 
     async fn prune_ha_outbox_retention(&self) -> Result<(), ProxyError> {
-        let threshold = Utc::now().timestamp() - HA_OUTBOX_RETENTION_SECS;
+        let threshold = self.backend_time.now_ts() - HA_OUTBOX_RETENTION_SECS;
         sqlx::query("DELETE FROM ha_outbox WHERE created_at < ?")
             .bind(threshold)
             .execute(&self.pool)

@@ -932,8 +932,9 @@ impl KeyStore {
         window_hours: i64,
     ) -> Result<RecentAlertsSummary, ProxyError> {
         let clamped_window_hours = window_hours.clamp(1, 24 * 30);
-        let since = Utc::now()
-            .timestamp()
+        let since = self
+            .backend_time
+            .now_ts()
             .saturating_sub(clamped_window_hours.saturating_mul(3600));
         let events = self
             .fetch_alert_events_filtered(AlertEventFilters {

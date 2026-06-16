@@ -202,7 +202,7 @@ impl TavilyProxy {
                             &lease.id,
                             MCP_SESSION_INIT_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -478,7 +478,7 @@ impl TavilyProxy {
                             &lease.id,
                             API_REBALANCE_HTTP_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 } else if armed_http_project_affinity_backoff {
@@ -487,7 +487,7 @@ impl TavilyProxy {
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 } else if armed_http_global_backoff {
@@ -496,7 +496,7 @@ impl TavilyProxy {
                             &lease.id,
                             HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -771,7 +771,7 @@ impl TavilyProxy {
                             &lease.id,
                             REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1016,7 +1016,7 @@ impl TavilyProxy {
                             &lease.id,
                             REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1307,7 +1307,7 @@ impl TavilyProxy {
                             &lease.id,
                             API_REBALANCE_HTTP_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 } else if armed_http_project_affinity_backoff {
@@ -1316,7 +1316,7 @@ impl TavilyProxy {
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 } else if armed_http_global_backoff {
@@ -1325,7 +1325,7 @@ impl TavilyProxy {
                             &lease.id,
                             HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1538,7 +1538,7 @@ impl TavilyProxy {
                             &lease.id,
                             HTTP_GLOBAL_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1548,7 +1548,7 @@ impl TavilyProxy {
                             &lease.id,
                             API_REBALANCE_HTTP_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1558,7 +1558,7 @@ impl TavilyProxy {
                             &lease.id,
                             MCP_SESSION_INIT_BACKOFF_SCOPE,
                             request_log_id,
-                            Utc::now().timestamp(),
+                            self.backend_time.now_ts(),
                         )
                         .await?;
                 }
@@ -1787,7 +1787,10 @@ impl TavilyProxy {
         let retention_days = settings.request_log_retention.max_log_retention_days;
         Ok((
             retention_days,
-            configured_request_logs_retention_threshold_utc_ts(retention_days),
+            configured_request_logs_retention_threshold_utc_ts_at(
+                retention_days,
+                self.backend_time.local_now(),
+            ),
         ))
     }
 

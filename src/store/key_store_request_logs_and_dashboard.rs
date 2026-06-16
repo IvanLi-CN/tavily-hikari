@@ -738,8 +738,13 @@ impl KeyStore {
         created_at_sql.to_string()
     }
 
-    fn clamp_request_logs_rollup_since(since: Option<i64>, retention_days: i64) -> Option<i64> {
-        let retention_since = configured_request_logs_retention_threshold_utc_ts(retention_days);
+    fn clamp_request_logs_rollup_since_at(
+        since: Option<i64>,
+        retention_days: i64,
+        now: chrono::DateTime<Local>,
+    ) -> Option<i64> {
+        let retention_since =
+            configured_request_logs_retention_threshold_utc_ts_at(retention_days, now);
         Some(since.unwrap_or(retention_since).max(retention_since))
     }
 
@@ -1176,6 +1181,21 @@ impl KeyStore {
         include_key_facets: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
+        let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
+            Self::request_logs_catalog_cache_key(
+                scoped_key_id,
+                since,
+                include_token_facets,
+                include_key_facets,
+            )
+        });
+        if let Some(cache_key) = cache_key.as_deref()
+            && let Some(cached) = self.cached_request_logs_catalog(cache_key).await
+        {
+            return Ok(cached);
+        }
         let request_kind_options = self
             .fetch_request_log_request_kind_options(scoped_key_id, since, filters)
             .await?;
@@ -1252,7 +1272,11 @@ impl KeyStore {
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
         self.flush_request_stats_writes().await?;
-        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
+        let since = Self::clamp_request_logs_rollup_since_at(
+            since,
+            retention_days,
+            self.backend_time.local_now(),
+        );
         self.ensure_request_log_catalog_rollups_available(since)
             .await?;
         let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
@@ -1337,7 +1361,8 @@ impl KeyStore {
             .await?
             .request_log_retention
             .max_log_retention_days;
-        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
         let page_size = page_size.clamp(1, 200);
         let query_limit = page_size + 1;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
@@ -1595,7 +1620,8 @@ impl KeyStore {
             .await?
             .request_log_retention
             .max_log_retention_days;
-        let since = Self::clamp_request_logs_rollup_since(since, retention_days);
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
@@ -2012,7 +2038,10 @@ impl KeyStore {
             .await?
             .request_log_retention
             .max_log_retention_days;
-        let since = configured_request_logs_retention_threshold_utc_ts(retention_days);
+        let since = configured_request_logs_retention_threshold_utc_ts_at(
+            retention_days,
+            self.backend_time.local_now(),
+        );
         let exprs = Self::request_log_catalog_rollup_exprs("");
         let canonical_request_kind_predicate_sql =
             canonical_request_kind_stored_predicate_sql("request_kind_key");
@@ -2245,7 +2274,7 @@ impl KeyStore {
         &self,
         older_than_secs: i64,
     ) -> Result<Vec<String>, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let threshold = now - older_than_secs;
         let rows = sqlx::query_scalar::<_, String>(
             r#"
@@ -2276,7 +2305,7 @@ impl KeyStore {
         active_within_secs: i64,
         stale_after_secs: i64,
     ) -> Result<Vec<String>, ProxyError> {
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let active_since = now - active_within_secs;
         let stale_before = now - stale_after_secs;
         let rows = sqlx::query_scalar::<_, String>(
@@ -2483,47 +2512,6 @@ impl KeyStore {
             geo: row.try_get("geo_count")?,
             linuxdo: row.try_get("linuxdo_count")?,
         })
-    }
-
-    pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
-        sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(ProxyError::Database)
-    }
-
-    pub(crate) async fn get_meta_i64(&self, key: &str) -> Result<Option<i64>, ProxyError> {
-        let value = self.get_meta_string(key).await?;
-
-        if let Some(v) = value {
-            match v.parse::<i64>() {
-                Ok(parsed) => Ok(Some(parsed)),
-                Err(_) => Ok(None),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub(crate) async fn set_meta_string(&self, key: &str, value: &str) -> Result<(), ProxyError> {
-        sqlx::query(
-            r#"
-            INSERT INTO meta (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            "#,
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn set_meta_i64(&self, key: &str, value: i64) -> Result<(), ProxyError> {
-        let v = value.to_string();
-        self.set_meta_string(key, &v).await
     }
 
     pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
@@ -2937,7 +2925,7 @@ impl KeyStore {
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
         self.flush_request_stats_writes().await?;
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)
             .await?;

@@ -7,9 +7,14 @@ pub async fn build_forward_proxy_settings_response(
     let disabled_keys = manager.disabled_keys();
     let disabled_overrides = load_forward_proxy_disabled_node_keys(pool).await?;
     let counts = load_forward_proxy_assignment_counts(pool).await?;
-    let now = Utc::now().timestamp();
-    let window_maps =
-        query_forward_proxy_window_stats_set_cached(pool, &manager.window_stats_cache, now).await?;
+    let now = manager.backend_time.now_ts();
+    let window_maps = query_forward_proxy_window_stats_set_cached(
+        pool,
+        &manager.window_stats_cache,
+        &manager.backend_time,
+        now,
+    )
+    .await?;
     let mut nodes =
         runtime_rows
             .into_iter()
@@ -78,10 +83,14 @@ pub async fn build_forward_proxy_live_stats_response(
         .map(|runtime| runtime.proxy_key.clone())
         .collect::<Vec<_>>();
     let counts = load_forward_proxy_assignment_counts(pool).await?;
-    let now_epoch = Utc::now().timestamp();
-    let window_maps =
-        query_forward_proxy_window_stats_set_cached(pool, &manager.window_stats_cache, now_epoch)
-            .await?;
+    let now_epoch = manager.backend_time.now_ts();
+    let window_maps = query_forward_proxy_window_stats_set_cached(
+        pool,
+        &manager.window_stats_cache,
+        &manager.backend_time,
+        now_epoch,
+    )
+    .await?;
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
     let hourly_map =
@@ -207,7 +216,7 @@ pub async fn build_forward_proxy_error_stats_response(
     let runtime_rows = manager.snapshot_runtime();
     let disabled_keys = manager.disabled_keys();
     let disabled_overrides = load_forward_proxy_disabled_node_keys(pool).await?;
-    let now_epoch = Utc::now().timestamp();
+    let now_epoch = manager.backend_time.now_ts();
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
     let stats_bundle =
@@ -1145,11 +1154,12 @@ pub fn failure_kind_from_http_error(err: &reqwest::Error) -> &'static str {
 }
 
 async fn wait_for_xray_api_ready(
+    backend_time: &BackendTime,
     child: &mut Child,
     api_port: u16,
     ready_timeout: Duration,
 ) -> Result<(), ProxyError> {
-    let deadline = Instant::now() + ready_timeout;
+    let deadline = backend_time.deadline_after(ready_timeout);
     loop {
         if let Some(status) = child.try_wait().map_err(|err| {
             ProxyError::Other(format!("failed to poll xray proxy process status: {err}"))
@@ -1165,7 +1175,7 @@ async fn wait_for_xray_api_ready(
         .await
         .is_ok_and(|connection| connection.is_ok())
         {
-            sleep(Duration::from_millis(50)).await;
+            backend_time.sleep(Duration::from_millis(50)).await;
             if let Some(status) = child.try_wait().map_err(|err| {
                 ProxyError::Other(format!("failed to poll xray proxy process status: {err}"))
             })? {
@@ -1175,20 +1185,21 @@ async fn wait_for_xray_api_ready(
             }
             return Ok(());
         }
-        if Instant::now() >= deadline {
+        if backend_time.instant_now() >= deadline {
             return Err(ProxyError::Other(
                 "xray api endpoint was not ready in time".to_string(),
             ));
         }
-        sleep(Duration::from_millis(100)).await;
+        backend_time.sleep(Duration::from_millis(100)).await;
     }
 }
 
 async fn wait_for_local_socks_ready(
+    backend_time: &BackendTime,
     local_port: u16,
     ready_timeout: Duration,
 ) -> Result<(), ProxyError> {
-    let deadline = Instant::now() + ready_timeout;
+    let deadline = backend_time.deadline_after(ready_timeout);
     loop {
         if let Ok(Ok(mut stream)) = timeout(
             Duration::from_millis(250),
@@ -1207,12 +1218,12 @@ async fn wait_for_local_socks_ready(
                 return Ok(());
             }
         }
-        if Instant::now() >= deadline {
+        if backend_time.instant_now() >= deadline {
             return Err(ProxyError::Other(
                 "xray local socks endpoint was not ready in time".to_string(),
             ));
         }
-        sleep(Duration::from_millis(100)).await;
+        backend_time.sleep(Duration::from_millis(100)).await;
     }
 }
 

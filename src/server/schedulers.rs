@@ -174,39 +174,17 @@ async fn sync_key_quota_with_db_job_gate(
     Ok((limit, remaining))
 }
 
+#[cfg(test)]
 fn next_local_daily_run_after(now: DateTime<Local>, hour: u32, minute: u32) -> DateTime<Local> {
-    let today = now.date_naive();
-    let scheduled_naive = today
-        .and_hms_opt(hour, minute, 0)
-        .unwrap_or_else(|| today.and_hms_opt(6, 20, 0).expect("valid default time"));
-    let scheduled_today = match Local.from_local_datetime(&scheduled_naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(dt, _) => dt,
-        chrono::LocalResult::None => now,
-    };
-    if scheduled_today > now {
-        return scheduled_today;
-    }
-
-    let tomorrow = today.succ_opt().unwrap_or_else(|| {
-        today
-            .checked_add_days(chrono::Days::new(1))
-            .unwrap_or(today)
-    });
-    let next_naive = tomorrow
-        .and_hms_opt(hour, minute, 0)
-        .unwrap_or_else(|| tomorrow.and_hms_opt(6, 20, 0).expect("valid default time"));
-    match Local.from_local_datetime(&next_naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(dt, _) => dt,
-        chrono::LocalResult::None => now + ChronoDuration::hours(24),
-    }
+    now + chrono::Duration::from_std(
+        tavily_hikari::duration_until_next_local_daily_run(now, hour, minute),
+    )
+    .unwrap_or_else(|_| ChronoDuration::zero())
 }
 
+#[cfg(test)]
 fn duration_until_next_local_daily_run(now: DateTime<Local>, hour: u32, minute: u32) -> Duration {
-    (next_local_daily_run_after(now, hour, minute) - now)
-        .to_std()
-        .unwrap_or_else(|_| Duration::from_secs(0))
+    tavily_hikari::duration_until_next_local_daily_run(now, hour, minute)
 }
 
 fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
@@ -298,7 +276,7 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
                 Ok(None) => wake.notified().await,
                 Err(err) => {
                     eprintln!("maintenance-worker: dequeue error: {err}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    state.proxy.backend_time().sleep(Duration::from_secs(1)).await;
                 }
             }
         }
@@ -326,7 +304,11 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
 
             for key_id in keys {
                 let delay = random_delay_secs(300);
-                tokio::time::sleep(Duration::from_secs(delay)).await;
+                cold_state
+                    .proxy
+                    .backend_time()
+                    .sleep(Duration::from_secs(delay))
+                    .await;
                 let Some(_) = enqueue_scheduled_job_logged(
                     cold_state.as_ref(),
                     "quota_sync",
@@ -340,7 +322,11 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 };
             }
 
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            cold_state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(3600))
+                .await;
         }
     });
 
@@ -364,7 +350,11 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
 
             for key_id in keys {
                 let delay = random_delay_secs(60);
-                tokio::time::sleep(Duration::from_secs(delay)).await;
+                hot_state
+                    .proxy
+                    .backend_time()
+                    .sleep(Duration::from_secs(delay))
+                    .await;
                 let Some(_) = enqueue_scheduled_job_logged(
                     hot_state.as_ref(),
                     "quota_sync/hot",
@@ -378,7 +368,11 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 };
             }
 
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            hot_state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(300))
+                .await;
         }
     });
 }
@@ -395,12 +389,12 @@ fn spawn_token_usage_rollup_scheduler(state: Arc<AppState>) {
             )
             .await
             else {
-                tokio::time::sleep(Duration::from_secs(300)).await;
+                state.proxy.backend_time().sleep(Duration::from_secs(300)).await;
                 continue;
             };
 
             // Run rollup every 5 minutes to keep charts reasonably fresh
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(300)).await;
         }
     });
 }
@@ -417,12 +411,12 @@ fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
             )
             .await
             else {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
                 continue;
             };
 
             // Run GC once per hour; retention window is enforced inside the proxy.
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
     });
 }
@@ -439,11 +433,11 @@ fn spawn_mcp_sessions_gc_scheduler(state: Arc<AppState>) {
             )
             .await
             else {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
                 continue;
             };
 
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
     });
 }
@@ -460,11 +454,11 @@ fn spawn_mcp_session_init_backoffs_gc_scheduler(state: Arc<AppState>) {
             )
             .await
             else {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
                 continue;
             };
 
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
     });
 }
@@ -474,7 +468,10 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
         // Schedule: daily at configured local time.
         loop {
             let (hour, minute) = effective_request_logs_gc_at();
-            tokio::time::sleep(duration_until_next_local_daily_run(Local::now(), hour, minute))
+            state
+                .proxy
+                .backend_time()
+                .sleep(state.proxy.backend_time().sleep_until_local_daily_run(hour, minute))
                 .await;
 
             let _ = enqueue_scheduled_job_logged(
@@ -685,7 +682,7 @@ async fn run_linuxdo_user_status_sync_claimed_job(
     let mut first_failure: Option<String> = None;
 
     for record in records {
-        let attempted_at = Utc::now().timestamp();
+        let attempted_at = state.proxy.backend_time().now_ts();
         let record_label = record
             .username
             .as_deref()
@@ -855,7 +852,10 @@ fn spawn_linuxdo_user_status_sync_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
             let (hour, minute) = state.linuxdo_oauth.user_sync_time();
-            tokio::time::sleep(duration_until_next_local_daily_run(Local::now(), hour, minute))
+            state
+                .proxy
+                .backend_time()
+                .sleep(state.proxy.backend_time().sleep_until_local_daily_run(hour, minute))
                 .await;
             let _ = enqueue_scheduled_job_logged(
                 state.as_ref(),
@@ -942,12 +942,20 @@ fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) {
                     )
                     .await;
                 }
-                tokio::time::sleep(Duration::from_secs(fifteen_minutes_secs() as u64)).await;
+                state
+                    .proxy
+                    .backend_time()
+                    .sleep(Duration::from_secs(fifteen_minutes_secs() as u64))
+                    .await;
                 continue;
             }
 
             let sleep_secs = wait_secs.min(fifteen_minutes_secs()) as u64;
-            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(sleep_secs))
+                .await;
         }
     });
 }
@@ -1192,10 +1200,10 @@ async fn run_db_compaction_claimed_job(state: Arc<AppState>, job_id: i64) -> boo
 
 fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut next_allowed_at = Instant::now();
+        let mut next_allowed_at = state.proxy.backend_time().instant_now();
         loop {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-            if Instant::now() < next_allowed_at {
+            state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
+            if state.proxy.backend_time().instant_now() < next_allowed_at {
                 continue;
             }
             let _job_execution_gate = acquire_db_job_execution_gate_for_state(state.as_ref()).await;
@@ -1223,7 +1231,9 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
                 eprintln!("db-compaction: enqueue job error: {err}");
                 continue;
             }
-            next_allowed_at = Instant::now() + Duration::from_secs(DB_COMPACTION_COOLDOWN_SECS);
+            next_allowed_at = state.proxy.backend_time().deadline_after(Duration::from_secs(
+                DB_COMPACTION_COOLDOWN_SECS,
+            ));
         }
     });
 }
@@ -1256,15 +1266,22 @@ fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::tas
                     )
                     .await;
                 }
-                tokio::time::sleep(Duration::from_secs(
-                    forward_proxy_geo_refresh_recheck_secs() as u64,
-                ))
-                .await;
+                state
+                    .proxy
+                    .backend_time()
+                    .sleep(Duration::from_secs(
+                        forward_proxy_geo_refresh_recheck_secs() as u64,
+                    ))
+                    .await;
                 continue;
             }
 
             let sleep_secs = wait_secs.min(forward_proxy_geo_refresh_recheck_secs()) as u64;
-            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(sleep_secs))
+                .await;
         }
     })
 }
@@ -1278,7 +1295,7 @@ fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
                     eprintln!("forward-proxy-maintenance: {err}");
                 }
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(30)).await;
         }
     });
 }

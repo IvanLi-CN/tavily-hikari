@@ -502,7 +502,7 @@ async fn tavily_http_usage(
             )
         })?;
 
-    let now = Utc::now();
+    let now = state.proxy.backend_time().now_utc();
     let month_start = start_of_month_dt(now).timestamp();
     let now_ts = now.timestamp();
     let summary = state
@@ -836,7 +836,7 @@ async fn sse_dashboard(
                 }
             }
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(2)).await;
         }
     };
 
@@ -967,7 +967,7 @@ async fn sse_public(
                     yield Ok(Event::default().event("ping").data("{}"));
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            state.proxy.backend_time().sleep(Duration::from_secs(2)).await;
         }
     };
 
@@ -1140,8 +1140,10 @@ async fn compute_signatures(
             counts_by_type: tavily_hikari::default_alert_type_counts(),
             top_groups: Vec::new(),
         });
-    let hourly_window_anchor = Utc::now()
-        .timestamp()
+    let hourly_window_anchor = state
+        .proxy
+        .backend_time()
+        .now_ts()
         .div_euclid(DASHBOARD_HOURLY_BUCKET_SECS)
         .saturating_mul(DASHBOARD_HOURLY_BUCKET_SECS);
     let disabled_token_ids = disabled_tokens

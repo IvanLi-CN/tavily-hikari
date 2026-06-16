@@ -281,7 +281,7 @@ async fn list_users(
                 eprintln!("list admin users sorted page monthly broken limits error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        let now_ts = Utc::now().timestamp();
+        let now_ts = state.proxy.backend_time().now_ts();
         let recent_ip_counts_7d = if user_ids.is_empty() {
             std::collections::HashMap::new()
         } else {
@@ -351,7 +351,7 @@ async fn list_users(
                 eprintln!("list admin users monthly broken limits error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        let now_ts = Utc::now().timestamp();
+        let now_ts = state.proxy.backend_time().now_ts();
         let recent_ip_counts_7d = if user_ids.is_empty() {
             std::collections::HashMap::new()
         } else {
@@ -432,7 +432,7 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
-    let now_ts = Utc::now().timestamp();
+    let now_ts = state.proxy.backend_time().now_ts();
     let recent_ip_counts_24h = if page_user_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
@@ -689,7 +689,7 @@ async fn get_user_detail(
             eprintln!("get admin user monthly broken limit error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let now_ts = Utc::now().timestamp();
+    let now_ts = state.proxy.backend_time().now_ts();
     let recent_ip_counts_24h = state
         .proxy
         .recent_client_ip_counts_by_user(

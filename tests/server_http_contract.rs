@@ -19,6 +19,9 @@ use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+#[path = "common/support_binaries.rs"]
+mod support_binaries;
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{}-{}.db", prefix, nanoid!(8)))
 }
@@ -157,7 +160,10 @@ fn spawn_backend_process_with_urls(
     db_path: PathBuf,
     dev_open_admin: bool,
 ) -> BackendGuard {
-    let binary = env!("CARGO_BIN_EXE_tavily-hikari");
+    let binary = support_binaries::resolve_support_binary(
+        "TAVILY_HIKARI_TEST_BIN",
+        env!("CARGO_BIN_EXE_tavily-hikari"),
+    );
     let mut cmd = std::process::Command::new(binary);
     cmd.arg("--bind")
         .arg("127.0.0.1")

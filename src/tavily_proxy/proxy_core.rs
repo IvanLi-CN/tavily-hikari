@@ -1,4 +1,19 @@
 impl TavilyProxy {
+    #[cfg(test)]
+    async fn acquire_test_startup_guard() -> tokio::sync::OwnedSemaphorePermit {
+        static LOCK: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test proxy startup semaphore closed")
+    }
+
+    pub fn backend_time(&self) -> &BackendTime {
+        &self.backend_time
+    }
+
     fn affinity_subject_score(subject: &str, key_id: &str) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(subject.as_bytes());
@@ -395,6 +410,23 @@ impl TavilyProxy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        Self::with_options_and_time(keys, upstream, database_path, options, BackendTime::system())
+            .await
+    }
+
+    pub(crate) async fn with_options_and_time<I, S>(
+        keys: I,
+        upstream: &str,
+        database_path: &str,
+        options: TavilyProxyOptions,
+        backend_time: BackendTime,
+    ) -> Result<Self, ProxyError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        #[cfg(test)]
+        let _startup_guard = Self::acquire_test_startup_guard().await;
         let startup_started = Instant::now();
         let sanitized: Vec<String> = keys
             .into_iter()
@@ -403,7 +435,7 @@ impl TavilyProxy {
             .collect();
 
         let key_store_started = Instant::now();
-        let key_store = KeyStore::new(database_path).await?;
+        let key_store = KeyStore::new_with_time(database_path, backend_time.clone()).await?;
         eprintln!(
             "forward-proxy startup: sqlite initialized in {}ms",
             key_store_started.elapsed().as_millis()
@@ -430,10 +462,11 @@ impl TavilyProxy {
         let forward_proxy_disabled_keys =
             forward_proxy::load_forward_proxy_disabled_node_keys(&key_store.pool).await?;
         let mut forward_proxy_manager =
-            forward_proxy::ForwardProxyManager::new_with_settings_updated_at(
+            forward_proxy::ForwardProxyManager::new_with_settings_updated_at_and_time(
                 forward_proxy_settings_snapshot.settings,
                 forward_proxy_settings_snapshot.updated_at,
                 forward_proxy_runtime,
+                backend_time.clone(),
             );
         forward_proxy_manager.set_disabled_keys(
             forward_proxy_disabled_keys
@@ -447,8 +480,9 @@ impl TavilyProxy {
         );
         let forward_proxy = Arc::new(Mutex::new(forward_proxy_manager));
         let key_store = Arc::new(key_store);
-        let token_quota = TokenQuota::new(key_store.clone());
-        let token_request_limit = TokenRequestLimit::new(key_store.clone());
+        let token_quota = TokenQuota::new(key_store.clone(), backend_time.clone());
+        let token_request_limit =
+            TokenRequestLimit::new(key_store.clone(), backend_time.clone());
         let system_settings = key_store.get_system_settings().await?;
         token_request_limit.set_request_limit(system_settings.request_rate_limit);
         let forward_proxy_clients = forward_proxy::ForwardProxyClientPool::new()?;
@@ -461,9 +495,10 @@ impl TavilyProxy {
             forward_proxy_trace_url: options.forward_proxy_trace_url,
             #[cfg(test)]
             forward_proxy_trace_overrides: Arc::new(Mutex::new(HashMap::new())),
-            xray_supervisor: Arc::new(Mutex::new(forward_proxy::XraySupervisor::new(
+            xray_supervisor: Arc::new(Mutex::new(forward_proxy::XraySupervisor::new_with_time(
                 options.xray_binary,
                 options.xray_runtime_dir,
+                backend_time.clone(),
             ))),
             upstream,
             key_store,
@@ -490,7 +525,9 @@ impl TavilyProxy {
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
-            health_readiness_grace_until: Instant::now() + options.health_readiness_grace_period,
+            health_readiness_grace_until: backend_time
+                .deadline_after(options.health_readiness_grace_period),
+            backend_time,
         };
         proxy.spawn_ha_state_coalescer();
         proxy.spawn_request_stats_coalescer();
@@ -566,7 +603,7 @@ impl TavilyProxy {
     }
 
     pub async fn is_forward_proxy_xray_ready(&self) -> bool {
-        if Instant::now() < self.health_readiness_grace_until {
+        if self.backend_time.instant_now() < self.health_readiness_grace_until {
             return true;
         }
         let (requires_xray, endpoints_ready) = {
@@ -628,6 +665,7 @@ impl TavilyProxy {
             .collect::<Vec<_>>();
         let updated = forward_proxy::set_forward_proxy_nodes_disabled(
             &self.key_store.pool,
+            &self.backend_time,
             &normalized,
             disabled,
         )

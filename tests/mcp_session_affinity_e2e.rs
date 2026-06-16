@@ -32,6 +32,9 @@ use tavily_hikari::{
 };
 use tokio::net::TcpListener;
 
+#[path = "common/support_binaries.rs"]
+mod support_binaries;
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}.db", nanoid!(8)))
 }
@@ -69,7 +72,10 @@ fn spawn_backend_process(
     port: u16,
     db_path: &Path,
 ) -> BackendGuard {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tavily-hikari"));
+    let mut cmd = Command::new(support_binaries::resolve_support_binary(
+        "TAVILY_HIKARI_TEST_BIN",
+        env!("CARGO_BIN_EXE_tavily-hikari"),
+    ));
     cmd.arg("--bind")
         .arg("127.0.0.1")
         .arg("--port")

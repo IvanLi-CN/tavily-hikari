@@ -1,4 +1,5 @@
 use crate::analysis::*;
+use crate::backend_time::BackendTime;
 use crate::models::*;
 use crate::store::*;
 use crate::*;
@@ -16,6 +17,7 @@ struct TokenQuota {
     hourly_limit: i64,
     daily_limit: i64,
     monthly_limit: i64,
+    backend_time: BackendTime,
 }
 
 /// Lightweight per-token hourly request limiter that counts *all* authenticated
@@ -27,6 +29,7 @@ struct TokenRequestLimit {
     request_limit: Arc<AtomicI64>,
     window_minutes: i64,
     window_secs: i64,
+    backend_time: BackendTime,
 }
 
 #[derive(Clone, Debug)]
@@ -356,7 +359,8 @@ pub struct TavilyProxy {
     pub(crate) mcp_session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) mcp_session_request_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) low_quota_depletion_threshold: i64,
-    health_readiness_grace_until: Instant,
+    health_readiness_grace_until: tokio::time::Instant,
+    pub(crate) backend_time: BackendTime,
 }
 
 #[derive(Clone, Debug)]
@@ -593,13 +597,14 @@ include!("proxy_forward_proxy_maintenance.rs");
 include!("proxy_ha.rs");
 
 impl TokenQuota {
-    pub(crate) fn new(store: Arc<KeyStore>) -> Self {
+    pub(crate) fn new(store: Arc<KeyStore>, backend_time: BackendTime) -> Self {
         Self {
             store,
             cleanup: Arc::new(Mutex::new(CleanupState::default())),
             hourly_limit: effective_token_hourly_limit(),
             daily_limit: effective_token_daily_limit(),
             monthly_limit: effective_token_monthly_limit(),
+            backend_time,
         }
     }
 
@@ -646,7 +651,7 @@ impl TokenQuota {
     }
 
     pub(crate) async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let local_now = now.with_timezone(&Local);
@@ -755,7 +760,7 @@ impl TokenQuota {
             return Ok(());
         }
 
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let day_bucket = start_of_local_day_utc_ts(now.with_timezone(&Local));
@@ -895,7 +900,7 @@ impl TokenQuota {
         if token_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let local_now = now.with_timezone(&Local);
@@ -1083,7 +1088,7 @@ impl TokenQuota {
                     AccountUsageRollupMetricKind::BusinessCredits,
                     AccountUsageRollupBucketKind::Month,
                     shift_month_start_utc_ts(
-                        start_of_month(Utc::now()).timestamp(),
+                        start_of_month(self.backend_time.now_utc()).timestamp(),
                         -ACCOUNT_USAGE_ROLLUP_MONTH_RETENTION_MONTHS,
                     ),
                 )
@@ -1095,7 +1100,7 @@ impl TokenQuota {
 }
 
 impl TokenRequestLimit {
-    pub(crate) fn new(store: Arc<KeyStore>) -> Self {
+    pub(crate) fn new(store: Arc<KeyStore>, backend_time: BackendTime) -> Self {
         Self {
             store,
             backend: RequestRateLimitBackend::Memory(Arc::new(
@@ -1104,6 +1109,7 @@ impl TokenRequestLimit {
             request_limit: Arc::new(AtomicI64::new(request_rate_limit())),
             window_minutes: request_rate_limit_window_minutes(),
             window_secs: request_rate_limit_window_secs(),
+            backend_time,
         }
     }
 
@@ -1122,7 +1128,7 @@ impl TokenRequestLimit {
         &self,
         token_id: &str,
     ) -> Result<TokenHourlyRequestVerdict, ProxyError> {
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let subject = self.resolve_subject_for_token(token_id).await?;
         let request_limit = self.current_request_limit();
         Ok(self
@@ -1146,7 +1152,7 @@ impl TokenRequestLimit {
         if token_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let request_limit = self.current_request_limit();
         let subjects_by_token = self.resolve_subjects_for_tokens(token_ids).await?;
         let mut unique_subjects: Vec<RequestRateSubject> =
@@ -1181,7 +1187,7 @@ impl TokenRequestLimit {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let now_ts = Utc::now().timestamp();
+        let now_ts = self.backend_time.now_ts();
         let request_limit = self.current_request_limit();
         let mut unique_subjects: Vec<RequestRateSubject> = user_ids
             .iter()
@@ -1214,7 +1220,7 @@ impl TokenRequestLimit {
     pub(crate) async fn recent_timestamps_for_user(&self, user_id: &str) -> Vec<i64> {
         let subject = RequestRateSubject::user(user_id);
         self.backend
-            .recent_timestamps(&subject, Utc::now().timestamp(), self.window_secs)
+            .recent_timestamps(&subject, self.backend_time.now_ts(), self.window_secs)
             .await
     }
 

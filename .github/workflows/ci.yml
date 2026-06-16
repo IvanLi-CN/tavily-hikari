@@ -128,8 +128,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Prepare backend test artifacts
+        run: python3 scripts/ci_backend_tests.py prepare-artifacts --output-dir /tmp/backend-test-artifacts
+
+      - name: Upload backend test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-artifacts
+          path: /tmp/backend-test-artifacts
+          if-no-files-found: error
+
       - name: Verify backend shard coverage
-        run: python3 scripts/ci_backend_tests.py verify
+        run: python3 scripts/ci_backend_tests.py verify --prebuilt-root /tmp/backend-test-artifacts
 
       - name: Export backend shard matrices
         id: matrix
@@ -158,6 +168,12 @@ jobs:
           name: web-dist
           path: web/dist
 
+      - name: Download backend test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-test-artifacts
+          path: /tmp/backend-test-artifacts
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
@@ -177,7 +193,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run library shard
-        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}" --prebuilt-root /tmp/backend-test-artifacts
 
   backend-bin-tests:
     name: Backend Bin Tests (${{ matrix.shard.name }})
@@ -198,6 +214,12 @@ jobs:
           name: web-dist
           path: web/dist
 
+      - name: Download backend test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-test-artifacts
+          path: /tmp/backend-test-artifacts
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
@@ -217,7 +239,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run binary shard
-        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}" --prebuilt-root /tmp/backend-test-artifacts
 
   backend-integration-tests:
     name: Backend Integration Tests (${{ matrix.shard.name }})
@@ -238,6 +260,12 @@ jobs:
           name: web-dist
           path: web/dist
 
+      - name: Download backend test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-test-artifacts
+          path: /tmp/backend-test-artifacts
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
@@ -257,7 +285,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run integration shard
-        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}"
+        run: python3 scripts/ci_backend_tests.py run-shard --id "${{ matrix.shard.id }}" --prebuilt-root /tmp/backend-test-artifacts
 
   backend-tests:
     name: Backend Tests

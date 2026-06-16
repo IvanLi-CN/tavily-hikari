@@ -156,7 +156,6 @@ async fn add_or_undelete_key_with_hint_only_direct_affinity_does_not_persist() {
             .fetch_one(&proxy.key_store.pool)
             .await
             .expect("query marker timestamp before repeat plan build");
-    tokio::time::sleep(Duration::from_millis(1100)).await;
     let _ = proxy
         .build_proxy_attempt_plan(&key_id)
         .await
@@ -1473,8 +1472,6 @@ async fn quarantine_key_by_id_preserves_original_created_at() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("first created_at");
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     proxy
         .key_store

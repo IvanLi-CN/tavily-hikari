@@ -697,7 +697,7 @@ impl KeyStore {
     ) -> Result<i64, ProxyError> {
         self.sum_linuxdo_credit_recharge_entitlements_for_month(
             user_id,
-            start_of_local_month_utc_ts(Local::now()),
+            start_of_local_month_utc_ts(self.backend_time.local_now()),
         )
         .await
     }
@@ -735,7 +735,7 @@ impl KeyStore {
     ) -> Result<HashMap<String, i64>, ProxyError> {
         self.sum_linuxdo_credit_recharge_entitlements_for_users(
             user_ids,
-            start_of_local_month_utc_ts(Local::now()),
+            start_of_local_month_utc_ts(self.backend_time.local_now()),
         )
         .await
     }

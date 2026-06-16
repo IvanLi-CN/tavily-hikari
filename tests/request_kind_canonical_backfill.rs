@@ -9,6 +9,9 @@ use sqlx::{
 };
 use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
 
+#[path = "common/support_binaries.rs"]
+mod support_binaries;
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "{}-{}-{}.db",
@@ -66,15 +69,18 @@ fn cleanup_sqlite_files(db_path: &Path) {
 }
 
 fn run_backfill(db_path: &str, batch_size: i64) {
-    let output = Command::new(env!("CARGO_BIN_EXE_request_kind_canonical_backfill"))
-        .args([
-            "--db-path",
-            db_path,
-            "--batch-size",
-            &batch_size.to_string(),
-        ])
-        .output()
-        .expect("run request_kind_canonical_backfill");
+    let output = Command::new(support_binaries::resolve_support_binary(
+        "REQUEST_KIND_CANONICAL_BACKFILL_TEST_BIN",
+        env!("CARGO_BIN_EXE_request_kind_canonical_backfill"),
+    ))
+    .args([
+        "--db-path",
+        db_path,
+        "--batch-size",
+        &batch_size.to_string(),
+    ])
+    .output()
+    .expect("run request_kind_canonical_backfill");
     assert!(
         output.status.success(),
         "backfill binary failed: stdout={}; stderr={}",

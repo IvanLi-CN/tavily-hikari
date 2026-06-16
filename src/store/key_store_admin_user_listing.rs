@@ -28,7 +28,7 @@ impl KeyStore {
             .filter(|value| !value.is_empty())
             .map(|value| format!("%{value}%"));
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
-        let active_since = Self::admin_user_activity_since(activity_scope);
+        let active_since = self.admin_user_activity_since(activity_scope);
 
         let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM users u WHERE ");
         Self::push_admin_user_filters(&mut count_builder, tag_id, search.as_deref(), active_since);

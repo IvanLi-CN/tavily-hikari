@@ -226,7 +226,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn rebuild_account_usage_rollup_buckets_v1(&self) -> Result<(), ProxyError> {
-        let now = Utc::now();
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
         let request_backfill_start = now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_BACKFILL_SECS);
         let business_backfill_start = now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_BUSINESS_BACKFILL_SECS);

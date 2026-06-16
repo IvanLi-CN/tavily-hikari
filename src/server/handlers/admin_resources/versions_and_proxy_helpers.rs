@@ -501,6 +501,7 @@ fn build_registration_geo_batch_url(origin: &str) -> String {
 async fn resolve_registration_regions(
     origin: &str,
     ips: &[String],
+    backend_time: &tavily_hikari::BackendTime,
 ) -> HashMap<String, String> {
     let pending = ips
         .iter()
@@ -532,14 +533,14 @@ async fn resolve_registration_regions(
             match client.post(&batch_url).json(batch).send().await {
                 Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt == 0 => {
                     attempt += 1;
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    backend_time.sleep(Duration::from_millis(250)).await;
                     continue;
                 }
                 Ok(response) => break response,
                 Err(err) if attempt == 0 => {
                     attempt += 1;
                     eprintln!("api key geo lookup request error, retrying once: {err}");
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    backend_time.sleep(Duration::from_millis(250)).await;
                 }
                 Err(err) => {
                     eprintln!("api key geo lookup request error: {err}");

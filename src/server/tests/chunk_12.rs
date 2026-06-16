@@ -254,7 +254,7 @@
                     let body = body.clone();
                     async move {
                         hits.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
                         (StatusCode::OK, body)
                     }
                 }),
@@ -332,7 +332,7 @@
                 .await;
         let subscription_addr = spawn_forward_proxy_subscription_server_with_delay(
             format!("http://{}\n", fake_proxy_addr),
-            Duration::from_secs(3),
+            Duration::from_millis(1200),
         )
         .await;
 
@@ -961,7 +961,7 @@
         );
         drop(response);
 
-        tokio::time::sleep(Duration::from_millis(700)).await;
+        tokio::time::sleep(Duration::from_millis(220)).await;
         assert!(
             hit_count.load(Ordering::SeqCst) <= 3,
             "validation should stop shortly after disconnect; observed {} probe requests",

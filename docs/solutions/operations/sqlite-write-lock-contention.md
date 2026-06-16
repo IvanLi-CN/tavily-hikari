@@ -142,6 +142,9 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Keep startup backfills cheap and no-op aware. Large production SQLite files make repeated per-user
   repair loops expensive even when every row is already correct; use an indexed precheck in the
   readiness path and move periodic refresh work to a background scheduler.
+- Do not let lock-contention tests depend on real wall-clock sleep just to cross a retry window or a
+  one-second timestamp boundary. Prefer deterministic state shaping or a controlled time seam so the
+  test still exercises the production retry logic without paying real-time cost.
 - Prefer bounded retries and narrower write windows before increasing SQLite pool size.
 
 ## Guardrails / Reuse Notes

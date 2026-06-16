@@ -224,7 +224,7 @@ impl KeyStore {
             });
         }
 
-        let now = Utc::now().timestamp();
+        let now = self.backend_time.now_ts();
         let mut builder =
             QueryBuilder::<Sqlite>::new("UPDATE auth_tokens SET enabled = 0, deleted_at = ");
         builder.push_bind(now);

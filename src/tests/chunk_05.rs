@@ -333,6 +333,97 @@ async fn ensure_user_token_binding_with_preferred_falls_back_when_preferred_unav
 }
 
 #[tokio::test]
+async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked() {
+    let db_path = temp_db_path("user-token-binding-preferred-begin-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time.clone(),
+    )
+    .await
+    .expect("proxy created");
+    tokio::time::pause();
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "preferred-begin-retry-user".to_string(),
+            username: Some("preferred_begin_retry".to_string()),
+            name: Some("Preferred Begin Retry".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let preferred = proxy
+        .create_access_token(Some("linuxdo:preferred_begin_retry"))
+        .await
+        .expect("create preferred token");
+
+    let mut lock_conn =
+        connect_sqlite_test_connection(&db_str, false, false, Duration::from_millis(1)).await;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("hold write lock");
+
+    let proxy_task = proxy.clone();
+    let user_id = user.user_id.clone();
+    let preferred_id = preferred.id.clone();
+    let bind_task = tokio::spawn(async move {
+        proxy_task
+            .ensure_user_token_binding_with_preferred(
+                &user_id,
+                Some("linuxdo:preferred_begin_retry"),
+                Some(&preferred_id),
+            )
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    manual_clock.advance(Duration::from_millis(20)).await;
+    manual_clock.advance(Duration::from_millis(50)).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match sqlx::query("COMMIT").execute(&mut lock_conn).await {
+            Ok(_) => break,
+            Err(sqlx::Error::Database(err))
+                if err.message().contains("database is locked")
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("release write lock: {err}"),
+        }
+    }
+
+    let rebound = bind_task
+        .await
+        .expect("join bind task")
+        .expect("bind should retry after transient begin lock");
+    assert_eq!(rebound.id, preferred.id);
+
+    let owner = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1",
+    )
+    .bind(&preferred.id)
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("query preferred owner")
+    .flatten();
+    assert_eq!(owner.as_deref(), Some(user.user_id.as_str()));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn force_user_relogin_migration_revokes_existing_sessions_once() {
     let db_path = temp_db_path("force-user-relogin-v1");
     let db_str = db_path.to_string_lossy().to_string();
