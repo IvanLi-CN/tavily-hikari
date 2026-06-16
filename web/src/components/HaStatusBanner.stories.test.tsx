@@ -1,12 +1,29 @@
 import '../../test/happydom'
 
 import { describe, expect, it } from 'bun:test'
+import { act } from 'react'
 import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import meta, * as stories from './HaStatusBanner.stories'
 import { LanguageProvider, translations } from '../i18n'
 import { ThemeProvider } from '../theme'
+
+async function renderIntoDom(element: JSX.Element): Promise<string> {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  await act(async () => {
+    root.render(createElement(LanguageProvider, { initialLanguage: 'zh' }, createElement(ThemeProvider, null, element)))
+  })
+  const text = container.textContent ?? ''
+  await act(async () => {
+    root.unmount()
+  })
+  container.remove()
+  return text
+}
 
 describe('HaStatusBanner Storybook proofs', () => {
   it('keeps the HA node list story and local promote entry available', () => {
@@ -76,35 +93,32 @@ describe('HaStatusBanner Storybook proofs', () => {
   it('keeps the origin group source settings dialog story available', () => {
     expect(stories.OriginGroupSourceDialog).toBeDefined()
     expect(stories.OriginGroupSourceDialog.render).toBeDefined()
+  })
 
+  it('renders the origin group source settings dialog story in the browser runtime', async () => {
     const renderStory = stories.OriginGroupSourceDialog.render as (() => JSX.Element) | undefined
-    const markup = renderToStaticMarkup(
-      createElement(
-        LanguageProvider,
-        { initialLanguage: 'zh' },
-        createElement(ThemeProvider, null, renderStory?.()),
-      ),
-    )
+    const text = await renderIntoDom(renderStory?.() ?? <></>)
 
-    expect(markup).toContain(translations.zh.admin.systemSettings.ha.configureSource)
-    expect(markup).toContain(translations.zh.admin.systemSettings.ha.sourceKindOriginGroup)
+    expect(text).toContain(translations.zh.admin.systemSettings.ha.configureSource)
+    expect(text).toContain(translations.zh.admin.systemSettings.ha.sourceKindOriginGroup)
   })
 
   it('keeps the direct source settings dialog story available', () => {
     expect(stories.DirectSourceDialog).toBeDefined()
     expect(stories.DirectSourceDialog.render).toBeDefined()
+  })
 
+  it('renders the direct source settings dialog story in the browser runtime', async () => {
     const renderStory = stories.DirectSourceDialog.render as (() => JSX.Element) | undefined
-    const markup = renderToStaticMarkup(
-      createElement(
-        LanguageProvider,
-        { initialLanguage: 'zh' },
-        createElement(ThemeProvider, null, renderStory?.()),
-      ),
-    )
+    const text = await renderIntoDom(renderStory?.() ?? <></>)
 
-    expect(markup).toContain(translations.zh.admin.systemSettings.ha.sourceKindDirect)
-    expect(markup).toContain('203.0.113.9:58087')
+    expect(text).toContain(translations.zh.admin.systemSettings.ha.sourceKindDirect)
+    expect(text).toContain('203.0.113.9:58087')
+  })
+
+  it('keeps the submit-failure source dialog story available', () => {
+    expect(stories.SourceDialogSubmitFailure).toBeDefined()
+    expect(stories.SourceDialogSubmitFailure.render).toBeDefined()
   })
 
   it('keeps the direct source selection summary in the story play proof', async () => {

@@ -1278,13 +1278,41 @@ export interface UpdateHaSourceSettingsPayload {
   applyToEdgeone?: boolean
 }
 
+export interface HaSourceSettingsApiError extends Error {
+  status?: number
+  rawDetail?: string
+}
+
+function formatHaSourceSettingsError(body: string, applyToEdgeone: boolean): HaSourceSettingsApiError {
+  const actionLabel = applyToEdgeone ? 'switch EdgeOne to the selected source' : 'save source settings'
+  let rawDetail = body.trim()
+
+  if (rawDetail.startsWith('{') || rawDetail.startsWith('[')) {
+    try {
+      const data = JSON.parse(rawDetail) as { detail?: string; message?: string; error?: string }
+      rawDetail = (data.detail ?? data.message ?? data.error ?? rawDetail).trim()
+    } catch {
+      // Keep the original body when it is not parseable JSON.
+    }
+  }
+
+  const message = rawDetail.length > 0 ? rawDetail : `Failed to ${actionLabel}`
+  const err = new Error(message) as HaSourceSettingsApiError
+  err.rawDetail = rawDetail.length > 0 ? rawDetail : undefined
+  return err
+}
+
 export function updateAdminHaSourceSettings(
   payload: UpdateHaSourceSettingsPayload,
 ): Promise<HaStatus> {
-  return requestJson('/api/admin/ha/source', {
+  return requestJson<HaStatus>('/api/admin/ha/source', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  }).catch((error: Error & { status?: number }) => {
+    const nextError = formatHaSourceSettingsError(error.message, payload.applyToEdgeone === true)
+    nextError.status = error.status
+    return Promise.reject(nextError)
   })
 }
 

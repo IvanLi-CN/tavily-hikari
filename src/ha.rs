@@ -1139,6 +1139,7 @@ fn encode_hex(data: &[u8]) -> String {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OriginScheme {
     Http,
     Https,

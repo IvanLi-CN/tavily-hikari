@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { HaStatus } from '../api'
+import type { HaSourceSettingsApiError, HaStatus } from '../api'
 import HaSourceSettingsDialog from '../admin/HaSourceSettingsDialog'
 import HaStatusBanner from './HaStatusBanner'
 import { translations } from '../i18n'
@@ -355,6 +355,71 @@ export const StandbySourceDialog: Story = {
     }
     if (text.includes('保存并切换 EdgeOne 到此源站')) {
       throw new Error('Expected standby HA source dialog to omit the EdgeOne switch action.')
+    }
+  },
+}
+
+export const SourceDialogSubmitFailure: Story = {
+  render: () => {
+    const submitSourceSettings = async (): Promise<HaStatus> => {
+      const error = new Error('Failed to deserialize the JSON body into the target type') as HaSourceSettingsApiError
+      error.status = 400
+      error.rawDetail =
+        'Failed to deserialize the JSON body into the target type: directOriginScheme: unknown variant `https`'
+      throw error
+    }
+
+    return (
+      <StoryFrame>
+        <>
+          <HaStatusBanner
+            status={fullMasterStatus}
+            audience="admin"
+            strings={translations.zh.admin.systemSettings.ha}
+            language="zh"
+            onConfigureSource={() => undefined}
+          />
+          <HaSourceSettingsDialog
+            open
+            status={fullMasterStatus}
+            strings={translations.zh.admin.systemSettings.ha}
+            onOpenChange={() => undefined}
+            onSaved={() => undefined}
+            submitSourceSettings={submitSourceSettings}
+          />
+        </>
+      </StoryFrame>
+    )
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: 'Source settings dialog showing the destructive submit-failure alert with operator-friendly guidance and technical details.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentRoot = canvasElement.ownerDocument
+    const applyButton = Array.from(documentRoot.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === translations.zh.admin.systemSettings.ha.sourceSaveAndApply,
+    )
+    if (!applyButton) {
+      throw new Error('Expected submit-failure HA source dialog story to expose the EdgeOne switch action.')
+    }
+
+    applyButton.click()
+    await new Promise<void>((resolve) => setTimeout(resolve, 32))
+    await new Promise<void>((resolve) => setTimeout(resolve, 32))
+
+    const text = documentRoot.body.textContent ?? ''
+    for (const expected of [
+      translations.zh.admin.systemSettings.ha.sourceApplyFailedTitle,
+      translations.zh.admin.systemSettings.ha.sourceSubmitFailedDirectDescription,
+      translations.zh.admin.systemSettings.ha.sourceTechnicalDetailsLabel,
+    ]) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected submit-failure HA source dialog story to contain: ${expected}`)
+      }
     }
   },
 }

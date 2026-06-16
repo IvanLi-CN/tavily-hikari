@@ -37,6 +37,23 @@ export default function SegmentedTabs<T extends string = string>({
   disabled = false,
 }: SegmentedTabsProps<T>): JSX.Element {
   const viewportMode = useViewportMode()
+  const buttonRefs = React.useRef<Array<HTMLButtonElement | null>>([])
+
+  function findNextEnabledIndex(startIndex: number, step: 1 | -1): number {
+    if (options.length === 0) return -1
+    for (let offset = 1; offset <= options.length; offset += 1) {
+      const nextIndex = (startIndex + offset * step + options.length) % options.length
+      if (!options[nextIndex]?.disabled) return nextIndex
+    }
+    return startIndex
+  }
+
+  function findBoundaryEnabledIndex(fromEnd: boolean): number {
+    const ordered = fromEnd ? [...options].reverse() : options
+    const match = ordered.find((option) => !option.disabled)
+    if (!match) return -1
+    return options.findIndex((option) => option.value === match.value)
+  }
 
   if (viewportMode === 'small') {
     const selectedOption = options.find((option) => option.value === value)
@@ -64,14 +81,39 @@ export default function SegmentedTabs<T extends string = string>({
     <div className={cn('segmented-tabs', className)} role="radiogroup" aria-label={ariaLabel}>
       {options.map((option) => {
         const active = option.value === value
+        const activeIndex = options.findIndex((candidate) => candidate.value === value)
         return (
           <button
             key={option.value}
             type="button"
             role="radio"
             aria-checked={active}
+            tabIndex={active ? 0 : -1}
             className={cn('segmented-tab', active && 'is-active')}
+            ref={(node) => {
+              buttonRefs.current[options.findIndex((candidate) => candidate.value === option.value)] = node
+            }}
             onClick={() => onChange(option.value)}
+            onKeyDown={(event) => {
+              if (disabled || option.disabled) return
+
+              let nextIndex = -1
+              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                nextIndex = findNextEnabledIndex(activeIndex, 1)
+              } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                nextIndex = findNextEnabledIndex(activeIndex, -1)
+              } else if (event.key === 'Home') {
+                nextIndex = findBoundaryEnabledIndex(false)
+              } else if (event.key === 'End') {
+                nextIndex = findBoundaryEnabledIndex(true)
+              }
+
+              if (nextIndex === -1 || nextIndex === activeIndex) return
+
+              event.preventDefault()
+              onChange(options[nextIndex]!.value)
+              buttonRefs.current[nextIndex]?.focus()
+            }}
             disabled={disabled || option.disabled}
           >
             {option.label}

@@ -32,8 +32,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3441,
-      reason: 'API barrel still carries HA source settings, admin settings, user-list contracts, and user-console overview APIs until the proxy API surface is split out.',
+      max: 3469,
+      reason:
+        'API barrel still carries HA source settings, admin settings, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
@@ -74,8 +75,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/types.ts',
     {
-      max: 1598,
-      reason: 'HA source settings and admin jobs maintenance translation types remain in the shared catalog contract.',
+      max: 1603,
+      reason:
+        'HA source settings mode-specific failure copy and admin jobs maintenance translation types remain in the shared catalog contract.',
     },
   ],
   [
