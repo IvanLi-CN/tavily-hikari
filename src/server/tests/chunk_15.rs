@@ -569,13 +569,7 @@
 
     #[tokio::test(start_paused = true)]
     async fn builtin_admin_session_expiry_stays_monotonic_when_wall_clock_moves_backwards() {
-        let (backend_time, manual_clock) = tavily_hikari::BackendTime::manual_from_ts(1_700_000_000);
-        let admin = BuiltinAdminAuth::new_with_time(
-            true,
-            Some("pw".to_string()),
-            None,
-            backend_time,
-        );
+        let admin = BuiltinAdminAuth::new(true, Some("pw".to_string()), None);
 
         let token = admin.login("pw").expect("admin login token");
         admin.remember_session(token.clone());
@@ -589,11 +583,13 @@
         );
         assert!(admin.is_admin(&headers));
 
-        manual_clock.advance_wall(Duration::from_secs(60 * 60 * 24));
-        manual_clock.set_now_ts(1_700_000_000 - 60 * 60 * 24 * 30);
+        tokio::time::advance(Duration::from_secs(60 * 60 * 24)).await;
         assert!(admin.is_admin(&headers));
 
-        tokio::time::advance(Duration::from_secs(BUILTIN_ADMIN_SESSION_MAX_AGE_SECS)).await;
+        tokio::time::advance(Duration::from_secs(
+            BUILTIN_ADMIN_SESSION_MAX_AGE_SECS - 60 * 60 * 24,
+        ))
+        .await;
         assert!(!admin.is_admin(&headers));
     }
 

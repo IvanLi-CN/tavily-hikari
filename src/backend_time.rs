@@ -20,7 +20,7 @@ impl BackendTime {
         Self::system()
     }
 
-    #[doc(hidden)]
+    #[cfg(test)]
     pub fn manual(start: DateTime<Utc>) -> (Self, ManualBackendTime) {
         let wall_clock = Arc::new(ManualWallClock::new(start));
         (
@@ -31,7 +31,7 @@ impl BackendTime {
         )
     }
 
-    #[doc(hidden)]
+    #[cfg(test)]
     pub fn manual_from_ts(start_ts: i64) -> (Self, ManualBackendTime) {
         Self::manual(
             Utc.timestamp_opt(start_ts, 0)
@@ -88,11 +88,13 @@ impl WallClock for SystemWallClock {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct ManualWallClock {
     now: std::sync::Mutex<DateTime<Utc>>,
 }
 
+#[cfg(test)]
 impl ManualWallClock {
     fn new(start: DateTime<Utc>) -> Self {
         Self {
@@ -125,6 +127,7 @@ impl ManualWallClock {
     }
 }
 
+#[cfg(test)]
 impl WallClock for ManualWallClock {
     fn now_ts(&self) -> i64 {
         self.current_utc().timestamp()
@@ -135,12 +138,13 @@ impl WallClock for ManualWallClock {
     }
 }
 
-#[doc(hidden)]
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct ManualBackendTime {
     wall_clock: Arc<ManualWallClock>,
 }
 
+#[cfg(test)]
 impl ManualBackendTime {
     pub fn now_ts(&self) -> i64 {
         self.wall_clock.current_utc().timestamp()

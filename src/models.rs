@@ -2688,7 +2688,7 @@ where
     let windows = BillingLedgerWindows::from_now(now());
     let previous_rebase_month_start = get_meta_i64_executor(&mut *conn, meta_key).await?;
     if previous_rebase_month_start == Some(windows.month_window_start) {
-        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         return Ok(None);
     }
 
