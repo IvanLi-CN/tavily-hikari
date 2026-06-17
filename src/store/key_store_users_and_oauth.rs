@@ -1551,7 +1551,15 @@ impl KeyStore {
             return Ok(RequestLogDiagnosticMetadata::default());
         };
 
-        let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        let row = sqlx::query_as::<_, (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>(
             r#"
             SELECT created_at, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
             FROM request_logs

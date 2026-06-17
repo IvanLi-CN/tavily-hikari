@@ -35,6 +35,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     let request_log_success: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO request_logs (
+            api_key_id,
             method,
             path,
             status_code,
@@ -46,7 +47,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             request_user_id,
             upstream_operation,
             created_at
-        ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
+        ) VALUES ('key-live-success', 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
         RETURNING id
         "#,
     )
@@ -83,6 +84,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     let request_log_failure: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO request_logs (
+            api_key_id,
             method,
             path,
             status_code,
@@ -94,7 +96,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             request_user_id,
             upstream_operation,
             created_at
-        ) VALUES ('POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?)
+        ) VALUES ('key-live-failure', 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?)
         RETURNING id
         "#,
     )
@@ -131,6 +133,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     let request_log_quota_exhausted: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO request_logs (
+            api_key_id,
             method,
             path,
             status_code,
@@ -142,7 +145,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             request_user_id,
             upstream_operation,
             created_at
-        ) VALUES ('POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?)
+        ) VALUES (NULL, 'POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?)
         RETURNING id
         "#,
     )
@@ -179,6 +182,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     let request_log_pre_upstream: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO request_logs (
+            api_key_id,
             method,
             path,
             status_code,
@@ -190,7 +194,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             request_user_id,
             upstream_operation,
             created_at
-        ) VALUES ('POST', '/api/tavily/search', 429, 429, 'blocked', 'api:search', 'API | search', 1, ?, NULL, ?)
+        ) VALUES (NULL, 'POST', '/api/tavily/search', 429, 429, 'blocked', 'api:search', 'API | search', 1, ?, NULL, ?)
         RETURNING id
         "#,
     )
@@ -296,6 +300,7 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
     sqlx::query(
         r#"
         INSERT INTO request_logs (
+            api_key_id,
             method,
             path,
             status_code,
@@ -308,11 +313,11 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
             upstream_operation,
             created_at
         ) VALUES
-            ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?),
-            ('POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?),
-            ('POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?),
-            ('POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, NULL, ?),
-            ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
+            ('key-backfill-success', 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, NULL, ?),
+            ('key-backfill-failure', 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, NULL, ?),
+            (NULL, 'POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?),
+            (NULL, 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, NULL, ?),
+            (NULL, 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
         "#,
     )
     .bind(&user.user_id)

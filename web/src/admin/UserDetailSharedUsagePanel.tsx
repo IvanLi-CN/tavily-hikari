@@ -220,6 +220,10 @@ function axisTickStride(series: AdminUserUsageSeriesKey): number {
   }
 }
 
+export function isBusinessCalls1hStacked(activeSeries: AdminUserUsageSeriesKey): boolean {
+  return activeSeries === 'businessCalls1h'
+}
+
 function isQuotaLikeSeries(
   value: AdminUserUsageSeries | null | undefined,
 ): value is Extract<AdminUserUsageSeries, { kind: 'quotaLike' }> {
@@ -576,6 +580,7 @@ export function UserDetailSharedUsagePanel({
       },
       scales: {
         x: {
+          stacked: isBusinessCalls1hStacked(activeSeries),
           grid: { display: false },
           ticks: {
             autoSkip: false,
@@ -595,7 +600,7 @@ export function UserDetailSharedUsagePanel({
         },
         y: {
           beginAtZero: true,
-          stacked: activeSeries === 'businessCalls1h',
+          stacked: isBusinessCalls1hStacked(activeSeries),
           grid: { color: chartPalette.grid },
           ticks: {
             color: chartPalette.tick,

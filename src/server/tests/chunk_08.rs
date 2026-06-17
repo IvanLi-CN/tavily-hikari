@@ -1262,7 +1262,7 @@
 
         let row = sqlx::query(
             r#"
-            SELECT request_body, response_body, result_status, tavily_status_code
+            SELECT request_body, response_body, result_status, tavily_status_code, upstream_operation
             FROM observability.request_logs
             ORDER BY id DESC
             LIMIT 1
@@ -1276,12 +1276,14 @@
         let response_body: Vec<u8> = row.try_get("response_body").unwrap();
         let result_status: String = row.try_get("result_status").unwrap();
         let tavily_status_code: Option<i64> = row.try_get("tavily_status_code").unwrap();
+        let upstream_operation: Option<String> = row.try_get("upstream_operation").unwrap();
 
         let req_text = String::from_utf8_lossy(&request_body);
         let resp_text = String::from_utf8_lossy(&response_body);
 
         assert_eq!(result_status, "success");
         assert_eq!(tavily_status_code, Some(200));
+        assert_eq!(upstream_operation.as_deref(), Some("http_search"));
         assert!(
             !req_text.contains(expected_api_key)
                 && !req_text.contains(&access_token.token)

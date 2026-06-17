@@ -1,6 +1,16 @@
 const ADMIN_USER_IP_ADDRESS_LIMIT: usize = 100;
 const ADMIN_USER_IP_TIMELINE_LIMIT: usize = 40;
 
+fn http_upstream_operation(upstream_path: &str) -> Option<&'static str> {
+    match upstream_path {
+        "/search" => Some("http_search"),
+        "/extract" => Some("http_extract"),
+        "/crawl" => Some("http_crawl"),
+        "/map" => Some("http_map"),
+        _ => None,
+    }
+}
+
 impl TavilyProxy {
     async fn select_http_json_key(
         &self,
@@ -284,6 +294,7 @@ impl TavilyProxy {
         inject_upstream_bearer_auth: bool,
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
+        let upstream_operation = http_upstream_operation(upstream_path);
         let (
             lease,
             api_route_binding_effect,
@@ -459,7 +470,7 @@ impl TavilyProxy {
                         experiment_variant: None,
                         proxy_session_id: None,
                         routing_subject_hash: None,
-                        upstream_operation: None,
+                        upstream_operation,
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
@@ -546,7 +557,7 @@ impl TavilyProxy {
                         experiment_variant: None,
                         proxy_session_id: None,
                         routing_subject_hash: None,
-                        upstream_operation: None,
+                        upstream_operation,
                         fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,

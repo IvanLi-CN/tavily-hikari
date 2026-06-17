@@ -1361,8 +1361,19 @@ impl UserBusinessCalls1hWindow {
             WHERE created_at >= ?
               AND request_user_id IS NOT NULL
               AND counts_business_quota = 1
-              AND upstream_operation IS NOT NULL
               AND result_status != ?
+              AND (
+                upstream_operation IS NOT NULL
+                OR (
+                  api_key_id IS NOT NULL
+                  AND path IN (
+                    '/api/tavily/search',
+                    '/api/tavily/extract',
+                    '/api/tavily/crawl',
+                    '/api/tavily/map'
+                )
+                )
+              )
             ORDER BY created_at ASC, id ASC
             "#,
         )

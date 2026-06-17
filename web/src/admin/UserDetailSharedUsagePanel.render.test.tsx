@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { AdminUserUsageSeries, AdminUserUsageSeriesKey } from '../api'
 import { ZH } from '../i18n/translations/zh'
 import { ThemeProvider, useTheme } from '../theme'
-import { UserDetailSharedUsagePanel } from './UserDetailSharedUsagePanel'
+import { UserDetailSharedUsagePanel, isBusinessCalls1hStacked } from './UserDetailSharedUsagePanel'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -356,5 +356,13 @@ describe('UserDetailSharedUsagePanel theme behavior', () => {
     await act(async () => {
       root.unmount()
     })
+  })
+})
+
+describe('UserDetailSharedUsagePanel business chart config', () => {
+  it('treats the business 1h chart as stacked on both axes', () => {
+    expect(isBusinessCalls1hStacked('businessCalls1h')).toBe(true)
+    expect(isBusinessCalls1hStacked('quota1h')).toBe(false)
+    expect(isBusinessCalls1hStacked('rate5m')).toBe(false)
   })
 })
