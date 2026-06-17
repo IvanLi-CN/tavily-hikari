@@ -803,6 +803,7 @@ async fn observability_sidecar_migrate_dry_run_reports_startup_attach_for_small_
         .observability_database_path
         .clone()
         .expect("sidecar path");
+    let lock_path = crate::store::sqlite_lock_sidecar_path(&db_str);
 
     let mut conn = sqlx::SqliteConnection::connect_with(
         &sqlx::sqlite::SqliteConnectOptions::new()
@@ -839,6 +840,10 @@ async fn observability_sidecar_migrate_dry_run_reports_startup_attach_for_small_
     assert_eq!(dry_run.attached_observability_path, observability_path);
     assert!(dry_run.legacy_request_logs_exists);
     assert!(!std::path::Path::new(&observability_path).exists());
+    assert!(
+        !std::path::Path::new(&lock_path).exists(),
+        "dry-run must not create an offline lock file when probing an existing DB"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -846,6 +851,7 @@ async fn observability_sidecar_migrate_dry_run_reports_startup_attach_for_small_
     let _ = std::fs::remove_file(&observability_path);
     let _ = std::fs::remove_file(format!("{observability_path}-shm"));
     let _ = std::fs::remove_file(format!("{observability_path}-wal"));
+    let _ = std::fs::remove_file(lock_path);
 }
 
 #[tokio::test]
@@ -857,6 +863,7 @@ async fn observability_sidecar_migrate_dry_run_tolerates_read_only_small_legacy_
         .observability_database_path
         .clone()
         .expect("sidecar path");
+    let lock_path = crate::store::sqlite_lock_sidecar_path(&db_str);
 
     let mut conn = sqlx::SqliteConnection::connect_with(
         &sqlx::sqlite::SqliteConnectOptions::new()
@@ -903,6 +910,10 @@ async fn observability_sidecar_migrate_dry_run_tolerates_read_only_small_legacy_
     assert!(!dry_run.sqlite_write_probe_ok);
     assert!(dry_run.legacy_request_logs_exists);
     assert!(!std::path::Path::new(&observability_path).exists());
+    assert!(
+        !std::path::Path::new(&lock_path).exists(),
+        "dry-run must not create an offline lock file for read-only snapshots"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -910,6 +921,7 @@ async fn observability_sidecar_migrate_dry_run_tolerates_read_only_small_legacy_
     let _ = std::fs::remove_file(&observability_path);
     let _ = std::fs::remove_file(format!("{observability_path}-shm"));
     let _ = std::fs::remove_file(format!("{observability_path}-wal"));
+    let _ = std::fs::remove_file(lock_path);
 }
 
 #[tokio::test]

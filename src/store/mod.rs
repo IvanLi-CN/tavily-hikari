@@ -33,21 +33,24 @@ fn flock_nonblocking(file: &File, operation: libc::c_int) -> std::io::Result<()>
     }
 }
 
+fn open_observability_lock_file(lock_path: &str, create_if_missing: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    if create_if_missing {
+        options.create(true).truncate(false);
+    }
+    options.open(lock_path)
+}
+
 pub(crate) fn acquire_observability_service_shared_lock(
     database_path: &str,
 ) -> Result<File, ProxyError> {
     let lock_path = sqlite_lock_sidecar_path(database_path);
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|err| {
-            ProxyError::Other(format!(
-                "failed to open observability service lock file {lock_path}: {err}"
-            ))
-        })?;
+    let file = open_observability_lock_file(&lock_path, true).map_err(|err| {
+        ProxyError::Other(format!(
+            "failed to open observability service lock file {lock_path}: {err}"
+        ))
+    })?;
     flock_nonblocking(&file, libc::LOCK_SH).map_err(|err| {
         ProxyError::Other(format!(
             "failed to acquire shared observability service lock {lock_path}: {err}"
@@ -60,17 +63,11 @@ pub(crate) fn acquire_observability_offline_guard(
     database_path: &str,
 ) -> Result<ObservabilityOfflineGuard, ProxyError> {
     let lock_path = sqlite_lock_sidecar_path(database_path);
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|err| {
-            ProxyError::Other(format!(
-                "failed to open observability offline lock file {lock_path}: {err}"
-            ))
-        })?;
+    let lock_file = open_observability_lock_file(&lock_path, true).map_err(|err| {
+        ProxyError::Other(format!(
+            "failed to open observability offline lock file {lock_path}: {err}"
+        ))
+    })?;
     flock_nonblocking(&lock_file, libc::LOCK_EX).map_err(|err| {
         ProxyError::Other(format!(
             "offline migration requires the service to be stopped; could not acquire exclusive observability service lock {lock_path}: {err}"
@@ -532,7 +529,26 @@ pub(crate) async fn probe_observability_offline_state(
     database_path: &str,
 ) -> Result<ObservabilityOfflineProbe, ProxyError> {
     let sibling_lock_path = sqlite_lock_sidecar_path(database_path);
-    let service_lock_held_exclusively = acquire_observability_offline_guard(database_path).is_ok();
+    let service_lock_held_exclusively = match open_observability_lock_file(
+        &sibling_lock_path,
+        false,
+    ) {
+        Ok(lock_file) => match flock_nonblocking(&lock_file, libc::LOCK_EX) {
+            Ok(()) => true,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(err) => {
+                return Err(ProxyError::Other(format!(
+                    "failed to probe observability offline lock file {sibling_lock_path}: {err}"
+                )));
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(err) => {
+            return Err(ProxyError::Other(format!(
+                "failed to open observability offline probe lock file {sibling_lock_path}: {err}"
+            )));
+        }
+    };
     let sqlite_write_probe_ok = OpenOptions::new()
         .read(true)
         .write(true)
