@@ -346,8 +346,6 @@ async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked()
     )
     .await
     .expect("proxy created");
-    tokio::time::pause();
-
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "linuxdo".to_string(),
@@ -365,6 +363,10 @@ async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked()
         .create_access_token(Some("linuxdo:preferred_begin_retry"))
         .await
         .expect("create preferred token");
+
+    // Pause Tokio time only after the LinuxDo bootstrap writes complete.
+    // This test is about begin-lock retry behavior, not startup/system-tag races.
+    tokio::time::pause();
 
     let mut lock_conn =
         connect_sqlite_test_connection(&db_str, false, false, Duration::from_millis(1)).await;
