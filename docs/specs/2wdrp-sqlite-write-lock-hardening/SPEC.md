@@ -4,7 +4,7 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-06-17
+- Last: 2026-06-18
 
 ## Background
 
@@ -145,10 +145,25 @@ source when a usable persisted runtime already exists.
 - The explicit sidecar migration contract must be resumable and idempotent. Re-running the command
   after a partial copy must preserve existing `observability.request_logs` rows by `id`, continue
   copying any missing `main.request_logs` rows in bounded batches, keep soft `request_log_id`
-  references valid, then delete the legacy `main.request_logs`. For each legacy rollup/bucket table
-  drop, the corresponding rebuild markers must be reset in the same transactional cutover step so
-  an interruption cannot leave sidecar rebuild metadata falsely marked complete after the legacy
-  table is already gone.
+  references valid, rebuild all derived observability tables in the sibling sidecar layout, delete
+  the legacy `main.request_logs` and legacy `main` rollup/bucket tables, then mark the corresponding
+  meta keys complete and write the explicit cutover marker
+  `observability_sidecar_explicit_cutover_v1_done`. The command must not report completion until a
+  normal restart can attach the sibling sidecar without running a full derived-table rebuild.
+  A DB where the legacy tables are already gone but this explicit marker or the derived completion
+  meta is missing is an interrupted cutover, not an `already_migrated` success; rerunning the tool
+  must rebuild and mark the sidecar offline.
+  Completion meta must be interpreted as complete only when the value is exactly `1`; present
+  `0` values mean rebuild-needed and must not satisfy either the offline `already_migrated` check
+  or the startup guard.
+  Offline rebuild SQL for `api_key_usage_buckets` must preserve the `valuable_failure_429_count`
+  metric, not just the aggregate success/error buckets.
+- Startup must not run large sidecar derived-table rebuilds after an explicit cutover. If a cutover
+  DB has the explicit cutover marker, `main.request_logs` removed, and sidecar `request_logs`
+  present but the derived rebuild meta is incomplete, startup must fail fast with an
+  operator-facing instruction to rerun `observability_sidecar_migrate`. Startup self-heal for
+  legacy single-DB and small automatic sidecar migration remains outside this explicit-cutover
+  fail-fast guard.
 - Sidecar-aware schema self-heal paths must probe the attached `observability` schema explicitly.
   When both `main.request_logs` and `observability.request_logs` exist during migration or repair,
   column-existence checks must not accidentally read the wrong schema and issue duplicate `ALTER TABLE` statements.
@@ -217,9 +232,10 @@ source when a usable persisted runtime already exists.
   `*-observability.db` exists, `main.request_logs` is gone, `observability.request_logs` preserves
   the original `id` coverage, child `request_log_id` / `source_request_log_id` references remain
   valid, and legacy `api_key_usage_buckets`, `dashboard_request_rollup_buckets`, and
-  `request_log_catalog_rollups` are removed from `main` with their rebuild markers reset. The
-  catalog retention meta must stay aligned with the current retention setting so the first normal
-  startup after cutover does not trigger an avoidable extra catalog rebuild.
+  `request_log_catalog_rollups` are removed from `main`. Sidecar `api_key_usage_buckets`,
+  `dashboard_request_rollup_buckets`, and `request_log_catalog_rollups` must already be rebuilt,
+  their meta keys must be marked complete, and the catalog retention meta must match the current
+  retention setting before the command reports `completed=true`.
 - The explicit migration path must refuse to run while another process still holds the sibling
   `observability-migrate.lock`; success no longer relies on WAL-mode `BEGIN EXCLUSIVE` semantics to
   infer that the live service has stopped.

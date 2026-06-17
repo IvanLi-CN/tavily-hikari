@@ -10,6 +10,7 @@ import urllib.request
 APP_URL = os.environ.get("APP_URL", "http://app:8787")
 CORE_DB = "/srv/app/runtime/data/tavily_proxy.db"
 SIDECAR_DB = "/srv/app/runtime/data/tavily_proxy-observability.db"
+MIGRATION_REPORT = "/srv/app/runtime/migrate-report.json"
 
 
 def request(method, url, body=None, headers=None, timeout=15):
@@ -34,6 +35,20 @@ def request(method, url, body=None, headers=None, timeout=15):
         except json.JSONDecodeError:
             parsed = raw
         return err.code, parsed
+
+
+def parse_sse_json_message(value):
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise AssertionError(f"unexpected response body type: {type(value)!r}")
+    for line in value.splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line.removeprefix("data:").strip()
+        if data:
+            return json.loads(data)
+    raise AssertionError(f"missing SSE data message: {value[:200]}")
 
 
 def wait_ok(path, timeout=90):
@@ -86,6 +101,13 @@ def sqlite_rows(path, sql, params=()):
     return rows
 
 
+def load_migration_report():
+    if not os.path.exists(MIGRATION_REPORT):
+        return None
+    with open(MIGRATION_REPORT, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def main():
     wait_ok("/health")
     version = wait_ok("/api/version")
@@ -112,6 +134,7 @@ def main():
         timeout=20,
     )
     assert_status("mcp tools/list", status, 200)
+    body = parse_sse_json_message(body)
     if body.get("jsonrpc") != "2.0":
         raise AssertionError(f"unexpected mcp body: {body}")
 
@@ -135,22 +158,47 @@ def main():
     if main_request_logs_exists is not None:
         raise AssertionError("core DB still owns main.request_logs after migration")
 
-    sidecar_rows = sqlite_rows(
+    report = load_migration_report()
+    sidecar_count, sidecar_min_id, sidecar_max_id = sqlite_rows(
         SIDECAR_DB,
-        "SELECT id, path FROM request_logs ORDER BY id ASC",
+        "SELECT COUNT(*), MIN(id), MAX(id) FROM request_logs",
+    )[0]
+    if report:
+        source_rows = int(report.get("sourceRequestLogRows") or 0)
+        source_min = report.get("sourceMinRequestLogId")
+        source_max = report.get("sourceMaxRequestLogId")
+        if sidecar_count < source_rows + 2:
+            raise AssertionError(
+                f"expected migrated history plus fresh rows, got {sidecar_count} < {source_rows + 2}"
+            )
+        if source_min is not None and sidecar_min_id != source_min:
+            raise AssertionError(f"sidecar min id changed: {sidecar_min_id} != {source_min}")
+        if source_max is not None and sidecar_max_id < source_max:
+            raise AssertionError(f"sidecar max id regressed: {sidecar_max_id} < {source_max}")
+    elif sidecar_count < 4:
+        raise AssertionError(f"expected migrated plus smoke rows, got {sidecar_count}")
+
+    sidecar_path_counts = dict(
+        sqlite_rows(
+            SIDECAR_DB,
+            """
+            SELECT path, COUNT(*)
+            FROM request_logs
+            WHERE path IN ('/api/tavily/search', '/mcp')
+            GROUP BY path
+            """,
+        )
     )
-    if len(sidecar_rows) < 4:
-        raise AssertionError(f"expected migrated plus smoke rows, got {len(sidecar_rows)}")
-    if sidecar_rows[0][0] != 1 or sidecar_rows[0][1] != "/api/tavily/search":
-        raise AssertionError(f"unexpected seed row 1: {sidecar_rows[0]}")
-    if sidecar_rows[1][0] != 2 or sidecar_rows[1][1] != "/mcp":
-        raise AssertionError(f"unexpected seed row 2: {sidecar_rows[1]}")
+    if sidecar_path_counts.get("/api/tavily/search", 0) < 1 or sidecar_path_counts.get("/mcp", 0) < 1:
+        raise AssertionError(f"missing expected sidecar log paths: {sidecar_path_counts}")
 
     payload = {
         "backend": version["backend"],
         "tokenId": token_id,
         "logPaths": sorted(paths),
-        "sidecarRowCount": len(sidecar_rows),
+        "sidecarRowCount": sidecar_count,
+        "sidecarMinId": sidecar_min_id,
+        "sidecarMaxId": sidecar_max_id,
     }
     print(json.dumps(payload))
 

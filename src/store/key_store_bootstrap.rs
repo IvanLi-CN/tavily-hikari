@@ -1992,6 +1992,19 @@ impl KeyStore {
         }
         self.ensure_request_log_catalog_rollup_schema().await?;
         self.ensure_ha_schema().await?;
+        if !uses_legacy_single_db_observability_compatibility
+            && core_database_file_size(&self.database_path).unwrap_or(u64::MAX)
+                <= LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES
+            && self
+                .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+                .await?
+                .is_none()
+        {
+            self.rebuild_observability_sidecar_derived_tables_offline(false)
+                .await?;
+        }
+        self.ensure_observability_sidecar_startup_rebuild_not_required()
+            .await?;
 
         if !uses_legacy_single_db_observability_compatibility
             && self
@@ -2015,6 +2028,8 @@ impl KeyStore {
                 .await?
                 .is_some();
             if !api_key_usage_buckets_v1_done {
+                self.reject_large_sidecar_startup_rebuild("api key usage bucket rebuild")
+                    .await?;
                 self.migrate_api_key_usage_buckets_v1().await?;
                 self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 1)
                     .await?;
@@ -2026,6 +2041,8 @@ impl KeyStore {
                     .await?
                     .is_none()
             {
+                self.reject_large_sidecar_startup_rebuild("api key usage bucket request-value backfill")
+                    .await?;
                 self.backfill_api_key_usage_bucket_request_value_counts_v2()
                     .await?;
                 self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE, 1)
@@ -2036,6 +2053,8 @@ impl KeyStore {
         if !uses_legacy_single_db_observability_compatibility
             && dashboard_request_rollup_buckets_schema_changed
         {
+            self.reject_large_sidecar_startup_rebuild("dashboard request rollup schema rebuild")
+                .await?;
             self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 0)
                 .await?;
         }
@@ -2046,6 +2065,8 @@ impl KeyStore {
                 .await?
                 != Some(1)
         {
+            self.reject_large_sidecar_startup_rebuild("dashboard request rollup rebuild")
+                .await?;
             self.rebuild_dashboard_request_rollup_buckets().await?;
             self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 1)
                 .await?;
@@ -2066,6 +2087,8 @@ impl KeyStore {
                     .await?
                     != Some(request_log_catalog_rollup_retention_days);
             if request_log_catalog_rollup_needs_rebuild {
+                self.reject_large_sidecar_startup_rebuild("request log catalog rollup rebuild")
+                    .await?;
                 self.rebuild_request_log_catalog_rollups().await?;
                 self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
                     .await?;

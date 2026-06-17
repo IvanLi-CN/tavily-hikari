@@ -104,3 +104,24 @@
 - Recorded the first passing shared-testbox evidence for that flow: isolated compose project build,
   explicit sidecar migration, fresh token-backed `/api/tavily/search`, `/mcp`, and migrated
   request-log reads all succeeded against the migrated snapshot.
+
+## 2026-06-18
+
+- A 101 short-maintenance cutover attempt exposed a contract bug in the first explicit migration:
+  the tool copied `request_logs` and reset derived-table rebuild markers, then service startup
+  synchronously awaited the large derived rollup rebuild before opening the HTTP listener.
+- Tightened the contract so `observability_sidecar_migrate` must complete all sidecar derived-table
+  rebuild work and write completion meta before reporting success or deleting hidden legacy
+  observability tables.
+- Tightened the finalization order again after review: the migration now drops hidden legacy
+  observability tables before writing completion meta and the explicit cutover marker, avoiding a
+  false completed state if final table deletion is interrupted.
+- Added startup protection for explicit cutovers: a sidecar with the explicit cutover marker,
+  historical rows, and missing derived completion meta now fails fast with an operator instruction
+  to rerun the offline tool instead of turning startup into an implicit migration worker. The guard
+  is scoped to the explicit marker so legacy startup and small automatic sidecar self-heal remain
+  compatible.
+- Tightened completion checks so only exact `1` meta values count as complete; stale `0` values
+  remain rebuild-needed and are recovered by rerunning the offline tool.
+- Restored `valuable_failure_429_count` in the offline `api_key_usage_buckets` rebuild path so
+  per-key upstream-429 failures survive explicit sidecar migration.

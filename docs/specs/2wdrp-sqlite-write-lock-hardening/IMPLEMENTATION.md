@@ -134,19 +134,30 @@
   - forces the sibling sidecar attach target instead of reusing the startup fallback,
   - copies only `main.request_logs` into `observability.request_logs` in `id` order with bounded
     batches and `NOT EXISTS` dedupe so reruns can resume partial copies safely,
-  - rebuilds request-log soft-reference tables before dropping `main.request_logs`,
+  - rebuilds request-log soft-reference tables before removing `main.request_logs`,
   - validates preserved child references (`billing_ledger`, `api_key_maintenance_records`,
     `api_key_transient_backoffs`, and any existing `auth_token_logs.request_log_id`),
-  - removes legacy `main` observability tables (`api_key_usage_buckets`,
-    `dashboard_request_rollup_buckets`, `request_log_catalog_rollups`) and resets their rebuild
-    meta markers so the next normal startup recreates or self-heals them in the sidecar layout.
-  - resets each legacy rollup/bucket rebuild marker in the same SQLite transaction that drops the
-    corresponding legacy `main` table, so an interrupted cutover cannot strand a missing table
-    behind a stale “already rebuilt” marker.
-  - preserves `request_log_catalog_rollup_v1_retention_days` at the current retention window while
-    resetting `request_log_catalog_rollup_v1_done`, so post-cutover startup sees the intended
-    rebuild marker reset without forcing an extra catalog rebuild solely because the retention meta
-    was zeroed.
+  - temporarily hides legacy `main` observability tables while reusing the existing sidecar layout
+    rebuild routines, so unqualified rebuild SQL reads and writes the attached `observability`
+    schema instead of the legacy `main` tables,
+  - rebuilds sidecar `api_key_usage_buckets`, `dashboard_request_rollup_buckets`, and
+    `request_log_catalog_rollups` before deleting any hidden legacy table,
+  - drops the hidden legacy `main` observability tables before writing completion meta, so a
+    crash cannot leave a false completed state with temporary legacy tables still present,
+  - marks `api_key_usage_buckets_v1_done`,
+    `api_key_usage_buckets_request_value_v2_done`,
+    `dashboard_request_rollup_buckets_v1_done`,
+    `request_log_catalog_rollup_v1_done`, and
+    `request_log_catalog_rollup_v1_retention_days` complete, then writes
+    `observability_sidecar_explicit_cutover_v1_done` before reporting success,
+  - reports the derived rebuild booleans, completion-meta booleans,
+    `startup_rebuild_required`, and `derived_rebuild_elapsed_ms` in JSON output.
+- Startup now treats explicit large sidecar cutover as a completed offline operation. If
+  `observability_sidecar_explicit_cutover_v1_done` is present, `main.request_logs` is gone, sidecar
+  `request_logs` contains rows, and the derived rebuild meta is incomplete, startup fails fast with
+  an instruction to rerun `observability_sidecar_migrate` instead of awaiting full derived-table
+  rebuilds before the HTTP listener is ready. Legacy single-DB startup and small automatic sidecar
+  migration remain allowed to use their bounded startup self-heal paths.
 - Server/admin test helpers now mirror that sidecar layout instead of opening only the core DB
   file. SQLite schema assertions for `request_logs` and the other observability tables now probe
   the attached schema explicitly, which keeps migration and admin-route coverage aligned with the
@@ -197,6 +208,8 @@
   - dry-run reporting without sidecar creation,
   - idempotent reruns after a finished cutover,
   - resuming partial copies when the sidecar already contains a subset of `request_logs` ids,
+  - rejecting startup when a cutover sidecar has historical rows but derived completion meta is
+    missing,
   - preserving the large-legacy startup compatibility path and standalone `request_logs_gc_once`
     behavior until the explicit cutover is run.
 - Added request-stats coverage proving summary/key-metric reads flush pending coalesced deltas
@@ -218,6 +231,7 @@
 - `cargo fmt --all`
 - `cargo test observability_sidecar_migrate_moves_large_legacy_request_logs_offline -- --nocapture`
 - `cargo test observability_sidecar_migrate_resumes_copy_from_preseeded_sidecar_gaps -- --nocapture`
+- `cargo test observability_sidecar -- --nocapture`
 - `cargo test large_legacy_single_db_request_logs_stay_in_core_database_for_startup -- --nocapture`
 - `cargo test standalone_request_logs_gc_uses_large_legacy_single_db_layout -- --nocapture`
 - Targeted SQLite lock contention tests.
