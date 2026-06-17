@@ -307,6 +307,42 @@ async fn resolve_observability_attach_plan(
     })
 }
 
+pub(crate) async fn open_sqlite_pool_forced_observability(
+    core_database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+    max_connections: u32,
+) -> Result<SqlitePool, ProxyError> {
+    let mut options = SqliteConnectOptions::new()
+        .filename(core_database_path)
+        .create_if_missing(create_if_missing)
+        .read_only(read_only)
+        .busy_timeout(Duration::from_secs(5));
+    if !read_only {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
+
+    let mut pool_options = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(max_connections);
+    if let Some(observability_database_path) = observability_database_path {
+        let observability_database_path = observability_database_path.to_string();
+        pool_options = pool_options.after_connect(move |conn, _meta| {
+            let observability_database_path = observability_database_path.clone();
+            Box::pin(async move {
+                attach_observability_database(conn, &observability_database_path).await?;
+                Ok(())
+            })
+        });
+    }
+
+    pool_options
+        .connect_with(options)
+        .await
+        .map_err(ProxyError::Database)
+}
+
 async fn select_observability_attach_path(
     conn: &mut sqlx::SqliteConnection,
     core_database_path: &str,
@@ -327,6 +363,39 @@ async fn select_observability_attach_path(
     }
 
     Ok(None)
+}
+
+pub(crate) async fn detect_observability_attach_path(
+    core_database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+) -> Result<Option<String>, ProxyError> {
+    let Some(observability_database_path) = observability_database_path else {
+        return Ok(None);
+    };
+
+    let mut options = SqliteConnectOptions::new()
+        .filename(core_database_path)
+        .create_if_missing(create_if_missing)
+        .read_only(read_only)
+        .busy_timeout(Duration::from_secs(5));
+    if !read_only {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
+
+    let mut conn = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(ProxyError::Database)?;
+    select_observability_attach_path(
+        &mut conn,
+        core_database_path,
+        observability_database_path,
+        create_if_missing,
+        read_only,
+    )
+    .await
+    .map_err(ProxyError::Database)
 }
 
 async fn connection_main_table_exists(
@@ -350,6 +419,80 @@ fn legacy_request_logs_inline_sidecar_migration_allowed(database_path: &str) -> 
                 "observability startup migration: failed to read core database size for {database_path}: {err}"
             );
             false
+        }
+    }
+}
+
+pub(crate) fn core_database_file_size(database_path: &str) -> Result<u64, ProxyError> {
+    std::fs::metadata(database_path)
+        .map(|metadata| metadata.len())
+        .map_err(|err| {
+            ProxyError::Other(format!(
+                "failed to stat core database {database_path}: {err}"
+            ))
+        })
+}
+
+pub(crate) fn available_disk_bytes_for_path(path: &str) -> Result<u64, ProxyError> {
+    let output = std::process::Command::new("df")
+        .arg("-k")
+        .arg(path)
+        .output()
+        .map_err(|err| ProxyError::Other(format!("failed to execute df for {path}: {err}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ProxyError::Other(format!(
+            "df -k {path} failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| ProxyError::Other(format!("df output for {path} was empty")))?;
+    let available_kib = line
+        .split_whitespace()
+        .nth(3)
+        .ok_or_else(|| ProxyError::Other(format!("unable to parse df output for {path}: {line}")))?
+        .parse::<u64>()
+        .map_err(|err| {
+            ProxyError::Other(format!(
+                "unable to parse df available bytes for {path}: {err}"
+            ))
+        })?;
+    Ok(available_kib.saturating_mul(1024))
+}
+
+pub(crate) async fn probe_sqlite_offline_exclusive_lock(
+    database_path: &str,
+) -> Result<bool, ProxyError> {
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(250));
+    let mut conn = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(ProxyError::Database)?;
+    match sqlx::query("BEGIN EXCLUSIVE").execute(&mut conn).await {
+        Ok(_) => {
+            sqlx::query("ROLLBACK")
+                .execute(&mut conn)
+                .await
+                .map_err(ProxyError::Database)?;
+            Ok(true)
+        }
+        Err(err) => {
+            let err = ProxyError::Database(err);
+            if is_transient_sqlite_write_error(&err) {
+                Ok(false)
+            } else {
+                Err(err)
+            }
         }
     }
 }

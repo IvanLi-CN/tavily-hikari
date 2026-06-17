@@ -115,11 +115,26 @@
   sidecar for the steady-state layout. Smaller legacy single-DB SQLite files still migrate
   `request_logs` into the sidecar during startup, but large legacy DBs now stay on a temporary
   single-DB compatibility path when the inline copy would exceed the startup budget. In that mode,
-  `observability` is attached back to the core file for startup and offline `request_logs_gc_once`,
-  and no sibling sidecar file is created until a later explicit migration path is available. That
-  compatibility path must still keep the normal SQLite pool capacity; collapsing the pool to one
-  connection makes `/api/summary` flushes and early scheduler enqueue paths fight for the same slot
-  and can leave owner-facing reads returning transient 500s after `/health` is already green.
+  `observability` is attached back to the core file for startup and offline `request_logs_gc_once`
+  until operators run the explicit offline sidecar cutover. That compatibility path must still keep
+  the normal SQLite pool capacity; collapsing the pool to one connection makes `/api/summary`
+  flushes and early scheduler enqueue paths fight for the same slot and can leave owner-facing
+  reads returning transient 500s after `/health` is already green.
+- Added `observability_sidecar_migrate` as an offline operator binary for that explicit cutover.
+  The command:
+  - always derives the sibling `*-observability.db` path from the core DB path,
+  - probes whether normal startup would still be on the large-legacy compatibility path,
+  - supports `--dry-run` / `--json` reporting without mutating or creating the sidecar,
+  - requires the service to be stopped before a real migration by probing `BEGIN EXCLUSIVE`,
+  - forces the sibling sidecar attach target instead of reusing the startup fallback,
+  - copies only `main.request_logs` into `observability.request_logs` in `id` order with bounded
+    batches and `NOT EXISTS` dedupe so reruns can resume partial copies safely,
+  - rebuilds request-log soft-reference tables before dropping `main.request_logs`,
+  - validates preserved child references (`billing_ledger`, `api_key_maintenance_records`,
+    `api_key_transient_backoffs`, and any existing `auth_token_logs.request_log_id`),
+  - removes legacy `main` observability tables (`api_key_usage_buckets`,
+    `dashboard_request_rollup_buckets`, `request_log_catalog_rollups`) and resets their rebuild
+    meta markers so the next normal startup recreates or self-heals them in the sidecar layout.
 - Server/admin test helpers now mirror that sidecar layout instead of opening only the core DB
   file. SQLite schema assertions for `request_logs` and the other observability tables now probe
   the attached schema explicitly, which keeps migration and admin-route coverage aligned with the
@@ -165,6 +180,13 @@
   snapshot persistence.
 - Added request-log GC coverage for old-row deletion, recent-row preservation, partial catch-up,
   catalog rollup cleanup, and transient SQLite write-lock retry.
+- Added explicit sidecar-migration coverage for:
+  - large legacy offline migration into the sibling sidecar,
+  - dry-run reporting without sidecar creation,
+  - idempotent reruns after a finished cutover,
+  - resuming partial copies when the sidecar already contains a subset of `request_logs` ids,
+  - preserving the large-legacy startup compatibility path and standalone `request_logs_gc_once`
+    behavior until the explicit cutover is run.
 - Added request-stats coverage proving summary/key-metric reads flush pending coalesced deltas
   before returning.
 - Added request-stats coverage proving auth-token activity reads and admin rate-5m usage-series
@@ -182,6 +204,10 @@
 ## Validation
 
 - `cargo fmt --all`
+- `cargo test observability_sidecar_migrate_moves_large_legacy_request_logs_offline -- --nocapture`
+- `cargo test observability_sidecar_migrate_resumes_copy_from_preseeded_sidecar_gaps -- --nocapture`
+- `cargo test large_legacy_single_db_request_logs_stay_in_core_database_for_startup -- --nocapture`
+- `cargo test standalone_request_logs_gc_uses_large_legacy_single_db_layout -- --nocapture`
 - Targeted SQLite lock contention tests.
 - Existing billing/MCP/quota-sync tests relevant to the touched paths.
 - `cargo test --lib scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source -- --nocapture`
@@ -196,6 +222,14 @@
 - `cargo clippy -- -D warnings`
 - Full `cargo test --locked --all-features`
 - `cargo clippy -- -D warnings`
+- Shared testbox isolated run:
+  - remote workspace `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb`
+  - remote run `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb/runs/20260617_035715_7dfaaa12_sidecar`
+  - compose project `codex_tavily-hikari__7aa37deb_20260617_035715_7dfaaa12_sidecar`
+  - migration CLI evidence:
+    `observability_sidecar_migrate: dry_run=false completed=true offline_lock=true copied_request_logs=2 batches=2 already_migrated=false resumed_copy=false`
+  - smoke evidence:
+    `{\"backend\":\"0.2.0\",\"tokenId\":\"UED8\",\"logPaths\":[\"/api/tavily/search\",\"/mcp\"],\"sidecarRowCount\":4}`
 
 ## Operations Notes
 
@@ -217,3 +251,32 @@
   restart, verify `/health`, inspect `scheduled_jobs` / `database is locked` logs, continue
   `request_logs_gc_once` if backlog remains, and only invoke `db_compaction_once` when reclaimable
   space crosses the threshold or operators explicitly force a maintenance window.
+- The large-legacy sidecar cutover is now a separate operator runbook instead of an automatic
+  startup side effect. The validated flow is:
+  - on codex-testbox, seed a production-shaped legacy core DB snapshot, run
+    `observability_sidecar_migrate`, then start the current-branch image against the migrated files
+    and verify `/health`, `/api/version`, `/api/tavily/search`, `/mcp`, and request-log reads;
+  - on 101, stop `tavily-hikari`, export the pre-cutover core DB as the rollback anchor to
+    codex-testbox, run `observability_sidecar_migrate` locally against
+    `/srv/app/data/tavily_proxy.db`, restart, and validate the same request-log and MCP surfaces;
+  - if validation fails, stop the service, restore the pre-cutover core DB, delete the sibling
+    `tavily_proxy-observability.db`, and then restart.
+- The current 101 deployment facts that this runbook assumes were rechecked on 2026-06-17:
+  - compose working directory `/home/ivan/srv/ai`
+  - running service name `tavily-hikari` in compose project `ai`
+  - container mount `/srv/app/data -> /var/lib/docker/volumes/ai-tavily-hikari-data/_data`
+  - host free space about `56G`
+  - `sqlite3` available at `/usr/bin/sqlite3`
+- Recommended 101 cutover sequence:
+  - stop the service:
+    `ssh 192.168.31.11 'cd /home/ivan/srv/ai && docker compose stop tavily-hikari'`
+  - create a consistent cold backup on 101:
+    `ssh 192.168.31.11 'sqlite3 /var/lib/docker/volumes/ai-tavily-hikari-data/_data/tavily_proxy.db \".backup /tmp/tavily_proxy.pre_sidecar.db\" && gzip -f /tmp/tavily_proxy.pre_sidecar.db'`
+  - upload the rollback anchor to codex-testbox:
+    `ssh 192.168.31.11 'cat /tmp/tavily_proxy.pre_sidecar.db.gz' | ssh codex-testbox 'cat > /srv/codex/workspaces/ivan/tavily-hikari__7aa37deb/backups/tavily_proxy.pre_sidecar.db.gz'`
+  - run the explicit migration on 101:
+    `ssh 192.168.31.11 'cd /home/ivan/srv/ai && docker compose run --rm -T tavily-hikari observability_sidecar_migrate --db-path /srv/app/data/tavily_proxy.db --batch-size 5000 --json'`
+  - restart and validate:
+    `ssh 192.168.31.11 'cd /home/ivan/srv/ai && docker compose up -d tavily-hikari && docker compose ps tavily-hikari'`
+  - rollback if validation fails:
+    `ssh 192.168.31.11 'cd /home/ivan/srv/ai && docker compose stop tavily-hikari && gzip -dc /tmp/tavily_proxy.pre_sidecar.db.gz > /var/lib/docker/volumes/ai-tavily-hikari-data/_data/tavily_proxy.db && rm -f /var/lib/docker/volumes/ai-tavily-hikari-data/_data/tavily_proxy-observability.db && docker compose up -d tavily-hikari'`

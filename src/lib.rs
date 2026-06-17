@@ -240,6 +240,47 @@ pub struct DbCompactionReport {
     pub elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservabilitySidecarMigrationReport {
+    pub dry_run: bool,
+    pub offline_lock_acquired: bool,
+    pub core_path: String,
+    pub sidecar_path: String,
+    pub attached_observability_path: String,
+    pub legacy_request_logs_exists: bool,
+    pub legacy_api_key_usage_buckets_exists: bool,
+    pub legacy_dashboard_request_rollup_buckets_exists: bool,
+    pub legacy_request_log_catalog_rollups_exists: bool,
+    pub large_legacy_fallback_active: bool,
+    pub large_legacy_fallback_threshold_bytes: u64,
+    pub core_file_bytes: u64,
+    pub sidecar_file_bytes_before: u64,
+    pub sidecar_file_bytes_after: u64,
+    pub available_bytes_before: u64,
+    pub available_bytes_after: u64,
+    pub source_min_request_log_id: Option<i64>,
+    pub source_max_request_log_id: Option<i64>,
+    pub source_request_log_rows: i64,
+    pub sidecar_request_log_rows_before: i64,
+    pub sidecar_request_log_rows_after: i64,
+    pub copied_request_logs: i64,
+    pub resumed_copy: bool,
+    pub already_migrated: bool,
+    pub dropped_main_request_logs: bool,
+    pub dropped_legacy_api_key_usage_buckets: bool,
+    pub dropped_legacy_dashboard_request_rollup_buckets: bool,
+    pub dropped_legacy_request_log_catalog_rollups: bool,
+    pub reset_api_key_usage_buckets_meta: bool,
+    pub reset_dashboard_request_rollup_buckets_meta: bool,
+    pub reset_request_log_catalog_rollup_meta: bool,
+    pub child_reference_checks_passed: bool,
+    pub batch_size: i64,
+    pub batches: i64,
+    pub completed: bool,
+    pub elapsed_ms: u128,
+}
+
 pub fn format_request_logs_gc_report_message(
     report: &RequestLogsGcReport,
     passes: usize,
@@ -323,6 +364,15 @@ pub async fn run_db_compaction_once(
         after,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+pub async fn run_observability_sidecar_migrate(
+    database_path: &str,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<ObservabilitySidecarMigrationReport, ProxyError> {
+    crate::store::KeyStore::run_observability_sidecar_migrate(database_path, batch_size, dry_run)
+        .await
 }
 
 impl ForwardProxyProgressEvent {

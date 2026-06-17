@@ -1,0 +1,37 @@
+services:
+  upstream-mock:
+    image: python:3.12-slim
+    working_dir: /work
+    command: ["python", "/work/scripts/upstream_mock.py"]
+    volumes:
+      - ./scripts:/work/scripts:ro
+
+  app:
+    build:
+      context: ../..
+      dockerfile: tests/ha/Dockerfile.app
+    environment:
+      TAVILY_API_KEYS: tvly-sidecar-smoke-seed
+      TAVILY_UPSTREAM: http://upstream-mock:9001
+      TAVILY_USAGE_BASE: http://upstream-mock:9001
+      PROXY_DB_PATH: /srv/app/runtime/data/tavily_proxy.db
+      PROXY_PORT: 8787
+      DEV_OPEN_ADMIN: "true"
+      ADMIN_AUTH_FORWARD_ENABLED: "false"
+      XRAY_BINARY: /bin/true
+    volumes:
+      - ./runtime:/srv/app/runtime
+    depends_on:
+      - upstream-mock
+
+  verify:
+    image: python:3.12-slim
+    working_dir: /work
+    command: ["sleep", "infinity"]
+    environment:
+      APP_URL: http://app:8787
+    volumes:
+      - ./scripts:/work/scripts:ro
+      - ./runtime:/srv/app/runtime:ro
+    depends_on:
+      - app

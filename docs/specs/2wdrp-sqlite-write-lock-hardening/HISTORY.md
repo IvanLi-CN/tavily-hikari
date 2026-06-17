@@ -85,3 +85,19 @@
 - Tightened attached-schema self-heal helpers to probe `observability` explicitly, preventing
   duplicate-column migrations when both `main.request_logs` and `observability.request_logs` are
   present during sidecar rollout or repair.
+
+## 2026-06-17
+
+- Promoted the large-legacy observability cutover from a deferred follow-up into an explicit
+  offline operator flow via `observability_sidecar_migrate`.
+- Locked the migration semantics to “copy only `request_logs`, then rebuild or self-heal derived
+  observability tables in the sidecar layout” instead of attempting a full-table legacy transplant.
+- Added resumable `request_logs` batch copy semantics keyed by preserved `id`, so partial sidecar
+  copies can resume safely without duplicating rows or breaking preserved `request_log_id`
+  references.
+- Standardized the validation path around a shared-testbox single-node Compose harness plus a 101
+  short-maintenance cutover/rollback runbook, with the pre-cutover core DB exported to testbox as
+  the rollback anchor.
+- Recorded the first passing shared-testbox evidence for that flow: isolated compose project build,
+  explicit sidecar migration, fresh token-backed `/api/tavily/search`, `/mcp`, and migrated
+  request-log reads all succeeded against the migrated snapshot.
