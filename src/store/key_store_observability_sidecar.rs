@@ -518,41 +518,61 @@ impl KeyStore {
                 }
 
                 if legacy_api_key_usage_buckets_exists {
+                    let mut tx = store.pool.begin().await?;
+                    sqlx::query(
+                        r#"
+                        INSERT INTO meta (key, value)
+                        VALUES (?, '0'), (?, '0')
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        "#,
+                    )
+                    .bind(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+                    .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
+                    .execute(&mut *tx)
+                    .await?;
                     sqlx::query("DROP TABLE api_key_usage_buckets")
-                        .execute(&store.pool)
+                        .execute(&mut *tx)
                         .await?;
-                    store
-                        .set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 0)
-                        .await?;
-                    store
-                        .set_meta_i64(
-                            META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE,
-                            0,
-                        )
-                        .await?;
+                    tx.commit().await?;
                     dropped_legacy_api_key_usage_buckets = true;
                     reset_api_key_usage_buckets_meta = true;
                 }
                 if legacy_dashboard_request_rollup_buckets_exists {
+                    let mut tx = store.pool.begin().await?;
+                    sqlx::query(
+                        r#"
+                        INSERT INTO meta (key, value)
+                        VALUES (?, '0')
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        "#,
+                    )
+                    .bind(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
+                    .execute(&mut *tx)
+                    .await?;
                     sqlx::query("DROP TABLE dashboard_request_rollup_buckets")
-                        .execute(&store.pool)
+                        .execute(&mut *tx)
                         .await?;
-                    store
-                        .set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 0)
-                        .await?;
+                    tx.commit().await?;
                     dropped_legacy_dashboard_request_rollup_buckets = true;
                     reset_dashboard_request_rollup_buckets_meta = true;
                 }
                 if legacy_request_log_catalog_rollups_exists {
+                    let mut tx = store.pool.begin().await?;
+                    sqlx::query(
+                        r#"
+                        INSERT INTO meta (key, value)
+                        VALUES (?, '0'), (?, '0')
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        "#,
+                    )
+                    .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
+                    .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS)
+                    .execute(&mut *tx)
+                    .await?;
                     sqlx::query("DROP TABLE request_log_catalog_rollups")
-                        .execute(&store.pool)
+                        .execute(&mut *tx)
                         .await?;
-                    store
-                        .set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 0)
-                        .await?;
-                    store
-                        .set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS, 0)
-                        .await?;
+                    tx.commit().await?;
                     dropped_legacy_request_log_catalog_rollups = true;
                     reset_request_log_catalog_rollup_meta = true;
                 }

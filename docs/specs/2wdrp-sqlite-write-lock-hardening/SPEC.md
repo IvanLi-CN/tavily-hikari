@@ -145,8 +145,10 @@ source when a usable persisted runtime already exists.
 - The explicit sidecar migration contract must be resumable and idempotent. Re-running the command
   after a partial copy must preserve existing `observability.request_logs` rows by `id`, continue
   copying any missing `main.request_logs` rows in bounded batches, keep soft `request_log_id`
-  references valid, then delete the legacy `main.request_logs` and reset legacy rollup/bucket
-  rebuild markers.
+  references valid, then delete the legacy `main.request_logs`. For each legacy rollup/bucket table
+  drop, the corresponding rebuild markers must be reset in the same transactional cutover step so
+  an interruption cannot leave sidecar rebuild metadata falsely marked complete after the legacy
+  table is already gone.
 - Sidecar-aware schema self-heal paths must probe the attached `observability` schema explicitly.
   When both `main.request_logs` and `observability.request_logs` exist during migration or repair,
   column-existence checks must not accidentally read the wrong schema and issue duplicate `ALTER TABLE` statements.
