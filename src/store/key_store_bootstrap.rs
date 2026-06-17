@@ -1992,6 +1992,8 @@ impl KeyStore {
         }
         self.ensure_request_log_catalog_rollup_schema().await?;
         self.ensure_ha_schema().await?;
+        self.ensure_observability_sidecar_startup_rebuild_not_required()
+            .await?;
         if !uses_legacy_single_db_observability_compatibility
             && core_database_file_size(&self.database_path).unwrap_or(u64::MAX)
                 <= LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES
@@ -2003,8 +2005,6 @@ impl KeyStore {
             self.rebuild_observability_sidecar_derived_tables_offline(false)
                 .await?;
         }
-        self.ensure_observability_sidecar_startup_rebuild_not_required()
-            .await?;
 
         if !uses_legacy_single_db_observability_compatibility
             && self

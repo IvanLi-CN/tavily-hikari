@@ -764,8 +764,17 @@ impl KeyStore {
         if !self.observability_sidecar_has_cutover_request_logs().await? {
             return Ok(());
         }
-        if self.main_table_exists("request_logs").await? {
-            return Ok(());
+        let explicit_cutover_done = self
+            .get_meta_i64(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .await?
+            == Some(1);
+        let require_explicit_cutover_marker = core_database_file_size(&self.database_path)
+            .unwrap_or(u64::MAX)
+            > LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES;
+        if require_explicit_cutover_marker && !explicit_cutover_done {
+            return Err(ProxyError::Other(
+                "observability sidecar derived tables are incomplete; stop the service and run observability_sidecar_migrate before startup".to_string(),
+            ));
         }
         let sidecar_has_request_logs = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
