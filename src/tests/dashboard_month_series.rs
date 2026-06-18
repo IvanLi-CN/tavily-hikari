@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn dashboard_month_series_uses_full_natural_month_axis_and_previous_month_comparison() {
     let db_path = temp_db_path("dashboard-month-series-natural-axis");
@@ -38,12 +40,10 @@ async fn dashboard_month_series_uses_full_natural_month_axis_and_previous_month_
     let current_day_start = local_day_bucket_start_utc_ts(evaluation_time.timestamp());
 
     insert_dashboard_summary_rollup_day_bucket(&proxy, current_month_start, 12, 9, 2, 1).await;
-    insert_dashboard_summary_rollup_day_bucket(&proxy, current_month_day_start, 18, 14, 3, 1)
-        .await;
+    insert_dashboard_summary_rollup_day_bucket(&proxy, current_month_day_start, 18, 14, 3, 1).await;
 
     insert_dashboard_summary_rollup_day_bucket(&proxy, previous_month_start, 10, 7, 2, 1).await;
-    insert_dashboard_summary_rollup_day_bucket(&proxy, previous_month_day_start, 8, 6, 1, 1)
-        .await;
+    insert_dashboard_summary_rollup_day_bucket(&proxy, previous_month_day_start, 8, 6, 1, 1).await;
 
     sqlx::query(
         r#"
@@ -203,16 +203,24 @@ async fn dashboard_month_series_uses_full_natural_month_axis_and_previous_month_
     assert_eq!(month_series.current[current_day_index].total, Some(32));
     assert_eq!(month_series.current[0].upstream_exhausted, Some(1));
     assert_eq!(month_series.current[1].upstream_exhausted, Some(1));
-    assert_eq!(month_series.current[current_day_index].upstream_exhausted, Some(2));
+    assert_eq!(
+        month_series.current[current_day_index].upstream_exhausted,
+        Some(2)
+    );
     assert_eq!(month_series.current[0].new_keys, Some(1));
     assert_eq!(month_series.current[1].new_keys, Some(2));
     assert_eq!(month_series.current[current_day_index].new_keys, Some(3));
     assert_eq!(month_series.current[0].new_quarantines, Some(1));
     assert_eq!(month_series.current[1].new_quarantines, Some(1));
-    assert_eq!(month_series.current[current_day_index].new_quarantines, Some(2));
-    assert!(month_series.current[(current_day_index + 1).min(month_series.current.len() - 1)]
-        .total
-        .is_none());
+    assert_eq!(
+        month_series.current[current_day_index].new_quarantines,
+        Some(2)
+    );
+    assert!(
+        month_series.current[(current_day_index + 1).min(month_series.current.len() - 1)]
+            .total
+            .is_none()
+    );
 
     assert_eq!(month_series.comparison[0].total, Some(10));
     assert_eq!(month_series.comparison[1].total, Some(18));
@@ -222,11 +230,13 @@ async fn dashboard_month_series_uses_full_natural_month_axis_and_previous_month_
     assert_eq!(month_series.comparison[1].new_keys, Some(2));
     assert_eq!(month_series.comparison[0].new_quarantines, Some(1));
     assert_eq!(month_series.comparison[1].new_quarantines, Some(1));
-    assert!(month_series
-        .comparison
-        .iter()
-        .take(2)
-        .all(|point| point.display_bucket_start.is_some()));
+    assert!(
+        month_series
+            .comparison
+            .iter()
+            .take(2)
+            .all(|point| point.display_bucket_start.is_some())
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -247,10 +257,7 @@ fn dashboard_month_series_bucket_iteration_uses_successor_boundaries() {
         ranges,
         vec![
             (1_000, 1_000 + 23 * 3_600),
-            (
-                1_000 + 23 * 3_600,
-                1_000 + 23 * 3_600 + 24 * 3_600,
-            ),
+            (1_000 + 23 * 3_600, 1_000 + 23 * 3_600 + 24 * 3_600,),
             (
                 1_000 + 23 * 3_600 + 24 * 3_600,
                 1_000 + 23 * 3_600 + 24 * 3_600 + 25 * 3_600,
@@ -261,10 +268,18 @@ fn dashboard_month_series_bucket_iteration_uses_successor_boundaries() {
 
 #[test]
 fn dashboard_month_series_bucket_population_hides_only_future_or_non_current_truncation() {
-    assert!(KeyStore::should_populate_dashboard_month_series_bucket(100, 200, 200, 300));
-    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(200, 300, 200, 100));
-    assert!(KeyStore::should_populate_dashboard_month_series_bucket(100, 250, 200, 100));
-    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(100, 250, 200, 50));
+    assert!(KeyStore::should_populate_dashboard_month_series_bucket(
+        100, 200, 200, 300
+    ));
+    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(
+        200, 300, 200, 100
+    ));
+    assert!(KeyStore::should_populate_dashboard_month_series_bucket(
+        100, 250, 200, 100
+    ));
+    assert!(!KeyStore::should_populate_dashboard_month_series_bucket(
+        100, 250, 200, 50
+    ));
 }
 
 #[tokio::test]

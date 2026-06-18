@@ -1,4 +1,8 @@
-    fn find_cookie_pair(headers: &reqwest::header::HeaderMap, cookie_name: &str) -> Option<String> {
+use super::*;
+use super::core_support_and_parsing::*;
+use super::upstream_support_and_manual_jobs::*;
+
+    pub(super) fn find_cookie_pair(headers: &reqwest::header::HeaderMap, cookie_name: &str) -> Option<String> {
         headers
             .get_all(reqwest::header::SET_COOKIE)
             .iter()
@@ -68,7 +72,7 @@
         .expect("fetch linuxdo system tag keys")
     }
 
-    async fn login_builtin_admin_cookie(
+    pub(super) async fn login_builtin_admin_cookie(
         admin_addr: SocketAddr,
         password: &str,
     ) -> (Client, String) {

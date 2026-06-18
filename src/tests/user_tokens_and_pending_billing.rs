@@ -1,3 +1,6 @@
+use super::jobs_and_request_log_retention::RequestLogsRetentionEnvGuard;
+use super::*;
+
 #[tokio::test]
 async fn ensure_user_token_binding_reuses_existing_binding() {
     let db_path = temp_db_path("user-token-binding-reuse");
@@ -336,16 +339,9 @@ async fn ensure_user_token_binding_with_preferred_falls_back_when_preferred_unav
 async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked() {
     let db_path = temp_db_path("user-token-binding-preferred-begin-retry");
     let db_str = db_path.to_string_lossy().to_string();
-    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
-    let proxy = TavilyProxy::with_options_and_time(
-        Vec::<String>::new(),
-        DEFAULT_UPSTREAM,
-        &db_str,
-        TavilyProxyOptions::from_database_path(&db_str),
-        backend_time.clone(),
-    )
-    .await
-    .expect("proxy created");
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "linuxdo".to_string(),
@@ -363,10 +359,6 @@ async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked()
         .create_access_token(Some("linuxdo:preferred_begin_retry"))
         .await
         .expect("create preferred token");
-
-    // Pause Tokio time only after the LinuxDo bootstrap writes complete.
-    // This test is about begin-lock retry behavior, not startup/system-tag races.
-    tokio::time::pause();
 
     let mut lock_conn =
         connect_sqlite_test_connection(&db_str, false, false, Duration::from_millis(1)).await;
@@ -389,8 +381,7 @@ async fn ensure_user_token_binding_with_preferred_retries_when_begin_is_locked()
     });
 
     tokio::task::yield_now().await;
-    manual_clock.advance(Duration::from_millis(20)).await;
-    manual_clock.advance(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
@@ -1221,7 +1212,10 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
         .expect("load exact since logs page");
     assert_eq!(since_page.total, 1);
     assert_eq!(since_page.items.len(), 1);
-    assert_eq!(since_page.items[0].auth_token_id.as_deref(), Some("rollup-token-c"));
+    assert_eq!(
+        since_page.items[0].auth_token_id.as_deref(),
+        Some("rollup-token-c")
+    );
 
     sqlx::query(
         "UPDATE observability.request_logs SET key_effect_code = ? WHERE auth_token_id = 'rollup-token-a'",
@@ -1296,10 +1290,12 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
     .await
     .expect("insert older retained row outside rollup window");
 
-    sqlx::query("DROP TRIGGER IF EXISTS observability.trg_request_logs_canonical_request_kind_update")
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("simulate database before legacy canonicalization trigger");
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS observability.trg_request_logs_canonical_request_kind_update",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate database before legacy canonicalization trigger");
     sqlx::query(
         r#"
         UPDATE observability.request_logs
@@ -1333,7 +1329,16 @@ async fn request_log_catalog_rollup_feeds_catalog_and_legacy_page() {
         .await
         .expect("proxy rebuilt rollup after retention metadata changed");
     let rebuilt_catalog = rebuilt_proxy
-        .request_logs_catalog(&["mcp:search".to_string()], None, None, None, None, None, None, None)
+        .request_logs_catalog(
+            &["mcp:search".to_string()],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("load rebuilt catalog after retention change");
     assert_eq!(rebuilt_catalog.request_kind_options[0].count, 2);

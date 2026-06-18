@@ -1,65 +1,4 @@
-async fn hold_sqlite_write_lock_for_test(
-    pool: &SqlitePool,
-) -> tokio::task::JoinHandle<()> {
-    hold_sqlite_write_lock_for_test_for(pool, Duration::from_millis(120)).await
-}
-
-async fn begin_held_sqlite_write_lock_for_test(pool: &SqlitePool) -> sqlx::pool::PoolConnection<sqlx::Sqlite> {
-    begin_immediate_sqlite_connection(pool)
-        .await
-        .expect("begin immediate transaction")
-}
-
-async fn hold_sqlite_write_lock_for_test_for(
-    pool: &SqlitePool,
-    hold_for: Duration,
-) -> tokio::task::JoinHandle<()> {
-    hold_sqlite_write_lock_for_test_for_with_release(pool, hold_for, None).await
-}
-
-async fn hold_sqlite_write_lock_for_test_for_with_release(
-    pool: &SqlitePool,
-    hold_for: Duration,
-    release: Option<crate::ManualBackendTime>,
-) -> tokio::task::JoinHandle<()> {
-    let mut immediate_conn = begin_immediate_sqlite_connection(pool)
-        .await
-        .expect("begin immediate transaction");
-    tokio::spawn(async move {
-        if let Some(release) = release {
-            release.advance(hold_for).await;
-        } else {
-            tokio::time::sleep(hold_for).await;
-        }
-        sqlx::query("ROLLBACK")
-            .execute(&mut *immediate_conn)
-            .await
-            .expect("rollback immediate transaction");
-    })
-}
-
-async fn ensure_quota_subject_lock_schema_for_test(pool: &SqlitePool) {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS quota_subject_locks (
-            subject TEXT PRIMARY KEY,
-            owner TEXT NOT NULL,
-            expires_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("create quota_subject_locks table");
-    sqlx::query(
-        r#"CREATE INDEX IF NOT EXISTS idx_quota_subject_locks_expires_at
-           ON quota_subject_locks(expires_at)"#,
-    )
-    .execute(pool)
-    .await
-    .expect("create quota_subject_locks expires index");
-}
+use super::*;
 
 #[tokio::test]
 async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
@@ -95,7 +34,8 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         ),
     };
     ensure_quota_subject_lock_schema_for_test(&store.pool).await;
-    let release = hold_sqlite_write_lock_for_test_for(&store.pool, Duration::from_millis(120)).await;
+    let release =
+        hold_sqlite_write_lock_for_test_for(&store.pool, Duration::from_millis(120)).await;
 
     let lease = store
         .acquire_quota_subject_lock(
@@ -116,7 +56,6 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
-
 
 #[tokio::test]
 async fn scheduled_job_start_retries_transient_sqlite_write_lock() {
@@ -227,8 +166,8 @@ async fn scheduled_job_claim_abandons_stale_quota_sync_running_job() {
         DEFAULT_UPSTREAM,
         &db_str,
     )
-        .await
-        .expect("proxy created");
+    .await
+    .expect("proxy created");
     let key_id = proxy
         .list_api_key_metrics()
         .await
@@ -300,8 +239,8 @@ async fn scheduled_job_claim_keeps_fresh_quota_sync_running_job() {
         DEFAULT_UPSTREAM,
         &db_str,
     )
-        .await
-        .expect("proxy created");
+    .await
+    .expect("proxy created");
     let key_id = proxy
         .list_api_key_metrics()
         .await
@@ -457,14 +396,16 @@ async fn scheduled_job_claim_reclaims_only_quota_sync_job_types() {
         .expect("claim quota sync job")
         .expect("quota sync job claimed");
 
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT job_type, status FROM scheduled_jobs ORDER BY id ASC",
-    )
-    .fetch_all(&proxy.key_store.pool)
-    .await
-    .expect("fetch scheduled job rows");
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT job_type, status FROM scheduled_jobs ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch scheduled job rows");
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0], ("request_logs_gc".to_string(), "running".to_string()));
+    assert_eq!(
+        rows[0],
+        ("request_logs_gc".to_string(), "running".to_string())
+    );
     assert_eq!(rows[1], ("quota_sync".to_string(), "running".to_string()));
 
     let _ = std::fs::remove_file(&db_path);
@@ -480,9 +421,9 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
         .await
         .expect("proxy created");
 
-    let results = futures_util::future::join_all((0..8).map(|_| {
-        proxy.scheduled_job_claim("db_compaction", "manual", None, 1)
-    }))
+    let results = futures_util::future::join_all(
+        (0..8).map(|_| proxy.scheduled_job_claim("db_compaction", "manual", None, 1)),
+    )
     .await;
     let claimed: Vec<i64> = results
         .into_iter()
@@ -575,13 +516,12 @@ async fn scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source(
     assert_eq!(manual.status, "running");
     assert_eq!(manual.trigger_source, "manual");
 
-    let row: (String, String) = sqlx::query_as(
-        "SELECT status, trigger_source FROM scheduled_jobs WHERE id = ?",
-    )
-    .bind(running_job_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("fetch running row after manual coalesce");
+    let row: (String, String) =
+        sqlx::query_as("SELECT status, trigger_source FROM scheduled_jobs WHERE id = ?")
+            .bind(running_job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch running row after manual coalesce");
     assert_eq!(row.0, "running");
     assert_eq!(row.1, "manual");
 
@@ -652,13 +592,12 @@ async fn scheduled_job_mark_running_sets_started_at_after_queue_time() {
     assert!(row.started_at.is_some());
     assert!(row.started_at.expect("started_at") >= row.queued_at);
 
-    let after: (String, i64, i64) = sqlx::query_as(
-        "SELECT status, queued_at, started_at FROM scheduled_jobs WHERE id = ?",
-    )
-    .bind(queued.job_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("fetch running row");
+    let after: (String, i64, i64) =
+        sqlx::query_as("SELECT status, queued_at, started_at FROM scheduled_jobs WHERE id = ?")
+            .bind(queued.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch running row");
     assert_eq!(after.0, "running");
     assert!(after.2 >= after.1);
 
@@ -691,12 +630,11 @@ async fn abandon_active_scheduled_jobs_abandons_queued_and_running_rows() {
         .expect("abandon active jobs");
     assert_eq!(abandoned, 2);
 
-    let rows: Vec<(i64, String, Option<i64>)> = sqlx::query_as(
-        "SELECT id, status, finished_at FROM scheduled_jobs ORDER BY id ASC",
-    )
-    .fetch_all(&proxy.key_store.pool)
-    .await
-    .expect("fetch abandoned rows");
+    let rows: Vec<(i64, String, Option<i64>)> =
+        sqlx::query_as("SELECT id, status, finished_at FROM scheduled_jobs ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch abandoned rows");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, queued.job_id);
     assert_eq!(rows[0].1, "abandoned");
@@ -842,13 +780,12 @@ async fn startup_linuxdo_tag_backfill_does_not_rewrite_correct_binding() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read binding timestamp before restart");
-    let snapshot_count_before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
-    )
-    .bind(&user.user_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read snapshot count before restart");
+    let snapshot_count_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?")
+            .bind(&user.user_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read snapshot count before restart");
     drop(proxy);
 
     let proxy_after = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -865,13 +802,12 @@ async fn startup_linuxdo_tag_backfill_does_not_rewrite_correct_binding() {
     .fetch_one(&proxy_after.key_store.pool)
     .await
     .expect("read binding timestamp after restart");
-    let snapshot_count_after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
-    )
-    .bind(&user.user_id)
-    .fetch_one(&proxy_after.key_store.pool)
-    .await
-    .expect("read snapshot count after restart");
+    let snapshot_count_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?")
+            .bind(&user.user_id)
+            .fetch_one(&proxy_after.key_store.pool)
+            .await
+            .expect("read snapshot count after restart");
     assert_eq!(binding_updated_at_after, binding_updated_at_before);
     assert_eq!(snapshot_count_after, snapshot_count_before);
 
@@ -918,13 +854,12 @@ async fn linuxdo_tag_binding_refresh_rewrites_correct_binding_periodically() {
         .execute(&proxy.key_store.pool)
         .await
         .expect("clear snapshots before refresh");
-    let snapshot_count_before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
-    )
-    .bind(&user.user_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read snapshot count before refresh");
+    let snapshot_count_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?")
+            .bind(&user.user_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read snapshot count before refresh");
 
     let refreshed = proxy
         .key_store
@@ -944,13 +879,12 @@ async fn linuxdo_tag_binding_refresh_rewrites_correct_binding_periodically() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read binding timestamp after refresh");
-    let snapshot_count_after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?",
-    )
-    .bind(&user.user_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read snapshot count after refresh");
+    let snapshot_count_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_quota_limit_snapshots WHERE user_id = ?")
+            .bind(&user.user_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read snapshot count after refresh");
     assert!(binding_updated_at_after > old_updated_at);
     assert_eq!(snapshot_count_before, 0);
     assert_eq!(snapshot_count_after, 1);
@@ -1055,12 +989,12 @@ async fn seed_auth_token_log_reference_for_gc(
     .expect("seed auth token log request reference");
 }
 
-struct RequestLogsRetentionEnvGuard {
+pub(super) struct RequestLogsRetentionEnvGuard {
     prev: Option<String>,
 }
 
 impl RequestLogsRetentionEnvGuard {
-    fn set_days(days: &str) -> Self {
+    pub(super) fn set_days(days: &str) -> Self {
         let prev = std::env::var("REQUEST_LOGS_RETENTION_DAYS").ok();
         unsafe {
             std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", days);
@@ -1068,7 +1002,7 @@ impl RequestLogsRetentionEnvGuard {
         Self { prev }
     }
 
-    fn set_32_days() -> Self {
+    pub(super) fn set_32_days() -> Self {
         Self::set_days("32")
     }
 }
@@ -1104,13 +1038,22 @@ async fn request_log_retention_settings_clamp_days_to_max_and_reject_bad_thresho
         .expect("seed body gc cursor");
     settings.request_log_retention.max_log_retention_days = 7;
     settings.request_log_retention.global.business_body_days = 92;
-    settings.request_log_retention.debug_shared.non_success_body_days = 32;
+    settings
+        .request_log_retention
+        .debug_shared
+        .non_success_body_days = 32;
     let saved = proxy
         .set_system_settings(&settings)
         .await
         .expect("save clamped retention settings");
     assert_eq!(saved.request_log_retention.global.business_body_days, 7);
-    assert_eq!(saved.request_log_retention.debug_shared.non_success_body_days, 7);
+    assert_eq!(
+        saved
+            .request_log_retention
+            .debug_shared
+            .non_success_body_days,
+        7
+    );
     assert!(
         proxy
             .key_store
@@ -1166,9 +1109,13 @@ async fn request_log_retention_settings_default_max_days_uses_env_until_saved() 
 async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
     let db_path = temp_db_path("request-log-retention-nonbusiness-body");
     let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(vec!["tvly-body-policy".to_string()], DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-body-policy".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
     let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
         .fetch_one(&proxy.key_store.pool)
         .await
@@ -1231,8 +1178,14 @@ async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
     assert!(row.0.is_none());
     assert!(row.1.is_none());
     assert_eq!(row.2, Some(request_body.len() as i64));
-    assert_eq!(row.3.as_deref(), Some(sha256_hex_bytes(request_body).as_str()));
-    assert_eq!(row.4.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+    assert_eq!(
+        row.3.as_deref(),
+        Some(sha256_hex_bytes(request_body).as_str())
+    );
+    assert_eq!(
+        row.4.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
 
     read_pool.close().await;
     proxy.key_store.pool.close().await;
@@ -1243,9 +1196,13 @@ async fn request_log_policy_drops_non_business_body_but_keeps_metadata() {
 async fn request_log_policy_preserves_batch_non_business_classification_without_body() {
     let db_path = temp_db_path("request-log-retention-batch-classification-without-body");
     let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(vec!["tvly-body-policy-batch".to_string()], DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-body-policy-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
     let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
         .fetch_one(&proxy.key_store.pool)
         .await
@@ -1371,12 +1328,12 @@ async fn request_log_policy_keeps_debug_shared_business_body() {
             .expect("read body gc cursor")
             .is_none()
     );
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.business_body_days = 0;
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -1418,14 +1375,13 @@ async fn request_log_policy_keeps_debug_shared_business_body() {
         .await
         .expect("log debug shared attempt");
 
-    let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
-        )
-        .bind(log_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("fetch request log body");
+    let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch request log body");
     assert_eq!(row.0.as_deref(), Some(request_body.as_slice()));
     assert!(row.1.is_none());
 
@@ -1477,12 +1433,12 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed heavy usage bucket");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.business_body_days = 7;
-    settings.request_log_retention.heavy_usage.business_body_days = 0;
+    settings
+        .request_log_retention
+        .heavy_usage
+        .business_body_days = 0;
     settings.request_log_retention.heavy_usage_threshold_percent = 80;
     proxy
         .set_system_settings(&settings)
@@ -1547,14 +1503,13 @@ async fn request_log_policy_applies_heavy_usage_business_body_days() {
         .expect("run heavy usage gc");
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
-    let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
-        )
-            .bind(log_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("fetch cleaned heavy usage body");
+    let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch cleaned heavy usage body");
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -1579,12 +1534,9 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
         crate::TavilyProxyOptions::from_database_path(&db_str),
         backend_time,
     )
-        .await
-        .expect("proxy created");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    .await
+    .expect("proxy created");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 1;
     proxy
@@ -1632,7 +1584,10 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
     .expect("fetch cleaned request log row");
     assert!(row.0.is_none());
     assert!(row.1.is_none());
-    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_RETENTION_EXPIRED));
+    assert_eq!(
+        row.2.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_RETENTION_EXPIRED)
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1644,10 +1599,7 @@ async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 0;
     proxy
@@ -1767,10 +1719,7 @@ async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_
         .await
         .expect("proxy created");
 
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.business_body_days = 7;
     proxy
         .set_system_settings(&settings)
@@ -1867,12 +1816,12 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
         .await
         .expect("enable debug sharing");
 
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.business_body_days = 0;
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -1914,14 +1863,13 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
         .expect("run request logs gc");
     assert_eq!(report.cleaned_request_log_bodies, 1);
 
-    let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
-        )
-        .bind(log_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("fetch cleaned opt-out row");
+    let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+    )
+    .bind(log_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch cleaned opt-out row");
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -1965,14 +1913,14 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 7;
     settings.request_log_retention.global.non_business_body_days = 0;
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -2031,14 +1979,13 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
             .fetch_one(&proxy.key_store.pool)
             .await
             .expect("fetch unexpired body");
-    let expired: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
-        )
-        .bind(expired_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("fetch expired body");
+    let expired: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+    )
+    .bind(expired_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch expired body");
     assert!(unexpired_body.is_some());
     assert!(expired.0.is_none());
     assert_eq!(
@@ -2113,12 +2060,12 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.non_business_body_days = 0;
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -2135,7 +2082,11 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
             "#,
         )
         .bind(&user.user_id)
-        .bind(format!(r#"{{"query":"debug retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(
+            format!(r#"{{"query":"debug retained {idx}"}}"#)
+                .as_bytes()
+                .to_vec(),
+        )
         .bind(br#"{"ok":true}"#.as_slice())
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(now - SECS_PER_DAY + idx)
@@ -2256,14 +2207,13 @@ async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
     assert!(report.completed);
     assert!(!report.has_more);
 
-    let row: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as(
-            "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
-        )
-        .bind(expired_id)
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("fetch restarted cursor row");
+    let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT request_body, body_cleaned_reason FROM observability.request_logs WHERE id = ?",
+    )
+    .bind(expired_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch restarted cursor row");
     assert!(row.0.is_none());
     assert_eq!(
         row.1.as_deref(),
@@ -2300,12 +2250,12 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.non_business_body_days = 0;
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -2322,7 +2272,11 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
             "#,
         )
         .bind(&user.user_id)
-        .bind(format!(r#"{{"query":"debug retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(
+            format!(r#"{{"query":"debug retained {idx}"}}"#)
+                .as_bytes()
+                .to_vec(),
+        )
         .bind(br#"{"ok":true}"#.as_slice())
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(now - SECS_PER_DAY + idx)
@@ -2399,11 +2353,11 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
         .set_user_debug_info_shared(&user.user_id, true)
         .await
         .expect("enable debug sharing");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
-    settings.request_log_retention.debug_shared.business_body_days = 14;
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings
+        .request_log_retention
+        .debug_shared
+        .business_body_days = 14;
     proxy
         .set_system_settings(&settings)
         .await
@@ -2427,7 +2381,11 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
             "#,
         )
         .bind(&user.user_id)
-        .bind(format!(r#"{{"query":"retained {idx}"}}"#).as_bytes().to_vec())
+        .bind(
+            format!(r#"{{"query":"retained {idx}"}}"#)
+                .as_bytes()
+                .to_vec(),
+        )
         .bind(br#"{"ok":true}"#.as_slice())
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(last_created_at)
@@ -2466,8 +2424,7 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
     assert!(restart_at > now);
     assert_eq!(
         restart_at,
-        shift_local_day_start_utc_ts(local_day_bucket_start_utc_ts(cursor_created_at), 14)
-            .max(now)
+        shift_local_day_start_utc_ts(local_day_bucket_start_utc_ts(cursor_created_at), 14).max(now)
     );
 
     let second_report = proxy
@@ -2575,8 +2532,8 @@ async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
         true,
         false,
     )
-        .await
-        .expect("open sqlite pool");
+    .await
+    .expect("open sqlite pool");
     let row: (Option<Vec<u8>>, Option<i64>, Option<String>, String) = sqlx::query_as(
         "SELECT request_body, request_body_bytes, body_cleaned_reason, request_kind_key FROM request_logs WHERE id = ?",
     )
@@ -2586,7 +2543,10 @@ async fn standalone_request_logs_gc_upgrades_legacy_body_metadata_columns() {
     .expect("fetch upgraded cleaned request log");
     assert!(row.0.is_none());
     assert!(row.1.is_some());
-    assert_eq!(row.2.as_deref(), Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO));
+    assert_eq!(
+        row.2.as_deref(),
+        Some(REQUEST_LOG_BODY_CLEANED_REASON_POLICY_ZERO)
+    );
     assert_eq!(row.3, "mcp:tools/list");
 
     let _ = std::fs::remove_file(db_path);
@@ -2648,8 +2608,8 @@ async fn standalone_request_logs_gc_initializes_meta_for_legacy_table() {
         true,
         false,
     )
-        .await
-        .expect("reopen sqlite pool");
+    .await
+    .expect("reopen sqlite pool");
     let meta_exists_after: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
             .fetch_optional(&pool)
@@ -2861,7 +2821,8 @@ async fn request_logs_gc_retries_transient_sqlite_write_lock() {
         .expect("proxy created");
     let old_ts = Utc::now().timestamp() - 40 * 24 * 60 * 60;
     let old_id = seed_request_log_for_gc(&proxy.key_store.pool, old_ts, "/mcp").await;
-    let threshold = request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
+    let threshold =
+        request_logs_retention_threshold_utc_ts(effective_request_logs_retention_days());
     assert!(old_ts < threshold);
 
     let release = hold_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
@@ -2899,10 +2860,7 @@ async fn request_logs_gc_body_cleanup_retries_transient_sqlite_write_lock() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let mut settings = proxy
-        .get_system_settings()
-        .await
-        .expect("load settings");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 0;
     proxy

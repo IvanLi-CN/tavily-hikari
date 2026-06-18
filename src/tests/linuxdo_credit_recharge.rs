@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn linuxdo_credit_recharge_adds_hourly_daily_and_monthly_quota() {
     let base = AccountQuotaLimits {
@@ -43,20 +45,11 @@ fn linuxdo_credit_recharge_price_config_enforces_normal_and_test_ranges() {
         Some(1_200_000)
     );
     assert_eq!(linuxdo_credit_recharge_money_cents(1, 1, normal), None);
-    assert_eq!(
-        linuxdo_credit_recharge_money_cents(21_000, 1, normal),
-        None
-    );
-    assert_eq!(
-        linuxdo_credit_recharge_money_cents(1000, 13, normal),
-        None
-    );
+    assert_eq!(linuxdo_credit_recharge_money_cents(21_000, 1, normal), None);
+    assert_eq!(linuxdo_credit_recharge_money_cents(1000, 13, normal), None);
 
     let test = LinuxDoCreditRechargePriceConfig::test_price();
-    assert_eq!(
-        linuxdo_credit_recharge_money_cents(1, 1, test),
-        Some(100)
-    );
+    assert_eq!(linuxdo_credit_recharge_money_cents(1, 1, test), Some(100));
     assert_eq!(linuxdo_credit_recharge_money_cents(2, 1, test), None);
     assert_eq!(linuxdo_credit_recharge_money_cents(1, 2, test), None);
     assert_eq!(
@@ -288,7 +281,10 @@ async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
         .expect("read released order")
         .expect("order exists");
     assert_eq!(released.status, LINUXDO_CREDIT_RECHARGE_STATUS_PAID);
-    assert_eq!(released.last_error.as_deref(), Some("refund endpoint unavailable"));
+    assert_eq!(
+        released.last_error.as_deref(),
+        Some("refund endpoint unavailable")
+    );
 
     proxy
         .reserve_linuxdo_credit_recharge_order_refund(&order.out_trade_no, now + 3)

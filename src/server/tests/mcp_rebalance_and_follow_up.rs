@@ -1,20 +1,6 @@
-    fn decode_sse_json_text(text: &str) -> Value {
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            return value;
-        }
-        let data = text
-            .lines()
-            .find_map(|line| line.strip_prefix("data:").map(str::trim))
-            .unwrap_or_else(|| panic!("SSE response should include a data line, got: {text}"));
-        serde_json::from_str(data).unwrap_or_else(|err| {
-            panic!("SSE data line should decode as JSON: {err}; data: {data}")
-        })
-    }
-
-    async fn decode_sse_json_response(response: reqwest::Response) -> Value {
-        let text = response.text().await.expect("read SSE response body");
-        decode_sse_json_text(&text)
-    }
+use super::*;
+use super::core_support_and_parsing::*;
+use super::upstream_support_and_manual_jobs::*;
 
     #[tokio::test]
     async fn mcp_primary_rebind_only_revokes_sessions_on_the_old_key() {

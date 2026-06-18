@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn system_settings_safe_defaults_disable_rollouts() {
     let db_path = temp_db_path("system-settings-api-rebalance-defaults");
@@ -6,7 +8,10 @@ async fn system_settings_safe_defaults_disable_rollouts() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let settings = proxy.get_system_settings().await.expect("get system settings");
+    let settings = proxy
+        .get_system_settings()
+        .await
+        .expect("get system settings");
 
     assert!(!settings.api_rebalance_enabled);
     assert_eq!(settings.api_rebalance_percent, 0);
@@ -39,8 +44,7 @@ async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
         .expect("upsert user");
 
     let now = Utc::now();
-    let current_bucket_start =
-        now.timestamp() - now.timestamp().rem_euclid(SECS_PER_FIVE_MINUTES);
+    let current_bucket_start = now.timestamp() - now.timestamp().rem_euclid(SECS_PER_FIVE_MINUTES);
     let chart_start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
     sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
         .bind(chart_start)
@@ -50,14 +54,21 @@ async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
         .expect("backdate user creation");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set rate5m coverage");
 
     proxy
         .key_store
         .request_stats_coalescer
-        .enqueue_auth_token_activity("rate5m-flush-token", Some(&user.user_id), current_bucket_start + 30)
+        .enqueue_auth_token_activity(
+            "rate5m-flush-token",
+            Some(&user.user_id),
+            current_bucket_start + 30,
+        )
         .await;
 
     let series = proxy
@@ -243,12 +254,14 @@ async fn user_dashboard_overview_request_rate_progress_tracks_live_window() {
             .and_then(|point| point.limit_value),
         Some(request_rate_limit())
     );
-    assert!(overview
-        .progress
-        .request_rate
-        .points
-        .windows(2)
-        .all(|window| window[0].value.unwrap_or(0) <= window[1].value.unwrap_or(0)));
+    assert!(
+        overview
+            .progress
+            .request_rate
+            .points
+            .windows(2)
+            .all(|window| window[0].value.unwrap_or(0) <= window[1].value.unwrap_or(0))
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -380,9 +393,11 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         overview.progress.quota_hourly.points[hourly_current_index].value,
         Some(5)
     );
-    assert!(overview.progress.quota_hourly.points[hourly_current_index + 1..]
-        .iter()
-        .all(|point| point.value.is_none()));
+    assert!(
+        overview.progress.quota_hourly.points[hourly_current_index + 1..]
+            .iter()
+            .all(|point| point.value.is_none())
+    );
 
     let daily_current_index = overview
         .progress
@@ -395,9 +410,11 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         overview.progress.quota_daily.points[daily_current_index].value,
         Some(5)
     );
-    assert!(overview.progress.quota_daily.points[daily_current_index + 1..]
-        .iter()
-        .all(|point| point.value.is_none()));
+    assert!(
+        overview.progress.quota_daily.points[daily_current_index + 1..]
+            .iter()
+            .all(|point| point.value.is_none())
+    );
 
     let monthly_current_index = overview
         .progress
@@ -410,9 +427,11 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         overview.progress.quota_monthly.points[monthly_current_index].value,
         Some(5)
     );
-    assert!(overview.progress.quota_monthly.points[monthly_current_index + 1..]
-        .iter()
-        .all(|point| point.value.is_none()));
+    assert!(
+        overview.progress.quota_monthly.points[monthly_current_index + 1..]
+            .iter()
+            .all(|point| point.value.is_none())
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -439,7 +458,10 @@ async fn account_limit_snapshot_backfill_preserves_history_for_existing_custom_r
         .await
         .expect("upsert user");
 
-    let mut settings = proxy.get_system_settings().await.expect("get system settings");
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("get system settings");
     settings.request_rate_limit = 80;
     proxy
         .set_system_settings(&settings)
@@ -461,7 +483,10 @@ async fn account_limit_snapshot_backfill_preserves_history_for_existing_custom_r
         .expect("backdate user creation");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set rate5m coverage start");
     sqlx::query("DELETE FROM meta WHERE key = ?")
@@ -483,14 +508,18 @@ async fn account_limit_snapshot_backfill_preserves_history_for_existing_custom_r
 
     assert_eq!(series.limit, 80);
     assert_eq!(series.points.len(), 288);
-    assert_eq!(series.points.first().and_then(|point| point.limit_value), Some(80));
+    assert_eq!(
+        series.points.first().and_then(|point| point.limit_value),
+        Some(80)
+    );
     assert_eq!(series.points[287].limit_value, Some(80));
 
     let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]
-async fn account_limit_snapshot_backfill_treats_absent_request_limit_setting_as_long_term_default() {
+async fn account_limit_snapshot_backfill_treats_absent_request_limit_setting_as_long_term_default()
+{
     let db_path = temp_db_path("account-limit-snapshot-backfill-absent-request-limit");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -528,7 +557,10 @@ async fn account_limit_snapshot_backfill_treats_absent_request_limit_setting_as_
         .expect("backdate user creation");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set rate5m coverage start");
     sqlx::query("DELETE FROM meta WHERE key = ?")
@@ -549,14 +581,18 @@ async fn account_limit_snapshot_backfill_treats_absent_request_limit_setting_as_
         .expect("load rate5m series");
 
     assert_eq!(series.limit, default_limit);
-    assert_eq!(series.points.first().and_then(|point| point.limit_value), Some(default_limit));
+    assert_eq!(
+        series.points.first().and_then(|point| point.limit_value),
+        Some(default_limit)
+    );
     assert_eq!(series.points[287].limit_value, Some(default_limit));
 
     let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]
-async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_as_long_term_history() {
+async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_as_long_term_history()
+ {
     let db_path = temp_db_path("account-limit-snapshot-backfill-persisted-default-request-gap");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -580,7 +616,10 @@ async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_
     let default_limit = request_rate_limit();
     let settings = SystemSettings {
         request_rate_limit: default_limit,
-        ..proxy.get_system_settings().await.expect("get system settings")
+        ..proxy
+            .get_system_settings()
+            .await
+            .expect("get system settings")
     };
     proxy
         .set_system_settings(&settings)
@@ -602,7 +641,10 @@ async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_
         .expect("backdate user creation");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set rate5m coverage start");
     sqlx::query("DELETE FROM meta WHERE key = ?")
@@ -623,7 +665,10 @@ async fn account_limit_snapshot_backfill_treats_persisted_default_request_limit_
         .expect("load rate5m series");
 
     assert_eq!(series.limit, default_limit);
-    assert_eq!(series.points.first().and_then(|point| point.limit_value), Some(default_limit));
+    assert_eq!(
+        series.points.first().and_then(|point| point.limit_value),
+        Some(default_limit)
+    );
     assert_eq!(series.points[287].limit_value, Some(default_limit));
 
     let _ = std::fs::remove_file(db_path);
@@ -702,7 +747,10 @@ async fn admin_user_usage_series_preserves_partially_covered_first_bucket_as_gap
 
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START, start + 600)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START,
+            start + 600,
+        )
         .await
         .expect("set partial quota1h coverage");
 
@@ -827,7 +875,10 @@ async fn account_limit_snapshot_backfill_treats_unchanged_default_quota_as_long_
         .expect("clear quota row");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set quota1h coverage start");
     sqlx::query("DELETE FROM meta WHERE key = ?")
@@ -902,7 +953,10 @@ async fn account_limit_snapshot_backfill_preserves_gaps_for_existing_custom_quot
         .expect("clear quota snapshots");
     proxy
         .key_store
-        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START, chart_start)
+        .set_meta_i64(
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START,
+            chart_start,
+        )
         .await
         .expect("set quota1h coverage start");
     sqlx::query("DELETE FROM meta WHERE key = ?")
@@ -922,7 +976,10 @@ async fn account_limit_snapshot_backfill_preserves_gaps_for_existing_custom_quot
         .await
         .expect("load quota1h series");
 
-    assert_eq!(series.points.first().and_then(|point| point.limit_value), None);
+    assert_eq!(
+        series.points.first().and_then(|point| point.limit_value),
+        None
+    );
     assert_eq!(
         series.points.last().and_then(|point| point.limit_value),
         Some(series.limit)
@@ -1071,10 +1128,30 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
     .expect("seed quarantines");
 
     for (key_id, status, reason_code, reason_summary) in [
-        (&exhausted_key_id, STATUS_EXHAUSTED, "quota_exhausted", "Upstream quota exhausted"),
-        (&quota_quarantine_key_id, KEY_EFFECT_QUARANTINED, "quota_exhausted", "Upstream quota exhausted"),
-        (&blocked_key_id, KEY_EFFECT_QUARANTINED, "account_deactivated", "Upstream account deactivated"),
-        (&quota_then_blocked_key_id, STATUS_EXHAUSTED, "quota_exhausted", "Old upstream quota exhausted"),
+        (
+            &exhausted_key_id,
+            STATUS_EXHAUSTED,
+            "quota_exhausted",
+            "Upstream quota exhausted",
+        ),
+        (
+            &quota_quarantine_key_id,
+            KEY_EFFECT_QUARANTINED,
+            "quota_exhausted",
+            "Upstream quota exhausted",
+        ),
+        (
+            &blocked_key_id,
+            KEY_EFFECT_QUARANTINED,
+            "account_deactivated",
+            "Upstream account deactivated",
+        ),
+        (
+            &quota_then_blocked_key_id,
+            STATUS_EXHAUSTED,
+            "quota_exhausted",
+            "Old upstream quota exhausted",
+        ),
     ] {
         sqlx::query(
             r#"INSERT INTO subject_key_breakages (
@@ -1112,7 +1189,10 @@ async fn monthly_blocked_key_count_excludes_quota_exhausted_and_counts_only_bloc
         .expect("fetch blocked-key details");
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].key_id, blocked_key_id);
-    assert_eq!(page.items[0].reason_code.as_deref(), Some("account_deactivated"));
+    assert_eq!(
+        page.items[0].reason_code.as_deref(),
+        Some("account_deactivated")
+    );
 }
 
 #[tokio::test]
@@ -1328,6 +1408,512 @@ async fn request_user_id_backfill_runs_in_resumable_batches() {
     .await
     .expect("count filled request logs after second batch");
     assert_eq!(filled_after_second, 3);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn admin_user_usage_series_quota1h_uses_historical_limit_snapshots() {
+    let db_path = temp_db_path("admin-user-usage-series-quota-limit-snapshots");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "usage-series-quota-snapshots".to_string(),
+            username: Some("usage_series_quota_snapshots".to_string()),
+            name: Some("Usage Series Quota Snapshots".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 600, 6_000, 60_000)
+        .await
+        .expect("update current business quota");
+    sqlx::query("DELETE FROM account_quota_limit_snapshots WHERE user_id = ?")
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear auto snapshots");
+
+    let now = Utc::now();
+    let current_bucket_start = now.timestamp() - now.timestamp().rem_euclid(SECS_PER_HOUR);
+    let start = current_bucket_start - 71 * SECS_PER_HOUR;
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+    sqlx::query(
+        r#"INSERT INTO account_quota_limit_snapshots
+           (user_id, changed_at, hourly_any_limit, hourly_limit, daily_limit, monthly_limit)
+           VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&user.user_id)
+    .bind(start + 12 * SECS_PER_HOUR + 600)
+    .bind(200)
+    .bind(200)
+    .bind(2_000)
+    .bind(20_000)
+    .bind(&user.user_id)
+    .bind(start + 36 * SECS_PER_HOUR + 600)
+    .bind(400)
+    .bind(400)
+    .bind(4_000)
+    .bind(40_000)
+    .bind(&user.user_id)
+    .bind(start + 60 * SECS_PER_HOUR + 600)
+    .bind(600)
+    .bind(600)
+    .bind(6_000)
+    .bind(60_000)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed deterministic quota snapshots");
+
+    proxy
+        .key_store
+        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START, start)
+        .await
+        .expect("set quota1h coverage");
+
+    let series = proxy
+        .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::Quota1h)
+        .await
+        .expect("load quota1h series");
+
+    assert_eq!(series.limit, 600);
+    assert_eq!(series.points.len(), 72);
+    assert_eq!(series.points[11].limit_value, None);
+    assert_eq!(series.points[12].limit_value, Some(200));
+    assert_eq!(series.points[35].limit_value, Some(200));
+    assert_eq!(series.points[36].limit_value, Some(400));
+    assert_eq!(series.points[59].limit_value, Some(400));
+    assert_eq!(series.points[60].limit_value, Some(600));
+    assert!(series.points.iter().all(|point| point.value == Some(0)));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn admin_user_usage_series_rate5m_uses_historical_request_limit_snapshots() {
+    let db_path = temp_db_path("admin-user-usage-series-rate-limit-snapshots");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "usage-series-rate-snapshots".to_string(),
+            username: Some("usage_series_rate_snapshots".to_string()),
+            name: Some("Usage Series Rate Snapshots".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    let mut settings = proxy
+        .get_system_settings()
+        .await
+        .expect("get system settings");
+    settings.request_rate_limit = 120;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("set current request rate");
+    sqlx::query("DELETE FROM request_rate_limit_snapshots")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear auto request snapshots");
+
+    let now = Utc::now();
+    let current_bucket_start = now.timestamp() - now.timestamp().rem_euclid(SECS_PER_FIVE_MINUTES);
+    let start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+    sqlx::query(
+        r#"INSERT INTO request_rate_limit_snapshots (changed_at, limit_value)
+           VALUES (?, ?), (?, ?)"#,
+    )
+    .bind(start + 48 * SECS_PER_FIVE_MINUTES + 120)
+    .bind(80)
+    .bind(start + 200 * SECS_PER_FIVE_MINUTES + 120)
+    .bind(120)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed deterministic request rate snapshots");
+
+    proxy
+        .key_store
+        .set_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, start)
+        .await
+        .expect("set rate5m coverage");
+
+    let series = proxy
+        .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::Rate5m)
+        .await
+        .expect("load rate5m series");
+
+    assert_eq!(series.limit, 120);
+    assert_eq!(series.points.len(), 288);
+    assert_eq!(series.points[47].limit_value, None);
+    assert_eq!(series.points[48].limit_value, Some(80));
+    assert_eq!(series.points[199].limit_value, Some(80));
+    assert_eq!(series.points[200].limit_value, Some(120));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn account_usage_rollup_rebuild_preserves_request_time_user_binding() {
+    let db_path = temp_db_path("account-usage-rollup-request-user-snapshot");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let first_user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-user-snapshot-a".to_string(),
+            username: Some("request_user_snapshot_a".to_string()),
+            name: Some("Request User Snapshot A".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert first user");
+    let second_user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "request-user-snapshot-b".to_string(),
+            username: Some("request_user_snapshot_b".to_string()),
+            name: Some("Request User Snapshot B".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert second user");
+    let token = proxy
+        .ensure_user_token_binding(&first_user.user_id, Some("request-user-snapshot"))
+        .await
+        .expect("bind token to first user");
+
+    proxy
+        .record_token_attempt(
+            &token.id,
+            &Method::GET,
+            "/search",
+            Some("q=request-user-snapshot"),
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            None,
+        )
+        .await
+        .expect("record token attempt");
+
+    let (created_at, request_user_id): (i64, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT created_at, request_user_id
+        FROM auth_token_logs
+        WHERE token_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&token.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stored request owner snapshot");
+    assert_eq!(
+        request_user_id.as_deref(),
+        Some(first_user.user_id.as_str())
+    );
+
+    sqlx::query(
+        r#"
+        UPDATE user_token_bindings
+        SET user_id = ?, updated_at = ?
+        WHERE token_id = ?
+        "#,
+    )
+    .bind(&second_user.user_id)
+    .bind(created_at + 1)
+    .bind(&token.id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("rebind token to second user");
+    proxy
+        .key_store
+        .cache_token_binding(&token.id, Some(&second_user.user_id))
+        .await;
+
+    proxy
+        .key_store
+        .rebuild_account_usage_rollup_buckets_v1()
+        .await
+        .expect("rebuild account usage rollups");
+
+    let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let first_user_values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &first_user.user_id,
+            AccountUsageRollupMetricKind::RequestCount,
+            AccountUsageRollupBucketKind::FiveMinute,
+            bucket_start,
+            bucket_start + SECS_PER_FIVE_MINUTES,
+        )
+        .await
+        .expect("load first user rollups");
+    let second_user_values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &second_user.user_id,
+            AccountUsageRollupMetricKind::RequestCount,
+            AccountUsageRollupBucketKind::FiveMinute,
+            bucket_start,
+            bucket_start + SECS_PER_FIVE_MINUTES,
+        )
+        .await
+        .expect("load second user rollups");
+
+    assert_eq!(first_user_values.get(&bucket_start), Some(&1));
+    assert_eq!(second_user_values.get(&bucket_start), None);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn account_usage_rollup_rebuild_uses_current_binding_for_pre_migration_requests() {
+    let db_path = temp_db_path("account-usage-rollup-pre-migration-binding-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "pre-migration-binding-fallback".to_string(),
+            username: Some("pre_migration_binding_fallback".to_string()),
+            name: Some("Pre Migration Binding Fallback".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("pre-migration-binding"))
+        .await
+        .expect("bind token");
+
+    proxy
+        .record_token_attempt(
+            &token.id,
+            &Method::GET,
+            "/search",
+            Some("q=pre-migration-binding"),
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            None,
+        )
+        .await
+        .expect("record token attempt");
+
+    let created_at: i64 = sqlx::query_scalar(
+        r#"
+        SELECT created_at
+        FROM auth_token_logs
+        WHERE token_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&token.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load pre-migration request log");
+    sqlx::query(
+        r#"
+        UPDATE auth_token_logs
+        SET request_user_id = NULL,
+            billing_subject = NULL
+        WHERE token_id = ?
+        "#,
+    )
+    .bind(&token.id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("strip request-time ownership to simulate pre-migration rows");
+
+    proxy
+        .key_store
+        .rebuild_account_usage_rollup_buckets_v1()
+        .await
+        .expect("rebuild account usage rollups");
+
+    let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &user.user_id,
+            AccountUsageRollupMetricKind::RequestCount,
+            AccountUsageRollupBucketKind::FiveMinute,
+            bucket_start,
+            bucket_start + SECS_PER_FIVE_MINUTES,
+        )
+        .await
+        .expect("load rebuilt request rollups");
+
+    assert_eq!(values.get(&bucket_start), Some(&1));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn account_usage_rollup_rebuild_zero_fills_inactive_rate5m_window() {
+    let db_path = temp_db_path("account-usage-rollup-empty-rate5m-window");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "empty-rate5m-window".to_string(),
+            username: Some("empty_rate5m_window".to_string()),
+            name: Some("Empty Rate5m Window".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let now = Utc::now().timestamp();
+    let current_bucket_start = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let window_start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(window_start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+
+    proxy
+        .key_store
+        .rebuild_account_usage_rollup_buckets_v1()
+        .await
+        .expect("rebuild account usage rollups");
+
+    let series = proxy
+        .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::Rate5m)
+        .await
+        .expect("load empty rate5m series");
+
+    assert_eq!(series.points.len(), 288);
+    assert!(series.points.iter().all(|point| point.value == Some(0)));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn account_usage_rollup_rebuild_clears_stale_rate5m_buckets_without_logs() {
+    let db_path = temp_db_path("account-usage-rollup-clears-stale-rate5m");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "clears-stale-rate5m".to_string(),
+            username: Some("clears_stale_rate5m".to_string()),
+            name: Some("Clears Stale Rate5m".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    let stale_bucket_start = {
+        let now = Utc::now().timestamp();
+        let current_bucket_start = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+        current_bucket_start - SECS_PER_FIVE_MINUTES
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO account_usage_rollup_buckets (
+            user_id,
+            metric_kind,
+            bucket_kind,
+            bucket_start,
+            value,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
+    .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
+    .bind(stale_bucket_start)
+    .bind(9_i64)
+    .bind(Utc::now().timestamp())
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert stale rate5m rollup");
+
+    proxy
+        .key_store
+        .rebuild_account_usage_rollup_buckets_v1()
+        .await
+        .expect("rebuild account usage rollups");
+
+    let values = proxy
+        .key_store
+        .fetch_account_usage_rollup_values(
+            &user.user_id,
+            AccountUsageRollupMetricKind::RequestCount,
+            AccountUsageRollupBucketKind::FiveMinute,
+            stale_bucket_start,
+            stale_bucket_start + SECS_PER_FIVE_MINUTES,
+        )
+        .await
+        .expect("load rebuilt stale bucket");
+    assert!(values.is_empty());
 
     let _ = std::fs::remove_file(db_path);
 }

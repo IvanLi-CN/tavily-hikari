@@ -1,6 +1,9 @@
+use super::*;
+use super::core_support_and_parsing::*;
+
 use tokio::time::Instant;
 
-async fn spawn_mock_mcp_upstream_for_tavily_search_failed_status_string(
+pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_failed_status_string(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -86,7 +89,7 @@ async fn spawn_mock_mcp_upstream_for_tavily_search_failed_status_string(
     (addr, hits)
 }
 
-async fn spawn_mock_mcp_upstream_for_unknown_tavily_tool(
+pub(super) async fn spawn_mock_mcp_upstream_for_unknown_tavily_tool(
     expected_api_key: String,
     tool_name: &'static str,
     credits: i64,
@@ -159,7 +162,7 @@ async fn spawn_mock_mcp_upstream_for_unknown_tavily_tool(
     (addr, hits)
 }
 
-async fn spawn_mock_mcp_upstream_for_tavily_non_search_tools(
+pub(super) async fn spawn_mock_mcp_upstream_for_tavily_non_search_tools(
     expected_api_key: String,
     extract_credits: i64,
     crawl_credits: i64,
@@ -242,7 +245,7 @@ async fn spawn_mock_mcp_upstream_for_tavily_non_search_tools(
     (addr, hits)
 }
 
-async fn spawn_mock_mcp_upstream_for_tavily_extract_without_usage(
+pub(super) async fn spawn_mock_mcp_upstream_for_tavily_extract_without_usage(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -314,7 +317,7 @@ async fn spawn_mock_mcp_upstream_for_tavily_extract_without_usage(
     (addr, hits)
 }
 
-fn assert_upstream_json_auth(
+pub(super) fn assert_upstream_json_auth(
     headers: &HeaderMap,
     body: &Value,
     expected_api_key: &str,
@@ -341,7 +344,7 @@ fn assert_upstream_json_auth(
     assert_upstream_bearer_auth(headers, expected_api_key, endpoint);
 }
 
-fn assert_upstream_bearer_auth(headers: &HeaderMap, expected_api_key: &str, endpoint: &str) {
+pub(super) fn assert_upstream_bearer_auth(headers: &HeaderMap, expected_api_key: &str, endpoint: &str) {
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -357,7 +360,7 @@ fn assert_upstream_bearer_auth(headers: &HeaderMap, expected_api_key: &str, endp
     );
 }
 
-async fn spawn_http_search_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
+pub(super) async fn spawn_http_search_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
     let app = Router::new().route(
         "/search",
         post({
@@ -389,7 +392,7 @@ async fn spawn_http_search_mock_asserting_api_key(expected_api_key: String) -> S
 
 type SeenUpstreamIdentity = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
-async fn spawn_http_search_mock_recording_upstream_identity(
+pub(super) async fn spawn_http_search_mock_recording_upstream_identity(
     seen: SeenUpstreamIdentity,
 ) -> SocketAddr {
     let app = Router::new().route(
@@ -446,15 +449,15 @@ async fn spawn_http_search_mock_recording_upstream_identity(
 }
 
 #[derive(Debug, Clone)]
-struct RecordedRebalanceGatewayCall {
-    path: String,
-    headers: HeaderMap,
-    body: Value,
+pub(super) struct RecordedRebalanceGatewayCall {
+    pub(super) path: String,
+    pub(super) headers: HeaderMap,
+    pub(super) body: Value,
 }
 
-type RecordedRebalanceGatewayCalls = Arc<Mutex<Vec<RecordedRebalanceGatewayCall>>>;
+pub(super) type RecordedRebalanceGatewayCalls = Arc<Mutex<Vec<RecordedRebalanceGatewayCall>>>;
 
-async fn spawn_rebalance_gateway_mock(
+pub(super) async fn spawn_rebalance_gateway_mock(
     expected_api_key: String,
     seen: RecordedRebalanceGatewayCalls,
 ) -> SocketAddr {
@@ -524,7 +527,7 @@ async fn spawn_rebalance_gateway_mock(
     addr
 }
 
-async fn spawn_rebalance_gateway_http_error_mock(
+pub(super) async fn spawn_rebalance_gateway_http_error_mock(
     expected_api_key: String,
     seen: RecordedRebalanceGatewayCalls,
     status: StatusCode,
@@ -568,7 +571,7 @@ async fn spawn_rebalance_gateway_http_error_mock(
     addr
 }
 
-async fn spawn_http_search_mock_with_usage(
+pub(super) async fn spawn_http_search_mock_with_usage(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -616,7 +619,7 @@ async fn spawn_http_search_mock_with_usage(
     (addr, hits)
 }
 
-async fn spawn_http_search_mock_with_usage_delayed(
+pub(super) async fn spawn_http_search_mock_with_usage_delayed(
     expected_api_key: String,
     arrived: Arc<Notify>,
     release: Arc<Notify>,
@@ -671,7 +674,7 @@ async fn spawn_http_search_mock_with_usage_delayed(
     (addr, hits)
 }
 
-async fn spawn_http_search_mock_without_usage(
+pub(super) async fn spawn_http_search_mock_without_usage(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -709,7 +712,7 @@ async fn spawn_http_search_mock_without_usage(
     (addr, hits)
 }
 
-async fn spawn_http_search_mock_with_usage_and_failed_status(
+pub(super) async fn spawn_http_search_mock_with_usage_and_failed_status(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -759,7 +762,7 @@ async fn spawn_http_search_mock_with_usage_and_failed_status(
     (addr, hits)
 }
 
-async fn spawn_http_json_endpoints_mock_with_usage(
+pub(super) async fn spawn_http_json_endpoints_mock_with_usage(
     expected_api_key: String,
     extract_credits: i64,
     crawl_credits: i64,
@@ -847,7 +850,7 @@ async fn spawn_http_json_endpoints_mock_with_usage(
     (addr, hits)
 }
 
-async fn spawn_http_extract_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
+pub(super) async fn spawn_http_extract_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
     let app = Router::new().route(
         "/extract",
         post({
@@ -877,7 +880,7 @@ async fn spawn_http_extract_mock_asserting_api_key(expected_api_key: String) -> 
     addr
 }
 
-async fn spawn_http_crawl_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
+pub(super) async fn spawn_http_crawl_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
     let app = Router::new().route(
         "/crawl",
         post({
@@ -907,7 +910,7 @@ async fn spawn_http_crawl_mock_asserting_api_key(expected_api_key: String) -> So
     addr
 }
 
-async fn spawn_http_map_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
+pub(super) async fn spawn_http_map_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
     let app = Router::new().route(
         "/map",
         post({
@@ -937,7 +940,7 @@ async fn spawn_http_map_mock_asserting_api_key(expected_api_key: String) -> Sock
     addr
 }
 
-async fn spawn_http_map_mock_returning_500(
+pub(super) async fn spawn_http_map_mock_returning_500(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -970,7 +973,7 @@ async fn spawn_http_map_mock_returning_500(
     (addr, hits)
 }
 
-async fn spawn_http_research_mock_with_usage_diff(
+pub(super) async fn spawn_http_research_mock_with_usage_diff(
     expected_api_key: String,
     base_research_usage: i64,
     delta: i64,
@@ -1038,7 +1041,7 @@ async fn spawn_http_research_mock_with_usage_diff(
     (addr, usage_calls, research_calls)
 }
 
-async fn spawn_http_research_mock_with_usage_diff_string_float(
+pub(super) async fn spawn_http_research_mock_with_usage_diff_string_float(
     expected_api_key: String,
     base_research_usage: i64,
     delta: i64,
@@ -1105,7 +1108,7 @@ async fn spawn_http_research_mock_with_usage_diff_string_float(
     (addr, usage_calls, research_calls)
 }
 
-async fn spawn_http_research_mock_with_usage_probe_failure(
+pub(super) async fn spawn_http_research_mock_with_usage_probe_failure(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let usage_calls = Arc::new(AtomicUsize::new(0));
@@ -1163,7 +1166,7 @@ async fn spawn_http_research_mock_with_usage_probe_failure(
     (addr, usage_calls, research_calls)
 }
 
-async fn spawn_http_research_mock_with_follow_up_usage_probe_failure(
+pub(super) async fn spawn_http_research_mock_with_follow_up_usage_probe_failure(
     expected_api_key: String,
     base_research_usage: i64,
 ) -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
@@ -1234,7 +1237,7 @@ async fn spawn_http_research_mock_with_follow_up_usage_probe_failure(
     (addr, usage_calls, research_calls)
 }
 
-async fn spawn_http_research_result_mock_asserting_bearer_at_path(
+pub(super) async fn spawn_http_research_result_mock_asserting_bearer_at_path(
     expected_api_key: String,
     expected_request_id: String,
     route_path: &str,
@@ -1282,7 +1285,7 @@ async fn spawn_http_research_result_mock_asserting_bearer_at_path(
     addr
 }
 
-async fn spawn_http_research_result_mock_asserting_bearer(
+pub(super) async fn spawn_http_research_result_mock_asserting_bearer(
     expected_api_key: String,
     expected_request_id: String,
 ) -> SocketAddr {
@@ -1294,7 +1297,7 @@ async fn spawn_http_research_result_mock_asserting_bearer(
     .await
 }
 
-async fn spawn_http_research_mock_requiring_same_key_for_result() -> SocketAddr {
+pub(super) async fn spawn_http_research_mock_requiring_same_key_for_result() -> SocketAddr {
     let request_key_map: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let usage_calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
@@ -1421,11 +1424,11 @@ async fn spawn_http_research_mock_requiring_same_key_for_result() -> SocketAddr 
     addr
 }
 
-async fn spawn_proxy_server(proxy: TavilyProxy, usage_base: String) -> SocketAddr {
+pub(super) async fn spawn_proxy_server(proxy: TavilyProxy, usage_base: String) -> SocketAddr {
     spawn_proxy_server_with_dev(proxy, usage_base, false).await
 }
 
-async fn spawn_proxy_server_with_dev(
+pub(super) async fn spawn_proxy_server_with_dev(
     proxy: TavilyProxy,
     usage_base: String,
     dev_open_admin: bool,
@@ -1439,7 +1442,7 @@ async fn spawn_proxy_server_with_dev(
     .await
 }
 
-async fn spawn_proxy_server_with_dev_and_ha(
+pub(super) async fn spawn_proxy_server_with_dev_and_ha(
     proxy: TavilyProxy,
     usage_base: String,
     dev_open_admin: bool,
@@ -1486,7 +1489,7 @@ async fn spawn_proxy_server_with_dev_and_ha(
     addr
 }
 
-async fn spawn_keys_admin_server(
+pub(super) async fn spawn_keys_admin_server(
     proxy: TavilyProxy,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
@@ -1538,7 +1541,7 @@ async fn spawn_keys_admin_server(
     addr
 }
 
-async fn spawn_keys_admin_server_with_usage_base(
+pub(super) async fn spawn_keys_admin_server_with_usage_base(
     proxy: TavilyProxy,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
@@ -1579,7 +1582,7 @@ async fn spawn_keys_admin_server_with_usage_base(
     addr
 }
 
-async fn spawn_keys_admin_server_with_geo_origin(
+pub(super) async fn spawn_keys_admin_server_with_geo_origin(
     proxy: TavilyProxy,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
@@ -1619,7 +1622,7 @@ async fn spawn_keys_admin_server_with_geo_origin(
     addr
 }
 
-async fn spawn_keys_admin_server_with_usage_and_geo(
+pub(super) async fn spawn_keys_admin_server_with_usage_and_geo(
     proxy: TavilyProxy,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
@@ -1661,7 +1664,7 @@ async fn spawn_keys_admin_server_with_usage_and_geo(
     addr
 }
 
-async fn spawn_ha_admin_server(
+pub(super) async fn spawn_ha_admin_server(
     proxy: TavilyProxy,
     ha: tavily_hikari::HaRuntime,
     dev_open_admin: bool,
@@ -1706,7 +1709,7 @@ async fn spawn_ha_admin_server(
     addr
 }
 
-async fn spawn_usage_mock_server() -> SocketAddr {
+pub(super) async fn spawn_usage_mock_server() -> SocketAddr {
     let app = Router::new().route(
         "/usage",
         get(|headers: HeaderMap| async move {
@@ -1787,7 +1790,7 @@ async fn spawn_usage_mock_server() -> SocketAddr {
     addr
 }
 
-async fn spawn_usage_timeout_mock_server() -> SocketAddr {
+pub(super) async fn spawn_usage_timeout_mock_server() -> SocketAddr {
     let app = Router::new().route(
         "/usage",
         get(|headers: HeaderMap| async move {
@@ -1817,7 +1820,7 @@ async fn spawn_usage_timeout_mock_server() -> SocketAddr {
     addr
 }
 
-async fn spawn_usage_blocking_mock_server(
+pub(super) async fn spawn_usage_blocking_mock_server(
 ) -> (SocketAddr, Arc<AtomicUsize>, tokio::sync::watch::Sender<bool>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let (release_tx, release_rx) = tokio::sync::watch::channel(false);
@@ -1864,7 +1867,7 @@ async fn spawn_usage_blocking_mock_server(
     (addr, hits, release_tx)
 }
 
-async fn hold_sqlite_write_lock_for_manual_trigger_test(
+pub(super) async fn hold_sqlite_write_lock_for_manual_trigger_test(
     db_path: &str,
     hold_for: Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -1896,7 +1899,7 @@ async fn hold_sqlite_write_lock_for_manual_trigger_test(
 }
 
 #[tokio::test]
-async fn manual_jobs_trigger_coalesces_running_job_and_returns_representative_row() {
+pub(super) async fn manual_jobs_trigger_coalesces_running_job_and_returns_representative_row() {
     let db_path = temp_db_path("manual-jobs-trigger-coalesces-running");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1970,7 +1973,7 @@ async fn manual_jobs_trigger_coalesces_running_job_and_returns_representative_ro
 }
 
 #[tokio::test]
-async fn manual_jobs_trigger_coalesces_running_manual_job_without_waiting_for_write_lock() {
+pub(super) async fn manual_jobs_trigger_coalesces_running_manual_job_without_waiting_for_write_lock() {
     let db_path = temp_db_path("manual-jobs-trigger-running-manual-fast-path");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -2037,7 +2040,7 @@ async fn manual_jobs_trigger_coalesces_running_manual_job_without_waiting_for_wr
 }
 
 #[tokio::test]
-async fn manual_sync_usage_times_out_and_finishes_job_with_error() {
+pub(super) async fn manual_sync_usage_times_out_and_finishes_job_with_error() {
     let db_path = temp_db_path("manual-sync-usage-timeout");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -2126,13 +2129,13 @@ async fn manual_sync_usage_times_out_and_finishes_job_with_error() {
 }
 
 #[derive(Clone)]
-struct ProxyRelayState {
+pub(super) struct ProxyRelayState {
     upstream_base: String,
     hits: Arc<AtomicUsize>,
     client: Client,
 }
 
-async fn proxy_relay_handler(
+pub(super) async fn proxy_relay_handler(
     State(state): State<ProxyRelayState>,
     method: Method,
     uri: Uri,
@@ -2176,7 +2179,7 @@ async fn proxy_relay_handler(
     }
 }
 
-async fn spawn_usage_proxy_relay_server(
+pub(super) async fn spawn_usage_proxy_relay_server(
     upstream_base: String,
     hits: Arc<AtomicUsize>,
 ) -> SocketAddr {
@@ -2197,7 +2200,7 @@ async fn spawn_usage_proxy_relay_server(
     addr
 }
 
-async fn spawn_api_key_geo_mock_server() -> SocketAddr {
+pub(super) async fn spawn_api_key_geo_mock_server() -> SocketAddr {
     let app = Router::new().route(
         "/geo",
         post(|Json(ips): Json<Vec<String>>| async move {
@@ -2244,7 +2247,7 @@ async fn spawn_api_key_geo_mock_server() -> SocketAddr {
     addr
 }
 
-fn hash_admin_password_for_test(password: &str) -> String {
+pub(super) fn hash_admin_password_for_test(password: &str) -> String {
     use argon2::password_hash::{PasswordHasher, SaltString};
 
     let salt = SaltString::generate(&mut rand::rngs::OsRng);
@@ -2254,7 +2257,7 @@ fn hash_admin_password_for_test(password: &str) -> String {
         .to_string()
 }
 
-async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password: &str) -> SocketAddr {
+pub(super) async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password: &str) -> SocketAddr {
     let password_hash = hash_admin_password_for_test(password);
     let state = Arc::new(AppState {
         proxy,
@@ -2309,7 +2312,7 @@ async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password: &str) -> 
     addr
 }
 
-fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
+pub(super) fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
     LinuxDoOAuthOptions {
         enabled: true,
         client_id: Some("linuxdo-test-client-id".to_string()),
@@ -2327,7 +2330,7 @@ fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
     }
 }
 
-fn linuxdo_credit_options_for_test() -> LinuxDoCreditOptions {
+pub(super) fn linuxdo_credit_options_for_test() -> LinuxDoCreditOptions {
     LinuxDoCreditOptions {
         enabled: true,
         client_id: Some("linuxdo-credit-client-id".to_string()),
@@ -2340,7 +2343,7 @@ fn linuxdo_credit_options_for_test() -> LinuxDoCreditOptions {
     }
 }
 
-async fn spawn_user_oauth_server_with_options(
+pub(super) async fn spawn_user_oauth_server_with_options(
     proxy: TavilyProxy,
     linuxdo_oauth: LinuxDoOAuthOptions,
 ) -> SocketAddr {
@@ -2400,7 +2403,7 @@ async fn spawn_user_oauth_server_with_options(
     addr
 }
 
-async fn spawn_user_oauth_recharge_server(
+pub(super) async fn spawn_user_oauth_recharge_server(
     proxy: TavilyProxy,
     linuxdo_credit: LinuxDoCreditOptions,
     dev_open_admin: bool,
@@ -2435,12 +2438,12 @@ async fn spawn_user_oauth_recharge_server(
     addr
 }
 
-async fn spawn_user_oauth_server(proxy: TavilyProxy) -> SocketAddr {
+pub(super) async fn spawn_user_oauth_server(proxy: TavilyProxy) -> SocketAddr {
     spawn_user_oauth_server_with_options(proxy, linuxdo_oauth_options_for_test()).await
 }
 
 #[test]
-fn linuxdo_user_sync_scheduler_requires_oauth_configuration() {
+pub(super) fn linuxdo_user_sync_scheduler_requires_oauth_configuration() {
     assert!(
         !LinuxDoOAuthOptions::disabled().is_user_sync_scheduler_enabled(),
         "disabled LinuxDo OAuth should not enqueue daily sync jobs"
@@ -2459,7 +2462,7 @@ fn linuxdo_user_sync_scheduler_requires_oauth_configuration() {
     assert!(!configured.is_user_sync_scheduler_enabled());
 }
 
-async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin: bool) -> SocketAddr {
+pub(super) async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin: bool) -> SocketAddr {
     let static_dir = temp_static_dir("admin-users");
     let state = Arc::new(AppState {
         proxy,
@@ -2507,7 +2510,7 @@ async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin: bool) -> S
     addr
 }
 
-async fn spawn_admin_tokens_server(proxy: TavilyProxy, dev_open_admin: bool) -> SocketAddr {
+pub(super) async fn spawn_admin_tokens_server(proxy: TavilyProxy, dev_open_admin: bool) -> SocketAddr {
     let static_dir = temp_static_dir("admin-tokens");
     let state = Arc::new(AppState {
         proxy,
@@ -2548,7 +2551,7 @@ async fn spawn_admin_tokens_server(proxy: TavilyProxy, dev_open_admin: bool) -> 
     addr
 }
 
-async fn spawn_admin_forward_proxy_server(
+pub(super) async fn spawn_admin_forward_proxy_server(
     proxy: TavilyProxy,
     usage_base: String,
     dev_open_admin: bool,
@@ -2562,7 +2565,7 @@ async fn spawn_admin_forward_proxy_server(
     .await
 }
 
-async fn spawn_admin_forward_proxy_server_with_geo_origin(
+pub(super) async fn spawn_admin_forward_proxy_server_with_geo_origin(
     proxy: TavilyProxy,
     usage_base: String,
     dev_open_admin: bool,
@@ -2618,7 +2621,7 @@ async fn spawn_admin_forward_proxy_server_with_geo_origin(
     addr
 }
 
-async fn spawn_forward_proxy_probe_upstream() -> SocketAddr {
+pub(super) async fn spawn_forward_proxy_probe_upstream() -> SocketAddr {
     let app = Router::new()
         .route("/usage", get(|| async { StatusCode::NOT_FOUND }))
         .route("/mcp", any(|| async { StatusCode::NOT_FOUND }));
@@ -2633,11 +2636,11 @@ async fn spawn_forward_proxy_probe_upstream() -> SocketAddr {
     addr
 }
 
-async fn spawn_fake_forward_proxy(status: StatusCode) -> SocketAddr {
+pub(super) async fn spawn_fake_forward_proxy(status: StatusCode) -> SocketAddr {
     spawn_fake_forward_proxy_with_body(status, String::new()).await
 }
 
-async fn spawn_fake_forward_proxy_with_body(status: StatusCode, body: String) -> SocketAddr {
+pub(super) async fn spawn_fake_forward_proxy_with_body(status: StatusCode, body: String) -> SocketAddr {
     let app = Router::new().fallback(any(move || {
         let body = body.clone();
         async move { (status, body) }
@@ -2652,7 +2655,7 @@ async fn spawn_fake_forward_proxy_with_body(status: StatusCode, body: String) ->
     addr
 }
 
-async fn spawn_fake_forward_proxy_with_stalled_body(status: StatusCode) -> SocketAddr {
+pub(super) async fn spawn_fake_forward_proxy_with_stalled_body(status: StatusCode) -> SocketAddr {
     let app = Router::new().fallback(any(move || async move {
             let stream = async_stream::stream! {
                 yield Ok::<Bytes, Infallible>(Bytes::from_static(b"ip=203.0.113.8\nloc=JP\ncolo=NRT\n"));
@@ -2670,7 +2673,7 @@ async fn spawn_fake_forward_proxy_with_stalled_body(status: StatusCode) -> Socke
     addr
 }
 
-async fn spawn_counted_fake_forward_proxy(
+pub(super) async fn spawn_counted_fake_forward_proxy(
     status: StatusCode,
     delay: Duration,
     hits: Arc<AtomicUsize>,
@@ -2693,7 +2696,7 @@ async fn spawn_counted_fake_forward_proxy(
     addr
 }
 
-async fn spawn_forward_proxy_subscription_server(body: String) -> SocketAddr {
+pub(super) async fn spawn_forward_proxy_subscription_server(body: String) -> SocketAddr {
     let app = Router::new().route(
         "/subscription",
         get(move || {
@@ -2711,7 +2714,7 @@ async fn spawn_forward_proxy_subscription_server(body: String) -> SocketAddr {
     addr
 }
 
-async fn spawn_forward_proxy_subscription_server_with_delay(
+pub(super) async fn spawn_forward_proxy_subscription_server_with_delay(
     body: String,
     delay: Duration,
 ) -> SocketAddr {
@@ -2735,7 +2738,7 @@ async fn spawn_forward_proxy_subscription_server_with_delay(
     addr
 }
 
-async fn spawn_mutable_forward_proxy_subscription_server(
+pub(super) async fn spawn_mutable_forward_proxy_subscription_server(
     state: Arc<Mutex<(StatusCode, String)>>,
 ) -> SocketAddr {
     let app = Router::new().route(
@@ -2761,7 +2764,7 @@ async fn spawn_mutable_forward_proxy_subscription_server(
     addr
 }
 
-async fn spawn_counted_forward_proxy_subscription_server(
+pub(super) async fn spawn_counted_forward_proxy_subscription_server(
     state: Arc<Mutex<(StatusCode, String)>>,
     hits: Arc<AtomicUsize>,
 ) -> SocketAddr {
@@ -2790,7 +2793,7 @@ async fn spawn_counted_forward_proxy_subscription_server(
     addr
 }
 
-async fn spawn_linuxdo_authorize_method_probe_server(
+pub(super) async fn spawn_linuxdo_authorize_method_probe_server(
     method_probe: Arc<Mutex<Option<Method>>>,
 ) -> SocketAddr {
     let app = Router::new().route(
@@ -2822,7 +2825,7 @@ async fn spawn_linuxdo_authorize_method_probe_server(
     addr
 }
 
-async fn spawn_linuxdo_oauth_mock_server(
+pub(super) async fn spawn_linuxdo_oauth_mock_server(
     provider_user_id: &str,
     username: &str,
     display_name: &str,
@@ -2847,17 +2850,17 @@ async fn spawn_linuxdo_oauth_mock_server(
 }
 
 #[derive(Clone)]
-struct LinuxDoOauthMockBehavior {
-    authorization_access_token: String,
-    authorization_refresh_token: Option<String>,
-    authorization_profile: Value,
-    refresh_access_token: String,
-    refresh_refresh_token: Option<String>,
-    refresh_profile: Value,
-    refresh_error: Option<(StatusCode, Value)>,
+pub(super) struct LinuxDoOauthMockBehavior {
+    pub(super) authorization_access_token: String,
+    pub(super) authorization_refresh_token: Option<String>,
+    pub(super) authorization_profile: Value,
+    pub(super) refresh_access_token: String,
+    pub(super) refresh_refresh_token: Option<String>,
+    pub(super) refresh_profile: Value,
+    pub(super) refresh_error: Option<(StatusCode, Value)>,
 }
 
-async fn spawn_linuxdo_oauth_mock_server_with_behavior(
+pub(super) async fn spawn_linuxdo_oauth_mock_server_with_behavior(
     behavior: LinuxDoOauthMockBehavior,
 ) -> SocketAddr {
     let app = Router::new()

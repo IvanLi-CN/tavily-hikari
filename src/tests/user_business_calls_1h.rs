@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_only() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);

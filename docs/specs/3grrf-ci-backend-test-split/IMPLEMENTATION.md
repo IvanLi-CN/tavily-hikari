@@ -30,24 +30,31 @@
 - `scripts/ci_backend_test_manifest.json`
   - 固化当前 lib / main-bin / support-bin / integration test 的 shard 归属。
   - `forward_proxy::tests::` 已从 `lib-core` 拆成独立 `lib-forward-proxy` shard；`bin-admin-api` 则保留 shard 级 `filtered_process_workers=2` 的保守并发策略。
-  - coverage verifier 已证明当前 union 覆盖 `375 lib + 332 main-bin` tests，且 `bin-support` 与 5 个 integration suites 全覆盖，无 overlap、无 unmatched。
+  - 当前 selector 已切到真实测试模块前缀，例如 `tests::request_rollup::...`、`tests::usage_series_and_backfills::...`、`server::tests::tavily_http_search::...`、`server::tests::mcp_billing_and_sessions::...`，不再依赖旧的平铺 `tests::foo_` / `server::tests::bar_` 前缀去猜测测试归属。
+  - coverage verifier 已证明当前 union 覆盖 `396 lib + 334 main-bin` tests，且 `bin-support` 与 5 个 integration suites 全覆盖，无 overlap、无 unmatched。
 - `scripts/ci_backend_tests.py`
   - `verify`：基于 `cargo test -- --list` 做 shard 覆盖等价校验并导出 matrix。
   - `run-shard`：不再依赖 `cargo test FILTER` / `--skip FILTER` 的子串匹配，而是先生成 test executable，再按精确测试名列表用 `--exact` 直跑对应 test binary，避免重复命中或漏跑。
   - `prepare-artifacts`：一次性构建全覆盖 test targets，再按 coverage target 拆分 artifact，并缓存每个 executable 的 `tests.json` 供 `verify --prebuilt-root` / `run-shard --prebuilt-root` 复用。
   - 现支持 shard 级 `filtered_process_workers`，在不破坏覆盖等价性的前提下允许重 shard 局部降并发，避免为稳定性回退到整 shard 串行。
-- `src/server/spa.rs` + `src/server/tests/chunk_15.rs`
+- `src/tests/mod.rs` + `src/tests/support.rs` + `src/tests/**`
+  - 库内测试已从 `include!(\"chunk_*.rs\")` 机械切片切回真实语义模块，并把共享 helper 显式收敛到 `support` 层。
+  - `src/tests/chunk_04_tail.rs` 已删除；observability / oauth / announcement / coalescer 等测试迁入语义模块文件。
+- `src/server/tests.rs` + `src/server/tests/**`
+  - server/bin 测试已从单个 `mod tests { include!(...) }` 机械聚合改为真实模块树，并通过 `core_support_and_parsing`、`upstream_support_and_manual_jobs` 等显式 support helper 保持复用关系。
+- `src/server/spa.rs` + `src/server/tests/admin_token_filters_and_maintenance.rs`
   - 修复 `registration-paused.html` 在 embedded web assets 开启时误覆盖本地静态 fallback 的回归，并补上 targeted regression test，确保 shard 后的 release/build path 保持原有行为。
 
 ## Verification Evidence
 
 - 本地 shard coverage 验证：
   - `python3 scripts/ci_backend_tests.py verify`
-  - 结果证明当前 manifest 覆盖 `375 lib + 332 main-bin` tests，且 `bin-support` 与 5 个 integration suites 全覆盖，无 overlap、无 unmatched。
+  - 结果证明当前 manifest 覆盖 `396 lib + 334 main-bin` tests，且 `bin-support` 与 5 个 integration suites 全覆盖，无 overlap、无 unmatched。
 - 代表性本地 shard 复现：
   - `python3 scripts/ci_backend_tests.py run-shard --id lib-account-user`
   - `python3 scripts/ci_backend_tests.py run-shard --id lib-request-rollup`
   - `python3 scripts/ci_backend_tests.py run-shard --id bin-admin-api`
+  - `python3 scripts/ci_backend_tests.py run-shard --id bin-mcp-core`
   - 结果表明最后几个慢 shard 主要由一串 `12-18s` 级顺序慢测试组成，而不是执行器挂死。
 - build-once fanout 本地证据：
   - `python3 scripts/ci_backend_tests.py prepare-artifacts --output-dir /tmp/backend-test-artifacts`：当前墙钟约 `70.71s`

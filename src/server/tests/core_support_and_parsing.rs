@@ -1,32 +1,23 @@
     use super::*;
     use axum::Router;
     use axum::body::Body;
-    use axum::extract::{DefaultBodyLimit, Form, Json, Query, State};
-    use axum::http::{HeaderMap, Method, Uri};
+    use axum::extract::{Json, Query};
+    use axum::http::{HeaderMap, Method};
     use axum::response::{IntoResponse, Response};
-    use axum::routing::{any, delete, get, patch, post};
+    use axum::routing::any;
     use bytes::Bytes;
     use nanoid::nanoid;
-    use reqwest::Client;
     use sha2::{Digest, Sha256};
-    use sqlx::Row;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::collections::HashMap;
-    use std::convert::Infallible;
-    use std::future::pending;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
-    use tavily_hikari::{
-        DEFAULT_UPSTREAM, ForwardProxySettings, effective_auth_token_log_retention_days,
-        effective_request_logs_retention_days, effective_token_hourly_limit,
-        request_rate_limit, request_rate_limit_window_minutes, request_rate_limit_window_secs,
-    };
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
 
-    fn temp_db_path(prefix: &str) -> PathBuf {
+    pub(super) fn temp_db_path(prefix: &str) -> PathBuf {
         static CLEANUP_ONCE: OnceLock<()> = OnceLock::new();
         CLEANUP_ONCE.get_or_init(cleanup_stale_test_db_dirs);
         let dir = std::env::temp_dir().join(format!(
@@ -38,7 +29,7 @@
         dir.join(format!("{prefix}.db"))
     }
 
-    fn cleanup_stale_test_db_dirs() {
+    pub(super) fn cleanup_stale_test_db_dirs() {
         let tmp_dir = std::env::temp_dir();
         let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
             return;
@@ -66,7 +57,7 @@
         }
     }
 
-    fn sha256_hex(value: &str) -> String {
+    pub(super) fn sha256_hex(value: &str) -> String {
         let digest: [u8; 32] = Sha256::digest(value.as_bytes()).into();
         let mut hex = String::with_capacity(digest.len() * 2);
         for byte in digest {
@@ -76,7 +67,7 @@
         hex
     }
 
-    fn sqlite_test_layout(database_path: &str) -> (String, Option<String>) {
+    pub(super) fn sqlite_test_layout(database_path: &str) -> (String, Option<String>) {
         let database_path = database_path.trim();
         let path = std::path::Path::new(database_path);
         let is_explicit_sqlite_file = path
@@ -120,7 +111,7 @@
         )
     }
 
-    async fn connect_sqlite_test_pool(db_str: &str) -> sqlx::SqlitePool {
+    pub(super) async fn connect_sqlite_test_pool(db_str: &str) -> sqlx::SqlitePool {
         let (core_database_path, observability_database_path) = sqlite_test_layout(db_str);
         let observability_database_path = observability_database_path.clone();
         let pool_options = if let Some(observability_database_path) = observability_database_path {
@@ -152,7 +143,7 @@
             .expect("connect to sqlite")
     }
 
-    fn sqlite_test_observability_table(table: &str) -> bool {
+    pub(super) fn sqlite_test_observability_table(table: &str) -> bool {
         matches!(
             table,
             "request_logs"
@@ -162,7 +153,7 @@
         )
     }
 
-    fn sqlite_test_table_info_source(table: &str) -> String {
+    pub(super) fn sqlite_test_table_info_source(table: &str) -> String {
         if sqlite_test_observability_table(table) {
             format!("observability.pragma_table_info('{table}')")
         } else {
@@ -170,7 +161,7 @@
         }
     }
 
-    async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
+    pub(super) async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
         let sql = format!(
             "SELECT 1 FROM {} WHERE name = ? LIMIT 1",
             sqlite_test_table_info_source(table)
@@ -183,7 +174,7 @@
             .is_some()
     }
 
-    async fn sqlite_column_not_null(
+    pub(super) async fn sqlite_column_not_null(
         pool: &sqlx::SqlitePool,
         table: &str,
         column: &str,
@@ -199,14 +190,14 @@
             .expect("probe sqlite column notnull")
     }
 
-    async fn fetch_api_key_rows(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
+    pub(super) async fn fetch_api_key_rows(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
         sqlx::query_as("SELECT id, api_key FROM api_keys ORDER BY api_key ASC")
             .fetch_all(pool)
             .await
             .expect("fetch api key rows")
     }
 
-    async fn fetch_user_last_login_at(pool: &sqlx::SqlitePool, user_id: &str) -> Option<i64> {
+    pub(super) async fn fetch_user_last_login_at(pool: &sqlx::SqlitePool, user_id: &str) -> Option<i64> {
         sqlx::query_scalar("SELECT last_login_at FROM users WHERE id = ? LIMIT 1")
             .bind(user_id)
             .fetch_one(pool)
@@ -214,7 +205,7 @@
             .expect("fetch user last_login_at")
     }
 
-    async fn fetch_user_active(pool: &sqlx::SqlitePool, user_id: &str) -> i64 {
+    pub(super) async fn fetch_user_active(pool: &sqlx::SqlitePool, user_id: &str) -> i64 {
         sqlx::query_scalar("SELECT active FROM users WHERE id = ? LIMIT 1")
             .bind(user_id)
             .fetch_one(pool)
@@ -222,7 +213,7 @@
             .expect("fetch user active")
     }
 
-    async fn install_refresh_token_write_failure_trigger(pool: &sqlx::SqlitePool) {
+    pub(super) async fn install_refresh_token_write_failure_trigger(pool: &sqlx::SqlitePool) {
         sqlx::query(
             r#"
             CREATE TRIGGER fail_oauth_refresh_token_persist
@@ -237,14 +228,14 @@
         .expect("install refresh token failure trigger");
     }
 
-    fn find_api_key_id(rows: &[(String, String)], api_key: &str) -> String {
+    pub(super) fn find_api_key_id(rows: &[(String, String)], api_key: &str) -> String {
         rows.iter()
             .find(|(_, secret)| secret == api_key)
             .map(|(id, _)| id.clone())
             .unwrap_or_else(|| panic!("missing api key row for {api_key}"))
     }
 
-    async fn read_sse_event_until(
+    pub(super) async fn read_sse_event_until(
         response: &mut reqwest::Response,
         predicate: impl Fn(&str) -> bool,
         chunk_context: &str,
@@ -276,7 +267,25 @@
         panic!("timed out waiting for matching SSE event: {chunk_context}");
     }
 
-    async fn fetch_key_quota_snapshot(
+    pub(super) fn decode_sse_json_text(text: &str) -> Value {
+        if let Ok(value) = serde_json::from_str::<Value>(text) {
+            return value;
+        }
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data:").map(str::trim))
+            .unwrap_or_else(|| panic!("SSE response should include a data line, got: {text}"));
+        serde_json::from_str(data).unwrap_or_else(|err| {
+            panic!("SSE data line should decode as JSON: {err}; data: {data}")
+        })
+    }
+
+    pub(super) async fn decode_sse_json_response(response: reqwest::Response) -> Value {
+        let text = response.text().await.expect("read SSE response body");
+        decode_sse_json_text(&text)
+    }
+
+    pub(super) async fn fetch_key_quota_snapshot(
         pool: &sqlx::SqlitePool,
         key_id: &str,
     ) -> (Option<i64>, Option<i64>, Option<i64>) {
@@ -289,7 +298,7 @@
         .expect("fetch key quota snapshot")
     }
 
-    async fn fetch_key_quota_sample_count(pool: &sqlx::SqlitePool, key_id: &str) -> i64 {
+    pub(super) async fn fetch_key_quota_sample_count(pool: &sqlx::SqlitePool, key_id: &str) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM api_key_quota_sync_samples WHERE key_id = ?")
             .bind(key_id)
             .fetch_one(pool)
@@ -297,7 +306,7 @@
             .expect("fetch quota sync sample count")
     }
 
-    async fn create_request_log_reference_tables(pool: &sqlx::SqlitePool) {
+    pub(super) async fn create_request_log_reference_tables(pool: &sqlx::SqlitePool) {
         sqlx::query(
             r#"
             CREATE TABLE users (
@@ -404,7 +413,7 @@
         .expect("create api_key_maintenance_records");
     }
 
-    async fn insert_request_log_reference_rows(
+    pub(super) async fn insert_request_log_reference_rows(
         pool: &sqlx::SqlitePool,
         key_id: &str,
         request_log_id: i64,
@@ -453,19 +462,19 @@
         .expect("insert maintenance reference");
     }
 
-    fn env_var_test_lock() -> &'static Mutex<()> {
+    pub(super) fn env_var_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    struct EnvVarGuard {
+    pub(super) struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
         _lock: MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
+        pub(super) fn set(key: &'static str, value: &str) -> Self {
             let lock = env_var_test_lock()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -493,7 +502,7 @@
         }
     }
 
-    fn temp_static_dir(prefix: &str) -> PathBuf {
+    pub(super) fn temp_static_dir(prefix: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("{prefix}-static-{}", nanoid!(8)));
         std::fs::create_dir_all(&dir).expect("create temp static dir");
         std::fs::write(
@@ -524,7 +533,7 @@
         dir
     }
 
-    async fn spawn_mock_upstream(expected_api_key: String) -> SocketAddr {
+    pub(super) async fn spawn_mock_upstream(expected_api_key: String) -> SocketAddr {
         let app = Router::new().route(
             "/mcp",
             any({
@@ -554,7 +563,7 @@
         addr
     }
 
-    async fn spawn_mock_upstream_with_hits(
+    pub(super) async fn spawn_mock_upstream_with_hits(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -590,7 +599,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -673,7 +682,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_search_and_delete_405(
+    pub(super) async fn spawn_mock_mcp_upstream_for_search_and_delete_405(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -753,7 +762,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_search_and_delete_500(
+    pub(super) async fn spawn_mock_mcp_upstream_for_search_and_delete_500(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -833,7 +842,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_session_headers(
+    pub(super) async fn spawn_mock_mcp_upstream_for_session_headers(
         allowed_api_keys: Vec<String>,
     ) -> (SocketAddr, Arc<Mutex<Vec<SessionHeaderCall>>>) {
         spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
@@ -843,7 +852,7 @@
         .await
     }
 
-    async fn spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
+    pub(super) async fn spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
         allowed_api_keys: Vec<String>,
         initialize_delay: Duration,
     ) -> (SocketAddr, Arc<Mutex<Vec<SessionHeaderCall>>>) {
@@ -996,24 +1005,24 @@
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SessionHeaderCall {
-        method: String,
-        session_id: Option<String>,
-        protocol_version: Option<String>,
-        last_event_id: Option<String>,
-        leaked_forwarded: bool,
-        user_agent: Option<String>,
-        tavily_api_key: Option<String>,
+    pub(super) struct SessionHeaderCall {
+        pub(super) method: String,
+        pub(super) session_id: Option<String>,
+        pub(super) protocol_version: Option<String>,
+        pub(super) last_event_id: Option<String>,
+        pub(super) leaked_forwarded: bool,
+        pub(super) user_agent: Option<String>,
+        pub(super) tavily_api_key: Option<String>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct RetryAfterSessionCall {
-        method: String,
-        upstream_session_id_header: Option<String>,
-        tavily_api_key: String,
+    pub(super) struct RetryAfterSessionCall {
+        pub(super) method: String,
+        pub(super) upstream_session_id_header: Option<String>,
+        pub(super) tavily_api_key: String,
     }
 
-    async fn spawn_mock_mcp_upstream_for_session_retry_after_once(
+    pub(super) async fn spawn_mock_mcp_upstream_for_session_retry_after_once(
         expected_api_key: String,
         retry_after_secs: i64,
     ) -> (SocketAddr, Arc<Mutex<Vec<RetryAfterSessionCall>>>) {
@@ -1147,7 +1156,7 @@
         (addr, calls)
     }
 
-    async fn spawn_mock_mcp_upstream_for_serialized_session_requests(
+    pub(super) async fn spawn_mock_mcp_upstream_for_serialized_session_requests(
         expected_api_key: String,
         tools_list_delay: Duration,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -1257,7 +1266,7 @@
         (addr, max_in_flight)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_empty_body(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_empty_body(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1317,7 +1326,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_sse(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_sse(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1382,7 +1391,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_batch(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_batch(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1478,7 +1487,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_error(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_error(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1574,7 +1583,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_quota_exhausted(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_quota_exhausted(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1674,7 +1683,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_detail_error(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_detail_error(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1775,7 +1784,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_batch_partial_usage(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_batch_partial_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1875,7 +1884,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_mixed_tools_list_and_search_usage(
+    pub(super) async fn spawn_mock_mcp_upstream_for_mixed_tools_list_and_search_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1978,7 +1987,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_search_and_extract_partial_usage(
+    pub(super) async fn spawn_mock_mcp_upstream_for_search_and_extract_partial_usage(
         expected_api_key: String,
         extract_credits: i64,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -2095,7 +2104,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_search_and_research_missing_usage(
+    pub(super) async fn spawn_mock_mcp_upstream_for_search_and_research_missing_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -2201,7 +2210,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_idless_tavily_tool_usage(
+    pub(super) async fn spawn_mock_mcp_upstream_for_idless_tavily_tool_usage(
         expected_api_key: String,
         tool_name: String,
         usage_credits: Option<i64>,
@@ -2291,7 +2300,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_search_missing_usage_with_extract_error(
+    pub(super) async fn spawn_mock_mcp_upstream_for_search_missing_usage_with_extract_error(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));
@@ -2400,7 +2409,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_delayed(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_delayed(
         expected_api_key: String,
         arrived: Arc<Notify>,
         release: Arc<Notify>,
@@ -2490,7 +2499,7 @@
         (addr, hits)
     }
 
-    async fn spawn_mock_mcp_upstream_for_tavily_search_error(
+    pub(super) async fn spawn_mock_mcp_upstream_for_tavily_search_error(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));

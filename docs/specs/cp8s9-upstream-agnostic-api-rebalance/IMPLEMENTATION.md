@@ -35,12 +35,12 @@
   - `web/src/admin/SystemSettingsModule.tsx`
   - `web/src/api/runtime.ts`
 - Tests:
-  - `src/tests/chunk_07.rs`
-  - `src/server/tests/chunk_03.rs`
-  - `src/server/tests/chunk_08.rs`
-  - `src/server/tests/chunk_09.rs`
-  - `src/server/tests/chunk_11.rs`
-  - `src/server/tests/chunk_12.rs`
+  - `src/tests/maintenance_and_mcp_affinity.rs`
+  - `src/server/tests/linuxdo_oauth_and_admin_keys.rs`
+  - `src/server/tests/tavily_http_search.rs`
+  - `src/server/tests/research_result_and_mcp_subpath.rs`
+  - `src/server/tests/mcp_rebalance_and_follow_up.rs`
+  - `src/server/tests/system_settings_and_forward_proxy.rs`
   - `web/src/admin/SystemSettingsModule.stories.tsx`
 
 ## Validation

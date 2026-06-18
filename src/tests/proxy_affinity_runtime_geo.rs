@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn add_or_undelete_key_with_status_keeps_tx_clean_after_insert_failure() {
     let db_path = temp_db_path("api-key-upsert-clean-tx-after-failure");
@@ -1040,14 +1042,12 @@ async fn select_proxy_affinity_marks_trace_without_region_as_retriable_trace_cac
         .lock()
         .await
         .remove(&proxy_url);
-    sqlx::query(
-        "UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?",
-    )
-    .bind(first_row.3)
-    .bind(&proxy_url)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("preserve trace cache timestamp");
+    sqlx::query("UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?")
+        .bind(first_row.3)
+        .bind(&proxy_url)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("preserve trace cache timestamp");
 
     let (_second_record, second_preview) = proxy
         .select_proxy_affinity_preview_for_registration_with_hint(
@@ -1344,14 +1344,12 @@ async fn force_refresh_replaces_stale_trace_with_negative_placeholder() {
         .lock()
         .await
         .remove(&proxy_url);
-    sqlx::query(
-        "UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?",
-    )
-    .bind(first_row.3 - 1)
-    .bind(&proxy_url)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("force later timestamp after failed refresh");
+    sqlx::query("UPDATE forward_proxy_runtime SET geo_refreshed_at = ? WHERE proxy_key = ?")
+        .bind(first_row.3 - 1)
+        .bind(&proxy_url)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("force later timestamp after failed refresh");
 
     proxy
         .refresh_forward_proxy_geo_metadata(&geo_origin, true)

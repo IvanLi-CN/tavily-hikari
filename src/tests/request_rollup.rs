@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     let db_path = temp_db_path("summary-windows-quota-charge");
@@ -138,7 +140,14 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     assert_eq!(summary.previous_month_start, previous_month_start);
     assert_eq!(summary.previous_month_end, local_month_start);
 
-    assert!(summary.yesterday.quota_charge.latest_sync_at.unwrap_or_default() < today_start);
+    assert!(
+        summary
+            .yesterday
+            .quota_charge
+            .latest_sync_at
+            .unwrap_or_default()
+            < today_start
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -159,7 +168,9 @@ async fn observability_tables_live_in_sidecar_database() {
         "observability sidecar should be a sibling file scoped to the core db path"
     );
     assert_ne!(
-        std::path::Path::new(&observability_path).file_name().and_then(|value| value.to_str()),
+        std::path::Path::new(&observability_path)
+            .file_name()
+            .and_then(|value| value.to_str()),
         Some("observability.db"),
         "observability sidecar must not collapse every explicit sqlite db onto one shared file"
     );
@@ -207,7 +218,10 @@ async fn observability_tables_live_in_sidecar_database() {
     .fetch_all(&proxy.key_store.pool)
     .await
     .expect("list main tables");
-    assert!(main_tables.is_empty(), "main database should not own observability tables");
+    assert!(
+        main_tables.is_empty(),
+        "main database should not own observability tables"
+    );
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
@@ -229,8 +243,8 @@ async fn legacy_single_db_request_logs_migrate_to_observability_sidecar() {
             .filename(&db_path)
             .create_if_missing(true),
     )
-        .await
-        .expect("open legacy sqlite");
+    .await
+    .expect("open legacy sqlite");
     sqlx::query(
         r#"
         CREATE TABLE api_keys (
@@ -333,11 +347,10 @@ async fn legacy_single_db_request_logs_migrate_to_observability_sidecar() {
     .execute(&mut conn)
     .await
     .expect("insert legacy request log");
-    let legacy_request_log_id: i64 =
-        sqlx::query_scalar("SELECT id FROM request_logs LIMIT 1")
-            .fetch_one(&mut conn)
-            .await
-            .expect("fetch legacy request log id");
+    let legacy_request_log_id: i64 = sqlx::query_scalar("SELECT id FROM request_logs LIMIT 1")
+        .fetch_one(&mut conn)
+        .await
+        .expect("fetch legacy request log id");
     sqlx::query(
         r#"
         INSERT INTO auth_token_logs (
@@ -643,7 +656,10 @@ async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
         .enqueue_auth_token_activity(&token.id, None, created_at)
         .await;
 
-    let tokens = proxy.list_access_tokens().await.expect("list access tokens");
+    let tokens = proxy
+        .list_access_tokens()
+        .await
+        .expect("list access tokens");
     let refreshed = tokens
         .into_iter()
         .find(|candidate| candidate.id == token.id)
@@ -775,7 +791,10 @@ async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_
 
     assert_eq!(summary.monthly_success, 13);
     assert_eq!(summary.daily_success, 0);
-    assert_eq!(public_summary.monthly_success, expected_public_monthly_success);
+    assert_eq!(
+        public_summary.monthly_success,
+        expected_public_monthly_success
+    );
     assert_eq!(public_summary.daily_success, 0);
 
     let _ = std::fs::remove_file(db_path);
@@ -846,11 +865,7 @@ async fn public_success_breakdown_does_not_double_count_retained_partial_minute(
         .expect("seeded key")
         .id;
 
-    let minute_start = Utc::now()
-        .timestamp()
-        .saturating_sub(300)
-        .div_euclid(60)
-        * 60;
+    let minute_start = Utc::now().timestamp().saturating_sub(300).div_euclid(60) * 60;
     let retained_floor = minute_start + 17;
     let window = TimeRangeUtc {
         start: minute_start.saturating_sub(60),
@@ -881,11 +896,12 @@ async fn public_success_breakdown_does_not_double_count_retained_partial_minute(
         .await
         .expect("public rollup success breakdown");
     let current_month_start = start_of_month(Utc::now()).timestamp();
-    let expected_monthly_success = if local_day_bucket_start_utc_ts(minute_start) >= current_month_start {
-        4
-    } else {
-        3
-    };
+    let expected_monthly_success =
+        if local_day_bucket_start_utc_ts(minute_start) >= current_month_start {
+            4
+        } else {
+            3
+        };
 
     assert_eq!(public.monthly_success, expected_monthly_success);
     assert_eq!(public.daily_success, 4);
@@ -1666,10 +1682,12 @@ async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are
         .execute(&mut *conn)
         .await
         .expect("drop current usage bucket table");
-    sqlx::query("ALTER TABLE observability.api_key_usage_buckets_legacy RENAME TO api_key_usage_buckets")
-        .execute(&mut *conn)
-        .await
-        .expect("rename legacy usage bucket table");
+    sqlx::query(
+        "ALTER TABLE observability.api_key_usage_buckets_legacy RENAME TO api_key_usage_buckets",
+    )
+    .execute(&mut *conn)
+    .await
+    .expect("rename legacy usage bucket table");
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&mut *conn)
         .await
@@ -1978,14 +1996,8 @@ async fn research_request_does_not_probe_usage_before_forwarding() {
     assert_eq!(resp.status, StatusCode::OK);
     assert_eq!(analysis.status, "success");
     assert_eq!(usage_delta, None);
-    assert_eq!(
-        usage_calls.load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    assert_eq!(
-        research_calls.load(std::sync::atomic::Ordering::SeqCst),
-        1
-    );
+    assert_eq!(usage_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(research_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     let quarantine_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*) FROM api_key_quarantines

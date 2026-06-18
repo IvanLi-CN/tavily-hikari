@@ -14,7 +14,8 @@
 
 - 该主题新增的直接原因是 `CI Pipeline` 关键路径长期接近 1 小时，且结构性浪费主要来自单长 backend job、重复 frontend build 与不必要的 downstream `needs` 阻塞。
 - 该 spec 不替代 release / docs-pages 相关 spec；它只约束 PR `CI Pipeline` 下的 backend split 与 safe parallelization。
-- 当前实现放弃了“先把所有 `chunk_*.rs` 机械模块化再靠命名空间切 shard”的方向，因为 `src/tests/chunk_03.rs`、`src/server/tests/chunk_02.rs`、`src/server/tests/chunk_03.rs`、`src/server/tests/chunk_11.rs` 存在真实跨文件 helper 依赖，贸然拆模块会破坏可见性并扩大改动面。
+- 早期实现阶段曾放弃“先把所有 `chunk_*.rs` 机械模块化再靠命名空间切 shard”的方向，因为当时 `src/tests/**` 与 `src/server/tests/**` 里存在真实跨文件 helper 依赖，贸然拆模块会破坏可见性并扩大改动面。
+- 2026-06-18：测试组织进一步收口为真实语义模块 + 显式 `support` 层；`src/tests/mod.rs` 与 `src/server/tests.rs` 不再依赖 `include!(\"chunk_*.rs\")`，shard selector 也同步切到稳定的模块前缀，而不是继续绑定预算驱动的机械切片文件名。
 
 ## References
 

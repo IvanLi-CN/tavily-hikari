@@ -1,3 +1,5 @@
+use super::*;
+
 fn resolve_test_binary(file_name: &str) -> std::path::PathBuf {
     let current_exe = std::env::current_exe().expect("resolve current test executable");
     if let Some(debug_dir) = current_exe.parent().and_then(|deps| deps.parent()) {
@@ -22,7 +24,9 @@ fn resolve_test_binary(file_name: &str) -> std::path::PathBuf {
                     let executable = {
                         use std::os::unix::fs::PermissionsExt;
                         path.metadata()
-                            .map(|metadata| metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0)
+                            .map(|metadata| {
+                                metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0
+                            })
                             .unwrap_or(false)
                     };
                     #[cfg(not(unix))]
@@ -1045,12 +1049,11 @@ async fn observability_sidecar_migrate_resumes_copy_from_preseeded_sidecar_gaps(
     let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("reopen migrated db");
-    let ids = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM observability.request_logs ORDER BY id ASC",
-    )
-    .fetch_all(&reopened.key_store.pool)
-    .await
-    .expect("fetch migrated ids");
+    let ids =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM observability.request_logs ORDER BY id ASC")
+            .fetch_all(&reopened.key_store.pool)
+            .await
+            .expect("fetch migrated ids");
     assert_eq!(ids, vec![1, 2, 4]);
     drop(reopened);
 
@@ -1127,12 +1130,10 @@ async fn observability_sidecar_migrate_recovers_temporary_legacy_tables() {
     .execute(&pool)
     .await
     .expect("create leftover temp request_logs table");
-    sqlx::query(
-        r#"INSERT INTO "__observability_sidecar_legacy_request_logs" (id) VALUES (7)"#,
-    )
-    .execute(&pool)
-    .await
-    .expect("seed leftover temp request_logs table");
+    sqlx::query(r#"INSERT INTO "__observability_sidecar_legacy_request_logs" (id) VALUES (7)"#)
+        .execute(&pool)
+        .await
+        .expect("seed leftover temp request_logs table");
     sqlx::query("DELETE FROM meta WHERE key IN (?, ?, ?, ?, ?, ?)")
         .bind(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
         .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
@@ -2135,9 +2136,11 @@ async fn published_announcement_update_archives_previous_version() {
         .list_user_announcement_history()
         .await
         .expect("list announcement history after draft archive");
-    assert!(!history_after_draft_archive
-        .iter()
-        .any(|item| item.id == archived_draft.id));
+    assert!(
+        !history_after_draft_archive
+            .iter()
+            .any(|item| item.id == archived_draft.id)
+    );
 
     let archived_revised = store
         .archive_announcement(&revised.id)
@@ -2166,16 +2169,21 @@ async fn published_announcement_update_archives_previous_version() {
         .await
         .expect("load archived revised after edit")
         .expect("archived revised still exists after edit");
-    assert_eq!(archived_revised_after_edit.status, ANNOUNCEMENT_STATUS_ARCHIVED);
+    assert_eq!(
+        archived_revised_after_edit.status,
+        ANNOUNCEMENT_STATUS_ARCHIVED
+    );
     assert_eq!(archived_revised_after_edit.title, archived_revised.title);
 
     let history_after_archived_edit = store
         .list_user_announcement_history()
         .await
         .expect("list announcement history after archived edit");
-    assert!(!history_after_archived_edit
-        .iter()
-        .any(|item| item.id == edited_archived.id));
+    assert!(
+        !history_after_archived_edit
+            .iter()
+            .any(|item| item.id == edited_archived.id)
+    );
 
     let republished = store
         .publish_announcement(&archived_revised.id)
@@ -2191,7 +2199,10 @@ async fn published_announcement_update_archives_previous_version() {
         .await
         .expect("load archived revised after republish")
         .expect("archived revised still exists");
-    assert_eq!(archived_revised_after_republish.status, ANNOUNCEMENT_STATUS_ARCHIVED);
+    assert_eq!(
+        archived_revised_after_republish.status,
+        ANNOUNCEMENT_STATUS_ARCHIVED
+    );
 
     let active_after_republish = store
         .list_user_active_announcements()
@@ -2264,7 +2275,10 @@ async fn ticker_announcements_may_omit_body_but_modal_announcements_may_not() {
             display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
         })
         .await;
-    assert!(modal.is_err(), "modal announcements still require body content");
+    assert!(
+        modal.is_err(),
+        "modal announcements still require body content"
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

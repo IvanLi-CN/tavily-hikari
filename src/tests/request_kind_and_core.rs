@@ -1,104 +1,4 @@
-use crate::analysis::*;
-use crate::models::*;
-use crate::store::*;
-use crate::tavily_proxy::*;
-use crate::*;
-
-use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{any, get, post},
-};
-use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row};
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
-use tokio::net::TcpListener;
-
-fn env_lock() -> Arc<tokio::sync::Mutex<()>> {
-    static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
-    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
-}
-
-fn dead_request_kind_migration_owner_pid() -> u32 {
-    for candidate in [999_999_u32, 888_888, 777_777, 666_666] {
-        if !request_kind_canonical_migration_owner_pid_is_live(candidate) {
-            return candidate;
-        }
-    }
-    panic!("unable to find a dead pid candidate for request-kind migration tests");
-}
-
-async fn spawn_api_key_geo_mock_server() -> SocketAddr {
-    let app = Router::new().route(
-        "/geo",
-        post(|Json(ips): Json<Vec<String>>| async move {
-            let entries = ips
-                .into_iter()
-                .map(|ip| match ip.as_str() {
-                    "18.183.246.69" => serde_json::json!({
-                        "ip": ip,
-                        "country": "JP",
-                        "city": "Tokyo",
-                        "subdivision": "13"
-                    }),
-                    "1.1.1.1" => serde_json::json!({
-                        "ip": ip,
-                        "country": "HK",
-                        "city": null,
-                        "subdivision": null
-                    }),
-                    "1.0.0.1" => serde_json::json!({
-                        "ip": ip,
-                        "country": "HK",
-                        "city": null,
-                        "subdivision": null
-                    }),
-                    "8.8.8.8" => serde_json::json!({
-                        "ip": ip,
-                        "country": "US",
-                        "city": null,
-                        "subdivision": null
-                    }),
-                    _ => serde_json::json!({
-                        "ip": ip,
-                        "country": null,
-                        "city": null,
-                        "subdivision": null
-                    }),
-                })
-                .collect::<Vec<_>>();
-            Json(entries)
-        }),
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-    addr
-}
-
-async fn spawn_fake_forward_proxy_with_body(body: String) -> SocketAddr {
-    let app = Router::new().fallback(any(move || {
-        let body = body.clone();
-        async move { (StatusCode::OK, body) }
-    }));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-    addr
-}
+use super::*;
 
 #[test]
 fn parse_hhmm_validates_clock_time() {
@@ -1414,14 +1314,15 @@ async fn token_primary_rebind_prefers_active_key_over_existing_exhausted_primary
     .fetch_all(&pool)
     .await
     .expect("all keys");
-    let (old_key_secret, rebound_key_id) = all_keys
-        .iter()
-        .fold((None, None), |(old_secret, rebound), (id, secret)| {
-            (
-                old_secret.or_else(|| (id == &old_key_id).then_some(secret.clone())),
-                rebound.or_else(|| (id != &old_key_id).then_some(id.clone())),
-            )
-        });
+    let (old_key_secret, rebound_key_id) =
+        all_keys
+            .iter()
+            .fold((None, None), |(old_secret, rebound), (id, secret)| {
+                (
+                    old_secret.or_else(|| (id == &old_key_id).then_some(secret.clone())),
+                    rebound.or_else(|| (id != &old_key_id).then_some(id.clone())),
+                )
+            });
     let old_key_secret = old_key_secret.expect("old primary key secret");
     let rebound_key_id = rebound_key_id.expect("active fallback key");
 
@@ -2381,13 +2282,9 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         ),
     };
 
-    let mut lock_conn = connect_sqlite_test_connection(
-        &db_str,
-        false,
-        false,
-        std::time::Duration::from_millis(1),
-    )
-    .await;
+    let mut lock_conn =
+        connect_sqlite_test_connection(&db_str, false, false, std::time::Duration::from_millis(1))
+            .await;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut lock_conn)
         .await

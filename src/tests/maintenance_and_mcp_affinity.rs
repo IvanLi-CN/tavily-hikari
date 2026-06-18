@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn reconcile_key_health_reports_none_when_state_already_changed() {
     let db_path = temp_db_path("maintenance-repeat-noop");
@@ -328,7 +330,11 @@ async fn low_quota_depleted_keys_are_final_fallback_only() {
             .expect("record depletion")
     );
 
-    let lease = proxy.key_store.acquire_key().await.expect("active selected");
+    let lease = proxy
+        .key_store
+        .acquire_key()
+        .await
+        .expect("active selected");
     assert_eq!(lease.id, active_id);
 
     proxy
@@ -1535,7 +1541,9 @@ async fn unknown_403_temporarily_cools_key_without_quarantine_and_success_clears
         .await
         .expect("load API rebalance cooldowns");
     assert_eq!(
-        cooldown.get(&hotter_key_id).map(|state| state.retry_after_secs),
+        cooldown
+            .get(&hotter_key_id)
+            .map(|state| state.retry_after_secs),
         Some(UNKNOWN_403_TRANSIENT_BACKOFF_DEFAULT_SECS),
     );
 
@@ -1770,7 +1778,10 @@ async fn unknown_403_api_rebalance_cools_key_and_next_request_avoids_it() {
         .await
         .expect("first global HTTP request should complete");
     assert_eq!(first_resp.status, StatusCode::FORBIDDEN);
-    assert_eq!(first_resp.api_key_id.as_deref(), Some(cooled_key_id.as_str()));
+    assert_eq!(
+        first_resp.api_key_id.as_deref(),
+        Some(cooled_key_id.as_str())
+    );
     assert_eq!(
         first_analysis.failure_kind.as_deref(),
         Some(FAILURE_KIND_UPSTREAM_UNKNOWN_403),
@@ -2116,7 +2127,8 @@ async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
         .expect("create token");
     let app = Router::new().route(
         "/search",
-        post(move |headers: HeaderMap, Json(body): Json<Value>| async move {
+        post(
+            move |headers: HeaderMap, Json(body): Json<Value>| async move {
                 let api_key = body
                     .get("api_key")
                     .and_then(|value| value.as_str())
@@ -2140,7 +2152,8 @@ async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
                     })),
                 )
                     .into_response()
-        }),
+            },
+        ),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2177,10 +2190,7 @@ async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
         analysis.failure_kind.as_deref(),
         Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
     );
-    assert_eq!(
-        analysis.key_effect.code,
-        KEY_EFFECT_TRANSIENT_BACKOFF_SET,
-    );
+    assert_eq!(analysis.key_effect.code, KEY_EFFECT_TRANSIENT_BACKOFF_SET,);
     let selected_key_id = resp
         .api_key_id
         .as_deref()
@@ -2286,10 +2296,7 @@ async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
         analysis.failure_kind.as_deref(),
         Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
     );
-    assert_eq!(
-        analysis.key_effect.code,
-        KEY_EFFECT_TRANSIENT_BACKOFF_SET,
-    );
+    assert_eq!(analysis.key_effect.code, KEY_EFFECT_TRANSIENT_BACKOFF_SET,);
 
     let backoff_row = sqlx::query_as::<_, (Option<i64>,)>(
         r#"SELECT source_request_log_id
