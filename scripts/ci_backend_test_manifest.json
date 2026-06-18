@@ -124,16 +124,17 @@
       "serial_prefixes": [
         "tests::request_"
       ],
-      "include_prefixes": [
-        "tests::request_",
-        "tests::summary_",
-        "tests::dashboard_",
-        "tests::rollup_",
-        "tests::startup_",
-        "tests::pending_",
-        "tests::proxy_",
-        "tests::observability_",
-        "tests::mcp_",
+        "include_prefixes": [
+          "tests::request_",
+          "tests::summary_",
+          "tests::dashboard_",
+          "tests::rollup_",
+          "tests::startup_",
+          "tests::small_",
+          "tests::pending_",
+          "tests::proxy_",
+          "tests::observability_",
+          "tests::mcp_",
         "tests::public_",
         "tests::quota_",
         "tests::large_",

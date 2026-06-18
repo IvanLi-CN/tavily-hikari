@@ -785,6 +785,13 @@ impl KeyStore {
         if !sidecar_has_request_logs {
             return Ok(());
         }
+        let explicit_cutover_done = self
+            .get_meta_i64(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .await?
+            == Some(1);
+        if !explicit_cutover_done {
+            return Ok(());
+        }
         let sidecar_request_log_rows: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
                 .fetch_one(&self.pool)
