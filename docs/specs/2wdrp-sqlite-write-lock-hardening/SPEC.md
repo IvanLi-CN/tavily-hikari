@@ -149,7 +149,8 @@ source when a usable persisted runtime already exists.
   the legacy `main.request_logs` and legacy `main` rollup/bucket tables, then mark the corresponding
   meta keys complete and write the explicit cutover marker
   `observability_sidecar_explicit_cutover_v1_done`. The command must not report completion until a
-  normal restart can attach the sibling sidecar without running a full derived-table rebuild.
+  normal restart can attach the sibling sidecar without running a full derived-table rebuild, and
+  the reopened startup path has been verified after the offline lock is released.
   A DB where the legacy tables are already gone but this explicit marker or the derived completion
   meta is missing is an interrupted cutover, not an `already_migrated` success; rerunning the tool
   must rebuild and mark the sidecar offline.
@@ -234,8 +235,9 @@ source when a usable persisted runtime already exists.
   valid, and legacy `api_key_usage_buckets`, `dashboard_request_rollup_buckets`, and
   `request_log_catalog_rollups` are removed from `main`. Sidecar `api_key_usage_buckets`,
   `dashboard_request_rollup_buckets`, and `request_log_catalog_rollups` must already be rebuilt,
-  their meta keys must be marked complete, and the catalog retention meta must match the current
-  retention setting before the command reports `completed=true`.
+  their meta keys must be marked complete, the catalog retention meta must match the current
+  retention setting, and a fresh normal startup reopen must succeed before the command reports
+  `completed=true`.
 - The explicit migration path must refuse to run while another process still holds the sibling
   `observability-migrate.lock`; success no longer relies on WAL-mode `BEGIN EXCLUSIVE` semantics to
   infer that the live service has stopped.

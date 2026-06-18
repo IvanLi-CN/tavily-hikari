@@ -54,9 +54,10 @@ fn write_plain_report(
 ) -> io::Result<()> {
     writeln!(
         writer,
-        "observability_sidecar_migrate: dry_run={} completed={} offline_lock={} sqlite_write_probe_ok={} copied_request_logs={} batches={} already_migrated={} resumed_copy={} core_path={} sidecar_path={} lock_path={} attached_observability_path={}",
+        "observability_sidecar_migrate: dry_run={} completed={} startup_reopen_verified={} offline_lock={} sqlite_write_probe_ok={} copied_request_logs={} batches={} already_migrated={} resumed_copy={} core_path={} sidecar_path={} lock_path={} attached_observability_path={}",
         report.dry_run,
         report.completed,
+        report.startup_reopen_verified,
         report.offline_lock_acquired,
         report.sqlite_write_probe_ok,
         report.copied_request_logs,

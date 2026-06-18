@@ -14,6 +14,27 @@ services:
       - ./scripts:/work/scripts:ro
       - ./runtime:/srv/app/runtime
 
+  migrate:
+    build:
+      context: ../..
+      dockerfile: tests/ha/Dockerfile.app
+    entrypoint: ["observability_sidecar_migrate"]
+    command:
+      - --db-path
+      - /srv/app/runtime/data/tavily_proxy.db
+      - --batch-size
+      - "1"
+      - --json
+    environment:
+      PROXY_DB_PATH: /srv/app/runtime/data/tavily_proxy.db
+    volumes:
+      - ./runtime:/srv/app/runtime
+    depends_on:
+      upstream-mock:
+        condition: service_started
+      prepare-db:
+        condition: service_completed_successfully
+
   app:
     build:
       context: ../..
@@ -33,6 +54,8 @@ services:
       upstream-mock:
         condition: service_started
       prepare-db:
+        condition: service_completed_successfully
+      migrate:
         condition: service_completed_successfully
 
   verify:

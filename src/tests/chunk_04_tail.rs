@@ -658,6 +658,7 @@ async fn observability_sidecar_migrate_moves_large_legacy_request_logs_offline()
         .await
         .expect("offline migration succeeds");
     assert!(report.completed);
+    assert!(report.startup_reopen_verified);
     assert_eq!(report.copied_request_logs, 4);
     assert_eq!(report.batches, 2);
     assert!(report.dropped_main_request_logs);
@@ -1468,6 +1469,72 @@ async fn observability_sidecar_rejects_startup_when_cutover_completed_but_meta_m
             .contains("observability sidecar derived tables are incomplete"),
         "unexpected startup error: {startup_err}"
     );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(&observability_path);
+    let _ = std::fs::remove_file(format!("{observability_path}-shm"));
+    let _ = std::fs::remove_file(format!("{observability_path}-wal"));
+}
+
+#[tokio::test]
+async fn observability_sidecar_migrate_reports_reopen_verification_before_completion() {
+    let db_path = temp_db_path("observability-sidecar-reopen-verified");
+    let db_str = db_path.to_string_lossy().to_string();
+    let layout = SqliteDatabaseLayout::from_database_path(&db_str);
+    let observability_path = layout
+        .observability_database_path
+        .clone()
+        .expect("sidecar path");
+
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true),
+    )
+    .await
+    .expect("open sqlite pool");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            result_status TEXT NOT NULL DEFAULT 'success',
+            visibility TEXT NOT NULL DEFAULT 'visible',
+            created_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy request_logs");
+    sqlx::query(
+        "INSERT INTO request_logs (method, path, created_at) VALUES ('POST', '/api/tavily/search', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed request log");
+    drop(pool);
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&db_path)
+        .expect("open sqlite file for resize")
+        .set_len(LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES + 4096)
+        .expect("expand sqlite file");
+
+    let report = run_observability_sidecar_migrate(&db_str, 1, false)
+        .await
+        .expect("offline migration succeeds");
+    assert!(report.completed);
+    assert!(report.startup_reopen_verified);
+
+    let restarted = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("startup accepts reopened cutover");
+    drop(restarted);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

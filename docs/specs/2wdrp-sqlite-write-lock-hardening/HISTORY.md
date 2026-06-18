@@ -110,6 +110,9 @@
 - A 101 short-maintenance cutover attempt exposed a contract bug in the first explicit migration:
   the tool copied `request_logs` and reset derived-table rebuild markers, then service startup
   synchronously awaited the large derived rollup rebuild before opening the HTTP listener.
+- The explicit migration contract now treats a successful reopen of the normal startup path as part
+  of completion, so `completed=true` only means “offline rebuild succeeded and the service can
+  reopen cleanly after the migration lock is released.”
 - Tightened the contract so `observability_sidecar_migrate` must complete all sidecar derived-table
   rebuild work and write completion meta before reporting success or deleting hidden legacy
   observability tables.

@@ -28,21 +28,11 @@ def compose_args():
 def main():
     os.makedirs(os.path.join(RUNTIME_DIR, "data"), exist_ok=True)
     run(sys.executable, os.path.join(ROOT, "scripts", "seed_large_legacy_db.py"), DB_PATH)
-    run(
-        "cargo",
-        "run",
-        "--quiet",
-        "--bin",
-        "observability_sidecar_migrate",
-        "--",
-        "--db-path",
-        DB_PATH,
-        "--batch-size",
-        "1",
-    )
 
-    run(*compose_args(), "up", "-d", "--build")
+    run(*compose_args(), "up", "-d", "--build", "upstream-mock", "prepare-db")
     try:
+        run(*compose_args(), "run", "--rm", "migrate")
+        run(*compose_args(), "up", "-d", "--build", "app")
         time.sleep(5)
         run(
             *compose_args(),

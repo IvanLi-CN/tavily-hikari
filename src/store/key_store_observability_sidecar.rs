@@ -12,6 +12,32 @@ struct ObservabilitySidecarDerivedRebuildReport {
     elapsed_ms: u128,
 }
 
+#[derive(Debug, Default)]
+struct ObservabilitySidecarMigrationState {
+    attached_observability_path: String,
+    sidecar_request_log_rows_before: i64,
+    sidecar_request_log_rows_after: i64,
+    copied_request_logs: i64,
+    batches: i64,
+    dropped_main_request_logs: bool,
+    dropped_legacy_api_key_usage_buckets: bool,
+    dropped_legacy_dashboard_request_rollup_buckets: bool,
+    dropped_legacy_request_log_catalog_rollups: bool,
+    reset_api_key_usage_buckets_meta: bool,
+    reset_dashboard_request_rollup_buckets_meta: bool,
+    reset_request_log_catalog_rollup_meta: bool,
+    rebuilt_api_key_usage_buckets: bool,
+    rebuilt_dashboard_request_rollup_buckets: bool,
+    rebuilt_request_log_catalog_rollups: bool,
+    marked_api_key_usage_buckets_meta_complete: bool,
+    marked_dashboard_request_rollup_buckets_meta_complete: bool,
+    marked_request_log_catalog_rollup_meta_complete: bool,
+    startup_reopen_verified: bool,
+    startup_rebuild_required: bool,
+    derived_rebuild_elapsed_ms: u128,
+    child_reference_checks_passed: bool,
+}
+
 impl KeyStore {
     async fn rebuild_request_log_soft_reference_tables_if_needed(
         &self,
@@ -1086,11 +1112,6 @@ impl KeyStore {
                 layout.core_database_path
             )));
         }
-        let _offline_guard = if dry_run {
-            None
-        } else {
-            Some(acquire_observability_offline_guard(&layout.core_database_path)?)
-        };
         let offline_probe = probe_observability_offline_state(&layout.core_database_path).await?;
         let offline_lock_acquired = if dry_run {
             offline_probe.service_lock_held_exclusively
@@ -1215,148 +1236,125 @@ impl KeyStore {
             && !temporary_legacy_request_log_catalog_rollups_exists
             && explicit_cutover_meta_complete;
 
-        let (attached_observability_path, sidecar_request_log_rows_before, sidecar_request_log_rows_after, copied_request_logs, batches, dropped_main_request_logs, dropped_legacy_api_key_usage_buckets, dropped_legacy_dashboard_request_rollup_buckets, dropped_legacy_request_log_catalog_rollups, reset_api_key_usage_buckets_meta, reset_dashboard_request_rollup_buckets_meta, reset_request_log_catalog_rollup_meta, rebuilt_api_key_usage_buckets, rebuilt_dashboard_request_rollup_buckets, rebuilt_request_log_catalog_rollups, marked_api_key_usage_buckets_meta_complete, marked_dashboard_request_rollup_buckets_meta_complete, marked_request_log_catalog_rollup_meta_complete, startup_rebuild_required, derived_rebuild_elapsed_ms, child_reference_checks_passed) =
-            if dry_run {
-                let attached_observability_path = attached_default
+        let mut migration_state = ObservabilitySidecarMigrationState::default();
+        if dry_run {
+            migration_state.attached_observability_path = attached_default
+                .clone()
+                .unwrap_or_else(|| sidecar_path.clone());
+            migration_state.sidecar_request_log_rows_before = sidecar_request_log_rows_before_probe;
+            migration_state.sidecar_request_log_rows_after = sidecar_request_log_rows_before_probe;
+            migration_state.startup_rebuild_required =
+                !already_migrated && sidecar_request_log_rows_before_probe > 0;
+        } else {
+            let _offline_guard = acquire_observability_offline_guard(&layout.core_database_path)?;
+            let store = Self::open_for_observability_sidecar_migration(database_path).await?;
+            let result = async {
+                migration_state.attached_observability_path = store
+                    .observability_database_path
                     .clone()
-                    .unwrap_or_else(|| sidecar_path.clone());
-                (
-                    attached_observability_path,
-                    sidecar_request_log_rows_before_probe,
-                    sidecar_request_log_rows_before_probe,
-                    0,
-                    0,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    !already_migrated && sidecar_request_log_rows_before_probe > 0,
-                    0,
-                    false,
-                )
-            } else {
-                let store = Self::open_for_observability_sidecar_migration(database_path).await?;
-                let result = {
-                    let attached_observability_path = store
-                        .observability_database_path
-                        .clone()
-                        .unwrap_or_else(|| layout.core_database_path.clone());
-                    let sidecar_request_log_rows_before: i64 =
+                    .unwrap_or_else(|| layout.core_database_path.clone());
+                migration_state.sidecar_request_log_rows_before =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+                        .fetch_one(&store.pool)
+                        .await?;
+
+                if already_migrated {
+                    store
+                        .ensure_observability_sidecar_startup_rebuild_not_required()
+                        .await?;
+                    migration_state.sidecar_request_log_rows_after =
                         sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
                             .fetch_one(&store.pool)
                             .await?;
-
-                    if already_migrated {
+                    migration_state.startup_reopen_verified = true;
+                    migration_state.child_reference_checks_passed = true;
+                    Ok::<(), ProxyError>(())
+                } else {
+                    if legacy_request_logs_exists {
                         store
-                            .ensure_observability_sidecar_startup_rebuild_not_required()
+                            .rebuild_request_log_soft_reference_tables_if_needed()
                             .await?;
-                        let sidecar_request_log_rows_after: i64 =
-                            sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
-                                .fetch_one(&store.pool)
-                                .await?;
-                        (
-                            attached_observability_path,
-                            sidecar_request_log_rows_before,
-                            sidecar_request_log_rows_after,
-                            0,
-                            0,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            0,
-                            true,
-                        )
-                    } else {
-                        let mut copied_request_logs = 0_i64;
-                        let mut batches = 0_i64;
-                        let child_reference_checks_passed;
-
-                        if legacy_request_logs_exists {
-                            store
-                                .rebuild_request_log_soft_reference_tables_if_needed()
-                                .await?;
-                            let (copied, copied_batches) =
-                                Self::copy_legacy_request_logs_into_observability_batched_in_pool(
-                                    &store.pool,
-                                    batch_size,
-                                )
-                                .await?;
-                            copied_request_logs = copied;
-                            batches = copied_batches;
-                            Self::ensure_request_logs_rebuild_references_valid_in_pool(
+                        let (copied, copied_batches) =
+                            Self::copy_legacy_request_logs_into_observability_batched_in_pool(
                                 &store.pool,
-                                "request_logs schema migration produced invalid preserved references",
+                                batch_size,
                             )
                             .await?;
-                            child_reference_checks_passed = true;
-                        } else {
-                            Self::ensure_request_logs_rebuild_references_valid_in_pool(
-                                &store.pool,
-                                "request_logs schema migration produced invalid preserved references",
-                            )
-                            .await?;
-                            child_reference_checks_passed = true;
-                        }
+                        migration_state.copied_request_logs = copied;
+                        migration_state.batches = copied_batches;
+                    }
+                    Self::ensure_request_logs_rebuild_references_valid_in_pool(
+                        &store.pool,
+                        "request_logs schema migration produced invalid preserved references",
+                    )
+                    .await?;
+                    migration_state.child_reference_checks_passed = true;
 
                         let derived_report = store
                             .rebuild_observability_sidecar_derived_tables_offline(true)
                             .await?;
-                        store
-                            .ensure_observability_sidecar_startup_rebuild_not_required()
-                            .await?;
 
-                        let sidecar_request_log_rows_after: i64 =
+                        migration_state.sidecar_request_log_rows_after =
                             sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
                                 .fetch_one(&store.pool)
                                 .await?;
-                        (
-                            attached_observability_path,
-                            sidecar_request_log_rows_before,
-                            sidecar_request_log_rows_after,
-                            copied_request_logs,
-                            batches,
-                            derived_report.dropped_main_request_logs,
-                            derived_report.dropped_legacy_api_key_usage_buckets,
-                            derived_report.dropped_legacy_dashboard_request_rollup_buckets,
-                            derived_report.dropped_legacy_request_log_catalog_rollups,
-                            false,
-                            false,
-                            false,
-                            derived_report.rebuilt_api_key_usage_buckets,
-                            derived_report.rebuilt_dashboard_request_rollup_buckets,
-                            derived_report.rebuilt_request_log_catalog_rollups,
-                            derived_report.marked_api_key_usage_buckets_meta_complete,
-                            derived_report.marked_dashboard_request_rollup_buckets_meta_complete,
-                            derived_report.marked_request_log_catalog_rollup_meta_complete,
-                            false,
-                            derived_report.elapsed_ms,
-                            child_reference_checks_passed,
-                        )
-                    }
-                };
-                store.pool.close().await;
-                result
-            };
+                    migration_state.dropped_main_request_logs =
+                        derived_report.dropped_main_request_logs;
+                    migration_state.dropped_legacy_api_key_usage_buckets =
+                        derived_report.dropped_legacy_api_key_usage_buckets;
+                    migration_state.dropped_legacy_dashboard_request_rollup_buckets =
+                        derived_report.dropped_legacy_dashboard_request_rollup_buckets;
+                    migration_state.dropped_legacy_request_log_catalog_rollups =
+                        derived_report.dropped_legacy_request_log_catalog_rollups;
+                    migration_state.rebuilt_api_key_usage_buckets =
+                        derived_report.rebuilt_api_key_usage_buckets;
+                    migration_state.rebuilt_dashboard_request_rollup_buckets =
+                        derived_report.rebuilt_dashboard_request_rollup_buckets;
+                    migration_state.rebuilt_request_log_catalog_rollups =
+                        derived_report.rebuilt_request_log_catalog_rollups;
+                    migration_state.marked_api_key_usage_buckets_meta_complete =
+                        derived_report.marked_api_key_usage_buckets_meta_complete;
+                    migration_state.marked_dashboard_request_rollup_buckets_meta_complete =
+                        derived_report.marked_dashboard_request_rollup_buckets_meta_complete;
+                    migration_state.marked_request_log_catalog_rollup_meta_complete =
+                        derived_report.marked_request_log_catalog_rollup_meta_complete;
+                    migration_state.startup_reopen_verified = true;
+                    migration_state.derived_rebuild_elapsed_ms = derived_report.elapsed_ms;
+                    Ok::<(), ProxyError>(())
+                }
+            }
+            .await;
+            store.pool.close().await;
+            drop(_offline_guard);
+            if result.is_ok() && !already_migrated {
+                crate::verify_observability_sidecar_reopen(&layout.core_database_path).await?;
+            }
+            result?;
+        }
+        let ObservabilitySidecarMigrationState {
+            attached_observability_path,
+            sidecar_request_log_rows_before,
+            sidecar_request_log_rows_after,
+            copied_request_logs,
+            batches,
+            dropped_main_request_logs,
+            dropped_legacy_api_key_usage_buckets,
+            dropped_legacy_dashboard_request_rollup_buckets,
+            dropped_legacy_request_log_catalog_rollups,
+            reset_api_key_usage_buckets_meta,
+            reset_dashboard_request_rollup_buckets_meta,
+            reset_request_log_catalog_rollup_meta,
+            rebuilt_api_key_usage_buckets,
+            rebuilt_dashboard_request_rollup_buckets,
+            rebuilt_request_log_catalog_rollups,
+            marked_api_key_usage_buckets_meta_complete,
+            marked_dashboard_request_rollup_buckets_meta_complete,
+            marked_request_log_catalog_rollup_meta_complete,
+            startup_reopen_verified,
+            startup_rebuild_required,
+            derived_rebuild_elapsed_ms,
+            child_reference_checks_passed,
+        } = migration_state;
         let available_bytes_after = available_disk_bytes_for_path(&layout.core_database_path)?;
         let sidecar_file_bytes_after = std::fs::metadata(&sidecar_path)
             .map(|metadata| metadata.len())
@@ -1403,6 +1401,7 @@ impl KeyStore {
             marked_api_key_usage_buckets_meta_complete,
             marked_dashboard_request_rollup_buckets_meta_complete,
             marked_request_log_catalog_rollup_meta_complete,
+            startup_reopen_verified,
             startup_rebuild_required,
             derived_rebuild_elapsed_ms,
             child_reference_checks_passed,
@@ -1410,6 +1409,7 @@ impl KeyStore {
             batches,
             completed: !dry_run
                 && child_reference_checks_passed
+                && startup_reopen_verified
                 && !startup_rebuild_required
                 && (already_migrated
                     || (rebuilt_api_key_usage_buckets

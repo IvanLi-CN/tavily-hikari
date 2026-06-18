@@ -285,6 +285,7 @@ pub struct ObservabilitySidecarMigrationReport {
     pub marked_api_key_usage_buckets_meta_complete: bool,
     pub marked_dashboard_request_rollup_buckets_meta_complete: bool,
     pub marked_request_log_catalog_rollup_meta_complete: bool,
+    pub startup_reopen_verified: bool,
     pub startup_rebuild_required: bool,
     pub derived_rebuild_elapsed_ms: u128,
     pub child_reference_checks_passed: bool,
@@ -399,6 +400,17 @@ pub async fn run_observability_sidecar_migrate(
 ) -> Result<ObservabilitySidecarMigrationReport, ProxyError> {
     crate::store::KeyStore::run_observability_sidecar_migrate(database_path, batch_size, dry_run)
         .await
+}
+
+pub async fn verify_observability_sidecar_reopen(database_path: &str) -> Result<(), ProxyError> {
+    let _store = crate::store::KeyStore::new_with_time(database_path, BackendTime::system())
+        .await
+        .map_err(|err| {
+            ProxyError::Other(format!(
+                "observability sidecar migration completed but reopen verification failed: {err}"
+            ))
+        })?;
+    Ok(())
 }
 
 impl ForwardProxyProgressEvent {
