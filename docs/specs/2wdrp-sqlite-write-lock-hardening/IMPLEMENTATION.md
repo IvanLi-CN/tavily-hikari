@@ -284,9 +284,9 @@
   space crosses the threshold or operators explicitly force a maintenance window.
 - The large-legacy sidecar cutover is now a separate operator runbook instead of an automatic
   startup side effect. The validated flow is:
-  - on codex-testbox, seed a production-shaped legacy core DB snapshot, run
-    `observability_sidecar_migrate`, then start the current-branch image against the migrated files
-    and verify `/health`, `/api/version`, `/api/tavily/search`, `/mcp`, and request-log reads;
+  - on codex-testbox, seed a production-shaped legacy core DB snapshot, run the migration
+    container first, then start the current-branch service image against the migrated files and
+    verify `/health`, `/api/version`, `/api/tavily/search`, `/mcp`, and request-log reads;
   - on 101, stop `tavily-hikari`, export the pre-cutover core DB as the rollback anchor to
     codex-testbox, run `observability_sidecar_migrate` locally against
     `/srv/app/data/tavily_proxy.db`, restart, and validate the same request-log and MCP surfaces;
