@@ -167,7 +167,8 @@
         "tests::proxy_affinity_runtime_geo::record_",
         "tests::proxy_affinity_runtime_geo::persist_",
         "tests::jobs_and_request_log_retention::scheduled_",
-        "tests::request_rollup::suppressed_"
+        "tests::request_rollup::suppressed_",
+        "tests::observability_and_lifecycle::small_"
       ]
     },
     {

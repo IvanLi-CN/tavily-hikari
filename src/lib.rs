@@ -279,6 +279,14 @@ pub struct ObservabilitySidecarMigrationReport {
     pub reset_api_key_usage_buckets_meta: bool,
     pub reset_dashboard_request_rollup_buckets_meta: bool,
     pub reset_request_log_catalog_rollup_meta: bool,
+    pub rebuilt_api_key_usage_buckets: bool,
+    pub rebuilt_dashboard_request_rollup_buckets: bool,
+    pub rebuilt_request_log_catalog_rollups: bool,
+    pub marked_api_key_usage_buckets_meta_complete: bool,
+    pub marked_dashboard_request_rollup_buckets_meta_complete: bool,
+    pub marked_request_log_catalog_rollup_meta_complete: bool,
+    pub startup_rebuild_required: bool,
+    pub derived_rebuild_elapsed_ms: u128,
     pub child_reference_checks_passed: bool,
     pub batch_size: i64,
     pub batches: i64,
@@ -852,6 +860,8 @@ const META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE: &str =
 const META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE: &str = "request_log_catalog_rollup_v1_done";
 const META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS: &str =
     "request_log_catalog_rollup_v1_retention_days";
+const META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE: &str =
+    "observability_sidecar_explicit_cutover_v1_done";
 const META_KEY_ACCOUNT_QUOTA_BACKFILL_V1: &str = "account_quota_backfill_v1";
 const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
     "account_quota_inherits_defaults_backfill_v1";

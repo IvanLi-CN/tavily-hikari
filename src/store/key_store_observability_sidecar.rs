@@ -1,3 +1,17 @@
+struct ObservabilitySidecarDerivedRebuildReport {
+    dropped_main_request_logs: bool,
+    dropped_legacy_api_key_usage_buckets: bool,
+    dropped_legacy_dashboard_request_rollup_buckets: bool,
+    dropped_legacy_request_log_catalog_rollups: bool,
+    rebuilt_api_key_usage_buckets: bool,
+    rebuilt_dashboard_request_rollup_buckets: bool,
+    rebuilt_request_log_catalog_rollups: bool,
+    marked_api_key_usage_buckets_meta_complete: bool,
+    marked_dashboard_request_rollup_buckets_meta_complete: bool,
+    marked_request_log_catalog_rollup_meta_complete: bool,
+    elapsed_ms: u128,
+}
+
 impl KeyStore {
     async fn rebuild_request_log_soft_reference_tables_if_needed(
         &self,
@@ -57,6 +71,54 @@ impl KeyStore {
         .fetch_optional(pool)
         .await?;
         Ok(exists.is_some())
+    }
+
+    async fn meta_i64_in_pool(pool: &SqlitePool, key: &str) -> Result<Option<i64>, ProxyError> {
+        if !Self::main_table_exists_in_pool(pool, "meta").await? {
+            return Ok(None);
+        }
+        let value = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM main.meta WHERE key = ? LIMIT 1",
+        )
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+        Ok(value.and_then(|raw| raw.parse::<i64>().ok()))
+    }
+
+    async fn explicit_sidecar_cutover_meta_complete_in_pool(
+        pool: &SqlitePool,
+        request_log_catalog_rollup_retention_days: i64,
+    ) -> Result<bool, ProxyError> {
+        let explicit_cutover_done =
+            Self::meta_i64_in_pool(pool, META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+                .await?
+                == Some(1);
+        let api_key_usage_done =
+            Self::meta_i64_in_pool(pool, META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+                .await?
+                == Some(1)
+                && Self::meta_i64_in_pool(
+                    pool,
+                    META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE,
+                )
+                .await?
+                    == Some(1);
+        let dashboard_done =
+            Self::meta_i64_in_pool(pool, META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
+                .await?
+                == Some(1);
+        let catalog_done =
+            Self::meta_i64_in_pool(pool, META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE).await?
+                == Some(1)
+                && Self::meta_i64_in_pool(
+                    pool,
+                    META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
+                )
+                .await?
+                    == Some(request_log_catalog_rollup_retention_days);
+
+        Ok(explicit_cutover_done && api_key_usage_done && dashboard_done && catalog_done)
     }
 
     async fn table_column_exists_in_pool(
@@ -154,6 +216,668 @@ impl KeyStore {
             sqlx::query(sql).execute(pool).await?;
         }
 
+        Ok(())
+    }
+
+    async fn ensure_observability_sidecar_derived_schema_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.api_key_usage_buckets (
+                api_key_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                total_requests INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                valuable_success_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_429_count INTEGER NOT NULL DEFAULT 0,
+                other_success_count INTEGER NOT NULL DEFAULT 0,
+                other_failure_count INTEGER NOT NULL DEFAULT 0,
+                unknown_count INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (api_key_id, bucket_start, bucket_secs)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_api_key_usage_buckets_time
+               ON api_key_usage_buckets(bucket_start DESC)"#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.dashboard_request_rollup_buckets (
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                total_requests INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                valuable_success_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_429_count INTEGER NOT NULL DEFAULT 0,
+                other_success_count INTEGER NOT NULL DEFAULT 0,
+                other_failure_count INTEGER NOT NULL DEFAULT 0,
+                unknown_count INTEGER NOT NULL DEFAULT 0,
+                mcp_non_billable INTEGER NOT NULL DEFAULT 0,
+                mcp_billable INTEGER NOT NULL DEFAULT 0,
+                api_non_billable INTEGER NOT NULL DEFAULT 0,
+                api_billable INTEGER NOT NULL DEFAULT 0,
+                local_estimated_credits INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (bucket_start, bucket_secs)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_dashboard_request_rollup_buckets_scope_time
+               ON dashboard_request_rollup_buckets(bucket_secs, bucket_start DESC)"#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.request_log_catalog_rollups (
+                bucket_start INTEGER NOT NULL,
+                request_kind_key TEXT NOT NULL,
+                request_kind_label TEXT NOT NULL,
+                result_bucket TEXT NOT NULL,
+                key_effect_code TEXT NOT NULL,
+                binding_effect_code TEXT NOT NULL,
+                selection_effect_code TEXT NOT NULL,
+                auth_token_id TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
+                operational_class TEXT NOT NULL,
+                request_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (
+                    bucket_start,
+                    request_kind_key,
+                    request_kind_label,
+                    result_bucket,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    auth_token_id,
+                    api_key_id,
+                    operational_class
+                )
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        for sql in [
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_kind_time
+               ON request_log_catalog_rollups(request_kind_key, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_result_time
+               ON request_log_catalog_rollups(result_bucket, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_token_time
+               ON request_log_catalog_rollups(auth_token_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_key_time
+               ON request_log_catalog_rollups(api_key_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_operational_time
+               ON request_log_catalog_rollups(operational_class, bucket_start DESC)"#,
+        ] {
+            sqlx::query(sql).execute(pool).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn mark_observability_sidecar_derived_meta_complete_in_pool(
+        pool: &SqlitePool,
+        request_log_catalog_rollup_retention_days: i64,
+        mark_explicit_cutover: bool,
+    ) -> Result<(), ProxyError> {
+        let query = sqlx::query(
+            r#"
+            INSERT INTO main.meta (key, value)
+            VALUES
+                (?, '1'),
+                (?, '1'),
+                (?, '1'),
+                (?, '1'),
+                (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+        .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
+        .bind(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
+        .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
+        .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS)
+        .bind(request_log_catalog_rollup_retention_days.to_string());
+        query.execute(pool).await?;
+        if mark_explicit_cutover {
+            sqlx::query(
+                r#"
+                INSERT INTO main.meta (key, value)
+                VALUES (?, '1')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+            )
+            .bind(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .execute(pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    fn sidecar_local_day_bucket_start_sql(created_at_sql: &str) -> String {
+        format!(
+            "CAST(strftime('%s', date({created_at_sql}, 'unixepoch', 'localtime'), 'utc') AS INTEGER)"
+        )
+    }
+
+    fn sidecar_counts_business_quota_sql(alias: &str, request_kind_sql: &str) -> String {
+        format!(
+            "COALESCE({alias}.counts_business_quota, {})",
+            request_log_counts_business_quota_sql(request_kind_sql, &format!("{alias}.request_body"))
+        )
+    }
+
+    fn sidecar_billing_group_sql(request_kind_sql: &str, counts_business_quota_sql: &str) -> String {
+        let normalized = format!("LOWER(TRIM(COALESCE({request_kind_sql}, '')))");
+        let non_billable_mcp = token_request_kind_non_billable_mcp_sql(request_kind_sql);
+        format!(
+            r#"
+            CASE
+                WHEN {normalized} IN ('api:research-result', 'api:usage', 'api:unknown-path')
+                    THEN 'non_billable'
+                WHEN {normalized} = 'mcp:batch' AND {counts_business_quota_sql} = 0
+                    THEN 'non_billable'
+                WHEN {non_billable_mcp}
+                    THEN 'non_billable'
+                ELSE 'billable'
+            END
+            "#
+        )
+    }
+
+    async fn rebuild_observability_sidecar_api_key_usage_buckets_sql(
+        pool: &SqlitePool,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        let request_kind_sql = "rl.request_kind_key";
+        let request_value_bucket_sql =
+            request_value_bucket_sql(request_kind_sql, "rl.request_body");
+        let bucket_start_sql = Self::sidecar_local_day_bucket_start_sql("rl.created_at");
+        let insert_sql = format!(
+            r#"
+            INSERT INTO observability.api_key_usage_buckets (
+                api_key_id,
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                valuable_failure_429_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                updated_at
+            )
+            SELECT
+                rl.api_key_id,
+                {bucket_start_sql} AS bucket_start,
+                86400 AS bucket_secs,
+                COUNT(*) AS total_requests,
+                SUM(CASE WHEN rl.result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN rl.result_status = 'error' THEN 1 ELSE 0 END) AS error_count,
+                SUM(CASE WHEN rl.result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status = 'success' THEN 1 ELSE 0 END) AS valuable_success_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status IN ('error', 'quota_exhausted') THEN 1 ELSE 0 END) AS valuable_failure_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status IN ('error', 'quota_exhausted') AND COALESCE(rl.failure_kind, '') = '{upstream_rate_limited_429}' THEN 1 ELSE 0 END) AS valuable_failure_429_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'other' AND rl.result_status = 'success' THEN 1 ELSE 0 END) AS other_success_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'other' AND rl.result_status IN ('error', 'quota_exhausted') THEN 1 ELSE 0 END) AS other_failure_count,
+                SUM(CASE WHEN ({request_value_bucket_sql}) = 'unknown' THEN 1 ELSE 0 END) AS unknown_count,
+                ? AS updated_at
+            FROM observability.request_logs AS rl
+            WHERE rl.visibility = 'visible'
+              AND rl.api_key_id IS NOT NULL
+            GROUP BY rl.api_key_id, bucket_start
+            "#,
+            upstream_rate_limited_429 = FAILURE_KIND_UPSTREAM_RATE_LIMITED_429
+        );
+        let mut conn = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let result = async {
+            sqlx::query("DELETE FROM observability.api_key_usage_buckets")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(&insert_sql)
+                .bind(updated_at)
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+        result
+    }
+
+    async fn rebuild_observability_sidecar_dashboard_request_rollup_buckets_sql(
+        pool: &SqlitePool,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        let request_kind_sql = "rl.request_kind_key";
+        let counts_business_quota_sql =
+            Self::sidecar_counts_business_quota_sql("rl", request_kind_sql);
+        let request_value_bucket_sql =
+            request_value_bucket_sql(request_kind_sql, "rl.request_body");
+        let protocol_group_sql = format!(
+            "CASE WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
+        );
+        let billing_group_sql =
+            Self::sidecar_billing_group_sql(request_kind_sql, &counts_business_quota_sql);
+        let select_sql = |bucket_start_sql: &str, bucket_secs: i64| {
+            format!(
+                r#"
+                SELECT
+                    {bucket_start_sql} AS bucket_start,
+                    {bucket_secs} AS bucket_secs,
+                    COUNT(*) AS total_requests,
+                    SUM(CASE WHEN rl.result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN rl.result_status = 'error' THEN 1 ELSE 0 END) AS error_count,
+                    SUM(CASE WHEN rl.result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status = 'success' THEN 1 ELSE 0 END) AS valuable_success_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status IN ('error', 'quota_exhausted') THEN 1 ELSE 0 END) AS valuable_failure_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'valuable' AND rl.result_status IN ('error', 'quota_exhausted') AND COALESCE(rl.failure_kind, '') = '{upstream_rate_limited_429}' THEN 1 ELSE 0 END) AS valuable_failure_429_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'other' AND rl.result_status = 'success' THEN 1 ELSE 0 END) AS other_success_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'other' AND rl.result_status IN ('error', 'quota_exhausted') THEN 1 ELSE 0 END) AS other_failure_count,
+                    SUM(CASE WHEN ({request_value_bucket_sql}) = 'unknown' THEN 1 ELSE 0 END) AS unknown_count,
+                    SUM(CASE WHEN ({protocol_group_sql}) = 'mcp' AND ({billing_group_sql}) = 'non_billable' THEN 1 ELSE 0 END) AS mcp_non_billable,
+                    SUM(CASE WHEN ({protocol_group_sql}) = 'mcp' AND ({billing_group_sql}) = 'billable' THEN 1 ELSE 0 END) AS mcp_billable,
+                    SUM(CASE WHEN ({protocol_group_sql}) = 'api' AND ({billing_group_sql}) = 'non_billable' THEN 1 ELSE 0 END) AS api_non_billable,
+                    SUM(CASE WHEN NOT (({protocol_group_sql}) = 'mcp' AND ({billing_group_sql}) = 'non_billable')
+                              AND NOT (({protocol_group_sql}) = 'mcp' AND ({billing_group_sql}) = 'billable')
+                              AND NOT (({protocol_group_sql}) = 'api' AND ({billing_group_sql}) = 'non_billable')
+                             THEN 1 ELSE 0 END) AS api_billable,
+                    SUM(MAX(COALESCE(rl.business_credits, 0), 0)) AS local_estimated_credits,
+                    ? AS updated_at
+                FROM observability.request_logs AS rl
+                WHERE rl.visibility = 'visible'
+                GROUP BY bucket_start
+                "#,
+                upstream_rate_limited_429 = FAILURE_KIND_UPSTREAM_RATE_LIMITED_429
+            )
+        };
+        let minute_select = select_sql("(rl.created_at / 60) * 60", SECS_PER_MINUTE);
+        let day_select = select_sql(
+            &Self::sidecar_local_day_bucket_start_sql("rl.created_at"),
+            SECS_PER_DAY,
+        );
+        let insert_sql = format!(
+            r#"
+            INSERT INTO observability.dashboard_request_rollup_buckets (
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                valuable_failure_429_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                mcp_non_billable,
+                mcp_billable,
+                api_non_billable,
+                api_billable,
+                local_estimated_credits,
+                updated_at
+            )
+            {minute_select}
+            UNION ALL
+            {day_select}
+            "#
+        );
+        let mut conn = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+        let result = async {
+            sqlx::query("DELETE FROM observability.dashboard_request_rollup_buckets")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(&insert_sql)
+                .bind(updated_at)
+                .bind(updated_at)
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+        result
+    }
+
+    async fn rename_main_table_if_exists_in_pool(
+        pool: &SqlitePool,
+        table: &str,
+        temporary_table: &str,
+    ) -> Result<bool, ProxyError> {
+        if !Self::main_table_exists_in_pool(pool, table).await? {
+            if Self::main_table_exists_in_pool(pool, temporary_table).await? {
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        if Self::main_table_exists_in_pool(pool, temporary_table).await? {
+            return Err(ProxyError::Other(format!(
+                "temporary migration table {temporary_table} already exists"
+            )));
+        }
+        sqlx::query(&format!(
+            r#"ALTER TABLE main."{table}" RENAME TO "{temporary_table}""#
+        ))
+        .execute(pool)
+        .await?;
+        Ok(true)
+    }
+
+    async fn restore_renamed_main_table_if_needed_in_pool(
+        pool: &SqlitePool,
+        table: &str,
+        temporary_table: &str,
+        renamed: bool,
+    ) -> Result<(), ProxyError> {
+        if !renamed {
+            return Ok(());
+        }
+        if Self::main_table_exists_in_pool(pool, table).await? {
+            return Err(ProxyError::Other(format!(
+                "cannot restore {temporary_table}: main table {table} already exists"
+            )));
+        }
+        sqlx::query(&format!(
+            r#"ALTER TABLE main."{temporary_table}" RENAME TO "{table}""#
+        ))
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn drop_renamed_main_table_if_needed_in_pool(
+        pool: &SqlitePool,
+        temporary_table: &str,
+        renamed: bool,
+    ) -> Result<bool, ProxyError> {
+        if !renamed {
+            return Ok(false);
+        }
+        sqlx::query(&format!(r#"DROP TABLE main."{temporary_table}""#))
+            .execute(pool)
+            .await?;
+        Ok(true)
+    }
+
+    async fn rebuild_observability_sidecar_derived_tables_offline(
+        &self,
+        mark_explicit_cutover: bool,
+    ) -> Result<ObservabilitySidecarDerivedRebuildReport, ProxyError> {
+        self.ensure_meta_schema().await?;
+        Self::ensure_observability_sidecar_derived_schema_in_pool(&self.pool).await?;
+        let started = Instant::now();
+        let temp_request_logs = "__observability_sidecar_legacy_request_logs";
+        let temp_api_key_usage = "__observability_sidecar_legacy_api_key_usage_buckets";
+        let temp_dashboard = "__observability_sidecar_legacy_dashboard_request_rollup_buckets";
+        let temp_catalog = "__observability_sidecar_legacy_request_log_catalog_rollups";
+
+        let request_logs_renamed =
+            Self::rename_main_table_if_exists_in_pool(&self.pool, "request_logs", temp_request_logs)
+                .await?;
+        let api_key_usage_renamed = Self::rename_main_table_if_exists_in_pool(
+            &self.pool,
+            "api_key_usage_buckets",
+            temp_api_key_usage,
+        )
+        .await?;
+        let dashboard_renamed = Self::rename_main_table_if_exists_in_pool(
+            &self.pool,
+            "dashboard_request_rollup_buckets",
+            temp_dashboard,
+        )
+        .await?;
+        let catalog_renamed = Self::rename_main_table_if_exists_in_pool(
+            &self.pool,
+            "request_log_catalog_rollups",
+            temp_catalog,
+        )
+        .await?;
+
+        let rebuild_result = async {
+            Self::rebuild_observability_sidecar_api_key_usage_buckets_sql(
+                &self.pool,
+                self.backend_time.now_ts(),
+            )
+            .await?;
+            Self::rebuild_observability_sidecar_dashboard_request_rollup_buckets_sql(
+                &self.pool,
+                self.backend_time.now_ts(),
+            )
+            .await?;
+            self.rebuild_request_log_catalog_rollups().await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+
+        if let Err(err) = rebuild_result {
+            let _ = Self::restore_renamed_main_table_if_needed_in_pool(
+                &self.pool,
+                "request_log_catalog_rollups",
+                temp_catalog,
+                catalog_renamed,
+            )
+            .await;
+            let _ = Self::restore_renamed_main_table_if_needed_in_pool(
+                &self.pool,
+                "dashboard_request_rollup_buckets",
+                temp_dashboard,
+                dashboard_renamed,
+            )
+            .await;
+            let _ = Self::restore_renamed_main_table_if_needed_in_pool(
+                &self.pool,
+                "api_key_usage_buckets",
+                temp_api_key_usage,
+                api_key_usage_renamed,
+            )
+            .await;
+            let _ = Self::restore_renamed_main_table_if_needed_in_pool(
+                &self.pool,
+                "request_logs",
+                temp_request_logs,
+                request_logs_renamed,
+            )
+            .await;
+            return Err(err);
+        }
+
+        let dropped_main_request_logs =
+            Self::drop_renamed_main_table_if_needed_in_pool(&self.pool, temp_request_logs, request_logs_renamed)
+                .await?;
+        let dropped_legacy_api_key_usage_buckets =
+            Self::drop_renamed_main_table_if_needed_in_pool(&self.pool, temp_api_key_usage, api_key_usage_renamed)
+                .await?;
+        let dropped_legacy_dashboard_request_rollup_buckets =
+            Self::drop_renamed_main_table_if_needed_in_pool(&self.pool, temp_dashboard, dashboard_renamed)
+                .await?;
+        let dropped_legacy_request_log_catalog_rollups =
+            Self::drop_renamed_main_table_if_needed_in_pool(&self.pool, temp_catalog, catalog_renamed)
+                .await?;
+
+        let request_log_catalog_rollup_retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        Self::mark_observability_sidecar_derived_meta_complete_in_pool(
+            &self.pool,
+            request_log_catalog_rollup_retention_days,
+            mark_explicit_cutover,
+        )
+        .await?;
+
+        Ok(ObservabilitySidecarDerivedRebuildReport {
+            dropped_main_request_logs,
+            dropped_legacy_api_key_usage_buckets,
+            dropped_legacy_dashboard_request_rollup_buckets,
+            dropped_legacy_request_log_catalog_rollups,
+            rebuilt_api_key_usage_buckets: true,
+            rebuilt_dashboard_request_rollup_buckets: true,
+            rebuilt_request_log_catalog_rollups: true,
+            marked_api_key_usage_buckets_meta_complete: true,
+            marked_dashboard_request_rollup_buckets_meta_complete: true,
+            marked_request_log_catalog_rollup_meta_complete: true,
+            elapsed_ms: started.elapsed().as_millis(),
+        })
+    }
+
+    async fn ensure_observability_sidecar_startup_rebuild_not_required(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if self.uses_legacy_single_db_observability_compatibility() {
+            return Ok(());
+        }
+        if !self.observability_sidecar_has_cutover_request_logs().await? {
+            return Ok(());
+        }
+        let explicit_cutover_done = self
+            .get_meta_i64(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .await?
+            == Some(1);
+        let require_explicit_cutover_marker = core_database_file_size(&self.database_path)
+            .unwrap_or(u64::MAX)
+            > LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES;
+        if require_explicit_cutover_marker && !explicit_cutover_done {
+            return Err(ProxyError::Other(
+                "observability sidecar derived tables are incomplete; stop the service and run observability_sidecar_migrate before startup".to_string(),
+            ));
+        }
+        let sidecar_has_request_logs = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+        if !sidecar_has_request_logs {
+            return Ok(());
+        }
+        let explicit_cutover_done = self
+            .get_meta_i64(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .await?
+            == Some(1);
+        if !explicit_cutover_done {
+            return Ok(());
+        }
+        let sidecar_request_log_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+                .fetch_one(&self.pool)
+                .await?;
+        if sidecar_request_log_rows == 0 {
+            return Ok(());
+        }
+        let request_log_catalog_rollup_retention_days = self
+            .get_system_settings()
+            .await?
+            .request_log_retention
+            .max_log_retention_days;
+        let api_key_usage_done = self
+            .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+            .await?
+            == Some(1)
+            && self
+                .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
+                .await?
+                == Some(1);
+        let dashboard_done = self
+            .get_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
+            .await?
+            == Some(1);
+        let catalog_done = self
+            .get_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
+            .await?
+            == Some(1)
+            && self
+                .get_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS)
+                .await?
+                == Some(request_log_catalog_rollup_retention_days);
+        if api_key_usage_done && dashboard_done && catalog_done {
+            return Ok(());
+        }
+        Err(ProxyError::Other(
+            "observability sidecar derived tables are incomplete; stop the service and run observability_sidecar_migrate before startup".to_string(),
+        ))
+    }
+
+    async fn observability_sidecar_has_cutover_request_logs(
+        &self,
+    ) -> Result<bool, ProxyError> {
+        if self.uses_legacy_single_db_observability_compatibility() {
+            return Ok(false);
+        }
+        if self.main_table_exists("request_logs").await? {
+            return Ok(false);
+        }
+        let sidecar_has_request_logs = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+        if !sidecar_has_request_logs {
+            return Ok(false);
+        }
+        let sidecar_request_log_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(sidecar_request_log_rows > 0)
+    }
+
+    async fn reject_large_sidecar_startup_rebuild(
+        &self,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        if self
+            .get_meta_i64(META_KEY_OBSERVABILITY_SIDECAR_EXPLICIT_CUTOVER_V1_DONE)
+            .await?
+            != Some(1)
+        {
+            return Ok(());
+        }
+        if core_database_file_size(&self.database_path).unwrap_or(u64::MAX)
+            <= LEGACY_REQUEST_LOGS_INLINE_SIDECAR_MIGRATION_MAX_BYTES
+        {
+            return Ok(());
+        }
+        if self.observability_sidecar_has_cutover_request_logs().await? {
+            return Err(ProxyError::Other(format!(
+                "observability sidecar derived tables require {reason}; stop the service and run observability_sidecar_migrate before startup"
+            )));
+        }
         Ok(())
     }
 
@@ -333,6 +1057,7 @@ impl KeyStore {
         };
         store.ensure_meta_schema().await?;
         Self::ensure_request_logs_schema_in_pool(&store.pool).await?;
+        Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
         store.upgrade_request_logs_schema().await?;
         store.ensure_request_logs_gc_support_indexes().await?;
         Ok(store)
@@ -367,7 +1092,11 @@ impl KeyStore {
             Some(acquire_observability_offline_guard(&layout.core_database_path)?)
         };
         let offline_probe = probe_observability_offline_state(&layout.core_database_path).await?;
-        let offline_lock_acquired = offline_probe.service_lock_held_exclusively;
+        let offline_lock_acquired = if dry_run {
+            offline_probe.service_lock_held_exclusively
+        } else {
+            true
+        };
 
         let core_file_bytes = core_database_file_size(&layout.core_database_path)?;
         let available_bytes_before = available_disk_bytes_for_path(&layout.core_database_path)?;
@@ -394,6 +1123,39 @@ impl KeyStore {
             Self::main_table_exists_in_pool(&core_probe, "dashboard_request_rollup_buckets").await?;
         let legacy_request_log_catalog_rollups_exists =
             Self::main_table_exists_in_pool(&core_probe, "request_log_catalog_rollups").await?;
+        let request_log_catalog_rollup_retention_days = Self::meta_i64_in_pool(
+            &core_probe,
+            META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1,
+        )
+        .await?
+        .unwrap_or_else(|| {
+            effective_request_logs_retention_days().min(REQUEST_LOG_RETENTION_DAYS_MAX)
+        })
+        .clamp(REQUEST_LOG_RETENTION_DAYS_MIN, REQUEST_LOG_RETENTION_DAYS_MAX);
+        let explicit_cutover_meta_complete = Self::explicit_sidecar_cutover_meta_complete_in_pool(
+            &core_probe,
+            request_log_catalog_rollup_retention_days,
+        )
+        .await?;
+        let temporary_legacy_request_logs_exists =
+            Self::main_table_exists_in_pool(&core_probe, "__observability_sidecar_legacy_request_logs").await?;
+        let temporary_legacy_api_key_usage_buckets_exists = Self::main_table_exists_in_pool(
+            &core_probe,
+            "__observability_sidecar_legacy_api_key_usage_buckets",
+        )
+        .await?;
+        let temporary_legacy_dashboard_request_rollup_buckets_exists =
+            Self::main_table_exists_in_pool(
+                &core_probe,
+                "__observability_sidecar_legacy_dashboard_request_rollup_buckets",
+            )
+            .await?;
+        let temporary_legacy_request_log_catalog_rollups_exists =
+            Self::main_table_exists_in_pool(
+                &core_probe,
+                "__observability_sidecar_legacy_request_log_catalog_rollups",
+            )
+            .await?;
         let attached_default = planned_observability_attach_path(
             &layout.core_database_path,
             layout.observability_database_path.as_deref(),
@@ -446,9 +1208,14 @@ impl KeyStore {
         let already_migrated = !legacy_request_logs_exists
             && !legacy_api_key_usage_buckets_exists
             && !legacy_dashboard_request_rollup_buckets_exists
-            && !legacy_request_log_catalog_rollups_exists;
+            && !legacy_request_log_catalog_rollups_exists
+            && !temporary_legacy_request_logs_exists
+            && !temporary_legacy_api_key_usage_buckets_exists
+            && !temporary_legacy_dashboard_request_rollup_buckets_exists
+            && !temporary_legacy_request_log_catalog_rollups_exists
+            && explicit_cutover_meta_complete;
 
-        let (attached_observability_path, sidecar_request_log_rows_before, sidecar_request_log_rows_after, copied_request_logs, batches, dropped_main_request_logs, dropped_legacy_api_key_usage_buckets, dropped_legacy_dashboard_request_rollup_buckets, dropped_legacy_request_log_catalog_rollups, reset_api_key_usage_buckets_meta, reset_dashboard_request_rollup_buckets_meta, reset_request_log_catalog_rollup_meta, child_reference_checks_passed) =
+        let (attached_observability_path, sidecar_request_log_rows_before, sidecar_request_log_rows_after, copied_request_logs, batches, dropped_main_request_logs, dropped_legacy_api_key_usage_buckets, dropped_legacy_dashboard_request_rollup_buckets, dropped_legacy_request_log_catalog_rollups, reset_api_key_usage_buckets_meta, reset_dashboard_request_rollup_buckets_meta, reset_request_log_catalog_rollup_meta, rebuilt_api_key_usage_buckets, rebuilt_dashboard_request_rollup_buckets, rebuilt_request_log_catalog_rollups, marked_api_key_usage_buckets_meta_complete, marked_dashboard_request_rollup_buckets_meta_complete, marked_request_log_catalog_rollup_meta_complete, startup_rebuild_required, derived_rebuild_elapsed_ms, child_reference_checks_passed) =
             if dry_run {
                 let attached_observability_path = attached_default
                     .clone()
@@ -467,6 +1234,14 @@ impl KeyStore {
                     false,
                     false,
                     false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    !already_migrated && sidecar_request_log_rows_before_probe > 0,
+                    0,
+                    false,
                 )
             } else {
                 let store = Self::open_for_observability_sidecar_migration(database_path).await?;
@@ -480,133 +1255,104 @@ impl KeyStore {
                             .fetch_one(&store.pool)
                             .await?;
 
-                    let request_log_catalog_rollup_retention_days = store
-                        .get_system_settings()
-                        .await?
-                        .request_log_retention
-                        .max_log_retention_days;
-                    let mut copied_request_logs = 0_i64;
-                    let mut batches = 0_i64;
-                    let mut dropped_main_request_logs = false;
-                    let mut dropped_legacy_api_key_usage_buckets = false;
-                    let mut dropped_legacy_dashboard_request_rollup_buckets = false;
-                    let mut dropped_legacy_request_log_catalog_rollups = false;
-                    let mut reset_api_key_usage_buckets_meta = false;
-                    let mut reset_dashboard_request_rollup_buckets_meta = false;
-                    let mut reset_request_log_catalog_rollup_meta = false;
-                    let child_reference_checks_passed;
-
-                    if legacy_request_logs_exists {
+                    if already_migrated {
                         store
-                            .rebuild_request_log_soft_reference_tables_if_needed()
+                            .ensure_observability_sidecar_startup_rebuild_not_required()
                             .await?;
-                        let (copied, copied_batches) =
-                            Self::copy_legacy_request_logs_into_observability_batched_in_pool(
+                        let sidecar_request_log_rows_after: i64 =
+                            sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+                                .fetch_one(&store.pool)
+                                .await?;
+                        (
+                            attached_observability_path,
+                            sidecar_request_log_rows_before,
+                            sidecar_request_log_rows_after,
+                            0,
+                            0,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            0,
+                            true,
+                        )
+                    } else {
+                        let mut copied_request_logs = 0_i64;
+                        let mut batches = 0_i64;
+                        let child_reference_checks_passed;
+
+                        if legacy_request_logs_exists {
+                            store
+                                .rebuild_request_log_soft_reference_tables_if_needed()
+                                .await?;
+                            let (copied, copied_batches) =
+                                Self::copy_legacy_request_logs_into_observability_batched_in_pool(
+                                    &store.pool,
+                                    batch_size,
+                                )
+                                .await?;
+                            copied_request_logs = copied;
+                            batches = copied_batches;
+                            Self::ensure_request_logs_rebuild_references_valid_in_pool(
                                 &store.pool,
-                                batch_size,
+                                "request_logs schema migration produced invalid preserved references",
                             )
                             .await?;
-                        copied_request_logs = copied;
-                        batches = copied_batches;
-                        Self::ensure_request_logs_rebuild_references_valid_in_pool(
-                            &store.pool,
-                            "request_logs schema migration produced invalid preserved references",
-                        )
-                        .await?;
-                        sqlx::query("DROP TABLE request_logs")
-                            .execute(&store.pool)
+                            child_reference_checks_passed = true;
+                        } else {
+                            Self::ensure_request_logs_rebuild_references_valid_in_pool(
+                                &store.pool,
+                                "request_logs schema migration produced invalid preserved references",
+                            )
                             .await?;
-                        dropped_main_request_logs = true;
-                        child_reference_checks_passed = true;
-                    } else {
-                        Self::ensure_request_logs_rebuild_references_valid_in_pool(
-                            &store.pool,
-                            "request_logs schema migration produced invalid preserved references",
-                        )
-                        .await?;
-                        child_reference_checks_passed = true;
-                    }
+                            child_reference_checks_passed = true;
+                        }
 
-                    if legacy_api_key_usage_buckets_exists {
-                        let mut tx = store.pool.begin().await?;
-                        sqlx::query(
-                            r#"
-                            INSERT INTO meta (key, value)
-                            VALUES (?, '0'), (?, '0')
-                            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                            "#,
-                        )
-                        .bind(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
-                        .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
-                        .execute(&mut *tx)
-                        .await?;
-                        sqlx::query("DROP TABLE api_key_usage_buckets")
-                            .execute(&mut *tx)
+                        let derived_report = store
+                            .rebuild_observability_sidecar_derived_tables_offline(true)
                             .await?;
-                        tx.commit().await?;
-                        dropped_legacy_api_key_usage_buckets = true;
-                        reset_api_key_usage_buckets_meta = true;
-                    }
-                    if legacy_dashboard_request_rollup_buckets_exists {
-                        let mut tx = store.pool.begin().await?;
-                        sqlx::query(
-                            r#"
-                            INSERT INTO meta (key, value)
-                            VALUES (?, '0')
-                            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                            "#,
-                        )
-                        .bind(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
-                        .execute(&mut *tx)
-                        .await?;
-                        sqlx::query("DROP TABLE dashboard_request_rollup_buckets")
-                            .execute(&mut *tx)
+                        store
+                            .ensure_observability_sidecar_startup_rebuild_not_required()
                             .await?;
-                        tx.commit().await?;
-                        dropped_legacy_dashboard_request_rollup_buckets = true;
-                        reset_dashboard_request_rollup_buckets_meta = true;
-                    }
-                    if legacy_request_log_catalog_rollups_exists {
-                        let mut tx = store.pool.begin().await?;
-                        sqlx::query(
-                            r#"
-                            INSERT INTO meta (key, value)
-                            VALUES (?, '0'), (?, ?)
-                            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                            "#,
-                        )
-                        .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE)
-                        .bind(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS)
-                        .bind(request_log_catalog_rollup_retention_days.to_string())
-                        .execute(&mut *tx)
-                        .await?;
-                        sqlx::query("DROP TABLE request_log_catalog_rollups")
-                            .execute(&mut *tx)
-                            .await?;
-                        tx.commit().await?;
-                        dropped_legacy_request_log_catalog_rollups = true;
-                        reset_request_log_catalog_rollup_meta = true;
-                    }
 
-                    let sidecar_request_log_rows_after: i64 =
-                        sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
-                            .fetch_one(&store.pool)
-                            .await?;
-                    (
-                        attached_observability_path,
-                        sidecar_request_log_rows_before,
-                        sidecar_request_log_rows_after,
-                        copied_request_logs,
-                        batches,
-                        dropped_main_request_logs,
-                        dropped_legacy_api_key_usage_buckets,
-                        dropped_legacy_dashboard_request_rollup_buckets,
-                        dropped_legacy_request_log_catalog_rollups,
-                        reset_api_key_usage_buckets_meta,
-                        reset_dashboard_request_rollup_buckets_meta,
-                        reset_request_log_catalog_rollup_meta,
-                        child_reference_checks_passed,
-                    )
+                        let sidecar_request_log_rows_after: i64 =
+                            sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+                                .fetch_one(&store.pool)
+                                .await?;
+                        (
+                            attached_observability_path,
+                            sidecar_request_log_rows_before,
+                            sidecar_request_log_rows_after,
+                            copied_request_logs,
+                            batches,
+                            derived_report.dropped_main_request_logs,
+                            derived_report.dropped_legacy_api_key_usage_buckets,
+                            derived_report.dropped_legacy_dashboard_request_rollup_buckets,
+                            derived_report.dropped_legacy_request_log_catalog_rollups,
+                            false,
+                            false,
+                            false,
+                            derived_report.rebuilt_api_key_usage_buckets,
+                            derived_report.rebuilt_dashboard_request_rollup_buckets,
+                            derived_report.rebuilt_request_log_catalog_rollups,
+                            derived_report.marked_api_key_usage_buckets_meta_complete,
+                            derived_report.marked_dashboard_request_rollup_buckets_meta_complete,
+                            derived_report.marked_request_log_catalog_rollup_meta_complete,
+                            false,
+                            derived_report.elapsed_ms,
+                            child_reference_checks_passed,
+                        )
+                    }
                 };
                 store.pool.close().await;
                 result
@@ -651,18 +1397,34 @@ impl KeyStore {
             reset_api_key_usage_buckets_meta,
             reset_dashboard_request_rollup_buckets_meta,
             reset_request_log_catalog_rollup_meta,
+            rebuilt_api_key_usage_buckets,
+            rebuilt_dashboard_request_rollup_buckets,
+            rebuilt_request_log_catalog_rollups,
+            marked_api_key_usage_buckets_meta_complete,
+            marked_dashboard_request_rollup_buckets_meta_complete,
+            marked_request_log_catalog_rollup_meta_complete,
+            startup_rebuild_required,
+            derived_rebuild_elapsed_ms,
             child_reference_checks_passed,
             batch_size,
             batches,
             completed: !dry_run
                 && child_reference_checks_passed
-                && (!legacy_request_logs_exists || dropped_main_request_logs)
-                && (!legacy_api_key_usage_buckets_exists
-                    || dropped_legacy_api_key_usage_buckets)
-                && (!legacy_dashboard_request_rollup_buckets_exists
-                    || dropped_legacy_dashboard_request_rollup_buckets)
-                && (!legacy_request_log_catalog_rollups_exists
-                    || dropped_legacy_request_log_catalog_rollups),
+                && !startup_rebuild_required
+                && (already_migrated
+                    || (rebuilt_api_key_usage_buckets
+                        && rebuilt_dashboard_request_rollup_buckets
+                        && rebuilt_request_log_catalog_rollups
+                        && marked_api_key_usage_buckets_meta_complete
+                        && marked_dashboard_request_rollup_buckets_meta_complete
+                        && marked_request_log_catalog_rollup_meta_complete
+                        && (!legacy_request_logs_exists || dropped_main_request_logs)
+                        && (!legacy_api_key_usage_buckets_exists
+                            || dropped_legacy_api_key_usage_buckets)
+                        && (!legacy_dashboard_request_rollup_buckets_exists
+                            || dropped_legacy_dashboard_request_rollup_buckets)
+                        && (!legacy_request_log_catalog_rollups_exists
+                            || dropped_legacy_request_log_catalog_rollups))),
             elapsed_ms: started.elapsed().as_millis(),
         })
     }
@@ -697,30 +1459,11 @@ impl KeyStore {
             drop(conn);
             sqlx::query("DROP TABLE request_logs")
                 .execute(&self.pool)
-                .await?;
+            .await?;
         }
 
-        if legacy_api_key_usage_buckets {
-            sqlx::query("DROP TABLE api_key_usage_buckets")
-                .execute(&self.pool)
-                .await?;
-            self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 0)
-                .await?;
-            self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE, 0)
-                .await?;
-        }
-        if legacy_dashboard_rollups {
-            sqlx::query("DROP TABLE dashboard_request_rollup_buckets")
-                .execute(&self.pool)
-                .await?;
-            self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 0)
-                .await?;
-        }
-        if legacy_catalog_rollups {
-            sqlx::query("DROP TABLE request_log_catalog_rollups")
-                .execute(&self.pool)
-                .await?;
-            self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 0)
+        if legacy_api_key_usage_buckets || legacy_dashboard_rollups || legacy_catalog_rollups {
+            self.rebuild_observability_sidecar_derived_tables_offline(false)
                 .await?;
         }
 
