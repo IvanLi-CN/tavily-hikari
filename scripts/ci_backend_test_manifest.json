@@ -418,7 +418,7 @@
         "server::tests::api_keys_and_registration::post_",
         "server::tests::admin_token_filters_and_maintenance::builtin_",
         "server::tests::api_keys_and_registration::builtin_",
-        "server::tests::admin_token_filters_and_maintenance::revoking_",
+        "server::tests::admin_token_filters_and_maintenance::re",
         "server::tests::admin_logs_and_summary::session_",
         "tests::parse_"
       ]
