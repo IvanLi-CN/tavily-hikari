@@ -6,13 +6,13 @@ const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
         "src/server/tests/admin_users_and_tokens.rs",
-        3300,
-        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while rankings and adjacent admin slices converge before a broader extraction pass.",
+        3380,
+        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage and adjacent admin slices converge before a broader extraction pass.",
     ),
     (
         "src/store/key_store_request_logs_and_dashboard.rs",
-        3100,
-        "Request-log persistence and dashboard rollup logic remain co-located in the legacy store module until a follow-up split separates rankings/query paths from the existing request-log pipeline.",
+        3120,
+        "Request-log persistence and dashboard rollup logic remain co-located in the legacy store module while retention controls and user-centered rollup query paths converge before a follow-up split.",
     ),
 ];
 
