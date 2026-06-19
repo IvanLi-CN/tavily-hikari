@@ -214,6 +214,7 @@ export const EN: TranslationShape = {
       nav: {
         dashboard: 'Dashboard',
         usage: 'Usage',
+        rankings: 'Rankings',
         tokens: 'Tokens',
         keys: 'API Keys',
         requests: 'Requests',
@@ -312,6 +313,25 @@ export const EN: TranslationShape = {
           user_request_rate_limited: 'User request rate limited',
           user_quota_exhausted: 'User quota exhausted',
         },
+      },
+      rankings: {
+        title: 'User Rankings',
+        description: 'Review the Top 20 users for primary successful calls and business-credit usage across rolling 24-hour, 7-day, and 30-day windows.',
+        loading: 'Loading user rankings…',
+        error: 'Unable to load user rankings right now.',
+        empty: 'No ranked users are available for this window yet.',
+        windows: {
+          last24h: 'Last 24 Hours',
+          last7d: 'Last 7 Days',
+          last30d: 'Last 30 Days',
+        },
+        primarySuccessTitle: 'Primary Successful Calls',
+        businessCreditsTitle: 'Business Credit Usage',
+        primarySuccessDescription: 'valuable success / primary_success semantics',
+        businessCreditsDescription: 'locally booked business_credits semantics',
+        userFallback: 'Unknown user',
+        usernamePrefix: '@',
+        refreshEvery: 'Auto refresh every {seconds}s',
       },
       modules: {
         comingSoon: 'Coming soon',

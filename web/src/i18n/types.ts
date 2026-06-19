@@ -208,6 +208,7 @@ export interface AdminTranslationsShape {
   }
   nav: {
     dashboard: string; usage: string; tokens: string; keys: string; requests: string; jobs: string; users: string
+    rankings: string
     announcements: string
     recharges: string
     alerts: string; systemSettings: string; proxySettings: string
@@ -299,6 +300,25 @@ export interface AdminTranslationsShape {
       user_request_rate_limited: string
       user_quota_exhausted: string
     }
+  }
+  rankings: {
+    title: string
+    description: string
+    loading: string
+    error: string
+    empty: string
+    windows: {
+      last24h: string
+      last7d: string
+      last30d: string
+    }
+    primarySuccessTitle: string
+    businessCreditsTitle: string
+    primarySuccessDescription: string
+    businessCreditsDescription: string
+    userFallback: string
+    usernamePrefix: string
+    refreshEvery: string
   }
   modules: {
     comingSoon: string

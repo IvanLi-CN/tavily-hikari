@@ -2005,6 +2005,19 @@ impl AuthTokenActivityDelta {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AccountUsageRollupDelta {
+    pub(crate) request_count: i64,
+    pub(crate) primary_success: i64,
+}
+
+impl AccountUsageRollupDelta {
+    pub(crate) fn add(&mut self, other: Self) {
+        self.request_count += other.request_count;
+        self.primary_success += other.primary_success;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct RequestLogCatalogRollupKey {
     pub(crate) bucket_start: i64,
@@ -2024,7 +2037,7 @@ pub(crate) struct RequestStatsCoalescerState {
     pub(crate) pending_dashboard_rollups: HashMap<(i64, i64), DashboardRequestRollupCounts>,
     pub(crate) pending_api_key_usage: HashMap<(String, i64), ApiKeyUsageBucketDelta>,
     pub(crate) pending_auth_token_activity: HashMap<String, AuthTokenActivityDelta>,
-    pub(crate) pending_account_request_rollups: HashMap<(String, i64), i64>,
+    pub(crate) pending_account_request_rollups: HashMap<(String, i64), AccountUsageRollupDelta>,
     pub(crate) pending_request_log_catalog: HashMap<RequestLogCatalogRollupKey, i64>,
     pub(crate) flush_deadline: Option<Instant>,
     pub(crate) flushing: bool,
@@ -2111,6 +2124,7 @@ impl RequestStatsCoalescer {
                 auth_token_id,
                 request_user_id,
                 created_at,
+                dashboard_counts.valuable_success_count,
             );
             if let Some(request_log_catalog_key) = request_log_catalog_key {
                 *state
@@ -2136,6 +2150,7 @@ impl RequestStatsCoalescer {
                 auth_token_id,
                 request_user_id,
                 created_at,
+                0,
             );
             Self::mark_flush_deadline_if_pending(&mut state);
         }
@@ -2147,6 +2162,7 @@ impl RequestStatsCoalescer {
         auth_token_id: &str,
         request_user_id: Option<&str>,
         created_at: i64,
+        primary_success_delta: i64,
     ) {
         state
             .pending_auth_token_activity
@@ -2155,10 +2171,12 @@ impl RequestStatsCoalescer {
             .add_request(created_at);
         if let Some(user_id) = request_user_id {
             let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
-            *state
+            let entry = state
                 .pending_account_request_rollups
                 .entry((user_id.to_string(), bucket_start))
-                .or_default() += 1;
+                .or_default();
+            entry.request_count += 1;
+            entry.primary_success += primary_success_delta.max(0);
         }
     }
 
@@ -2248,6 +2266,7 @@ include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_dashboard_month_series.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_request_logs_summary_windows.rs");
+include!("key_store_user_rankings.rs");
 include!("key_store_meta.rs");
 include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");

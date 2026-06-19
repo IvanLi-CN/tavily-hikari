@@ -213,6 +213,7 @@ export const ZH: TranslationShape = {
       nav: {
         dashboard: '仪表盘',
         usage: '用量',
+        rankings: '用户排行',
         tokens: '访问令牌',
         keys: 'API Keys',
         requests: '请求日志',
@@ -311,6 +312,25 @@ export const ZH: TranslationShape = {
           user_request_rate_limited: '用户请求限流',
           user_quota_exhausted: '用户额度耗尽',
         },
+      },
+      rankings: {
+        title: '用户排行',
+        description: '按最近 24 小时、7 天、30 天滚动窗口查看成功主要调用与积分消耗 TOP20 用户。',
+        loading: '正在加载用户排行…',
+        error: '暂时无法加载用户排行。',
+        empty: '当前时间窗暂无可展示的用户数据。',
+        windows: {
+          last24h: '最近 24 小时',
+          last7d: '最近 7 天',
+          last30d: '最近 30 天',
+        },
+        primarySuccessTitle: '成功主要调用',
+        businessCreditsTitle: '积分消耗',
+        primarySuccessDescription: 'valuable success / primary_success 口径',
+        businessCreditsDescription: '本地记账 business_credits 口径',
+        userFallback: '未命名用户',
+        usernamePrefix: '@',
+        refreshEvery: '每 {seconds} 秒自动刷新',
       },
       modules: {
         comingSoon: '即将支持',

@@ -18,8 +18,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13268,
-      reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings and active-user list filtering land before a larger extraction pass.',
+      max: 13394,
+      reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, active-user list filtering, and the new admin rankings route finish converging before a larger extraction pass.',
     },
   ],
   [
@@ -47,8 +47,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api.test.ts',
     {
-      max: 1560,
-      reason: 'Shared API contract coverage now includes the user-console overview snapshot and events surface until the largest runtime suites are split out.',
+      max: 1580,
+      reason: 'Shared API contract coverage now includes the user-console overview snapshot, events surface, and admin rankings endpoint until the largest runtime suites are split out.',
     },
   ],
   [
@@ -61,23 +61,23 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/translations/en.ts',
     {
-      max: 1533,
-      reason: 'Admin jobs maintenance copy is still stored in the shared English runtime catalog.',
+      max: 1553,
+      reason: 'Admin jobs maintenance copy and admin rankings module strings are still stored in the shared English runtime catalog.',
     },
   ],
   [
     'src/i18n/translations/zh.ts',
     {
-      max: 1532,
-      reason: 'Admin jobs maintenance copy is still stored in the shared Chinese runtime catalog.',
+      max: 1552,
+      reason: 'Admin jobs maintenance copy and admin rankings module strings are still stored in the shared Chinese runtime catalog.',
     },
   ],
   [
     'src/i18n/types.ts',
     {
-      max: 1608,
+      max: 1628,
       reason:
-        'HA source settings mode-specific failure copy and admin jobs maintenance translation types remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, admin jobs maintenance strings, and admin rankings translation types remain in the shared catalog contract.',
     },
   ],
   [

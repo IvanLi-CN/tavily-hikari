@@ -67,6 +67,7 @@ import { AdminUserDetailQuotaWorkspace } from './AdminUserDetailQuotaWorkspace'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './DashboardOverview'
+import AdminUserRankingsPage from './AdminUserRankingsPage'
 import AdminJobTriggerMenu from './AdminJobTriggerMenu'
 import { AnchoredApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import {
@@ -289,6 +290,10 @@ import {
   updateForwardProxySettingsWithProgress,
   validateForwardProxyCandidateWithProgress,
 } from '../api'
+import {
+  fetchAdminUserRankings,
+  type AdminUserRankingsSnapshot,
+} from '../api/adminRankings'
 import type { TokenGroup } from '../api/tokens'
 import {
   createDialogProgressState,
@@ -1676,6 +1681,9 @@ function AdminDashboard(): JSX.Element {
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
   const [dashboardSummaryWindows, setDashboardSummaryWindows] = useState<SummaryWindowsResponse | null>(null)
+  const [rankingsSnapshot, setRankingsSnapshot] = useState<AdminUserRankingsSnapshot | null>(null)
+  const [rankingsLoading, setRankingsLoading] = useState(false)
+  const [rankingsError, setRankingsError] = useState<string | null>(null)
   const [dashboardMonthSeries, setDashboardMonthSeries] = useState<DashboardMonthSeries>(() => createEmptyDashboardMonthSeries())
   const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
@@ -2719,6 +2727,26 @@ function AdminDashboard(): JSX.Element {
     [],
   )
 
+  const loadUserRankings = useCallback(
+    async (signal?: AbortSignal) => {
+      setRankingsLoading(true)
+      try {
+        const snapshot = await fetchAdminUserRankings(signal)
+        if (signal?.aborted) return
+        setRankingsSnapshot(snapshot)
+        setRankingsError(null)
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return
+        setRankingsError(err instanceof Error ? err.message : 'Unexpected error occurred')
+      } finally {
+        if (!signal?.aborted) {
+          setRankingsLoading(false)
+        }
+      }
+    },
+    [],
+  )
+
   useEffect(() => {
     routeRef.current = route
   }, [route])
@@ -3304,6 +3332,16 @@ function AdminDashboard(): JSX.Element {
     }
     return () => controller.abort()
   }, [loadDashboardOverview, loadData, loadShellData, route])
+
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'rankings')) {
+      return
+    }
+
+    const controller = new AbortController()
+    void loadUserRankings(controller.signal)
+    return () => controller.abort()
+  }, [loadUserRankings, route])
 
   useLayoutEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
@@ -4130,6 +4168,74 @@ function AdminDashboard(): JSX.Element {
     }
   }, [sseConnected, sseFallbackActive, loadData, loadDashboardOverview, loadShellData, loadUnboundTokenUsage, route])
 
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'rankings')) {
+      return
+    }
+
+    let es: EventSource | null = null
+    let reconnectTimer: number | null = null
+    let disposed = false
+
+    const scheduleReconnect = () => {
+      if (disposed || reconnectTimer != null) {
+        return
+      }
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, 1000) as unknown as number
+    }
+
+    const closeEventSource = () => {
+      if (!es) return
+      try {
+        es.close()
+      } catch {}
+      es = null
+    }
+
+    const connect = () => {
+      if (disposed) return
+      closeEventSource()
+      es = new EventSource('/api/users/rankings/events')
+      es.onopen = () => {
+        setRankingsError(null)
+      }
+      es.onerror = () => {
+        closeEventSource()
+        scheduleReconnect()
+      }
+      es.addEventListener('degraded', (event) => {
+        const message =
+          event instanceof MessageEvent && typeof event.data === 'string' && event.data.trim().length > 0
+            ? event.data
+            : adminStrings.rankings.error
+        setRankingsError(message)
+      })
+      es.addEventListener('snapshot', (event) => {
+        try {
+          const nextSnapshot = JSON.parse((event as MessageEvent<string>).data) as AdminUserRankingsSnapshot
+          setRankingsSnapshot(nextSnapshot)
+          setRankingsLoading(false)
+          setRankingsError(null)
+        } catch (parseError) {
+          console.error('Rankings SSE parse error', parseError)
+        }
+      })
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      closeEventSource()
+    }
+  }, [adminStrings.rankings.error, route])
+
 
   // Establish SSE connection to receive live dashboard updates
   useEffect(() => {
@@ -4669,6 +4775,9 @@ function AdminDashboard(): JSX.Element {
             loadDashboardOverview(controller.signal),
           ]
         : [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
+    if (route.name === 'module' && route.module === 'rankings') {
+      tasks.push(loadUserRankings(controller.signal))
+    }
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
     }
@@ -5555,6 +5664,7 @@ function AdminDashboard(): JSX.Element {
   const forwardProxyErrorStatsBlocking = isBlockingLoadState(forwardProxyErrorStatsLoadState)
   const activeModuleBlocking =
     (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
+    || (route.name === 'module' && route.module === 'rankings' && rankingsLoading)
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
     || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
     || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
@@ -7298,6 +7408,7 @@ function AdminDashboard(): JSX.Element {
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
     { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'rankings', label: adminStrings.nav.rankings, icon: <Icon icon="mdi:trophy-outline" width={18} height={18} /> },
     { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
@@ -9695,6 +9806,7 @@ function AdminDashboard(): JSX.Element {
   const showNotFound = route.name === 'not-found'
   const notFoundPath = route.name === 'not-found' ? route.path : ''
   const showDashboard = activeModule === 'dashboard' && !showNotFound
+  const showRankings = activeModule === 'rankings' && !showNotFound
   const showTokens = activeModule === 'tokens'
   const showKeys = activeModule === 'keys'
   const showRequests = activeModule === 'requests'
@@ -9778,6 +9890,11 @@ function AdminDashboard(): JSX.Element {
         return {
           title: headerStrings.title,
           description: headerStrings.subtitle,
+        }
+      case 'rankings':
+        return {
+          title: adminStrings.rankings.title,
+          description: adminStrings.rankings.description,
         }
       case 'tokens':
         return {
@@ -10334,6 +10451,15 @@ function AdminDashboard(): JSX.Element {
           onOpenModule={navigateModule}
           onOpenToken={navigateToken}
           onOpenKey={navigateKey}
+        />
+      )}
+
+      {showRankings && (
+        <AdminUserRankingsPage
+          strings={adminStrings.rankings}
+          snapshot={rankingsSnapshot}
+          loading={rankingsLoading}
+          error={rankingsError}
         />
       )}
 

@@ -9,6 +9,7 @@ import {
   createAdminUserToken,
   deleteAdminUserToken,
   fetchAdminRegistrationSettings,
+  fetchAdminUserRankings,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserUsageSeries,
   fetchAdminUsers,
@@ -478,6 +479,28 @@ describe('admin user tag api helpers', () => {
     expect(overview.tokenCoverage).toBe('ok')
     expect(overview.recentAlerts.totalEvents).toBe(3)
     expect(overview.recentAlerts.topGroups[0]?.latestEvent.request?.id).toBe(91)
+  })
+
+  it('loads the admin user rankings snapshot from the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({
+        generatedAt: 1_781_763_600,
+        refreshIntervalSecs: 10,
+        last24h: { primarySuccessTop: [], businessCreditsTop: [] },
+        last7d: { primarySuccessTop: [], businessCreditsTop: [] },
+        last30d: { primarySuccessTop: [], businessCreditsTop: [] },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const snapshot = await fetchAdminUserRankings()
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/users/rankings')
+    expect(snapshot.refreshIntervalSecs).toBe(10)
+    expect(snapshot.last24h.primarySuccessTop).toEqual([])
   })
 
   it('formats the admin user usage series URL with the selected series key', async () => {

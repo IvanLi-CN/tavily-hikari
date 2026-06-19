@@ -26,6 +26,7 @@ export interface AdminTokensListContext {
 
 export type AdminModuleId =
   | 'dashboard'
+  | 'rankings'
   | 'tokens'
   | 'keys'
   | 'requests'
@@ -91,6 +92,9 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
 
   if (path === ADMIN_BASE || path === `${ADMIN_BASE}/dashboard`) {
     return { name: 'module', module: 'dashboard' }
+  }
+  if (path === `${ADMIN_BASE}/rankings`) {
+    return { name: 'module', module: 'rankings' }
   }
   if (path === `${ADMIN_BASE}/tokens`) {
     return { name: 'module', module: 'tokens' }

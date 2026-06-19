@@ -523,6 +523,7 @@ impl TavilyProxy {
             dashboard_hourly_request_window_cache: Arc::new(Mutex::new(
                 DashboardHourlyRequestWindowCacheState::default(),
             )),
+            user_rankings_cache: Arc::new(Mutex::new(UserRankingsCacheState::default())),
             ha_state_coalescer,
             token_billing_locks: shared_token_billing_locks(),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),

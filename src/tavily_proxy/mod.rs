@@ -149,6 +149,12 @@ struct CachedDashboardHourlyRequestWindow {
 }
 
 #[derive(Clone, Debug)]
+struct CachedUserRankingsSnapshot {
+    generated_at: Instant,
+    value: UserRankingsSnapshot,
+}
+
+#[derive(Clone, Debug)]
 struct SummaryWindowsCacheState {
     cached: Option<CachedSummaryWindows>,
     loading: bool,
@@ -172,6 +178,13 @@ struct DashboardHourlyRequestWindowCacheState {
     notify: Arc<tokio::sync::Notify>,
 }
 
+#[derive(Clone, Debug)]
+struct UserRankingsCacheState {
+    cached: Option<CachedUserRankingsSnapshot>,
+    loading: bool,
+    notify: Arc<tokio::sync::Notify>,
+}
+
 type SharedTokenBillingLockMap = Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>;
 
 fn shared_token_billing_locks() -> SharedTokenBillingLockMap {
@@ -182,6 +195,16 @@ fn shared_token_billing_locks() -> SharedTokenBillingLockMap {
 }
 
 impl Default for DashboardHourlyRequestWindowCacheState {
+    fn default() -> Self {
+        Self {
+            cached: None,
+            loading: false,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl Default for UserRankingsCacheState {
     fn default() -> Self {
         Self {
             cached: None,
@@ -384,6 +407,38 @@ impl Drop for DashboardHourlyRequestWindowLoadGuard {
     }
 }
 
+struct UserRankingsLoadGuard {
+    state: Arc<Mutex<UserRankingsCacheState>>,
+    armed: bool,
+}
+
+impl UserRankingsLoadGuard {
+    fn new(state: Arc<Mutex<UserRankingsCacheState>>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for UserRankingsLoadGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut cache = state.lock().await;
+            if cache.loading {
+                cache.loading = false;
+                cache.notify.notify_waiters();
+            }
+        });
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
@@ -406,6 +461,7 @@ pub struct TavilyProxy {
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
     summary_windows_cache: Arc<Mutex<SummaryWindowsCacheState>>,
     dashboard_hourly_request_window_cache: Arc<Mutex<DashboardHourlyRequestWindowCacheState>>,
+    user_rankings_cache: Arc<Mutex<UserRankingsCacheState>>,
     pub(crate) ha_state_coalescer: HaStateCoalescer,
     // Fast in-process lock to collapse duplicate work within one instance.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -1118,6 +1174,13 @@ impl TokenQuota {
             self.store
                 .delete_old_account_usage_rollup_buckets(
                     AccountUsageRollupMetricKind::RequestCount,
+                    AccountUsageRollupBucketKind::FiveMinute,
+                    now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_FIVE_MINUTE_RETENTION_SECS),
+                )
+                .await?;
+            self.store
+                .delete_old_account_usage_rollup_buckets(
+                    AccountUsageRollupMetricKind::PrimarySuccess,
                     AccountUsageRollupBucketKind::FiveMinute,
                     now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_FIVE_MINUTE_RETENTION_SECS),
                 )

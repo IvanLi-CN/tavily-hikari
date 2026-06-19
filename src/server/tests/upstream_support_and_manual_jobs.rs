@@ -2297,6 +2297,8 @@ pub(super) async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password
             "/api/keys/:id/logs/:log_id/details",
             get(get_key_log_details),
         )
+        .route("/api/users/rankings", get(get_user_rankings))
+        .route("/api/users/rankings/events", get(sse_user_rankings))
         .route("/api/tokens/:id/logs/list", get(get_token_logs_list))
         .route("/api/tokens/:id/logs/catalog", get(get_token_logs_catalog))
         .route("/api/keys/batch", post(create_api_keys_batch))
