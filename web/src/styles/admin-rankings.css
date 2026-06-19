@@ -1,0 +1,126 @@
+.admin-rankings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.admin-rankings-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin-rankings-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.admin-ranking-connection {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--card) 85%, white);
+  color: var(--foreground);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.admin-ranking-connection.is-live {
+  border-color: color-mix(in srgb, var(--success) 26%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, white);
+  color: color-mix(in srgb, var(--success-foreground) 62%, var(--foreground));
+}
+
+.admin-ranking-connection.is-connecting {
+  border-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, white);
+}
+
+.admin-ranking-connection.is-degraded {
+  border-color: color-mix(in srgb, var(--destructive) 28%, transparent);
+  background: color-mix(in srgb, var(--destructive) 10%, white);
+  color: color-mix(in srgb, var(--destructive-foreground) 58%, var(--foreground));
+}
+
+.admin-ranking-window {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-ranking-window-header h2 {
+  margin: 0;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.admin-rankings-page > .surface.panel > .panel-header {
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.admin-rankings-page > .surface.panel > .panel-header > * {
+  min-width: 0;
+}
+
+.admin-ranking-window-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.admin-ranking-card {
+  overflow: hidden;
+}
+
+.admin-ranking-chart-layout {
+  min-width: 0;
+}
+
+.admin-ranking-chart-shell {
+  min-width: 0;
+}
+
+.admin-ranking-scale-hint {
+  margin: 0;
+}
+
+.admin-ranking-stale-hint {
+  margin-top: 6px;
+  font-size: 0.92em;
+  opacity: 0.82;
+}
+
+@media (max-width: 1200px) {
+  .admin-ranking-window-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-rankings-page {
+    gap: 14px;
+  }
+
+  .admin-rankings-page > .surface.panel > .panel-header {
+    margin-bottom: 12px;
+  }
+
+  .admin-rankings-meta {
+    justify-content: flex-start;
+  }
+
+  .admin-rankings-toolbar {
+    align-items: stretch;
+  }
+}

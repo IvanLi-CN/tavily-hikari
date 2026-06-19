@@ -333,31 +333,60 @@ impl KeyStore {
                     pending_account_request_rollups.drain().collect::<Vec<_>>();
                 account_request_rollup_entries.sort_by(|left, right| left.0.cmp(&right.0));
                 for ((user_id, bucket_start), delta) in account_request_rollup_entries {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO account_usage_rollup_buckets (
-                            user_id,
-                            metric_kind,
-                            bucket_kind,
-                            bucket_start,
-                            value,
-                            updated_at
+                    if delta.request_count > 0 {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO account_usage_rollup_buckets (
+                                user_id,
+                                metric_kind,
+                                bucket_kind,
+                                bucket_start,
+                                value,
+                                updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
+                            DO UPDATE SET
+                                value = account_usage_rollup_buckets.value + excluded.value,
+                                updated_at = excluded.updated_at
+                            "#,
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
-                        DO UPDATE SET
-                            value = account_usage_rollup_buckets.value + excluded.value,
-                            updated_at = excluded.updated_at
-                        "#,
-                    )
-                    .bind(&user_id)
-                    .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
-                    .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
-                    .bind(bucket_start)
-                    .bind(delta)
-                    .bind(updated_at)
-                    .execute(&mut *tx)
-                    .await?;
+                        .bind(&user_id)
+                        .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
+                        .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
+                        .bind(bucket_start)
+                        .bind(delta.request_count)
+                        .bind(updated_at)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    if delta.primary_success > 0 {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO account_usage_rollup_buckets (
+                                user_id,
+                                metric_kind,
+                                bucket_kind,
+                                bucket_start,
+                                value,
+                                updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
+                            DO UPDATE SET
+                                value = account_usage_rollup_buckets.value + excluded.value,
+                                updated_at = excluded.updated_at
+                            "#,
+                        )
+                        .bind(&user_id)
+                        .bind(AccountUsageRollupMetricKind::PrimarySuccess.as_str())
+                        .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
+                        .bind(bucket_start)
+                        .bind(delta.primary_success)
+                        .bind(updated_at)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
                 }
 
                 let mut request_log_catalog_entries =
@@ -396,7 +425,11 @@ impl KeyStore {
                         .add(delta);
                 }
                 for (key, delta) in pending_account_request_rollups {
-                    *state.pending_account_request_rollups.entry(key).or_default() += delta;
+                    state
+                        .pending_account_request_rollups
+                        .entry(key)
+                        .or_default()
+                        .add(delta);
                 }
                 for (key, delta) in pending_request_log_catalog {
                     *state.pending_request_log_catalog.entry(key).or_default() += delta;

@@ -34,6 +34,10 @@ describe('admin user tag routes', () => {
     expect(parseAdminPath('/admin/tokens/leaderboard')).toEqual({ name: 'unbound-token-usage' })
   })
 
+  it('parses the rankings module route', () => {
+    expect(parseAdminPath('/admin/rankings')).toEqual({ name: 'module', module: 'rankings' })
+  })
+
   it('parses the system settings module route', () => {
     expect(parseAdminPath('/admin/system-settings')).toEqual({
       name: 'module',

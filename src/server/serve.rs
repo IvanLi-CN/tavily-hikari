@@ -220,6 +220,8 @@ pub async fn serve(
         .route("/api/tavily/usage", get(tavily_http_usage))
         .route("/api/summary", get(fetch_summary))
         .route("/api/summary/windows", get(fetch_summary_windows))
+        .route("/api/users/rankings", get(get_user_rankings))
+        .route("/api/users/rankings/events", get(sse_user_rankings))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
         .route("/api/admin/recharges", get(get_admin_recharges))

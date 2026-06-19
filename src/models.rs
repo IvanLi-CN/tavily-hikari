@@ -1368,6 +1368,40 @@ pub(crate) struct SummaryWindowBounds {
     pub previous_month_end: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRankingIdentity {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub username: Option<String>,
+    pub avatar_template: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRankingRow {
+    pub rank: i64,
+    pub value: i64,
+    pub user: UserRankingIdentity,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRankingWindow {
+    pub primary_success_top: Vec<UserRankingRow>,
+    pub business_credits_top: Vec<UserRankingRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRankingsSnapshot {
+    pub generated_at: i64,
+    pub refresh_interval_secs: i64,
+    pub last24h: UserRankingWindow,
+    pub last7d: UserRankingWindow,
+    pub last30d: UserRankingWindow,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardHourlyRequestBucket {

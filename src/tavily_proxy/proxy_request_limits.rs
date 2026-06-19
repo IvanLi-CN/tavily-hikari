@@ -1,4 +1,53 @@
 impl TavilyProxy {
+    pub async fn user_rankings_snapshot(&self) -> Result<UserRankingsSnapshot, ProxyError> {
+        const USER_RANKINGS_CACHE_TTL: Duration = Duration::from_secs(10);
+        const USER_RANKINGS_REFRESH_INTERVAL_SECS: i64 = 10;
+
+        loop {
+            let waiter = {
+                let mut cache = self.user_rankings_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && self
+                        .backend_time
+                        .instant_now()
+                        .saturating_duration_since(cached.generated_at)
+                        < USER_RANKINGS_CACHE_TTL
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let mut load_guard = UserRankingsLoadGuard::new(self.user_rankings_cache.clone());
+            let generated_at = self.backend_time.now_ts();
+            let snapshot = self
+                .key_store
+                .fetch_user_rankings_snapshot(generated_at, USER_RANKINGS_REFRESH_INTERVAL_SECS)
+                .await;
+            let mut cache = self.user_rankings_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = snapshot.as_ref() {
+                cache.cached = Some(CachedUserRankingsSnapshot {
+                    generated_at: self.backend_time.instant_now(),
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            load_guard.disarm();
+            return snapshot;
+        }
+    }
+
     pub fn current_request_rate_limit(&self) -> i64 {
         self.token_request_limit.current_request_limit()
     }

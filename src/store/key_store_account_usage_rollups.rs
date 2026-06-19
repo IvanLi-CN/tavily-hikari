@@ -1,4 +1,5 @@
 const ACCOUNT_USAGE_ROLLUP_METRIC_REQUEST_COUNT: &str = "request_count";
+const ACCOUNT_USAGE_ROLLUP_METRIC_PRIMARY_SUCCESS: &str = "primary_success";
 const ACCOUNT_USAGE_ROLLUP_METRIC_BUSINESS_CREDITS: &str = "business_credits";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_FIVE_MINUTE: &str = "five_minute";
 const ACCOUNT_USAGE_ROLLUP_BUCKET_HOUR: &str = "hour";
@@ -10,6 +11,7 @@ const ACCOUNT_USAGE_ROLLUP_INSERT_CHUNK_SIZE: usize = 400;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccountUsageRollupMetricKind {
     RequestCount,
+    PrimarySuccess,
     BusinessCredits,
 }
 
@@ -17,6 +19,7 @@ impl AccountUsageRollupMetricKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::RequestCount => ACCOUNT_USAGE_ROLLUP_METRIC_REQUEST_COUNT,
+            Self::PrimarySuccess => ACCOUNT_USAGE_ROLLUP_METRIC_PRIMARY_SUCCESS,
             Self::BusinessCredits => ACCOUNT_USAGE_ROLLUP_METRIC_BUSINESS_CREDITS,
         }
     }
@@ -243,7 +246,7 @@ impl KeyStore {
             .get_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA_MONTH_COVERAGE_START)
             .await?;
 
-        let request_rows = sqlx::query_as::<_, (String, i64, i64)>(
+        let request_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
             r#"
             SELECT
                 COALESCE(
@@ -255,7 +258,39 @@ impl KeyStore {
                     b.user_id
                 ) AS user_id,
                 (l.created_at / ?) * ? AS bucket_start,
-                COUNT(*) AS total
+                COUNT(*) AS total,
+                SUM(
+                    CASE
+                        WHEN l.result_status = 'success'
+                             AND (
+                                CASE
+                                    WHEN l.request_kind_key LIKE 'api:%' THEN 'valuable'
+                                    WHEN l.request_kind_key = 'mcp:batch' AND COALESCE(l.counts_business_quota, 0) <> 0 THEN 'valuable'
+                                    WHEN l.request_kind_key = 'mcp:batch' THEN 'other'
+                                    WHEN l.request_kind_key IN (
+                                        'mcp:search',
+                                        'mcp:extract',
+                                        'mcp:crawl',
+                                        'mcp:map',
+                                        'mcp:research'
+                                    ) THEN 'valuable'
+                                    WHEN l.request_kind_key IN (
+                                        'api:usage',
+                                        'mcp:initialize',
+                                        'mcp:ping',
+                                        'mcp:tools/list'
+                                    )
+                                    OR l.request_kind_key LIKE 'mcp:resources/%'
+                                    OR l.request_kind_key LIKE 'mcp:prompts/%'
+                                    OR l.request_kind_key LIKE 'mcp:notifications/%'
+                                    THEN 'other'
+                                    ELSE 'unknown'
+                                END
+                             ) = 'valuable'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS primary_success
             FROM auth_token_logs l
             LEFT JOIN user_token_bindings b ON b.token_id = l.token_id
             WHERE l.created_at >= ?
@@ -276,14 +311,22 @@ impl KeyStore {
         .bind(request_backfill_start)
         .fetch_all(&self.pool)
         .await?;
-        let request_records: Vec<AccountUsageRollupRecord> = request_rows
-            .into_iter()
-            .map(|(user_id, bucket_start, value)| AccountUsageRollupRecord {
-                user_id,
+        let mut request_records = Vec::with_capacity(request_rows.len());
+        let mut primary_success_records = Vec::new();
+        for (user_id, bucket_start, value, primary_success) in request_rows {
+            request_records.push(AccountUsageRollupRecord {
+                user_id: user_id.clone(),
                 bucket_start,
                 value,
-            })
-            .collect();
+            });
+            if primary_success > 0 {
+                primary_success_records.push(AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value: primary_success,
+                });
+            }
+        }
 
         let business_rows = sqlx::query_as::<_, (String, i64, i64)>(
             r#"
@@ -452,6 +495,19 @@ impl KeyStore {
         .bind(request_backfill_start)
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            r#"
+            DELETE FROM account_usage_rollup_buckets
+            WHERE metric_kind = ?
+              AND bucket_kind = ?
+              AND bucket_start >= ?
+            "#,
+        )
+        .bind(AccountUsageRollupMetricKind::PrimarySuccess.as_str())
+        .bind(AccountUsageRollupBucketKind::FiveMinute.as_str())
+        .bind(request_backfill_start)
+        .execute(&mut *tx)
+        .await?;
 
         for bucket_kind in [
             AccountUsageRollupBucketKind::FiveMinute,
@@ -493,6 +549,14 @@ impl KeyStore {
             AccountUsageRollupMetricKind::RequestCount,
             AccountUsageRollupBucketKind::FiveMinute,
             &request_records,
+            now_ts,
+        )
+        .await?;
+        replace_account_usage_rollup_records(
+            &mut tx,
+            AccountUsageRollupMetricKind::PrimarySuccess,
+            AccountUsageRollupBucketKind::FiveMinute,
+            &primary_success_records,
             now_ts,
         )
         .await?;

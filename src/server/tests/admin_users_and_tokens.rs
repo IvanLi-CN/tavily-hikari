@@ -3032,3 +3032,221 @@ use super::upstream_support_and_manual_jobs::*;
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[tokio::test]
+    async fn admin_user_rankings_http_and_sse_include_identity_and_windowed_leaderboards() {
+        let db_path = temp_db_path("admin-user-rankings");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let alice = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-rankings-alice".to_string(),
+                username: Some("alice".to_string()),
+                name: Some("Alice Chen".to_string()),
+                avatar_template: Some("/avatar/alice/{size}/1.png".to_string()),
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert alice");
+        let bob = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-rankings-bob".to_string(),
+                username: Some("bob".to_string()),
+                name: Some("Bob Lin".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert bob");
+
+        let alice_token = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("linuxdo:alice-rankings"))
+            .await
+            .expect("bind alice token");
+        let bob_token = proxy
+            .ensure_user_token_binding(&bob.user_id, Some("linuxdo:bob-rankings"))
+            .await
+            .expect("bind bob token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let now = Utc::now().timestamp();
+        let recent = now - 600;
+        let week_recent = now - 2 * 86_400;
+        let month_recent = now - 12 * 86_400;
+
+        for created_at in [recent, week_recent, month_recent] {
+            sqlx::query(
+                r#"
+                INSERT INTO auth_token_logs (
+                    token_id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
+                    result_status,
+                    error_message,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
+                    binding_effect_code,
+                    binding_effect_summary,
+                    selection_effect_code,
+                    selection_effect_summary,
+                    created_at,
+                    counts_business_quota,
+                    billing_subject,
+                    billing_state,
+                    business_credits,
+                    request_user_id
+                ) VALUES
+                    (?, 'POST', '/api/tavily/search', NULL, 200, NULL, 'api:search', 'API | search', NULL, 'success', NULL, NULL, 'none', NULL, 'none', NULL, 'none', NULL, ?, 1, ?, 'charged', ?, ?),
+                    (?, 'POST', '/api/tavily/search', NULL, 200, NULL, 'api:search', 'API | search', NULL, 'success', NULL, NULL, 'none', NULL, 'none', NULL, 'none', NULL, ?, 1, ?, 'charged', ?, ?)
+                "#,
+            )
+            .bind(&alice_token.id)
+            .bind(created_at)
+            .bind(format!("account:{}", alice.user_id))
+            .bind(7_i64)
+            .bind(&alice.user_id)
+            .bind(&bob_token.id)
+            .bind(created_at + 1)
+            .bind(format!("account:{}", bob.user_id))
+            .bind(3_i64)
+            .bind(&bob.user_id)
+            .execute(&pool)
+            .await
+            .expect("insert ranking auth logs");
+        }
+
+        proxy
+            .rebuild_ha_recovery_rollups()
+            .await
+            .expect("rebuild ranking rollups");
+
+        let admin_password = "admin-user-rankings-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let (client, admin_cookie) = login_builtin_admin_cookie(admin_addr, admin_password).await;
+
+        let rankings_resp = client
+            .get(format!("http://{}/api/users/rankings", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("rankings request");
+        assert_eq!(rankings_resp.status(), reqwest::StatusCode::OK);
+        let rankings_json: serde_json::Value = rankings_resp
+            .json()
+            .await
+            .expect("rankings json");
+        let expected_primary_top = if alice.user_id <= bob.user_id {
+            (&alice.user_id, "Alice Chen", "alice")
+        } else {
+            (&bob.user_id, "Bob Lin", "bob")
+        };
+
+        assert_eq!(
+            rankings_json
+                .get("refreshIntervalSecs")
+                .and_then(|value| value.as_i64()),
+            Some(10)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/primarySuccessTop/0/user/userId")
+                .and_then(|value| value.as_str()),
+            Some(expected_primary_top.0.as_str())
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/primarySuccessTop/0/user/displayName")
+                .and_then(|value| value.as_str()),
+            Some(expected_primary_top.1)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/primarySuccessTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last7d/primarySuccessTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last30d/businessCreditsTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(21)
+        );
+        let alice_primary_row = rankings_json
+            .get("last24h")
+            .and_then(|value| value.get("primarySuccessTop"))
+            .and_then(|value| value.as_array())
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.pointer("/user/userId").and_then(|value| value.as_str())
+                        == Some(alice.user_id.as_str())
+                })
+            })
+            .expect("alice primary success row");
+        assert!(
+            alice_primary_row
+                .pointer("/user/avatarUrl")
+                .and_then(|value| value.as_str())
+                .is_some(),
+            "expected avatar url to be resolved for alice"
+        );
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/users/rankings/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("rankings sse request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let snapshot_event = read_sse_event_until(
+            &mut events_resp,
+            |chunk| chunk.contains("event: snapshot"),
+            "rankings snapshot event",
+        )
+        .await;
+        let snapshot_json = decode_sse_json_text(&snapshot_event);
+
+        assert_eq!(
+            snapshot_json
+                .pointer("/last30d/primarySuccessTop/0/user/userId")
+                .and_then(|value| value.as_str()),
+            Some(expected_primary_top.0.as_str())
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/last30d/primarySuccessTop/0/user/username")
+                .and_then(|value| value.as_str()),
+            Some(expected_primary_top.2)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/last30d/businessCreditsTop/1/user/displayName")
+                .and_then(|value| value.as_str()),
+            Some("Bob Lin")
+        );
+
+        drop(events_resp);
+        let _ = std::fs::remove_file(db_path);
+    }

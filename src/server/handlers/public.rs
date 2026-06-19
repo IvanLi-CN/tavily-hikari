@@ -65,6 +65,40 @@ struct SummaryWindowsView {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct UserRankingIdentityView {
+    user_id: String,
+    display_name: Option<String>,
+    username: Option<String>,
+    avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserRankingRowView {
+    rank: i64,
+    value: i64,
+    user: UserRankingIdentityView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserRankingWindowView {
+    primary_success_top: Vec<UserRankingRowView>,
+    business_credits_top: Vec<UserRankingRowView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserRankingsSnapshotView {
+    generated_at: i64,
+    refresh_interval_secs: i64,
+    last24h: UserRankingWindowView,
+    last7d: UserRankingWindowView,
+    last30d: UserRankingWindowView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DashboardHourlyRequestBucketView {
     bucket_start: i64,
     secondary_success: i64,
@@ -165,6 +199,53 @@ impl From<tavily_hikari::DashboardMonthSeries> for DashboardMonthSeriesView {
     }
 }
 
+fn build_user_ranking_row_view(
+    row: tavily_hikari::UserRankingRow,
+    cfg: &LinuxDoOAuthOptions,
+) -> UserRankingRowView {
+    UserRankingRowView {
+        rank: row.rank,
+        value: row.value,
+        user: UserRankingIdentityView {
+            user_id: row.user.user_id,
+            display_name: row.user.display_name,
+            username: row.user.username,
+            avatar_url: resolve_linuxdo_avatar_url(cfg, row.user.avatar_template.as_deref()),
+        },
+    }
+}
+
+fn build_user_ranking_window_view(
+    window: tavily_hikari::UserRankingWindow,
+    cfg: &LinuxDoOAuthOptions,
+) -> UserRankingWindowView {
+    UserRankingWindowView {
+        primary_success_top: window
+            .primary_success_top
+            .into_iter()
+            .map(|row| build_user_ranking_row_view(row, cfg))
+            .collect(),
+        business_credits_top: window
+            .business_credits_top
+            .into_iter()
+            .map(|row| build_user_ranking_row_view(row, cfg))
+            .collect(),
+    }
+}
+
+fn build_user_rankings_snapshot_view(
+    snapshot: tavily_hikari::UserRankingsSnapshot,
+    cfg: &LinuxDoOAuthOptions,
+) -> UserRankingsSnapshotView {
+    UserRankingsSnapshotView {
+        generated_at: snapshot.generated_at,
+        refresh_interval_secs: snapshot.refresh_interval_secs,
+        last24h: build_user_ranking_window_view(snapshot.last24h, cfg),
+        last7d: build_user_ranking_window_view(snapshot.last7d, cfg),
+        last30d: build_user_ranking_window_view(snapshot.last30d, cfg),
+    }
+}
+
 async fn fetch_summary_windows(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -182,6 +263,54 @@ async fn fetch_summary_windows(
             eprintln!("summary windows error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })
+}
+
+async fn get_user_rankings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<UserRankingsSnapshotView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .user_rankings_snapshot()
+        .await
+        .map(|snapshot| Json(build_user_rankings_snapshot_view(snapshot, &state.linuxdo_oauth)))
+        .map_err(|err| {
+            eprintln!("user rankings error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn sse_user_rankings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let state = state.clone();
+
+    let stream = stream! {
+        loop {
+            match state.proxy.user_rankings_snapshot().await {
+                Ok(snapshot) => {
+                    let view = build_user_rankings_snapshot_view(snapshot, &state.linuxdo_oauth);
+                    match serde_json::to_string(&view) {
+                        Ok(json) => yield Ok(Event::default().event("snapshot").data(json)),
+                        Err(_) => yield Ok(Event::default().event("degraded").data("{}")),
+                    }
+                }
+                Err(_) => yield Ok(Event::default().event("degraded").data("{}")),
+            }
+
+            state.proxy.backend_time().sleep(Duration::from_secs(10)).await;
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
 #[derive(Debug, Deserialize)]
