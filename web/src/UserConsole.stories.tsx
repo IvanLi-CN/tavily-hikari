@@ -68,6 +68,7 @@ const guideProofLabels = [
 ] as const
 const removedTokenQuotaLabels = ['配额窗口', 'Quota Windows', '任意请求(1h)', 'Any Req (1h)']
 const removedTokenQuotaLabelsMobile = [...removedTokenQuotaLabels, '小时', '日', '月']
+const removedTokenInternalLabels = ['primary', 'backup', '备注', 'Note']
 
 function createRequestRate(
   used: number,
@@ -1582,7 +1583,7 @@ export const ConsoleHomeTokensFocus: Story = {
     await expectTokenListProof(
       canvasElement,
       '.user-console-tokens-table',
-      removedTokenQuotaLabels,
+      [...removedTokenQuotaLabels, ...removedTokenInternalLabels],
       [
         ['Status', '状态与最近使用'],
         ['Last Used', '最近使用'],
@@ -1606,7 +1607,7 @@ export const ConsoleHomeTokensFocusMobile: Story = {
     await expectTokenListProof(
       canvasElement,
       '.user-console-mobile-card',
-      removedTokenQuotaLabelsMobile,
+      [...removedTokenQuotaLabelsMobile, ...removedTokenInternalLabels],
       [
         ['状态与最近使用', 'Status & Activity'],
         ['最近使用', 'Last Used'],

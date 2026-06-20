@@ -20,7 +20,7 @@
 
 .user-console-tokens-table th:nth-child(1),
 .user-console-tokens-table td:nth-child(1) {
-  width: 20%;
+  width: 22%;
 }
 
 .user-console-tokens-table th:nth-child(2),
@@ -30,12 +30,12 @@
 
 .user-console-tokens-table th:nth-child(3),
 .user-console-tokens-table td:nth-child(3) {
-  width: 34%;
+  width: 30%;
 }
 
 .user-console-tokens-table th:nth-child(4),
 .user-console-tokens-table td:nth-child(4) {
-  width: 22%;
+  width: 24%;
 }
 
 .user-console-logs-table th:nth-child(1),
@@ -128,9 +128,9 @@
 
 .user-console-tokens-table .table-actions {
   justify-content: flex-end;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .user-console-tokens-table .table-actions button {
@@ -138,57 +138,80 @@
 }
 
 .user-console-tokens-section .user-console-tokens-table td {
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  vertical-align: middle;
 }
 
 .user-console-tokens-section .user-console-tokens-table tbody tr:not(:last-child) td {
   border-bottom: 1px solid hsl(var(--border) / 0.4);
 }
 
-.user-console-token-meta {
+.user-console-token-id-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
-.user-console-token-meta code {
+.user-console-token-id-cell code {
   overflow-wrap: anywhere;
 }
 
-.user-console-tokens-section .user-console-cell-stack {
+.user-console-token-status-summary {
   display: grid;
-  grid-template-columns: repeat(1, minmax(0, 1fr));
   gap: 8px;
-}
-
-.user-console-tokens-section .user-console-cell-item {
-  display: grid;
-  align-items: start;
-  justify-content: flex-start;
-  gap: 4px;
   min-width: 0;
-  border-radius: 14px;
-  border: 1px solid hsl(var(--border) / 0.58);
-  background: hsl(var(--muted) / 0.14);
-  padding: 8px 10px;
-  border-bottom-style: solid;
 }
 
-.user-console-tokens-section .user-console-cell-item:last-child {
-  padding-bottom: 8px;
+.user-console-token-status-badge {
+  width: fit-content;
 }
 
-.user-console-tokens-section .user-console-cell-item span {
+.user-console-token-last-used {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-console-token-last-used span,
+.user-console-token-stat span {
+  color: hsl(var(--muted-foreground));
   font-size: 0.72rem;
   font-weight: 700;
   line-height: 1.2;
+  letter-spacing: 0.01em;
 }
 
-.user-console-tokens-section .user-console-cell-item strong {
-  font-size: 0.86rem;
-  line-height: 1.25;
+.user-console-token-last-used strong,
+.user-console-token-stat strong {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: hsl(var(--foreground));
+}
+
+.user-console-token-last-used strong {
+  overflow-wrap: anywhere;
+}
+
+.user-console-token-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.user-console-token-stat {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.user-console-token-actions-desktop {
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
 }
 
 .user-console-log-stack {

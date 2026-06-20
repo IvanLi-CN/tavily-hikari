@@ -2705,7 +2705,7 @@ export default function UserConsole(): JSX.Element {
               ) : showEmptyTokens ? (
                 <div className="empty-state alert">{text.tokens.empty}</div>
               ) : (
-                <table className="user-console-tokens-table">
+                <table className="user-console-tokens-table" data-table-density="compact">
                   <thead>
                     <tr>
                       <th>{text.tokens.table.id}</th>
@@ -2720,40 +2720,35 @@ export default function UserConsole(): JSX.Element {
                       return (
                         <tr key={item.tokenId}>
                           <td>
-                            <div className="user-console-token-meta">
+                            <div className="user-console-token-id-cell">
                               <code>{item.tokenId}</code>
-                              {item.note?.trim() ? (
-                                <span className="panel-description">{text.tokens.table.note}: {item.note.trim()}</span>
-                              ) : null}
                             </div>
                           </td>
                           <td>
-                            <div className="user-console-cell-stack">
-                              <div className="user-console-cell-item">
-                                <span>{text.tokens.table.status}</span>
-                                <strong>
-                                  <StatusBadge tone={tokenListStatusTone(item.enabled)}>
-                                    {item.enabled ? text.tokens.table.enabled : text.tokens.table.disabled}
-                                  </StatusBadge>
-                                </strong>
-                              </div>
-                              <div className="user-console-cell-item">
+                            <div className="user-console-token-status-summary">
+                              <StatusBadge
+                                className="user-console-token-status-badge"
+                                tone={tokenListStatusTone(item.enabled)}
+                              >
+                                {item.enabled ? text.tokens.table.enabled : text.tokens.table.disabled}
+                              </StatusBadge>
+                              <div className="user-console-token-last-used">
                                 <span>{text.tokens.table.lastUsed}</span>
                                 <strong>{formatTokenLastUsedLabel(item.lastUsedAt, text.tokens.table.neverUsed)}</strong>
                               </div>
                             </div>
                           </td>
                           <td>
-                            <div className="user-console-cell-stack">
-                              <div className="user-console-cell-item">
+                            <div className="user-console-token-stats-grid">
+                              <div className="user-console-token-stat">
                                 <span>{text.tokens.table.dailySuccess}</span>
                                 <strong>{formatNumber(item.dailySuccess)}</strong>
                               </div>
-                              <div className="user-console-cell-item">
+                              <div className="user-console-token-stat">
                                 <span>{text.tokens.table.dailyFailure}</span>
                                 <strong>{formatNumber(item.dailyFailure)}</strong>
                               </div>
-                              <div className="user-console-cell-item">
+                              <div className="user-console-token-stat">
                                 <span>{text.tokens.table.monthlySuccess}</span>
                                 <strong>{formatNumber(item.monthlySuccess)}</strong>
                               </div>
@@ -2772,6 +2767,7 @@ export default function UserConsole(): JSX.Element {
                               onReset={openResetTokenDialog}
                               isCopyIntentKey={isCopyIntentKey}
                               canReset={item.enabled}
+                              className="user-console-token-actions-desktop"
                             />
                           </td>
                         </tr>
@@ -2807,12 +2803,6 @@ export default function UserConsole(): JSX.Element {
                         <span>{text.tokens.table.lastUsed}</span>
                         <strong>{formatTokenLastUsedLabel(item.lastUsedAt, text.tokens.table.neverUsed)}</strong>
                       </div>
-                      {item.note?.trim() ? (
-                        <div className="user-console-mobile-kv">
-                          <span>{text.tokens.table.note}</span>
-                          <strong>{item.note.trim()}</strong>
-                        </div>
-                      ) : null}
                       <div className="user-console-mobile-kv">
                         <span>{text.tokens.table.dailySuccess}</span>
                         <strong>{formatNumber(item.dailySuccess)}</strong>
