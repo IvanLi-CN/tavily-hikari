@@ -168,6 +168,13 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - If the live system stores the main DB and observability data in sibling SQLite files, export the
   offline validation input with SQLite `.backup` per file and carry forward SHA-256 plus
   `PRAGMA integrity_check` evidence for each member of the set.
+- If the snapshot export path stages large temporary backup files on the source host, treat cleanup
+  of those staging directories as part of the same maintenance runbook. A successful upload to the
+  shared testbox is not the end of the flow if tens of GiB remain under a temporary source path.
+- Treat disk hygiene as an explicit post-maintenance step. Remove orphaned one-off snapshot
+  directories, stale gzip/sqlite artifacts, and dangling images once the new release is verified, or
+  the next “database is too large” incident can be self-inflicted by leftover maintenance inputs
+  rather than live product data.
 - Avoid high-resource retention catch-up tactics such as rebuilding large log tables or producing a
   large WAL. If the backlog is very large, run repeated bounded cleanup windows and verify progress
   with row counts and resource telemetry.
@@ -203,6 +210,10 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
   a separate maintenance-window decision after retention cleanup has completed.
 - Automatic compaction should be threshold-gated and cooldown-limited. Triggering it on every GC
   pass can turn a cleanup backlog into a new writer-pressure loop.
+- Do not treat a large main SQLite file as proof that the main DB alone is the whole persistence
+  surface. In this project the observability sibling sidecar is part of the production-shaped input,
+  while `ha_outbox` and other retained rows can make the core file look “unreasonably large” until
+  retention cleanup and optional compaction are completed in the right order.
 - Stale `scheduled_jobs.running` rows from a previous process lifetime are still an operational
   restart concern. Claim-time stale abandonment should cover fresh quota-sync wedges, but the
   broader maintenance queue should abandon every leftover `queued`/`running` row on startup instead

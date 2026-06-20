@@ -109,12 +109,66 @@ Key points:
 
 ## Persistence, backup, and upgrades
 
-The key long-lived data is the SQLite file:
+The long-lived data is not just one main DB file:
 
-- default container path: `/srv/app/data/tavily_proxy.db`
-- back it up before upgrades
-- the container image itself is stateless, so most upgrades are just a new tag plus restart
+- core DB: `/srv/app/data/tavily_proxy.db`
+- observability sidecar: `/srv/app/data/tavily_proxy-observability.db`
 - if you maintain Caddy or reverse-proxy config alongside it, back that up too
+
+Upgrade notes:
+
+- the container image itself is stateless, so most upgrades are just a new tag plus restart
+- do not back up only `tavily_proxy.db` when preparing offline validation or rollback input; treat
+  the core DB plus the observability sidecar as one complete database set
+- prefer `scripts/export-live-db-snapshot-to-testbox.sh` when you need a read-only validation copy.
+  It runs SQLite `.backup` per file, records SHA-256 sums, and verifies `PRAGMA integrity_check`
+- after the service is already running the new image, remove maintenance leftovers such as orphaned
+  temporary snapshot directories, large one-off backup artifacts, and dangling images so disk usage
+  does not keep drifting upward
+
+## SQLite and HA maintenance windows
+
+If you see `database is locked`, long-running `quota_sync` rows, oversized `ha_outbox` backlog, or
+unexpected SQLite file growth, keep the recovery flow consistent:
+
+1. roll forward to the target image and do a controlled restart
+2. verify `/health` returns `200`
+3. confirm `scheduled_jobs` has no fresh long-running `quota_sync*` `running` rows
+4. confirm `database is locked` is no longer continuously spiking in logs
+5. use `request_logs_gc_once` first for request-log backlog
+6. use `ha_outbox_cleanup_once` or `scripts/ha-outbox-maintenance.sh` first for HA outbox backlog
+7. run `db_compaction_once` only when `reclaimable_bytes >= 512MB` or you are explicitly in a
+   maintenance window
+8. clean temporary snapshots, offline backup intermediates, and dangling images after the
+   maintenance pass
+
+The operator CLIs inside the image are:
+
+```bash
+request_logs_gc_once --json
+ha_outbox_cleanup_once --json
+db_compaction_once --json
+db_compaction_once --json --force
+```
+
+For large offline validation or cleanup rehearsal, export a full read-only snapshot set from 101
+before copying it to the shared testbox:
+
+```bash
+scripts/export-live-db-snapshot-to-testbox.sh
+```
+
+Notes:
+
+- `request_logs_gc_once` performs bounded request-log/body cleanup
+- `ha_outbox_cleanup_once` performs bounded historical HA outbox cleanup; the online `ha_outbox_gc`
+  scheduler is intentionally lighter and handles freshness cleanup only
+- `scripts/ha-outbox-maintenance.sh` is the operator wrapper that keeps the order as “cleanup
+  first, compaction only if needed”
+- `db_compaction_once` shrinks SQLite files and honors the reclaimable-space threshold by default
+- `db_compaction_once --force` is only for an explicit maintenance window
+- offline validation input must be the full DB set: `tavily_proxy.db` plus
+  `tavily_proxy-observability.db`, not the main DB alone
 
 ## High-anonymity forwarding
 
