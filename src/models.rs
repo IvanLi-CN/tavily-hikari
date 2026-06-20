@@ -7,6 +7,7 @@ use std::{
     collections::HashSet,
     net::{IpAddr, SocketAddr},
 };
+use tracing::{error, info};
 
 pub const DEFAULT_TRUSTED_PROXY_CIDRS: &[&str] = &["127.0.0.0/8", "::1/128"];
 
@@ -2930,7 +2931,15 @@ pub(crate) fn log_success(
 ) {
     let key_preview = preview_key(key);
     let full_path = compose_path(path, query);
-    println!("[{key_preview}] {method} {full_path} -> {status}");
+    info!(
+        component = "proxy",
+        event = "upstream_request_succeeded",
+        key_preview,
+        method = %method,
+        path = %full_path,
+        status = status.as_u16(),
+        "[{key_preview}] {method} {full_path} -> {status}"
+    );
 }
 
 pub(crate) fn log_error(
@@ -2942,7 +2951,15 @@ pub(crate) fn log_error(
 ) {
     let key_preview = preview_key(key);
     let full_path = compose_path(path, query);
-    eprintln!("[{key_preview}] {method} {full_path} !! {err}");
+    error!(
+        component = "proxy",
+        event = "upstream_request_failed",
+        key_preview,
+        method = %method,
+        path = %full_path,
+        err = %err,
+        "[{key_preview}] {method} {full_path} !! {err}"
+    );
 }
 
 pub(crate) fn log_proxy_error(
@@ -2957,7 +2974,15 @@ pub(crate) fn log_proxy_error(
         _ => {
             let key_preview = preview_key(key);
             let full_path = compose_path(path, query);
-            eprintln!("[{key_preview}] {method} {full_path} !! {err}");
+            error!(
+                component = "proxy",
+                event = "proxy_request_failed",
+                key_preview,
+                method = %method,
+                path = %full_path,
+                err = %err,
+                "[{key_preview}] {method} {full_path} !! {err}"
+            );
         }
     }
 }

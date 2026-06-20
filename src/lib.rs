@@ -1,3 +1,5 @@
+#[macro_use]
+mod runtime_logging;
 mod admin_token_filters;
 mod analysis;
 mod backend_time;
@@ -38,9 +40,13 @@ pub use forward_proxy::{
 pub use ha::*;
 pub use linuxdo_credit_recharge::*;
 pub use models::*;
+pub use runtime_logging::{
+    LegacyStdIoLevel, RuntimeLogFormat, emit_legacy_stdio_event, init_runtime_logging,
+};
 pub use tavily_proxy::*;
 
 use std::{
+    cell::Cell,
     cmp::min,
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
@@ -68,32 +74,10 @@ use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::Instant;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use url::form_urlencoded;
 
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
-
-static RUNTIME_LOGGING_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
-pub fn init_runtime_logging() {
-    RUNTIME_LOGGING_INIT.get_or_init(|| {
-        let filter = EnvFilter::try_from_default_env()
-            .or_else(|_| EnvFilter::try_new("warn,sqlx::query=warn"))
-            .unwrap_or_else(|_| EnvFilter::new("warn"));
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                fmt::layer()
-                    .with_writer(std::io::stderr)
-                    .with_target(true)
-                    .without_time()
-                    .compact(),
-            )
-            .try_init()
-            .ok();
-    });
-}
 
 pub fn emit_db_operation_slow_log(operation: &str, elapsed: Duration, context: Option<&str>) {
     store::log_slow_db_operation(operation, elapsed, context);
@@ -934,6 +918,50 @@ const META_KEY_ADMIN_TOTP_FAILURE_COUNT_V1: &str = "admin_totp_failure_count_v1"
 const META_KEY_ADMIN_TOTP_LOCKED_UNTIL_V1: &str = "admin_totp_locked_until_v1";
 const META_KEY_REQUEST_RATE_LIMIT_V1: &str = "request_rate_limit_v1";
 const META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1: &str = "auth_token_log_retention_days_v1";
+
+static PROCESS_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+thread_local! {
+    static PROCESS_ENV_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub struct ProcessEnvLockGuard {
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+pub fn lock_process_env() -> ProcessEnvLockGuard {
+    let nested = PROCESS_ENV_LOCK_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current > 0
+    });
+    if nested {
+        ProcessEnvLockGuard { _guard: None }
+    } else {
+        let guard = PROCESS_ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ProcessEnvLockGuard {
+            _guard: Some(guard),
+        }
+    }
+}
+
+impl Drop for ProcessEnvLockGuard {
+    fn drop(&mut self) {
+        PROCESS_ENV_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            debug_assert!(current > 0, "process env lock depth underflow");
+            depth.set(current.saturating_sub(1));
+        });
+    }
+}
+
+fn with_process_env_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = lock_process_env();
+    f()
+}
 const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
 const META_KEY_REBALANCE_MCP_ENABLED_V1: &str = "rebalance_mcp_enabled_v1";
 const META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1: &str = "rebalance_mcp_session_percent_v1";
@@ -1113,7 +1141,7 @@ pub fn normalize_auth_token_log_retention_days(value: i64) -> Option<i64> {
 }
 
 fn parse_auth_token_log_retention_days_env() -> Result<Option<i64>, String> {
-    match std::env::var("AUTH_TOKEN_LOG_RETENTION_DAYS") {
+    with_process_env_lock(|| match std::env::var("AUTH_TOKEN_LOG_RETENTION_DAYS") {
         Ok(raw) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
@@ -1134,7 +1162,7 @@ fn parse_auth_token_log_retention_days_env() -> Result<Option<i64>, String> {
                 })
         }
         Err(_) => Ok(None),
-    }
+    })
 }
 
 pub fn default_auth_token_log_retention_days() -> i64 {

@@ -114,6 +114,7 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--bind` / `PROXY_BIND`                                                             | Listen address (default `127.0.0.1`).                                                                                |
 | `--port` / `PROXY_PORT`                                                             | Listen port (default `8787`).                                                                                        |
 | `--db-path` / `PROXY_DB_PATH`                                                       | SQLite file path (default `tavily_proxy.db`).                                                                        |
+| `--log-format` / `RUNTIME_LOG_FORMAT`                                               | Runtime log formatter (`json` by default, `text` for fallback grep workflows).                                       |
 | `--low-quota-depletion-threshold` / `LOW_QUOTA_DEPLETION_THRESHOLD`                 | Remaining-credit threshold for keeping 432-exhausted upstream keys out of normal monthly pools (default `15`).       |
 | `--static-dir` / `WEB_STATIC_DIR`                                                   | Directory for static assets; auto-detected if `web/dist` exists.                                                     |
 | `--forward-auth-header` / `FORWARD_AUTH_HEADER`                                     | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                                  |
@@ -190,6 +191,9 @@ For the full HTTP proxy design and acceptance criteria, see [`docs/tavily-http-a
 - `exhausted` status is triggered automatically when upstream returns 432; scheduler skips those keys until UTC month rollover or manual recovery.
 - Each access token maintains a soft affinity to a single API key for a short time window. Within that window, the proxy prefers the same key when it remains active; when affinity expires or the key becomes exhausted/disabled, the next key is chosen by a global least‑recently‑used scheduler to keep load balanced across healthy keys. If all are disabled, the proxy falls back to the oldest disabled entries.
 - `request_logs` captures request metadata, upstream payloads, and dropped/forwarded header sets for postmortem analysis.
+- Runtime process logs are separate from `request_logs`. By default Hikari emits JSON lines on stderr via `tracing`; use `RUNTIME_LOG_FORMAT=text` (or `--log-format text`) only when you explicitly need grep-friendly local fallback output.
+- Stable runtime event fields include `component`, `event`, and per-path fields such as `operation`, `job_type`, `attempt`, `backoff_ms`, `path`, `method`, and `err`. Secrets, full tokens, cookies, and raw sensitive headers are intentionally excluded.
+- `RUST_LOG` still controls filtering. Typical operator flows are `docker logs ... | jq -c` in JSON mode and `RUNTIME_LOG_FORMAT=text RUST_LOG=info cargo run ... | rg "component=db|event=operation_"` in fallback text mode.
 - High-anonymity behavior (header allowlist, origin rewrite, etc.) is detailed in [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
 
 ## ForwardAuth Integration

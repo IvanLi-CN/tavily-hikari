@@ -2,22 +2,21 @@
 
 ## Current Coverage
 
-- Added a runtime DB logging contract for the online service surface without migrating the whole
-  repo to structured logging. Runtime SQLite pool creation now initializes a minimal
-  `tracing_subscriber` backend once at process startup, and all runtime `SqliteConnectOptions`
-  enable `sqlx` slow statement logging at `250ms`.
-- Added shared DB operation log helpers in `src/store/mod.rs`. They emit stable stderr lines using
-  `db operation slow:` and `db operation error:` with `operation=...`, `elapsed_ms=...`, optional
-  `context=...`, and optional `err=...`, so startup, request-path, and background DB phases can be
-  grepped with one contract.
+- Added a runtime logging contract for the online service surface based on `tracing` +
+  `tracing-subscriber`. Runtime logging now defaults to JSON lines on stderr, exposes a documented
+  `RUNTIME_LOG_FORMAT=text` fallback for grep-oriented workflows, and keeps `RUST_LOG` filtering
+  intact. All runtime `SqliteConnectOptions` still enable `sqlx` slow statement logging at `250ms`.
+- Added shared DB operation log helpers in `src/store/mod.rs`. They emit stable structured events
+  with `component=db`, `event=operation_slow|operation_error`, `operation=...`,
+  `elapsed_ms=...`, optional `context=...`, and optional `err=...`, so startup, request-path, and
+  background DB phases can be filtered with one contract in both JSON and fallback text mode.
 - Runtime DB operation logs intentionally do not include SQL bind values. The SQL-level
   `sqlx::query` slow-statement warnings keep the statement text/summary and timing, while the
   explicit phase-level helper keeps only operation/context metadata to avoid leaking secrets.
 - Startup SQLite open / observability-attach probe / schema initialization now pass through that
-  shared helper with a `1s` slow-operation threshold. The existing
-  `forward-proxy startup: sqlite initialized in ...` line remains in place for historical grep
-  continuity, and the new `db operation slow:`/`error:` lines make it clear which startup DB phase
-  stalled or failed.
+  shared helper with a `1s` slow-operation threshold. Startup/shutdown/HA/forward-proxy paths also
+  emit named runtime events (`component`, `event`, and path-specific fields), so operators can tell
+  which startup DB phase stalled or failed without depending on ad hoc stderr text.
 - Request-path DB work now has unified phase logs around LinuxDo OAuth upsert/profile refresh and
   pending billing settlement. That covers the same classes already seen in production after
   `2026-06-19 01:00 +08:00`: `oauth account upsert`, `apply_pending_billing_log`, and the
@@ -303,12 +302,12 @@
   - request-path/user writes: `upsert linuxdo oauth account error`,
     `oauth account upsert: transient sqlite write error`, `apply_pending_billing_log`, and
     `/api/tavily/search` proxy failures bubbling a `database is locked`
-- The new runtime DB logging contract is designed to map those same symptoms onto stable grep keys:
-  - `db operation slow: operation=sqlite startup ...`
-  - `db operation error: operation=scheduled job enqueue ...`
-  - `db operation error: operation=request stats persist ...`
-  - `db operation error|slow: operation=oauth account upsert ...`
-  - `db operation error|slow: operation=apply_pending_billing_log ...`
+- The new runtime DB logging contract is designed to map those same symptoms onto stable fields:
+  - `component=db event=operation_slow operation="sqlite startup" ...`
+  - `component=db event=operation_error operation="scheduled job enqueue" ...`
+  - `component=db event=operation_error operation="request stats persist" ...`
+  - `component=db event=operation_error|operation_slow operation="oauth account upsert" ...`
+  - `component=db event=operation_error|operation_slow operation="apply_pending_billing_log" ...`
   - `sqlx::query` warn lines for statements slower than `250ms`
 - Production baseline was read-only: container healthy, version `0.46.2`, database `8.3G`, WAL
   `235M`, and the most recent one-hour lock sample only showed LinuxDo OAuth upsert contention.

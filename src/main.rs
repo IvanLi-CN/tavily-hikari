@@ -1,3 +1,29 @@
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        tavily_hikari::emit_legacy_stdio_event(
+            tavily_hikari::LegacyStdIoLevel::Info,
+            module_path!(),
+            file!(),
+            line!(),
+            format_args!($($arg)*),
+        )
+    }};
+}
+
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        tavily_hikari::emit_legacy_stdio_event(
+            tavily_hikari::LegacyStdIoLevel::Warn,
+            module_path!(),
+            file!(),
+            line!(),
+            format_args!($($arg)*),
+        )
+    }};
+}
+
 mod server;
 
 use std::{
@@ -9,9 +35,10 @@ use argon2::password_hash::PasswordHash;
 use clap::Parser;
 use dotenvy::dotenv;
 use tavily_hikari::{
-    DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, TavilyProxy,
-    TavilyProxyOptions,
+    DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, RuntimeLogFormat,
+    TavilyProxy, TavilyProxyOptions,
 };
+use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Tavily reverse proxy with key rotation")]
@@ -300,13 +327,17 @@ struct Cli {
     /// HA standby pull sync interval in seconds, clamped to 5-15.
     #[arg(long, env = "HA_SYNC_INTERVAL_SECS", default_value_t = 15)]
     ha_sync_interval_secs: u64,
+
+    /// Runtime log formatter (`json` by default, `text` for fallback grep workflows).
+    #[arg(long, env = "RUNTIME_LOG_FORMAT", value_enum, default_value_t = RuntimeLogFormat::Json)]
+    log_format: RuntimeLogFormat,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    tavily_hikari::init_runtime_logging();
     let cli = Cli::parse();
+    tavily_hikari::init_runtime_logging(cli.log_format);
     reject_legacy_ha_origin_env_vars()?;
 
     // Ensure parent directory for database exists when using nested path like data/tavily_proxy.db
@@ -316,7 +347,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         std::fs::create_dir_all(parent)?;
     }
-    println!("Using database: {}", db_path.display());
+    info!(
+        component = "startup",
+        event = "database_path_resolved",
+        path = %db_path.display(),
+        log_format = %cli.log_format,
+        "resolved runtime database path"
+    );
 
     let proxy_options = TavilyProxyOptions {
         xray_binary: cli.xray_binary,
@@ -381,11 +418,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.admin_auth_builtin_enabled {
         match (&builtin_password_hash, &builtin_password) {
-            (Some(_), Some(_)) => println!(
-                "Built-in auth: both password and password hash are set; using password hash"
+            (Some(_), Some(_)) => info!(
+                component = "startup",
+                event = "builtin_auth_configured",
+                mode = "password_hash_preferred",
+                "built-in auth configured with both password and password hash; preferring hash"
             ),
-            (None, Some(_)) => println!(
-                "Built-in auth: using plaintext password (not recommended); prefer ADMIN_AUTH_BUILTIN_PASSWORD_HASH"
+            (None, Some(_)) => warn!(
+                component = "startup",
+                event = "builtin_auth_configured",
+                mode = "plaintext_password",
+                "built-in auth configured with plaintext password; prefer ADMIN_AUTH_BUILTIN_PASSWORD_HASH"
             ),
             _ => {}
         }
@@ -418,17 +461,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scope.to_string()
         }
     };
-    let linuxdo_oauth_refresh_token_crypt_key = match parse_linuxdo_refresh_token_crypt_key(
-        cli.linuxdo_oauth_refresh_token_crypt_key,
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!(
-                "warning: {err}; LinuxDo refresh-token persistence and daily user sync will stay disabled"
-            );
-            None
-        }
-    };
+    let linuxdo_oauth_refresh_token_crypt_key =
+        match parse_linuxdo_refresh_token_crypt_key(cli.linuxdo_oauth_refresh_token_crypt_key) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(
+                    component = "startup",
+                    event = "linuxdo_refresh_token_key_invalid",
+                    err = %err,
+                    "linuxdo refresh-token persistence and daily user sync stay disabled"
+                );
+                None
+            }
+        };
     let linuxdo_oauth_user_sync_at =
         parse_hhmm(&cli.linuxdo_oauth_user_sync_at).ok_or_else(|| {
             format!(

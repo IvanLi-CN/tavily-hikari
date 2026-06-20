@@ -107,6 +107,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--bind` / `PROXY_BIND`                                                             | 监听地址，默认 `127.0.0.1`。                                                                                                 |
 | `--port` / `PROXY_PORT`                                                             | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
 | `--db-path` / `PROXY_DB_PATH`                                                       | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
+| `--log-format` / `RUNTIME_LOG_FORMAT`                                               | 运行期日志格式，默认 `json`；需要本地 `grep`/迁移期排障时可显式切到 `text`。                                                 |
 | `--static-dir` / `WEB_STATIC_DIR`                                                   | Web 静态目录，若缺省且存在 `web/dist` 会自动挂载。                                                                           |
 | `--forward-auth-header` / `FORWARD_AUTH_HEADER`                                     | 指定 ForwardAuth 注入的“用户标识”请求头（如 `Remote-Email`）。                                                               |
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
@@ -184,6 +185,10 @@ Tavily Hikari 通过 `/api/tavily/search` 为 Tavily HTTP API 提供代理与密
 - **额度感知**：当 Tavily 返回 432 时会自动将 Key 标记为 `exhausted`，轮询器将跳过该 Key，直到 UTC 月初或手动恢复。
 - **调度算法**：优先选择最久未使用的 `active` Key；若全部被禁用则按照禁用时间回退，避免请求被直接拒绝。
 - **日志字段**：`request_logs` 记录 method/path/query、上游响应体、状态码、错误堆栈、透传/丢弃头部，便于配额排障。
+- **运行日志与审计分层**：`request_logs` / token logs 继续承担业务审计与 owner-facing 查询；进程级 runtime logging 默认改为 `tracing` 的 JSON 行输出，写入 stderr，供容器/平台侧聚合。
+- **默认 JSON，显式 text 回退**：默认使用 `RUNTIME_LOG_FORMAT=json`；只有在本地 grep、迁移窗口或临时排障时，才显式设置 `RUNTIME_LOG_FORMAT=text`（或 `--log-format text`）。
+- **稳定字段契约**：运行日志稳定字段包括 `component`、`event`，以及按场景补充的 `operation`、`job_type`、`attempt`、`backoff_ms`、`path`、`method`、`err` 等；不会输出完整 Tavily key、Hikari token secret、cookie 或原始敏感头。
+- **过滤方式不变**：继续使用 `RUST_LOG` 控制日志级别；JSON 模式建议配合 `jq`，text 回退模式建议配合 `rg`/`grep`。
 - **匿名策略**：详见 [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md)，包括允许/丢弃的头部列表、主机名改写策略等。
 
 ## ForwardAuth 配置

@@ -12,7 +12,7 @@
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
@@ -462,22 +462,15 @@
         .expect("insert maintenance reference");
     }
 
-    pub(super) fn env_var_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     pub(super) struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
-        _lock: MutexGuard<'static, ()>,
+        _lock: tavily_hikari::ProcessEnvLockGuard,
     }
 
     impl EnvVarGuard {
         pub(super) fn set(key: &'static str, value: &str) -> Self {
-            let lock = env_var_test_lock()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = tavily_hikari::lock_process_env();
             let previous = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);

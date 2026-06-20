@@ -9,6 +9,7 @@ use sqlx::SqliteConnection;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use tracing::log::LevelFilter;
+use tracing::{error, warn};
 
 pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
@@ -161,7 +162,12 @@ pub(crate) fn log_slow_db_operation(operation: &str, elapsed: Duration, context:
     if elapsed < SQLITE_SLOW_OPERATION_THRESHOLD {
         return;
     }
-    eprintln!(
+    warn!(
+        component = "db",
+        event = "operation_slow",
+        operation,
+        elapsed_ms = elapsed.as_millis() as u64,
+        context = context.unwrap_or(""),
         "{}",
         format_db_operation_log(DbLogStatus::Slow, operation, elapsed, context, None)
     );
@@ -173,7 +179,13 @@ pub(crate) fn log_db_operation_error(
     context: Option<&str>,
     err: &ProxyError,
 ) {
-    eprintln!(
+    error!(
+        component = "db",
+        event = "operation_error",
+        operation,
+        elapsed_ms = elapsed.as_millis() as u64,
+        context = context.unwrap_or(""),
+        err = %err,
         "{}",
         format_db_operation_log(
             DbLogStatus::Error,
@@ -236,10 +248,16 @@ pub(crate) async fn sleep_before_sqlite_transient_write_retry(
 
     let remaining = deadline.saturating_duration_since(now);
     let backoff = sqlite_transient_write_retry_delay(attempt).min(remaining);
-    eprintln!(
+    warn!(
+        component = "db",
+        event = "sqlite_transient_write_retry",
+        operation,
+        attempt = attempt + 1,
+        backoff_ms = backoff.as_millis() as u64,
+        err = %err,
         "{operation}: transient sqlite write error (attempt={}, backoff={}ms): {err}",
         attempt + 1,
-        backoff.as_millis()
+        backoff.as_millis(),
     );
     backend_time.sleep(backoff).await;
     true

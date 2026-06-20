@@ -25,11 +25,11 @@ pub async fn serve(
     );
     let ha = tavily_hikari::HaRuntime::new(ha_config);
     let previous_ha_role = proxy.get_persisted_ha_node_role().await.unwrap_or_else(|err| {
-        eprintln!("HA persisted role lookup warning: {err}");
+        tracing::warn!(component = "ha", event = "persisted_role_lookup_failed", err = %err, "HA persisted role lookup warning");
         None
     });
     let persisted_ha_source_settings = proxy.get_ha_source_settings().await.unwrap_or_else(|err| {
-        eprintln!("HA source settings lookup warning: {err}");
+        tracing::warn!(component = "ha", event = "source_settings_lookup_failed", err = %err, "HA source settings lookup warning");
         None
     });
     let startup_ha_status = reconcile_ha_startup_role(&ha, previous_ha_role).await;
@@ -38,7 +38,7 @@ pub async fn serve(
             .set_local_source_settings(Some(settings.clone()))
             .await
     {
-        eprintln!("HA source settings restore warning: {err}");
+        tracing::warn!(component = "ha", event = "source_settings_restore_failed", err = %err, "HA source settings restore warning");
     }
     if let Err(err) = async {
         proxy
@@ -54,7 +54,7 @@ pub async fn serve(
     }
     .await
     {
-        eprintln!("HA startup node state persist warning: {err}");
+        tracing::warn!(component = "ha", event = "startup_node_state_persist_failed", err = %err, "HA startup node state persist warning");
     }
     let state = Arc::new(AppState {
         proxy,
@@ -71,68 +71,97 @@ pub async fn serve(
     });
     match state.proxy.abandon_active_scheduled_jobs().await {
         Ok(count) if count > 0 => {
-            eprintln!("scheduled-jobs: abandoned {count} stale queued/running jobs from previous process")
+            tracing::warn!(
+                component = "scheduler",
+                event = "stale_jobs_abandoned",
+                count,
+                "scheduled-jobs: abandoned stale queued/running jobs from previous process"
+            )
         }
         Ok(_) => {}
-        Err(err) => eprintln!("scheduled-jobs: stale queued/running cleanup warning: {err}"),
+        Err(err) => tracing::warn!(
+            component = "scheduler",
+            event = "stale_jobs_cleanup_failed",
+            err = %err,
+            "scheduled-jobs: stale queued/running cleanup warning"
+        ),
     }
     spawn_ha_standby_sync_task(state.clone());
-    println!(
-        "Admin auth modes: forward_enabled={} builtin_enabled={} dev_open_admin={}",
-        state.forward_auth_enabled,
-        state.builtin_admin.is_enabled(),
-        state.dev_open_admin
+    tracing::info!(
+        component = "startup",
+        event = "admin_auth_modes",
+        forward_enabled = state.forward_auth_enabled,
+        builtin_enabled = state.builtin_admin.is_enabled(),
+        dev_open_admin = state.dev_open_admin,
+        "configured admin auth modes"
     );
 
     if !state.forward_auth_enabled {
-        println!("Forward-Auth: disabled (ADMIN_AUTH_FORWARD_ENABLED=false)");
+        tracing::info!(
+            component = "startup",
+            event = "forward_auth_configuration",
+            enabled = false,
+            reason = "ADMIN_AUTH_FORWARD_ENABLED=false",
+            "forward auth disabled"
+        );
     } else if let Some(h) = state.forward_auth.user_header() {
-        println!(
-            "Forward-Auth: header='{}' admin_value='{}'",
-            h,
-            state.forward_auth.admin_value().unwrap_or("<none>")
+        tracing::info!(
+            component = "startup",
+            event = "forward_auth_configuration",
+            enabled = true,
+            header = %h,
+            admin_value_present = state.forward_auth.admin_value().is_some(),
+            "forward auth enabled"
         );
     } else {
-        println!(
-            "Forward-Auth: disabled (no user header), admin_override={} dev_open_admin={}",
-            state.forward_auth.admin_override_name().unwrap_or("<none>"),
-            state.dev_open_admin
+        tracing::warn!(
+            component = "startup",
+            event = "forward_auth_configuration",
+            enabled = false,
+            reason = "missing_user_header",
+            admin_override_present = state.forward_auth.admin_override_name().is_some(),
+            dev_open_admin = state.dev_open_admin,
+            "forward auth disabled because no user header is configured"
         );
     }
 
-    println!(
-        "LinuxDo OAuth: enabled={} configured={} redirect={}",
-        state.linuxdo_oauth.enabled,
-        state.linuxdo_oauth.is_enabled_and_configured(),
-        state
-            .linuxdo_oauth
-            .redirect_url
-            .as_deref()
-            .unwrap_or("<none>")
+    tracing::info!(
+        component = "startup",
+        event = "linuxdo_oauth_configuration",
+        enabled = state.linuxdo_oauth.enabled,
+        configured = state.linuxdo_oauth.is_enabled_and_configured(),
+        redirect_configured = state.linuxdo_oauth.redirect_url.is_some(),
+        "linuxdo oauth configuration loaded"
     );
     let (linuxdo_user_sync_hour, linuxdo_user_sync_minute) = state.linuxdo_oauth.user_sync_time();
-    println!(
-        "LinuxDo user sync: scheduler_enabled={} oauth_ready={} refresh_token_key={} at={:02}:{:02}",
-        state.linuxdo_oauth.is_user_sync_scheduler_enabled(),
-        state.linuxdo_oauth.is_enabled_and_configured(),
-        state.linuxdo_oauth.has_refresh_token_crypt_key(),
-        linuxdo_user_sync_hour,
-        linuxdo_user_sync_minute,
+    tracing::info!(
+        component = "startup",
+        event = "linuxdo_user_sync_configuration",
+        scheduler_enabled = state.linuxdo_oauth.is_user_sync_scheduler_enabled(),
+        oauth_ready = state.linuxdo_oauth.is_enabled_and_configured(),
+        refresh_token_key = state.linuxdo_oauth.has_refresh_token_crypt_key(),
+        sync_hour = linuxdo_user_sync_hour,
+        sync_minute = linuxdo_user_sync_minute,
+        "linuxdo user sync configuration loaded"
     );
-    println!(
-        "LinuxDo Credit: enabled={} configured={} submit_url={}",
-        state.linuxdo_credit.enabled,
-        state.linuxdo_credit.is_enabled_and_configured(),
-        state.linuxdo_credit.submit_url
+    tracing::info!(
+        component = "startup",
+        event = "linuxdo_credit_configuration",
+        enabled = state.linuxdo_credit.enabled,
+        configured = state.linuxdo_credit.is_enabled_and_configured(),
+        submit_url = %state.linuxdo_credit.submit_url,
+        "linuxdo credit configuration loaded"
     );
     let ha_status = state.ha.status().await;
-    println!(
-        "HA: mode={:?} node={} role={:?} origin={:?} edgeone_domain={:?}",
-        ha_status.mode,
-        ha_status.node_id,
-        ha_status.role,
-        ha_status.edgeone_origin,
-        ha_status.edgeone_domain
+    tracing::info!(
+        component = "ha",
+        event = "startup_status",
+        mode = ?ha_status.mode,
+        node_id = %ha_status.node_id,
+        role = ?ha_status.role,
+        origin = ?ha_status.edgeone_origin,
+        edgeone_domain = ?ha_status.edgeone_domain,
+        "ha startup status loaded"
     );
 
     let mut router = Router::new()
@@ -432,7 +461,12 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
-    println!("Tavily proxy listening on http://{bound_addr}");
+    tracing::info!(
+        component = "startup",
+        event = "server_listening",
+        bind_addr = %bound_addr,
+        "tavily proxy listening"
+    );
 
     // Spawn background schedulers
     spawn_maintenance_worker(state.clone());
@@ -460,7 +494,11 @@ pub async fn serve(
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
-    println!("Server shut down gracefully.");
+    tracing::info!(
+        component = "shutdown",
+        event = "server_shutdown_complete",
+        "server shut down gracefully"
+    );
     Ok(())
 }
 
@@ -471,7 +509,12 @@ async fn reconcile_ha_startup_role(
     let startup_role_checked = match ha.refresh_startup_role().await {
         Ok(()) => true,
         Err(err) => {
-            eprintln!("HA startup role check warning: {err}");
+            tracing::warn!(
+                component = "ha",
+                event = "startup_role_check_failed",
+                err = %err,
+                "HA startup role check warning"
+            );
             false
         }
     };
@@ -502,8 +545,12 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
         return;
     };
     let Some(internal_token) = state.ha.internal_token() else {
-        eprintln!(
-            "HA standby sync disabled: HA_INTERNAL_TOKEN is required when HA_SYNC_SOURCE_URL is set"
+        tracing::warn!(
+            component = "ha",
+            event = "standby_sync_disabled",
+            reason = "missing_internal_token",
+            source_url = source_url,
+            "HA standby sync disabled because HA_INTERNAL_TOKEN is required when HA_SYNC_SOURCE_URL is set"
         );
         return;
     };
@@ -515,7 +562,13 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
                 && let Err(err) =
                     run_ha_standby_sync_once(&state, &client, &source_url, &internal_token).await
             {
-                eprintln!("HA standby sync failed: {err}");
+                tracing::warn!(
+                    component = "ha",
+                    event = "standby_sync_failed",
+                    source_url = source_url,
+                    err = %err,
+                    "HA standby sync failed"
+                );
             }
             state.proxy.backend_time().sleep(interval).await;
         }
@@ -695,11 +748,21 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                     }
                     .await
                     {
-                        eprintln!("HA authority state persist failed: {err}");
+                        tracing::warn!(
+                            component = "ha",
+                            event = "authority_state_persist_failed",
+                            err = %err,
+                            "HA authority state persist failed"
+                        );
                     }
                 }
                 Err(err) => {
-                    eprintln!("HA authority refresh failed: {err}");
+                    tracing::warn!(
+                        component = "ha",
+                        event = "authority_refresh_failed",
+                        err = %err,
+                        "HA authority refresh failed"
+                    );
                 }
             }
         }
@@ -710,7 +773,12 @@ async fn wait_for_ctrl_c() -> &'static str {
     match signal::ctrl_c().await {
         Ok(()) => "ctrl_c",
         Err(err) => {
-            eprintln!("Failed to listen for Ctrl+C: {err}");
+            tracing::error!(
+                component = "shutdown",
+                event = "ctrl_c_listener_failed",
+                err = %err,
+                "Failed to listen for Ctrl+C"
+            );
             "ctrl_c_error"
         }
     }
@@ -724,7 +792,12 @@ async fn wait_for_sigterm() -> &'static str {
             "sigterm"
         }
         Err(err) => {
-            eprintln!("Failed to listen for SIGTERM: {err}");
+            tracing::error!(
+                component = "shutdown",
+                event = "sigterm_listener_failed",
+                err = %err,
+                "Failed to listen for SIGTERM"
+            );
             wait_for_ctrl_c().await
         }
     }
@@ -746,7 +819,12 @@ async fn shutdown_signal() {
         }
     };
 
-    println!("Shutdown signal ({signal}) received, waiting for in-flight requests to finish...");
+    tracing::info!(
+        component = "shutdown",
+        event = "shutdown_signal_received",
+        signal,
+        "shutdown signal received, waiting for in-flight requests to finish"
+    );
 }
 
 const BODY_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB 默认限制

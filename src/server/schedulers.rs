@@ -1,5 +1,4 @@
 use tokio::time::Instant;
-
 fn random_delay_secs(max_inclusive: u64) -> u64 {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -95,7 +94,15 @@ async fn enqueue_scheduled_job_logged(
                 Some(context.as_str()),
                 &err,
             );
-            eprintln!("{log_prefix}: enqueue job error: {err}");
+            tracing::warn!(
+                component = "scheduler",
+                event = "job_enqueue_failed",
+                job_type,
+                trigger_source,
+                key_id = key_id.unwrap_or("-"),
+                err = %err,
+                "{log_prefix}: enqueue job error: {err}"
+            );
             None
         }
     }
@@ -137,11 +144,26 @@ async fn claim_scheduled_job(
     match claim_scheduled_job_with_gate(state, job_type, key_id, trigger_source).await {
         Ok(Some(job)) => Some(job),
         Ok(None) => {
-            eprintln!("{log_prefix}: job already running; skip trigger");
+            tracing::info!(
+                component = "scheduler",
+                event = "job_trigger_skipped_already_running",
+                job_type,
+                trigger_source,
+                key_id = key_id.unwrap_or("-"),
+                "{log_prefix}: job already running; skip trigger"
+            );
             None
         }
         Err(err) => {
-            eprintln!("{log_prefix}: start job error: {err}");
+            tracing::warn!(
+                component = "scheduler",
+                event = "job_start_failed",
+                job_type,
+                trigger_source,
+                key_id = key_id.unwrap_or("-"),
+                err = %err,
+                "{log_prefix}: start job error: {err}"
+            );
             None
         }
     }
