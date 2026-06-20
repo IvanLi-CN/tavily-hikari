@@ -575,6 +575,24 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_failure_created
+               ON auth_token_logs(failure_kind, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_result_created
+               ON auth_token_logs(result_status, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_result_token_created
+               ON auth_token_logs(result_status, token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

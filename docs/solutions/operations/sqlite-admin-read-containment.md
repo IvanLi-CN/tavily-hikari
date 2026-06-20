@@ -63,6 +63,18 @@ reads:
 - Replace repeated window scans with a single bounded scan that derives all needed windows, then add
   a short manager-scoped TTL cache when settings and live stats can request the same window set in
   one admin refresh cycle.
+- For public metrics or SSE surfaces backed by request-stat rollups, gate synchronous flushes on
+  persisted freshness plus the oldest pending coalesced write. Do not force a flush on every public
+  read once the rollup window is already current enough.
+- Move alert events/groups/recent summary/catalog to SQL-side pagination and aggregation. Pulling
+  all matching alert events into Rust and then sorting, grouping, or paginating in memory does not
+  survive a retained `auth_token_logs` window.
+- Canonicalize alert `request_kind` inside the SQL projection before filtering or grouping rows.
+  Mixed legacy keys such as `tavily_search` / `mcp_search` otherwise drift from the canonical
+  request-kind keys returned by the HTTP contract and can make filtered pages appear empty.
+- Prefer `auth_token_logs`-native fields and narrow joins on alert reads. If a path only needs
+  request kind, failure class, token, or mirrored API-key metadata, do not widen it with a
+  `LEFT JOIN request_logs` just to re-derive fields already stored on the alert-side truth table.
 - For per-user IP statistics over `request_logs`, force the user/IP/time index on count, sample, and
   timeline reads. On large databases SQLite can prefer the visibility/time index for
   `visibility + created_at` predicates and then build temporary B-trees for `GROUP BY`,
@@ -88,6 +100,9 @@ reads:
 - Add query-plan regression tests for admin read hot paths when the fix depends on SQLite choosing a
   specific index. Local small databases may return quickly even when the planner would be disastrous
   on production data volume.
+- When admin and public read paths share one rollup family, keep one freshness contract. Letting
+  HTTP and SSE each invent separate “maybe flush” logic is an easy way to reintroduce duplicate
+  scans and inconsistent first-paint latency.
 - `COUNT(DISTINCT ...)` over request logs is especially prone to temp B-trees; keep its input
   cardinality small with user-first filtering and avoid running it over all visible rows in a recent
   time window for every admin refresh.
@@ -99,4 +114,5 @@ reads:
 - `src/store/key_store_request_logs_and_dashboard.rs`
 - `src/store/key_store_token_logs.rs`
 - `src/store/key_store_keys.rs`
+- `src/store/key_store_alerts.rs`
 - `src/forward_proxy/storage.rs`

@@ -174,6 +174,12 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - Keep startup backfills cheap and no-op aware. Large production SQLite files make repeated per-user
   repair loops expensive even when every row is already correct; use an indexed precheck in the
   readiness path and move periodic refresh work to a background scheduler.
+- For `billing_ledger` startup truth repair specifically, persist a high-watermark marker and let
+  the readiness path prove “no gap / no drift” before invoking a whole-ledger reconcile. The first
+  upgraded boot may still need one repair, but steady-state restarts should only pay the precheck.
+- If an owner-facing read depends on coalesced rollups, prefer a freshness-gated flush over an
+  unconditional flush. This keeps near-real-time semantics without turning every public/admin read
+  into a write barrier under SQLite's single-writer budget.
 - Do not let lock-contention tests depend on real wall-clock sleep just to cross a retry window or a
   one-second timestamp boundary. Prefer deterministic state shaping or a controlled time seam so the
   test still exercises the production retry logic without paying real-time cost.
@@ -214,6 +220,7 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
 - `src/bin/request_logs_gc_once.rs`
 - `src/bin/ha_outbox_cleanup_once.rs`
 - `scripts/export-live-db-snapshot-to-testbox.sh`
+- `src/store/key_store_bootstrap.rs`
 - `src/store/key_store_users_and_oauth.rs`
 - `src/store/key_store_request_logs_and_dashboard.rs`
 - `src/tavily_proxy/proxy_auth_and_oauth.rs`

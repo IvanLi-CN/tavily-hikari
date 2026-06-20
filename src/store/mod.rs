@@ -2232,6 +2232,10 @@ pub(crate) struct RequestStatsCoalescerState {
     pub(crate) pending_account_request_rollups:
         HashMap<AccountRequestRollupKey, AccountUsageRollupDelta>,
     pub(crate) pending_request_log_catalog: HashMap<RequestLogCatalogRollupKey, i64>,
+    pub(crate) oldest_pending_created_at: Option<i64>,
+    pub(crate) newest_pending_created_at: Option<i64>,
+    pub(crate) flushing_oldest_created_at: Option<i64>,
+    pub(crate) flushing_newest_created_at: Option<i64>,
     pub(crate) flush_deadline: Option<Instant>,
     pub(crate) flushing: bool,
     pub(crate) shutdown: bool,
@@ -2242,6 +2246,16 @@ pub(crate) struct RequestStatsCoalescer {
     pub(crate) state: Arc<Mutex<RequestStatsCoalescerState>>,
     pub(crate) wake: Arc<Notify>,
     pub(crate) flushed: Arc<Notify>,
+    #[cfg(test)]
+    pub(crate) post_flush_pause: Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct RequestStatsPostFlushPause {
+    pub(crate) arrived: Arc<Notify>,
+    pub(crate) release: Arc<Notify>,
+    pub(crate) released: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for RequestStatsCoalescer {
@@ -2250,6 +2264,8 @@ impl Default for RequestStatsCoalescer {
             state: Arc::new(Mutex::new(RequestStatsCoalescerState::default())),
             wake: Arc::new(Notify::new()),
             flushed: Arc::new(Notify::new()),
+            #[cfg(test)]
+            post_flush_pause: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -2270,6 +2286,21 @@ impl RequestStatsCoalescer {
         if Self::pending_key_count(state) > 0 && state.flush_deadline.is_none() {
             state.flush_deadline = Some(Instant::now() + Self::FLUSH_INTERVAL);
         }
+    }
+
+    fn note_pending_created_at(state: &mut RequestStatsCoalescerState, created_at: i64) {
+        state.oldest_pending_created_at = Some(
+            state
+                .oldest_pending_created_at
+                .map(|current| current.min(created_at))
+                .unwrap_or(created_at),
+        );
+        state.newest_pending_created_at = Some(
+            state
+                .newest_pending_created_at
+                .map(|current| current.max(created_at))
+                .unwrap_or(created_at),
+        );
     }
 
     pub(crate) async fn enqueue_request_log_rollups(
@@ -2326,6 +2357,7 @@ impl RequestStatsCoalescer {
                     .entry(request_log_catalog_key)
                     .or_default() += 1;
             }
+            Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
@@ -2347,6 +2379,7 @@ impl RequestStatsCoalescer {
                 0,
                 0,
             );
+            Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
@@ -2401,9 +2434,44 @@ impl RequestStatsCoalescer {
                     .or_default()
                     .local_estimated_credits += credits;
             }
+            Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pending_oldest_created_at(&self) -> Option<i64> {
+        let state = self.state.lock().await;
+        state.oldest_pending_created_at
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pending_newest_created_at(&self) -> Option<i64> {
+        let state = self.state.lock().await;
+        state.newest_pending_created_at
+    }
+
+    pub(crate) async fn freshness_created_at_bounds(&self) -> Option<(i64, i64)> {
+        let state = self.state.lock().await;
+        let oldest_created_at = match (
+            state.oldest_pending_created_at,
+            state.flushing_oldest_created_at,
+        ) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }?;
+        let newest_created_at = match (
+            state.newest_pending_created_at,
+            state.flushing_newest_created_at,
+        ) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+        .unwrap_or(oldest_created_at);
+        Some((oldest_created_at, newest_created_at))
     }
 
     pub(crate) async fn wait_until_flushed(&self) {
@@ -2423,6 +2491,33 @@ impl RequestStatsCoalescer {
                 self.flushed.clone().notified_owned()
             };
             notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn install_post_flush_pause(&self) -> RequestStatsPostFlushPause {
+        let pause = RequestStatsPostFlushPause {
+            arrived: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut slot = self.post_flush_pause.lock().await;
+        *slot = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn take_post_flush_pause(&self) -> Option<RequestStatsPostFlushPause> {
+        self.post_flush_pause.lock().await.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_post_flush_pause_if_installed(&self) {
+        if let Some(pause) = self.take_post_flush_pause().await {
+            pause.arrived.notify_waiters();
+            while !pause.released.load(std::sync::atomic::Ordering::SeqCst) {
+                pause.release.notified().await;
+            }
         }
     }
 }
@@ -2451,6 +2546,7 @@ pub(crate) struct KeyStore {
 
 include!("key_store_bootstrap.rs");
 include!("key_store_observability_sidecar.rs");
+include!("key_store_public_metrics_freshness.rs");
 include!("key_store_request_logs_gc.rs");
 include!("key_store_migrations_a.rs");
 include!("key_store_migrations_b.rs");
@@ -2476,6 +2572,8 @@ include!("key_store_jobs.rs");
 include!("key_store_account_limit_snapshots.rs");
 include!("key_store_account_usage_rollups.rs");
 include!("key_store_ha.rs");
+#[cfg(test)]
+include!("key_store_request_logs_and_dashboard_test_support.rs");
 
 #[cfg(test)]
 mod tests {

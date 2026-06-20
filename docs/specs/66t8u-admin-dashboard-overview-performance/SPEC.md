@@ -140,6 +140,10 @@
 - `2026-04-06`：使用当前 worktree 的 Storybook 静态预览端口 `127.0.0.1:30020` 打开 `Admin/Components/DashboardOverview/ZhDarkEvidence` iframe，确认 dashboard 总览结构、风险观察与快捷入口在轻量 overview 收敛后保持稳定。
 - `2026-04-30`：`cargo test admin_forward_proxy_settings_and_stats_endpoints_work -- --nocapture` 通过，覆盖 forward proxy stats 单次窗口集合查询后的响应结构。
 - `2026-05-01`：`cargo test admin_forward_proxy_settings_and_stats_endpoints_work -- --nocapture` 通过，覆盖 forward proxy stats 短 TTL 缓存后的响应结构不变。
+- `2026-06-20`：在 101 生产快照的共享测试机回放上，`/api/public/metrics` 与 `/api/public/events`
+  首条 `metrics` 事件复用了同一套 rollup freshness 判定，`/api/public/metrics` 首包约
+  `1.44s`，SSE 首条 `metrics` 事件立即可见；同时 `/api/alerts/events` 在 SQL 侧分页/聚合改造后
+  约 `0.14s` 返回。
 
 ## 实现里程碑
 
@@ -169,3 +173,6 @@
 - 2026-04-17: 将 `summary_windows` 与 dashboard 小时图切到 `dashboard_request_rollup_buckets`，移除 2 秒 freshness 缓存依赖，确保当前小时与本地估算额度可近实时出现在 overview / snapshot。
 - 2026-04-30: 将 forward proxy 窗口统计收敛为单次 bounded scan，并补充 admin heavy-read 并发保护，避免线上 SQLite worker 饱和时 dashboard overview 被重读拖慢。
 - 2026-05-01: 为 forward proxy 窗口集合查询增加 manager-scoped 短 TTL 缓存，减少同一管理端刷新周期内的重复 7d scan。
+- 2026-06-20: 将 dashboard rollup freshness 合同扩展到公共 metrics / public SSE 首条
+  `metrics` 读取，并将 alerts 事件/分组/summary 改为 SQL 侧有界读取，避免管理端和公共首页分别
+  重新引入宽时间窗扫描。

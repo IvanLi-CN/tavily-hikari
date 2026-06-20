@@ -32,6 +32,7 @@ mod proxy_affinity_and_summary;
 mod proxy_affinity_runtime_geo;
 mod request_kind_and_core;
 mod request_rollup;
+mod request_rollup_public_metrics;
 mod support;
 mod usage_series_and_backfills;
 mod user_business_calls_1h;

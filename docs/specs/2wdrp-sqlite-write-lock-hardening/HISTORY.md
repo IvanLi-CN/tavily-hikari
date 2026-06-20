@@ -128,3 +128,21 @@
   remain rebuild-needed and are recovered by rerunning the offline tool.
 - Restored `valuable_failure_429_count` in the offline `api_key_usage_buckets` rebuild path so
   per-key upstream-429 failures survive explicit sidecar migration.
+
+## 2026-06-20
+
+- Validated the first lossless startup/read-path hardening pass against a live 101 SQLite snapshot
+  copied online with SQLite `.backup`, then replayed on `codex-testbox`.
+- The first upgraded boot still paid one-time repair/migration work on the historical snapshot:
+  `billing_ledger` repair ran once, and the new alert-supporting indexes were created on
+  `auth_token_logs`.
+- The second boot on that same repaired snapshot logged
+  `billing ledger startup precheck skipped: ... reason=no_gap` and reduced
+  `sqlite startup total` from about `24s` to about `2.2s`, confirming the routine restart tax is
+  gone after the first successful repair.
+- The same production-derived replay returned `/api/public/metrics` in about `1.44s`,
+  `/api/alerts/events` in about `0.14s`, and emitted the first public SSE `metrics` event
+  immediately after connect.
+- Offline `billing_ledger_audit` on that snapshot still reported `118` day-only mismatches between
+  quota samples and ledger-derived daily windows. That audit drift remains a separate quota
+  correctness follow-up and is not repaired by the startup ledger bootstrap path itself.

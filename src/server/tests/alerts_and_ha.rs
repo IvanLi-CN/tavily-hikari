@@ -399,6 +399,39 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
             .and_then(|value| value.as_i64()),
         Some(1)
     );
+    assert_eq!(
+        filtered_events_body
+            .pointer("/items/0/requestKind/key")
+            .and_then(|value| value.as_str()),
+        Some("api:search")
+    );
+
+    let filtered_groups_resp = client
+        .get(format!(
+            "http://{}/api/alerts/groups?request_kind={}&type=upstream_rate_limited_429",
+            admin_addr, upstream_429_request_kind
+        ))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("filtered alert groups request");
+    assert_eq!(filtered_groups_resp.status(), reqwest::StatusCode::OK);
+    let filtered_groups_body: serde_json::Value = filtered_groups_resp
+        .json()
+        .await
+        .expect("filtered alert groups json");
+    assert_eq!(
+        filtered_groups_body
+            .get("total")
+            .and_then(|value| value.as_i64()),
+        Some(1)
+    );
+    assert_eq!(
+        filtered_groups_body
+            .pointer("/items/0/requestKind/key")
+            .and_then(|value| value.as_str()),
+        Some("api:search")
+    );
 
     let groups_resp = client
         .get(format!("http://{}/api/alerts/groups", admin_addr))

@@ -638,6 +638,139 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_billing_ledger_request_log
+               ON billing_ledger(request_log_id, auth_token_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn billing_ledger_startup_repair_upper_bound(&self) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT MAX(id)
+            FROM auth_token_logs
+            WHERE billing_state <> 'none'
+               OR billing_subject IS NOT NULL
+               OR business_credits IS NOT NULL
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    async fn billing_ledger_startup_repair_needs_reconcile(
+        &self,
+        upper_bound: i64,
+    ) -> Result<bool, ProxyError> {
+        let persisted_high_watermark = self
+            .get_meta_i64(META_KEY_BILLING_LEDGER_STARTUP_HIGH_WATERMARK_V1)
+            .await?
+            .unwrap_or_default();
+        if persisted_high_watermark >= upper_bound {
+            let has_gap = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT 1
+                FROM auth_token_logs atl
+                WHERE atl.id <= ?
+                  AND (
+                    atl.billing_state <> 'none'
+                    OR atl.billing_subject IS NOT NULL
+                    OR atl.business_credits IS NOT NULL
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM billing_ledger bl
+                    WHERE bl.auth_token_log_id = atl.id
+                  )
+                LIMIT 1
+                "#,
+            )
+            .bind(upper_bound)
+            .fetch_optional(&self.pool)
+            .await?;
+            if has_gap.is_none() {
+                return Ok(false);
+            }
+        }
+
+        let mismatch = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM auth_token_logs atl
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = atl.id
+            WHERE atl.id <= ?
+              AND (
+                atl.billing_state <> 'none'
+                OR atl.billing_subject IS NOT NULL
+                OR atl.business_credits IS NOT NULL
+              )
+              AND (
+                bl.auth_token_log_id IS NULL
+                OR bl.token_id <> atl.token_id
+                OR COALESCE(bl.billing_subject, '') <> COALESCE(atl.billing_subject, '')
+                OR bl.billing_state <> atl.billing_state
+                OR COALESCE(bl.business_credits, -1) <> COALESCE(atl.business_credits, -1)
+                OR COALESCE(bl.request_user_id, '') <> COALESCE(atl.request_user_id, '')
+                OR COALESCE(bl.api_key_id, '') <> COALESCE(atl.api_key_id, '')
+                OR bl.result_status <> atl.result_status
+                OR bl.created_at <> atl.created_at
+                OR COALESCE(bl.error_message, '') <> COALESCE(atl.error_message, '')
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(upper_bound)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(mismatch.is_some())
+    }
+
+    async fn maybe_repair_billing_ledger_from_auth_token_logs(&self) -> Result<(), ProxyError> {
+        let Some(upper_bound) = self.billing_ledger_startup_repair_upper_bound().await? else {
+            self.set_meta_i64(META_KEY_BILLING_LEDGER_STARTUP_HIGH_WATERMARK_V1, 0)
+                .await?;
+            eprintln!("billing ledger startup precheck skipped: upper_bound=0, reason=no_billable_logs");
+            return Ok(());
+        };
+
+        let precheck_started = Instant::now();
+        let needs_reconcile = self
+            .billing_ledger_startup_repair_needs_reconcile(upper_bound)
+            .await?;
+        log_slow_db_operation(
+            "billing ledger startup precheck",
+            precheck_started.elapsed(),
+            Some("component=startup"),
+        );
+
+        if !needs_reconcile {
+            self.set_meta_i64(META_KEY_BILLING_LEDGER_STARTUP_HIGH_WATERMARK_V1, upper_bound)
+                .await?;
+            eprintln!(
+                "billing ledger startup precheck skipped: upper_bound={upper_bound}, reason=no_gap"
+            );
+            return Ok(());
+        }
+
+        eprintln!("billing ledger startup repair started: upper_bound={upper_bound}");
+        let repair_started = Instant::now();
+        self.backfill_billing_ledger_from_auth_token_logs().await?;
+        self.set_meta_i64(META_KEY_BILLING_LEDGER_STARTUP_HIGH_WATERMARK_V1, upper_bound)
+            .await?;
+        let elapsed = repair_started.elapsed();
+        log_slow_db_operation(
+            "billing ledger startup repair",
+            elapsed,
+            Some("component=startup"),
+        );
+        eprintln!(
+            "billing ledger startup repair completed: upper_bound={upper_bound}, elapsed_ms={}",
+            elapsed.as_millis()
+        );
         Ok(())
     }
 
@@ -1764,7 +1897,9 @@ impl KeyStore {
             request_kind_schema_changed = true;
         }
 
-        self.backfill_billing_ledger_from_auth_token_logs().await?;
+        self.ensure_meta_schema().await?;
+        self.maybe_repair_billing_ledger_from_auth_token_logs()
+            .await?;
 
         self.ensure_auth_token_logs_indexes().await?;
 

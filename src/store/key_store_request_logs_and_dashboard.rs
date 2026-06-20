@@ -262,22 +262,27 @@ impl KeyStore {
                     return Ok(());
                 } else {
                     state.flushing = true;
+                    state.flushing_oldest_created_at = state.oldest_pending_created_at.take();
+                    state.flushing_newest_created_at = state.newest_pending_created_at.take();
                     Some((
                         std::mem::take(&mut state.pending_dashboard_rollups),
                         std::mem::take(&mut state.pending_api_key_usage),
                         std::mem::take(&mut state.pending_auth_token_activity),
                         std::mem::take(&mut state.pending_account_request_rollups),
                         std::mem::take(&mut state.pending_request_log_catalog),
+                        state.flushing_oldest_created_at,
+                        state.flushing_newest_created_at,
                     ))
                 }
             };
-
             let Some((
                 pending_dashboard_rollups,
                 pending_api_key_usage,
                 pending_auth_token_activity,
                 pending_account_request_rollups,
                 pending_request_log_catalog,
+                drained_oldest_pending_created_at,
+                drained_newest_pending_created_at,
             )) = pending
             else {
                 self.request_stats_coalescer.wait_until_flushed().await;
@@ -292,7 +297,6 @@ impl KeyStore {
             let updated_at = Utc::now().timestamp();
             let result = async {
                 let mut tx = self.pool.begin().await?;
-
                 let mut dashboard_entries = pending_dashboard_rollups
                     .drain()
                     .collect::<Vec<_>>();
@@ -447,78 +451,88 @@ impl KeyStore {
                     .await?;
                 }
 
+                sqlx::query(
+                    r#"
+                    INSERT INTO meta (key, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    "#,
+                )
+                .bind(META_KEY_REQUEST_STATS_LAST_FLUSHED_AT_V1)
+                .bind(updated_at.to_string())
+                .execute(&mut *tx)
+                .await?;
+
                 tx.commit().await?;
                 Ok::<_, ProxyError>(())
             }
             .await;
 
-            let mut state = self.request_stats_coalescer.state.lock().await;
-            state.flushing = false;
-            state.flush_deadline = None;
-            if let Err(err) = result {
-                for (key, counts) in pending_dashboard_rollups {
-                    state.pending_dashboard_rollups.entry(key).or_default().add(counts);
+            {
+                let mut state = self.request_stats_coalescer.state.lock().await;
+                state.flushing = false;
+                state.flush_deadline = None;
+                if let Err(err) = result {
+                    state.flushing_oldest_created_at = None;
+                    state.flushing_newest_created_at = None;
+                    for (key, counts) in pending_dashboard_rollups {
+                        state.pending_dashboard_rollups.entry(key).or_default().add(counts);
+                    }
+                    for (key, delta) in pending_api_key_usage {
+                        state.pending_api_key_usage.entry(key).or_default().add(delta);
+                    }
+                    for (token_id, delta) in pending_auth_token_activity {
+                        state
+                            .pending_auth_token_activity
+                            .entry(token_id)
+                            .or_default()
+                            .add(delta);
+                    }
+                    for (key, delta) in pending_account_request_rollups {
+                        state
+                            .pending_account_request_rollups
+                            .entry(key)
+                            .or_default()
+                            .add(delta);
+                    }
+                    for (key, delta) in pending_request_log_catalog {
+                        *state.pending_request_log_catalog.entry(key).or_default() += delta;
+                    }
+                    if let Some(created_at) = drained_oldest_pending_created_at {
+                        state.oldest_pending_created_at = Some(
+                            state
+                                .oldest_pending_created_at
+                                .map(|current| current.min(created_at))
+                                .unwrap_or(created_at),
+                        );
+                    }
+                    if let Some(created_at) = drained_newest_pending_created_at {
+                        state.newest_pending_created_at = Some(
+                            state
+                                .newest_pending_created_at
+                                .map(|current| current.max(created_at))
+                                .unwrap_or(created_at),
+                        );
+                    }
+                    RequestStatsCoalescer::mark_flush_deadline_if_pending(&mut state);
+                    self.request_stats_coalescer.flushed.notify_waiters();
+                    return Err(err);
                 }
-                for (key, delta) in pending_api_key_usage {
-                    state.pending_api_key_usage.entry(key).or_default().add(delta);
+                state.flushing_oldest_created_at = None;
+                state.flushing_newest_created_at = None;
+                if RequestStatsCoalescer::pending_key_count(&state) == 0 {
+                    state.oldest_pending_created_at = None;
+                    state.newest_pending_created_at = None;
+                } else {
+                    RequestStatsCoalescer::mark_flush_deadline_if_pending(&mut state);
                 }
-                for (token_id, delta) in pending_auth_token_activity {
-                    state
-                        .pending_auth_token_activity
-                        .entry(token_id)
-                        .or_default()
-                        .add(delta);
-                }
-                for (key, delta) in pending_account_request_rollups {
-                    state
-                        .pending_account_request_rollups
-                        .entry(key)
-                        .or_default()
-                        .add(delta);
-                }
-                for (key, delta) in pending_request_log_catalog {
-                    *state.pending_request_log_catalog.entry(key).or_default() += delta;
-                }
-                RequestStatsCoalescer::mark_flush_deadline_if_pending(&mut state);
                 self.request_stats_coalescer.flushed.notify_waiters();
-                return Err(err);
             }
-            self.request_stats_coalescer.flushed.notify_waiters();
+            #[cfg(test)]
+            self.request_stats_coalescer
+                .wait_for_post_flush_pause_if_installed()
+                .await;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn enqueue_request_stats_rollup_for_test(
-        &self,
-        api_key_id: Option<&str>,
-        created_at: i64,
-        outcome: &str,
-    ) {
-        let mut counts = DashboardRequestRollupCounts {
-            total_requests: 1,
-            api_billable: 1,
-            ..DashboardRequestRollupCounts::default()
-        };
-        match outcome {
-            OUTCOME_SUCCESS => {
-                counts.success_count = 1;
-                counts.valuable_success_count = 1;
-            }
-            OUTCOME_ERROR => {
-                counts.error_count = 1;
-                counts.valuable_failure_count = 1;
-            }
-            OUTCOME_QUOTA_EXHAUSTED => {
-                counts.quota_exhausted_count = 1;
-                counts.valuable_failure_count = 1;
-            }
-            _ => {
-                counts.unknown_count = 1;
-            }
-        }
-        self.request_stats_coalescer
-            .enqueue_request_log_rollups(api_key_id, "test-auth-token", None, created_at, counts, None)
-            .await;
     }
 
     async fn migrate_log_effect_buckets(&self) -> Result<(), ProxyError> {
@@ -3002,7 +3016,8 @@ impl KeyStore {
         day_start: i64,
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.flush_request_stats_writes_if_public_metrics_stale(month_start, day_start, day_end)
+            .await?;
         let now = self.backend_time.now_ts();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)

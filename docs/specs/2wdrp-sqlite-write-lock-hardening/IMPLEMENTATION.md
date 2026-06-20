@@ -115,6 +115,10 @@
   `billing_subject`, `business_credits`, request linkage, and settlement metadata are backfilled
   from `auth_token_logs` at startup and then maintained in `billing_ledger` on every new pending
   billing record and settlement.
+- Billing-ledger startup repair is now no-op aware. Startup records a high-watermark metadata key,
+  runs a cheap indexed precheck first, and only enters the historical full reconcile path when a
+  gap or drift is detected. Steady-state restarts now log `billing ledger startup precheck skipped`
+  instead of paying the full `billing_ledger` UPSERT cost every time.
 - Pending-billing readers and rollups that previously scanned `auth_token_logs.billing_state` now
   read from `billing_ledger`, while `auth_token_logs.billing_state` is still mirrored for backward
   compatibility with existing admin/history surfaces.
@@ -133,6 +137,10 @@
 - Request-derived rollups now flush in one background batcher (`1s / 100 pending keys`) instead of
   issuing synchronous rollup writes per request. Owner-facing summary, key-metrics, and request-log
   catalog reads flush that coalescer before reading.
+- Public `/api/public/metrics` and the first `metrics` event on `/api/public/events` now reuse the
+  same freshness-gated read path on top of `dashboard_request_rollup_buckets`. The read path checks
+  the last flushed timestamp plus the oldest pending request-stat write and only triggers one
+  synchronous flush when the requested window is actually stale.
 - Request observability tables now attach through a per-core sibling sidecar SQLite file
   (`<core-stem>-observability.db`) in the new layout. `request_logs`, `api_key_usage_buckets`,
   `dashboard_request_rollup_buckets`, and `request_log_catalog_rollups` are created in that
@@ -206,6 +214,10 @@
   columns explicitly and avoid unnecessary billing joins in count/facet queries. That removes the
   `ambiguous column name` regressions that appeared once synchronous billing truth moved out of
   `auth_token_logs` and the admin token-log surfaces began reading mixed ledger/history data.
+- Alert events/groups/recent-summary/catalog reads now stop full-fetching alert events into Rust for
+  in-memory paging/grouping. Those paths page and aggregate in SQL, canonicalize `request_kind`
+  before filtering/grouping, and rely on dedicated `auth_token_logs` indexes for
+  `failure_kind/result_status/token_id + created_at` windows.
 - Service startup now abandons leftover `queued` and `running` maintenance rows from the previous
   process lifetime before starting the new worker.
 - Added `request_logs_gc_once` as a one-shot operational binary. It supports JSON output and
@@ -220,6 +232,10 @@
   the HTTP response hints returned by `/api/jobs/trigger`.
 - Added regression coverage for duplicate manual trigger coalescing while another connection holds
   the SQLite writer slot, both at the store layer and through the owner-facing HTTP trigger route.
+- Added request-rollup tests that prove public metrics skip synchronous flush when freshness is
+  already current and perform one bounded flush when the live window is stale.
+- Extended alert endpoint coverage so request-kind filtered event/group reads continue returning the
+  canonical keys exposed by the HTTP contract after the SQL-side pagination/aggregation rewrite.
 - Added worker orchestration coverage that proves only one remote-I/O maintenance job enters
   `running` at a time and that `request_logs_gc` can still complete while a quota-sync remote phase
   is waiting on `/usage`.
