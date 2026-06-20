@@ -150,6 +150,7 @@
         "tests::request_kind_and_core::startup_",
         "tests::request_rollup::startup_",
         "tests::usage_series_and_backfills::startup_",
+        "tests::account_usage_rollup_request_days::startup_",
         "tests::user_tokens_and_pending_billing::startup_",
         "tests::user_tokens_and_pending_billing::pending_",
         "tests::proxy_affinity_and_summary::proxy_",
@@ -211,6 +212,7 @@
       ],
       "include_prefixes": [
         "tests::account_quota_and_billing::account_",
+        "tests::account_usage_rollup_request_days::account_",
         "tests::usage_series_and_backfills::account_",
         "tests::user_tokens_and_pending_billing::account_",
         "tests::account_quota_and_billing::linuxdo_",
