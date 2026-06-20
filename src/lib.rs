@@ -440,6 +440,8 @@ pub struct HaOutboxGcChannelReport {
     pub channel: HaSyncChannel,
     pub retention_secs: i64,
     pub threshold: i64,
+    pub invalid_legacy_deleted_rows: i64,
+    pub retention_deleted_rows: i64,
     pub deleted_rows: i64,
     pub batches: i64,
     pub has_more: bool,
@@ -471,9 +473,11 @@ pub fn format_ha_outbox_gc_report_message(report: &HaOutboxGcReport, passes: usi
             .channels
             .iter()
             .map(|channel| format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}",
                 channel.channel.as_str(),
                 channel.deleted_rows,
+                channel.invalid_legacy_deleted_rows,
+                channel.retention_deleted_rows,
                 channel.retention_secs,
                 channel.batches,
                 channel.has_more
@@ -520,6 +524,34 @@ pub async fn verify_observability_sidecar_reopen(database_path: &str) -> Result<
 pub async fn configure_ha_write_mode(database_path: &str, mode: HaMode) -> Result<(), ProxyError> {
     let store = crate::store::KeyStore::new_with_time(database_path, BackendTime::system()).await?;
     store.configure_ha_event_writes(mode).await
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaTriggerRepairChannelReport {
+    pub channel: HaSyncChannel,
+    pub legacy_triggers_dropped: i64,
+    pub current_triggers_dropped: i64,
+    pub triggers_created: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaTriggerRepairReport {
+    pub mode: HaMode,
+    pub legacy_triggers_dropped: i64,
+    pub current_triggers_dropped: i64,
+    pub triggers_created: i64,
+    pub channels: Vec<HaTriggerRepairChannelReport>,
+    pub elapsed_ms: u128,
+}
+
+pub async fn repair_ha_triggers_once(
+    database_path: &str,
+    mode: HaMode,
+) -> Result<HaTriggerRepairReport, ProxyError> {
+    let store = crate::store::KeyStore::new_with_time(database_path, BackendTime::system()).await?;
+    store.repair_ha_triggers(mode).await
 }
 
 impl ForwardProxyProgressEvent {

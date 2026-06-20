@@ -47,6 +47,23 @@ The scheduler still performs bounded online `ha_outbox_gc`, but that path is int
 to per-channel expired-row cleanup plus a passive WAL checkpoint so it cannot recreate the previous
 SWAP spike failure mode.
 
+## Upgrade Trigger Repair Revision
+
+Production-shaped validation confirmed that the post-upgrade `ha_outbox` growth was not just stale
+retained history. The upgraded 101 database still carried old single-channel `trg_ha_outbox_*`
+triggers, so hot tables such as `billing_ledger`, `account_usage_rollup_buckets`, and
+`scheduled_jobs` kept appending fresh invalid rows into `ha_outbox` even after the code had moved
+to three explicit channels.
+
+- The accepted fix is an explicit repair-first maintenance step that enumerates HA replication
+  triggers from `sqlite_master`, drops the whole legacy/current HA trigger set, and recreates only
+  the current `control/billing/runtime` contract.
+- Invalid legacy `ha_outbox` rows are now treated as garbage and removed immediately during
+  cleanup instead of waiting for retention.
+- Shared-testbox validation against a full 101 snapshot deleted `27,770,036` invalid legacy rows
+  plus `1,373,458` ordinary retention rows, proving that the continuous growth was rooted in stale
+  upgraded triggers rather than only slow historical decay.
+
 ## Full Live Snapshot Validation Revision
 
 Merge-ready validation for the HA outbox fix now requires a complete production-shaped SQLite input
@@ -58,6 +75,15 @@ sidecar sibling, not the main `.db` file alone.
   not a hand-picked subset of rows.
 - Offline HA cleanup and optional compaction proof now runs against that copied snapshot set inside
   one isolated testbox run directory.
+- Hot WAL-mode production snapshots should default to a single-step SQLite backup instead of small
+  incremental page loops. Incremental `backup_step()` on a busy live source can restart repeatedly
+  when the source changes under it and may never finish in practice; the accepted export default is
+  therefore `pages=-1` with progress logging for observability.
+- Shared-testbox compaction proof remains subject to the testbox's own disk headroom. In the
+  validated run the cleanup created about `12 GiB` of reclaimable space, but `VACUUM` still failed
+  on the testbox because the root filesystem only had about `3.5 GiB` free. That does not weaken
+  the repair-first conclusion; it means the real production maintenance window must ensure enough
+  temporary free space before compaction starts.
 
 ## Admin IA Revision
 

@@ -12,10 +12,16 @@ Environment variables:
   SOURCE_HOST                 Defaults to 192.168.31.11
   SOURCE_SSH_TARGET           Defaults to SOURCE_HOST
   TESTBOX_HOST                Defaults to codex-testbox
-  SOURCE_DB_DIR               Defaults to /var/lib/docker/volumes/ai-tavily-hikari-data/_data
+  SOURCE_CONTAINER_NAME       Defaults to tavily-hikari
+  SOURCE_CONTAINER_DB_DIR     Defaults to /srv/app/data
+  SOURCE_HELPER_IMAGE         Defaults to python:3.12-alpine
+  SOURCE_BACKUP_PAGES         Defaults to -1 (single-step backup to avoid hot-DB restart loops)
+  SOURCE_BACKUP_SLEEP_SECS    Defaults to 0.005
+  SOURCE_BACKUP_PROGRESS_SECS Defaults to 15
+  SOURCE_DB_DIR               Fallback host path, defaults to /var/lib/docker/volumes/ai-tavily-hikari-data/_data
   SOURCE_CORE_DB_NAME         Defaults to tavily_proxy.db
   SOURCE_OBSERVABILITY_DB_NAME Defaults to tavily_proxy-observability.db
-  SOURCE_SNAPSHOT_DIR         Defaults to /tmp/<repo>-<run-id>
+  SOURCE_SNAPSHOT_DIR         Defaults to /home/ivan/srv/media/shared_data/<repo>-<run-id>
   RUN_ID                      Optional explicit run id
   KEEP_SOURCE_SNAPSHOTS       true/false, defaults to false
 
@@ -35,6 +41,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_HOST="${SOURCE_HOST:-192.168.31.11}"
 SOURCE_SSH_TARGET="${SOURCE_SSH_TARGET:-$SOURCE_HOST}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
+SOURCE_CONTAINER_NAME="${SOURCE_CONTAINER_NAME:-tavily-hikari}"
+SOURCE_CONTAINER_DB_DIR="${SOURCE_CONTAINER_DB_DIR:-/srv/app/data}"
+SOURCE_HELPER_IMAGE="${SOURCE_HELPER_IMAGE:-python:3.12-alpine}"
+SOURCE_BACKUP_PAGES="${SOURCE_BACKUP_PAGES:--1}"
+SOURCE_BACKUP_SLEEP_SECS="${SOURCE_BACKUP_SLEEP_SECS:-0.005}"
+SOURCE_BACKUP_PROGRESS_SECS="${SOURCE_BACKUP_PROGRESS_SECS:-15}"
 SOURCE_DB_DIR="${SOURCE_DB_DIR:-/var/lib/docker/volumes/ai-tavily-hikari-data/_data}"
 SOURCE_CORE_DB_NAME="${SOURCE_CORE_DB_NAME:-tavily_proxy.db}"
 SOURCE_OBSERVABILITY_DB_NAME="${SOURCE_OBSERVABILITY_DB_NAME:-tavily_proxy-observability.db}"
@@ -70,7 +82,7 @@ REMOTE_RUN="$REMOTE_WORKSPACE/runs/$RUN_ID"
 REMOTE_REPO_DIR="$REMOTE_RUN/repo"
 REMOTE_DB_DIR="$REMOTE_RUN/live-db"
 
-SOURCE_TMP_DIR="${SOURCE_SNAPSHOT_DIR:-/tmp/${REPO_NAME}-${RUN_ID}}"
+SOURCE_TMP_DIR="${SOURCE_SNAPSHOT_DIR:-/home/ivan/srv/media/shared_data/${REPO_NAME}-${RUN_ID}}"
 SOURCE_CORE_LIVE="$SOURCE_DB_DIR/$SOURCE_CORE_DB_NAME"
 SOURCE_SIDECAR_LIVE="$SOURCE_DB_DIR/$SOURCE_OBSERVABILITY_DB_NAME"
 SOURCE_CORE_SNAPSHOT="$SOURCE_TMP_DIR/$SOURCE_CORE_DB_NAME"
@@ -89,6 +101,12 @@ ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_WORKSPACE/workspace.txt'" <
 local_repo_root=$REPO_ROOT
 created_utc=$CREATED_UTC
 source_host=$SOURCE_HOST
+source_container_name=$SOURCE_CONTAINER_NAME
+source_container_db_dir=$SOURCE_CONTAINER_DB_DIR
+source_helper_image=$SOURCE_HELPER_IMAGE
+source_backup_pages=$SOURCE_BACKUP_PAGES
+source_backup_sleep_secs=$SOURCE_BACKUP_SLEEP_SECS
+source_backup_progress_secs=$SOURCE_BACKUP_PROGRESS_SECS
 source_db_dir=$SOURCE_DB_DIR
 TXT
 
@@ -108,6 +126,12 @@ rsync -az --delete \
 printf 'Creating read-only SQLite backups on %s ...\n' "$SOURCE_SSH_TARGET"
 SOURCE_MANIFEST="$(ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "bash -s" -- \
   "$SOURCE_TMP_DIR" \
+  "$SOURCE_CONTAINER_NAME" \
+  "$SOURCE_CONTAINER_DB_DIR" \
+  "$SOURCE_HELPER_IMAGE" \
+  "$SOURCE_BACKUP_PAGES" \
+  "$SOURCE_BACKUP_SLEEP_SECS" \
+  "$SOURCE_BACKUP_PROGRESS_SECS" \
   "$SOURCE_CORE_LIVE" \
   "$SOURCE_SIDECAR_LIVE" \
   "$SOURCE_CORE_SNAPSHOT" \
@@ -115,19 +139,50 @@ SOURCE_MANIFEST="$(ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "bash -s" -- \
 set -euo pipefail
 
 tmp_dir="$1"
-core_live="$2"
-sidecar_live="$3"
-core_snapshot="$4"
-sidecar_snapshot="$5"
+container_name="$2"
+container_db_dir="$3"
+helper_image="$4"
+backup_pages="$5"
+backup_sleep_secs="$6"
+backup_progress_secs="$7"
+core_live="$8"
+sidecar_live="$9"
+core_snapshot="${10}"
+sidecar_snapshot="${11}"
 
 mkdir -p "$tmp_dir"
-test -f "$core_live"
-test -f "$sidecar_live"
-
-core_live_bytes="$(stat -c %s "$core_live")"
-core_live_wal_bytes="$(stat -c %s "${core_live}-wal" 2>/dev/null || echo 0)"
-sidecar_live_bytes="$(stat -c %s "$sidecar_live")"
 available_tmp_bytes="$(df -B1 --output=avail "$tmp_dir" | tail -n1 | tr -d ' ')"
+
+snapshot_source_kind="host-path"
+effective_core_live="$core_live"
+effective_sidecar_live="$sidecar_live"
+
+if docker inspect "$container_name" >/dev/null 2>&1; then
+  if docker exec "$container_name" sh -lc "command -v sqlite3 >/dev/null && test -f '$container_db_dir/$(basename "$core_live")' && test -f '$container_db_dir/$(basename "$sidecar_live")'"; then
+    snapshot_source_kind="container-sqlite-backup"
+    effective_core_live="$container_db_dir/$(basename "$core_live")"
+    effective_sidecar_live="$container_db_dir/$(basename "$sidecar_live")"
+    core_live_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '$effective_core_live'")"
+    core_live_wal_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '${effective_core_live}-wal' 2>/dev/null || echo 0")"
+    sidecar_live_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '$effective_sidecar_live'")"
+  elif docker exec "$container_name" sh -lc "test -f '$container_db_dir/$(basename "$core_live")' && test -f '$container_db_dir/$(basename "$sidecar_live")'"; then
+    snapshot_source_kind="container-helper-python-backup"
+    effective_core_live="$container_db_dir/$(basename "$core_live")"
+    effective_sidecar_live="$container_db_dir/$(basename "$sidecar_live")"
+    core_live_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '$effective_core_live'")"
+    core_live_wal_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '${effective_core_live}-wal' 2>/dev/null || echo 0")"
+    sidecar_live_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '$effective_sidecar_live'")"
+  fi
+fi
+
+if [[ "$snapshot_source_kind" == "host-path" ]]; then
+  test -f "$effective_core_live"
+  test -f "$effective_sidecar_live"
+  core_live_bytes="$(stat -c %s "$effective_core_live")"
+  core_live_wal_bytes="$(stat -c %s "${effective_core_live}-wal" 2>/dev/null || echo 0)"
+  sidecar_live_bytes="$(stat -c %s "$effective_sidecar_live")"
+fi
+
 required_tmp_bytes="$((core_live_bytes + core_live_wal_bytes + sidecar_live_bytes + 1073741824))"
 
 if (( available_tmp_bytes < required_tmp_bytes )); then
@@ -136,24 +191,128 @@ if (( available_tmp_bytes < required_tmp_bytes )); then
 fi
 
 rm -f "$core_snapshot" "$sidecar_snapshot"
-sqlite3 "$core_live" ".timeout 10000" ".backup '$core_snapshot'"
-sqlite3 "$sidecar_live" ".timeout 10000" ".backup '$sidecar_snapshot'"
+
+if [[ "$snapshot_source_kind" == "container-sqlite-backup" ]]; then
+  docker exec "$container_name" sh -lc "sqlite3 '$effective_core_live' \".timeout 10000\" \".backup '/tmp/$(basename "$core_snapshot")'\""
+  docker exec "$container_name" sh -lc "sqlite3 '$effective_sidecar_live' \".timeout 10000\" \".backup '/tmp/$(basename "$sidecar_snapshot")'\""
+  docker cp "$container_name:/tmp/$(basename "$core_snapshot")" "$core_snapshot"
+  docker cp "$container_name:/tmp/$(basename "$sidecar_snapshot")" "$sidecar_snapshot"
+  docker exec "$container_name" sh -lc "rm -f '/tmp/$(basename "$core_snapshot")' '/tmp/$(basename "$sidecar_snapshot")'"
+elif [[ "$snapshot_source_kind" == "container-helper-python-backup" ]]; then
+  docker run --rm \
+    --volumes-from "$container_name":ro \
+    -v "$tmp_dir:/backup" \
+    "$helper_image" \
+    python3 -c '
+import os
+import sqlite3
+import sys
+import time
+
+
+BACKUP_PAGES = int(sys.argv[1])
+BACKUP_SLEEP_SECS = float(sys.argv[2])
+BACKUP_PROGRESS_SECS = float(sys.argv[3])
+CORE_SRC_PATH = sys.argv[4]
+CORE_DST_PATH = sys.argv[5]
+SIDECAR_SRC_PATH = sys.argv[6]
+SIDECAR_DST_PATH = sys.argv[7]
+
+
+def backup_database(label: str, src_path: str, dst_path: str) -> None:
+    if os.path.exists(dst_path):
+        os.remove(dst_path)
+    src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True, timeout=30.0)
+    dst = sqlite3.connect(dst_path, timeout=30.0)
+    start = time.time()
+    last_report = 0.0
+
+    def progress(status: int, remaining: int, total: int) -> None:
+        nonlocal last_report
+        now = time.time()
+        if total <= 0:
+            return
+        if remaining == 0 or last_report == 0.0 or (now - last_report) >= BACKUP_PROGRESS_SECS:
+            copied = total - remaining
+            pct = (copied / total) * 100.0
+            elapsed = now - start
+            print(
+                f"[sqlite-backup] label={label} copied_pages={copied} total_pages={total} remaining_pages={remaining} pct={pct:.2f} elapsed_secs={elapsed:.1f}",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_report = now
+
+    try:
+        dst.execute("PRAGMA journal_mode=OFF;")
+        dst.execute("PRAGMA synchronous=OFF;")
+        dst.execute("PRAGMA temp_store=MEMORY;")
+        dst.execute("PRAGMA locking_mode=EXCLUSIVE;")
+        if BACKUP_PAGES == -1:
+            total_pages = src.execute("PRAGMA page_count;").fetchone()[0]
+            print(
+                f"[sqlite-backup] label={label} mode=single-step total_pages={total_pages}",
+                file=sys.stderr,
+                flush=True,
+            )
+        src.backup(
+            dst,
+            pages=BACKUP_PAGES,
+            sleep=BACKUP_SLEEP_SECS,
+            progress=progress,
+        )
+        dst.commit()
+    finally:
+        src.close()
+        dst.close()
+
+
+backup_database("core", CORE_SRC_PATH, CORE_DST_PATH)
+backup_database("observability", SIDECAR_SRC_PATH, SIDECAR_DST_PATH)
+' "$backup_pages" "$backup_sleep_secs" "$backup_progress_secs" "$effective_core_live" "/backup/$(basename "$core_snapshot")" "$effective_sidecar_live" "/backup/$(basename "$sidecar_snapshot")"
+else
+  sqlite3 "$effective_core_live" ".timeout 10000" ".backup '$core_snapshot'"
+  sqlite3 "$effective_sidecar_live" ".timeout 10000" ".backup '$sidecar_snapshot'"
+fi
 
 core_integrity="$(sqlite3 "$core_snapshot" 'PRAGMA integrity_check;' | tr -d '\r')"
 sidecar_integrity="$(sqlite3 "$sidecar_snapshot" 'PRAGMA integrity_check;' | tr -d '\r')"
+core_snapshot_bytes="$(stat -c %s "$core_snapshot")"
+sidecar_snapshot_bytes="$(stat -c %s "$sidecar_snapshot")"
+core_snapshot_page_count="$(sqlite3 "$core_snapshot" 'PRAGMA page_count;' | tr -d '\r')"
+sidecar_snapshot_page_count="$(sqlite3 "$sidecar_snapshot" 'PRAGMA page_count;' | tr -d '\r')"
+
+if (( core_snapshot_bytes <= 0 )); then
+  echo "core snapshot is empty" >&2
+  exit 3
+fi
+if (( sidecar_snapshot_bytes <= 0 )); then
+  echo "sidecar snapshot is empty" >&2
+  exit 4
+fi
+if [[ "${core_snapshot_page_count:-0}" == "0" ]]; then
+  echo "core snapshot page_count is zero" >&2
+  exit 5
+fi
+if [[ "${sidecar_snapshot_page_count:-0}" == "0" ]]; then
+  echo "sidecar snapshot page_count is zero" >&2
+  exit 6
+fi
 
 if [[ "$core_integrity" != "ok" ]]; then
   echo "core snapshot integrity_check failed: $core_integrity" >&2
-  exit 3
+  exit 7
 fi
 if [[ "$sidecar_integrity" != "ok" ]]; then
   echo "sidecar snapshot integrity_check failed: $sidecar_integrity" >&2
-  exit 4
+  exit 8
 fi
 
 printf 'source_tmp_dir=%s\n' "$tmp_dir"
-printf 'core_live_path=%s\n' "$core_live"
-printf 'sidecar_live_path=%s\n' "$sidecar_live"
+printf 'snapshot_source_kind=%s\n' "$snapshot_source_kind"
+printf 'helper_image=%s\n' "$helper_image"
+printf 'core_live_path=%s\n' "$effective_core_live"
+printf 'sidecar_live_path=%s\n' "$effective_sidecar_live"
 printf 'core_live_bytes=%s\n' "$core_live_bytes"
 printf 'core_live_wal_bytes=%s\n' "$core_live_wal_bytes"
 printf 'sidecar_live_bytes=%s\n' "$sidecar_live_bytes"
@@ -161,8 +320,10 @@ printf 'available_tmp_bytes=%s\n' "$available_tmp_bytes"
 printf 'required_tmp_bytes=%s\n' "$required_tmp_bytes"
 printf 'core_snapshot_path=%s\n' "$core_snapshot"
 printf 'sidecar_snapshot_path=%s\n' "$sidecar_snapshot"
-printf 'core_snapshot_bytes=%s\n' "$(stat -c %s "$core_snapshot")"
-printf 'sidecar_snapshot_bytes=%s\n' "$(stat -c %s "$sidecar_snapshot")"
+printf 'core_snapshot_bytes=%s\n' "$core_snapshot_bytes"
+printf 'sidecar_snapshot_bytes=%s\n' "$sidecar_snapshot_bytes"
+printf 'core_snapshot_page_count=%s\n' "$core_snapshot_page_count"
+printf 'sidecar_snapshot_page_count=%s\n' "$sidecar_snapshot_page_count"
 printf 'core_snapshot_sha256=%s\n' "$(sha256sum "$core_snapshot" | awk '{print $1}')"
 printf 'sidecar_snapshot_sha256=%s\n' "$(sha256sum "$sidecar_snapshot" | awk '{print $1}')"
 printf 'core_snapshot_integrity=%s\n' "$core_integrity"
@@ -171,6 +332,8 @@ EOS
 )"
 
 SOURCE_TMP_DIR_REMOTE="$(manifest_get source_tmp_dir)"
+SNAPSHOT_SOURCE_KIND="$(manifest_get snapshot_source_kind)"
+HELPER_IMAGE_REMOTE="$(manifest_get helper_image)"
 CORE_LIVE_PATH_REMOTE="$(manifest_get core_live_path)"
 SIDECAR_LIVE_PATH_REMOTE="$(manifest_get sidecar_live_path)"
 CORE_LIVE_BYTES="$(manifest_get core_live_bytes)"
@@ -198,7 +361,15 @@ run_id=$RUN_ID
 created_utc=$CREATED_UTC
 source_host=$SOURCE_HOST
 source_ssh_target=$SOURCE_SSH_TARGET
+source_container_name=$SOURCE_CONTAINER_NAME
+source_container_db_dir=$SOURCE_CONTAINER_DB_DIR
+source_helper_image=$SOURCE_HELPER_IMAGE
+source_backup_pages=$SOURCE_BACKUP_PAGES
+source_backup_sleep_secs=$SOURCE_BACKUP_SLEEP_SECS
+source_backup_progress_secs=$SOURCE_BACKUP_PROGRESS_SECS
 source_db_dir=$SOURCE_DB_DIR
+snapshot_source_kind=$SNAPSHOT_SOURCE_KIND
+helper_image=$HELPER_IMAGE_REMOTE
 core_live_path=$CORE_LIVE_PATH_REMOTE
 sidecar_live_path=$SIDECAR_LIVE_PATH_REMOTE
 core_live_bytes=$CORE_LIVE_BYTES

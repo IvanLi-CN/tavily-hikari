@@ -18,6 +18,13 @@ pub enum HaMode {
 }
 
 impl HaMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::ActiveStandby => "active_standby",
+        }
+    }
+
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "active_standby" | "active-standby" | "ha" => Self::ActiveStandby,

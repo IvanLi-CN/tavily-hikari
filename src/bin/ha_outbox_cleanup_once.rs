@@ -35,6 +35,14 @@ struct Cli {
     #[arg(long, default_value_t = HaOutboxGcOptions::default().inter_batch_sleep_ms)]
     inter_batch_sleep_ms: u64,
 
+    /// Repair HA triggers against the current three-channel contract before cleanup.
+    #[arg(long, default_value_t = false)]
+    repair_triggers: bool,
+
+    /// HA mode used when repairing triggers.
+    #[arg(long, env = "HA_MODE", default_value = "active_standby")]
+    ha_mode: String,
+
     /// Continue running bounded passes until no retained control outbox rows remain.
     #[arg(long, default_value_t = false)]
     run_until_complete: bool,
@@ -69,11 +77,15 @@ fn positive_u64(value: &str) -> Result<u64, String> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliReport {
+    repaired_triggers: bool,
+    trigger_repair_report: Option<tavily_hikari::HaTriggerRepairReport>,
     run_until_complete: bool,
     passes: usize,
     batch_size: i64,
     max_batches: i64,
     deleted_rows: i64,
+    invalid_legacy_deleted_rows: i64,
+    retention_deleted_rows: i64,
     batches: i64,
     completed: bool,
     has_more: bool,
@@ -86,16 +98,33 @@ struct CliReport {
 }
 
 impl CliReport {
-    fn from_passes(run_until_complete: bool, reports: Vec<HaOutboxGcReport>) -> Self {
+    fn from_passes(
+        run_until_complete: bool,
+        repaired_triggers: bool,
+        trigger_repair_report: Option<tavily_hikari::HaTriggerRepairReport>,
+        reports: Vec<HaOutboxGcReport>,
+    ) -> Self {
         let last = reports
             .last()
             .expect("ha outbox cleanup cli always records at least one pass");
         Self {
+            repaired_triggers,
+            trigger_repair_report,
             run_until_complete,
             passes: reports.len(),
             batch_size: last.batch_size,
             max_batches: last.max_batches,
             deleted_rows: reports.iter().map(|report| report.deleted_rows).sum(),
+            invalid_legacy_deleted_rows: reports
+                .iter()
+                .flat_map(|report| report.channels.iter())
+                .map(|channel| channel.invalid_legacy_deleted_rows)
+                .sum(),
+            retention_deleted_rows: reports
+                .iter()
+                .flat_map(|report| report.channels.iter())
+                .map(|channel| channel.retention_deleted_rows)
+                .sum(),
             batches: reports.iter().map(|report| report.batches).sum(),
             completed: last.completed,
             has_more: last.has_more,
@@ -131,7 +160,10 @@ fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<
     };
     writeln!(
         writer,
-        "ha_outbox_gc: {}",
+        "ha_outbox_gc: repaired_triggers={} invalid_legacy_deleted_rows={} retention_deleted_rows={} {}",
+        report.repaired_triggers,
+        report.invalid_legacy_deleted_rows,
+        report.retention_deleted_rows,
         format_ha_outbox_gc_report_message(&aggregate, report.passes)
     )?;
     writer.flush()
@@ -141,6 +173,7 @@ fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     let cli = Cli::parse();
+    let mode = tavily_hikari::HaMode::parse(&cli.ha_mode);
     let options = HaOutboxGcOptions {
         batch_size: cli.batch_size,
         max_batches: cli.max_batches,
@@ -148,6 +181,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inter_batch_sleep_ms: cli.inter_batch_sleep_ms,
     };
     let mut reports = Vec::new();
+    let trigger_repair_report = if cli.repair_triggers {
+        Some(tavily_hikari::repair_ha_triggers_once(&cli.db_path, mode).await?)
+    } else {
+        None
+    };
 
     loop {
         let report = run_ha_outbox_gc_once(&cli.db_path, options).await?;
@@ -158,7 +196,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let cli_report = CliReport::from_passes(cli.run_until_complete, reports);
+    let cli_report = CliReport::from_passes(
+        cli.run_until_complete,
+        cli.repair_triggers,
+        trigger_repair_report,
+        reports,
+    );
     if cli.json {
         write_json_report(io::stdout().lock(), &cli_report)?;
     } else {
@@ -166,4 +209,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_report_sums_invalid_and_retention_passes() {
+        let report = CliReport::from_passes(
+            true,
+            true,
+            None,
+            vec![
+                HaOutboxGcReport {
+                    batch_size: 10,
+                    max_batches: 2,
+                    deleted_rows: 5,
+                    batches: 1,
+                    completed: false,
+                    has_more: true,
+                    channels: vec![HaOutboxGcChannelReport {
+                        channel: tavily_hikari::HaSyncChannel::Control,
+                        retention_secs: 72,
+                        threshold: 100,
+                        invalid_legacy_deleted_rows: 2,
+                        retention_deleted_rows: 3,
+                        deleted_rows: 5,
+                        batches: 1,
+                        has_more: true,
+                    }],
+                    wal_checkpoint_busy: false,
+                    wal_checkpoint_log_frames: 0,
+                    wal_checkpoint_checkpointed_frames: 0,
+                    elapsed_ms: 12,
+                },
+                HaOutboxGcReport {
+                    batch_size: 10,
+                    max_batches: 2,
+                    deleted_rows: 2,
+                    batches: 1,
+                    completed: true,
+                    has_more: false,
+                    channels: vec![HaOutboxGcChannelReport {
+                        channel: tavily_hikari::HaSyncChannel::Control,
+                        retention_secs: 72,
+                        threshold: 100,
+                        invalid_legacy_deleted_rows: 1,
+                        retention_deleted_rows: 1,
+                        deleted_rows: 2,
+                        batches: 1,
+                        has_more: false,
+                    }],
+                    wal_checkpoint_busy: false,
+                    wal_checkpoint_log_frames: 0,
+                    wal_checkpoint_checkpointed_frames: 0,
+                    elapsed_ms: 8,
+                },
+            ],
+        );
+
+        assert!(report.repaired_triggers);
+        assert_eq!(report.deleted_rows, 7);
+        assert_eq!(report.invalid_legacy_deleted_rows, 3);
+        assert_eq!(report.retention_deleted_rows, 4);
+        assert_eq!(report.batches, 2);
+        assert!(report.completed);
+        assert_eq!(report.elapsed_ms, 20);
+    }
 }

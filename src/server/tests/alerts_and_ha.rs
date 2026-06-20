@@ -729,6 +729,97 @@ async fn ha_switching_back_to_single_disables_billing_and_runtime_triggers() {
 }
 
 #[tokio::test]
+async fn ha_repair_clears_legacy_single_channel_triggers_from_upgraded_db() {
+    let db_path = temp_db_path("ha-repair-legacy-single-channel-triggers");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_in_ha_mode(
+        vec!["tvly-ha-repair-key".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        tavily_hikari::TavilyProxyOptions::from_database_path(&db_str),
+        tavily_hikari::HaMode::ActiveStandby,
+    )
+    .await
+    .expect("proxy created");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER trg_ha_outbox_scheduled_jobs_insert
+        AFTER INSERT ON scheduled_jobs
+        BEGIN
+            INSERT INTO ha_outbox (
+                kind, resource, resource_id, op, payload_json, created_at, checksum
+            )
+            VALUES (
+                'state',
+                'scheduled_jobs',
+                CAST(NEW.id AS TEXT),
+                'upsert',
+                json_object('id', NEW.id, 'job_type', NEW.job_type),
+                CAST(strftime('%s','now') AS INTEGER),
+                NULL
+            );
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy scheduled_jobs trigger");
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (
+            job_type, trigger_source, status, attempt, queued_at, started_at, finished_at, message
+        ) VALUES ('legacy_ha_trigger_test', 'manual', 'queued', 1, 1, NULL, NULL, NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert scheduled job with legacy trigger");
+    let legacy_count_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ha_outbox WHERE resource = 'scheduled_jobs'")
+            .fetch_one(&pool)
+            .await
+            .expect("count legacy scheduled_jobs rows before repair");
+    assert_eq!(legacy_count_before, 1);
+    pool.close().await;
+
+    let report =
+        tavily_hikari::repair_ha_triggers_once(&db_str, tavily_hikari::HaMode::ActiveStandby)
+            .await
+            .expect("repair ha triggers");
+    assert!(report.legacy_triggers_dropped >= 1);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let legacy_trigger_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_ha_outbox_scheduled_jobs_insert'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count legacy trigger after repair");
+    assert_eq!(legacy_trigger_count, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (
+            job_type, trigger_source, status, attempt, queued_at, started_at, finished_at, message
+        ) VALUES ('legacy_ha_trigger_test_after', 'manual', 'queued', 1, 2, NULL, NULL, NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert scheduled job after repair");
+    let legacy_count_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ha_outbox WHERE resource = 'scheduled_jobs'")
+            .fetch_one(&pool)
+            .await
+            .expect("count legacy scheduled_jobs rows after repair");
+    assert_eq!(legacy_count_after, 1);
+    pool.close().await;
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_billing_and_runtime_channels_do_not_route_into_control_outbox() {
     let db_path = temp_db_path("ha-multichannel-outboxes");
     let db_str = db_path.to_string_lossy().to_string();

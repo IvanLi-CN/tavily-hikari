@@ -25,6 +25,11 @@
 - Added offline `ha_outbox_cleanup_once` and `scripts/ha-outbox-maintenance.sh` so large retained
   historical `ha_outbox` rows can be cleaned explicitly during a maintenance window before an
   optional `db_compaction_once`.
+- Added a dedicated `ha_trigger_repair_once` one-shot CLI and upgraded HA trigger reconcile so an
+  upgraded database no longer relies on the current whitelist alone when dropping triggers.
+  Startup/manual repair now enumerates `sqlite_master`, removes legacy `trg_ha_outbox_*` leftovers
+  that no longer belong to `control/billing/runtime`, then rebuilds only the current three-channel
+  contract.
 - Added `scripts/export-live-db-snapshot-to-testbox.sh` so operators can export the full live
   SQLite validation input from 101 into an isolated `codex-testbox` run directory. The script is
   intentionally sidecar-aware and treats the validation input as a set:
@@ -34,8 +39,27 @@
 - The accepted offline validation sequence is now explicit:
   1. create a full read-only snapshot set on 101
   2. upload that full set into one `codex-testbox` run directory
-  3. run `ha_outbox_cleanup_once` / `scripts/ha-outbox-maintenance.sh` there
-  4. run `db_compaction_once` only if the threshold gate says reclaimable space is large enough
+  3. run `ha_trigger_repair_once` or `ha_outbox_cleanup_once --repair-triggers` there
+  4. run `ha_outbox_cleanup_once` / `scripts/ha-outbox-maintenance.sh` there
+  5. run `db_compaction_once` only if the threshold gate says reclaimable space is large enough
+- `ha_outbox_cleanup_once` now distinguishes immediate invalid-legacy cleanup from normal retention
+  cleanup in its JSON/plain reports, so operators can prove whether the pass is shrinking a stale
+  upgraded backlog or only trimming aged rows.
+- Shared-testbox validation against a full 101 snapshot confirmed the upgraded-database failure
+  mode and the repair-first fix:
+  - `ha_trigger_repair_once --ha-mode active_standby` dropped `30` legacy single-channel triggers
+    before recreating the current `control/billing/runtime` trigger set.
+  - `ha_outbox_cleanup_once --repair-triggers --run-until-complete --json` deleted `29,143,494`
+    rows in total, including `27,770,036` invalid legacy `ha_outbox` rows and `1,373,458` normal
+    retention rows.
+  - After cleanup, `ha_outbox` contained only current control resources and shrank to `163,357`
+    rows, while `ha_billing_outbox` / `ha_runtime_outbox` stayed at `265,496` / `19,822` rows.
+  - The same validation run left `freelist_count=2,951,432`, proving roughly `12 GiB` of
+    reclaimable space and confirming that a follow-up compaction is worth running in the real
+    maintenance window.
+  - `db_compaction_once` on the shared testbox failed with `database or disk is full` because the
+    host root filesystem had only about `3.5 GiB` free. That is an environment-capacity blocker,
+    not a repair-path failure; production compaction still needs adequate temporary free space.
 - “Full live DB validation input” does not mean “copy the main `.db` file only.” For this service
   it means the core DB plus the observability sibling sidecar; otherwise offline verification can
   silently miss the production request-log/read-model layout.

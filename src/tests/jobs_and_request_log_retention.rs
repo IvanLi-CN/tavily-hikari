@@ -272,6 +272,103 @@ async fn standalone_ha_outbox_gc_deletes_expired_rows_across_channels_in_bounded
 }
 
 #[tokio::test]
+async fn standalone_ha_outbox_gc_deletes_invalid_legacy_rows_before_retention_rows() {
+    let db_path = temp_db_path("ha-outbox-gc-invalid-legacy-first");
+    let db_str = db_path.to_string_lossy().to_string();
+    let old_control_ts = Utc::now().timestamp() - (4 * SECS_PER_DAY);
+    let recent_ts = Utc::now().timestamp();
+
+    let proxy = TavilyProxy::with_options_in_ha_mode(
+        vec!["tvly-ha-invalid-gc-key".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        HaMode::ActiveStandby,
+    )
+    .await
+    .expect("proxy created");
+    drop(proxy);
+
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false),
+    )
+    .await
+    .expect("open sqlite pool");
+    sqlx::query(
+        r#"
+        INSERT INTO ha_outbox (
+            kind, resource, resource_id, op, payload_json, created_at, checksum
+        ) VALUES
+            ('state', 'scheduled_jobs', 'legacy-1', 'upsert', '{}', ?, NULL),
+            ('state', 'scheduled_jobs', 'legacy-2', 'upsert', '{}', ?, NULL),
+            ('state', 'users', 'old-user', 'upsert', '{}', ?, NULL),
+            ('state', 'users', 'recent-user', 'upsert', '{}', ?, NULL)
+        "#,
+    )
+    .bind(recent_ts)
+    .bind(recent_ts + 1)
+    .bind(old_control_ts)
+    .bind(recent_ts + 2)
+    .execute(&pool)
+    .await
+    .expect("seed control outbox rows");
+    drop(pool);
+
+    let report = run_ha_outbox_gc_once(
+        &db_str,
+        HaOutboxGcOptions {
+            batch_size: 10,
+            max_batches: 2,
+            max_runtime_secs: 30,
+            inter_batch_sleep_ms: 0,
+        },
+    )
+    .await
+    .expect("run standalone ha outbox gc");
+
+    let control = report
+        .channels
+        .iter()
+        .find(|channel| channel.channel == HaSyncChannel::Control)
+        .expect("control report");
+    assert_eq!(control.invalid_legacy_deleted_rows, 2);
+    assert_eq!(control.retention_deleted_rows, 1);
+    assert_eq!(control.deleted_rows, 3);
+
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false),
+    )
+    .await
+    .expect("reopen sqlite pool");
+    let legacy_remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ha_outbox WHERE resource = 'scheduled_jobs'")
+            .fetch_one(&pool)
+            .await
+            .expect("count legacy rows");
+    let old_allowed_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ha_outbox WHERE resource = 'users' AND created_at < ?",
+    )
+    .bind(recent_ts - SECS_PER_DAY)
+    .fetch_one(&pool)
+    .await
+    .expect("count old allowed rows");
+    let recent_allowed_remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ha_outbox WHERE resource = 'users'")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining allowed rows");
+    assert_eq!(legacy_remaining, 0);
+    assert_eq!(old_allowed_remaining, 0);
+    assert_eq!(recent_allowed_remaining, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn scheduled_job_start_retries_transient_sqlite_write_lock() {
     let db_path = temp_db_path("scheduled-job-start-retries-sqlite-lock");
     let db_str = db_path.to_string_lossy().to_string();

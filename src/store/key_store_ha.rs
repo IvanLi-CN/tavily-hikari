@@ -162,6 +162,18 @@ fn ha_channel_retention_secs(channel: HaSyncChannel) -> i64 {
     }
 }
 
+fn ha_channel_outbox_trigger_prefixes(channel: HaSyncChannel) -> Vec<String> {
+    let mut prefixes = vec![format!("trg_ha_{}_", channel.as_str())];
+    if channel == HaSyncChannel::Control {
+        prefixes.push("trg_ha_outbox_".to_string());
+    }
+    prefixes
+}
+
+fn ha_channel_allowed_resources(channel: HaSyncChannel) -> &'static [&'static str] {
+    ha_baseline_tables(channel)
+}
+
 impl KeyStore {
     pub(crate) async fn persist_ha_node_state(
         &self,
@@ -933,25 +945,58 @@ impl KeyStore {
     }
 
     pub(crate) async fn configure_ha_event_writes(&self, mode: HaMode) -> Result<(), ProxyError> {
-        self.drop_ha_channel_triggers(HaSyncChannel::Control).await?;
-        self.drop_ha_channel_triggers(HaSyncChannel::Billing).await?;
-        self.drop_ha_channel_triggers(HaSyncChannel::Runtime).await?;
-        if mode == HaMode::Single {
-            return Ok(());
+        self.repair_ha_triggers(mode).await.map(|_| ())
+    }
+
+    pub(crate) async fn repair_ha_triggers(
+        &self,
+        mode: HaMode,
+    ) -> Result<HaTriggerRepairReport, ProxyError> {
+        let started = Instant::now();
+        let mut channels = Vec::new();
+
+        for channel in [
+            HaSyncChannel::Control,
+            HaSyncChannel::Billing,
+            HaSyncChannel::Runtime,
+        ] {
+            let (legacy_triggers_dropped, current_triggers_dropped) =
+                self.drop_ha_channel_triggers(channel).await?;
+            let triggers_created = if mode == HaMode::Single {
+                0
+            } else {
+                self.ensure_ha_channel_outbox_triggers(channel).await?
+            };
+            channels.push(HaTriggerRepairChannelReport {
+                channel,
+                legacy_triggers_dropped,
+                current_triggers_dropped,
+                triggers_created,
+            });
         }
-        self.ensure_ha_channel_outbox_triggers(HaSyncChannel::Control)
-            .await?;
-        self.ensure_ha_channel_outbox_triggers(HaSyncChannel::Billing)
-            .await?;
-        self.ensure_ha_channel_outbox_triggers(HaSyncChannel::Runtime)
-            .await
+
+        Ok(HaTriggerRepairReport {
+            mode,
+            legacy_triggers_dropped: channels
+                .iter()
+                .map(|channel| channel.legacy_triggers_dropped)
+                .sum(),
+            current_triggers_dropped: channels
+                .iter()
+                .map(|channel| channel.current_triggers_dropped)
+                .sum(),
+            triggers_created: channels.iter().map(|channel| channel.triggers_created).sum(),
+            channels,
+            elapsed_ms: started.elapsed().as_millis(),
+        })
     }
 
     pub(crate) async fn ensure_ha_channel_outbox_triggers(
         &self,
         channel: HaSyncChannel,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<i64, ProxyError> {
         let mut conn = self.pool.acquire().await?;
+        let mut created = 0_i64;
         for table in ha_channel_event_tables(channel) {
             let table_exists = sqlx::query_scalar::<_, i64>(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
@@ -1016,30 +1061,49 @@ impl KeyStore {
                     quote_sqlite_identifier(ha_channel_event_table(channel))
                 );
                 sqlx::query(&sql).execute(&mut *conn).await?;
+                created += 1;
             }
         }
-        Ok(())
+        Ok(created)
     }
 
-    async fn drop_ha_channel_triggers(&self, channel: HaSyncChannel) -> Result<(), ProxyError> {
+    async fn drop_ha_channel_triggers(&self, channel: HaSyncChannel) -> Result<(i64, i64), ProxyError> {
         let mut conn = self.pool.acquire().await?;
+        let mut current_trigger_names = std::collections::HashSet::new();
         for table in ha_channel_event_tables(channel) {
             for suffix in ["insert", "update", "delete"] {
-                sqlx::query(&format!(
-                    "DROP TRIGGER IF EXISTS {}",
-                    quote_sqlite_identifier(&format!("trg_ha_outbox_{}_{}", table, suffix))
-                ))
-                .execute(&mut *conn)
-                .await?;
-                sqlx::query(&format!(
-                    "DROP TRIGGER IF EXISTS {}",
-                    quote_sqlite_identifier(&ha_trigger_name(channel, table, suffix))
-                ))
-                .execute(&mut *conn)
-                .await?;
+                if channel == HaSyncChannel::Control {
+                    current_trigger_names.insert(format!("trg_ha_outbox_{}_{}", table, suffix));
+                }
+                current_trigger_names.insert(ha_trigger_name(channel, table, suffix));
             }
         }
-        Ok(())
+        let mut current_triggers_dropped = 0_i64;
+        let mut legacy_triggers_dropped = 0_i64;
+        let prefixes = ha_channel_outbox_trigger_prefixes(channel);
+        let rows = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name ASC",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for row in rows {
+            let name: String = row.try_get("name")?;
+            if !prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+                continue;
+            }
+            sqlx::query(&format!(
+                "DROP TRIGGER IF EXISTS {}",
+                quote_sqlite_identifier(&name)
+            ))
+            .execute(&mut *conn)
+            .await?;
+            if current_trigger_names.contains(&name) {
+                current_triggers_dropped += 1;
+            } else {
+                legacy_triggers_dropped += 1;
+            }
+        }
+        Ok((legacy_triggers_dropped, current_triggers_dropped))
     }
 
 }
@@ -1374,6 +1438,62 @@ impl KeyStore {
         Ok(deleted.rows_affected() as i64)
     }
 
+    pub(crate) async fn delete_ha_invalid_legacy_events_bounded(
+        &self,
+        channel: HaSyncChannel,
+        batch_size: i64,
+    ) -> Result<i64, ProxyError> {
+        let table = quote_sqlite_identifier(ha_channel_event_table(channel));
+        let allowed_resources = ha_channel_allowed_resources(channel)
+            .iter()
+            .map(|resource| quote_sqlite_string(resource))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let where_sql = if allowed_resources.is_empty() {
+            "1=1".to_string()
+        } else {
+            format!("resource NOT IN ({allowed_resources})")
+        };
+        let deleted = sqlx::query(&format!(
+            r#"
+            DELETE FROM {table}
+            WHERE seq IN (
+                SELECT seq
+                FROM {table}
+                WHERE {where_sql}
+                ORDER BY seq ASC
+                LIMIT ?
+            )
+            "#
+        ))
+        .bind(batch_size.max(1))
+        .execute(&self.pool)
+        .await?;
+        Ok(deleted.rows_affected() as i64)
+    }
+
+    pub(crate) async fn ha_invalid_legacy_events_exist(
+        &self,
+        channel: HaSyncChannel,
+    ) -> Result<bool, ProxyError> {
+        let table = quote_sqlite_identifier(ha_channel_event_table(channel));
+        let allowed_resources = ha_channel_allowed_resources(channel)
+            .iter()
+            .map(|resource| quote_sqlite_string(resource))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = if allowed_resources.is_empty() {
+            format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)")
+        } else {
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM {table} WHERE resource NOT IN ({allowed_resources}) LIMIT 1)"
+            )
+        };
+        Ok(sqlx::query_scalar::<_, bool>(&sql)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
     pub(crate) async fn gc_ha_outbox_with_options(
         &self,
         options: HaOutboxGcOptions,
@@ -1395,15 +1515,32 @@ impl KeyStore {
             let retention_secs = ha_channel_retention_secs(channel);
             let threshold = self.backend_time.now_ts() - retention_secs;
             let mut channel_deleted_rows = 0_i64;
+            let mut invalid_legacy_deleted_rows = 0_i64;
+            let mut retention_deleted_rows = 0_i64;
             let mut channel_batches = 0_i64;
 
             while channel_batches < max_batches && Instant::now() < deadline {
-                let deleted = self
-                    .delete_ha_channel_events_bounded(channel, threshold, batch_size)
+                let deleted_invalid = self
+                    .delete_ha_invalid_legacy_events_bounded(channel, batch_size)
                     .await?;
-                channel_deleted_rows += deleted;
+                invalid_legacy_deleted_rows += deleted_invalid;
+                channel_deleted_rows += deleted_invalid;
                 channel_batches += 1;
-                if deleted < batch_size {
+                if deleted_invalid > 0 {
+                    if deleted_invalid < batch_size {
+                        continue;
+                    }
+                } else {
+                    let deleted_retention = self
+                        .delete_ha_channel_events_bounded(channel, threshold, batch_size)
+                        .await?;
+                    retention_deleted_rows += deleted_retention;
+                    channel_deleted_rows += deleted_retention;
+                    if deleted_retention < batch_size {
+                        break;
+                    }
+                }
+                if deleted_invalid > 0 && deleted_invalid < batch_size {
                     break;
                 }
                 completed = false;
@@ -1414,13 +1551,15 @@ impl KeyStore {
                 }
             }
 
-            let has_more: bool = sqlx::query_scalar(&format!(
+            let has_more_retention: bool = sqlx::query_scalar(&format!(
                 "SELECT EXISTS(SELECT 1 FROM {} WHERE created_at < ? LIMIT 1)",
                 quote_sqlite_identifier(ha_channel_event_table(channel))
             ))
             .bind(threshold)
             .fetch_one(&self.pool)
             .await?;
+            let has_more_invalid = self.ha_invalid_legacy_events_exist(channel).await?;
+            let has_more = has_more_invalid || has_more_retention;
             if has_more {
                 completed = false;
             }
@@ -1431,6 +1570,8 @@ impl KeyStore {
                 channel,
                 retention_secs,
                 threshold,
+                invalid_legacy_deleted_rows,
+                retention_deleted_rows,
                 deleted_rows: channel_deleted_rows,
                 batches: channel_batches,
                 has_more,

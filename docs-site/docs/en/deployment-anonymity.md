@@ -136,7 +136,7 @@ unexpected SQLite file growth, keep the recovery flow consistent:
 3. confirm `scheduled_jobs` has no fresh long-running `quota_sync*` `running` rows
 4. confirm `database is locked` is no longer continuously spiking in logs
 5. use `request_logs_gc_once` first for request-log backlog
-6. use `ha_outbox_cleanup_once` or `scripts/ha-outbox-maintenance.sh` first for HA outbox backlog
+6. repair HA triggers first, then use `ha_outbox_cleanup_once` or `scripts/ha-outbox-maintenance.sh` for HA outbox backlog
 7. run `db_compaction_once` only when `reclaimable_bytes >= 512MB` or you are explicitly in a
    maintenance window
 8. clean temporary snapshots, offline backup intermediates, and dangling images after the
@@ -147,6 +147,7 @@ The operator CLIs inside the image are:
 ```bash
 request_logs_gc_once --json
 ha_outbox_cleanup_once --json
+ha_trigger_repair_once --json
 db_compaction_once --json
 db_compaction_once --json --force
 ```
@@ -161,10 +162,14 @@ scripts/export-live-db-snapshot-to-testbox.sh
 Notes:
 
 - `request_logs_gc_once` performs bounded request-log/body cleanup
-- `ha_outbox_cleanup_once` performs bounded historical HA outbox cleanup; the online `ha_outbox_gc`
-  scheduler is intentionally lighter and handles freshness cleanup only
-- `scripts/ha-outbox-maintenance.sh` is the operator wrapper that keeps the order as “cleanup
-  first, compaction only if needed”
+- `ha_trigger_repair_once` explicitly removes upgraded-database leftovers such as stale
+  `trg_ha_outbox_*` triggers before backlog cleanup starts
+- `ha_outbox_cleanup_once` performs bounded historical HA outbox cleanup; it can also
+  `--repair-triggers`, and its report separates invalid-legacy deletions from ordinary retention
+  deletions. The online `ha_outbox_gc` scheduler is intentionally lighter and handles freshness
+  cleanup only
+- `scripts/ha-outbox-maintenance.sh` is the operator wrapper that keeps the order as “repair +
+  cleanup first, compaction only if needed”
 - `db_compaction_once` shrinks SQLite files and honors the reclaimable-space threshold by default
 - `db_compaction_once --force` is only for an explicit maintenance window
 - offline validation input must be the full DB set: `tavily_proxy.db` plus

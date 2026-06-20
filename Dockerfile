@@ -27,7 +27,9 @@ RUN cargo build --release --locked \
     --bin observability_sidecar_migrate \
     --bin observability_lock_holder \
     --bin db_compaction_once \
-    --bin request_logs_gc_once
+    --bin request_logs_gc_once \
+    --bin ha_outbox_cleanup_once \
+    --bin ha_trigger_repair_once
 
 ########## Stage 2: import the official Xray runtime ##########
 FROM ghcr.io/xtls/xray-core:${XRAY_CORE_VERSION} AS xray-downloader
@@ -50,6 +52,8 @@ COPY --from=builder /app/target/release/observability_sidecar_migrate /usr/local
 COPY --from=builder /app/target/release/observability_lock_holder /usr/local/bin/observability_lock_holder
 COPY --from=builder /app/target/release/db_compaction_once /usr/local/bin/db_compaction_once
 COPY --from=builder /app/target/release/request_logs_gc_once /usr/local/bin/request_logs_gc_once
+COPY --from=builder /app/target/release/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once
+COPY --from=builder /app/target/release/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/xray /usr/local/share/xray
 # Copy prebuilt web assets (produced by CI before Docker build)

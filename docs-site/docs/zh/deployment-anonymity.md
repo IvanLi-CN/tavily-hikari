@@ -133,7 +133,7 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 3. 检查 `scheduled_jobs` 里没有新的长时间 `quota_sync*` `running`
 4. 检查日志里 `database is locked` 不再持续爆发
 5. request logs backlog 优先运行 `request_logs_gc_once`
-6. `ha_outbox` backlog 优先运行 `ha_outbox_cleanup_once` 或 `scripts/ha-outbox-maintenance.sh`
+6. `ha_outbox` backlog 先修 trigger，再运行 `ha_outbox_cleanup_once` 或 `scripts/ha-outbox-maintenance.sh`
 7. 只有在 `reclaimable_bytes >= 512MB`，或者你明确进入维护窗口时，再运行 `db_compaction_once`
 8. 维护完成后清理临时快照目录、离线备份中间文件和 dangling image，避免把磁盘再次打满
 
@@ -142,6 +142,7 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 ```bash
 request_logs_gc_once --json
 ha_outbox_cleanup_once --json
+ha_trigger_repair_once --json
 db_compaction_once --json
 db_compaction_once --json --force
 ```
@@ -155,8 +156,9 @@ scripts/export-live-db-snapshot-to-testbox.sh
 说明：
 
 - `request_logs_gc_once` 用于 bounded 地清理 request logs / body backlog
-- `ha_outbox_cleanup_once` 用于 bounded 地清理历史 HA outbox backlog；线上 scheduler 里的 `ha_outbox_gc` 只负责轻量 freshness cleanup，不负责重型历史收缩
-- `scripts/ha-outbox-maintenance.sh` 是一层运维封装，顺序固定为“先 cleanup，后按需 compaction”
+- `ha_trigger_repair_once` 用于显式修复升级库中残留的旧 `trg_ha_outbox_*` trigger；如果真实问题是旧 trigger 还在持续写 `ha_outbox`，必须先跑它
+- `ha_outbox_cleanup_once` 用于 bounded 地清理历史 HA outbox backlog；它支持 `--repair-triggers`，并会在报告中区分 `invalid legacy` 删除量与正常 retention 删除量。线上 scheduler 里的 `ha_outbox_gc` 只负责轻量 freshness cleanup，不负责重型历史收缩
+- `scripts/ha-outbox-maintenance.sh` 是一层运维封装，顺序固定为“先 repair + cleanup，后按需 compaction”
 - `db_compaction_once` 用于 SQLite 文件压缩；默认会尊重 reclaimable space 阈值，不满足条件时返回 `skipped=true`
 - `db_compaction_once --force` 只建议在明确的维护窗口里使用
 - 离线验证输入必须是完整数据库集：`tavily_proxy.db` + `tavily_proxy-observability.db`，不能只拷主库
