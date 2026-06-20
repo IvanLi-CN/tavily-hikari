@@ -1577,6 +1577,7 @@ async fn insert_charged_business_log(
             request_log_id,
             result_status,
             created_at,
+            updated_at,
             settled_at,
             error_message
         )
@@ -1590,6 +1591,7 @@ async fn insert_charged_business_log(
             NULL,
             NULL,
             result_status,
+            created_at,
             created_at,
             created_at,
             error_message
@@ -1607,6 +1609,7 @@ async fn insert_charged_business_log(
             request_log_id = excluded.request_log_id,
             result_status = excluded.result_status,
             created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
             settled_at = excluded.settled_at,
             error_message = excluded.error_message
         "#,

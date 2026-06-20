@@ -378,6 +378,7 @@ async fn repair_candidates(
                 request_log_id,
                 result_status,
                 created_at,
+                updated_at,
                 settled_at,
                 error_message
             )
@@ -391,6 +392,7 @@ async fn repair_candidates(
                 atl.api_key_id,
                 atl.request_log_id,
                 atl.result_status,
+                atl.created_at,
                 atl.created_at,
                 NULL,
                 atl.error_message
@@ -406,6 +408,7 @@ async fn repair_candidates(
                 request_log_id = excluded.request_log_id,
                 result_status = excluded.result_status,
                 created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
                 settled_at = NULL,
                 error_message = excluded.error_message
             "#,

@@ -211,6 +211,12 @@ impl KeyStore {
         if !self.main_table_exists("billing_ledger").await? {
             return Ok(());
         }
+        let has_updated_at = self.table_column_exists("billing_ledger", "updated_at").await?;
+        let updated_at_select_expr = if has_updated_at {
+            "updated_at"
+        } else {
+            "created_at"
+        };
 
         let mut conn = self.pool.acquire().await?;
         sqlx::query("PRAGMA foreign_keys = OFF")
@@ -242,7 +248,7 @@ impl KeyStore {
             )
             .execute(&mut *conn)
             .await?;
-            sqlx::query(
+            let copy_sql = format!(
                 r#"
                 INSERT INTO billing_ledger_new (
                     auth_token_log_id,
@@ -270,14 +276,13 @@ impl KeyStore {
                     request_log_id,
                     result_status,
                     created_at,
-                    COALESCE(updated_at, created_at),
+                    {updated_at_select_expr},
                     settled_at,
                     error_message
                 FROM billing_ledger
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
+                "#
+            );
+            sqlx::query(&copy_sql).execute(&mut *conn).await?;
             sqlx::query("DROP TABLE billing_ledger")
                 .execute(&mut *conn)
                 .await?;
