@@ -242,6 +242,7 @@ async fn account_usage_rollup_rebuild_backfills_request_day_buckets_beyond_rate5
 
 #[tokio::test]
 async fn startup_rebuilds_request_day_rollups_when_v1_done_exists_but_day_coverage_is_missing() {
+    let _env_guard = AuthTokenLogRetentionEnvGuard::set("14").await;
     let db_path = temp_db_path("startup-rebuilds-request-day-rollups-missing-coverage");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -604,13 +605,15 @@ async fn account_usage_rollup_rebuild_preserves_existing_request_day_buckets_bey
 }
 
 #[tokio::test]
-async fn startup_request_day_rebuild_expands_when_auth_token_retention_is_widened() {
+async fn startup_request_day_rebuild_uses_available_history_before_gc() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
-    let db_path = temp_db_path("startup-request-day-rebuild-expands-retention");
+    let db_path = temp_db_path("startup-request-day-rebuild-uses-available-history");
     let db_str = db_path.to_string_lossy().to_string();
     let current_local_day_start = local_day_bucket_start_utc_ts(manual_clock.now_ts());
     let narrow_days = 14_i64;
     let widened_days = 92_i64;
+    let expected_request_day_coverage_start =
+        shift_local_day_start_utc_ts(current_local_day_start, -(widened_days as i32));
     let historical_day_bucket_start =
         shift_local_day_start_utc_ts(current_local_day_start, -(widened_days as i32 - 1));
     let historical_created_at = historical_day_bucket_start + 60;
@@ -685,9 +688,7 @@ async fn startup_request_day_rebuild_expands_when_auth_token_retention_is_widene
         .await
         .expect("load narrow request day coverage start")
         .expect("narrow request day coverage start");
-    let expected_narrow_coverage_start =
-        shift_local_day_start_utc_ts(current_local_day_start, -(narrow_days as i32));
-    assert_eq!(narrow_coverage_start, expected_narrow_coverage_start);
+    assert_eq!(narrow_coverage_start, expected_request_day_coverage_start);
 
     let narrow_day_values = proxy
         .key_store
@@ -700,7 +701,10 @@ async fn startup_request_day_rebuild_expands_when_auth_token_retention_is_widene
         )
         .await
         .expect("load day rollup after narrow rebuild");
-    assert!(narrow_day_values.is_empty());
+    assert_eq!(
+        narrow_day_values.get(&historical_day_bucket_start),
+        Some(&1)
+    );
 
     env_guard.update(&widened_days.to_string());
     drop(proxy);
@@ -721,9 +725,7 @@ async fn startup_request_day_rebuild_expands_when_auth_token_retention_is_widene
         .await
         .expect("load widened request day coverage start")
         .expect("widened request day coverage start");
-    let expected_widened_coverage_start =
-        shift_local_day_start_utc_ts(current_local_day_start, -(widened_days as i32));
-    assert_eq!(widened_coverage_start, expected_widened_coverage_start);
+    assert_eq!(widened_coverage_start, expected_request_day_coverage_start);
 
     let widened_day_values = reopened
         .key_store
