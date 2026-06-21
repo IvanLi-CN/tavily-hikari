@@ -9,9 +9,9 @@
 - `Dockerfile` 在 builder 阶段复制 `build.rs`，保证新增 Cargo build script 后容器构建路径仍可用；容器运行时继续通过 `WEB_STATIC_DIR=/srv/app/web` 使用镜像内静态目录。
 - release workflow 先在单独的 `web-assets` job 内构建一次 `web/dist` 并上传 `release-web-dist` artifact，随后 `docker-native` 与 `binary-native` 都只下载该 artifact 复用，不再各自重复 Bun 安装与前端构建。
 - `binary-native` matrix 继续在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上构建 release binary、打包 `tar.gz`、生成 `.sha256` 并 smoke 解包后的 binary。
-- `reqwest` 依赖面显式关闭默认特性并改为 `rustls-tls-native-roots`，同时显式保留原本默认的 `charset`、`http2`、`system-proxy` 与透明压缩解码（`gzip` / `brotli` / `deflate`）行为，避免为了 portable binary 牺牲既有 HTTP 能力，也保留宿主机系统 CA store 对自定义上游和企业证书链的信任。
+- `reqwest` 改为按目标平台分流：glibc / native Linux 资产继续保留原本默认 `default-tls` 行为，避免现有发布因为 portable 需求而整体切换 TLS backend；只有 musl portable 构建改用 `rustls-tls-native-roots`，并显式保留 `charset`、`http2`、`system-proxy` 与透明压缩解码（`gzip` / `brotli` / `deflate`）能力。
 - `sqlx` 继续使用 `sqlite` 特性，自带 bundled `libsqlite3-sys` 静态链接路径，不再依赖宿主机 `libsqlite3` 运行时。
-- release workflow 新增 `binary-portable` matrix：在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上安装 Zig 与 `cargo-zigbuild`，分别构建 `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 版本，并打包为 `*-portable.tar.gz` 与 `.sha256`。
+- release workflow 新增 `binary-portable` matrix：在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上安装 Zig 与固定版本的 `cargo-zigbuild`，分别构建 `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 版本，并打包为 `*-portable.tar.gz` 与 `.sha256`。
 - `prepare` job 额外从被 checkout 的目标源码树读取 release contract marker；只有目标树声明 `portable_release_contract=v1` 时才启用 `binary-portable` 与 portable 资产文案。这样当前 workflow 仍可用 `workflow_dispatch(head_sha=...)` 回填 pre-portable 历史提交，而不会把新 portable 构建强加到旧依赖树上。
 - portable matrix 在 smoke 前额外执行链接面检查：同时读取 `file`、`readelf -d` 与 `readelf -l`，要求产物保持 static/static-pie、没有 `PT_INTERP`、没有 `DT_NEEDED`，并显式拒绝 `glibc` / `OpenSSL` / `libsqlite3` 运行时依赖，避免仅靠 `ldd` 文本匹配漏过 glibc 动态链接回归。
 - GitHub Release job 下载 binary artifacts 后用 `gh release upload --clobber --repo "${GITHUB_REPOSITORY}"` 上传资产；该 job 没有 checkout，不能依赖本地 `.git` 推断仓库。PR release comment 列出 binary

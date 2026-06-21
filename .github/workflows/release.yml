@@ -577,7 +577,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo install cargo-zigbuild --locked
+          cargo install cargo-zigbuild --locked --version 0.22.1
 
       - name: Build portable release binary
         shell: bash
