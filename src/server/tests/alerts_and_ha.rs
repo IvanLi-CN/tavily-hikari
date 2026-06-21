@@ -6,7 +6,7 @@ use super::upstream_support_and_manual_jobs::*;
 const TEST_SECS_PER_DAY: i64 = 24 * 60 * 60;
 
 #[tokio::test]
-async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
+async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
     let db_path = temp_db_path("alerts-dashboard-default-window");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -335,7 +335,7 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
     let events_body: serde_json::Value = events_resp.json().await.expect("alert events json");
     assert_eq!(
         events_body.get("total").and_then(|value| value.as_i64()),
-        Some(5)
+        Some(6)
     );
     assert_eq!(
         events_body
@@ -450,6 +450,40 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
             .pointer("/items/0/type")
             .and_then(|value| value.as_str()),
         Some("upstream_key_blocked")
+    );
+    let semantic_rate_group = groups_body
+        .get("items")
+        .and_then(|value| value.as_array())
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("type").and_then(|value| value.as_str())
+                    == Some("user_request_rate_limited")
+            })
+        })
+        .expect("semantic request-rate mother group");
+    assert_eq!(
+        semantic_rate_group
+            .get("groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("mother")
+    );
+    assert_eq!(
+        semantic_rate_group
+            .get("childCount")
+            .and_then(|value| value.as_i64()),
+        Some(1)
+    );
+    assert_eq!(
+        semantic_rate_group
+            .pointer("/children/0/groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("child")
+    );
+    assert_eq!(
+        semantic_rate_group
+            .pointer("/children/0/childEvents/0/type")
+            .and_then(|value| value.as_str()),
+        Some("user_request_rate_limited")
     );
 
     let overview_resp = client

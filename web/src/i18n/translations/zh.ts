@@ -301,7 +301,7 @@ export const ZH: TranslationShape = {
         tokenCoverageTruncated: '令牌风险范围已截断，请进入“访问令牌”查看完整数据。',
         tokenCoverageError: '令牌风险数据加载失败，请进入“访问令牌”重试。',
         recentAlertsTitle: '近期告警',
-        recentAlertsDescription: '默认按最近 24 小时汇总，和告警中心首屏口径保持一致。',
+        recentAlertsDescription: '默认汇总最近 24 小时，并可一键进入聚合告警的同口径时间切片。',
         recentAlertsEvents: '事件数',
         recentAlertsGroups: '分组数',
         recentAlertsEmpty: '最近 24 小时暂无告警活动。',

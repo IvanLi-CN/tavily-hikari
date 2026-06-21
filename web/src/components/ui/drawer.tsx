@@ -3,11 +3,14 @@ import { Drawer as DrawerPrimitive } from 'vaul'
 
 import { cn } from '../../lib/utils'
 
+type DrawerDirection = React.ComponentProps<typeof DrawerPrimitive.Root>['direction']
+
 const Drawer = ({
   shouldScaleBackground = true,
+  direction = 'bottom',
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Root>) => (
-  <DrawerPrimitive.Root shouldScaleBackground={shouldScaleBackground} {...props} />
+  <DrawerPrimitive.Root shouldScaleBackground={shouldScaleBackground} direction={direction} {...props} />
 )
 Drawer.displayName = 'Drawer'
 
@@ -23,21 +26,29 @@ const DrawerOverlay = React.forwardRef<
 ))
 DrawerOverlay.displayName = DrawerPrimitive.Overlay.displayName
 
+type DrawerContentProps = React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Content> & {
+  direction?: DrawerDirection
+}
+
 const DrawerContent = React.forwardRef<
   React.ElementRef<typeof DrawerPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  DrawerContentProps
+>(({ className, children, direction = 'bottom', ...props }, ref) => (
   <DrawerPortal>
     <DrawerOverlay />
     <DrawerPrimitive.Content
       ref={ref}
       className={cn(
-        'layer-drawer fixed inset-x-0 bottom-0 mt-24 flex h-auto flex-col rounded-t-[32px] border border-border/70 bg-card/95 shadow-claySurface backdrop-blur',
+        direction === 'right'
+          ? 'layer-drawer fixed inset-y-0 right-0 left-auto mt-0 flex h-dvh w-[min(46rem,calc(100vw-1rem))] max-w-full flex-col rounded-none rounded-l-[32px] border border-border/70 bg-card/95 shadow-claySurface backdrop-blur'
+          : 'layer-drawer fixed inset-x-0 bottom-0 mt-24 flex h-auto flex-col rounded-t-[32px] border border-border/70 bg-card/95 shadow-claySurface backdrop-blur',
         className,
       )}
       {...props}
     >
-      <div className="mx-auto mt-3 h-1.5 w-12 shrink-0 rounded-full bg-muted" />
+      {direction === 'bottom' || direction === 'top' ? (
+        <div className="mx-auto mt-3 h-1.5 w-12 shrink-0 rounded-full bg-muted" />
+      ) : null}
       {children}
     </DrawerPrimitive.Content>
   </DrawerPortal>

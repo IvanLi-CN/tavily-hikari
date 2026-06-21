@@ -1437,12 +1437,14 @@ tbody .log-details-row:hover {
   width: 100%;
   flex: 1 1 auto;
   min-height: 100%;
+  min-width: 0;
   padding-bottom: 0;
 }
 
 .admin-main-content .app-shell {
   max-width: none;
   width: min(100%, 1760px);
+  min-width: 0;
 }
 
 .admin-main-content .app-footer {

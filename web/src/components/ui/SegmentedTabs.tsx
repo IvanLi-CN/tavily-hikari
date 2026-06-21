@@ -18,6 +18,7 @@ interface SegmentedTabsProps<T extends string = string> {
   className?: string
   disabled?: boolean
   smallViewportBehavior?: 'select' | 'buttons'
+  collapseMode?: 'auto' | 'never'
 }
 
 function labelToPlainText(node: React.ReactNode): string {
@@ -36,10 +37,13 @@ export default function SegmentedTabs<T extends string = string>({
   ariaLabel,
   className,
   disabled = false,
-  smallViewportBehavior = 'select',
+  collapseMode = 'auto',
+  smallViewportBehavior,
 }: SegmentedTabsProps<T>): JSX.Element {
   const viewportMode = useViewportMode()
   const buttonRefs = React.useRef<Array<HTMLButtonElement | null>>([])
+  const effectiveSmallViewportBehavior =
+    smallViewportBehavior ?? (collapseMode === 'never' ? 'buttons' : 'select')
 
   function findNextEnabledIndex(startIndex: number, step: 1 | -1): number {
     if (options.length === 0) return -1
@@ -57,7 +61,7 @@ export default function SegmentedTabs<T extends string = string>({
     return options.findIndex((option) => option.value === match.value)
   }
 
-  if (viewportMode === 'small' && smallViewportBehavior === 'select') {
+  if (viewportMode === 'small' && effectiveSmallViewportBehavior === 'select') {
     const selectedOption = options.find((option) => option.value === value)
     const selectedLabel = selectedOption ? labelToPlainText(selectedOption.label) : ''
 
@@ -83,7 +87,9 @@ export default function SegmentedTabs<T extends string = string>({
     <div
       className={cn(
         'segmented-tabs',
-        viewportMode === 'small' && smallViewportBehavior === 'buttons' && 'segmented-tabs-mobile-buttons',
+        viewportMode === 'small' &&
+          effectiveSmallViewportBehavior === 'buttons' &&
+          'segmented-tabs-mobile-buttons',
         className,
       )}
       role="radiogroup"

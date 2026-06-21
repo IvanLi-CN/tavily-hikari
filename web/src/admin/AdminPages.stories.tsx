@@ -86,7 +86,6 @@ export const UserDetailSharedUsageTooltip = { ...RuntimeStories.UserDetailShared
 export const UserDetailMonthlyGap = { ...RuntimeStories.UserDetailMonthlyGap }
 export const UserDetailBusinessCalls1h = { ...RuntimeStories.UserDetailBusinessCalls1h }
 export const UserDetailIpUsage = { ...RuntimeStories.UserDetailIpUsage }
-export const Alerts = { ...RuntimeStories.Alerts }
 export const Announcements = { ...RuntimeStories.Announcements }
 export const SystemSettings = { ...RuntimeStories.SystemSettings }
 export const SystemSettingsHa = { ...HaStories.SystemSettingsHa }

@@ -13,7 +13,6 @@ struct AlertEventFilters<'a> {
 struct AlertEventProjectionRow {
     source_kind: String,
     source_id: String,
-    row_sort_id: String,
     alert_type: String,
     occurred_at: i64,
     token_id: Option<String>,
@@ -38,14 +37,477 @@ struct AlertEventProjectionRow {
 }
 
 #[derive(Debug, Clone)]
-struct AlertGroupProjectionRow {
-    row_sort_id: String,
-    alert_type: String,
-    subject_kind: String,
-    subject_id: String,
-    total_count: i64,
-    first_seen: i64,
-    last_seen: i64,
+struct AlertGroupingEnvelope {
+    top_level_items: Vec<AlertGroupRecord>,
+    total: i64,
+}
+
+#[derive(Debug, Clone)]
+struct AlertChildWindowAccumulator {
+    key: String,
+    kind: AlertSemanticWindowKind,
+    window_minutes: Option<i64>,
+    semantic_window_start: Option<i64>,
+    semantic_window_end: Option<i64>,
+    events: Vec<AlertEventRecord>,
+}
+
+fn parse_request_rate_window_metadata(error_message: Option<&str>) -> Option<i64> {
+    let message = error_message?.trim();
+    let marker = "rolling ";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let end = rest.find('m')?;
+    rest[..end].trim().parse::<i64>().ok().filter(|value| *value > 0)
+}
+
+fn quota_window_kind_from_error_message(error_message: Option<&str>) -> Option<AlertSemanticWindowKind> {
+    let message = error_message?.trim();
+    if message.contains("quota exceeded on month window") {
+        return Some(AlertSemanticWindowKind::Month);
+    }
+    if message.contains("quota exceeded on day window") {
+        return Some(AlertSemanticWindowKind::Day);
+    }
+    if message.contains("quota exceeded on hour window") {
+        return Some(AlertSemanticWindowKind::RollingHour);
+    }
+    None
+}
+
+fn local_hour_window_bounds(ts: i64) -> Option<(i64, i64)> {
+    let now = chrono::DateTime::from_timestamp(ts, 0)?.with_timezone(&chrono::Local);
+    let end = now.timestamp();
+    let start = end.saturating_sub(59 * 60);
+    Some((start, end))
+}
+
+fn local_day_window_bounds(ts: i64) -> Option<(i64, i64)> {
+    let now = chrono::DateTime::from_timestamp(ts, 0)?.with_timezone(&chrono::Local);
+    let start = start_of_local_day_utc_ts(now);
+    let end = next_local_day_start_utc_ts(start).saturating_sub(1);
+    Some((start, end))
+}
+
+fn utc_month_window_bounds(ts: i64) -> Option<(i64, i64)> {
+    let now = chrono::DateTime::from_timestamp(ts, 0)?.with_timezone(&chrono::Utc);
+    let start = start_of_month(now).timestamp();
+    let end = shift_month_start_utc_ts(start, 1).saturating_sub(1);
+    Some((start, end))
+}
+
+fn event_semantic_window(event: &AlertEventRecord) -> Option<AlertSemanticWindow> {
+    match event.alert_type.as_str() {
+        ALERT_TYPE_USER_REQUEST_RATE_LIMITED => {
+            let window_minutes = parse_request_rate_window_metadata(event.error_message.as_deref())
+                .or(Some(request_rate_limit_window_minutes()));
+            let rolling_window_secs = window_minutes.unwrap_or(5) * 60;
+            Some(AlertSemanticWindow {
+                kind: AlertSemanticWindowKind::RequestRate,
+                window_minutes,
+                window_start: Some(event.occurred_at.saturating_sub(rolling_window_secs)),
+                window_end: Some(event.occurred_at),
+                window_key: None,
+            })
+        }
+        ALERT_TYPE_USER_QUOTA_EXHAUSTED => {
+            let kind = quota_window_kind_from_error_message(event.error_message.as_deref())?;
+            let (window_start, window_end, window_key) = match kind {
+                AlertSemanticWindowKind::RollingHour => {
+                    let (start, end) = local_hour_window_bounds(event.occurred_at)?;
+                    (
+                        Some(start),
+                        Some(end),
+                        Some(format!("hour:{start}")),
+                    )
+                }
+                AlertSemanticWindowKind::Day => {
+                    let (start, end) = local_day_window_bounds(event.occurred_at)?;
+                    (
+                        Some(start),
+                        Some(end),
+                        Some(format!("day:{start}")),
+                    )
+                }
+                AlertSemanticWindowKind::Month => {
+                    let (start, end) = utc_month_window_bounds(event.occurred_at)?;
+                    (
+                        Some(start),
+                        Some(end),
+                        Some(format!("month:{start}")),
+                    )
+                }
+                AlertSemanticWindowKind::RequestRate => return None,
+            };
+            Some(AlertSemanticWindow {
+                kind,
+                window_minutes: if kind == AlertSemanticWindowKind::RollingHour {
+                    Some(60)
+                } else {
+                    None
+                },
+                window_start,
+                window_end,
+                window_key,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn group_request_kind_key(event: &AlertEventRecord) -> &str {
+    event
+        .request_kind
+        .as_ref()
+        .map(|value| value.key.as_str())
+        .unwrap_or("unknown")
+}
+
+fn build_compat_group_record(events: &[AlertEventRecord]) -> Option<AlertGroupRecord> {
+    let latest_event = events.first()?.clone();
+    let earliest_event = events.last()?;
+    Some(AlertGroupRecord {
+        id: alert_group_id(&latest_event),
+        alert_type: latest_event.alert_type.clone(),
+        subject_kind: latest_event.subject_kind.clone(),
+        subject_id: latest_event.subject_id.clone(),
+        subject_label: latest_event.subject_label.clone(),
+        user: latest_event.user.clone(),
+        token: latest_event.token.clone(),
+        key: latest_event.key.clone(),
+        request_kind: latest_event.request_kind.clone(),
+        count: events.len() as i64,
+        first_seen: earliest_event.occurred_at,
+        last_seen: latest_event.occurred_at,
+        latest_event,
+        grouping_kind: "compat".to_string(),
+        semantic_window_kind: None,
+        semantic_window_minutes: None,
+        semantic_window_start: None,
+        semantic_window_end: None,
+        semantic_window_key: None,
+        child_count: 0,
+        event_count: events.len() as i64,
+        children: Vec::new(),
+        child_events: Vec::new(),
+    })
+}
+
+fn semantic_group_base_id(event: &AlertEventRecord) -> String {
+    let semantic = event.semantic_window.as_ref();
+    let semantic_key = semantic
+        .and_then(|value| value.window_key.clone())
+        .unwrap_or_else(|| semantic.map(|value| value.kind.as_str().to_string()).unwrap_or_default());
+    format!(
+        "{}:{}:{}:{}",
+        event.alert_type, event.subject_kind, event.subject_id, semantic_key
+    )
+}
+
+fn child_group_id(parent_id: &str, index: usize) -> String {
+    format!("{parent_id}:child:{index}")
+}
+
+fn build_child_group_record(id: String, events: Vec<AlertEventRecord>) -> Option<AlertGroupRecord> {
+    let latest_event = events.first()?.clone();
+    let earliest_event = events.last()?;
+    let semantic = latest_event.semantic_window.clone();
+    Some(AlertGroupRecord {
+        id,
+        alert_type: latest_event.alert_type.clone(),
+        subject_kind: latest_event.subject_kind.clone(),
+        subject_id: latest_event.subject_id.clone(),
+        subject_label: latest_event.subject_label.clone(),
+        user: latest_event.user.clone(),
+        token: latest_event.token.clone(),
+        key: latest_event.key.clone(),
+        request_kind: None,
+        count: events.len() as i64,
+        first_seen: earliest_event.occurred_at,
+        last_seen: latest_event.occurred_at,
+        latest_event,
+        grouping_kind: "child".to_string(),
+        semantic_window_kind: semantic
+            .as_ref()
+            .map(|value| value.kind.as_str().to_string()),
+        semantic_window_minutes: semantic.as_ref().and_then(|value| value.window_minutes),
+        semantic_window_start: semantic.as_ref().and_then(|value| value.window_start),
+        semantic_window_end: semantic.as_ref().and_then(|value| value.window_end),
+        semantic_window_key: semantic.and_then(|value| value.window_key),
+        child_count: 0,
+        event_count: events.len() as i64,
+        children: Vec::new(),
+        child_events: events,
+    })
+}
+
+fn sort_alert_events_desc(events: &mut [AlertEventRecord]) {
+    events.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+}
+
+fn semantic_subject_key(event: &AlertEventRecord) -> String {
+    let semantic = event.semantic_window.as_ref();
+    let kind = semantic
+        .map(|value| value.kind.as_str())
+        .unwrap_or("compat");
+    let minutes = semantic
+        .and_then(|value| value.window_minutes)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    format!(
+        "{}:{}:{}:{}:{}",
+        event.alert_type, event.subject_kind, event.subject_id, kind, minutes
+    )
+}
+
+fn compat_subject_key(event: &AlertEventRecord) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        event.alert_type,
+        event.subject_kind,
+        event.subject_id,
+        group_request_kind_key(event)
+    )
+}
+
+fn build_semantic_child_windows(events: Vec<AlertEventRecord>) -> Vec<AlertGroupRecord> {
+    if events.is_empty() {
+        return Vec::new();
+    }
+    let mut asc_events = events;
+    asc_events.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut windows: Vec<AlertChildWindowAccumulator> = Vec::new();
+    for event in asc_events {
+        let Some(semantic) = event.semantic_window.clone() else {
+            continue;
+        };
+        let should_start_new = match windows.last() {
+            Some(current) if current.kind == AlertSemanticWindowKind::RequestRate => {
+                let threshold = current.window_minutes.unwrap_or(5) * 60;
+                current
+                    .events
+                    .last()
+                    .map(|last| event.occurred_at.saturating_sub(last.occurred_at) > threshold)
+                    .unwrap_or(true)
+            }
+            Some(current) => current.key != semantic.window_key.clone().unwrap_or_default(),
+            None => true,
+        };
+        if should_start_new {
+            let key = semantic
+                .window_key
+                .clone()
+                .unwrap_or_else(|| format!("{}:{}", semantic.kind.as_str(), event.occurred_at));
+            windows.push(AlertChildWindowAccumulator {
+                key,
+                kind: semantic.kind,
+                window_minutes: semantic.window_minutes,
+                semantic_window_start: semantic.window_start,
+                semantic_window_end: semantic.window_end,
+                events: vec![event],
+            });
+            continue;
+        }
+        if let Some(current) = windows.last_mut() {
+            current.events.push(event);
+            if current.kind == AlertSemanticWindowKind::RequestRate {
+                current.semantic_window_start = current
+                    .semantic_window_start
+                    .zip(current.events.last().and_then(|value| value.semantic_window.as_ref().and_then(|semantic| semantic.window_start)))
+                    .map(|(left, right)| left.min(right))
+                    .or(current.semantic_window_start)
+                    .or_else(|| current.events.last().and_then(|value| value.semantic_window.as_ref().and_then(|semantic| semantic.window_start)));
+                current.semantic_window_end = current
+                    .semantic_window_end
+                    .zip(current.events.last().and_then(|value| value.semantic_window.as_ref().and_then(|semantic| semantic.window_end)))
+                    .map(|(left, right)| left.max(right))
+                    .or(current.semantic_window_end)
+                    .or_else(|| current.events.last().and_then(|value| value.semantic_window.as_ref().and_then(|semantic| semantic.window_end)));
+            }
+        }
+    }
+
+    windows
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut window)| {
+            sort_alert_events_desc(&mut window.events);
+            if let Some(latest) = window.events.first_mut()
+                && let Some(semantic) = latest.semantic_window.as_mut()
+                && window.kind == AlertSemanticWindowKind::RequestRate
+            {
+                semantic.window_start = window.semantic_window_start;
+                semantic.window_end = window.semantic_window_end;
+                semantic.window_key = Some(window.key.clone());
+            }
+            let parent_id = semantic_group_base_id(window.events.first()?);
+            build_child_group_record(child_group_id(&parent_id, index), window.events)
+        })
+        .collect()
+}
+
+fn child_group_chain_boundary(left: &AlertGroupRecord, right: &AlertGroupRecord) -> bool {
+    let left_kind = left.semantic_window_kind.as_deref().unwrap_or_default();
+    let right_kind = right.semantic_window_kind.as_deref().unwrap_or_default();
+    if left_kind != right_kind {
+        return true;
+    }
+    match left_kind {
+        "request_rate" => {
+            let threshold = left.semantic_window_minutes.unwrap_or(5) * 60;
+            let left_end = left.semantic_window_end.unwrap_or(left.last_seen);
+            let right_start = right.semantic_window_start.unwrap_or(right.first_seen);
+            right_start.saturating_sub(left_end) > threshold
+        }
+        "rolling_hour" => {
+            let left_end = left.semantic_window_end.unwrap_or(left.last_seen);
+            let right_start = right.semantic_window_start.unwrap_or(right.first_seen);
+            right_start.saturating_sub(left_end) > 60 * 60
+        }
+        "day" | "month" => {
+            let left_end = left.semantic_window_end.unwrap_or(left.last_seen);
+            let right_start = right.semantic_window_start.unwrap_or(right.first_seen);
+            right_start.saturating_sub(left_end) > 1
+        }
+        _ => true,
+    }
+}
+
+fn build_semantic_mother_groups(children: Vec<AlertGroupRecord>) -> Vec<AlertGroupRecord> {
+    if children.is_empty() {
+        return Vec::new();
+    }
+    let mut asc_children = children;
+    asc_children.sort_by(|left, right| {
+        left.first_seen
+            .cmp(&right.first_seen)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut chains: Vec<Vec<AlertGroupRecord>> = Vec::new();
+    for child in asc_children {
+        let should_start_new = match chains.last().and_then(|items| items.last()) {
+            Some(previous) => child_group_chain_boundary(previous, &child),
+            None => true,
+        };
+        if should_start_new {
+            chains.push(vec![child]);
+        } else if let Some(current) = chains.last_mut() {
+            current.push(child);
+        }
+    }
+
+    chains
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut chain)| {
+            chain.sort_by(|left, right| {
+                right
+                    .last_seen
+                    .cmp(&left.last_seen)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
+            let latest_child = chain.first()?.clone();
+            let first_seen = chain.iter().map(|value| value.first_seen).min()?;
+            let last_seen = chain.iter().map(|value| value.last_seen).max()?;
+            let event_count = chain.iter().map(|value| value.event_count).sum::<i64>();
+            let parent_id = format!("{}:mother:{index}", semantic_group_base_id(&latest_child.latest_event));
+            Some(AlertGroupRecord {
+                id: parent_id,
+                alert_type: latest_child.alert_type.clone(),
+                subject_kind: latest_child.subject_kind.clone(),
+                subject_id: latest_child.subject_id.clone(),
+                subject_label: latest_child.subject_label.clone(),
+                user: latest_child.user.clone(),
+                token: latest_child.token.clone(),
+                key: latest_child.key.clone(),
+                request_kind: None,
+                count: event_count,
+                first_seen,
+                last_seen,
+                latest_event: latest_child.latest_event.clone(),
+                grouping_kind: "mother".to_string(),
+                semantic_window_kind: latest_child.semantic_window_kind.clone(),
+                semantic_window_minutes: latest_child.semantic_window_minutes,
+                semantic_window_start: chain
+                    .iter()
+                    .filter_map(|value| value.semantic_window_start)
+                    .min(),
+                semantic_window_end: chain
+                    .iter()
+                    .filter_map(|value| value.semantic_window_end)
+                    .max(),
+                semantic_window_key: None,
+                child_count: chain.len() as i64,
+                event_count,
+                children: chain,
+                child_events: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+fn build_group_records_from_events(events: Vec<AlertEventRecord>) -> AlertGroupingEnvelope {
+    let mut compat_groups: HashMap<String, Vec<AlertEventRecord>> = HashMap::new();
+    let mut semantic_groups: HashMap<String, Vec<AlertEventRecord>> = HashMap::new();
+
+    for event in events {
+        if matches!(
+            event.alert_type.as_str(),
+            ALERT_TYPE_USER_REQUEST_RATE_LIMITED | ALERT_TYPE_USER_QUOTA_EXHAUSTED
+        ) && event.semantic_window.is_some()
+        {
+            semantic_groups
+                .entry(semantic_subject_key(&event))
+                .or_default()
+                .push(event);
+        } else {
+            compat_groups
+                .entry(compat_subject_key(&event))
+                .or_default()
+                .push(event);
+        }
+    }
+
+    let mut items = Vec::new();
+
+    for (_key, mut grouped_events) in compat_groups {
+        sort_alert_events_desc(&mut grouped_events);
+        if let Some(group) = build_compat_group_record(&grouped_events) {
+            items.push(group);
+        }
+    }
+
+    for (_key, grouped_events) in semantic_groups {
+        let children = build_semantic_child_windows(grouped_events);
+        if children.is_empty() {
+            continue;
+        }
+        items.extend(build_semantic_mother_groups(children));
+    }
+
+    items.sort_by(|left, right| {
+        right
+            .last_seen
+            .cmp(&left.last_seen)
+            .then_with(|| right.count.cmp(&left.count))
+            .then_with(|| right.alert_type.cmp(&left.alert_type))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+
+    AlertGroupingEnvelope {
+        total: items.len() as i64,
+        top_level_items: items,
+    }
 }
 
 fn normalize_alert_request_kind_filters(request_kinds: &[String]) -> Vec<String> {
@@ -116,38 +578,52 @@ fn alert_subject_tuple(
     token: Option<&AlertEntityRef>,
     key: Option<&AlertEntityRef>,
 ) -> (String, String, String) {
-    if alert_type == ALERT_TYPE_UPSTREAM_KEY_BLOCKED
-        && let Some(key) = key
-    {
-        return (
-            ALERT_SUBJECT_KEY.to_string(),
-            key.id.clone(),
-            key.label.clone(),
-        );
-    }
+    let user_subject = || {
+        user.map(|user| {
+            (
+                ALERT_SUBJECT_USER.to_string(),
+                user.user_id.clone(),
+                alert_user_label(user),
+            )
+        })
+    };
 
-    if let Some(user) = user {
-        return (
-            ALERT_SUBJECT_USER.to_string(),
-            user.user_id.clone(),
-            alert_user_label(user),
-        );
-    }
+    let token_subject = || {
+        token.map(|token| {
+            (
+                ALERT_SUBJECT_TOKEN.to_string(),
+                token.id.clone(),
+                token.label.clone(),
+            )
+        })
+    };
 
-    if let Some(token) = token {
-        return (
-            ALERT_SUBJECT_TOKEN.to_string(),
-            token.id.clone(),
-            token.label.clone(),
-        );
-    }
+    let key_subject = || {
+        key.map(|key| {
+            (
+                ALERT_SUBJECT_KEY.to_string(),
+                key.id.clone(),
+                key.label.clone(),
+            )
+        })
+    };
 
-    if let Some(key) = key {
-        return (
-            ALERT_SUBJECT_KEY.to_string(),
-            key.id.clone(),
-            key.label.clone(),
-        );
+    let preferred_subject = match alert_type {
+        ALERT_TYPE_UPSTREAM_RATE_LIMITED_429
+        | ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432
+        | ALERT_TYPE_UPSTREAM_KEY_BLOCKED => key_subject()
+            .or_else(user_subject)
+            .or_else(token_subject),
+        ALERT_TYPE_USER_REQUEST_RATE_LIMITED | ALERT_TYPE_USER_QUOTA_EXHAUSTED => user_subject()
+            .or_else(token_subject)
+            .or_else(key_subject),
+        _ => user_subject()
+            .or_else(token_subject)
+            .or_else(key_subject),
+    };
+
+    if let Some(subject) = preferred_subject {
+        return subject;
     }
 
     (
@@ -438,83 +914,6 @@ impl KeyStore {
         query.push(")");
     }
 
-    fn alert_subject_kind_sql(alias: &str) -> String {
-        format!(
-            "CASE \
-                WHEN {alias}.alert_type = 'upstream_key_blocked' AND {alias}.key_id IS NOT NULL THEN 'key' \
-                WHEN {alias}.user_id IS NOT NULL THEN 'user' \
-                WHEN {alias}.token_id IS NOT NULL THEN 'token' \
-                WHEN {alias}.key_id IS NOT NULL THEN 'key' \
-                ELSE 'token' \
-            END"
-        )
-    }
-
-    fn alert_subject_id_sql(alias: &str) -> String {
-        format!(
-            "CASE \
-                WHEN {alias}.alert_type = 'upstream_key_blocked' AND {alias}.key_id IS NOT NULL THEN {alias}.key_id \
-                WHEN {alias}.user_id IS NOT NULL THEN {alias}.user_id \
-                WHEN {alias}.token_id IS NOT NULL THEN {alias}.token_id \
-                WHEN {alias}.key_id IS NOT NULL THEN {alias}.key_id \
-                ELSE 'unknown' \
-            END"
-        )
-    }
-
-    fn alert_group_request_kind_sql(alias: &str) -> String {
-        format!("COALESCE(NULLIF(TRIM({alias}.request_kind_key), ''), 'unknown')")
-    }
-
-    fn push_alert_groups_cte<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
-        filters: AlertEventFilters<'a>,
-    ) {
-        let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
-        let subject_id_sql = Self::alert_subject_id_sql("alerts");
-        let request_kind_sql = Self::alert_group_request_kind_sql("alerts");
-        Self::push_alert_events_cte(query, filters);
-        query.push(format!(
-            r#",
-            grouped_alerts AS (
-                SELECT
-                    alerts.row_sort_id AS row_sort_id,
-                    alerts.alert_type AS alert_type,
-                    {subject_kind_sql} AS subject_kind,
-                    {subject_id_sql} AS subject_id,
-                    {request_kind_sql} AS request_kind_key,
-                    COUNT(*) OVER (
-                        PARTITION BY alerts.alert_type, {subject_kind_sql}, {subject_id_sql}, {request_kind_sql}
-                    ) AS total_count,
-                    MIN(alerts.occurred_at) OVER (
-                        PARTITION BY alerts.alert_type, {subject_kind_sql}, {subject_id_sql}, {request_kind_sql}
-                    ) AS first_seen,
-                    MAX(alerts.occurred_at) OVER (
-                        PARTITION BY alerts.alert_type, {subject_kind_sql}, {subject_id_sql}, {request_kind_sql}
-                    ) AS last_seen,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY alerts.alert_type, {subject_kind_sql}, {subject_id_sql}, {request_kind_sql}
-                        ORDER BY alerts.occurred_at DESC, alerts.row_sort_id DESC
-                    ) AS group_rank
-                FROM alerts
-            )"#
-        ));
-    }
-
-    fn decode_alert_group_projection_row(
-        row: &sqlx::sqlite::SqliteRow,
-    ) -> Result<AlertGroupProjectionRow, sqlx::Error> {
-        Ok(AlertGroupProjectionRow {
-            row_sort_id: row.try_get("row_sort_id")?,
-            alert_type: row.try_get("alert_type")?,
-            subject_kind: row.try_get("subject_kind")?,
-            subject_id: row.try_get("subject_id")?,
-            total_count: row.try_get("total_count")?,
-            first_seen: row.try_get("first_seen")?,
-            last_seen: row.try_get("last_seen")?,
-        })
-    }
-
     fn summarize_alert_type_count_rows(rows: Vec<sqlx::sqlite::SqliteRow>) -> Vec<AlertTypeCount> {
         let mut counts = default_alert_type_counts();
         let mut index_by_type = HashMap::new();
@@ -584,115 +983,27 @@ impl KeyStore {
         })
     }
 
-    async fn fetch_group_latest_events_by_projection(
+    async fn fetch_all_alert_events(
         &self,
         filters: AlertEventFilters<'_>,
-        groups: &[AlertGroupProjectionRow],
-    ) -> Result<HashMap<String, AlertEventRecord>, ProxyError> {
-        if groups.is_empty() {
-            return Ok(HashMap::new());
-        }
-
+    ) -> Result<Vec<AlertEventRecord>, ProxyError> {
         let mut query = QueryBuilder::new("");
         Self::push_alert_events_cte(&mut query, filters);
-        query.push(" SELECT * FROM alerts WHERE row_sort_id IN (");
-        {
-            let mut separated = query.separated(", ");
-            for group in groups {
-                separated.push_bind(group.row_sort_id.as_str());
-            }
-        }
-        query.push(")");
-
-        let rows = query.build().fetch_all(&self.pool).await?;
-        let mut events_by_row_sort_id = HashMap::new();
-        for row in rows {
-            let decoded = Self::decode_alert_event_projection_row(row)?;
-            let row_sort_id = decoded.row_sort_id.clone();
-            if let Some(event) = Self::build_alert_event_from_projection(decoded) {
-                events_by_row_sort_id.insert(row_sort_id, event);
-            }
-        }
-        Ok(events_by_row_sort_id)
-    }
-
-    fn build_alert_group_records(
-        groups: Vec<AlertGroupProjectionRow>,
-        latest_events_by_row_sort_id: HashMap<String, AlertEventRecord>,
-    ) -> Vec<AlertGroupRecord> {
-        groups
-            .into_iter()
-            .filter_map(|group| {
-                let latest_event = latest_events_by_row_sort_id.get(&group.row_sort_id)?.clone();
-                Some(AlertGroupRecord {
-                    id: alert_group_id(&latest_event),
-                    alert_type: group.alert_type,
-                    subject_kind: group.subject_kind,
-                    subject_id: group.subject_id,
-                    subject_label: latest_event.subject_label.clone(),
-                    user: latest_event.user.clone(),
-                    token: latest_event.token.clone(),
-                    key: latest_event.key.clone(),
-                    request_kind: latest_event.request_kind.clone(),
-                    count: group.total_count,
-                    first_seen: group.first_seen,
-                    last_seen: group.last_seen,
-                    latest_event,
-                })
-            })
-            .collect()
-    }
-
-    async fn fetch_alert_group_projection_page(
-        &self,
-        filters: AlertEventFilters<'_>,
-        page: i64,
-        per_page: i64,
-    ) -> Result<PaginatedAlertGroups, ProxyError> {
-        let page = page.max(1);
-        let per_page = per_page.clamp(1, 100);
-        let offset = (page - 1) * per_page;
-
-        let mut count_query = QueryBuilder::new("");
-        Self::push_alert_groups_cte(&mut count_query, filters);
-        count_query.push(" SELECT COUNT(*) FROM grouped_alerts WHERE group_rank = 1");
-        Self::push_alert_request_kind_filter(
-            &mut count_query,
-            "COALESCE(NULLIF(TRIM(request_kind_key), ''), 'unknown')",
-            filters.request_kinds,
-        );
-        let total: i64 = count_query.build_query_scalar().fetch_one(&self.pool).await?;
-
-        let mut query = QueryBuilder::new("");
-        Self::push_alert_groups_cte(&mut query, filters);
-        query.push(" SELECT * FROM grouped_alerts WHERE group_rank = 1");
+        query.push(" SELECT * FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut query,
             "COALESCE(NULLIF(TRIM(request_kind_key), ''), 'unknown')",
             filters.request_kinds,
         );
-        query.push(
-            " ORDER BY last_seen DESC, total_count DESC, alert_type DESC, row_sort_id DESC LIMIT ",
-        );
-        query.push_bind(per_page);
-        query.push(" OFFSET ");
-        query.push_bind(offset);
-
+        query.push(" ORDER BY occurred_at DESC, row_sort_id DESC");
         let rows = query.build().fetch_all(&self.pool).await?;
-        let groups = rows
-            .iter()
-            .map(Self::decode_alert_group_projection_row)
-            .collect::<Result<Vec<_>, _>>()?;
-        let latest_events_by_row_sort_id =
-            self.fetch_group_latest_events_by_projection(filters, &groups).await?;
-        let items = Self::build_alert_group_records(groups, latest_events_by_row_sort_id);
-
-        Ok(PaginatedAlertGroups {
-            items,
-            total,
-            page,
-            per_page,
-        })
+        Ok(rows
+            .into_iter()
+            .map(Self::decode_alert_event_projection_row)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(Self::build_alert_event_from_projection)
+            .collect())
     }
 
     fn decode_alert_event_projection_row(
@@ -701,7 +1012,6 @@ impl KeyStore {
         Ok(AlertEventProjectionRow {
             source_kind: row.try_get("source_kind")?,
             source_id: row.try_get("source_id")?,
-            row_sort_id: row.try_get("row_sort_id")?,
             alert_type: row.try_get("alert_type")?,
             occurred_at: row.try_get("occurred_at")?,
             token_id: row.try_get("token_id")?,
@@ -732,7 +1042,6 @@ impl KeyStore {
         let AlertEventProjectionRow {
             source_kind,
             source_id,
-            row_sort_id: _,
             alert_type,
             occurred_at,
             token_id,
@@ -802,7 +1111,7 @@ impl KeyStore {
             reason_summary.as_deref(),
         );
 
-        Some(AlertEventRecord {
+        let mut event = AlertEventRecord {
             id: format!("{source_kind}:{source_id}"),
             alert_type: resolved_alert_type,
             title,
@@ -826,7 +1135,10 @@ impl KeyStore {
                 kind: source_kind,
                 id: source_id,
             },
-        })
+            semantic_window: None,
+        };
+        event.semantic_window = event_semantic_window(&event);
+        Some(event)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -871,20 +1183,32 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
-        self.fetch_alert_group_projection_page(
-            AlertEventFilters {
-                alert_type,
-                since,
-                until,
-                user_id,
-                token_id,
-                key_id,
-                request_kinds,
-            },
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+        let filters = AlertEventFilters {
+            alert_type,
+            since,
+            until,
+            user_id,
+            token_id,
+            key_id,
+            request_kinds,
+        };
+        let all_events = self.fetch_all_alert_events(filters).await?;
+        let grouped = build_group_records_from_events(all_events);
+        let items = grouped
+            .top_level_items
+            .into_iter()
+            .skip(offset as usize)
+            .take(per_page as usize)
+            .collect::<Vec<_>>();
+        Ok(PaginatedAlertGroups {
+            items,
+            total: grouped.total,
             page,
             per_page,
-        )
-        .await
+        })
     }
 
     pub(crate) async fn fetch_alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
@@ -1053,16 +1377,10 @@ impl KeyStore {
             key_id: None,
             request_kinds: &[],
         };
-        let mut summary_query = QueryBuilder::new("");
-        Self::push_alert_groups_cte(&mut summary_query, filters);
-        summary_query.push(
-            " SELECT \
-                (SELECT COUNT(*) FROM alerts) AS total_events, \
-                (SELECT COUNT(*) FROM grouped_alerts WHERE group_rank = 1) AS grouped_count",
-        );
-        let summary_row = summary_query.build().fetch_one(&self.pool).await?;
-        let total_events: i64 = summary_row.try_get("total_events")?;
-        let grouped_count: i64 = summary_row.try_get("grouped_count")?;
+        let all_events = self.fetch_all_alert_events(filters).await?;
+        let total_events = all_events.len() as i64;
+        let grouped = build_group_records_from_events(all_events);
+        let grouped_count = grouped.total;
 
         let mut counts_query = QueryBuilder::new("");
         Self::push_alert_events_cte(&mut counts_query, filters);
@@ -1076,7 +1394,7 @@ impl KeyStore {
             counts_query.build().fetch_all(&self.pool).await?,
         );
 
-        let top_groups = self.fetch_alert_group_projection_page(filters, 1, 5).await?.items;
+        let top_groups = grouped.top_level_items.into_iter().take(5).collect();
         Ok(RecentAlertsSummary {
             window_hours: clamped_window_hours,
             total_events,
@@ -1084,5 +1402,352 @@ impl KeyStore {
             counts_by_type,
             top_groups,
         })
+    }
+}
+
+#[cfg(test)]
+mod alert_grouping_tests {
+    use super::*;
+
+    fn make_alert_event(
+        id: &str,
+        alert_type: &str,
+        occurred_at: i64,
+        request_kind_key: &str,
+        request_kind_label: &str,
+        error_message: Option<&str>,
+    ) -> AlertEventRecord {
+        let mut event = AlertEventRecord {
+            id: id.to_string(),
+            alert_type: alert_type.to_string(),
+            title: format!("title-{id}"),
+            summary: format!("summary-{id}"),
+            occurred_at,
+            subject_kind: "user".to_string(),
+            subject_id: "usr_test".to_string(),
+            subject_label: "Test User".to_string(),
+            user: Some(AlertUserRef {
+                user_id: "usr_test".to_string(),
+                display_name: Some("Test User".to_string()),
+                username: Some("tester".to_string()),
+            }),
+            token: Some(AlertEntityRef {
+                id: "tok_test".to_string(),
+                label: "tok_test".to_string(),
+            }),
+            key: None,
+            request: Some(AlertRequestRef {
+                id: occurred_at,
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                query: None,
+            }),
+            request_kind: Some(TokenRequestKind::new(
+                request_kind_key,
+                request_kind_label,
+                Some(request_kind_label.to_string()),
+            )),
+            failure_kind: None,
+            result_status: Some("quota_exhausted".to_string()),
+            error_message: error_message.map(str::to_string),
+            reason_code: None,
+            reason_summary: None,
+            reason_detail: None,
+            source: AlertSourceRef {
+                kind: "auth_token_log".to_string(),
+                id: format!("source-{id}"),
+            },
+            semantic_window: None,
+        };
+        event.semantic_window = event_semantic_window(&event);
+        event
+    }
+
+    #[test]
+    fn request_rate_events_merge_request_kinds_into_one_child_window() {
+        let grouped = build_group_records_from_events(vec![
+            make_alert_event(
+                "evt-1",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_000,
+                "mcp_initialize",
+                "MCP initialize",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-2",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_060,
+                "mcp_tools_list",
+                "MCP tools/list",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-3",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_120,
+                "mcp_notifications_initialized",
+                "MCP notifications/initialized",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-4",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_180,
+                "mcp_resources_list",
+                "MCP resources/list",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+        ]);
+
+        assert_eq!(grouped.total, 1);
+        let mother = &grouped.top_level_items[0];
+        assert_eq!(mother.grouping_kind, "mother");
+        assert_eq!(mother.child_count, 1);
+        assert_eq!(mother.event_count, 4);
+        assert!(mother.request_kind.is_none());
+
+        let child = &mother.children[0];
+        assert_eq!(child.grouping_kind, "child");
+        assert_eq!(child.child_events.len(), 4);
+        assert!(child.request_kind.is_none());
+        assert_eq!(
+            child.child_events[0]
+                .request_kind
+                .as_ref()
+                .map(|value| value.key.as_str()),
+            Some("mcp_resources_list")
+        );
+        assert_eq!(
+            child.child_events[3]
+                .request_kind
+                .as_ref()
+                .map(|value| value.key.as_str()),
+            Some("mcp_initialize")
+        );
+    }
+
+    #[test]
+    fn upstream_alerts_prefer_key_subject_over_token() {
+        let user = AlertUserRef {
+            user_id: "usr_test".to_string(),
+            display_name: Some("Test User".to_string()),
+            username: Some("tester".to_string()),
+        };
+        let token = AlertEntityRef {
+            id: "tok_test".to_string(),
+            label: "tok_test".to_string(),
+        };
+        let key = AlertEntityRef {
+            id: "key_test".to_string(),
+            label: "key_test".to_string(),
+        };
+
+        let (subject_kind, subject_id, subject_label) = alert_subject_tuple(
+            ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432,
+            Some(&user),
+            Some(&token),
+            Some(&key),
+        );
+
+        assert_eq!(subject_kind, ALERT_SUBJECT_KEY);
+        assert_eq!(subject_id, "key_test");
+        assert_eq!(subject_label, "key_test");
+    }
+
+    #[test]
+    fn local_limit_alerts_prefer_user_subject_over_token() {
+        let user = AlertUserRef {
+            user_id: "usr_test".to_string(),
+            display_name: Some("Test User".to_string()),
+            username: Some("tester".to_string()),
+        };
+        let token = AlertEntityRef {
+            id: "tok_test".to_string(),
+            label: "tok_test".to_string(),
+        };
+        let key = AlertEntityRef {
+            id: "key_test".to_string(),
+            label: "key_test".to_string(),
+        };
+
+        let (subject_kind, subject_id, subject_label) = alert_subject_tuple(
+            ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+            Some(&user),
+            Some(&token),
+            Some(&key),
+        );
+
+        assert_eq!(subject_kind, ALERT_SUBJECT_USER);
+        assert_eq!(subject_id, "usr_test");
+        assert_eq!(subject_label, "Test User");
+    }
+
+    #[test]
+    fn request_rate_contiguous_children_roll_up_into_one_mother_range() {
+        let grouped = build_group_records_from_events(vec![
+            make_alert_event(
+                "evt-1",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_000,
+                "mcp_initialize",
+                "MCP initialize",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-2",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_060,
+                "mcp_tools_list",
+                "MCP tools/list",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-3",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_420,
+                "mcp_notifications_initialized",
+                "MCP notifications/initialized",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-4",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_000_480,
+                "mcp_resources_list",
+                "MCP resources/list",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+            make_alert_event(
+                "evt-5",
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+                1_700_001_500,
+                "mcp_resources_list",
+                "MCP resources/list",
+                Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            ),
+        ]);
+
+        assert_eq!(grouped.total, 2);
+        let merged = grouped
+            .top_level_items
+            .iter()
+            .find(|item| item.child_count == 2)
+            .expect("merged mother range");
+        assert_eq!(merged.grouping_kind, "mother");
+        assert_eq!(merged.event_count, 4);
+        assert_eq!(merged.children.len(), 2);
+
+        let split = grouped
+            .top_level_items
+            .iter()
+            .find(|item| item.child_count == 1)
+            .expect("split mother range");
+        assert_eq!(split.event_count, 1);
+    }
+
+    #[test]
+    fn quota_window_parser_recovers_hour_day_and_month_semantics() {
+        let hour = make_alert_event(
+            "hour",
+            ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+            1_700_100_000,
+            "tavily_search",
+            "Tavily Search",
+            Some("token quota exceeded on hour window (limit 100, used 100)"),
+        );
+        let day = make_alert_event(
+            "day",
+            ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+            1_700_100_000,
+            "tavily_search",
+            "Tavily Search",
+            Some("token quota exceeded on day window (limit 500, used 500)"),
+        );
+        let month = make_alert_event(
+            "month",
+            ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+            1_700_100_000,
+            "tavily_search",
+            "Tavily Search",
+            Some("token quota exceeded on month window (limit 5000, used 5000)"),
+        );
+
+        assert_eq!(
+            hour.semantic_window.as_ref().map(|value| value.kind),
+            Some(AlertSemanticWindowKind::RollingHour)
+        );
+        assert_eq!(
+            day.semantic_window.as_ref().map(|value| value.kind),
+            Some(AlertSemanticWindowKind::Day)
+        );
+        assert_eq!(
+            month.semantic_window.as_ref().map(|value| value.kind),
+            Some(AlertSemanticWindowKind::Month)
+        );
+        assert!(hour
+            .semantic_window
+            .as_ref()
+            .and_then(|value| value.window_key.as_ref())
+            .is_some_and(|value| value.starts_with("hour:")));
+        assert!(day
+            .semantic_window
+            .as_ref()
+            .and_then(|value| value.window_key.as_ref())
+            .is_some_and(|value| value.starts_with("day:")));
+        assert!(month
+            .semantic_window
+            .as_ref()
+            .and_then(|value| value.window_key.as_ref())
+            .is_some_and(|value| value.starts_with("month:")));
+    }
+
+    #[test]
+    fn quota_hour_windows_form_distinct_children_under_one_mother() {
+        let grouped = build_group_records_from_events(vec![
+            make_alert_event(
+                "hour-1",
+                ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+                1_700_200_000,
+                "tavily_search",
+                "Tavily Search",
+                Some("token quota exceeded on hour window (limit 100, used 100)"),
+            ),
+            make_alert_event(
+                "hour-2",
+                ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+                1_700_200_010,
+                "tavily_extract",
+                "Tavily Extract",
+                Some("token quota exceeded on hour window (limit 100, used 100)"),
+            ),
+        ]);
+
+        assert_eq!(grouped.total, 1);
+        let mother = &grouped.top_level_items[0];
+        assert_eq!(mother.grouping_kind, "mother");
+        assert_eq!(mother.semantic_window_kind.as_deref(), Some("rolling_hour"));
+        assert_eq!(mother.child_count, 2);
+        assert_eq!(mother.event_count, 2);
+    }
+
+    #[test]
+    fn unrecoverable_quota_events_fall_back_to_compat_groups() {
+        let grouped = build_group_records_from_events(vec![make_alert_event(
+            "quota-compat",
+            ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+            1_700_300_000,
+            "tavily_search",
+            "Tavily Search",
+            Some("quota exhausted"),
+        )]);
+
+        assert_eq!(grouped.total, 1);
+        let group = &grouped.top_level_items[0];
+        assert_eq!(group.grouping_kind, "compat");
+        assert_eq!(
+            group.request_kind.as_ref().map(|value| value.key.as_str()),
+            Some("tavily_search")
+        );
     }
 }
