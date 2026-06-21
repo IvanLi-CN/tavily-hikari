@@ -1548,6 +1548,7 @@ async fn ha_standby_sync_does_not_repeat_zero_watermark_baseline() {
         dev_open_admin: true,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     let source_url = format!("http://{source_addr}");
     let client = Client::new();
@@ -2386,10 +2387,11 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin: false,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let (before_sig, _) = compute_signatures(&state)

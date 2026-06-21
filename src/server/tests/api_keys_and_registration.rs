@@ -376,11 +376,12 @@ colo=LAX
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
-        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
             ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: format!("http://{geo_addr}/geo"),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         run_forward_proxy_geo_refresh_job(state.clone()).await;
@@ -478,11 +479,12 @@ colo=LAX
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
-        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
             ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "http://127.0.0.1:9/geo".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
@@ -575,11 +577,12 @@ colo=LAX
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
-        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
             ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "http://127.0.0.1:9/geo".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
@@ -665,11 +668,12 @@ colo=LAX
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
-        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
             ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: format!("http://{geo_addr}/geo"),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
@@ -2384,6 +2388,7 @@ colo=LAX
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let app = Router::new()
@@ -2871,6 +2876,7 @@ colo=LAX
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let app = Router::new()

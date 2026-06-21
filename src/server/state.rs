@@ -11,6 +11,7 @@ struct AppState {
     dev_open_admin: bool,
     usage_base: String,
     api_key_ip_geo_origin: String,
+    dashboard_overview_cache: Arc<Mutex<DashboardOverviewCacheState>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,10 @@ impl Default for DashboardOverviewCacheState {
     }
 }
 
+fn new_dashboard_overview_cache() -> Arc<Mutex<DashboardOverviewCacheState>> {
+    Arc::new(Mutex::new(DashboardOverviewCacheState::default()))
+}
+
 static DB_MAINTENANCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
@@ -64,9 +69,6 @@ static MAINTENANCE_WORKER_WAKES: OnceLock<
 > = OnceLock::new();
 static MAINTENANCE_REMOTE_IO_SLOTS: OnceLock<
     std::sync::Mutex<HashMap<usize, std::sync::Weak<Semaphore>>>,
-> = OnceLock::new();
-static DASHBOARD_OVERVIEW_CACHES: OnceLock<
-    std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<DashboardOverviewCacheState>>>>,
 > = OnceLock::new();
 
 fn db_maintenance_gate() -> &'static RwLock<()> {
@@ -111,17 +113,7 @@ fn maintenance_remote_io_slot_for_state(state: &AppState) -> Arc<Semaphore> {
 }
 
 fn dashboard_overview_cache_for_state(state: &AppState) -> Arc<Mutex<DashboardOverviewCacheState>> {
-    let key = state as *const AppState as usize;
-    let caches = DASHBOARD_OVERVIEW_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut caches = caches
-        .lock()
-        .expect("dashboard overview cache map lock");
-    if let Some(cache) = caches.get(&key).and_then(std::sync::Weak::upgrade) {
-        return cache;
-    }
-    let cache = Arc::new(Mutex::new(DashboardOverviewCacheState::default()));
-    caches.insert(key, Arc::downgrade(&cache));
-    cache
+    state.dashboard_overview_cache.clone()
 }
 
 fn try_acquire_maintenance_remote_io_slot_for_state(

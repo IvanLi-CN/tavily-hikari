@@ -423,6 +423,7 @@
         "server::tests::upstream_support_and_manual_jobs::linuxdo_",
         "server::tests::api_keys_and_registration::forward_",
         "server::tests::log_catalog_and_dashboard_sse::request_",
+        "server::tests::log_catalog_and_dashboard_sse::dashboard_",
         "server::tests::admin_logs_and_summary::dashboard_",
         "server::tests::api_keys_and_registration::dashboard_",
         "server::tests::api_keys_and_registration::console_",

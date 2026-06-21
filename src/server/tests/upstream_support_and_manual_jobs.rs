@@ -1460,6 +1460,7 @@ pub(super) async fn spawn_proxy_server_with_dev_and_ha(
         dev_open_admin,
         usage_base,
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -1502,10 +1503,11 @@ pub(super) async fn spawn_keys_admin_server(
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1555,10 +1557,11 @@ pub(super) async fn spawn_keys_admin_server_with_usage_base(
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base,
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1596,10 +1599,11 @@ pub(super) async fn spawn_keys_admin_server_with_geo_origin(
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: geo_origin,
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1637,10 +1641,11 @@ pub(super) async fn spawn_keys_admin_server_with_usage_and_geo(
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base,
         api_key_ip_geo_origin: geo_origin,
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1681,6 +1686,7 @@ pub(super) async fn spawn_ha_admin_server(
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2267,10 +2273,11 @@ pub(super) async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password
         builtin_admin: BuiltinAdminAuth::new(true, None, Some(password_hash)),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin: false,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2358,10 +2365,11 @@ pub(super) async fn spawn_user_oauth_server_with_options(
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth,
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin: false,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2423,6 +2431,7 @@ pub(super) async fn spawn_user_oauth_recharge_server(
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2474,10 +2483,11 @@ pub(super) async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin:
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2522,10 +2532,11 @@ pub(super) async fn spawn_admin_tokens_server(proxy: TavilyProxy, dev_open_admin
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
-            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
         dev_open_admin,
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()
@@ -2586,6 +2597,7 @@ pub(super) async fn spawn_admin_forward_proxy_server_with_geo_origin(
         dev_open_admin,
         usage_base,
         api_key_ip_geo_origin,
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
     let app = Router::new()

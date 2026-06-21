@@ -108,6 +108,7 @@ mod admin_resources_tests {
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
         (state, db_path)
     }

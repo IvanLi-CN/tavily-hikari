@@ -2304,6 +2304,7 @@ use super::upstream_support_and_manual_jobs::*;
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let (sig, latest_id) = compute_signatures(&state)
@@ -2342,19 +2343,12 @@ use super::upstream_support_and_manual_jobs::*;
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
 
         let first = load_dashboard_overview_snapshot(&state)
             .await
             .expect("first overview snapshot");
-        let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
-        {
-            let mut cache = cache_handle.lock().await;
-            cache.cached = Some(CachedDashboardOverviewSnapshot {
-                snapshot: first.clone(),
-                freshness: first.freshness.clone(),
-            });
-        }
 
         reset_dashboard_overview_build_count();
 
@@ -2399,22 +2393,14 @@ use super::upstream_support_and_manual_jobs::*;
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
         });
         let pool = connect_sqlite_test_pool(&db_str).await;
 
         let first = load_dashboard_overview_snapshot(&state)
             .await
             .expect("first overview snapshot");
-        let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
-        {
-            let mut cache = cache_handle.lock().await;
-            cache.cached = Some(CachedDashboardOverviewSnapshot {
-                snapshot: first,
-                freshness: compute_dashboard_overview_freshness(&state)
-                    .await
-                    .expect("freshness for cached snapshot"),
-            });
-        }
+        let _ = first;
 
         reset_dashboard_overview_build_count();
 

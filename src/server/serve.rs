@@ -68,6 +68,7 @@ pub async fn serve(
         dev_open_admin,
         usage_base: usage_base.clone(),
         api_key_ip_geo_origin,
+        dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     match state.proxy.abandon_active_scheduled_jobs().await {
         Ok(count) if count > 0 => {
