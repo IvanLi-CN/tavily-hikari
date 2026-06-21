@@ -1459,7 +1459,19 @@ impl KeyStore {
         if groups.is_empty() {
             return Ok(groups);
         }
-        let selected_ids = groups.iter().map(|group| group.id.clone()).collect::<HashSet<_>>();
+        let selected_mother_keys = groups
+            .iter()
+            .filter(|group| group.grouping_kind == "mother")
+            .map(|group| {
+                (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                )
+            })
+            .collect::<HashSet<_>>();
         let selected_subjects = groups
             .iter()
             .filter(|group| group.grouping_kind == "mother")
@@ -1515,16 +1527,39 @@ impl KeyStore {
             .filter_map(Self::build_alert_event_from_projection)
             .collect::<Vec<_>>();
         let grouped = build_group_records_from_events(all_events);
-        let mut groups_by_id = grouped
+        let mut groups_by_mother_key = grouped
             .top_level_items
             .into_iter()
-            .filter(|group| selected_ids.contains(&group.id))
-            .map(|group| (group.id.clone(), group))
+            .filter_map(|group| {
+                if group.grouping_kind != "mother" {
+                    return None;
+                }
+                let key = (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                );
+                selected_mother_keys.contains(&key).then_some((key, group))
+            })
             .collect::<HashMap<_, _>>();
 
         Ok(groups
             .into_iter()
-            .map(|group| groups_by_id.remove(&group.id).unwrap_or(group))
+            .map(|group| {
+                if group.grouping_kind != "mother" {
+                    return group;
+                }
+                let key = (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                );
+                groups_by_mother_key.remove(&key).unwrap_or(group)
+            })
             .collect())
     }
 
