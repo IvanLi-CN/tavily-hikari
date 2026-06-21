@@ -348,7 +348,17 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("save standby xray relay settings");
 
-        let addr = spawn_proxy_server(proxy, format!("http://{}", upstream_addr)).await;
+        let standby_ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+            mode: tavily_hikari::HaMode::ActiveStandby,
+            ..tavily_hikari::HaConfig::default()
+        });
+        let addr = spawn_proxy_server_with_dev_and_ha(
+            proxy,
+            format!("http://{}", upstream_addr),
+            false,
+            standby_ha,
+        )
+        .await;
         let response = Client::new()
             .get(format!("http://{addr}/health"))
             .send()
@@ -356,6 +366,65 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("call standby health");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.expect("standby health body"), "ok");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn active_standby_health_still_requires_xray_readiness_when_serving() {
+        let share_link =
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@active-health.example.com:443?encryption=none#Active";
+        let db_path = temp_db_path("health-xray-active-standby");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let mut options = tavily_hikari::TavilyProxyOptions::from_database_path(&db_str);
+        options.xray_binary = "/tmp/tavily-hikari-missing-xray".to_string();
+        options.health_readiness_grace_period = Duration::from_secs(0);
+        let proxy = TavilyProxy::with_options_in_ha_mode::<Vec<String>, String>(
+            Vec::new(),
+            &upstream,
+            &db_str,
+            options,
+            tavily_hikari::HaMode::ActiveStandby,
+        )
+        .await
+        .expect("create active-standby proxy");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![share_link.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                true,
+            )
+            .await
+            .expect("save active xray relay settings");
+
+        proxy
+            .ensure_forward_proxy_runtime_started()
+            .await
+            .expect("active role startup should initialize runtime state");
+
+        let active_ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default());
+        let addr = spawn_proxy_server_with_dev_and_ha(
+            proxy,
+            format!("http://{}", upstream_addr),
+            false,
+            active_ha,
+        )
+        .await;
+        let response = Client::new()
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .expect("call active health");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.text().await.expect("active health body"), "xray not ready");
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -421,8 +490,8 @@ use super::upstream_support_and_manual_jobs::*;
             "unexpected first start error: {first_err_text}"
         );
         assert!(
-            proxy.is_forward_proxy_xray_ready().await,
-            "failed runtime start must leave runtime in a retryable not-started state"
+            !proxy.is_forward_proxy_xray_ready().await,
+            "failed runtime start must not report xray ready before a successful retry"
         );
 
         sqlx::query("ROLLBACK")

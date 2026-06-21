@@ -754,7 +754,7 @@ impl TavilyProxy {
             .forward_proxy_runtime_started
             .load(Ordering::SeqCst)
         {
-            return true;
+            return false;
         }
         if self.backend_time.instant_now() < self.health_readiness_grace_until {
             return true;
