@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 mod account_quota_and_billing;
 mod account_usage_rollup_request_days;
 mod dashboard_month_series;
+mod ha_baseline_streaming_and_sessions;
 mod ha_outbox_and_compaction;
 mod jobs_and_request_log_retention;
 mod linuxdo_credit_recharge;

@@ -440,9 +440,12 @@ impl KeyStore {
     {
         let mut session = self.begin_ha_baseline_read(channel).await?;
         let export = session.export_info().await?;
-        session
+        let write_result = session
             .write_ndjson(node_id, export.high_watermark, export.row_count, writer)
-            .await?;
+            .await;
+        let close_result = session.close().await;
+        write_result?;
+        close_result?;
         Ok(export)
     }
 
@@ -1242,9 +1245,14 @@ impl HaBaselineReadSession {
         })
     }
 
-    pub async fn rollback(mut self) -> Result<(), ProxyError> {
+    // Read/export sessions only hold a snapshot transaction; closing them just releases that snapshot.
+    pub async fn close(mut self) -> Result<(), ProxyError> {
         sqlx::query("ROLLBACK").execute(&mut *self.conn).await?;
         Ok(())
+    }
+
+    pub async fn rollback(self) -> Result<(), ProxyError> {
+        self.close().await
     }
 
     pub async fn write_ndjson<W>(
@@ -1375,9 +1383,13 @@ impl HaEventsReadSession {
         .await
     }
 
-    pub async fn rollback(mut self) -> Result<(), ProxyError> {
+    pub async fn close(mut self) -> Result<(), ProxyError> {
         sqlx::query("ROLLBACK").execute(&mut *self.conn).await?;
         Ok(())
+    }
+
+    pub async fn rollback(self) -> Result<(), ProxyError> {
+        self.close().await
     }
 
     pub async fn write_ndjson<W>(

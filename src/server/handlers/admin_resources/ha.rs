@@ -322,7 +322,7 @@ async fn build_ha_baseline_reader(
         writer.bytes()
     };
     if compressed_bytes > ha_baseline_max_compressed_bytes() {
-        preflight.rollback().await.map_err(internal_error)?;
+        preflight.close().await.map_err(internal_error)?;
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
@@ -341,7 +341,7 @@ async fn build_ha_baseline_reader(
         if result.is_ok() {
             let _ = encoder.shutdown().await;
         }
-        let _ = preflight.rollback().await;
+        let _ = preflight.close().await;
     });
     Ok(HaBaselineReader {
         reader,
@@ -376,7 +376,7 @@ async fn build_ha_events_reader(
             break export;
         }
         if event_count <= 1 {
-            preflight.rollback().await.map_err(internal_error)?;
+            preflight.close().await.map_err(internal_error)?;
             return Err((
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!(
@@ -393,7 +393,7 @@ async fn build_ha_events_reader(
         if result.is_ok() {
             let _ = encoder.shutdown().await;
         }
-        let _ = preflight.rollback().await;
+        let _ = preflight.close().await;
     });
     Ok(HaEventsReader { reader, export })
 }
