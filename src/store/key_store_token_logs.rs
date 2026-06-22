@@ -2362,6 +2362,7 @@ impl KeyStore {
                 None,
                 None,
                 None,
+                None,
                 operational_class,
                 page,
                 per_page,

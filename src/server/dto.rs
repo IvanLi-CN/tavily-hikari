@@ -572,10 +572,12 @@ struct CursorLogsQuery {
     key_effect: Option<String>,
     binding_effect: Option<String>,
     selection_effect: Option<String>,
+    request_user_id: Option<String>,
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
     since: Option<i64>,
+    until: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -92,6 +92,7 @@ fn spawn_proxy_process(db_path: &str, upstream: &str, port: u16) -> ProxyProcess
     .env("PROXY_PORT", port.to_string())
     .env("PROXY_DB_PATH", db_path)
     .env("DEV_OPEN_ADMIN", "true")
+    .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
     .stdout(Stdio::null())
     .stderr(Stdio::inherit())
     .spawn()

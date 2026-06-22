@@ -2247,7 +2247,10 @@ use super::upstream_support_and_manual_jobs::*;
 
         let proxy_page = proxy
             .request_logs_list(
+                None,
                 &[],
+                None,
+                None,
                 None,
                 None,
                 None,

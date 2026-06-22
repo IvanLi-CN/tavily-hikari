@@ -1072,6 +1072,7 @@ struct RequestLogFilterParams<'a, 'b> {
     key_effect_code: Option<&'b str>,
     binding_effect_code: Option<&'b str>,
     selection_effect_code: Option<&'b str>,
+    request_user_id: Option<&'b str>,
     auth_token_id: Option<&'b str>,
     key_id: Option<&'b str>,
     stored_request_kind_sql: &'a str,

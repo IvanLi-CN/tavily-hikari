@@ -92,6 +92,7 @@ fn spawn_backend_process(
     }
 
     let child = cmd
+        .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()

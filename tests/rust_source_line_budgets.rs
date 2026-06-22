@@ -21,8 +21,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/key_store_request_logs_and_dashboard.rs",
-        3120,
-        "Request-log persistence and dashboard rollup logic remain co-located in the legacy store module while retention controls and user-centered rollup query paths converge before a follow-up split.",
+        3160,
+        "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending.",
     ),
 ];
 

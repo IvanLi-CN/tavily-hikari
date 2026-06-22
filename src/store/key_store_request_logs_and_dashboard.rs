@@ -632,6 +632,7 @@ impl KeyStore {
         builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,
         since: Option<i64>,
+        until: Option<i64>,
     ) -> bool {
         builder.push(" WHERE visibility = ");
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
@@ -650,6 +651,15 @@ impl KeyStore {
             builder.push_bind(since);
             has_where = true;
         }
+        if let Some(until) = until {
+            builder.push(if has_where {
+                " AND created_at < "
+            } else {
+                " WHERE created_at < "
+            });
+            builder.push_bind(until);
+            has_where = true;
+        }
         has_where
     }
 
@@ -663,6 +673,7 @@ impl KeyStore {
             key_effect_code,
             binding_effect_code,
             selection_effect_code,
+            request_user_id,
             auth_token_id,
             key_id,
             stored_request_kind_sql,
@@ -704,6 +715,15 @@ impl KeyStore {
                 " WHERE selection_effect_code = "
             });
             builder.push_bind(selection_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(request_user_id) = request_user_id {
+            builder.push(if has_where {
+                " AND request_user_id = "
+            } else {
+                " WHERE request_user_id = "
+            });
+            builder.push_bind(request_user_id.to_string());
             has_where = true;
         }
         if let Some(auth_token_id) = auth_token_id {
@@ -1017,7 +1037,7 @@ impl KeyStore {
             result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
 
         let mut query = QueryBuilder::<Sqlite>::new("SELECT 1 FROM observability.request_logs");
-        let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since);
+        let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since, None);
         let mut has_where = has_where;
         if let Some(key_effect_code) = key_effect_code {
             query.push(if has_where {
@@ -1436,11 +1456,13 @@ impl KeyStore {
         &self,
         scoped_key_id: Option<&str>,
         since: Option<i64>,
+        until: Option<i64>,
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
         binding_effect_code: Option<&str>,
         selection_effect_code: Option<&str>,
+        request_user_id: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -1570,7 +1592,8 @@ impl KeyStore {
             FROM observability.request_logs
             "#
         ));
-        let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
+        let has_where =
+            Self::push_request_logs_scope(&mut items_query, scoped_key_id, since, until);
         Self::push_request_logs_filters(
             &mut items_query,
             RequestLogFilterParams {
@@ -1579,6 +1602,7 @@ impl KeyStore {
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                request_user_id,
                 auth_token_id,
                 key_id,
                 stored_request_kind_sql,
@@ -1698,6 +1722,7 @@ impl KeyStore {
         key_effect_code: Option<&str>,
         binding_effect_code: Option<&str>,
         selection_effect_code: Option<&str>,
+        request_user_id: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -1861,7 +1886,7 @@ impl KeyStore {
             FROM observability.request_logs
             "#
         ));
-        let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
+        let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since, None);
         Self::push_request_logs_filters(
             &mut items_query,
             RequestLogFilterParams {
@@ -1870,6 +1895,7 @@ impl KeyStore {
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                request_user_id,
                 auth_token_id,
                 key_id,
                 stored_request_kind_sql,

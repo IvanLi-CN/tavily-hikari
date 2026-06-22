@@ -816,6 +816,7 @@ async fn list_logs(
             key_effect_code,
             binding_effect_code,
             selection_effect_code,
+            None,
             auth_token_id,
             key_id,
             operational_class,
@@ -910,9 +911,15 @@ async fn list_logs_cursor(
         binding_effect_code,
         selection_effect_code,
     )?;
+    let request_user_id = normalize_optional_filter(params.request_user_id.as_deref());
     let auth_token_id = normalize_optional_filter(params.auth_token_id.as_deref());
     let key_id = normalize_optional_filter(params.key_id.as_deref());
     let operational_class = normalize_operational_class_filter(params.operational_class.as_deref());
+    let until = params
+        .until
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.timestamp());
     if params
         .operational_class
         .as_deref()
@@ -925,14 +932,17 @@ async fn list_logs_cursor(
     state
         .proxy
         .request_logs_list(
+            params.since,
             &request_kinds,
             result_status,
             key_effect_code,
             binding_effect_code,
             selection_effect_code,
+            request_user_id,
             auth_token_id,
             key_id,
             operational_class,
+            until,
             cursor.as_ref(),
             direction,
             page_size,

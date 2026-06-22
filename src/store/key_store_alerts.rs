@@ -57,7 +57,6 @@ struct AlertGroupProjectionRow {
 #[derive(Debug, Clone)]
 struct AlertGroupingEnvelope {
     top_level_items: Vec<AlertGroupRecord>,
-    total: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -529,7 +528,6 @@ fn build_group_records_from_events(events: Vec<AlertEventRecord>) -> AlertGroupi
     });
 
     AlertGroupingEnvelope {
-        total: items.len() as i64,
         top_level_items: items,
     }
 }
@@ -1029,29 +1027,6 @@ impl KeyStore {
             page,
             per_page,
         })
-    }
-
-    async fn fetch_all_alert_events(
-        &self,
-        filters: AlertEventFilters<'_>,
-    ) -> Result<Vec<AlertEventRecord>, ProxyError> {
-        let mut query = QueryBuilder::new("");
-        Self::push_alert_events_cte(&mut query, filters);
-        query.push(" SELECT * FROM alerts WHERE 1 = 1");
-        Self::push_alert_request_kind_filter(
-            &mut query,
-            "COALESCE(NULLIF(TRIM(request_kind_key), ''), 'unknown')",
-            filters.request_kinds,
-        );
-        query.push(" ORDER BY occurred_at DESC, row_sort_id DESC");
-        let rows = query.build().fetch_all(&self.pool).await?;
-        Ok(rows
-            .into_iter()
-            .map(Self::decode_alert_event_projection_row)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(Self::build_alert_event_from_projection)
-            .collect())
     }
 
     fn alert_group_request_kind_sql(alias: &str) -> String {
@@ -2004,10 +1979,11 @@ impl KeyStore {
             key_id: None,
             request_kinds: &[],
         };
-        let all_events = self.fetch_all_alert_events(filters).await?;
-        let total_events = all_events.len() as i64;
-        let grouped = build_group_records_from_events(all_events);
-        let grouped_count = grouped.total;
+        let mut total_query = QueryBuilder::new("");
+        Self::push_alert_events_cte(&mut total_query, filters);
+        total_query.push(" SELECT COUNT(*) FROM alerts");
+        let total_events: i64 = total_query.build_query_scalar().fetch_one(&self.pool).await?;
+        let (top_groups, grouped_count) = self.fetch_alert_group_projection_page(filters, 1, 5).await?;
 
         let mut counts_query = QueryBuilder::new("");
         Self::push_alert_events_cte(&mut counts_query, filters);
@@ -2021,7 +1997,6 @@ impl KeyStore {
             counts_query.build().fetch_all(&self.pool).await?,
         );
 
-        let top_groups = grouped.top_level_items.into_iter().take(5).collect();
         Ok(RecentAlertsSummary {
             window_hours: clamped_window_hours,
             total_events,
@@ -2127,7 +2102,7 @@ mod alert_grouping_tests {
             ),
         ]);
 
-        assert_eq!(grouped.total, 1);
+        assert_eq!(grouped.top_level_items.len(), 1);
         let mother = &grouped.top_level_items[0];
         assert_eq!(mother.grouping_kind, "mother");
         assert_eq!(mother.child_count, 1);
@@ -2255,7 +2230,7 @@ mod alert_grouping_tests {
             ),
         ]);
 
-        assert_eq!(grouped.total, 2);
+        assert_eq!(grouped.top_level_items.len(), 2);
         let merged = grouped
             .top_level_items
             .iter()
@@ -2350,7 +2325,7 @@ mod alert_grouping_tests {
             ),
         ]);
 
-        assert_eq!(grouped.total, 1);
+        assert_eq!(grouped.top_level_items.len(), 1);
         let mother = &grouped.top_level_items[0];
         assert_eq!(mother.grouping_kind, "mother");
         assert_eq!(mother.semantic_window_kind.as_deref(), Some("rolling_hour"));
@@ -2369,7 +2344,7 @@ mod alert_grouping_tests {
             Some("quota exhausted"),
         )]);
 
-        assert_eq!(grouped.total, 1);
+        assert_eq!(grouped.top_level_items.len(), 1);
         let group = &grouped.top_level_items[0];
         assert_eq!(group.grouping_kind, "compat");
         assert_eq!(

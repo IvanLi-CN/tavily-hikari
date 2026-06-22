@@ -700,6 +700,7 @@ export interface RequestLogsPageQuery {
   selectionEffect?: string
   operationalClass?: LogOperationalClass | 'all'
   includeBodies?: boolean
+  userId?: string
   tokenId?: string
   keyId?: string
   since?: number
@@ -946,6 +947,7 @@ function appendRequestLogsPageFilters(
     selectionEffect,
     operationalClass,
     includeBodies,
+    userId,
     tokenId,
     keyId,
     since,
@@ -960,6 +962,7 @@ function appendRequestLogsPageFilters(
     | 'selectionEffect'
     | 'operationalClass'
     | 'includeBodies'
+    | 'userId'
     | 'tokenId'
     | 'keyId'
     | 'since'
@@ -977,6 +980,7 @@ function appendRequestLogsPageFilters(
   if (selectionEffect?.trim()) params.set('selection_effect', selectionEffect.trim())
   if (operationalClass && operationalClass !== 'all') params.set('operational_class', operationalClass)
   if (includeBodies) params.set('include_bodies', 'true')
+  if (userId?.trim()) params.set('request_user_id', userId.trim())
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
   if (keyId?.trim()) params.set('key_id', keyId.trim())
   if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))

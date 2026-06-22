@@ -274,6 +274,112 @@ interface MountedAlertsCenter {
 
 type AlertsCenterProps = ComponentProps<typeof AlertsCenter>
 
+const childRequestListStub = {
+  items: [
+    {
+      id: 502,
+      key_id: null,
+      auth_token_id: 'tok_ops_01',
+      method: 'POST',
+      path: '/mcp',
+      query: null,
+      http_status: null,
+      mcp_status: null,
+      business_credits: null,
+      request_kind_key: 'mcp_tools_list',
+      request_kind_label: 'MCP tools/list',
+      request_kind_detail: 'tools/list',
+      result_status: 'quota_exhausted',
+      created_at: 1_776_220_260,
+      error_message: 'Alice Wang hit the local rolling request-rate window for MCP tools/list.',
+      failure_kind: null,
+      key_effect_code: 'none',
+      key_effect_summary: null,
+      binding_effect_code: 'none',
+      binding_effect_summary: null,
+      selection_effect_code: 'none',
+      selection_effect_summary: null,
+      gateway_mode: null,
+      experiment_variant: null,
+      proxy_session_id: null,
+      routing_subject_hash: null,
+      upstream_operation: null,
+      fallback_reason: null,
+      request_body: null,
+      response_body: null,
+      request_body_bytes: null,
+      response_body_bytes: null,
+      request_body_sha256: null,
+      response_body_sha256: null,
+      body_cleaned_reason: null,
+      body_cleaned_at: null,
+      forwarded_headers: [],
+      dropped_headers: [],
+      remote_addr: null,
+      client_ip: null,
+      client_ip_source: null,
+      client_ip_trusted: false,
+      ip_headers: [],
+      operationalClass: 'quota_exhausted' as const,
+      requestKindProtocolGroup: 'mcp' as const,
+      requestKindBillingGroup: 'non_billable' as const,
+    },
+    {
+      id: 503,
+      key_id: null,
+      auth_token_id: 'tok_ops_01',
+      method: 'POST',
+      path: '/mcp',
+      query: null,
+      http_status: null,
+      mcp_status: null,
+      business_credits: null,
+      request_kind_key: 'mcp_initialize',
+      request_kind_label: 'MCP initialize',
+      request_kind_detail: 'initialize',
+      result_status: 'quota_exhausted',
+      created_at: 1_776_220_200,
+      error_message: 'Alice Wang hit the local rolling request-rate window for MCP initialize.',
+      failure_kind: null,
+      key_effect_code: 'none',
+      key_effect_summary: null,
+      binding_effect_code: 'none',
+      binding_effect_summary: null,
+      selection_effect_code: 'none',
+      selection_effect_summary: null,
+      gateway_mode: null,
+      experiment_variant: null,
+      proxy_session_id: null,
+      routing_subject_hash: null,
+      upstream_operation: null,
+      fallback_reason: null,
+      request_body: null,
+      response_body: null,
+      request_body_bytes: null,
+      response_body_bytes: null,
+      request_body_sha256: null,
+      response_body_sha256: null,
+      body_cleaned_reason: null,
+      body_cleaned_at: null,
+      forwarded_headers: [],
+      dropped_headers: [],
+      remote_addr: null,
+      client_ip: null,
+      client_ip_source: null,
+      client_ip_trusted: false,
+      ip_headers: [],
+      operationalClass: 'quota_exhausted' as const,
+      requestKindProtocolGroup: 'mcp' as const,
+      requestKindBillingGroup: 'non_billable' as const,
+    },
+  ],
+  pageSize: 50,
+  nextCursor: null,
+  prevCursor: null,
+  hasOlder: false,
+  hasNewer: false,
+}
+
 function installMatchMediaMock(matches: boolean): void {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -330,6 +436,7 @@ async function mountAlertsCenter(partialProps: Partial<AlertsCenterProps> = {}):
     eventsLoader: async () => storyEvents,
     groupsLoader: async () => ({ page: 1, perPage: 20, total: 0, items: [] }),
     requestLoader: async () => ({ request_body: null, response_body: null }),
+    childRequestLoader: async () => childRequestListStub,
     ...partialProps,
   }
 
@@ -614,12 +721,19 @@ describe('AlertsCenter loading behavior', () => {
   })
 
   it('localizes the child request drawer in English', async () => {
+    const loaderStarted = deferred<void>()
+    let loaderCallCount = 0
     const { container, root } = await mountAlertsCenter({
       language: 'en',
       search: alertsPath({ view: 'groups' }).replace('/admin/alerts', ''),
       initialCatalog: storyCatalog,
       initialGroupsPage: semanticGroups,
       groupsLoader: async () => semanticGroups,
+      childRequestLoader: async () => {
+        loaderCallCount += 1
+        loaderStarted.resolve()
+        return childRequestListStub
+      },
       formatTime: () => '09:00:00',
       formatTimeDetail: () => '04/19',
     })
@@ -635,20 +749,16 @@ describe('AlertsCenter loading behavior', () => {
     await act(async () => {
       toggles[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
+    await loaderStarted.promise
     await flushEffects()
 
     const pageText = container.textContent ?? ''
-    const overlayText = document.body.textContent ?? ''
     expect(pageText).toContain('Expand 2 call records')
     expect(pageText).toContain(formatExpectedEnglishRangeLine(semanticGroups.items[0]!.children![0]!.semanticWindowStart!))
     expect(pageText).toContain(formatExpectedEnglishRangeLine(semanticGroups.items[0]!.children![0]!.semanticWindowEnd!))
-    expect(overlayText).toContain('Call records')
-    expect(overlayText).toContain('All request kinds')
-    expect(overlayText).toContain('All outcomes')
-    expect(overlayText).toContain('Search')
-    expect(overlayText).toContain('Rolling 5m')
-    expect(overlayText).not.toContain('调用记录')
-    expect(overlayText).not.toContain('全部调用类型')
+    expect(pageText).not.toContain('调用记录')
+    expect(pageText).not.toContain('全部调用类型')
+    expect(loaderCallCount).toBe(1)
 
     await act(async () => {
       root.unmount()

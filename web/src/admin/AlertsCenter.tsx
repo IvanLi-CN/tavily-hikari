@@ -8,9 +8,17 @@ import type {
   AlertsQuery,
   AlertsPage,
   RequestLog,
+  RequestLogsListPage,
+  RequestLogsListQuery,
   RequestLogBodies,
 } from '../api'
-import { fetchAlertCatalog, fetchAlertEvents, fetchAlertGroups, fetchRequestLogDetails } from '../api'
+import {
+  fetchAlertCatalog,
+  fetchAlertEvents,
+  fetchAlertGroups,
+  fetchRequestLogDetails,
+  fetchRequestLogsList,
+} from '../api'
 import type { Language } from '../i18n'
 import { Icon } from '../lib/icons'
 import { getBlockingLoadState, getRefreshingLoadState, type QueryLoadState } from './queryLoadState'
@@ -152,6 +160,14 @@ function semanticWindowLabel(group: Pick<AlertGroup, 'semanticWindowKind' | 'sem
 
 function subjectDisplayLabel(subject: Pick<AlertEvent, 'subjectLabel'> | Pick<AlertGroup, 'subjectLabel'>): string {
   return subject.subjectLabel.trim() || '—'
+}
+
+function hasClickableGroupSubject(group: AlertGroup): boolean {
+  return group.subjectKind === 'user'
+    ? Boolean(group.user?.userId)
+    : group.subjectKind === 'token'
+      ? Boolean(group.token?.id)
+      : Boolean(group.key?.id)
 }
 
 function isCompatibilityGroup(group: Pick<AlertGroup, 'groupingKind'>): boolean {
@@ -402,6 +418,7 @@ interface AlertsCenterProps {
   eventsLoader?: (query: AlertsQuery, signal?: AbortSignal) => Promise<AlertsPage<AlertEvent>>
   groupsLoader?: (query: AlertsQuery, signal?: AbortSignal) => Promise<AlertsPage<AlertGroup>>
   requestLoader?: (requestId: number, signal?: AbortSignal) => Promise<RequestLogBodies>
+  childRequestLoader?: (query: RequestLogsListQuery, signal?: AbortSignal) => Promise<RequestLogsListPage>
   initialCatalog?: AlertCatalog | null
   initialEventsPage?: AlertsPage<AlertEvent> | null
   initialGroupsPage?: AlertsPage<AlertGroup> | null
@@ -411,86 +428,14 @@ interface AlertsCenterProps {
 
 interface SelectedChildDetails {
   child: AlertGroup
-  events: AlertEvent[]
 }
 
 type ChildRequestOutcomeFilter = 'all' | 'success' | 'quota_exhausted' | 'error' | 'neutral'
-
-interface ChildRequestRecord {
-  eventId: string
-  event: AlertEvent
-  log: RequestLog
-}
 
 interface ChildRequestFilterState {
   requestKind: string | null
   outcome: ChildRequestOutcomeFilter
   text: string
-}
-
-function alertEventToRequestLog(event: AlertEvent): RequestLog | null {
-  if (!event.request) return null
-  return {
-    id: event.request.id,
-    key_id: event.key?.id ?? null,
-    auth_token_id: event.token?.id ?? null,
-    method: event.request.method,
-    path: event.request.path,
-    query: event.request.query ?? null,
-    http_status: null,
-    mcp_status: null,
-    business_credits: null,
-    request_kind_key: event.requestKind?.key,
-    request_kind_label: event.requestKind?.label,
-    request_kind_detail: event.requestKind?.detail ?? null,
-    result_status: event.resultStatus ?? 'neutral',
-    created_at: event.occurredAt,
-    error_message: event.errorMessage ?? null,
-    failure_kind: event.failureKind ?? null,
-    key_effect_code: 'none',
-    key_effect_summary: null,
-    binding_effect_code: 'none',
-    binding_effect_summary: null,
-    selection_effect_code: 'none',
-    selection_effect_summary: null,
-    gateway_mode: null,
-    experiment_variant: null,
-    proxy_session_id: null,
-    routing_subject_hash: null,
-    upstream_operation: null,
-    fallback_reason: null,
-    request_body: null,
-    response_body: null,
-    request_body_bytes: null,
-    response_body_bytes: null,
-    request_body_sha256: null,
-    response_body_sha256: null,
-    body_cleaned_reason: null,
-    body_cleaned_at: null,
-    forwarded_headers: [],
-    dropped_headers: [],
-    remote_addr: null,
-    client_ip: null,
-    client_ip_source: null,
-    client_ip_trusted: false,
-    ip_headers: [],
-    operationalClass:
-      event.resultStatus === 'success'
-        ? 'success'
-        : event.resultStatus === 'quota_exhausted'
-          ? 'quota_exhausted'
-          : event.resultStatus === 'error'
-            ? 'upstream_error'
-            : 'neutral',
-    requestKindProtocolGroup: event.requestKind?.key?.startsWith('mcp') ? 'mcp' : 'api',
-    requestKindBillingGroup:
-      event.requestKind?.key?.includes('resources/list') ||
-        event.requestKind?.key?.includes('tools/list') ||
-        event.requestKind?.key?.includes('initialize') ||
-        event.requestKind?.key?.includes('notifications/initialized')
-        ? 'non_billable'
-        : 'billable',
-  }
 }
 
 export default function AlertsCenter({
@@ -507,6 +452,7 @@ export default function AlertsCenter({
   eventsLoader = fetchAlertEvents,
   groupsLoader = fetchAlertGroups,
   requestLoader = fetchRequestLogDetails,
+  childRequestLoader = fetchRequestLogsList,
   initialCatalog = null,
   initialEventsPage = null,
   initialGroupsPage = null,
@@ -551,6 +497,16 @@ export default function AlertsCenter({
     outcome: 'all',
     text: '',
   })
+  const [childRequestPage, setChildRequestPage] = useState<RequestLogsListPage>({
+    items: [],
+    pageSize: 50,
+    nextCursor: null,
+    prevCursor: null,
+    hasOlder: false,
+    hasNewer: false,
+  })
+  const [childRequestLoadState, setChildRequestLoadState] = useState<QueryLoadState>('initial_loading')
+  const [childRequestLoadError, setChildRequestLoadError] = useState<string | null>(null)
   const [requestBodies, setRequestBodies] = useState<RequestLogBodies | null>(null)
   const [requestLoadState, setRequestLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestLoadError, setRequestLoadError] = useState<string | null>(null)
@@ -696,6 +652,59 @@ export default function AlertsCenter({
     return () => controller.abort()
   }, [copy.requestDrawer.error, requestLoader, selectedRequest])
 
+  useEffect(() => {
+    if (!selectedChildDetails) {
+      setChildRequestPage({
+        items: [],
+        pageSize: 50,
+        nextCursor: null,
+        prevCursor: null,
+        hasOlder: false,
+        hasNewer: false,
+      })
+      setChildRequestLoadState('initial_loading')
+      setChildRequestLoadError(null)
+      return
+    }
+    const controller = new AbortController()
+    const child = selectedChildDetails.child
+    setChildRequestLoadState('initial_loading')
+    setChildRequestLoadError(null)
+    childRequestLoader(
+      {
+        limit: 50,
+        userId: child.user?.userId ?? (child.subjectKind === 'user' ? child.subjectId : undefined),
+        tokenId: child.token?.id ?? (child.subjectKind === 'token' ? child.subjectId : undefined),
+        keyId: child.key?.id ?? (child.subjectKind === 'key' ? child.subjectId : undefined),
+        since: child.semanticWindowStart ?? child.firstSeen,
+        untilIso:
+          child.semanticWindowEnd != null
+            ? formatIso8601WithOffset(new Date(child.semanticWindowEnd * 1000))
+            : undefined,
+      },
+      controller.signal,
+    )
+      .then((value) => {
+        if (controller.signal.aborted) return
+        setChildRequestPage(value)
+        setChildRequestLoadState('ready')
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        setChildRequestPage({
+          items: [],
+          pageSize: 50,
+          nextCursor: null,
+          prevCursor: null,
+          hasOlder: false,
+          hasNewer: false,
+        })
+        setChildRequestLoadError(error instanceof Error ? error.message : copy.childDrawer.empty)
+        setChildRequestLoadState('error')
+      })
+    return () => controller.abort()
+  }, [childRequestLoader, copy.childDrawer.empty, selectedChildDetails])
+
   const currentPage = view === 'events' ? eventsPage : groupsPage
   const totalPageCount = totalPages(currentPage.total, currentPage.perPage)
   const typeOptions = useMemo(
@@ -731,20 +740,11 @@ export default function AlertsCenter({
   )
   const requestBody = requestBodies?.request_body ?? cleanedBodySummary(requestBodies, 'request')
   const responseBody = requestBodies?.response_body ?? cleanedBodySummary(requestBodies, 'response')
-  const childRequestRecords = useMemo<ChildRequestRecord[]>(() => {
-    if (!selectedChildDetails) return []
-    return selectedChildDetails.events
-      .map((event) => {
-        const log = alertEventToRequestLog(event)
-        if (!log) return null
-        return { eventId: event.id, event, log }
-      })
-      .filter((value): value is ChildRequestRecord => value != null)
-  }, [selectedChildDetails])
+  const childRequestRecords = childRequestPage.items
   const childRequestKindOptions = useMemo(() => {
     const options = new Map<string, { value: string; label: string; count: number }>()
     for (const record of childRequestRecords) {
-      const key = record.log.request_kind_key?.trim()
+      const key = record.request_kind_key?.trim()
       if (!key) continue
       const current = options.get(key)
       if (current) {
@@ -752,7 +752,7 @@ export default function AlertsCenter({
       } else {
         options.set(key, {
           value: key,
-          label: record.log.request_kind_label ?? key,
+          label: record.request_kind_label ?? key,
           count: 1,
         })
       }
@@ -762,24 +762,22 @@ export default function AlertsCenter({
   const filteredChildRequestRecords = useMemo(() => {
     const normalizedText = childRequestFilters.text.trim().toLowerCase()
     return childRequestRecords.filter((record) => {
-      if (childRequestFilters.requestKind && record.log.request_kind_key !== childRequestFilters.requestKind) {
+      if (childRequestFilters.requestKind && record.request_kind_key !== childRequestFilters.requestKind) {
         return false
       }
-      if (childRequestFilters.outcome !== 'all' && record.log.result_status !== childRequestFilters.outcome) {
+      if (childRequestFilters.outcome !== 'all' && record.result_status !== childRequestFilters.outcome) {
         return false
       }
       if (!normalizedText) return true
       const haystacks = [
-        record.event.title,
-        record.event.summary,
-        record.event.subjectLabel,
-        record.log.method,
-        record.log.path,
-        record.log.query ?? '',
-        record.log.request_kind_label ?? '',
-        record.log.request_kind_detail ?? '',
-        record.event.token?.label ?? '',
-        record.event.key?.label ?? '',
+        record.method,
+        record.path,
+        record.query ?? '',
+        record.request_kind_label ?? '',
+        record.request_kind_detail ?? '',
+        record.error_message ?? '',
+        record.auth_token_id ?? '',
+        record.key_id ?? '',
       ]
       return haystacks.some((candidate) => candidate.toLowerCase().includes(normalizedText))
     })
@@ -1099,7 +1097,29 @@ export default function AlertsCenter({
                           </TableCell>
                           <TableCell className="alerts-center-col alerts-center-col--subject">
                             <div className="alerts-center-subject-cell">
-                              <strong>{subjectDisplayLabel(group)}</strong>
+                              {hasClickableGroupSubject(group) ? (
+                                <button
+                                  type="button"
+                                  className={`alerts-center-related-link${group.subjectKind !== 'user' ? ' alerts-center-related-link--mono' : ''}`}
+                                  onClick={() => {
+                                    if (group.subjectKind === 'user' && group.user?.userId) {
+                                      onOpenUser(group.user.userId)
+                                      return
+                                    }
+                                    if (group.subjectKind === 'token' && group.token?.id) {
+                                      onOpenToken(group.token.id)
+                                      return
+                                    }
+                                    if (group.subjectKind === 'key' && group.key?.id) {
+                                      onOpenKey(group.key.id)
+                                    }
+                                  }}
+                                >
+                                  {subjectDisplayLabel(group)}
+                                </button>
+                              ) : (
+                                <strong>{subjectDisplayLabel(group)}</strong>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell className="alerts-center-col alerts-center-col--request-kind">
@@ -1170,12 +1190,11 @@ export default function AlertsCenter({
                                             })
                                             setSelectedChildDetails({
                                               child,
-                                              events: child.childEvents ?? [],
                                             })
                                           }}
                                         >
                                           <Icon icon="mdi:format-list-bulleted-square" width={16} height={16} aria-hidden="true" />
-                                          <span>{`${copy.groupUi.expand} ${child.childEvents?.length ?? 0} ${copy.groupUi.requestRecords}`}</span>
+                                          <span>{`${copy.groupUi.expand} ${child.eventCount ?? child.count} ${copy.groupUi.requestRecords}`}</span>
                                         </button>
                                       </div>
                                     </TableCell>
@@ -1262,7 +1281,7 @@ export default function AlertsCenter({
               <DrawerDescription asChild>
                 <p className="panel-description">
                   {selectedChildDetails
-                    ? `${semanticWindowLabel(selectedChildDetails.child, language)} · ${childRequestRecords.length} ${copy.groupUi.hitRecords}`
+                    ? `${semanticWindowLabel(selectedChildDetails.child, language)} · ${childRequestRecords.length} ${copy.groupUi.requestRecords}`
                     : '—'}
                 </p>
               </DrawerDescription>
@@ -1357,45 +1376,63 @@ export default function AlertsCenter({
             </div>
 
             <div className="alerts-center-child-events alerts-center-child-request-list">
-              {selectedChildDetails == null || childRequestRecords.length === 0 ? (
+              {selectedChildDetails == null ? (
+                <div className="alerts-center-inline-muted">{copy.childDrawer.empty}</div>
+              ) : childRequestLoadState === 'error' ? (
+                <div className="alerts-center-inline-muted">{childRequestLoadError ?? copy.childDrawer.empty}</div>
+              ) : childRequestLoadState !== 'ready' ? (
+                <div className="alerts-center-inline-muted">{copy.requestDrawer.loading}</div>
+              ) : childRequestRecords.length === 0 ? (
                 <div className="alerts-center-inline-muted">{copy.childDrawer.empty}</div>
               ) : filteredChildRequestRecords.length === 0 ? (
                 <div className="alerts-center-inline-muted">{copy.childDrawer.emptyFiltered}</div>
               ) : (
-                filteredChildRequestRecords.map(({ event, log }) => (
-                  <div key={event.id} className="alerts-center-child-event alerts-center-child-request-item">
+                filteredChildRequestRecords.map((log) => (
+                  <div key={log.id} className="alerts-center-child-event alerts-center-child-request-item">
                     <div className="alerts-center-child-event__meta">
-                      <StatusBadge tone={alertTypeTone(event.type)}>{copy.types[event.type]}</StatusBadge>
-                      <span>{formatMonthDayTimeWithSeconds(event.occurredAt, language)}</span>
+                      <StatusBadge tone={alertTypeTone(log.result_status === 'quota_exhausted' ? 'user_quota_exhausted' : 'user_request_rate_limited')}>
+                        {log.result_status === 'quota_exhausted'
+                          ? copy.types.user_quota_exhausted
+                          : copy.types.user_request_rate_limited}
+                      </StatusBadge>
+                      <span>{formatMonthDayTimeWithSeconds(log.created_at, language)}</span>
                       {log.request_kind_key ? (
                         <RequestKindBadge requestKindKey={log.request_kind_key} requestKindLabel={log.request_kind_label ?? log.request_kind_key} size="sm" />
                       ) : null}
                     </div>
                     <div className="alerts-center-summary-cell">
                       <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
-                      <span>{event.summary}</span>
+                      <span>{log.error_message?.trim() || requestSummary({ id: log.id, method: log.method, path: log.path, query: log.query })}</span>
                     </div>
                     <div className="alerts-center-related-actions">
-                      {event.user ? (
-                        <button type="button" className="alerts-center-related-link" onClick={() => onOpenUser(event.user!.userId)}>
-                          {event.user.displayName ?? event.user.username ?? event.user.userId}
+                      {selectedChildDetails?.child.user?.userId ? (
+                        <button type="button" className="alerts-center-related-link" onClick={() => onOpenUser(selectedChildDetails.child.user!.userId)}>
+                          {selectedChildDetails.child.user.displayName ?? selectedChildDetails.child.user.username ?? selectedChildDetails.child.user.userId}
                         </button>
                       ) : null}
-                      {event.token ? (
-                        <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenToken(event.token!.id)}>
-                          {event.token.label ?? event.token.id}
+                      {log.auth_token_id ? (
+                        <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenToken(log.auth_token_id!)}>
+                          {log.auth_token_id}
                         </button>
                       ) : null}
-                      {event.key ? (
-                        <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenKey(event.key!.id)}>
-                          {event.key.label ?? event.key.id}
+                      {log.key_id ? (
+                        <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onOpenKey(log.key_id!)}>
+                          {log.key_id}
                         </button>
                       ) : null}
-                      {event.request ? (
-                        <button type="button" className="alerts-center-request-link" onClick={() => setSelectedRequest(event.request)}>
-                          {requestSummary(event.request)}
-                        </button>
-                      ) : null}
+                      <button
+                        type="button"
+                        className="alerts-center-request-link"
+                        onClick={() =>
+                          setSelectedRequest({
+                            id: log.id,
+                            method: log.method,
+                            path: log.path,
+                            query: log.query,
+                          })}
+                      >
+                        {requestSummary({ id: log.id, method: log.method, path: log.path, query: log.query })}
+                      </button>
                     </div>
                   </div>
                 ))
