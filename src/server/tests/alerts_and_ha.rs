@@ -2407,6 +2407,136 @@ async fn ha_event_apply_preserves_foreign_keys_and_composite_deletes() {
 }
 
 #[tokio::test]
+async fn ha_apply_ndjson_wrappers_abort_failed_sessions_before_retry() {
+    let db_path = temp_db_path("ha-apply-wrapper-abort");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-apply-wrapper-abort".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let invalid_baseline = "{\"kind\":\"baseline_start\"}\nnot-json\n";
+    let baseline_err = proxy
+        .apply_ha_baseline_ndjson(tavily_hikari::HaSyncChannel::Control, invalid_baseline)
+        .await
+        .expect_err("invalid baseline should fail");
+    assert!(
+        baseline_err.to_string().contains("invalid HA baseline NDJSON"),
+        "unexpected baseline error: {baseline_err}"
+    );
+
+    let valid_baseline = [
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "baseline_start",
+            "channel": "control",
+            "nodeId": "retry-node",
+            "generatedAt": 1,
+            "highWatermark": 1,
+            "encoding": "zstd-ndjson"
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "resource",
+            "channel": "control",
+            "resource": "meta",
+            "op": "upsert",
+            "data": {
+                "key": "request_rate_limit_v1",
+                "value": "55"
+            }
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "baseline_end",
+            "channel": "control",
+            "nodeId": "retry-node",
+            "highWatermark": 1,
+            "rowCount": 1
+        }),
+    ]
+    .into_iter()
+    .map(|value| value.to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+    let baseline_result = proxy
+        .apply_ha_baseline_ndjson(tavily_hikari::HaSyncChannel::Control, &valid_baseline)
+        .await
+        .expect("valid baseline should recover after failure");
+    assert_eq!(baseline_result.high_watermark, 1);
+
+    let invalid_events = "{\"kind\":\"events_start\"}\nnot-json\n";
+    let events_err = proxy
+        .apply_ha_events_ndjson(tavily_hikari::HaSyncChannel::Control, invalid_events)
+        .await
+        .expect_err("invalid events should fail");
+    assert!(
+        events_err.to_string().contains("invalid HA events NDJSON"),
+        "unexpected events error: {events_err}"
+    );
+
+    let valid_events = [
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_start",
+            "channel": "control",
+            "afterSeq": 0
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "event",
+            "channel": "control",
+            "event": {
+                "channel": "control",
+                "seq": 2,
+                "kind": "state",
+                "resource": "meta",
+                "resourceId": "request_rate_limit_v1",
+                "op": "upsert",
+                "payload": {
+                    "key": "request_rate_limit_v1",
+                    "value": "77"
+                },
+                "createdAt": 2,
+                "checksum": null
+            }
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_end",
+            "channel": "control",
+            "lastSeq": 2,
+            "eventCount": 1
+        }),
+    ]
+    .into_iter()
+    .map(|value| value.to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+    let events_result = proxy
+        .apply_ha_events_ndjson(tavily_hikari::HaSyncChannel::Control, &valid_events)
+        .await
+        .expect("valid events should recover after failure");
+    assert_eq!(events_result.high_watermark, 2);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let request_rate_limit: Option<String> =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = 'request_rate_limit_v1'")
+            .fetch_optional(&pool)
+            .await
+            .expect("read synced meta");
+    assert_eq!(request_rate_limit.as_deref(), Some("77"));
+    pool.close().await;
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_startup_role_check_failure_does_not_recover_previous_active() {
     let edgeone_app = Router::new().fallback(post(|| async {
         (

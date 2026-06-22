@@ -580,7 +580,10 @@ impl KeyStore {
     ) -> Result<HaApplyResult, ProxyError> {
         let mut session = self.begin_ha_baseline_apply(channel).await?;
         for line in ndjson.lines().filter(|line| !line.trim().is_empty()) {
-            session.apply_line(line).await?;
+            if let Err(err) = session.apply_line(line).await {
+                let _ = session.abort().await;
+                return Err(err);
+            }
         }
         session.finish().await
     }
@@ -592,7 +595,10 @@ impl KeyStore {
     ) -> Result<HaApplyResult, ProxyError> {
         let mut session = self.begin_ha_events_apply(channel).await?;
         for line in ndjson.lines().filter(|line| !line.trim().is_empty()) {
-            session.apply_line(line).await?;
+            if let Err(err) = session.apply_line(line).await {
+                let _ = session.abort().await;
+                return Err(err);
+            }
         }
         session.finish().await
     }
