@@ -33,6 +33,11 @@
   events apply steps, so the next channel's `BEGIN IMMEDIATE` transaction does not race with a
   coalesced state write and reintroduce `database is locked` / nested-transaction failures during
   large baseline catch-up.
+- HA node-state persistence now deduplicates identical coalesced snapshots before writing SQLite.
+  This keeps the standby-side EdgeOne authority refresh loop from rewriting the same `ha_node_state`
+  row every five seconds while the node stays fenced, which in turn removes the repeated slow
+  `INSERT INTO ha_node_state ... ON CONFLICT DO UPDATE` noise observed during `hinet-lam` standby
+  smoke runs.
 - Replaced the old implicit single-channel HA contract with explicit `control` / `billing` /
   `runtime` channels carried over the same `/api/admin/ha/baseline`, `/api/admin/ha/events`, and
   `/api/admin/ha/events/ack` endpoints via a required `channel` contract.

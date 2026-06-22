@@ -135,8 +135,9 @@ impl TavilyProxy {
                     }
                 }
 
-                if let Some(pending) = pending_node_state
-                    && let Err(err) = store
+                let mut flushed_node_state = None;
+                if let Some(pending) = pending_node_state {
+                    match store
                         .persist_ha_node_state(
                             &pending.node_id,
                             pending.role,
@@ -145,12 +146,21 @@ impl TavilyProxy {
                             pending.message.as_deref(),
                         )
                         .await
-                {
-                    eprintln!("HA node state persist warning: {err}");
+                    {
+                        Ok(()) => {
+                            flushed_node_state = Some(pending);
+                        }
+                        Err(err) => {
+                            eprintln!("HA node state persist warning: {err}");
+                        }
+                    }
                 }
 
                 {
                     let mut state = coalescer.state.lock().await;
+                    if let Some(flushed_node_state) = flushed_node_state {
+                        state.last_flushed_node_state = Some(flushed_node_state);
+                    }
                     state.flushing = false;
                     state.flush_deadline = None;
                     coalescer.flushed.notify_waiters();
