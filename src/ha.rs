@@ -792,27 +792,36 @@ impl HaRuntime {
         if !force {
             let (current, entry) = self.edgeone.describe_current_target_with_audit().await?;
             audit.push(entry);
+            let expected_current_origin = self.config.canonical_expected_origin();
+            let current_target = current.as_ref().map(|target| target.target());
+            let current_matches_expected_origin = current_target
+                .as_deref()
+                .zip(expected_current_origin.as_deref())
+                .is_some_and(|(current, expected)| current == expected);
+            let current_matches_target_settings =
+                self.is_expected_target(current.as_ref(), &target_settings);
             if self.is_self_target(current.as_ref()) {
-                let mut state = self.state.write().await;
-                state.edgeone_origin = current.as_ref().map(|target| target.target());
-                state.last_edgeone_check_at = Some(self.backend_time.now_ts());
-            } else {
-                let expected_current_origin = self.config.canonical_expected_origin();
-                let current_target = current.as_ref().map(|target| target.target());
-                let current_matches_expected_origin = current_target
-                    .as_deref()
-                    .zip(expected_current_origin.as_deref())
-                    .is_some_and(|(current, expected)| current == expected);
-                if !current_matches_expected_origin {
+                if !current_matches_target_settings {
                     return Err(format!(
-                        "EdgeOne target is {:?}, expected current origin {:?} before promote to {}; refusing promote without force",
+                        "EdgeOne target is {:?}, but current HA source target is {}; refusing promote without force",
                         current_target,
-                        expected_current_origin,
                         target_settings
                             .effective_target()
                             .unwrap_or_else(|| "<unknown>".to_string())
                     ));
                 }
+                let mut state = self.state.write().await;
+                state.edgeone_origin = current_target;
+                state.last_edgeone_check_at = Some(self.backend_time.now_ts());
+            } else if !current_matches_expected_origin || current_matches_target_settings {
+                return Err(format!(
+                    "EdgeOne target is {:?}, expected current origin {:?} before promote to {}; refusing promote without force",
+                    current_target,
+                    expected_current_origin,
+                    target_settings
+                        .effective_target()
+                        .unwrap_or_else(|| "<unknown>".to_string())
+                ));
             }
         }
         let entry = self
@@ -859,6 +868,17 @@ impl HaRuntime {
         match (target, self.effective_source_settings().ok().flatten()) {
             (Some(current), Some(expected)) => current.matches_source_settings(&expected),
             _ => false,
+        }
+    }
+
+    fn is_expected_target(
+        &self,
+        target: Option<&EdgeOneTarget>,
+        expected: &HaSourceSettings,
+    ) -> bool {
+        match target {
+            Some(current) => current.matches_source_settings(expected),
+            None => false,
         }
     }
 }
@@ -1571,6 +1591,99 @@ mod tests {
         assert_eq!(status.role, HaNodeRole::ProvisionalMaster);
         assert_eq!(status.edgeone_origin.as_deref(), Some("node-b:8787"));
         assert_eq!(audit.len(), 2);
+        assert_eq!(&*current_origin.lock().await, "node-b:8787");
+    }
+
+    #[tokio::test]
+    async fn promote_without_force_rejects_when_live_target_matches_self_but_source_target_drifted()
+    {
+        let current_origin =
+            std::sync::Arc::new(tokio::sync::Mutex::new("node-b:8787".to_string()));
+        let current_origin_handle = current_origin.clone();
+        let edgeone_app = axum::Router::new().fallback(axum::routing::post(
+            move |headers: axum::http::HeaderMap| {
+                let current_origin = current_origin_handle.clone();
+                async move {
+                    let action = headers
+                        .get("x-tc-action")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    match action.as_str() {
+                        "DescribeAccelerationDomains" => {
+                            let origin = current_origin.lock().await.clone();
+                            let (host, port) = origin.rsplit_once(':').expect("origin host/port");
+                            axum::Json(serde_json::json!({
+                                "Response": {
+                                    "AccelerationDomains": [
+                                        {
+                                            "OriginDetail": {
+                                                "Origin": host,
+                                                "HttpOriginPort": port.parse::<u16>().expect("port"),
+                                                "HttpsOriginPort": port.parse::<u16>().expect("port")
+                                            }
+                                        }
+                                    ],
+                                    "RequestId": "describe-self-drift"
+                                }
+                            }))
+                        }
+                        other => axum::Json(serde_json::json!({
+                            "Response": {
+                                "Error": {
+                                    "Message": format!("unexpected action {other}")
+                                }
+                            }
+                        })),
+                    }
+                }
+            },
+        ));
+        let edgeone_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind edgeone mock");
+        let edgeone_addr = edgeone_listener.local_addr().expect("edgeone mock addr");
+        tokio::spawn(async move {
+            axum::serve(edgeone_listener, edgeone_app.into_make_service())
+                .await
+                .expect("serve edgeone mock");
+        });
+
+        let runtime = HaRuntime::new(HaConfig {
+            mode: HaMode::ActiveStandby,
+            node_id: "node-b".to_string(),
+            node_public_scheme: Some("https".to_string()),
+            node_public_host: Some("node-b".to_string()),
+            node_public_port: Some(8787),
+            edgeone_expected_origin_scheme: Some("https".to_string()),
+            edgeone_expected_origin_host: Some("node-a".to_string()),
+            edgeone_expected_origin_port: Some(8787),
+            edgeone_zone_id: Some("zone-test".to_string()),
+            edgeone_domain: Some("hikari.example.test".to_string()),
+            edgeone_secret_id: Some("secret-id".to_string()),
+            edgeone_secret_key: Some("secret-key".to_string()),
+            edgeone_api_endpoint: format!("http://{edgeone_addr}"),
+            ..HaConfig::default()
+        });
+        runtime
+            .set_local_source_settings(Some(HaSourceSettings {
+                source_kind: HaSourceKind::Direct,
+                direct_origin_scheme: Some(OriginScheme::Https),
+                direct_origin_host: Some("node-c".to_string()),
+                direct_origin_port: Some(8787),
+                origin_group_id: None,
+            }))
+            .await
+            .expect("set drifted source target");
+
+        let err = runtime
+            .promote_self_to_provisional_with_audit(false)
+            .await
+            .expect_err("drifted source target should require force");
+        assert!(
+            err.contains("refusing promote without force"),
+            "unexpected promote error: {err}"
+        );
         assert_eq!(&*current_origin.lock().await, "node-b:8787");
     }
 
