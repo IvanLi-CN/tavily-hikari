@@ -25,6 +25,14 @@
   startup behavior, but `active_standby` now defers forward-proxy/xray initialization until the node
   role allows business traffic. `standby`/`recovery` also skip the periodic forward-proxy maintenance
   loop and report `/health=ok` without requiring xray readiness.
+- Tightened standby/recovery startup so business background schedulers are role-gated alongside the
+  deferred runtime graph. `quota_sync`, usage rollups, request-log/auth-token GC, LinuxDo sync,
+  forward-proxy maintenance, and DB compaction no longer enqueue or run on standby startup; only the
+  HA sync/authority background path stays active before promotion.
+- HA standby sync now flushes persisted node-state/watermark writes between per-channel baseline and
+  events apply steps, so the next channel's `BEGIN IMMEDIATE` transaction does not race with a
+  coalesced state write and reintroduce `database is locked` / nested-transaction failures during
+  large baseline catch-up.
 - Replaced the old implicit single-channel HA contract with explicit `control` / `billing` /
   `runtime` channels carried over the same `/api/admin/ha/baseline`, `/api/admin/ha/events`, and
   `/api/admin/ha/events/ack` endpoints via a required `channel` contract.
@@ -109,6 +117,8 @@
 - `cargo fmt --check`
 - `cargo check`
 - `cargo test alerts_and_ha -- --nocapture`
+- `cargo test standby_server_startup_does_not_spawn_business_scheduled_jobs -- --nocapture`
+- `cargo test ha_standby_sync_recovers_after_invalid_events_stream -- --nocapture`
 - `cargo test ha_source_endpoint_accepts_lowercase_direct_origin_scheme`
 - `cargo test standalone_ha_outbox_gc_deletes_expired_rows_across_channels_in_bounded_batches -- --nocapture`
 - `cd web && bun run build`
@@ -124,3 +134,15 @@
   `pre`, `failover`, and `recovery`.
 - Added Python mocks for EdgeOne origin describe/modify, single-entry ingress forwarding, and Tavily/MCP upstream responses.
 - The harness uses only mock upstreams and runs on `codex-testbox`; it does not call the production Tavily or EdgeOne endpoints.
+- Added `tests/ha/docker-compose.memory.yml`, `tests/ha/scripts/seed_large_ha_fixture.py`,
+  `tests/ha/scripts/run_ha_memory_contract.py`, and
+  `tests/ha/scripts/run_testbox_ha_memory_contract.sh` for the 256MiB cgroup contract. The accepted
+  proof seeds a production-shaped HA fixture, forces both app services under `mem_limit: 256m`,
+  waits for standby catch-up, then repeatedly hits the active `billing` baseline export while
+  sampling `memory.current`.
+- Shared-testbox proof result for the accepted fixture:
+  - standby counts converged to `users=2000`, `tokens=2000`, `sessions=3000`, `billing=35000`
+  - repeated billing baseline exports all returned `rowCount=35000`
+  - sampled `memory.current` peaks were `95,809,536` bytes on node-a and `268,423,168` bytes on
+    node-b
+  - neither container reported `OOMKilled=true`

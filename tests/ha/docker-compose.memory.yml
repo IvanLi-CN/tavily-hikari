@@ -1,0 +1,11 @@
+services:
+  node-a:
+    mem_limit: 256m
+
+  node-b:
+    mem_limit: 256m
+
+  ha-test-runner:
+    volumes:
+      - node-a-data:/volumes/node-a
+      - node-b-data:/volumes/node-b
