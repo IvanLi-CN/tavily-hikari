@@ -1002,6 +1002,63 @@ async fn ha_baseline_returns_500_when_export_generation_fails() {
 }
 
 #[tokio::test]
+async fn ha_baseline_returns_413_when_compressed_stream_exceeds_cap() {
+    let _cap = EnvVarGuard::set("TAVILY_TEST_HA_BASELINE_MAX_COMPRESSED_BYTES", "256");
+    let active_db = temp_db_path("ha-baseline-export-too-large");
+    let active_db_str = active_db.to_string_lossy().to_string();
+    let active_proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &active_db_str,
+    )
+    .await
+    .expect("active proxy created");
+    let pool = connect_sqlite_test_pool(&active_db_str).await;
+    let large_random = (0..4096)
+        .map(|idx| format!("row-{idx:04}-{}", nanoid::nanoid!(64)))
+        .collect::<Vec<_>>();
+    for (idx, key) in large_random.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, created_at, status_changed_at
+            ) VALUES (?, ?, 'active', ?, ?)
+            "#,
+        )
+        .bind(format!("key-{idx}"))
+        .bind(key)
+        .bind(Utc::now().timestamp() + idx as i64)
+        .bind(Utc::now().timestamp() + idx as i64)
+        .execute(&pool)
+        .await
+        .expect("insert api key");
+    }
+    pool.close().await;
+    let active_ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        node_id: "node-active".to_string(),
+        database_path: Some(active_db_str.clone()),
+        ..tavily_hikari::HaConfig::default()
+    });
+    let active_addr = spawn_ha_admin_server(active_proxy, active_ha, true).await;
+
+    let response = Client::new()
+        .get(format!(
+            "http://{active_addr}/api/admin/ha/baseline?channel=control"
+        ))
+        .send()
+        .await
+        .expect("baseline request");
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response.text().await.expect("baseline error body");
+    assert!(
+        body.contains("HA payload exceeds compressed limit"),
+        "unexpected baseline error body: {body}"
+    );
+
+    let _ = std::fs::remove_file(active_db);
+}
+
+#[tokio::test]
 async fn ha_events_endpoint_returns_zstd_ndjson() {
     let db_path = temp_db_path("ha-events");
     let db_str = db_path.to_string_lossy().to_string();

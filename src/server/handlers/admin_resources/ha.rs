@@ -48,6 +48,7 @@ struct HaEventResponseItem {
 }
 
 const HA_EVENTS_MAX_COMPRESSED_BYTES: usize = 4 * 1024 * 1024;
+const HA_BASELINE_MAX_COMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
 fn parse_ha_channel(raw: Option<&str>) -> Result<tavily_hikari::HaSyncChannel, (StatusCode, String)> {
     let Some(value) = raw else {
@@ -224,61 +225,86 @@ async fn get_admin_ha_baseline(
         ));
     }
     let channel = parse_ha_channel(query.channel.as_deref())?;
-    let high_watermark = state
-        .proxy
-        .ha_channel_high_watermark(channel)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let row_count = state
-        .proxy
-        .count_ha_baseline_rows(channel)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let reader = build_ha_baseline_reader(&state.proxy, channel, &status.node_id)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let baseline = build_ha_baseline_reader(&state.proxy, channel, &status.node_id).await?;
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/x-ndjson")
         .header("content-encoding", "zstd")
         .header("x-ha-schema-version", "2")
         .header("x-ha-channel", channel.as_str())
-        .header("x-ha-high-watermark", high_watermark.to_string())
-        .header("x-ha-row-count", row_count.to_string())
-        .body(Body::from_stream(ReaderStream::new(reader)))
+        .header(
+            "x-ha-high-watermark",
+            baseline.export.high_watermark.to_string(),
+        )
+        .header("x-ha-row-count", baseline.export.row_count.to_string())
+        .body(Body::from_stream(ReaderStream::new(baseline.reader)))
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+struct HaBaselineReader {
+    reader: tokio::fs::File,
+    export: tavily_hikari::HaApplyResult,
 }
 
 async fn build_ha_baseline_reader(
     proxy: &TavilyProxy,
     channel: tavily_hikari::HaSyncChannel,
     node_id: &str,
-) -> Result<tokio::fs::File, ProxyError> {
+) -> Result<HaBaselineReader, (StatusCode, String)> {
     #[cfg(test)]
     if std::env::var("TAVILY_TEST_FAIL_HA_BASELINE_EXPORT")
         .ok()
         .as_deref()
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case(channel.as_str()))
     {
-        return Err(ProxyError::Other(
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
             "forced HA baseline export failure".to_string(),
         ));
     }
-    let std_file = tempfile::tempfile().map_err(|err| ProxyError::Other(err.to_string()))?;
+    let std_file = tempfile::tempfile().map_err(internal_error)?;
     let file = tokio::fs::File::from_std(std_file);
     let mut encoder = ZstdEncoder::with_quality(file, async_compression::Level::Precise(3));
-    proxy
+    let export = proxy
         .write_ha_baseline_ndjson(channel, node_id, &mut encoder)
-        .await?;
+        .await
+        .map_err(internal_error)?;
     encoder
         .shutdown()
         .await
-        .map_err(|err| ProxyError::Other(err.to_string()))?;
+        .map_err(internal_error)?;
     let mut file = encoder.into_inner();
+    let compressed_bytes = file.metadata().await.map_err(internal_error)?.len();
+    if compressed_bytes > ha_baseline_max_compressed_bytes() {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "HA payload exceeds compressed limit: {compressed_bytes} > {}",
+                ha_baseline_max_compressed_bytes()
+            ),
+        ));
+    }
     file.seek(SeekFrom::Start(0))
         .await
-        .map_err(|err| ProxyError::Other(err.to_string()))?;
-    Ok(file)
+        .map_err(internal_error)?;
+    Ok(HaBaselineReader {
+        reader: file,
+        export,
+    })
+}
+
+fn internal_error(err: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+}
+
+fn ha_baseline_max_compressed_bytes() -> u64 {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("TAVILY_TEST_HA_BASELINE_MAX_COMPRESSED_BYTES") {
+        if let Ok(parsed) = value.parse::<u64>() {
+            return parsed;
+        }
+    }
+    HA_BASELINE_MAX_COMPRESSED_BYTES
 }
 
 async fn get_admin_ha_events(
