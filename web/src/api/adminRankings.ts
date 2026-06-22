@@ -16,6 +16,7 @@ export interface AdminUserRankingRow {
 export interface AdminUserRankingWindow {
   primarySuccessTop: AdminUserRankingRow[]
   businessCreditsTop: AdminUserRankingRow[]
+  uniqueIpTop: AdminUserRankingRow[]
 }
 
 export interface AdminUserRankingsSnapshot {

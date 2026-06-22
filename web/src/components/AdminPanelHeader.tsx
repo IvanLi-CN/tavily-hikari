@@ -1,3 +1,5 @@
+import { type ReactNode } from 'react'
+
 import { Icon } from '../lib/icons'
 
 import AdminReturnToConsoleLink from './AdminReturnToConsoleLink'
@@ -7,7 +9,7 @@ import { Button } from './ui/button'
 
 interface AdminPanelHeaderProps {
   title: string
-  subtitle: string
+  subtitle?: string
   displayName?: string | null
   isAdmin: boolean
   updatedPrefix: string
@@ -18,15 +20,17 @@ interface AdminPanelHeaderProps {
   refreshingLabel: string
   userConsoleLabel?: string
   userConsoleHref?: string
+  stackActions?: boolean
   onRefresh: () => void
+  extraActions?: ReactNode
 }
 
 export default function AdminPanelHeader(props: AdminPanelHeaderProps): JSX.Element {
   return (
-    <section className="surface app-header admin-panel-header">
+    <section className={`surface app-header admin-panel-header${props.stackActions ? ' admin-panel-header--stacked-actions' : ''}`}>
       <div className="admin-panel-header-main">
         <h1>{props.title}</h1>
-        <p className="admin-panel-header-subtitle">{props.subtitle}</p>
+        {props.subtitle ? <p className="admin-panel-header-subtitle">{props.subtitle}</p> : null}
       </div>
 
       <div className="admin-panel-header-side">
@@ -43,7 +47,9 @@ export default function AdminPanelHeader(props: AdminPanelHeaderProps): JSX.Elem
           )}
         </div>
 
-        <div className="admin-panel-header-actions">
+        <div className={`admin-panel-header-actions${props.stackActions ? ' admin-panel-header-actions--stacked' : ''}`}>
+          {props.extraActions}
+
           {props.updatedTime && (
             <span className="admin-panel-header-time" aria-live="polite">
               <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />

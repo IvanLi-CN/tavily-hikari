@@ -158,7 +158,7 @@ export default function AdminShell({
                 )
               })}
             </nav>
-            <div ref={setSidebarUtilityHost} className="admin-sidebar-utility admin-desktop-only" />
+            <div ref={setSidebarUtilityHost} className="admin-sidebar-utility" />
           </div>
         </aside>
 
@@ -179,7 +179,7 @@ export function AdminShellSidebarUtility({ children }: PropsWithChildren): JSX.E
   const host = useContext(AdminSidebarUtilityContext)
 
   if (!host) {
-    return <div className="admin-sidebar-utility admin-sidebar-utility-fallback admin-desktop-only">{children}</div>
+    return null
   }
 
   return createPortal(children, host)

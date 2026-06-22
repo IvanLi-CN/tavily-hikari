@@ -67,7 +67,7 @@ import { AdminUserDetailQuotaWorkspace } from './AdminUserDetailQuotaWorkspace'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import AdminOverlayHost from './AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './DashboardOverview'
-import AdminUserRankingsPage from './AdminUserRankingsPage'
+import AdminUserRankingsPage, { RankingsMeta } from './AdminUserRankingsPage'
 import AdminJobTriggerMenu from './AdminJobTriggerMenu'
 import { AnchoredApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import {
@@ -122,6 +122,7 @@ import {
   resolveAdminUserActivityScope,
   resolveAdminUserActivityScopeFromSettings,
 } from './userActivityScope'
+import { useAdminStackedLayout } from '../lib/responsive'
 import { formatRequestRateScope, formatRequestRateSummary, resolveRequestRate } from '../requestRate'
 import {
   type AdminUsersCollectionView,
@@ -9834,6 +9835,7 @@ function AdminDashboard(): JSX.Element {
   const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
   const showProxySettings = activeModule === 'proxy-settings'
   const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
+  const isStackedAdminLayout = useAdminStackedLayout()
 
   const moduleDesktopUtility = (
     <AdminShellSidebarUtility>
@@ -9905,7 +9907,6 @@ function AdminDashboard(): JSX.Element {
       case 'rankings':
         return {
           title: adminStrings.rankings.title,
-          description: adminStrings.rankings.description,
         }
       case 'tokens':
         return {
@@ -10391,8 +10392,22 @@ function AdminDashboard(): JSX.Element {
           {moduleDesktopUtility}
           {adminHaCompactAlert}
 
-      {!showNotFound && (
-        <div className="admin-stacked-only">
+      {!showNotFound && isStackedAdminLayout && (
+        showRankings ? (
+          <section className="surface app-header admin-usage-stacked-intro">
+            <div className="admin-usage-stacked-intro-main">
+              <h1>{moduleDesktopIntro.title}</h1>
+            </div>
+            <div className="admin-usage-stacked-intro-actions">
+              <RankingsMeta
+                strings={adminStrings.rankings}
+                snapshot={rankingsSnapshot}
+                connectionState={rankingsConnectionState}
+                language={language}
+              />
+            </div>
+          </section>
+        ) : (
           <AdminPanelHeader
             title={moduleDesktopIntro.title} subtitle={moduleDesktopIntro.description}
             displayName={displayName}
@@ -10406,33 +10421,40 @@ function AdminDashboard(): JSX.Element {
             userConsoleHref={userConsoleHref}
             onRefresh={handleManualRefresh}
           />
-        </div>
+        )
       )}
 
-      {!showNotFound && (
-        <div className="admin-desktop-only">
-          <AdminCompactIntro
-            title={moduleDesktopIntro.title}
-            description={moduleDesktopIntro.description}
-            actions={
-              showTokens
-                ? renderTokenToolbar()
-                : showKeys && isAdmin
-                    ? renderKeyQuickAddToolbar()
-                    : showUsers
-                        ? renderUsersSearchControls('users-search-controls--header')
-                        : showRequests
-                          ? <div id={REQUESTS_HEADER_FILTERS_ID} className="admin-header-filter-slot" />
-                          : showJobs
-                            ? renderJobFilterToolbar('admin-module-toolbar--header-filter')
-                            : showAlerts
-                              ? renderAlertsViewTabs()
-                              : showAnnouncements
-                                ? <div id={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID} />
+      {!showNotFound && !isStackedAdminLayout && (
+        <AdminCompactIntro
+          title={moduleDesktopIntro.title}
+          description={moduleDesktopIntro.description}
+          actions={
+            showRankings
+              ? (
+                <RankingsMeta
+                  strings={adminStrings.rankings}
+                  snapshot={rankingsSnapshot}
+                  connectionState={rankingsConnectionState}
+                  language={language}
+                />
+              )
+              : showTokens
+              ? renderTokenToolbar()
+              : showKeys && isAdmin
+                  ? renderKeyQuickAddToolbar()
+                  : showUsers
+                      ? renderUsersSearchControls('users-search-controls--header')
+                      : showRequests
+                        ? <div id={REQUESTS_HEADER_FILTERS_ID} className="admin-header-filter-slot" />
+                        : showJobs
+                          ? renderJobFilterToolbar('admin-module-toolbar--header-filter')
+                          : showAlerts
+                            ? renderAlertsViewTabs()
+                            : showAnnouncements
+                              ? <div id={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID} />
                               : undefined
-            }
-          />
-        </div>
+          }
+        />
       )}
 
       {showNotFound && (
@@ -10473,6 +10495,7 @@ function AdminDashboard(): JSX.Element {
           loading={rankingsLoading}
           error={rankingsError}
           connectionState={rankingsConnectionState}
+          showHeader={false}
           onRetry={() => {
             setRankingsError(null)
             setRankingsConnectionState('connecting')

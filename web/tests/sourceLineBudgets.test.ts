@@ -18,16 +18,16 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13412,
+      max: 13435,
       reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, active-user list filtering, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
     },
   ],
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7524,
+      max: 7640,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states and system-settings proof data stay on the shared Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, and system-settings proof data stay on the shared Admin/Pages proof shell.',
     },
   ],
   [
@@ -41,7 +41,7 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/demo.ts',
     {
-      max: 1826,
+      max: 1845,
       reason:
         'Demo API fixtures now cover user-console overview snapshots, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
     },
@@ -49,9 +49,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api.test.ts',
     {
-      max: 1586,
+      max: 1595,
       reason:
-        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, and admin rankings endpoint until the largest runtime suites are split out.',
+        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, and the expanded admin rankings endpoint until the largest runtime suites are split out.',
     },
   ],
   [
@@ -65,23 +65,23 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/translations/en.ts',
     {
-      max: 1562,
+      max: 1575,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings live-status/accessibility strings, and the auth-token retention settings copy are still stored in the shared English runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, and the auth-token retention settings copy are still stored in the shared English runtime catalog.',
     },
   ],
   [
     'src/i18n/translations/zh.ts',
     {
-      max: 1561,
+      max: 1575,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings live-status/accessibility strings, and the auth-token retention settings copy are still stored in the shared Chinese runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, and the auth-token retention settings copy are still stored in the shared Chinese runtime catalog.',
     },
   ],
   [
     'src/i18n/types.ts',
     {
-      max: 1637,
+      max: 1650,
       reason:
         'HA source settings mode-specific failure copy, admin jobs maintenance strings, the expanded admin rankings contract, and auth-token retention settings copy remain in the shared catalog contract.',
     },

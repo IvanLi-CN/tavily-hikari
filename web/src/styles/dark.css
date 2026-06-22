@@ -1104,7 +1104,7 @@
     display: none;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-header-side {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-header-side {
     display: inline-flex;
     width: auto;
     flex-direction: row;
@@ -1113,8 +1113,8 @@
     flex: 0 0 auto;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-header-tools,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-header-actions {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-header-tools,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-header-actions {
     max-width: none;
     width: auto;
     align-items: center;
@@ -1122,24 +1122,24 @@
     gap: 4px;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-header-time,
-  .admin-main-content .admin-shell-content > .admin-panel-header .user-badge,
-  .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-label,
-  .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger > svg:last-child,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button span,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link span {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-header-time,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .user-badge,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .theme-toggle-label,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .language-switcher-trigger > svg:last-child,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-refresh-button span,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-return-link span {
     display: none;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-language-switcher {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-language-switcher {
     display: inline-flex;
     gap: 4px;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .theme-toggle-trigger,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .language-switcher-trigger,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-refresh-button,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-return-link {
     min-height: 32px;
     height: 32px;
     min-width: 32px;
@@ -1148,7 +1148,7 @@
     border-radius: 9px;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-refresh-button {
     min-width: 32px;
     align-self: auto;
   }
@@ -1221,13 +1221,13 @@
     border-radius: 9px;
   }
 
-  .app-header .admin-return-link span,
-  .panel-header .admin-return-link span {
+  .app-header:not(.admin-panel-header--stacked-actions) .admin-return-link span,
+  .panel-header:not(.admin-panel-header--stacked-actions) .admin-return-link span {
     display: none;
   }
 
-  .app-header .admin-return-link,
-  .panel-header .admin-return-link {
+  .app-header:not(.admin-panel-header--stacked-actions) .admin-return-link,
+  .panel-header:not(.admin-panel-header--stacked-actions) .admin-return-link {
     min-height: 32px;
     height: 32px;
     min-width: 32px;
@@ -1305,10 +1305,10 @@
     display: none;
   }
 
-  .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link {
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .theme-toggle-trigger,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .language-switcher-trigger,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-panel-refresh-button,
+  .admin-main-content .admin-shell-content > .admin-panel-header:not(.admin-panel-header--stacked-actions) .admin-return-link {
     min-width: 30px;
     min-height: 30px;
     height: 30px;

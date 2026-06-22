@@ -1025,6 +1025,7 @@ body.not-found-page-body,
 .admin-compact-intro-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   min-width: 0;
 }
 

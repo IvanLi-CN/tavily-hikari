@@ -50,10 +50,14 @@ impl KeyStore {
                 end_at,
             )
             .await?;
+        let unique_ip_top = self
+            .fetch_user_unique_ip_ranking_rows(start_at, end_at)
+            .await?;
 
         Ok(UserRankingWindow {
             primary_success_top,
             business_credits_top,
+            unique_ip_top,
         })
     }
 
@@ -118,6 +122,51 @@ impl KeyStore {
         }
         rows.truncate(20);
         Ok(rows)
+    }
+
+    async fn fetch_user_unique_ip_ranking_rows(
+        &self,
+        start_at: i64,
+        end_at: i64,
+    ) -> Result<Vec<UserRankingRow>, ProxyError> {
+        if end_at <= start_at {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT request_user_id AS user_id, COUNT(DISTINCT client_ip) AS total
+            FROM request_logs INDEXED BY idx_request_logs_user_ip_time
+            WHERE visibility = ?
+              AND created_at >= ?
+              AND created_at < ?
+              AND request_user_id IS NOT NULL
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY request_user_id
+            HAVING total > 0
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(start_at)
+        .bind(end_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let totals = rows.into_iter().collect::<HashMap<_, _>>();
+        let mut ranking_rows = self.fetch_user_ranking_identities(&totals).await?;
+        ranking_rows.sort_by(|left, right| {
+            right
+                .value
+                .cmp(&left.value)
+                .then_with(|| left.user.user_id.cmp(&right.user.user_id))
+        });
+
+        for (index, row) in ranking_rows.iter_mut().enumerate() {
+            row.rank = (index + 1) as i64;
+        }
+        ranking_rows.truncate(20);
+        Ok(ranking_rows)
     }
 
     async fn fetch_user_ranking_rollup_totals(

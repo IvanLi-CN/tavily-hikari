@@ -62,6 +62,7 @@ const ICON_SOURCES = [
     ['mdi:trash-can-outline', 'trash-can-outline'],
     ['mdi:trash-outline', 'trash-can-outline'],
     ['mdi:tray-arrow-down', 'tray-arrow-down'],
+    ['mdi:trophy-outline', 'trophy-outline'],
     ['mdi:tune', 'tune'],
     ['mdi:tune-variant', 'tune-variant'],
     ['mdi:view-dashboard-outline', 'view-dashboard-outline'],

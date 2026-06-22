@@ -85,6 +85,7 @@ struct UserRankingRowView {
 struct UserRankingWindowView {
     primary_success_top: Vec<UserRankingRowView>,
     business_credits_top: Vec<UserRankingRowView>,
+    unique_ip_top: Vec<UserRankingRowView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +228,11 @@ fn build_user_ranking_window_view(
             .collect(),
         business_credits_top: window
             .business_credits_top
+            .into_iter()
+            .map(|row| build_user_ranking_row_view(row, cfg))
+            .collect(),
+        unique_ip_top: window
+            .unique_ip_top
             .into_iter()
             .map(|row| build_user_ranking_row_view(row, cfg))
             .collect(),

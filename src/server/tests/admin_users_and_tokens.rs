@@ -3238,6 +3238,47 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("insert ranking auth logs");
         }
 
+        for (user_id, client_ip, created_at) in [
+            (&alice.user_id, "198.51.100.10", recent),
+            (&alice.user_id, "198.51.100.10", recent + 5),
+            (&alice.user_id, "198.51.100.11", week_recent),
+            (&alice.user_id, "198.51.100.12", month_recent),
+            (&bob.user_id, "203.0.113.20", recent + 1),
+            (&bob.user_id, "203.0.113.21", week_recent + 1),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    method,
+                    path,
+                    status_code,
+                    tavily_status_code,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    response_body,
+                    created_at,
+                    request_user_id,
+                    visibility,
+                    remote_addr,
+                    client_ip,
+                    client_ip_source,
+                    client_ip_trusted,
+                    ip_headers
+                ) VALUES (
+                    'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'HTTP | search', NULL, ?, ?, ?, NULL, ?, 'cf-connecting-ip', 1, NULL
+                )
+                "#,
+            )
+            .bind(created_at)
+            .bind(user_id)
+            .bind(tavily_hikari::REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(client_ip)
+            .execute(&pool)
+            .await
+            .expect("insert ranking request logs");
+        }
+
         proxy
             .rebuild_ha_recovery_rollups()
             .await
@@ -3300,6 +3341,18 @@ use super::upstream_support_and_manual_jobs::*;
                 .and_then(|value| value.as_i64()),
             Some(21)
         );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/uniqueIpTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last7d/uniqueIpTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
         let alice_primary_row = rankings_json
             .get("last24h")
             .and_then(|value| value.get("primarySuccessTop"))
@@ -3340,6 +3393,12 @@ use super::upstream_support_and_manual_jobs::*;
                 .pointer("/last30d/primarySuccessTop/0/user/userId")
                 .and_then(|value| value.as_str()),
             Some(expected_primary_top.0.as_str())
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/last30d/uniqueIpTop/0/value")
+                .and_then(|value| value.as_i64()),
+            Some(3)
         );
         assert_eq!(
             snapshot_json
