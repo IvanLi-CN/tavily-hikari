@@ -340,6 +340,21 @@ const LazyUserDetailTokenTable = lazy(async () =>
 
 const ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID = 'announcements-header-action-slot'
 
+function formatIso8601WithOffset(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absoluteOffsetMinutes = Math.abs(offsetMinutes)
+  const offsetHours = String(Math.floor(absoluteOffsetMinutes / 60)).padStart(2, '0')
+  const offsetRemainderMinutes = String(absoluteOffsetMinutes % 60).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainderMinutes}`
+}
+
 function AdminLazyBoundary({
   children,
   loadingLabel,
@@ -4405,7 +4420,7 @@ function AdminDashboard(): JSX.Element {
         return
       }
       if (target === 'alerts') {
-        navigateToPath(alertsPath())
+        navigateToPath(alertsPath({ view: 'groups' }))
         return
       }
       if (target === 'system-settings-ha') {
@@ -9967,7 +9982,7 @@ function AdminDashboard(): JSX.Element {
       }
     }
   })()
-  const alertsView = showAlerts ? getAlertsViewFromSearch(locationSearch) : 'events'
+  const alertsView = showAlerts ? getAlertsViewFromSearch(locationSearch) : 'groups'
   const alertTabsCopy = language === 'zh'
     ? { events: '事件记录', groups: '聚合告警' }
     : { events: 'Events', groups: 'Groups' }
@@ -9995,6 +10010,14 @@ function AdminDashboard(): JSX.Element {
       ariaLabel={moduleDesktopIntro.title}
     />
   )
+  const openDashboardRecentAlerts = useCallback(() => {
+    const now = new Date()
+    navigateToPath(alertsPath({
+      view: 'groups',
+      since: formatIso8601WithOffset(new Date(now.getTime() - 24 * 60 * 60 * 1000)),
+      until: formatIso8601WithOffset(now),
+    }))
+  }, [navigateToPath])
   const renderUsersSearchControls = (className?: string) => (
     <div style={{ display: 'grid', gap: 6 }}>
       <div className={['users-search-controls', className].filter(Boolean).join(' ')}>
@@ -10482,6 +10505,7 @@ function AdminDashboard(): JSX.Element {
           jobs={dashboardJobs}
           recentAlerts={dashboardRecentAlerts}
           onOpenModule={navigateModule}
+          onOpenRecentAlerts={openDashboardRecentAlerts}
           onOpenToken={navigateToken}
           onOpenKey={navigateKey}
         />

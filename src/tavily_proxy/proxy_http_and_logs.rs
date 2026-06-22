@@ -1813,6 +1813,7 @@ impl TavilyProxy {
         key_effect_code: Option<&str>,
         binding_effect_code: Option<&str>,
         selection_effect_code: Option<&str>,
+        request_user_id: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -1831,6 +1832,7 @@ impl TavilyProxy {
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                request_user_id,
                 auth_token_id,
                 key_id,
                 operational_class,
@@ -1846,29 +1848,34 @@ impl TavilyProxy {
     #[allow(clippy::too_many_arguments)]
     pub async fn request_logs_list(
         &self,
+        since: Option<i64>,
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
         binding_effect_code: Option<&str>,
         selection_effect_code: Option<&str>,
+        request_user_id: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
+        until: Option<i64>,
         cursor: Option<&RequestLogsCursor>,
         direction: RequestLogsCursorDirection,
         page_size: i64,
     ) -> Result<RequestLogsCursorPage, ProxyError> {
         let (_, retention_since) = self.request_logs_retention_window().await?;
-        let since = Some(retention_since);
+        let since = Some(since.unwrap_or(retention_since).max(retention_since));
         self.key_store
             .fetch_request_logs_cursor_page(
                 None,
                 since,
+                until,
                 request_kinds,
                 result_status,
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                request_user_id,
                 auth_token_id,
                 key_id,
                 operational_class,
@@ -1972,6 +1979,7 @@ impl TavilyProxy {
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                None,
                 auth_token_id,
                 None,
                 None,
@@ -2006,11 +2014,13 @@ impl TavilyProxy {
             .fetch_request_logs_cursor_page(
                 Some(key_id),
                 since,
+                None,
                 request_kinds,
                 result_status,
                 key_effect_code,
                 binding_effect_code,
                 selection_effect_code,
+                None,
                 auth_token_id,
                 None,
                 operational_class,

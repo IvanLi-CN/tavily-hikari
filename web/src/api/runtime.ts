@@ -201,6 +201,16 @@ export interface AlertSourceRef {
   id: string
 }
 
+export type AlertSemanticWindowKind = 'request_rate' | 'rolling_hour' | 'day' | 'month'
+
+export interface AlertSemanticWindow {
+  kind: AlertSemanticWindowKind
+  windowMinutes: number | null
+  windowStart: number | null
+  windowEnd: number | null
+  windowKey: string | null
+}
+
 export interface AlertEvent {
   id: string
   type: AlertType
@@ -222,6 +232,7 @@ export interface AlertEvent {
   reasonSummary: string | null
   reasonDetail: string | null
   source: AlertSourceRef
+  semanticWindow?: AlertSemanticWindow | null
 }
 
 export interface AlertGroup {
@@ -238,6 +249,16 @@ export interface AlertGroup {
   firstSeen: number
   lastSeen: number
   latestEvent: AlertEvent
+  groupingKind?: 'compat' | 'mother' | 'child'
+  semanticWindowKind?: AlertSemanticWindowKind | null
+  semanticWindowMinutes?: number | null
+  semanticWindowStart?: number | null
+  semanticWindowEnd?: number | null
+  semanticWindowKey?: string | null
+  childCount?: number
+  eventCount?: number
+  children?: AlertGroup[]
+  childEvents?: AlertEvent[]
 }
 
 export interface AlertTypeCount {
@@ -531,6 +552,20 @@ interface ServerAlertEvent {
   reasonSummary?: string | null
   reasonDetail?: string | null
   source: ServerAlertSourceRef
+  semanticWindow?: ServerAlertSemanticWindow | null
+  semantic_window?: ServerAlertSemanticWindow | null
+}
+
+interface ServerAlertSemanticWindow {
+  kind: AlertSemanticWindowKind
+  windowMinutes?: number | null
+  window_minutes?: number | null
+  windowStart?: number | null
+  window_start?: number | null
+  windowEnd?: number | null
+  window_end?: number | null
+  windowKey?: string | null
+  window_key?: string | null
 }
 
 interface ServerAlertGroup {
@@ -547,6 +582,25 @@ interface ServerAlertGroup {
   firstSeen: number
   lastSeen: number
   latestEvent: ServerAlertEvent
+  groupingKind?: 'compat' | 'mother' | 'child'
+  grouping_kind?: 'compat' | 'mother' | 'child'
+  semanticWindowKind?: AlertSemanticWindowKind | null
+  semantic_window_kind?: AlertSemanticWindowKind | null
+  semanticWindowMinutes?: number | null
+  semantic_window_minutes?: number | null
+  semanticWindowStart?: number | null
+  semantic_window_start?: number | null
+  semanticWindowEnd?: number | null
+  semantic_window_end?: number | null
+  semanticWindowKey?: string | null
+  semantic_window_key?: string | null
+  childCount?: number
+  child_count?: number
+  eventCount?: number
+  event_count?: number
+  children?: ServerAlertGroup[]
+  childEvents?: ServerAlertEvent[]
+  child_events?: ServerAlertEvent[]
 }
 
 interface ServerAlertsPage<T> {
@@ -646,6 +700,7 @@ export interface RequestLogsPageQuery {
   selectionEffect?: string
   operationalClass?: LogOperationalClass | 'all'
   includeBodies?: boolean
+  userId?: string
   tokenId?: string
   keyId?: string
   since?: number
@@ -754,6 +809,17 @@ function normalizeAlertSource(value: ServerAlertSourceRef): AlertSourceRef {
   }
 }
 
+function normalizeAlertSemanticWindow(value?: ServerAlertSemanticWindow | null): AlertSemanticWindow | null {
+  if (!value) return null
+  return {
+    kind: value.kind,
+    windowMinutes: value.windowMinutes ?? value.window_minutes ?? null,
+    windowStart: value.windowStart ?? value.window_start ?? null,
+    windowEnd: value.windowEnd ?? value.window_end ?? null,
+    windowKey: value.windowKey ?? value.window_key ?? null,
+  }
+}
+
 function normalizeAlertEvent(value: ServerAlertEvent): AlertEvent {
   return {
     id: value.id,
@@ -776,6 +842,7 @@ function normalizeAlertEvent(value: ServerAlertEvent): AlertEvent {
     reasonSummary: value.reasonSummary ?? null,
     reasonDetail: value.reasonDetail ?? null,
     source: normalizeAlertSource(value.source),
+    semanticWindow: normalizeAlertSemanticWindow(value.semanticWindow ?? value.semantic_window),
   }
 }
 
@@ -794,6 +861,16 @@ function normalizeAlertGroup(value: ServerAlertGroup): AlertGroup {
     firstSeen: value.firstSeen,
     lastSeen: value.lastSeen,
     latestEvent: normalizeAlertEvent(value.latestEvent),
+    groupingKind: value.groupingKind ?? value.grouping_kind ?? 'compat',
+    semanticWindowKind: value.semanticWindowKind ?? value.semantic_window_kind ?? null,
+    semanticWindowMinutes: value.semanticWindowMinutes ?? value.semantic_window_minutes ?? null,
+    semanticWindowStart: value.semanticWindowStart ?? value.semantic_window_start ?? null,
+    semanticWindowEnd: value.semanticWindowEnd ?? value.semantic_window_end ?? null,
+    semanticWindowKey: value.semanticWindowKey ?? value.semantic_window_key ?? null,
+    childCount: value.childCount ?? value.child_count ?? 0,
+    eventCount: value.eventCount ?? value.event_count ?? value.count ?? 0,
+    children: (value.children ?? []).map(normalizeAlertGroup),
+    childEvents: (value.childEvents ?? value.child_events ?? []).map(normalizeAlertEvent),
   }
 }
 
@@ -870,6 +947,7 @@ function appendRequestLogsPageFilters(
     selectionEffect,
     operationalClass,
     includeBodies,
+    userId,
     tokenId,
     keyId,
     since,
@@ -884,6 +962,7 @@ function appendRequestLogsPageFilters(
     | 'selectionEffect'
     | 'operationalClass'
     | 'includeBodies'
+    | 'userId'
     | 'tokenId'
     | 'keyId'
     | 'since'
@@ -901,6 +980,7 @@ function appendRequestLogsPageFilters(
   if (selectionEffect?.trim()) params.set('selection_effect', selectionEffect.trim())
   if (operationalClass && operationalClass !== 'all') params.set('operational_class', operationalClass)
   if (includeBodies) params.set('include_bodies', 'true')
+  if (userId?.trim()) params.set('request_user_id', userId.trim())
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
   if (keyId?.trim()) params.set('key_id', keyId.trim())
   if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))

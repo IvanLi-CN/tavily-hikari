@@ -23,7 +23,7 @@
   - `user_request_rate_limited`
   - `user_quota_exhausted`
 - 基于现有日志与维护记录派生告警读模型，支持共享筛选、分页、URL 状态同步，以及用户 / 令牌 / Key / 请求关联跳转。
-- 为 `/api/dashboard/overview` 增加最近 24 小时告警摘要，使仪表盘与告警中心默认口径一致，并支持一键进入同口径视图。
+- 为 `/api/dashboard/overview` 增加最近 24 小时告警摘要；仪表盘摘要固定 24h，CTA 显式进入同口径 `聚合告警` 时间切片，而直接打开告警中心默认展示 retention 内全部历史。
 - 为 Web UI 补齐 Storybook 稳定入口、页面/交互覆盖与视觉证据。
 
 ## Non-goals
@@ -86,19 +86,27 @@
   - `request_log_id`
   - token owner -> user
 
-## 聚合口径
+## 事件源与聚合口径
 
+- `事件记录` Tab 数据源固定为 `GET /api/alerts/events`，其读侧 projection 由现有 `auth_token_logs`、`request_logs`、`api_key_maintenance_records`、`user_token_bindings`、`users` 组合得出。
 - 聚合分组仅针对“当前筛选窗口内”的结果，无状态、无持久化，不引入 ack / resolve。
-- group key 固定为：
+- `upstream_rate_limited_429`、`upstream_usage_limit_432`、`upstream_key_blocked` 继续沿用兼容分组：
   - `alert_type`
   - 主体：`user` 优先，其次 `token`；Key 级告警固定使用 `key`
   - `request_kind_key`
-- `聚合告警` Tab 默认按 `lastSeen DESC` 排序，至少展示：
-  - `count`
-  - `firstSeen`
-  - `lastSeen`
-  - `latestEvent`
-  - 主体、Key、request kind、类型
+- `user_request_rate_limited` 与 `user_quota_exhausted` 改为母子语义聚合：
+  - 原始告警事件 -> 子窗口（触发限制的原时间窗口实例）-> 母区间（多个连续子窗口组成的连续受限范围）
+  - grouped 主表只展示 `母 -> 子` 两层；原始告警事件从子行的内联明细 / 抽屉入口查看
+  - `user_request_rate_limited`：
+    - 子窗口基于滚动 `5m` request-rate 语义
+    - 同一主体在一次原始 5 分钟窗口里的多条限流事件归入同一子窗口
+    - 相邻子窗口若空档不超过 `5m`，则继续归入同一母区间
+  - `user_quota_exhausted`：
+    - 子窗口基于原始 `hour | day | month` 语义
+    - `hour` 为滚动 60 分钟窗口，`day` 为本地自然日窗口，`month` 为 UTC 自然月窗口
+    - 同一原窗口实例内不再按 `request_kind` 拆分子窗口
+    - 连续窗口链再向上聚成母区间，不同窗口类型不混组
+- `聚合告警` Tab 默认按 `lastSeen DESC` 排序。母行至少展示主体、受限类型、连续区间、子窗口数、总命中次数、最新命中时间与最新摘要；展开后子行展示原时间窗口实例与原始告警入口。
 
 ## URL 与页面行为
 
@@ -116,8 +124,8 @@
   - `requestKinds=<request_kind_key>`（可重复）
   - `page=<n>`
 - 默认：
-  - `view=events`
-  - 时间窗口 = 最近 24 小时
+  - `view=groups`
+  - 未显式传 `since` / `until` 时返回 retention 内全部历史
   - 其它筛选为空
 - 事件 Tab 与聚合 Tab 共享同一组筛选。
 - 关联跳转：
@@ -157,6 +165,7 @@
   - `total`
   - `page`
   - `perPage`
+- 未显式传 `since` / `until` 时返回 retention 内全部历史。
 
 ### `GET /api/alerts/groups`
 
@@ -167,6 +176,17 @@
   - `total`
   - `page`
   - `perPage`
+  - `groupingKind`
+  - `semanticWindowKind`
+  - `semanticWindowMinutes`
+  - `semanticWindowStart`
+  - `semanticWindowEnd`
+  - `semanticWindowKey`
+  - `childCount`
+  - `eventCount`
+  - `children[]`
+  - `childEvents[]`
+- 未显式传 `since` / `until` 时返回 retention 内全部历史。
 
 ### `GET /api/dashboard/overview`
 
@@ -177,7 +197,7 @@
   - `countsByType`
   - `topGroups[]`
 - 默认口径固定为最近 24 小时。
-- `recentAlerts` 与 `/api/alerts/*` 默认 24 小时查询结果必须一致。
+- `recentAlerts` 不改变 `/api/alerts/*` direct-open 默认口径；仪表盘 CTA 需要显式携带 `24h + view=groups`。
 
 ## 展示约束
 
@@ -204,9 +224,11 @@
 - `upstream_usage_limit_432` 必须在查询时把历史与新增 Tavily 432 事件从 `user_quota_exhausted` 中重新归类出来。
 - `user_quota_exhausted` 仅保留给真实本地业务额度耗尽。
 - 事件记录与聚合告警可在同一组筛选下切换，并保持 URL 状态同步。
-- 聚合分组符合“告警类型 + 主体（user 优先，否则 token；key 级告警用 key）+ request kind”的口径。
+- `事件记录` 继续保持 raw alerts 列表与现有排序逻辑，数据源不变。
+- `user_request_rate_limited` 与 `user_quota_exhausted` 的 grouped 口径符合“母区间 -> 子窗口”的语义，不再按 `request_kind` 作为主拆分键。
+- `request_kind` 若需要展示，仅作为子窗口明细或原始事件属性出现。
 - 关联跳转可用：用户 / 令牌 / Key 进入详情页，请求进入当前页抽屉。
-- `/admin/dashboard` 新增最近 24 小时告警摘要，并与 `/admin/alerts` 默认 24h 视图口径一致。
+- `/admin/dashboard` 新增最近 24 小时告警摘要；CTA 可直接进入同口径 grouped 视图，而 `/admin/alerts` direct-open 默认展示全部历史。
 - 后端验证至少包含：
   - `cargo test`
   - `cargo clippy -- -D warnings`
@@ -214,7 +236,7 @@
   - `cd web && bun test`
   - `cd web && bun run build`
   - `cd web && bun run build-storybook`
-- Storybook 与浏览器实页都能复核 `/admin/dashboard` 与 `/admin/alerts` 的新展示面。
+- 浏览器实页可复核 `/admin/dashboard` 与 `/admin/alerts` 的新展示面；owner-facing 视觉证据以真实页面视口为准。
 
 ## 实现里程碑
 
@@ -232,17 +254,17 @@
 
 ## Visual Evidence
 
-- Storybook 受控渲染：
-  - `admin-components-alertscenter--events-default`：事件记录默认视图直接展示 `upstream_usage_limit_432`，并保留全宽共享筛选、默认可见的用户 / 令牌 / Key 筛选、关联跳转与请求详情入口。
+- Web demo 真实页面视口：
+  - `/admin/alerts?demo=1&view=groups`：direct-open 默认进入 `聚合告警`，`用户请求限流` 以 `母 -> 子 -> 原始事件明细` 两层半结构展示，子窗口不再按 `request_kind` 拆主结构。
 
-    ![告警中心 Storybook 受控渲染](assets/alerts-center-story.png)
+    ![告警中心母子语义聚合 Web Demo 真实页面视口](assets/alerts-center-web-demo-viewport-trimmed.png)
 
-  - `admin-components-dashboardoverview--zh-dark-evidence`：24h 告警摘要卡展示 5 类计数，其中明确包含 `上游用量限制 432`、`用户额度耗尽` 与进入告警中心 CTA。
+  - 子窗口“调用记录”使用右侧滑出抽屉承载筛选后的调用列表；抽屉本体贴合浏览器视口上下边缘，不再复用旧的底部抽屉高度约束。
 
-    ![仪表盘 24h 告警摘要 Storybook 受控渲染](assets/dashboard-alerts-summary-story.png)
+    ![告警中心子窗口调用记录右侧抽屉真实页面视口](assets/alerts-center-child-drawer-viewport.png)
 
 - Chrome DevTools 复核：
-  - Storybook canvas 复核确认告警中心默认筛选区不再渲染“更多筛选”折叠入口，用户 / 令牌 / Key 筛选默认可见。
+  - Web demo 页面复核确认告警中心默认选中 `聚合告警`，并可在同一表格内展开母组、子窗口与原始告警明细。
 
 ## 101 验证 Runbook
 

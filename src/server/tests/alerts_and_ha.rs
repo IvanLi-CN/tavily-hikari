@@ -6,7 +6,7 @@ use super::upstream_support_and_manual_jobs::*;
 const TEST_SECS_PER_DAY: i64 = 24 * 60 * 60;
 
 #[tokio::test]
-async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
+async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
     let db_path = temp_db_path("alerts-dashboard-default-window");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -335,7 +335,7 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
     let events_body: serde_json::Value = events_resp.json().await.expect("alert events json");
     assert_eq!(
         events_body.get("total").and_then(|value| value.as_i64()),
-        Some(5)
+        Some(6)
     );
     assert_eq!(
         events_body
@@ -450,6 +450,121 @@ async fn alerts_endpoints_and_dashboard_recent_alerts_share_default_window() {
             .pointer("/items/0/type")
             .and_then(|value| value.as_str()),
         Some("upstream_key_blocked")
+    );
+    let semantic_rate_group = groups_body
+        .get("items")
+        .and_then(|value| value.as_array())
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("type").and_then(|value| value.as_str())
+                    == Some("user_request_rate_limited")
+            })
+        })
+        .expect("semantic request-rate mother group");
+    assert_eq!(
+        semantic_rate_group
+            .get("groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("mother")
+    );
+    assert_eq!(
+        semantic_rate_group
+            .get("childCount")
+            .and_then(|value| value.as_i64()),
+        Some(1)
+    );
+    assert_eq!(
+        semantic_rate_group
+            .pointer("/children/0/groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("child")
+    );
+    assert_eq!(
+        semantic_rate_group
+            .pointer("/children/0/childEvents/0/type")
+            .and_then(|value| value.as_str()),
+        Some("user_request_rate_limited")
+    );
+
+    let paged_groups_resp = client
+        .get(format!(
+            "http://{}/api/alerts/groups?page=2&per_page=1",
+            admin_addr
+        ))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("paged alert groups request");
+    assert_eq!(paged_groups_resp.status(), reqwest::StatusCode::OK);
+    let paged_groups_body: serde_json::Value =
+        paged_groups_resp.json().await.expect("paged alert groups json");
+    assert_eq!(
+        paged_groups_body.get("total").and_then(|value| value.as_i64()),
+        Some(5)
+    );
+    assert_eq!(
+        paged_groups_body
+            .pointer("/items/0/type")
+            .and_then(|value| value.as_str()),
+        Some("upstream_usage_limit_432")
+    );
+    assert_eq!(
+        paged_groups_body
+            .pointer("/items/0/groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("compat")
+    );
+    assert_eq!(
+        paged_groups_body
+            .pointer("/items/0/children")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let semantic_page_resp = client
+        .get(format!(
+            "http://{}/api/alerts/groups?page=4&per_page=1",
+            admin_addr
+        ))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("semantic paged alert groups request");
+    assert_eq!(semantic_page_resp.status(), reqwest::StatusCode::OK);
+    let semantic_page_body: serde_json::Value = semantic_page_resp
+        .json()
+        .await
+        .expect("semantic paged alert groups json");
+    assert_eq!(
+        semantic_page_body
+            .pointer("/items/0/type")
+            .and_then(|value| value.as_str()),
+        Some("user_request_rate_limited")
+    );
+    assert_eq!(
+        semantic_page_body
+            .pointer("/items/0/groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("mother")
+    );
+    assert_eq!(
+        semantic_page_body
+            .pointer("/items/0/childCount")
+            .and_then(|value| value.as_i64()),
+        Some(1)
+    );
+    assert_eq!(
+        semantic_page_body
+            .pointer("/items/0/children/0/groupingKind")
+            .and_then(|value| value.as_str()),
+        Some("child")
+    );
+    assert_eq!(
+        semantic_page_body
+            .pointer("/items/0/children/0/childEvents/0/type")
+            .and_then(|value| value.as_str()),
+        Some("user_request_rate_limited")
     );
 
     let overview_resp = client

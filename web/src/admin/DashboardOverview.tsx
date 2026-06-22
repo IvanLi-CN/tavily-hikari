@@ -160,6 +160,7 @@ interface DashboardOverviewProps {
   jobs: JobLogView[]
   recentAlerts: RecentAlertsSummary
   onOpenModule: (module: AdminModuleId) => void
+  onOpenRecentAlerts: () => void
   onOpenToken: (id: string) => void
   onOpenKey: (id: string) => void
   initialChartMode?: DashboardHourlyChartMode
@@ -478,6 +479,7 @@ export default function DashboardOverview({
   jobs,
   recentAlerts,
   onOpenModule,
+  onOpenRecentAlerts,
   onOpenToken,
   onOpenKey,
   initialChartMode,
@@ -877,7 +879,7 @@ export default function DashboardOverview({
             </div>
           ) : null}
           <div className="dashboard-priority-actions">
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => onOpenModule('alerts')}>
+            <button type="button" className="btn btn-outline btn-sm" onClick={onOpenRecentAlerts}>
               {strings.recentAlertsOpen}
             </button>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onOpenModule('tokens')}>
@@ -1039,7 +1041,7 @@ export default function DashboardOverview({
             <h2>{strings.recentAlertsTitle}</h2>
             <p className="panel-description">{strings.recentAlertsDescription}</p>
           </div>
-          <button type="button" className="btn btn-outline" onClick={() => onOpenModule('alerts')}>
+          <button type="button" className="btn btn-outline" onClick={onOpenRecentAlerts}>
             {strings.recentAlertsOpen}
           </button>
         </div>

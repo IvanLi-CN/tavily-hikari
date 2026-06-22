@@ -1167,6 +1167,34 @@ pub struct AlertSourceRef {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertSemanticWindowKind {
+    RequestRate,
+    RollingHour,
+    Day,
+    Month,
+}
+
+impl AlertSemanticWindowKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RequestRate => "request_rate",
+            Self::RollingHour => "rolling_hour",
+            Self::Day => "day",
+            Self::Month => "month",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertSemanticWindow {
+    pub kind: AlertSemanticWindowKind,
+    pub window_minutes: Option<i64>,
+    pub window_start: Option<i64>,
+    pub window_end: Option<i64>,
+    pub window_key: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertEventRecord {
     pub id: String,
@@ -1189,6 +1217,7 @@ pub struct AlertEventRecord {
     pub reason_summary: Option<String>,
     pub reason_detail: Option<String>,
     pub source: AlertSourceRef,
+    pub semantic_window: Option<AlertSemanticWindow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1214,6 +1243,16 @@ pub struct AlertGroupRecord {
     pub first_seen: i64,
     pub last_seen: i64,
     pub latest_event: AlertEventRecord,
+    pub grouping_kind: String,
+    pub semantic_window_kind: Option<String>,
+    pub semantic_window_minutes: Option<i64>,
+    pub semantic_window_start: Option<i64>,
+    pub semantic_window_end: Option<i64>,
+    pub semantic_window_key: Option<String>,
+    pub child_count: i64,
+    pub event_count: i64,
+    pub children: Vec<AlertGroupRecord>,
+    pub child_events: Vec<AlertEventRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

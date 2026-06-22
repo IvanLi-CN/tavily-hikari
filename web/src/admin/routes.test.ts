@@ -4,9 +4,11 @@ import {
   announcementCreatePath,
   announcementEditPath,
   announcementListPath,
+  alertsPath,
   buildAdminKeysPath,
   buildAdminUsersOverviewPath,
   buildAdminUsersPath,
+  getAlertsViewFromSearch,
   isAdminUsersOverviewSortField,
   isSameAdminRoute,
   keyDetailPath,
@@ -83,6 +85,10 @@ describe('admin user tag routes', () => {
   })
 
   it('builds stable user tag management paths', () => {
+    expect(alertsPath()).toBe('/admin/alerts?view=groups')
+    expect(alertsPath({ view: 'events' })).toBe('/admin/alerts?view=events')
+    expect(getAlertsViewFromSearch('')).toBe('groups')
+    expect(getAlertsViewFromSearch('?view=events')).toBe('events')
     expect(userTagsPath()).toBe('/admin/users/tags')
     expect(userUsagePath()).toBe('/admin/users/usage')
     expect(unboundTokenUsagePath()).toBe('/admin/tokens/leaderboard')

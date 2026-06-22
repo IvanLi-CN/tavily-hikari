@@ -31,6 +31,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.UserDetailCompact).toMatchObject({})
     expect(adminPageStories.UserDetailSingleTokenGuard).toMatchObject({})
     expect(adminPageStories.UserDetailBusinessCalls1h).toMatchObject({})
+    expect('Alerts' in adminPageStories).toBe(false)
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {

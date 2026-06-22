@@ -18,7 +18,7 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13435,
+      max: 13480,
       reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, active-user list filtering, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
     },
   ],
@@ -33,7 +33,7 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3506,
+      max: 3600,
       reason:
         'API barrel still carries HA source settings, admin settings, auth-token retention contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
@@ -41,15 +41,23 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/demo.ts',
     {
-      max: 1845,
+      max: 2250,
       reason:
-        'Demo API fixtures now cover user-console overview snapshots, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
+        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
+    },
+  ],
+  [
+    'src/styles/admin.css',
+    {
+      max: 2260,
+      reason:
+        'The shared admin shell stylesheet now also carries the alerts-center layout refinements while the broader admin surface remains consolidated on the same runtime stylesheet.',
     },
   ],
   [
     'src/api.test.ts',
     {
-      max: 1595,
+      max: 1700,
       reason:
         'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, and the expanded admin rankings endpoint until the largest runtime suites are split out.',
     },

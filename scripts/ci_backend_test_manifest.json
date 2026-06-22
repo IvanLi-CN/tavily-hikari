@@ -88,6 +88,7 @@
         "ha::tests::",
         "models::client_ip_tests::",
         "runtime_logging::tests::",
+        "store::alert_grouping_tests::",
         "store::tests::",
         "tavily_proxy::tests::",
         "tests::request_kind_and_core::parse_",

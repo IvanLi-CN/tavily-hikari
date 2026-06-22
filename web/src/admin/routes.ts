@@ -258,7 +258,7 @@ function normalizeAlertRequestKinds(values?: string[] | null): string[] {
 
 export function alertsPath(context?: AdminAlertsPathContext): string {
   const params = new URLSearchParams()
-  params.set('view', context?.view === 'groups' ? 'groups' : 'events')
+  params.set('view', context?.view === 'events' ? 'events' : 'groups')
   if (context?.type?.trim()) params.set('type', context.type.trim())
   if (context?.since?.trim()) params.set('since', context.since.trim())
   if (context?.until?.trim()) params.set('until', context.until.trim())
@@ -276,7 +276,7 @@ export function alertsPath(context?: AdminAlertsPathContext): string {
 }
 
 export function getAlertsViewFromSearch(search: string): AlertsCenterView {
-  return new URLSearchParams(search).get('view') === 'groups' ? 'groups' : 'events'
+  return new URLSearchParams(search).get('view') === 'events' ? 'events' : 'groups'
 }
 
 export function getAlertTypeFromSearch(search: string): string | null {

@@ -5,6 +5,11 @@ const MAX_RUST_SOURCE_LINES: usize = 3050;
 const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
+        "src/models.rs",
+        3070,
+        "Alert center semantic mother-child grouping expanded the shared alert/event DTO contracts while the broader model extraction remains pending.",
+    ),
+    (
         "src/server/tests/admin_users_and_tokens.rs",
         3440,
         "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage, rankings six-tab/IP payload assertions, and adjacent admin slices converge before a broader extraction pass.",
@@ -16,8 +21,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/key_store_request_logs_and_dashboard.rs",
-        3120,
-        "Request-log persistence and dashboard rollup logic remain co-located in the legacy store module while retention controls and user-centered rollup query paths converge before a follow-up split.",
+        3160,
+        "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending.",
     ),
 ];
 

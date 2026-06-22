@@ -302,7 +302,7 @@ export const EN: TranslationShape = {
         tokenCoverageTruncated: 'Token risk scope is truncated. Open Tokens for complete coverage.',
         tokenCoverageError: 'Token risk scope could not be loaded. Open Tokens to retry.',
         recentAlertsTitle: 'Recent alerts',
-        recentAlertsDescription: '24-hour alert summary aligned with the Alerts center default window.',
+        recentAlertsDescription: 'Summarizes the last 24 hours and deep-links into the grouped Alerts view with the same time slice.',
         recentAlertsEvents: 'Events',
         recentAlertsGroups: 'Groups',
         recentAlertsEmpty: 'No alert activity in the last 24 hours.',

@@ -5,10 +5,6 @@ import { SELECT_STORY } from 'storybook/internal/core-events'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type {
-  AlertCatalog,
-  AlertEvent,
-  AlertGroup,
-  AlertsPage,
   Announcement,
   ApiKeyBulkAction,
   AdminUnboundTokenUsageSortField,
@@ -30,7 +26,6 @@ import type {
   RequestRate,
   RequestRateScope,
   RequestLog,
-  RequestLogBodies,
   RequestLogsCatalog,
   RequestLogsListPage,
   SortDirection,
@@ -1018,243 +1013,10 @@ const MOCK_JOBS: JobLogView[] = [
   },
 ]
 
-const STORY_ALERT_EVENTS_PAGE: AlertsPage<AlertEvent> = {
-  page: 1,
-  perPage: 20,
-  total: 5,
-  items: [
-    {
-      id: 'alert_evt_401',
-      type: 'upstream_usage_limit_432',
-      title: '上游用量限制 432',
-      summary: 'Alice Wang 的 Tavily Search 请求被 Tavily usage limit 432 拒绝。',
-      occurredAt: now - 180,
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_001', label: 'tok_req_001' },
-      key: { id: 'MZli', label: 'MZli' },
-      request: { id: 3001, method: 'POST', path: '/api/tavily/search', query: null },
-      requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
-      failureKind: null,
-      resultStatus: 'quota_exhausted',
-      errorMessage: "This request exceeds your plan's set usage limit.",
-      reasonCode: null,
-      reasonSummary: null,
-      reasonDetail: null,
-      source: { kind: 'auth_token_log', id: 'log_3001' },
-    },
-    {
-      id: 'alert_evt_402',
-      type: 'upstream_rate_limited_429',
-      title: '上游返回 429',
-      summary: '上游对 tok_req_001 的 Tavily Search 请求返回 429。',
-      occurredAt: now - 520,
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_001', label: 'tok_req_001' },
-      key: { id: 'MZli', label: 'MZli' },
-      request: { id: 3002, method: 'POST', path: '/api/tavily/search', query: 'max_results=5' },
-      requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
-      failureKind: 'upstream_rate_limited_429',
-      resultStatus: 'error',
-      errorMessage: 'HTTP 429 from upstream',
-      reasonCode: null,
-      reasonSummary: null,
-      reasonDetail: null,
-      source: { kind: 'auth_token_log', id: 'log_3002' },
-    },
-    {
-      id: 'alert_evt_403',
-      type: 'user_request_rate_limited',
-      title: '用户请求限流',
-      summary: 'Bob Chen 的 MCP Search 请求命中本地 request-rate 限流。',
-      occurredAt: now - 1_440,
-      subjectKind: 'user',
-      subjectId: 'usr_bob',
-      subjectLabel: 'Bob Chen',
-      user: { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
-      token: { id: 'tok_req_002', label: 'tok_req_002' },
-      key: null,
-      request: { id: 3003, method: 'POST', path: '/mcp', query: null },
-      requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'POST /mcp' },
-      failureKind: null,
-      resultStatus: 'quota_exhausted',
-      errorMessage: 'hourly any-request limit exceeded',
-      reasonCode: null,
-      reasonSummary: null,
-      reasonDetail: null,
-      source: { kind: 'auth_token_log', id: 'log_3003' },
-    },
-    {
-      id: 'alert_evt_404',
-      type: 'upstream_key_blocked',
-      title: '上游 Key 封禁',
-      summary: 'MZli 因上游账号停用被隔离。',
-      occurredAt: now - 2_040,
-      subjectKind: 'key',
-      subjectId: 'MZli',
-      subjectLabel: 'MZli',
-      user: null,
-      token: null,
-      key: { id: 'MZli', label: 'MZli' },
-      request: null,
-      requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'POST /mcp' },
-      failureKind: null,
-      resultStatus: null,
-      errorMessage: null,
-      reasonCode: 'account_deactivated',
-      reasonSummary: 'Upstream account deactivated',
-      reasonDetail: 'The upstream provider returned a deactivated-account response and the key entered quarantine.',
-      source: { kind: 'api_key_maintenance_record', id: 'maint_3004' },
-    },
-    {
-      id: 'alert_evt_405',
-      type: 'user_quota_exhausted',
-      title: '用户额度耗尽',
-      summary: 'Alice Wang 的 Tavily Extract 请求触发本地业务额度上限。',
-      occurredAt: now - 2_280,
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_003', label: 'tok_req_003' },
-      key: null,
-      request: { id: 3004, method: 'POST', path: '/api/tavily/extract', query: null },
-      requestKind: { key: 'tavily_extract', label: 'Tavily Extract', detail: 'POST /api/tavily/extract' },
-      failureKind: null,
-      resultStatus: 'quota_exhausted',
-      errorMessage: 'monthly business quota exhausted',
-      reasonCode: null,
-      reasonSummary: null,
-      reasonDetail: null,
-      source: { kind: 'auth_token_log', id: 'log_3004' },
-    },
-  ],
-}
-
-const STORY_ALERT_GROUPS_PAGE: AlertsPage<AlertGroup> = {
-  page: 1,
-  perPage: 20,
-  total: 4,
-  items: [
-    {
-      id: 'group:upstream_usage_limit_432:user:usr_alice:tavily_search',
-      type: 'upstream_usage_limit_432',
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_001', label: 'tok_req_001' },
-      key: { id: 'MZli', label: 'MZli' },
-      requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
-      count: 2,
-      firstSeen: now - 3_600,
-      lastSeen: now - 180,
-      latestEvent: STORY_ALERT_EVENTS_PAGE.items[0],
-    },
-    {
-      id: 'group:upstream_rate_limited_429:user:usr_alice:tavily_search',
-      type: 'upstream_rate_limited_429',
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_001', label: 'tok_req_001' },
-      key: { id: 'MZli', label: 'MZli' },
-      requestKind: { key: 'tavily_search', label: 'Tavily Search', detail: 'POST /api/tavily/search' },
-      count: 1,
-      firstSeen: now - 520,
-      lastSeen: now - 520,
-      latestEvent: STORY_ALERT_EVENTS_PAGE.items[1],
-    },
-    {
-      id: 'group:upstream_key_blocked:key:MZli:mcp_search',
-      type: 'upstream_key_blocked',
-      subjectKind: 'key',
-      subjectId: 'MZli',
-      subjectLabel: 'MZli',
-      user: null,
-      token: null,
-      key: { id: 'MZli', label: 'MZli' },
-      requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'POST /mcp' },
-      count: 1,
-      firstSeen: now - 2_040,
-      lastSeen: now - 2_040,
-      latestEvent: STORY_ALERT_EVENTS_PAGE.items[3],
-    },
-    {
-      id: 'group:user_quota_exhausted:user:usr_alice:tavily_extract',
-      type: 'user_quota_exhausted',
-      subjectKind: 'user',
-      subjectId: 'usr_alice',
-      subjectLabel: 'Alice Wang',
-      user: { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
-      token: { id: 'tok_req_003', label: 'tok_req_003' },
-      key: null,
-      requestKind: { key: 'tavily_extract', label: 'Tavily Extract', detail: 'POST /api/tavily/extract' },
-      count: 1,
-      firstSeen: now - 2_280,
-      lastSeen: now - 2_280,
-      latestEvent: STORY_ALERT_EVENTS_PAGE.items[4],
-    },
-  ],
-}
-
-const STORY_ALERT_CATALOG: AlertCatalog = {
-  retentionDays: 30,
-  types: [
-    { value: 'upstream_rate_limited_429', count: 1 },
-    { value: 'upstream_usage_limit_432', count: 1 },
-    { value: 'upstream_key_blocked', count: 1 },
-    { value: 'user_request_rate_limited', count: 1 },
-    { value: 'user_quota_exhausted', count: 1 },
-  ],
-  requestKindOptions: [
-    { key: 'tavily_search', label: 'Tavily Search', protocol_group: 'api', billing_group: 'billable', count: 2 },
-    { key: 'tavily_extract', label: 'Tavily Extract', protocol_group: 'api', billing_group: 'billable', count: 1 },
-    { key: 'mcp_search', label: 'MCP Search', protocol_group: 'mcp', billing_group: 'billable', count: 2 },
-  ],
-  users: [
-    { value: 'usr_alice', label: 'Alice Wang', count: 3 },
-    { value: 'usr_bob', label: 'Bob Chen', count: 1 },
-  ],
-  tokens: [
-    { value: 'tok_req_001', label: 'tok_req_001', count: 2 },
-    { value: 'tok_req_002', label: 'tok_req_002', count: 1 },
-    { value: 'tok_req_003', label: 'tok_req_003', count: 1 },
-  ],
-  keys: [
-    { value: 'MZli', label: 'MZli', count: 2 },
-  ],
-}
-
-const STORY_ALERT_REQUEST_BODIES: Record<number, RequestLogBodies> = {
-  3001: {
-    request_body: JSON.stringify({ query: 'quota exhausted', max_results: 5 }, null, 2),
-    response_body: JSON.stringify({ error: 'quota exhausted' }, null, 2),
-  },
-  3002: {
-    request_body: JSON.stringify({ query: '429', max_results: 5 }, null, 2),
-    response_body: JSON.stringify({ status: 429, detail: 'rate limit' }, null, 2),
-  },
-  3003: {
-    request_body: JSON.stringify({ method: 'tools/call', params: { name: 'tavily_search' } }, null, 2),
-    response_body: JSON.stringify({ error: 'hourly any-request limit exceeded' }, null, 2),
-  },
-  3004: {
-    request_body: JSON.stringify({ urls: ['https://example.com/plan'], extract_depth: 'advanced' }, null, 2),
-    response_body: JSON.stringify({ error: 'monthly business quota exhausted' }, null, 2),
-  },
-}
-
 const STORY_RECENT_ALERTS: RecentAlertsSummary = {
   windowHours: 24,
-  totalEvents: STORY_ALERT_EVENTS_PAGE.total,
-  groupedCount: STORY_ALERT_GROUPS_PAGE.total,
+  totalEvents: 5,
+  groupedCount: 4,
   countsByType: [
     { type: 'upstream_rate_limited_429', count: 1 },
     { type: 'upstream_usage_limit_432', count: 1 },
@@ -1262,7 +1024,7 @@ const STORY_RECENT_ALERTS: RecentAlertsSummary = {
     { type: 'user_request_rate_limited', count: 1 },
     { type: 'user_quota_exhausted', count: 1 },
   ],
-  topGroups: STORY_ALERT_GROUPS_PAGE.items,
+  topGroups: [],
 }
 
 const DEFAULT_LINUXDO_TAG_DELTA = {
@@ -3724,6 +3486,7 @@ export function DashboardPageCanvas({ beforeIntro }: { beforeIntro?: ReactNode }
         jobs={MOCK_JOBS}
         recentAlerts={STORY_RECENT_ALERTS}
         onOpenModule={() => {}}
+        onOpenRecentAlerts={() => {}}
         onOpenToken={() => {}}
         onOpenKey={() => {}}
       />
@@ -6447,31 +6210,6 @@ function UserDetailPageCanvas({
   )
 }
 
-function AlertsPageCanvas(): JSX.Element {
-  const admin = useTranslate().admin
-  const { language } = useLanguage()
-  const [search, setSearch] = useState(() => '?view=events')
-  return (
-    <AdminPageFrame activeModule="alerts">
-      <AlertsCenter
-        language={language}
-        search={search}
-        refreshToken={0}
-        onNavigate={setSearch}
-        onOpenUser={() => {}}
-        onOpenToken={() => {}}
-        onOpenKey={() => {}}
-        formatTime={formatTimestamp}
-        formatTimeDetail={formatTimestamp}
-        catalogLoader={async () => STORY_ALERT_CATALOG}
-        eventsLoader={async () => STORY_ALERT_EVENTS_PAGE}
-        groupsLoader={async () => STORY_ALERT_GROUPS_PAGE}
-        requestLoader={async (requestId) => STORY_ALERT_REQUEST_BODIES[requestId] ?? { request_body: null, response_body: null }}
-      />
-    </AdminPageFrame>
-  )
-}
-
 const STORY_ANNOUNCEMENTS: Announcement[] = [
   {
     id: 'ann-story-modal',
@@ -7559,13 +7297,6 @@ export const UserDetailIpUsage: Story = {
         throw new Error(`Expected the user detail IP story to include ${expected}.`)
       }
     }
-  },
-}
-
-export const Alerts: Story = {
-  render: () => <AlertsPageCanvas />,
-  parameters: {
-    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }
 

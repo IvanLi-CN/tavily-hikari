@@ -572,10 +572,12 @@ struct CursorLogsQuery {
     key_effect: Option<String>,
     binding_effect: Option<String>,
     selection_effect: Option<String>,
+    request_user_id: Option<String>,
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
     since: Option<i64>,
+    until: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -904,6 +906,7 @@ struct AlertEventView {
     reason_summary: Option<String>,
     reason_detail: Option<String>,
     source: AlertSourceView,
+    semantic_window: Option<AlertSemanticWindowView>,
 }
 
 impl From<tavily_hikari::AlertEventRecord> for AlertEventView {
@@ -929,6 +932,29 @@ impl From<tavily_hikari::AlertEventRecord> for AlertEventView {
             reason_summary: value.reason_summary,
             reason_detail: value.reason_detail,
             source: AlertSourceView::from(value.source),
+            semantic_window: value.semantic_window.map(AlertSemanticWindowView::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertSemanticWindowView {
+    kind: String,
+    window_minutes: Option<i64>,
+    window_start: Option<i64>,
+    window_end: Option<i64>,
+    window_key: Option<String>,
+}
+
+impl From<tavily_hikari::AlertSemanticWindow> for AlertSemanticWindowView {
+    fn from(value: tavily_hikari::AlertSemanticWindow) -> Self {
+        Self {
+            kind: value.kind.as_str().to_string(),
+            window_minutes: value.window_minutes,
+            window_start: value.window_start,
+            window_end: value.window_end,
+            window_key: value.window_key,
         }
     }
 }
@@ -950,6 +976,16 @@ struct AlertGroupView {
     first_seen: i64,
     last_seen: i64,
     latest_event: AlertEventView,
+    grouping_kind: String,
+    semantic_window_kind: Option<String>,
+    semantic_window_minutes: Option<i64>,
+    semantic_window_start: Option<i64>,
+    semantic_window_end: Option<i64>,
+    semantic_window_key: Option<String>,
+    child_count: i64,
+    event_count: i64,
+    children: Vec<AlertGroupView>,
+    child_events: Vec<AlertEventView>,
 }
 
 impl From<tavily_hikari::AlertGroupRecord> for AlertGroupView {
@@ -968,6 +1004,20 @@ impl From<tavily_hikari::AlertGroupRecord> for AlertGroupView {
             first_seen: value.first_seen,
             last_seen: value.last_seen,
             latest_event: AlertEventView::from(value.latest_event),
+            grouping_kind: value.grouping_kind,
+            semantic_window_kind: value.semantic_window_kind,
+            semantic_window_minutes: value.semantic_window_minutes,
+            semantic_window_start: value.semantic_window_start,
+            semantic_window_end: value.semantic_window_end,
+            semantic_window_key: value.semantic_window_key,
+            child_count: value.child_count,
+            event_count: value.event_count,
+            children: value.children.into_iter().map(AlertGroupView::from).collect(),
+            child_events: value
+                .child_events
+                .into_iter()
+                .map(AlertEventView::from)
+                .collect(),
         }
     }
 }
