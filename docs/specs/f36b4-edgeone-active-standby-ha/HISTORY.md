@@ -124,6 +124,13 @@ the 101 primary look like it had a leak whenever billing baseline export repeate
 - HA sync state persistence also needs an explicit per-channel flush boundary. Coalescing watermark
   and node-state writes until the end of the whole sync loop is not safe once each channel owns its
   own long-running apply transaction.
+- Standby validation on `hinet-lam` exposed another HA-sync semantic gap after the memory fix:
+  runtime events can still arrive in a channel-local order that is valid on the active node but
+  temporarily invalid on the standby because the required parent row has not been re-established in
+  that channel window yet. The accepted behavior is not to keep retrying the same event batch
+  forever. Instead, a standby channel that fails events apply with SQLite foreign-key errors must
+  reset its own `baseline_applied` / `applied_seq` watermarks and recover on the next interval via
+  a fresh baseline pull.
 - Readiness semantics split accordingly: active/full-business roles still treat xray readiness as a
   health requirement, while standby/recovery roles do not.
 - Shared-testbox proof is now part of the accepted contract rather than an ad hoc smoke check. For

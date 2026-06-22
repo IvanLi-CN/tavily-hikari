@@ -49,6 +49,9 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - `control` 只同步控制面小状态，事件流写入 `ha_outbox`，保留窗口为 72 小时；超过窗口必须重新拉取该 channel 的状态基线。
 - `billing` 只同步 `billing_ledger` 完整账本行历史，事件流写入 `ha_billing_outbox`，不再通过 `ha_outbox` 复制账本。
 - `runtime` 只同步 failover 后若不恢复就会影响基础 API/MCP 正确性的最小运行态，事件流写入 `ha_runtime_outbox`。允许的最小运行态包括 quota 当前状态与 bucket、token/account 月额度、MCP 当前会话必要状态、forward proxy 亲和与节点 override、以及主/次 API key affinity。
+- 如果 standby 在某个 channel 的 events apply 中命中 SQLite `FOREIGN KEY constraint failed`，
+  该 channel 必须被视为“增量窗口不再自洽”，立即把 `baseline_applied` 与 `applied_seq`
+  水位重置回 `0`，并要求下一轮重新拉取该 channel baseline；不得无限重试同一批坏 events。
 - `control`/`billing`/`runtime` 三个 channel 的 baseline 和 events 都禁止包含 `request_logs`、`auth_token_logs`、请求体、响应体、path/query/IP/header 明细、dashboard recent logs、OAuth login 临时态、Web session、forward proxy runtime/attempts/hourly weight、维护审计、调度队列、请求限流快照和节点本地观测噪声。
 - `HA_MODE=single` 下不得产生新的 HA 事件写入；仅保留 schema 兼容、显式 one-shot 维护工具与后续切回 `active_standby` 的启动能力。
 - `standby` / `recovery` 启动时不得预热 forward-proxy runtime 或共享 `xray` 子进程；只有

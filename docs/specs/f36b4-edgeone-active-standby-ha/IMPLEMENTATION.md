@@ -33,6 +33,11 @@
   events apply steps, so the next channel's `BEGIN IMMEDIATE` transaction does not race with a
   coalesced state write and reintroduce `database is locked` / nested-transaction failures during
   large baseline catch-up.
+- HA standby sync now treats SQLite foreign-key failures during per-channel events apply as a
+  broken incremental window for that channel instead of a fatal whole-loop error. When a channel
+  hits `FOREIGN KEY constraint failed`, the standby resets that channel's `baseline_applied` and
+  `applied_seq` watermarks to `0`, flushes the reset immediately, and lets the next sync interval
+  recover through a fresh baseline pull rather than retrying the same invalid event batch forever.
 - HA node-state persistence now deduplicates identical coalesced snapshots before writing SQLite.
   This keeps the standby-side EdgeOne authority refresh loop from rewriting the same `ha_node_state`
   row every five seconds while the node stays fenced, which in turn removes the repeated slow

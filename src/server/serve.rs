@@ -591,6 +591,34 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
     });
 }
 
+fn is_ha_retryable_foreign_key_gap(
+    err: &(dyn std::error::Error + 'static),
+) -> bool {
+    let mut current = Some(err);
+    while let Some(source) = current {
+        if let Some(ProxyError::Database(sqlx::Error::Database(db_err))) =
+            source.downcast_ref::<ProxyError>()
+        {
+            if db_err
+                .code()
+                .as_deref()
+                .is_some_and(|code| code == "787" || code == "SQLITE_CONSTRAINT_FOREIGNKEY")
+            {
+                return true;
+            }
+            if db_err
+                .message()
+                .to_ascii_lowercase()
+                .contains("foreign key constraint failed")
+            {
+                return true;
+            }
+        }
+        current = source.source();
+    }
+    false
+}
+
 async fn run_ha_standby_sync_once(
     state: &Arc<AppState>,
     client: &reqwest::Client,
@@ -724,7 +752,36 @@ async fn run_ha_standby_sync_once(
             )
             .into());
         }
-        let result = apply_ha_events_response_stream(&state.proxy, channel, response).await?;
+        let result = match apply_ha_events_response_stream(&state.proxy, channel, response).await {
+            Ok(result) => result,
+            Err(err) if is_ha_retryable_foreign_key_gap(&*err) => {
+                let reset_detail =
+                    "foreign key gap during events apply; baseline required";
+                state
+                    .proxy
+                    .persist_ha_sync_watermark(
+                        &seq_key,
+                        Some(source_url),
+                        Some(&local_node_id),
+                        0,
+                        Some(reset_detail),
+                    )
+                    .await?;
+                state
+                    .proxy
+                    .persist_ha_sync_watermark(
+                        &baseline_key,
+                        Some(source_url),
+                        Some(&local_node_id),
+                        0,
+                        Some(reset_detail),
+                    )
+                    .await?;
+                state.proxy.flush_ha_state_writes().await?;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         if result.high_watermark > next_seq {
             next_seq = result.high_watermark;
             state

@@ -451,6 +451,7 @@
         "server::tests::linuxdo_oauth_and_admin_keys::manual_",
         "server::tests::upstream_support_and_manual_jobs::manual_",
         "server::tests::alerts_and_ha::ha_",
+        "server::tests::alerts_and_ha_sync_recovery::ha_",
         "server::tests::alerts_and_ha_node_state::redundant_",
         "server::tests::alerts_and_ha_startup_roles::standby_",
         "server::tests::alerts_and_ha_event_exports::ha_",
