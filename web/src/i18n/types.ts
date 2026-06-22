@@ -307,20 +307,28 @@ export interface AdminTranslationsShape {
     loading: string
     error: string
     empty: string
+    tabsLabel: string
     windows: {
       last24h: string
       last7d: string
       last30d: string
     }
+    metrics: {
+      primarySuccess: string
+      businessCredits: string
+      uniqueIp: string
+    }
     primarySuccessTitle: string
     businessCreditsTitle: string
+    uniqueIpTitle: string
     primarySuccessDescription: string
     businessCreditsDescription: string
+    uniqueIpDescription: string
     userFallback: string
     refreshEvery: string
     lastUpdated: string
+    awaitingFirstSnapshot: string
     retry: string
-    windowSelector: string
     statusLive: string
     statusConnecting: string
     statusDegraded: string

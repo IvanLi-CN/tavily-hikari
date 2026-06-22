@@ -20,6 +20,10 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.KeysSelectionRetainedAfterSync).toMatchObject({})
     expect(adminPageStories.KeysTemporaryIsolationFilter).toMatchObject({})
     expect(adminPageStories.Requests).toMatchObject({})
+    expect(adminPageStories.Rankings).toMatchObject({})
+    expect(adminPageStories.RankingsEmpty).toMatchObject({})
+    expect(adminPageStories.RankingsLoading).toMatchObject({})
+    expect(adminPageStories.RankingsMobile).toMatchObject({})
     expect(adminPageStories.RequestsResultFilterOpen).toMatchObject({})
     expect(adminPageStories.KeyDetailRecentRequests).toMatchObject({})
     expect(adminPageStories.TokenDetailRecentRequests).toMatchObject({})
@@ -98,6 +102,86 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).not.toContain('10 页')
   })
 
+  it('renders the rankings route story with the active nav icon and rankings shell', () => {
+    const renderStory = adminPageStories.Rankings.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('用户排行')
+    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-ranking-chart-shell')
+    expect(markup).toContain('每 10 秒自动刷新')
+    expect(markup).toContain('最后更新')
+    expect(markup).toContain('实时连接正常')
+    expect(markup.match(/<h2[^>]*>用户排行<\/h2>/g) ?? []).toHaveLength(0)
+  })
+
+  it('renders the rankings dimension route story inside the same three-metric rankings shell', () => {
+    const renderStory = adminPageStories.RankingsDimension.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('用户排行')
+    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('主要调用')
+    expect(markup).toContain('积分')
+    expect(markup).toContain('IP')
+    expect(markup).toContain('按时间窗统计唯一 IP 数')
+    expect(markup).toContain('实时连接正常')
+    expect(markup.match(/role="radio"/g)?.length ?? 0).toBe(6)
+    expect(markup).not.toContain('<h3>最近 24 小时</h3>')
+    expect(markup).not.toContain('<h3>最近 7 天</h3>')
+    expect(markup).not.toContain('<h3>最近 30 天</h3>')
+  })
+
+  it('renders the rankings empty route story with the redesigned empty stage', () => {
+    const renderStory = adminPageStories.RankingsEmpty.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('admin-ranking-empty-state')
+    expect(markup).toContain('当前分组暂无可展示的用户数据。')
+  })
+
+  it('renders the rankings loading route story with live header copy and card-only skeletons', () => {
+    const renderStory = adminPageStories.RankingsLoading.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('admin-ranking-skeleton-stage')
+    expect(markup).toContain('最近 24 小时')
+    expect(markup).toContain('等待首帧快照')
+    expect(markup).toContain('正在连接实时更新')
+  })
+
   it('renders the jobs story with manual trigger controls and source labels', () => {
     const renderStory = adminPageStories.Jobs.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
@@ -152,7 +236,7 @@ describe('AdminPages Storybook proofs', () => {
     const panelAccessTokenHeadings = markup.match(/<h2[^>]*>Access Tokens<\/h2>/g) ?? []
     const tokenToolbars = markup.match(/admin-module-toolbar admin-module-toolbar--tokens/g) ?? []
 
-    expect(accessTokenHeadings).toHaveLength(2)
+    expect(accessTokenHeadings).toHaveLength(1)
     expect(panelAccessTokenHeadings).toHaveLength(0)
     expect(tokenToolbars).toHaveLength(2)
     expect(markup).toContain('View unbound token usage')

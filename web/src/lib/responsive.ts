@@ -12,6 +12,11 @@ function readViewportMode(): ViewportMode {
   return window.matchMedia(`(max-width: ${VIEWPORT_SMALL_MAX}px)`).matches ? 'small' : 'normal'
 }
 
+function readAdminStackedLayout(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia(`(max-width: ${ADMIN_SIDEBAR_STACK_MAX}px)`).matches
+}
+
 export function useViewportMode(): ViewportMode {
   const [mode, setMode] = useState<ViewportMode>(() => readViewportMode())
 
@@ -24,6 +29,20 @@ export function useViewportMode(): ViewportMode {
   }, [])
 
   return mode
+}
+
+export function useAdminStackedLayout(): boolean {
+  const [isStacked, setIsStacked] = useState<boolean>(() => readAdminStackedLayout())
+
+  useEffect(() => {
+    const media = window.matchMedia(`(max-width: ${ADMIN_SIDEBAR_STACK_MAX}px)`)
+    const apply = () => setIsStacked(media.matches)
+    apply()
+    media.addEventListener('change', apply)
+    return () => media.removeEventListener('change', apply)
+  }, [])
+
+  return isStacked
 }
 
 function readContentMode<T extends HTMLElement>(ref: RefObject<T>, maxWidth: number): ContentMode {

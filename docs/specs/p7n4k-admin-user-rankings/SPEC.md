@@ -4,8 +4,8 @@
 
 ## Summary
 
-- 新增独立 `/admin/rankings` 管理台模块，固定展示最近 `24h / 7d / 30d` 三个滚动时间窗。
-- 每个时间窗固定两张榜：`成功主要调用` 与 `积分消耗`，各取 `TOP20` 用户，按 `value desc, userId asc` 排序。
+- 新增独立 `/admin/rankings` 管理台模块，以 `24h / 7d / 30d / 主要调用 / 积分 / IP` 六个单选 tab 组织排行视图。
+- 每个时间窗固定三张榜：`成功主要调用`、`积分消耗` 与 `IP`，各取 `TOP20` 用户，按 `value desc, userId asc` 排序。
 - 新增 admin-only HTTP 快照 `GET /api/users/rankings` 与独立 SSE `GET /api/users/rankings/events`；SSE 建连首帧即发 `snapshot`，之后每 10 秒推送。
 - 排行身份统一返回 `userId / displayName / username / avatarUrl`；前端展示优先级为 `displayName > username > userId`，优先显示真实头像，缺失或加载失败时回退为稳定 mock 头像。
 - 后端通过用户级 rollup、partial bucket 补扫与 10 秒 snapshot cache/singleflight 组合支撑滚动窗口，不回退到“每 10 秒扫 30 天原始日志”。
@@ -37,6 +37,7 @@
 - 每个时间窗固定：
   - `primarySuccessTop`
   - `businessCreditsTop`
+  - `uniqueIpTop`
 - 每个排行 row 固定：
   - `rank`
   - `value`
@@ -65,16 +66,24 @@
 - `businessCreditsTop`
   - 仅统计本地 `business_credits` 已记账消耗
   - 不引入上游实扣排行
+- `uniqueIpTop`
+  - 统计当前滚动时间窗内用户的唯一 `client_ip` 数
+  - 仅统计 `request_logs.visibility=visible` 的记录
+  - 过滤空 `client_ip`
+  - 不要求请求成功，也不要求请求计费
 - 用户入榜条件
   - 当前窗口该指标 `value > 0`
   - 不过滤当前 `active` 状态
 
 ## UI Constraints
 
-- 页面主视图固定为“时间窗切换 + 当前时间窗双榜”，默认选中最近 `24h`。
-- 桌面端当前时间窗内部双栏并排展示两张榜；移动端改为纵向堆叠，不允许横向滚动。
-- 图表使用成熟第三方图表库 `Apache ECharts + echarts-for-react` 的标准横向柱状图配置，不允许业务侧自绘 canvas 装饰。
-- 每张榜作为单一 chart surface 渲染；身份信息不再拆成图外独立列表。
+- 页面主视图固定为六个全局单选 tab：`24h / 7d / 30d / 主要调用 / 积分 / IP`，默认选中最近 `24h`。
+- 内容区始终保持同一组三张榜，顺序固定为 `主要调用 → 积分 → IP`，不再切换成另一种三卡布局。
+- 选中时间范围 tab 时，三张榜切换到对应时间窗数据；选中排行维度 tab 时，仅切换全局单选态，内容区仍保持当前时间窗下的三张榜结构。
+- 六个 tab 在视觉上作为单行 tab strip 呈现；移动端允许自然换行，但任一时刻只允许一个 active tab。
+- 桌面端内容区三栏并排展示三张榜；移动端改为纵向堆叠，不允许横向滚动。
+- 图表使用成熟第三方图表库 `Apache ECharts + echarts-for-react`；允许在 ECharts 内通过 `custom series` 统一渲染身份区、柱体与数值，但不允许再叠加图外 DOM 假标签层。
+- 每张榜作为单一 chart surface 渲染；身份信息不再拆成图外独立列表，也不允许出现“图表 + 覆盖层”双实现。
 - 每条 bar 仅展示一份用户身份：`rank + avatar + 单一显示名`，不再重复展示 secondary identity。
 - 页面需显式展示实时连接状态、最后更新时间与断连后的重试入口；SSE 退化时允许继续展示最近一次成功快照。
 - 为避免核心排行信息只存在于 canvas，页面必须补充同榜单同内容的语义 DOM fallback，供辅助技术读取。
@@ -84,47 +93,42 @@
 
 - `/admin/rankings` 作为独立 admin 模块出现在导航中，不影响 `/admin/users/usage` 与 `/admin/tokens/leaderboard`。
 - HTTP 与 SSE `snapshot` payload 结构完全一致。
-- 24h / 7d / 30d 三个窗口都返回 `primarySuccessTop` 与 `businessCreditsTop` 两榜，且每榜最多 20 行。
+- 24h / 7d / 30d 三个窗口都返回 `primarySuccessTop`、`businessCreditsTop` 与 `uniqueIpTop` 三榜，且每榜最多 20 行。
 - 排序固定为 `value desc, userId asc`。
 - SSE 建连后立即收到首帧，并每 10 秒持续推送。
-- Storybook 与真实 admin 页面都能证明“时间窗切换 + 双榜”的桌面双栏与移动端堆叠布局稳定。
+- `web demo` 页面能证明“6 个单选 tab + 三榜内容区”的桌面三栏、移动端堆叠与暗色桌面布局稳定。
 
 ## Visual Evidence
 
-- Storybook: `Admin/Pages/UserRankings`
-- Story variants:
-  - `Default`
-  - `EmptyState`
-  - `ErrorState`
-  - `ConnectingState`
-  - `Mobile`
-- Live page:
-  - `/admin/rankings`
+- owner-facing route: `/admin/rankings?demo=true`
+- Storybook stories continue to cover internal states and route contracts, but final owner-facing screenshots are unified to `web demo`.
 
-### Storybook Default
+### Web Demo Desktop With Data
 
-- source_type: storybook_canvas
-  story_id_or_title: `Admin/Pages/UserRankings`
-  state: `Default desktop`
-  evidence_note: 默认 24h 视图展示 ECharts 单窗口双榜、TOP20 条形排行、真实头像优先与稳定 mock avatar fallback。
+- source_type: ui_demo
+  route: `/admin/rankings?demo=true`
+  state: `Desktop light theme with populated rankings`
+  evidence_note: 桌面端默认浅色主题，展示六个单选 tab、页头右侧状态簇，以及同一时间窗下的三张排行榜。
   PR: include
 
-![Storybook default desktop](./assets/storybook-rankings-desktop.png)
+![Web demo desktop](./assets/web-demo-rankings-desktop.png)
 
-### Storybook Mobile
+### Web Demo Mobile With Data
 
-- source_type: storybook_canvas
-  story_id_or_title: `Admin/Pages/UserRankings`
-  state: `Mobile`
-  evidence_note: 移动端保持时间窗切换与双榜纵向堆叠，不出现横向滚动。
+- source_type: ui_demo
+  route: `/admin/rankings?demo=true`
+  state: `Mobile with populated rankings`
+  evidence_note: 移动端 `web demo` 展示堆叠式三榜、顶部状态块与侧栏 utility 已收纳进菜单，不再出现内容串位。
   PR: include
 
-![Storybook mobile](./assets/storybook-rankings-mobile.png)
+![Web demo mobile](./assets/web-demo-rankings-mobile.png)
 
-### Live Page Route
+### Web Demo Desktop Dark
 
-- current local capture uses empty live data, so it proves the final layout, status row, empty state, and mobile stacking rather than populated bars.
+- source_type: ui_demo
+  route: `/admin/rankings?demo=true`
+  state: `Desktop dark theme with populated rankings`
+  evidence_note: 暗色桌面版沿用同一布局与三榜结构，只切换共享主题 token，不再存在第二套排行壳子。
+  PR: include
 
-![Live rankings desktop](./assets/live-rankings-desktop.png)
-
-![Live rankings mobile](./assets/live-rankings-mobile.png)
+![Web demo dark desktop](./assets/web-demo-rankings-dark-desktop.png)

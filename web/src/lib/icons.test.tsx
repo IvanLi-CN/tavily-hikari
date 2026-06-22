@@ -62,6 +62,7 @@ const REQUIRED_RUNTIME_ICON_NAMES = [
   'mdi:trash-can-outline',
   'mdi:trash-outline',
   'mdi:tray-arrow-down',
+  'mdi:trophy-outline',
   'mdi:tune',
   'mdi:tune-variant',
   'mdi:view-dashboard-outline',

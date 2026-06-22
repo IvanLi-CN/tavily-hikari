@@ -486,9 +486,9 @@ describe('admin user tag api helpers', () => {
       Promise.resolve(new Response(JSON.stringify({
         generatedAt: 1_781_763_600,
         refreshIntervalSecs: 10,
-        last24h: { primarySuccessTop: [], businessCreditsTop: [] },
-        last7d: { primarySuccessTop: [], businessCreditsTop: [] },
-        last30d: { primarySuccessTop: [], businessCreditsTop: [] },
+        last24h: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
+        last7d: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
+        last30d: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -501,6 +501,7 @@ describe('admin user tag api helpers', () => {
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/users/rankings')
     expect(snapshot.refreshIntervalSecs).toBe(10)
     expect(snapshot.last24h.primarySuccessTop).toEqual([])
+    expect(snapshot.last24h.uniqueIpTop).toEqual([])
   })
 
   it('formats the admin user usage series URL with the selected series key', async () => {

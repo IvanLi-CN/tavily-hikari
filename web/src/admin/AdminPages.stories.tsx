@@ -42,6 +42,11 @@ export const DashboardDark = {
 }
 export const DashboardStacked = { ...RuntimeStories.DashboardStacked }
 export const Tokens = { ...RuntimeStories.Tokens }
+export const Rankings = { ...RuntimeStories.Rankings }
+export const RankingsDimension = { ...RuntimeStories.RankingsDimension }
+export const RankingsEmpty = { ...RuntimeStories.RankingsEmpty }
+export const RankingsLoading = { ...RuntimeStories.RankingsLoading }
+export const RankingsMobile = { ...RuntimeStories.RankingsMobile }
 export const Keys = { ...RuntimeStories.Keys }
 export const KeysSelected = { ...RuntimeStories.KeysSelected }
 export const KeysSyncUsageInProgress = { ...RuntimeStories.KeysSyncUsageInProgress }

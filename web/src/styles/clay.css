@@ -182,12 +182,7 @@
 
   @media (max-width: 520px) {
     html[data-demo-mode='true'] body::after {
-      content: 'Demo';
-      right: 10px;
-      bottom: 10px;
-      padding: 8px 10px;
-      font-size: 0.68rem;
-      letter-spacing: 0.04em;
+      display: none;
     }
   }
 
@@ -1888,32 +1883,48 @@
   }
 
   .admin-sidebar.is-stacked {
-    height: auto;
+    top: 0;
+    height: 0;
     min-height: 0;
-    padding: 8px;
-    border: 1px solid hsl(var(--border) / 0.62);
-    border-radius: 1.5rem;
-    background: hsl(var(--card) / 0.92);
-    box-shadow: 0 1px 0 hsl(var(--foreground) / 0.04), 0 12px 22px -28px hsl(var(--foreground) / 0.26);
+    overflow: visible;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
   }
 
   .admin-sidebar.is-stacked .admin-sidebar-topbar {
-    position: static;
-    min-height: 44px;
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: auto;
+    min-height: 0;
+    height: auto;
     padding: 0;
-    justify-content: space-between;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    justify-content: flex-end;
+    gap: 0;
   }
 
   .admin-sidebar.is-stacked .admin-sidebar-brand {
-    display: inline-flex;
+    display: none;
   }
 
   .admin-sidebar.is-stacked .admin-menu-toggle {
     width: auto;
-    min-width: 44px;
-    min-height: 44px;
-    height: 44px;
-    padding: 0 12px;
+    min-width: 32px;
+    min-height: 32px;
+    height: 32px;
+    padding: 0 7px;
+    background: hsl(var(--background) / 0.78);
+  }
+
+  .admin-sidebar.is-stacked .admin-menu-toggle span {
+    display: none;
   }
 
   .admin-main-content button[role='switch'] {

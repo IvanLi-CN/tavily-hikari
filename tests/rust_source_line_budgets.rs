@@ -6,8 +6,8 @@ const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
         "src/server/tests/admin_users_and_tokens.rs",
-        3380,
-        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage and adjacent admin slices converge before a broader extraction pass.",
+        3440,
+        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage, rankings six-tab/IP payload assertions, and adjacent admin slices converge before a broader extraction pass.",
     ),
     (
         "src/tests/jobs_and_request_log_retention.rs",

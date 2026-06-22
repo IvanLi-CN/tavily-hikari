@@ -71,6 +71,7 @@ import { Badge } from '../../components/ui/badge'
 import { useLanguage, useTranslate, type AdminTranslations } from '../../i18n'
 import { KeyDetails } from '../../AdminDashboard'
 import { TokenDetailStoryCanvas } from '../../pages/TokenDetail.stories'
+import { useAdminStackedLayout } from '../../lib/responsive'
 import {
   buildRequestKindQuickFilterSelection,
   defaultTokenLogRequestKindQuickFilters,
@@ -86,6 +87,7 @@ import {
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from '../AdminShell'
 import AdminJobTriggerMenu from '../AdminJobTriggerMenu'
 import AlertsCenter from '../AlertsCenter'
+import AdminUserRankingsPage, { RankingsMeta } from '../AdminUserRankingsPage'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
 import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
 import { UserRechargeQuotaCalendar } from '../UserRechargeQuotaCalendar'
@@ -137,6 +139,7 @@ import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
 import AdminOverlayHost from '../AdminOverlayHost'
 import AnnouncementsModule from '../AnnouncementsModule'
 import { createStoryUserRechargeAudit } from './userRechargeFixtures'
+import { rankingsStoryEmptySnapshot, rankingsStorySnapshot } from '../rankingsStoryData'
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -3267,6 +3270,7 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
     { target: 'dashboard', label: strings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
     { target: 'user-usage', label: strings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'rankings', label: strings.nav.rankings, icon: <Icon icon="mdi:trophy-outline" width={18} height={18} /> },
     { target: 'tokens', label: strings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: strings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
@@ -3309,6 +3313,7 @@ export function AdminPageFrame({
   introOverride,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useTranslate().admin
+  const isStackedAdminLayout = useAdminStackedLayout()
   const headerActions = actions ?? introActions
   const intro = introOverride ?? (() => {
     switch (activeModule) {
@@ -3321,6 +3326,10 @@ export function AdminPageFrame({
         return {
           title: admin.tokens.title,
           description: admin.tokens.description,
+        }
+      case 'rankings':
+        return {
+          title: admin.rankings.title,
         }
       case 'keys':
         return {
@@ -3422,9 +3431,15 @@ export function AdminPageFrame({
 
             {beforeIntro}
 
-            <div className="admin-stacked-only">
-              {introOverride && headerActions ? (
-                <section className="surface app-header admin-usage-stacked-intro"><div className="admin-usage-stacked-intro-main"><h1>{intro.title}</h1><p className="admin-compact-intro-description">{intro.description}</p></div><div className="admin-usage-stacked-intro-actions">{headerActions}</div></section>
+            {isStackedAdminLayout ? (
+              introOverride && headerActions ? (
+                <section className="surface app-header admin-usage-stacked-intro">
+                  <div className="admin-usage-stacked-intro-main">
+                    <h1>{intro.title}</h1>
+                    {intro.description ? <p className="admin-compact-intro-description">{intro.description}</p> : null}
+                  </div>
+                  <div className="admin-usage-stacked-intro-actions">{headerActions}</div>
+                </section>
               ) : (
                 <AdminPanelHeader
                   title={intro.title}
@@ -3440,11 +3455,10 @@ export function AdminPageFrame({
                   userConsoleHref="/console"
                   onRefresh={() => {}}
                 />
-              )}
-            </div>
-            <div className="admin-desktop-only">
+              )
+            ) : (
               <AdminCompactIntro title={intro.title} description={intro.description} actions={headerActions} />
-            </div>
+            )}
           </>
         )}
         {children}
@@ -3868,6 +3882,45 @@ function TokensPageCanvas(): JSX.Element {
           </div>
         </div>
       </section>
+    </AdminPageFrame>
+  )
+}
+
+function RankingsPageCanvas({
+  initialTab = 'last24h',
+  snapshot = rankingsStorySnapshot,
+  loading = false,
+  connectionState = 'live',
+}: {
+  initialTab?: React.ComponentProps<typeof AdminUserRankingsPage>['initialTab']
+  snapshot?: React.ComponentProps<typeof AdminUserRankingsPage>['snapshot']
+  loading?: React.ComponentProps<typeof AdminUserRankingsPage>['loading']
+  connectionState?: React.ComponentProps<typeof AdminUserRankingsPage>['connectionState']
+} = {}): JSX.Element {
+  const { admin } = useTranslate()
+  const { language } = useLanguage()
+  const rankingsHeaderMeta = (
+    <RankingsMeta
+      strings={admin.rankings}
+      snapshot={snapshot}
+      connectionState={connectionState}
+      language={language}
+    />
+  )
+
+  return (
+    <AdminPageFrame activeModule="rankings" actions={rankingsHeaderMeta}>
+      <AdminUserRankingsPage
+        strings={admin.rankings}
+        language={language}
+        snapshot={snapshot}
+        loading={loading}
+        error={null}
+        connectionState={connectionState}
+        showHeader={false}
+        onRetry={() => {}}
+        initialTab={initialTab}
+      />
     </AdminPageFrame>
   )
 }
@@ -6614,6 +6667,69 @@ export const Tokens: Story = {
   render: () => <TokensPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const Rankings: Story = {
+  render: () => <RankingsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
+    if (!activeNavItem) {
+      throw new Error('Expected rankings page to mark the matching nav item as active.')
+    }
+    if (!activeNavItem.textContent?.includes('用户排行')) {
+      throw new Error('Expected active nav item to remain on rankings.')
+    }
+    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    if (!navIcon) {
+      throw new Error('Expected rankings nav item to render its bundled SVG icon.')
+    }
+  },
+}
+
+export const RankingsDimension: Story = {
+  render: () => <RankingsPageCanvas initialTab="uniqueIp" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
+    if (!activeNavItem) {
+      throw new Error('Expected rankings dimension story to keep the rankings nav item active.')
+    }
+    if (!activeNavItem.textContent?.includes('用户排行')) {
+      throw new Error('Expected active nav item to remain on rankings for the dimension story.')
+    }
+    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    if (!navIcon) {
+      throw new Error('Expected rankings dimension story to render its bundled SVG nav icon.')
+    }
+  },
+}
+
+export const RankingsEmpty: Story = {
+  render: () => <RankingsPageCanvas snapshot={rankingsStoryEmptySnapshot} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const RankingsLoading: Story = {
+  render: () => <RankingsPageCanvas snapshot={null} loading connectionState="connecting" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const RankingsMobile: Story = {
+  render: () => <RankingsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }
 
