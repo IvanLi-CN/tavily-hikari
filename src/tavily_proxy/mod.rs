@@ -235,6 +235,7 @@ struct PendingHaSyncWatermark {
 struct HaStateCoalescerState {
     pending_node_state: Option<PendingHaNodeState>,
     pending_sync_watermarks: HashMap<String, PendingHaSyncWatermark>,
+    last_flushed_node_state: Option<PendingHaNodeState>,
     flush_deadline: Option<Instant>,
     flushing: bool,
     shutdown: bool,
@@ -261,6 +262,32 @@ impl HaStateCoalescer {
     const MAX_PENDING_KEYS: usize = 100;
     const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
+    fn same_node_state(left: &PendingHaNodeState, right: &PendingHaNodeState) -> bool {
+        left.node_id == right.node_id
+            && left.role == right.role
+            && left.edgeone_origin == right.edgeone_origin
+            && left.message == right.message
+            && left.source_settings.as_ref().map(|settings| {
+                (
+                    settings.source_kind,
+                    settings.direct_origin_scheme,
+                    settings.direct_origin_host.as_deref(),
+                    settings.direct_origin_port,
+                    settings.origin_group_id.as_deref(),
+                    settings.target.as_deref(),
+                )
+            }) == right.source_settings.as_ref().map(|settings| {
+                (
+                    settings.source_kind,
+                    settings.direct_origin_scheme,
+                    settings.direct_origin_host.as_deref(),
+                    settings.direct_origin_port,
+                    settings.origin_group_id.as_deref(),
+                    settings.target.as_deref(),
+                )
+            })
+    }
+
     fn pending_key_count(state: &HaStateCoalescerState) -> usize {
         usize::from(state.pending_node_state.is_some()) + state.pending_sync_watermarks.len()
     }
@@ -279,15 +306,30 @@ impl HaStateCoalescer {
         source_settings: Option<&HaSourceSettingsView>,
         message: Option<&str>,
     ) {
+        let next_state = PendingHaNodeState {
+            node_id: node_id.to_string(),
+            role,
+            edgeone_origin: edgeone_origin.map(str::to_string),
+            source_settings: source_settings.cloned(),
+            message: message.map(str::to_string),
+        };
         {
             let mut state = self.state.lock().await;
-            state.pending_node_state = Some(PendingHaNodeState {
-                node_id: node_id.to_string(),
-                role,
-                edgeone_origin: edgeone_origin.map(str::to_string),
-                source_settings: source_settings.cloned(),
-                message: message.map(str::to_string),
-            });
+            if state
+                .last_flushed_node_state
+                .as_ref()
+                .is_some_and(|flushed| Self::same_node_state(flushed, &next_state))
+            {
+                return;
+            }
+            if state
+                .pending_node_state
+                .as_ref()
+                .is_some_and(|pending| Self::same_node_state(pending, &next_state))
+            {
+                return;
+            }
+            state.pending_node_state = Some(next_state);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();

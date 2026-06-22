@@ -128,6 +128,11 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
   metadata at safe boundaries between channel apply sessions. Waiting until the end of the whole
   sync loop can make the next channel's `BEGIN IMMEDIATE` collide with delayed bookkeeping writes
   and surface as nested-transaction or `database is locked` failures.
+- If an authority/health refresh loop keeps re-emitting the exact same HA node-state payload, do
+  not let that become a periodic SQLite rewrite. In this service, a standby node whose EdgeOne
+  authority stayed unchanged could still enqueue the same `ha_node_state` row every five seconds;
+  deduplicating identical coalesced snapshots removed both the slow-statement noise and an
+  otherwise needless writer competitor.
 - Keep `HA_MODE=single` truly silent for HA replication writes. Leaving replication triggers enabled
   on a single live node creates unbounded local-only backlog with no standby consumer.
 - Treat large retained HA event cleanup like request-log cleanup: bounded online GC for freshness,
