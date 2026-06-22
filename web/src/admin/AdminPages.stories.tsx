@@ -1,6 +1,7 @@
 import type { Meta } from '@storybook/react-vite'
 
 import * as HaStories from './storySupport/AdminPagesHaStories'
+import * as AlertsStories from './storySupport/AdminPagesAlertsStories'
 import * as RuntimeStories from './storySupport/AdminPagesStoryRuntime'
 
 const meta = {
@@ -55,6 +56,8 @@ export const KeysRegistrationFilters = { ...RuntimeStories.KeysRegistrationFilte
 export const KeysTemporaryIsolationFilter = { ...RuntimeStories.KeysTemporaryIsolationFilter }
 export const Requests = { ...RuntimeStories.Requests }
 export const RequestsResultFilterOpen = { ...RuntimeStories.RequestsResultFilterOpen }
+export const Alerts = { ...AlertsStories.Alerts }
+export const AlertsMobile = { ...AlertsStories.AlertsMobile }
 export const KeyDetailRecentRequests = { ...RuntimeStories.KeyDetailRecentRequests }
 export const TokenDetailRecentRequests = { ...RuntimeStories.TokenDetailRecentRequests }
 export const RequestsTokenDrawerDesktop = { ...RuntimeStories.RequestsTokenDrawerDesktop }

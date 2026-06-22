@@ -254,6 +254,10 @@
 
 ## Visual Evidence
 
+- Alerts 页面筛选区已统一到时间输入的控件语言：
+  - `请求类型`、`用户`、`令牌`、`Key`、`应用时间`、`清空筛选` 与 `datetime-local` 输入现在共享同一套高度、圆角、pressed surface、padding 与 focus ring。
+  - grouped 读侧已改为 SQLite 兼容写法，`/api/alerts/groups` 在 101 上不再依赖命名 `WINDOW` 语法。
+
 - Web demo 真实页面视口：
   - `/admin/alerts?demo=1&view=groups`：direct-open 默认进入 `聚合告警`，`用户请求限流` 以 `母 -> 子 -> 原始事件明细` 两层半结构展示，子窗口不再按 `request_kind` 拆主结构。
 
@@ -292,24 +296,31 @@
    ssh 192.168.31.11 'docker exec ai-tavily-hikari curl -fsS http://127.0.0.1:8787/health'
    ```
 
-4. 验证历史 432 告警已重分类：
+4. 验证 `/api/alerts/groups` 与 `/api/alerts/events` 都可读，且 grouped 查询不再报 SQLite 语法错误：
 
    ```bash
-   ssh 192.168.31.11 "docker exec ai-tavily-hikari curl -fsS 'http://127.0.0.1:8787/api/alerts/events?per_page=50&type=upstream_usage_limit_432' | jq '.items[] | select(.request.id == 972534 or .request.id == 971163 or .request.id == 956970) | {type, request: .request.id, key: .key.id, title}'"
+   ssh 192.168.31.11 "docker exec ai-tavily-hikari curl -fsS -H 'x-forward-user: admin' 'http://127.0.0.1:8787/api/alerts/events?page=1&per_page=20' | jq '.total'"
+   ssh 192.168.31.11 "docker exec ai-tavily-hikari curl -fsS -H 'x-forward-user: admin' 'http://127.0.0.1:8787/api/alerts/groups?page=1&per_page=20' | jq '.total'"
    ```
 
    期望：
-   - `type == "upstream_usage_limit_432"`
-   - `key.id` 已从 `request_logs.api_key_id` 回填
-   - 不再显示为 `user_quota_exhausted`
+   - 两个接口都返回 `200`
+   - `groups` 不再返回 `database error: (code: 1) near "(": syntax error`
+   - `groups.total` 能稳定返回非 0 的聚合结果
 
-5. 验证 dashboard recentAlerts 已包含新类型：
+5. 验证历史 432 告警已重分类：
+
+   ```bash
+   ssh 192.168.31.11 "docker exec ai-tavily-hikari curl -fsS -H 'x-forward-user: admin' 'http://127.0.0.1:8787/api/alerts/events?per_page=50&type=upstream_usage_limit_432' | jq '.items[] | select(.request.id == 972534 or .request.id == 971163 or .request.id == 956970) | {type, request: .request.id, key: .key.id, title}'"
+   ```
+
+6. 验证 dashboard recentAlerts 已包含新类型：
 
    ```bash
    ssh 192.168.31.11 "docker exec ai-tavily-hikari curl -fsS http://127.0.0.1:8787/api/dashboard/overview | jq '.recentAlerts.countsByType[] | select(.type == \"upstream_usage_limit_432\")'"
    ```
 
-6. 验证 stale affinity 自愈：
+7. 验证 stale affinity 自愈：
 
    ```bash
    ssh 192.168.31.11 "docker exec ai-tavily-hikari sqlite3 /srv/app/data/tavily_proxy.db \"select user_id, api_key_id from user_primary_api_key_affinity where user_id='yjPBlIKQ4csL'; select token_id, api_key_id from token_primary_api_key_affinity where token_id='exlD';\""

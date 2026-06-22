@@ -63,7 +63,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/too
 import { UserTagBindingControls } from '../UserTagBindingControls'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
-import { useLanguage, useTranslate, type AdminTranslations } from '../../i18n'
+import { translations, useLanguage, type AdminTranslations } from '../../i18n'
 import { KeyDetails } from '../../AdminDashboard'
 import { TokenDetailStoryCanvas } from '../../pages/TokenDetail.stories'
 import { useAdminStackedLayout } from '../../lib/responsive'
@@ -81,7 +81,6 @@ import {
 
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from '../AdminShell'
 import AdminJobTriggerMenu from '../AdminJobTriggerMenu'
-import AlertsCenter from '../AlertsCenter'
 import AdminUserRankingsPage, { RankingsMeta } from '../AdminUserRankingsPage'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
 import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
@@ -155,6 +154,11 @@ const defaultDashboardHourlyRequestWindow = buildDashboardHourlyRequestWindowFix
     apiBillable: (index % 5) + 4,
   }),
 })
+
+function useAdminTranslations(): AdminTranslations {
+  const { language } = useLanguage()
+  return translations[language].admin
+}
 
 function createRequestRate(
   used: number,
@@ -2014,7 +2018,7 @@ function StoryMonthlyBrokenDrawer({
   items: MonthlyBrokenKeyDetail[]
   onOpenChange: (open: boolean) => void
 }): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const users = admin.users
   const keyStrings = admin.keys
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null)
@@ -3074,7 +3078,7 @@ export function AdminPageFrame({
   introActions,
   introOverride,
 }: AdminPageFrameProps): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const isStackedAdminLayout = useAdminStackedLayout()
   const headerActions = actions ?? introActions
   const intro = introOverride ?? (() => {
@@ -3230,7 +3234,7 @@ export function AdminPageFrame({
 }
 
 export function DashboardPageCanvas({ beforeIntro }: { beforeIntro?: ReactNode } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
 
   const totalRequests = MOCK_KEYS.reduce((sum, item) => sum + item.total_requests, 0)
   const successCount = MOCK_KEYS.reduce((sum, item) => sum + item.success_count, 0)
@@ -3495,7 +3499,7 @@ export function DashboardPageCanvas({ beforeIntro }: { beforeIntro?: ReactNode }
 }
 
 function TokensPageCanvas(): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const tokenStrings = admin.tokens
   const tokenToolbar = (
     <div className="admin-module-toolbar admin-module-toolbar--tokens">
@@ -3660,7 +3664,7 @@ function RankingsPageCanvas({
   loading?: React.ComponentProps<typeof AdminUserRankingsPage>['loading']
   connectionState?: React.ComponentProps<typeof AdminUserRankingsPage>['connectionState']
 } = {}): JSX.Element {
-  const { admin } = useTranslate()
+  const admin = useAdminTranslations()
   const { language } = useLanguage()
   const rankingsHeaderMeta = (
     <RankingsMeta
@@ -3705,7 +3709,7 @@ function KeysPageCanvas({
   bulkSyncProgress?: ApiKeyBulkSyncProgressState | null
   bulkFeedback?: { kind: 'success' | 'error'; message: string } | null
 } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const keyStrings = admin.keys
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>(initialStatuses)
@@ -4271,7 +4275,7 @@ function RequestsPageCanvas({
 }: {
   initialDrawerTarget?: { kind: 'key' | 'token'; id: string } | null
 } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const { language } = useLanguage()
   const logStrings = admin.logs
   const [currentPage, setCurrentPage] = useState(1)
@@ -4448,7 +4452,7 @@ function RequestsPageCanvas({
 }
 
 function JobsPageCanvas(): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const jobsStrings = admin.jobs
   const keyStrings = admin.keys
   const [jobFilter, setJobFilter] = useState<JobGroup>('all')
@@ -4686,7 +4690,7 @@ function UsersPageCanvas({
   initialQuery?: string
   defaultActiveUsersOnly?: boolean
 } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const { language } = useLanguage()
   const users = admin.users
   const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
@@ -4936,7 +4940,7 @@ function UsersUsagePageCanvas({
   initialQuery?: string
   defaultActiveUsersOnly?: boolean
 } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const { language } = useLanguage()
   const users = admin.users
   const usageDailyRateLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
@@ -5311,7 +5315,7 @@ function UnboundTokenUsagePageCanvas({
   initialSortField?: AdminUnboundTokenUsageSortField | null
   initialSortOrder?: SortDirection | null
 } = {}): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
   const { language } = useLanguage()
   const users = admin.users
   const tokenStrings = admin.tokens
@@ -5709,7 +5713,7 @@ function UnboundTokenUsagePageCanvas({
 
 function UsersUsageTooltipProofCanvas(): JSX.Element {
   const { language } = useLanguage()
-  const users = useTranslate().admin.users
+  const users = useAdminTranslations().users
   const dailySuccessLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
   const monthlySuccessLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
   const dailySuccessTooltip = language === 'zh' ? '按最近 24 小时成功率排序' : 'Sort by 24h success rate'
@@ -5805,7 +5809,7 @@ function UsersUsageTooltipProofCanvas(): JSX.Element {
 }
 
 function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCardMode }): JSX.Element {
-  const users = useTranslate().admin.users
+  const users = useAdminTranslations().users
   const cards: Array<AdminUserTag | null> = editorMode === 'new' ? [null, ...MOCK_TAG_CATALOG] : MOCK_TAG_CATALOG
   const editableTagId = 'team_lead'
 
@@ -5869,7 +5873,7 @@ function UserDetailPageCanvas({
   initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
   initialDetail?: AdminUserDetail
 } = {}): JSX.Element {
-  const admin = useTranslate().admin, users = admin.users
+  const admin = useAdminTranslations(), users = admin.users
   const { language } = useLanguage()
   const [detail, setDetail] = useState<AdminUserDetail>(initialDetail)
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
@@ -6289,7 +6293,7 @@ function AnnouncementsPageCanvas(): JSX.Element {
 }
 
 function ProxySettingsPageCanvas(): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
 
   return (
     <AdminPageFrame activeModule="proxy-settings">
@@ -6321,7 +6325,7 @@ function ProxySettingsPageCanvas(): JSX.Element {
 }
 
 function SystemSettingsPageCanvas(): JSX.Element {
-  const admin = useTranslate().admin
+  const admin = useAdminTranslations()
 
   return (
     <AdminPageFrame activeModule="system-settings">

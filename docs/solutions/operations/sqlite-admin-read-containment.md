@@ -74,6 +74,10 @@ reads:
 - Move alert events/groups/recent summary/catalog to SQL-side pagination and aggregation. Pulling
   all matching alert events into Rust and then sorting, grouping, or paginating in memory does not
   survive a retained `auth_token_logs` window.
+- For alert grouped reads on SQLite, avoid parser-sensitive named window clauses when the same
+  partition logic can be expressed inline. Keep the grouped projection in SQL, but prefer inline
+  `OVER (...)` windows plus a final `group_rank = 1` collapse over `WINDOW ... AS (...)` syntax on
+  the production read path.
 - Canonicalize alert `request_kind` inside the SQL projection before filtering or grouping rows.
   Mixed legacy keys such as `tavily_search` / `mcp_search` otherwise drift from the canonical
   request-kind keys returned by the HTTP contract and can make filtered pages appear empty.
@@ -108,6 +112,8 @@ reads:
 - A controlled in-container admin-style request to
   `http://127.0.0.1:8787/api/dashboard/overview` with the production forward-auth headers still
   took about `4.70s` on 2026-06-21.
+- Production 101 grouped-alert reads hit a SQLite parser failure before the compat rewrite:
+  `database error: (code: 1) near "(": syntax error`.
 - Recent production logs from the same container still show overview-adjacent SQLite pressure, for
   example:
   - a retained-window aggregate over `observability.request_logs` logged at about `925ms`

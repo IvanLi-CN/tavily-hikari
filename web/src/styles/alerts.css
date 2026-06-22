@@ -120,10 +120,80 @@
   width: 100%;
 }
 
+.alerts-center-panel .alerts-center-filter-control.searchable-facet-select__trigger,
+.alerts-center-panel .alerts-center-request-kinds-trigger.alerts-center-filter-control,
+.alerts-center-panel .alerts-center-filter-action-button,
+.alerts-center-panel .alerts-center-time-input.alerts-center-filter-control {
+  min-height: 48px;
+  height: 48px;
+  border: 1px solid hsl(var(--input) / 0.35);
+  border-radius: 20px;
+  background: hsl(var(--muted) / 0.6);
+  color: hsl(var(--foreground));
+  box-shadow: var(--shadow-clay-pressed);
+  font-size: 0.875rem;
+  font-weight: 650;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.alerts-center-panel .alerts-center-filter-control.searchable-facet-select__trigger,
+.alerts-center-panel .alerts-center-request-kinds-trigger.alerts-center-filter-control {
+  align-items: center;
+  padding-left: 1rem;
+  padding-right: 0.92rem;
+}
+
+.alerts-center-panel .alerts-center-time-input.alerts-center-filter-control {
+  display: block;
+  width: 100%;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.alerts-center-panel .alerts-center-filter-action-button {
+  justify-content: center;
+  padding-inline: 1rem;
+  border-color: hsl(var(--input) / 0.35);
+  background: hsl(var(--muted) / 0.6);
+  color: hsl(var(--foreground));
+  box-shadow: var(--shadow-clay-pressed);
+  letter-spacing: 0;
+}
+
+.alerts-center-panel .alerts-center-filter-control.searchable-facet-select__trigger:hover,
+.alerts-center-panel .alerts-center-request-kinds-trigger.alerts-center-filter-control:hover,
+.alerts-center-panel .alerts-center-filter-action-button:hover,
+.alerts-center-panel .alerts-center-time-input.alerts-center-filter-control:hover {
+  border-color: hsl(var(--ring) / 0.42);
+  background: hsl(var(--card) / 0.9);
+  box-shadow: var(--shadow-clay-pressed);
+  transform: none;
+}
+
+.alerts-center-panel .alerts-center-filter-control.searchable-facet-select__trigger:focus-visible,
+.alerts-center-panel .alerts-center-request-kinds-trigger.alerts-center-filter-control:focus-visible,
+.alerts-center-panel .alerts-center-filter-action-button:focus-visible,
+.alerts-center-panel .alerts-center-time-input.alerts-center-filter-control:focus-visible {
+  outline: none;
+  border-color: hsl(var(--ring) / 0.45);
+  background: hsl(var(--card) / 0.9);
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.2),
+    var(--shadow-clay-pressed);
+}
+
+.alerts-center-panel .alerts-center-filter-action-button:active {
+  transform: none;
+  box-shadow: var(--shadow-clay-pressed);
+}
+
 .alerts-center-request-kinds-trigger {
   width: 100%;
-  min-height: 40px;
-  border-radius: 20px;
   justify-content: space-between;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -132,7 +202,6 @@
 .alerts-center-time-input {
   display: block;
   min-width: 0;
-  padding-right: 0.8rem;
 }
 
 .alerts-center-time-input::-webkit-datetime-edit {

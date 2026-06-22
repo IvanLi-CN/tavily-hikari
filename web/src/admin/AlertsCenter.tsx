@@ -820,6 +820,7 @@ export default function AlertsCenter({
                 searchAriaLabel={copy.filters.type}
                 triggerAriaLabel={copy.filters.type}
                 listAriaLabel={copy.filters.type}
+                triggerClassName="alerts-center-filter-control"
                 onChange={(nextType) => navigateWith({ type: nextType, page: 1 })}
               />
             </div>
@@ -830,7 +831,7 @@ export default function AlertsCenter({
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="searchable-facet-select__trigger alerts-center-request-kinds-trigger"
+                    className="searchable-facet-select__trigger alerts-center-request-kinds-trigger alerts-center-filter-control"
                     aria-label={copy.filters.requestKinds}
                   >
                     <span className="searchable-facet-select__summary">{requestKindsSummary}</span>
@@ -870,7 +871,7 @@ export default function AlertsCenter({
               <span className="alerts-center-filter-label">{copy.filters.since}</span>
               <Input
                 type="datetime-local"
-                className="alerts-center-time-input"
+                className="alerts-center-time-input alerts-center-filter-control"
                 value={draftSince}
                 onChange={(event) => setDraftSince(event.target.value)}
               />
@@ -879,7 +880,7 @@ export default function AlertsCenter({
               <span className="alerts-center-filter-label">{copy.filters.until}</span>
               <Input
                 type="datetime-local"
-                className="alerts-center-time-input"
+                className="alerts-center-time-input alerts-center-filter-control"
                 value={draftUntil}
                 onChange={(event) => setDraftUntil(event.target.value)}
               />
@@ -896,6 +897,7 @@ export default function AlertsCenter({
                 searchAriaLabel={copy.filters.user}
                 triggerAriaLabel={copy.filters.user}
                 listAriaLabel={copy.filters.user}
+                triggerClassName="alerts-center-filter-control"
                 onChange={(nextUserId) => navigateWith({ userId: nextUserId, page: 1 })}
               />
             </div>
@@ -911,6 +913,7 @@ export default function AlertsCenter({
                 searchAriaLabel={copy.filters.token}
                 triggerAriaLabel={copy.filters.token}
                 listAriaLabel={copy.filters.token}
+                triggerClassName="alerts-center-filter-control"
                 onChange={(nextTokenId) => navigateWith({ tokenId: nextTokenId, page: 1 })}
                 labelVariant="mono"
               />
@@ -927,6 +930,7 @@ export default function AlertsCenter({
                 searchAriaLabel={copy.filters.key}
                 triggerAriaLabel={copy.filters.key}
                 listAriaLabel={copy.filters.key}
+                triggerClassName="alerts-center-filter-control"
                 onChange={(nextKeyId) => navigateWith({ keyId: nextKeyId, page: 1 })}
                 labelVariant="mono"
               />
@@ -935,6 +939,7 @@ export default function AlertsCenter({
               <Button
                 type="button"
                 variant="outline"
+                className="alerts-center-filter-action-button"
                 onClick={() =>
                   navigateWith({
                     since: dateTimeLocalToIso(draftSince),
@@ -945,7 +950,12 @@ export default function AlertsCenter({
               >
                 {copy.filters.applyTime}
               </Button>
-              <Button type="button" variant="outline" className="alerts-center-clear-button" onClick={() => onNavigate(alertsPath({ view: 'groups' }))}>
+              <Button
+                type="button"
+                variant="outline"
+                className="alerts-center-filter-action-button alerts-center-clear-button"
+                onClick={() => onNavigate(alertsPath({ view: 'groups' }))}
+              >
                 {copy.filters.clear}
               </Button>
             </div>

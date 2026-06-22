@@ -594,6 +594,25 @@ describe('AlertsCenter loading behavior', () => {
     })
   })
 
+  it('applies the same control class to the grouped filter triggers and time inputs', async () => {
+    const { container, root } = await mountAlertsCenter({
+      search: alertsPath({ view: 'groups' }).replace('/admin/alerts', ''),
+      initialCatalog: storyCatalog,
+      initialGroupsPage: semanticGroups,
+      groupsLoader: async () => semanticGroups,
+    })
+
+    expect(container.querySelectorAll('.alerts-center-filter-control').length).toBe(7)
+    expect(container.querySelectorAll('.alerts-center-panel .alerts-center-filter-control.searchable-facet-select__trigger').length).toBe(5)
+    expect(container.querySelectorAll('.alerts-center-panel .alerts-center-time-input.alerts-center-filter-control').length).toBe(2)
+    expect(container.querySelectorAll('.alerts-center-panel .alerts-center-filter-action-button').length).toBe(2)
+    expect(container.querySelector('.alerts-center-request-kinds-trigger')?.classList.contains('alerts-center-filter-control')).toBe(true)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
   it('keeps alert view tabs as segmented buttons even when the viewport is compact', async () => {
     installMatchMediaMock(true)
 

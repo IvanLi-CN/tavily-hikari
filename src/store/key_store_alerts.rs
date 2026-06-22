@@ -1145,22 +1145,49 @@ impl KeyStore {
             semantic_events AS (
                 SELECT
                     filtered_alerts.*,
-                    LAG(filtered_alerts.semantic_window_key) OVER semantic_partition AS prev_window_key,
-                    LAG(filtered_alerts.semantic_window_kind) OVER semantic_partition AS prev_window_kind,
-                    LAG(filtered_alerts.semantic_window_minutes) OVER semantic_partition AS prev_window_minutes,
-                    LAG(filtered_alerts.semantic_window_end) OVER semantic_partition AS prev_window_end,
-                    LAG(filtered_alerts.occurred_at) OVER semantic_partition AS prev_occurred_at
+                    LAG(filtered_alerts.semantic_window_key) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.semantic_window_kind,
+                                     COALESCE(filtered_alerts.semantic_window_minutes, 0)
+                        ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
+                    ) AS prev_window_key,
+                    LAG(filtered_alerts.semantic_window_kind) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.semantic_window_kind,
+                                     COALESCE(filtered_alerts.semantic_window_minutes, 0)
+                        ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
+                    ) AS prev_window_kind,
+                    LAG(filtered_alerts.semantic_window_minutes) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.semantic_window_kind,
+                                     COALESCE(filtered_alerts.semantic_window_minutes, 0)
+                        ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
+                    ) AS prev_window_minutes,
+                    LAG(filtered_alerts.semantic_window_end) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.semantic_window_kind,
+                                     COALESCE(filtered_alerts.semantic_window_minutes, 0)
+                        ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
+                    ) AS prev_window_end,
+                    LAG(filtered_alerts.occurred_at) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.semantic_window_kind,
+                                     COALESCE(filtered_alerts.semantic_window_minutes, 0)
+                        ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
+                    ) AS prev_occurred_at
                 FROM filtered_alerts
                 WHERE filtered_alerts.grouping_kind = 'mother'
                   AND filtered_alerts.semantic_window_kind IS NOT NULL
-                WINDOW semantic_partition AS (
-                    PARTITION BY filtered_alerts.alert_type,
-                                 filtered_alerts.subject_kind,
-                                 filtered_alerts.subject_id,
-                                 filtered_alerts.semantic_window_kind,
-                                 COALESCE(filtered_alerts.semantic_window_minutes, 0)
-                    ORDER BY filtered_alerts.occurred_at ASC, filtered_alerts.row_sort_id ASC
-                )
             ),
             semantic_children AS (
                 SELECT
@@ -1197,11 +1224,46 @@ impl KeyStore {
             semantic_child_ranges AS (
                 SELECT
                     semantic_children.*,
-                    MIN(semantic_children.occurred_at) OVER child_partition AS child_first_seen,
-                    MAX(semantic_children.occurred_at) OVER child_partition AS child_last_seen,
-                    COUNT(*) OVER child_partition AS child_event_count,
-                    MIN(semantic_children.semantic_window_start) OVER child_partition AS child_window_start,
-                    MAX(semantic_children.semantic_window_end) OVER child_partition AS child_window_end,
+                    MIN(semantic_children.occurred_at) OVER (
+                        PARTITION BY semantic_children.alert_type,
+                                     semantic_children.subject_kind,
+                                     semantic_children.subject_id,
+                                     semantic_children.semantic_window_kind,
+                                     COALESCE(semantic_children.semantic_window_minutes, 0),
+                                     semantic_children.child_ordinal
+                    ) AS child_first_seen,
+                    MAX(semantic_children.occurred_at) OVER (
+                        PARTITION BY semantic_children.alert_type,
+                                     semantic_children.subject_kind,
+                                     semantic_children.subject_id,
+                                     semantic_children.semantic_window_kind,
+                                     COALESCE(semantic_children.semantic_window_minutes, 0),
+                                     semantic_children.child_ordinal
+                    ) AS child_last_seen,
+                    COUNT(*) OVER (
+                        PARTITION BY semantic_children.alert_type,
+                                     semantic_children.subject_kind,
+                                     semantic_children.subject_id,
+                                     semantic_children.semantic_window_kind,
+                                     COALESCE(semantic_children.semantic_window_minutes, 0),
+                                     semantic_children.child_ordinal
+                    ) AS child_event_count,
+                    MIN(semantic_children.semantic_window_start) OVER (
+                        PARTITION BY semantic_children.alert_type,
+                                     semantic_children.subject_kind,
+                                     semantic_children.subject_id,
+                                     semantic_children.semantic_window_kind,
+                                     COALESCE(semantic_children.semantic_window_minutes, 0),
+                                     semantic_children.child_ordinal
+                    ) AS child_window_start,
+                    MAX(semantic_children.semantic_window_end) OVER (
+                        PARTITION BY semantic_children.alert_type,
+                                     semantic_children.subject_kind,
+                                     semantic_children.subject_id,
+                                     semantic_children.semantic_window_kind,
+                                     COALESCE(semantic_children.semantic_window_minutes, 0),
+                                     semantic_children.child_ordinal
+                    ) AS child_window_end,
                     ROW_NUMBER() OVER (
                         PARTITION BY semantic_children.alert_type,
                                      semantic_children.subject_kind,
@@ -1212,14 +1274,6 @@ impl KeyStore {
                         ORDER BY semantic_children.occurred_at DESC, semantic_children.row_sort_id DESC
                     ) AS child_latest_rank
                 FROM semantic_children
-                WINDOW child_partition AS (
-                    PARTITION BY semantic_children.alert_type,
-                                 semantic_children.subject_kind,
-                                 semantic_children.subject_id,
-                                 semantic_children.semantic_window_kind,
-                                 COALESCE(semantic_children.semantic_window_minutes, 0),
-                                 semantic_children.child_ordinal
-                )
             ),
             semantic_child_heads AS (
                 SELECT
@@ -1235,19 +1289,26 @@ impl KeyStore {
                     semantic_child_ranges.child_event_count,
                     semantic_child_ranges.child_window_start,
                     semantic_child_ranges.child_window_end,
-                    LAG(semantic_child_ranges.child_window_end) OVER child_head_partition AS prev_child_window_end,
-                    LAG(semantic_child_ranges.child_last_seen) OVER child_head_partition AS prev_child_last_seen
+                    LAG(semantic_child_ranges.child_window_end) OVER (
+                        PARTITION BY semantic_child_ranges.alert_type,
+                                     semantic_child_ranges.subject_kind,
+                                     semantic_child_ranges.subject_id,
+                                     semantic_child_ranges.semantic_window_kind,
+                                     COALESCE(semantic_child_ranges.semantic_window_minutes, 0)
+                        ORDER BY semantic_child_ranges.child_first_seen ASC,
+                                 semantic_child_ranges.child_ordinal ASC
+                    ) AS prev_child_window_end,
+                    LAG(semantic_child_ranges.child_last_seen) OVER (
+                        PARTITION BY semantic_child_ranges.alert_type,
+                                     semantic_child_ranges.subject_kind,
+                                     semantic_child_ranges.subject_id,
+                                     semantic_child_ranges.semantic_window_kind,
+                                     COALESCE(semantic_child_ranges.semantic_window_minutes, 0)
+                        ORDER BY semantic_child_ranges.child_first_seen ASC,
+                                 semantic_child_ranges.child_ordinal ASC
+                    ) AS prev_child_last_seen
                 FROM semantic_child_ranges
                 WHERE semantic_child_ranges.child_latest_rank = 1
-                WINDOW child_head_partition AS (
-                    PARTITION BY semantic_child_ranges.alert_type,
-                                 semantic_child_ranges.subject_kind,
-                                 semantic_child_ranges.subject_id,
-                                 semantic_child_ranges.semantic_window_kind,
-                                 COALESCE(semantic_child_ranges.semantic_window_minutes, 0)
-                    ORDER BY semantic_child_ranges.child_first_seen ASC,
-                             semantic_child_ranges.child_ordinal ASC
-                )
             ),
             semantic_mother_heads AS (
                 SELECT
@@ -1281,7 +1342,7 @@ impl KeyStore {
                         ORDER BY semantic_child_heads.child_first_seen ASC,
                                  semantic_child_heads.child_ordinal ASC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                    ) AS mother_ordinal
+                        ) AS mother_ordinal
                 FROM semantic_child_heads
             ),
             semantic_grouped_alerts AS (
@@ -1292,14 +1353,56 @@ impl KeyStore {
                     semantic_mother_heads.subject_kind AS subject_kind,
                     semantic_mother_heads.subject_id AS subject_id,
                     NULL AS request_kind_key_normalized,
-                    SUM(semantic_mother_heads.child_event_count) OVER mother_partition AS total_count,
-                    MIN(semantic_mother_heads.child_first_seen) OVER mother_partition AS first_seen,
-                    MAX(semantic_mother_heads.child_last_seen) OVER mother_partition AS last_seen,
+                    SUM(semantic_mother_heads.child_event_count) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS total_count,
+                    MIN(semantic_mother_heads.child_first_seen) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS first_seen,
+                    MAX(semantic_mother_heads.child_last_seen) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS last_seen,
                     semantic_mother_heads.semantic_window_kind AS semantic_window_kind,
                     semantic_mother_heads.semantic_window_minutes AS semantic_window_minutes,
-                    MIN(semantic_mother_heads.child_window_start) OVER mother_partition AS semantic_window_start,
-                    MAX(semantic_mother_heads.child_window_end) OVER mother_partition AS semantic_window_end,
-                    COUNT(*) OVER mother_partition AS child_count,
+                    MIN(semantic_mother_heads.child_window_start) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS semantic_window_start,
+                    MAX(semantic_mother_heads.child_window_end) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS semantic_window_end,
+                    COUNT(*) OVER (
+                        PARTITION BY semantic_mother_heads.alert_type,
+                                     semantic_mother_heads.subject_kind,
+                                     semantic_mother_heads.subject_id,
+                                     semantic_mother_heads.semantic_window_kind,
+                                     COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
+                                     semantic_mother_heads.mother_ordinal
+                    ) AS child_count,
                     ROW_NUMBER() OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
@@ -1311,14 +1414,6 @@ impl KeyStore {
                                  semantic_mother_heads.row_sort_id DESC
                     ) AS group_rank
                 FROM semantic_mother_heads
-                WINDOW mother_partition AS (
-                    PARTITION BY semantic_mother_heads.alert_type,
-                                 semantic_mother_heads.subject_kind,
-                                 semantic_mother_heads.subject_id,
-                                 semantic_mother_heads.semantic_window_kind,
-                                 COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
-                                 semantic_mother_heads.mother_ordinal
-                )
             ),
             compat_grouped_alerts AS (
                 SELECT
@@ -1328,9 +1423,24 @@ impl KeyStore {
                     filtered_alerts.subject_kind AS subject_kind,
                     filtered_alerts.subject_id AS subject_id,
                     filtered_alerts.request_kind_key_normalized AS request_kind_key_normalized,
-                    COUNT(*) OVER compat_partition AS total_count,
-                    MIN(filtered_alerts.occurred_at) OVER compat_partition AS first_seen,
-                    MAX(filtered_alerts.occurred_at) OVER compat_partition AS last_seen,
+                    COUNT(*) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.request_kind_key_normalized
+                    ) AS total_count,
+                    MIN(filtered_alerts.occurred_at) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.request_kind_key_normalized
+                    ) AS first_seen,
+                    MAX(filtered_alerts.occurred_at) OVER (
+                        PARTITION BY filtered_alerts.alert_type,
+                                     filtered_alerts.subject_kind,
+                                     filtered_alerts.subject_id,
+                                     filtered_alerts.request_kind_key_normalized
+                    ) AS last_seen,
                     NULL AS semantic_window_kind,
                     NULL AS semantic_window_minutes,
                     NULL AS semantic_window_start,
@@ -1345,17 +1455,11 @@ impl KeyStore {
                     ) AS group_rank
                 FROM filtered_alerts
                 WHERE filtered_alerts.grouping_kind = 'compat'
-                WINDOW compat_partition AS (
-                    PARTITION BY filtered_alerts.alert_type,
-                                 filtered_alerts.subject_kind,
-                                 filtered_alerts.subject_id,
-                                 filtered_alerts.request_kind_key_normalized
-                )
             ),
             grouped_alerts AS (
-                SELECT * FROM semantic_grouped_alerts
+                SELECT * FROM semantic_grouped_alerts WHERE group_rank = 1
                 UNION ALL
-                SELECT * FROM compat_grouped_alerts
+                SELECT * FROM compat_grouped_alerts WHERE group_rank = 1
             )"#
         ));
     }
@@ -1466,12 +1570,12 @@ impl KeyStore {
         let offset = (page - 1) * per_page;
         let mut count_query = QueryBuilder::new("");
         Self::push_alert_groups_cte(&mut count_query, filters);
-        count_query.push(" SELECT COUNT(*) FROM grouped_alerts WHERE group_rank = 1");
+        count_query.push(" SELECT COUNT(*) FROM grouped_alerts");
         let total: i64 = count_query.build_query_scalar().fetch_one(&self.pool).await?;
 
         let mut query = QueryBuilder::new("");
         Self::push_alert_groups_cte(&mut query, filters);
-        query.push(" SELECT * FROM grouped_alerts WHERE group_rank = 1");
+        query.push(" SELECT * FROM grouped_alerts");
         query.push(
             " ORDER BY last_seen DESC, total_count DESC, alert_type DESC, row_sort_id DESC LIMIT ",
         );
@@ -2010,6 +2114,156 @@ impl KeyStore {
 #[cfg(test)]
 mod alert_grouping_tests {
     use super::*;
+    use crate::BackendTime;
+    use tempfile::tempdir;
+
+    async fn seed_bound_user_and_token(
+        store: &KeyStore,
+        user_id: &str,
+        token_id: &str,
+        display_name: &str,
+        username: &str,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO users (id, display_name, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(display_name)
+        .bind(username)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&store.pool)
+        .await
+        .expect("insert user");
+
+        sqlx::query("INSERT INTO auth_tokens (id, secret, created_at) VALUES (?, ?, ?)")
+            .bind(token_id)
+            .bind(format!("secret-{token_id}"))
+            .bind(created_at)
+            .execute(&store.pool)
+            .await
+            .expect("insert auth token");
+
+        sqlx::query(
+            "INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&store.pool)
+        .await
+        .expect("insert user token binding");
+    }
+
+    async fn insert_request_log(
+        store: &KeyStore,
+        token_id: &str,
+        key_id: &str,
+        created_at: i64,
+    ) -> i64 {
+        sqlx::query_scalar(
+            r#"
+            INSERT INTO observability.request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                tavily_status_code,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                counts_business_quota,
+                created_at
+            ) VALUES (?, ?, 'POST', '/api/tavily/search', 'max_results=5', 432, 'quota_exhausted', 'tavily_search', 'Tavily Search', 'POST /api/tavily/search', 1, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(key_id)
+        .bind(token_id)
+        .bind(created_at)
+        .fetch_one(&store.pool)
+        .await
+        .expect("insert request log")
+    }
+
+    async fn insert_request_rate_alert(
+        store: &KeyStore,
+        token_id: &str,
+        created_at: i64,
+        request_kind_key: &str,
+        request_kind_label: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                counts_business_quota,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', ?, ?, ?, 'quota_exhausted', 'user request rate limit exceeded on rolling 5m window (limit 25, used 25)', 'none', 'none', 'none', 0, ?)
+            "#,
+        )
+        .bind(token_id)
+        .bind(request_kind_key)
+        .bind(request_kind_label)
+        .bind(request_kind_label)
+        .bind(created_at)
+        .execute(&store.pool)
+        .await
+        .expect("insert request-rate alert");
+    }
+
+    async fn insert_upstream_usage_limit_alert(
+        store: &KeyStore,
+        token_id: &str,
+        key_id: &str,
+        created_at: i64,
+    ) {
+        let request_log_id = insert_request_log(store, token_id, key_id, created_at).await;
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                counts_business_quota,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/api/tavily/search', 'max_results=5', 432, 'tavily_search', 'Tavily Search', 'POST /api/tavily/search', 'quota_exhausted', 'This request exceeds your plan''s set usage limit.', 'none', 'none', 'none', 1, ?, ?, ?)
+            "#,
+        )
+        .bind(token_id)
+        .bind(key_id)
+        .bind(request_log_id)
+        .bind(created_at)
+        .execute(&store.pool)
+        .await
+        .expect("insert upstream usage-limit alert");
+    }
 
     fn make_alert_event(
         id: &str,
@@ -2350,6 +2604,85 @@ mod alert_grouping_tests {
         assert_eq!(
             group.request_kind.as_ref().map(|value| value.key.as_str()),
             Some("tavily_search")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_alert_groups_page_executes_sqlite_grouped_query_for_mother_and_compat_groups() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let db_path = temp_dir.path().join("alerts-groups.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let store = KeyStore::new_with_time(&db_str, BackendTime::system())
+            .await
+            .expect("create key store");
+
+        let user_id = "usr_alerts_sql";
+        let token_id = "tok_alerts_sql";
+        let key_id = "key_alerts_sql";
+        seed_bound_user_and_token(
+            &store,
+            user_id,
+            token_id,
+            "SQLite Alerts",
+            "sqlite-alerts",
+            1_700_000_000,
+        )
+        .await;
+
+        for (created_at, request_kind_key, request_kind_label) in [
+            (1_700_000_000_i64, "mcp_initialize", "MCP initialize"),
+            (1_700_000_060_i64, "mcp_tools_list", "MCP tools/list"),
+            (
+                1_700_000_420_i64,
+                "mcp_notifications_initialized",
+                "MCP notifications/initialized",
+            ),
+            (1_700_000_480_i64, "mcp_resources_list", "MCP resources/list"),
+        ] {
+            insert_request_rate_alert(
+                &store,
+                token_id,
+                created_at,
+                request_kind_key,
+                request_kind_label,
+            )
+            .await;
+        }
+
+        insert_upstream_usage_limit_alert(&store, token_id, key_id, 1_700_100_000).await;
+        insert_upstream_usage_limit_alert(&store, token_id, key_id, 1_700_100_120).await;
+
+        let page = store
+            .fetch_alert_groups_page(None, None, None, None, None, None, &[], 1, 20)
+            .await
+            .expect("fetch grouped alerts page");
+
+        assert_eq!(page.total, 2);
+
+        let mother = page
+            .items
+            .iter()
+            .find(|item| item.grouping_kind == "mother")
+            .expect("semantic mother group");
+        assert_eq!(mother.alert_type, ALERT_TYPE_USER_REQUEST_RATE_LIMITED);
+        assert_eq!(mother.subject_kind, ALERT_SUBJECT_USER);
+        assert_eq!(mother.child_count, 2);
+        assert_eq!(mother.event_count, 4);
+        assert_eq!(mother.children.len(), 2);
+        assert!(mother.request_kind.is_none());
+
+        let compat = page
+            .items
+            .iter()
+            .find(|item| item.grouping_kind == "compat")
+            .expect("compat group");
+        assert_eq!(compat.alert_type, ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432);
+        assert_eq!(compat.subject_kind, ALERT_SUBJECT_KEY);
+        assert_eq!(compat.count, 2);
+        assert_eq!(compat.event_count, 2);
+        assert_eq!(
+            compat.request_kind.as_ref().map(|value| value.key.as_str()),
+            Some("api:search")
         );
     }
 }
