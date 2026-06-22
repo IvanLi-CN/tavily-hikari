@@ -236,52 +236,28 @@ async fn get_admin_ha_baseline(
 }
 
 struct HaBaselineReader {
-    reader: tokio::io::DuplexStream,
+    reader: tokio::fs::File,
     export: tavily_hikari::HaApplyResult,
 }
 
 struct HaEventsReader {
-    reader: tokio::io::DuplexStream,
+    reader: tokio::fs::File,
     export: tavily_hikari::HaApplyResult,
 }
 
-struct CountingAsyncWriter {
-    bytes: u64,
+fn create_ha_temp_output_file() -> Result<tokio::fs::File, (StatusCode, String)> {
+    tempfile::tempfile()
+        .map(tokio::fs::File::from_std)
+        .map_err(internal_error)
 }
 
-impl CountingAsyncWriter {
-    fn new() -> Self {
-        Self { bytes: 0 }
-    }
-
-    fn bytes(&self) -> u64 {
-        self.bytes
-    }
-}
-
-impl tokio::io::AsyncWrite for CountingAsyncWriter {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        self.bytes = self.bytes.saturating_add(buf.len() as u64);
-        std::task::Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
+async fn rewind_ha_temp_output_file(
+    file: &mut tokio::fs::File,
+) -> Result<(), (StatusCode, String)> {
+    tokio::io::AsyncSeekExt::seek(file, std::io::SeekFrom::Start(0))
+        .await
+        .map(|_| ())
+        .map_err(internal_error)
 }
 
 async fn build_ha_baseline_reader(
@@ -305,11 +281,11 @@ async fn build_ha_baseline_reader(
         .await
         .map_err(internal_error)?;
     let export = preflight.export_info().await.map_err(internal_error)?;
-    let compressed_bytes = {
-        let mut writer = CountingAsyncWriter::new();
+    let mut reader = create_ha_temp_output_file()?;
+    let encode_result = {
         let mut encoder =
-            ZstdEncoder::with_quality(&mut writer, async_compression::Level::Precise(3));
-        preflight
+            ZstdEncoder::with_quality(&mut reader, async_compression::Level::Precise(3));
+        let export_result = preflight
             .write_ndjson(
                 node_id,
                 export.high_watermark,
@@ -317,12 +293,17 @@ async fn build_ha_baseline_reader(
                 &mut encoder,
             )
             .await
-            .map_err(internal_error)?;
-        encoder.shutdown().await.map_err(internal_error)?;
-        writer.bytes()
+            .map_err(internal_error);
+        match export_result {
+            Ok(()) => encoder.shutdown().await.map_err(internal_error),
+            Err(err) => Err(err),
+        }
     };
+    let close_result = preflight.close().await.map_err(internal_error);
+    encode_result?;
+    close_result?;
+    let compressed_bytes = reader.metadata().await.map_err(internal_error)?.len();
     if compressed_bytes > ha_baseline_max_compressed_bytes() {
-        preflight.close().await.map_err(internal_error)?;
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
@@ -331,22 +312,8 @@ async fn build_ha_baseline_reader(
             ),
         ));
     }
-    let (writer, reader) = tokio::io::duplex(64 * 1024);
-    let node_id = node_id.to_string();
-    tokio::spawn(async move {
-        let mut encoder = ZstdEncoder::with_quality(writer, async_compression::Level::Precise(3));
-        let result = preflight
-            .write_ndjson(&node_id, export.high_watermark, export.row_count, &mut encoder)
-            .await;
-        if result.is_ok() {
-            let _ = encoder.shutdown().await;
-        }
-        let _ = preflight.close().await;
-    });
-    Ok(HaBaselineReader {
-        reader,
-        export,
-    })
+    rewind_ha_temp_output_file(&mut reader).await?;
+    Ok(HaBaselineReader { reader, export })
 }
 
 async fn build_ha_events_reader(
@@ -362,18 +329,32 @@ async fn build_ha_events_reader(
         .await
         .map_err(map_ha_export_error)?;
     let mut event_count = available;
-    let export = loop {
-        let mut writer = CountingAsyncWriter::new();
-        let mut encoder =
-            ZstdEncoder::with_quality(&mut writer, async_compression::Level::Precise(3));
-        let export = preflight
-            .write_ndjson(after, limit, event_count, &mut encoder)
-            .await
-            .map_err(map_ha_export_error)?;
-        encoder.shutdown().await.map_err(internal_error)?;
-        let compressed_bytes = writer.bytes();
+    loop {
+        let mut reader = create_ha_temp_output_file()?;
+        let export_result = {
+            let mut encoder =
+                ZstdEncoder::with_quality(&mut reader, async_compression::Level::Precise(3));
+            match preflight.write_ndjson(after, limit, event_count, &mut encoder).await {
+                Ok(export) => match encoder.shutdown().await.map_err(internal_error) {
+                    Ok(()) => Ok(export),
+                    Err(err) => Err(err),
+                },
+                Err(err) => Err(map_ha_export_error(err)),
+            }
+        };
+        let export = match export_result {
+            Ok(export) => export,
+            Err(err) => {
+                let close_result = preflight.close().await.map_err(internal_error);
+                close_result?;
+                return Err(err);
+            }
+        };
+        let compressed_bytes = reader.metadata().await.map_err(internal_error)?.len();
         if compressed_bytes <= max_compressed_bytes {
-            break export;
+            preflight.close().await.map_err(internal_error)?;
+            rewind_ha_temp_output_file(&mut reader).await?;
+            return Ok(HaEventsReader { reader, export });
         }
         if event_count <= 1 {
             preflight.close().await.map_err(internal_error)?;
@@ -385,17 +366,7 @@ async fn build_ha_events_reader(
             ));
         }
         event_count = event_count.div_ceil(2);
-    };
-    let (writer, reader) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
-        let mut encoder = ZstdEncoder::with_quality(writer, async_compression::Level::Precise(3));
-        let result = preflight.write_ndjson(after, limit, event_count, &mut encoder).await;
-        if result.is_ok() {
-            let _ = encoder.shutdown().await;
-        }
-        let _ = preflight.close().await;
-    });
-    Ok(HaEventsReader { reader, export })
+    }
 }
 
 fn internal_error(err: impl std::fmt::Display) -> (StatusCode, String) {
