@@ -114,5 +114,19 @@ the 101 primary look like it had a leak whenever billing baseline export repeate
 - `HA_MODE=single` keeps the old eager forward-proxy runtime startup semantics, but
   `active_standby` standby/recovery roles now intentionally avoid prewarming xray/runtime before
   they are promoted back into business-serving roles.
+- Production-shaped standby proof exposed a second bug after the streaming refactor: standby still
+  started business schedulers such as `quota_sync`, usage rollups, and request-log GC. Those jobs
+  could write into the same SQLite file while HA apply sessions were trying to hold
+  `BEGIN IMMEDIATE`, producing `database is locked`, nested-transaction errors, and false “memory
+  leak” symptoms during large catch-up.
+- The accepted refinement is that standby/recovery startup keeps only HA-minimal background tasks.
+  Business background jobs must follow the same role gate as business traffic and runtime warmup.
+- HA sync state persistence also needs an explicit per-channel flush boundary. Coalescing watermark
+  and node-state writes until the end of the whole sync loop is not safe once each channel owns its
+  own long-running apply transaction.
 - Readiness semantics split accordingly: active/full-business roles still treat xray readiness as a
   health requirement, while standby/recovery roles do not.
+- Shared-testbox proof is now part of the accepted contract rather than an ad hoc smoke check. For
+  the production-shaped synthetic fixture used here, the contract passes only when standby finishes
+  its first full catch-up under a `256MiB` cgroup limit and repeated active billing baseline exports
+  stay within the same limit without OOM.

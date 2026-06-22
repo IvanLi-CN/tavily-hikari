@@ -478,23 +478,10 @@ pub async fn serve(
         "tavily proxy listening"
     );
 
-    // Spawn background schedulers
-    spawn_maintenance_worker(state.clone());
-    spawn_quota_sync_scheduler(state.clone());
-    spawn_token_usage_rollup_scheduler(state.clone());
-    spawn_auth_token_logs_gc_scheduler(state.clone());
-    spawn_ha_outbox_gc_scheduler(state.clone());
-    spawn_mcp_sessions_gc_scheduler(state.clone());
-    spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
-    spawn_request_logs_gc_scheduler(state.clone());
-    if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
-        spawn_linuxdo_user_status_sync_scheduler(state.clone());
-    }
-    spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
-    let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
-    spawn_forward_proxy_maintenance_scheduler(state.clone());
-    spawn_db_compaction_scheduler(state.clone());
+    // Always-on HA tasks must stay available on standby/recovery so health, role
+    // refresh, and pull-sync keep working even while business traffic is fenced.
     spawn_ha_edgeone_authority_task(state.clone());
+    spawn_background_tasks_for_current_role(state.clone()).await;
 
     axum::serve(
         listener,
@@ -651,8 +638,8 @@ async fn run_ha_standby_sync_once(
                 )
                 .into());
             }
-            let result = apply_ha_baseline_response_stream(&state.proxy, channel, response).await?;
-            next_seq = result.high_watermark;
+        let result = apply_ha_baseline_response_stream(&state.proxy, channel, response).await?;
+        next_seq = result.high_watermark;
             state
                 .proxy
                 .persist_ha_sync_watermark(
@@ -683,6 +670,7 @@ async fn run_ha_standby_sync_once(
                     Some("baseline applied"),
                 )
                 .await?;
+            state.proxy.flush_ha_state_writes().await?;
         }
 
         let target = format!(
@@ -725,6 +713,7 @@ async fn run_ha_standby_sync_once(
                     Some(reset_detail),
                 )
                 .await?;
+            state.proxy.flush_ha_state_writes().await?;
             continue;
         }
         if !response.status().is_success() {
@@ -748,6 +737,7 @@ async fn run_ha_standby_sync_once(
                     Some(&format!("events={}", result.row_count)),
                 )
                 .await?;
+            state.proxy.flush_ha_state_writes().await?;
         }
         let ack_target = format!("{}/api/admin/ha/events/ack", source_url.trim_end_matches('/'));
         let _ = client
@@ -764,6 +754,32 @@ async fn run_ha_standby_sync_once(
     state.ha.mark_sync_success().await;
     state.proxy.flush_ha_state_writes().await?;
     Ok(())
+}
+
+fn spawn_business_background_tasks(state: Arc<AppState>) {
+    spawn_maintenance_worker(state.clone());
+    spawn_quota_sync_scheduler(state.clone());
+    spawn_token_usage_rollup_scheduler(state.clone());
+    spawn_auth_token_logs_gc_scheduler(state.clone());
+    spawn_ha_outbox_gc_scheduler(state.clone());
+    spawn_mcp_sessions_gc_scheduler(state.clone());
+    spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
+    spawn_request_logs_gc_scheduler(state.clone());
+    if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
+        spawn_linuxdo_user_status_sync_scheduler(state.clone());
+    }
+    spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
+    let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
+    spawn_forward_proxy_maintenance_scheduler(state.clone());
+    spawn_db_compaction_scheduler(state);
+}
+
+async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
+    if !state.ha.role().await.allows_basic_business() {
+        return false;
+    }
+    spawn_business_background_tasks(state);
+    true
 }
 
 async fn apply_ha_baseline_response_stream(

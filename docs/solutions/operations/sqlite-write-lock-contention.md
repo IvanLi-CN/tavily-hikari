@@ -120,6 +120,14 @@ brief contention visible as HTTP 500s or failed background bookkeeping.
   billing baseline path that still built one giant NDJSON string on the active node and one giant
   decompressed blob on the standby node. The reusable rule is: state-replication paths must stream
   rows/events end-to-end and apply incrementally within a bounded transaction.
+- The same role gate must cover background writers, not just external request handlers. In this
+  service, standby still looked “fenced” from the outside while `quota_sync`, usage rollups, GC,
+  and maintenance schedulers were quietly enqueueing and writing into SQLite. That is enough to
+  break a long-running HA apply transaction even when the request path is fully blocked.
+- If HA sync persists node-state or watermark metadata through a coalescing writer, flush that
+  metadata at safe boundaries between channel apply sessions. Waiting until the end of the whole
+  sync loop can make the next channel's `BEGIN IMMEDIATE` collide with delayed bookkeeping writes
+  and surface as nested-transaction or `database is locked` failures.
 - Keep `HA_MODE=single` truly silent for HA replication writes. Leaving replication triggers enabled
   on a single live node creates unbounded local-only backlog with no standby consumer.
 - Treat large retained HA event cleanup like request-log cleanup: bounded online GC for freshness,

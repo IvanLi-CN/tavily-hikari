@@ -34,6 +34,7 @@ mod tests {
     mod alerts_and_ha;
     mod alerts_and_ha_event_exports;
     mod alerts_and_ha_serving_modes;
+    mod alerts_and_ha_startup_roles;
     mod api_keys_and_registration;
     mod core_support_and_parsing;
     mod linuxdo_oauth_and_admin_keys;

@@ -54,6 +54,10 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - `standby` / `recovery` 启动时不得预热 forward-proxy runtime 或共享 `xray` 子进程；只有
   角色恢复到允许业务流量的状态后，才允许按需拉起业务 runtime。对应地，standby/recovery
   的 `/health` 不得因为 `xray` 未就绪而失败。
+- `standby` / `recovery` 启动时不得拉起会持续写入主业务库的业务后台任务，例如 quota sync、
+  usage rollup、request log GC、LinuxDo 同步、forward-proxy maintenance 与 DB compaction；
+  这些任务只能在角色恢复到允许业务流量后再启动。standby 侧只保留 health、HA pull-sync、
+  role/authority refresh 与 fencing 所需的最小后台能力。
 - recovery 只允许导入幂等账本事件，不导入调用记录，不覆盖新主当前权威状态。
 - recovery 完成后 quota 与 usage 聚合必须可继续滚动更新。
 
@@ -169,3 +173,6 @@ PR: include
   fencing、状态基线、outbox 增量 catch-up、standby promote、provisional gating、finalize 后 full
   write、旧主账本 recovery 和重复导入幂等。
 - 大量调用记录和大请求/响应正文不得进入 HA baseline、events 或 recovery payload。
+- 共享 `codex-testbox` 上的 256MiB cgroup v2 合同验证必须通过：standby 首次全量 baseline
+  sync 成功、active 连续 billing baseline 导出成功，且主备进程组 `memory.current` 峰值都不
+  得超过 `268435456` bytes。
