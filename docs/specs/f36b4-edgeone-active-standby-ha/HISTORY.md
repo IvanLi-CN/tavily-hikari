@@ -101,6 +101,21 @@ HA source settings originally drifted across layers: the frontend, demo fixtures
 
 The HA source settings dialog previously dumped raw backend failure text straight into the modal body, which was both visually inconsistent and hard to scan. The accepted interaction keeps local input validation beside the affected field and reserves form-level remote failures for a formal destructive alert with operator-friendly copy plus a default-collapsed technical-details disclosure.
 
+## HA Control Plane Revision
+
+The earlier HA admin UI mixed real local state with inferred remote placeholders derived from
+`edgeoneOrigin` / `edgeoneExpectedOrigin`. That was acceptable for initial fault-recovery work but
+not for routine maintenance operations.
+
+- The accepted model is a single active-led control surface.
+- Real peer inventory now comes from `HA_PEER_NODES_JSON`.
+- Only one peer may be marked `standby_candidate` in the current release.
+- `planned cutover` is the formal maintenance cutover path and is initiated only from the current
+  `full_master`.
+- Peer visibility and timeline retention are intentionally bounded: multiple peers may be observed,
+  but only the eligible standby candidate can take planned cutover, and raw operator-visible
+  control-plane events are retained for 7 days.
+
 ## Streaming HA Memory Contract Revision
 
 Observed 101 memory growth showed that HA sync still had one large-object pipeline even after the

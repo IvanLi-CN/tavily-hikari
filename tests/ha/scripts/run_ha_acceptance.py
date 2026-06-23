@@ -138,12 +138,17 @@ def stage_pre():
 
 def stage_failover():
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        promoted = executor.submit(request, "POST", f"{NODE_B}/api/admin/ha/promote", {})
+        cutover = executor.submit(
+            request,
+            "POST",
+            f"{NODE_A}/api/admin/ha/planned-cutover",
+            {"targetNodeId": "node-b"},
+        )
         active_rejected = executor.submit(request, "POST", f"{NODE_A}/api/admin/ha/promote", {})
-        b_status, b_body = promoted.result(timeout=20)
+        b_status, b_body = cutover.result(timeout=20)
         a_status, _a_body = active_rejected.result(timeout=20)
-    assert_status("promote node-b", b_status, 200)
-    assert b_body["role"] == "provisional_master", b_body
+    assert_status("planned cutover to node-b", b_status, 200)
+    assert b_body["status"] == "success", b_body
     assert_status("active node-a non-force promote rejected", a_status, 409)
     assert active_origin() == "node-b:8787"
     node_a = wait_json(
@@ -164,12 +169,13 @@ def stage_failover():
         token,
     )
     assert_status("provisional ingress mcp", status, 200)
-    status, _ = request("POST", f"{NODE_B}/api/tokens", {"note": "blocked provisional"})
-    assert_status("provisional token write gate", status, 503)
-
-    status, body = request("POST", f"{NODE_B}/api/admin/ha/finalize", {})
-    assert_status("finalize node-b", status, 200)
-    assert body["role"] == "full_master", body
+    node_b = wait_json(
+        f"{NODE_B}/api/admin/ha/status",
+        lambda body: body["role"] == "full_master",
+        "node-b full_master after planned cutover",
+        timeout=30,
+    )
+    assert node_b["role"] == "full_master", node_b
     status, _ = request("POST", f"{NODE_B}/api/tokens", {"note": "after finalize"})
     assert_status("full master token write restored", status, 201)
     print(json.dumps({"stage": "failover", "origin": active_origin()}))

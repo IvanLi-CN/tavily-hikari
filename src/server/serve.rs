@@ -184,6 +184,7 @@ pub async fn serve(
         .route("/api/public/logs", get(get_public_logs))
         .route("/api/token/metrics", get(get_token_metrics_public))
         .route("/api/ha/status", get(get_public_ha_status))
+        .route("/api/internal/ha/status", get(get_internal_ha_status))
         .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
@@ -241,8 +242,15 @@ pub async fn serve(
         .route("/api/admin/ha/baseline", get(get_admin_ha_baseline))
         .route("/api/admin/ha/events", get(get_admin_ha_events))
         .route("/api/admin/ha/events/ack", post(post_admin_ha_events_ack))
+        .route("/api/admin/ha/timeline", get(get_admin_ha_timeline))
+        .route("/api/admin/ha/nodes/:node_id", get(get_admin_ha_node_detail))
         .route("/api/admin/ha/promote", post(post_admin_ha_promote))
+        .route(
+            "/api/admin/ha/planned-cutover",
+            post(post_admin_ha_planned_cutover),
+        )
         .route("/api/admin/ha/finalize", post(post_admin_ha_finalize))
+        .route("/api/internal/ha/finalize", post(post_internal_ha_finalize))
         .route(
             "/api/admin/ha/recovery/import",
             post(post_admin_ha_recovery_import),
@@ -481,6 +489,7 @@ pub async fn serve(
     // Always-on HA tasks must stay available on standby/recovery so health, role
     // refresh, and pull-sync keep working even while business traffic is fenced.
     spawn_ha_edgeone_authority_task(state.clone());
+    spawn_ha_control_plane_gc_task(state.clone());
     spawn_background_tasks_for_current_role(state.clone()).await;
 
     axum::serve(
@@ -1056,6 +1065,26 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                         "HA authority refresh failed"
                     );
                 }
+            }
+        }
+    });
+}
+
+fn spawn_ha_control_plane_gc_task(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            state
+                .proxy
+                .backend_time()
+                .sleep(std::time::Duration::from_secs(60 * 60))
+                .await;
+            if let Err(err) = state.proxy.gc_ha_control_plane_events().await {
+                tracing::warn!(
+                    component = "ha",
+                    event = "control_plane_gc_failed",
+                    err = %err,
+                    "HA control-plane event GC failed"
+                );
             }
         }
     });

@@ -34,6 +34,7 @@ use futures_util::stream as futures_stream;
 use futures_util::{Stream, StreamExt};
 use nanoid::nanoid;
 use rand::Rng;
+use reqwest::Client;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

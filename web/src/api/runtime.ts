@@ -1343,6 +1343,57 @@ export interface HaStatus {
   syncLagSeconds: number | null
   recoveryStatus: string | null
   message: string | null
+  peerNodes: HaPeerNode[]
+  plannedCutoverEligible: boolean
+}
+
+export interface HaPeerNode {
+  nodeId: string
+  publicOrigin: string | null
+  role: HaNodeRole | null
+  allowsBasicBusiness: boolean
+  allowsFullWrites: boolean
+  lastSyncAt: number | null
+  syncLagSeconds: number | null
+  recoveryStatus: string | null
+  message: string | null
+  lastSeenAt: number | null
+  stale: boolean
+  roleHint: 'standby_candidate' | 'observer'
+  plannedCutoverEligible: boolean
+}
+
+export interface HaTimelineEvent {
+  id: number
+  eventKind: string
+  category: 'planned_cutover' | 'manual_failover' | 'edgeone' | 'peer' | 'sync' | 'recovery' | 'role'
+  status: 'info' | 'running' | 'success' | 'warning' | 'error'
+  nodeId: string | null
+  operationId: string | null
+  summary: string
+  detail: string | null
+  technicalDetails: Record<string, unknown> | null
+  createdAt: number
+}
+
+export interface HaTimelinePage {
+  events: HaTimelineEvent[]
+  nextCursor: number | null
+}
+
+export interface HaNodeDetail {
+  currentNodeId: string
+  node: HaPeerNode
+  edgeoneDomain: string | null
+  edgeoneCurrentTarget: string | null
+  edgeoneCurrentSourceKind: HaSourceKind | null
+  haSourceEffective: HaSourceSettings | null
+  timeline: HaTimelinePage
+}
+
+export interface PlannedCutoverResult {
+  operationId: string
+  status: string
 }
 
 export function fetchAdminHaStatus(signal?: AbortSignal): Promise<HaStatus> {
@@ -1410,6 +1461,47 @@ export function promoteHaNode(force = false): Promise<HaStatus> {
 
 export function finalizeHaFailover(): Promise<HaStatus> {
   return requestJson('/api/admin/ha/finalize', { method: 'POST' })
+}
+
+export function runPlannedCutover(targetNodeId: string): Promise<PlannedCutoverResult> {
+  return requestJson('/api/admin/ha/planned-cutover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetNodeId }),
+  })
+}
+
+export function fetchHaTimeline(
+  query: {
+    cursor?: number | null
+    limit?: number
+    nodeId?: string | null
+    category?: HaTimelineEvent['category'] | null
+  } = {},
+  signal?: AbortSignal,
+): Promise<HaTimelinePage> {
+  const params = new URLSearchParams()
+  if (query.cursor != null) params.set('cursor', String(query.cursor))
+  if (query.limit != null) params.set('limit', String(query.limit))
+  if (query.nodeId) params.set('nodeId', query.nodeId)
+  if (query.category) params.set('category', query.category)
+  const suffix = params.toString()
+  return requestJson(`/api/admin/ha/timeline${suffix ? `?${suffix}` : ''}`, { signal })
+}
+
+export function fetchHaNodeDetail(
+  nodeId: string,
+  query: {
+    cursor?: number | null
+    limit?: number
+  } = {},
+  signal?: AbortSignal,
+): Promise<HaNodeDetail> {
+  const params = new URLSearchParams()
+  if (query.cursor != null) params.set('cursor', String(query.cursor))
+  if (query.limit != null) params.set('limit', String(query.limit))
+  const suffix = params.toString()
+  return requestJson(`/api/admin/ha/nodes/${encodeURIComponent(nodeId)}${suffix ? `?${suffix}` : ''}`, { signal })
 }
 
 export function fetchPublicMetrics(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<PublicMetrics> {

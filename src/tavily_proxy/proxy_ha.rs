@@ -356,6 +356,40 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn insert_ha_control_plane_event(
+        &self,
+        event: &HaControlPlaneEventInsert,
+    ) -> Result<i64, ProxyError> {
+        self.key_store.insert_ha_control_plane_event(event).await
+    }
+
+    pub async fn list_ha_control_plane_events(
+        &self,
+        cursor: Option<i64>,
+        limit: i64,
+        node_id: Option<&str>,
+        category: Option<HaControlPlaneEventCategory>,
+    ) -> Result<Vec<HaControlPlaneEventView>, ProxyError> {
+        self.key_store
+            .list_ha_control_plane_events(cursor, limit, node_id, category)
+            .await
+    }
+
+    pub async fn list_ha_control_plane_events_for_node_interactions(
+        &self,
+        cursor: Option<i64>,
+        limit: i64,
+        node_id: &str,
+    ) -> Result<Vec<HaControlPlaneEventView>, ProxyError> {
+        self.key_store
+            .list_ha_control_plane_events_for_node_interactions(cursor, limit, node_id)
+            .await
+    }
+
+    pub async fn gc_ha_control_plane_events(&self) -> Result<i64, ProxyError> {
+        self.key_store.gc_ha_control_plane_events().await
+    }
+
     pub async fn claim_ha_recovery_batch(
         &self,
         batch_id: &str,

@@ -2695,6 +2695,35 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS ha_control_plane_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_kind TEXT NOT NULL,
+                category TEXT NOT NULL,
+                status TEXT NOT NULL,
+                node_id TEXT,
+                operation_id TEXT,
+                summary TEXT NOT NULL,
+                detail TEXT,
+                technical_details_json TEXT,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ha_control_plane_events_created_at ON ha_control_plane_events(created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ha_control_plane_events_category_node ON ha_control_plane_events(category, node_id, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS ha_outbox (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT NOT NULL,

@@ -57,6 +57,8 @@ services:
       EDGEONE_API_ENDPOINT: http://edgeone-mock:9000
       HA_INTERNAL_TOKEN: ha-internal-token
       HA_SYNC_INTERVAL_SECS: 5
+      HA_PEER_NODES_JSON: >-
+        [{"nodeId":"node-b","adminBaseUrl":"http://node-b:8787","publicOrigin":"node-b:8787","roleHint":"standby_candidate"}]
     volumes:
       - node-a-data:/srv/app/data
     depends_on:
@@ -91,6 +93,8 @@ services:
       HA_SYNC_SOURCE_URL: http://node-a:8787
       HA_INTERNAL_TOKEN: ha-internal-token
       HA_SYNC_INTERVAL_SECS: 5
+      HA_PEER_NODES_JSON: >-
+        [{"nodeId":"node-a","adminBaseUrl":"http://node-a:8787","publicOrigin":"node-a:8787","roleHint":"standby_candidate"}]
     volumes:
       - node-b-data:/srv/app/data
     depends_on:

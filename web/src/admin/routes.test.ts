@@ -14,6 +14,7 @@ import {
   keyDetailPath,
   parseAdminPath,
   systemSettingsHaPath,
+  systemSettingsHaNodePath,
   tokenDetailPath,
   unboundTokenUsagePath,
   userDetailPath,
@@ -58,6 +59,13 @@ describe('admin user tag routes', () => {
       name: 'module',
       module: 'system-settings',
       systemSettingsView: 'ha',
+    })
+  })
+
+  it('parses the HA node detail route', () => {
+    expect(parseAdminPath('/admin/system-settings/ha/nodes/demo-standby')).toEqual({
+      name: 'ha-node',
+      nodeId: 'demo-standby',
     })
   })
 
@@ -114,6 +122,7 @@ describe('admin user tag routes', () => {
     expect(announcementCreatePath()).toBe('/admin/announcements/new')
     expect(announcementEditPath('ann 42')).toBe('/admin/announcements/ann%2042/edit')
     expect(systemSettingsHaPath()).toBe('/admin/system-settings/ha')
+    expect(systemSettingsHaNodePath('demo standby')).toBe('/admin/system-settings/ha/nodes/demo%20standby')
   })
 
   it('preserves full users list context when building cross-page routes', () => {
@@ -203,5 +212,10 @@ describe('admin user tag routes', () => {
 
   it('compares user usage routes as the same logical page', () => {
     expect(isSameAdminRoute({ name: 'user-usage' }, { name: 'user-usage' })).toBe(true)
+  })
+
+  it('compares HA node routes by node id', () => {
+    expect(isSameAdminRoute({ name: 'ha-node', nodeId: 'node-a' }, { name: 'ha-node', nodeId: 'node-a' })).toBe(true)
+    expect(isSameAdminRoute({ name: 'ha-node', nodeId: 'node-a' }, { name: 'ha-node', nodeId: 'node-b' })).toBe(false)
   })
 })

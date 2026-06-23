@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { HaSourceSettingsApiError, HaStatus } from '../api'
+import type { HaPeerNode, HaSourceSettingsApiError, HaStatus, HaTimelineEvent } from '../api'
 import HaSourceSettingsDialog from '../admin/HaSourceSettingsDialog'
 import HaStatusBanner from './HaStatusBanner'
 import { translations } from '../i18n'
@@ -45,6 +45,24 @@ const baseStatus: HaStatus = {
   syncLagSeconds: 8,
   recoveryStatus: null,
   message: 'standby is synchronized and ready for manual promotion',
+  peerNodes: [
+    {
+      nodeId: 'node-a',
+      publicOrigin: '203.0.113.9:58087',
+      role: 'full_master',
+      allowsBasicBusiness: true,
+      allowsFullWrites: true,
+      lastSyncAt: 1_700_000_000,
+      syncLagSeconds: 2,
+      recoveryStatus: null,
+      message: 'active node is serving traffic',
+      lastSeenAt: 1_700_000_001,
+      stale: false,
+      roleHint: 'standby_candidate',
+      plannedCutoverEligible: false,
+    },
+  ],
+  plannedCutoverEligible: false,
 }
 
 const provisionalStatus: HaStatus = {
@@ -104,6 +122,149 @@ const recoveryStatus: HaStatus = {
   message: 'EdgeOne origin moved to 203.0.113.10:58087; recovery import required',
 }
 
+const eligiblePeer: HaPeerNode = {
+  nodeId: 'node-b',
+  publicOrigin: '203.0.113.10:58087',
+  role: 'standby',
+  allowsBasicBusiness: false,
+  allowsFullWrites: false,
+  lastSyncAt: 1_700_000_018,
+  syncLagSeconds: 4,
+  recoveryStatus: null,
+  message: 'standby is synchronized and ready',
+  lastSeenAt: 1_700_000_020,
+  stale: false,
+  roleHint: 'standby_candidate',
+  plannedCutoverEligible: true,
+}
+
+const stalePeer: HaPeerNode = {
+  ...eligiblePeer,
+  nodeId: 'node-c',
+  publicOrigin: '203.0.113.11:58087',
+  stale: true,
+  plannedCutoverEligible: false,
+  message: 'peer status probe is older than 30 seconds',
+}
+
+const unreachablePeer: HaPeerNode = {
+  ...eligiblePeer,
+  nodeId: 'node-d',
+  publicOrigin: '203.0.113.12:58087',
+  role: 'recovery',
+  recoveryStatus: 'peer unreachable',
+  stale: true,
+  plannedCutoverEligible: false,
+  message: 'peer internal status endpoint is unreachable',
+}
+
+const lagBlockedPeer: HaPeerNode = {
+  ...eligiblePeer,
+  nodeId: 'node-e',
+  publicOrigin: '203.0.113.13:58087',
+  syncLagSeconds: 61,
+  plannedCutoverEligible: false,
+  message: 'sync lag exceeds 30 seconds threshold',
+}
+
+const runningTimeline: HaTimelineEvent[] = [
+  {
+    id: 401,
+    eventKind: 'planned_cutover_started',
+    category: 'planned_cutover',
+    status: 'running',
+    nodeId: 'node-a',
+    operationId: 'ha-op-running',
+    summary: 'planned cutover to node-b is running',
+    detail: 'EdgeOne route already points to node-b; waiting for finalize.',
+    technicalDetails: { phase: 'await_peer_finalize', targetNodeId: 'node-b' },
+    createdAt: 1_700_000_050,
+  },
+]
+
+const completedTimeline: HaTimelineEvent[] = [
+  {
+    id: 501,
+    eventKind: 'planned_cutover_succeeded',
+    category: 'planned_cutover',
+    status: 'success',
+    nodeId: 'node-a',
+    operationId: 'ha-op-success',
+    summary: 'planned cutover completed to node-b',
+    detail: 'Target peer finalized and this node moved into recovery.',
+    technicalDetails: { targetNodeId: 'node-b', oldRole: 'full_master', newRole: 'recovery' },
+    createdAt: 1_700_000_060,
+  },
+  {
+    id: 500,
+    eventKind: 'edgeone_modify_acceleration_domain',
+    category: 'edgeone',
+    status: 'success',
+    nodeId: 'node-a',
+    operationId: 'ha-op-success',
+    summary: 'EdgeOne ModifyAccelerationDomain succeeded',
+    detail: 'Route switched to node-b.',
+    technicalDetails: { requestId: 'edgeone-demo-request' },
+    createdAt: 1_700_000_058,
+  },
+]
+
+const failedTimeline: HaTimelineEvent[] = [
+  {
+    id: 601,
+    eventKind: 'planned_cutover_rejected_precheck',
+    category: 'planned_cutover',
+    status: 'error',
+    nodeId: 'node-a',
+    operationId: 'ha-op-failed',
+    summary: 'planned cutover precheck rejected node-e',
+    detail: 'The standby candidate exceeded the sync lag threshold.',
+    technicalDetails: { targetNodeId: 'node-e', syncLagSeconds: 61 },
+    createdAt: 1_700_000_070,
+  },
+]
+
+const cutoverReadyStatus: HaStatus = {
+  ...fullMasterStatus,
+  nodeId: 'node-a',
+  nodePublicOrigin: '203.0.113.9:58087',
+  edgeoneOrigin: '203.0.113.9:58087',
+  edgeoneCurrentTarget: '203.0.113.9:58087',
+  edgeoneExpectedOrigin: null,
+  edgeoneExpectedTarget: null,
+  lastSyncAt: 1_700_000_020,
+  syncLagSeconds: 0,
+  message: 'full master is ready to drain traffic for planned maintenance',
+  peerNodes: [eligiblePeer, stalePeer, unreachablePeer, lagBlockedPeer],
+}
+
+const cutoverRunningStatus: HaStatus = {
+  ...cutoverReadyStatus,
+  message: 'planned cutover is in progress',
+  peerNodes: [
+    {
+      ...eligiblePeer,
+      plannedCutoverEligible: false,
+      role: 'provisional_master',
+      message: 'peer is waiting for finalize',
+    },
+  ],
+}
+
+const cutoverSuccessStatus: HaStatus = {
+  ...recoveryStatus,
+  peerNodes: [
+    {
+      ...eligiblePeer,
+      role: 'full_master',
+      allowsBasicBusiness: true,
+      allowsFullWrites: true,
+      plannedCutoverEligible: false,
+      message: 'planned cutover completed; node-b now serves traffic',
+    },
+  ],
+}
+
 function StoryFrame({ children }: { children: JSX.Element }): JSX.Element {
   return (
     <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gap: 18 }}>
@@ -132,6 +293,14 @@ function StateGallery(): JSX.Element {
         />
         <HaStatusBanner status={fullMasterStatus} audience="admin" strings={translations.zh.admin.systemSettings.ha} language="zh" />
         <HaStatusBanner status={recoveryStatus} audience="admin" strings={translations.zh.admin.systemSettings.ha} language="zh" />
+        <HaStatusBanner
+          status={cutoverReadyStatus}
+          audience="admin"
+          strings={translations.zh.admin.systemSettings.ha}
+          language="zh"
+          onPlannedCutover={() => undefined}
+          timeline={completedTimeline}
+        />
       </>
     </StoryFrame>
   )
@@ -178,7 +347,7 @@ export const NodeListGallery: Story = {
   },
   play: async ({ canvasElement }) => {
     const text = canvasElement.textContent ?? ''
-    for (const expected of ['节点清单', '提升为主节点', '完成主切换', '请使用该节点管理端']) {
+    for (const expected of ['节点清单', '提升为主节点', '完成主切换', '计划内切流', '7 天时间线']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected HA node list gallery to contain: ${expected}`)
       }
@@ -189,7 +358,7 @@ export const NodeListGallery: Story = {
 export const StandbyAdmin: Story = {
   play: async ({ canvasElement }) => {
     const text = canvasElement.textContent ?? ''
-    for (const expected of ['HA 服务节点', 'node-b', '已配置的对端', '提升为主节点']) {
+    for (const expected of ['HA 服务节点', 'node-b', '当前管理节点', '提升为主节点']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected standby admin story to contain: ${expected}`)
       }
@@ -212,6 +381,50 @@ export const FullMasterAdmin: Story = {
   },
 }
 
+export const PlannedCutoverReady: Story = {
+  args: {
+    status: cutoverReadyStatus,
+    onPromote: undefined,
+    onPlannedCutover: () => undefined,
+    timeline: completedTimeline,
+    onLoadMoreTimeline: () => undefined,
+    hasMoreTimeline: true,
+  },
+  play: async ({ canvasElement }) => {
+    const text = canvasElement.textContent ?? ''
+    for (const expected of ['计划内切流', 'node-b', '备用节点探测正常', '状态过期', '需要恢复', '加载更多']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected planned cutover ready story to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const PlannedCutoverRunning: Story = {
+  args: {
+    status: cutoverRunningStatus,
+    onPromote: undefined,
+    timeline: runningTimeline,
+  },
+}
+
+export const PlannedCutoverFailed: Story = {
+  args: {
+    status: cutoverReadyStatus,
+    onPromote: undefined,
+    timeline: failedTimeline,
+  },
+}
+
+export const TimelineEmpty: Story = {
+  args: {
+    status: cutoverReadyStatus,
+    onPromote: undefined,
+    onPlannedCutover: () => undefined,
+    timeline: [],
+  },
+}
+
 export const OriginGroupSourceDialog: Story = {
   render: () => (
     <StoryFrame>
@@ -221,7 +434,6 @@ export const OriginGroupSourceDialog: Story = {
           audience="admin"
           strings={translations.zh.admin.systemSettings.ha}
           language="zh"
-          onConfigureSource={() => undefined}
         />
         <HaSourceSettingsDialog
           open
@@ -288,7 +500,6 @@ export const DirectSourceDialog: Story = {
             audience="admin"
             strings={translations.zh.admin.systemSettings.ha}
             language="zh"
-            onConfigureSource={() => undefined}
           />
           <HaSourceSettingsDialog
             open
@@ -327,7 +538,6 @@ export const StandbySourceDialog: Story = {
           audience="admin"
           strings={translations.zh.admin.systemSettings.ha}
           language="zh"
-          onConfigureSource={() => undefined}
         />
         <HaSourceSettingsDialog
           open
@@ -377,7 +587,6 @@ export const SourceDialogSubmitFailure: Story = {
             audience="admin"
             strings={translations.zh.admin.systemSettings.ha}
             language="zh"
-            onConfigureSource={() => undefined}
           />
           <HaSourceSettingsDialog
             open
@@ -426,8 +635,9 @@ export const SourceDialogSubmitFailure: Story = {
 
 export const RecoveryAdmin: Story = {
   args: {
-    status: recoveryStatus,
+    status: cutoverSuccessStatus,
     onPromote: undefined,
+    timeline: completedTimeline,
   },
 }
 

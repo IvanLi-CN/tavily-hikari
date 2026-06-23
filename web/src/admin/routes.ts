@@ -40,6 +40,7 @@ export type AdminModuleId =
 
 export type AdminPathRoute =
   | { name: 'module'; module: AdminModuleId; systemSettingsView?: AdminSystemSettingsView }
+  | { name: 'ha-node'; nodeId: string }
   | { name: 'not-found'; path: string }
   | { name: 'token'; id: string }
   | { name: 'unbound-token-usage' }
@@ -166,6 +167,11 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/system-settings/ha`) {
     return { name: 'module', module: 'system-settings', systemSettingsView: 'ha' }
   }
+  if (path.startsWith(`${ADMIN_BASE}/system-settings/ha/nodes/`)) {
+    const id = decodeSegment(path.slice(`${ADMIN_BASE}/system-settings/ha/nodes/`.length))
+    if (id) return { name: 'ha-node', nodeId: id }
+    return { name: 'module', module: 'system-settings', systemSettingsView: 'ha' }
+  }
   if (path === `${ADMIN_BASE}/proxy-settings`) {
     return { name: 'module', module: 'proxy-settings' }
   }
@@ -181,6 +187,9 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
         && (left.systemSettingsView ?? 'general') === (right.systemSettingsView ?? 'general')
     }
     return left.module === right.module
+  }
+  if (left.name === 'ha-node' && right.name === 'ha-node') {
+    return left.nodeId === right.nodeId
   }
   if (left.name === 'not-found' && right.name === 'not-found') {
     return left.path === right.path
@@ -220,6 +229,10 @@ export function modulePath(module: AdminModuleId): string {
 
 export function systemSettingsHaPath(): string {
   return `${ADMIN_BASE}/system-settings/ha`
+}
+
+export function systemSettingsHaNodePath(nodeId: string): string {
+  return `${ADMIN_BASE}/system-settings/ha/nodes/${encodeURIComponent(nodeId)}`
 }
 
 export function announcementListPath(): string {

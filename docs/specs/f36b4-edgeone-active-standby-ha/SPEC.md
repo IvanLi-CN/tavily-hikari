@@ -2,7 +2,7 @@
 
 ## Summary
 
-Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从负载均衡。任一时刻只有一个实例处理完整业务，EdgeOne 当前源站 `IP:port` 或源站组 ID 是 active master 的权威标识。standby 持续同步 active 的 SQLite 数据；active 故障时，standby 通过 EdgeOne API 切换源站到自己，先进入 `provisional_master`，恢复基础 API/MCP 服务，再由管理员确认后进入 `full_master`。
+Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从负载均衡。任一时刻只有一个实例处理完整业务，EdgeOne 当前源站 `IP:port` 或源站组 ID 是 active master 的权威标识。standby 持续同步 active 的 SQLite 数据；active 故障时，standby 通过 EdgeOne API 切换源站到自己，先进入 `provisional_master`，恢复基础 API/MCP 服务，再由管理员确认后进入 `full_master`。同时，管理员现在必须能在当前 active 节点直接查看真实 peer 状态、执行 `planned cutover`，并查看 7 天 HA 控制面时间线。
 
 ## Goals
 
@@ -11,6 +11,9 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - 自动 failover 只恢复基础 API/MCP、鉴权和 quota 扣减。
 - 注册、充值、配置写入、上游 key 管理等高风险写入必须等管理员 finalize。
 - 旧主恢复后只补传可幂等合并数据，不覆盖新主配置类状态。
+- 当前 active 节点 HA 页面必须展示真实 peer 列表，而不是基于 EdgeOne 字段推断的占位节点。
+- 提供计划内维护切流入口 `planned cutover`，由当前 `full_master` 发起并自动完成目标节点 finalize。
+- 提供 7 天 HA 控制面时间线，覆盖切流、手工 failover、EdgeOne 调用、同步异常和 recovery/角色变化。
 
 ## Non-Goals
 
@@ -18,6 +21,8 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - 不实现跨从额度租约或 token 配额派发。
 - 不合并多从 rebalance 映射状态。
 - 不依赖 EdgeOne 免费版的原生负载均衡能力。
+- 不在本轮实现 UI 内 cluster membership 编辑。
+- 不在本轮让多个 standby 都具备自动接管能力；只有一个 `standby_candidate` 可作为计划内切流目标。
 
 ## EdgeOne Control Plane
 
@@ -67,6 +72,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 ## API Contract
 
 - `GET /api/admin/ha/status` 返回当前节点状态、EdgeOne 源站、同步水位、recovery 状态。
+- `GET /api/admin/ha/status` 继续保留当前本机字段，并新增 `peerNodes[]` 与 `plannedCutoverEligible`。
 - `GET /api/ha/status` 返回可公开给用户控制台的降级摘要，不包含 secret 或 expected origin。
 - `GET /api/admin/ha/status` 还要返回当前/预期源站类型、本地默认源站、本地覆盖源站和当前 EdgeOne target。
 - `PUT /api/admin/ha/source` 保存当前服务节点私有源站配置，可在 `IP/域名` 与 `源站组` 间切换，并可选择保存后立即应用到 EdgeOne。
@@ -77,6 +83,9 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - `POST /api/admin/ha/events/ack` 仅内部或管理员认证可调用，请求体必须显式携带 `channel`，用于记录 standby 已应用的该 channel outbox seq。
 - `POST /api/admin/ha/promote` 将当前 standby 切为 `provisional_master`，可带 `force` 用于强制接管。
 - `POST /api/admin/ha/finalize` 管理员确认后进入 `full_master`。
+- `POST /api/admin/ha/planned-cutover` 由当前 `full_master` 发起，请求体固定为 `{ targetNodeId }`，只允许对 `roleHint=standby_candidate`、最近 30 秒内探测成功、`syncLagSeconds <= 30`、当前角色为 `standby` 且无 `recoveryStatus` 的 peer 执行。
+- `GET /api/admin/ha/timeline` 返回最近 7 天 HA 控制面事件，支持 `cursor`、`limit`、`nodeId`、`category` 过滤。
+- `GET /api/internal/ha/status` 和 `POST /api/internal/ha/finalize` 仅供节点间内部控制使用。
 - `POST /api/admin/ha/recovery/import` 导入旧主 recovery 账本批次，仅允许内部或管理员认证调用；调用记录字段必须被拒绝。
 
 ## Runtime Configuration
@@ -99,12 +108,17 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - `HA_SYNC_SOURCE_URL`（standby 拉取 active 的内部 URL）
 - `HA_INTERNAL_TOKEN`
 - `HA_SYNC_INTERVAL_SECS`
+- `HA_PEER_NODES_JSON`：peer inventory 唯一真相源，元素固定为 `nodeId`、`adminBaseUrl`、`publicOrigin`、`roleHint`，且当前版本只允许一个 `standby_candidate`。
 
 ## UI Contract
 
 - 用户控制台在 failover、provisional、recovery、同步滞后时显示降级警告。
 - 管理员控制台的完整 HA 服务节点管理面板只出现在系统设置的高可用二级界面，包含节点清单、角色、源站、健康状态、同步水位、promote/finalize 操作和 EdgeOne 当前源站摘要。
+- 管理员控制台的 HA 页面必须稳定分成三块：真实节点清单、`planned cutover` 操作区、7 天时间线。
 - HA 管理页还要提供当前节点源站配置入口，允许在 `IP/域名` 与 `源站组` 之间切换，并在 active/provisional 时支持保存后切换 EdgeOne 到此源站。
+- 节点清单必须直接展示 peer eligibility、最后探测时间、同步状态、恢复状态，以及哪个 peer 是当前允许切流的目标。
+- `planned cutover` 必须通过明确确认流展示目标节点、当前路由和预检语义。
+- 时间线默认展示运维摘要，原始 EdgeOne 请求/响应与内部错误细节放进 disclosure。
 - HA 源站设置弹窗的本地校验必须贴近字段本身：`host`、`port`、`origin group` 错误继续绑定各自控件并保留 `aria-invalid`，不得与远端提交失败共用同一块文案区域。
 - HA 源站设置弹窗的远端提交失败必须使用正式 destructive alert，包含任务相关标题、简短修复提示，以及默认折叠的“技术详情”展开区；原始后端文本只在展开后展示。
 - 管理员业务页面在 `full_master` 正常态不得显示 HA 面板；在 failover、standby、recovery 或写入受限时，只显示紧凑异常提示并链接到系统设置的高可用界面，不直接执行 promote/finalize。
@@ -154,6 +168,20 @@ PR: include
 
 PR: include
 
+![HA control-plane settings page from web demo on desktop](./assets/ha-control-plane-web-demo-desktop.png)
+
+PR: include
+
+![HA control-plane settings page from web demo on mobile](./assets/ha-control-plane-web-demo-mobile.png)
+
+PR: include
+
+![HA node detail page from web demo on desktop](./assets/ha-node-detail-web-demo-desktop.png)
+
+PR: include
+
+![HA node detail page from web demo on mobile](./assets/ha-node-detail-web-demo-mobile.png)
+
 ![HA source settings dialog using an EdgeOne origin group with selected-source summary](./assets/ha-source-dialog-origin-group-polished.png)
 
 PR: include
@@ -167,6 +195,8 @@ PR: include
 ## Acceptance
 
 - `standby/recovery` 禁止外部业务写入。
+- `planned cutover` 验收必须覆盖当前 active 节点发起到目标 standby 自动 `provisional_master -> full_master`，同时旧主进入 `recovery`，且过程无需人工再登录目标节点执行 finalize。
+- `planned cutover` 预检失败必须覆盖 stale、unreachable、同步滞后超阈值、目标处于 recovery、目标不是 `standby_candidate` 这几类拒绝路径，并保证不会修改 EdgeOne。
 - `provisional_master` 允许 API/MCP/quota，禁止注册、充值、配置写入。
 - `finalize` 后恢复完整功能。
 - EdgeOne 当前源站与本节点 origin 一致时，节点可识别自己为 active。
@@ -175,6 +205,7 @@ PR: include
 - 双节点 mock EdgeOne 验收必须覆盖 `pre -> failover -> recovery`：单入口业务流量、standby
   fencing、状态基线、outbox 增量 catch-up、standby promote、provisional gating、finalize 后 full
   write、旧主账本 recovery 和重复导入幂等。
+- `GET /api/admin/ha/timeline` 分页、过滤、技术详情 disclosure 与 7 天保留清理必须有自动化覆盖。
 - 大量调用记录和大请求/响应正文不得进入 HA baseline、events 或 recovery payload。
 - 共享 `codex-testbox` 上的 256MiB cgroup v2 合同验证必须通过：standby 首次全量 baseline
   sync 成功、active 连续 billing baseline 导出成功，且主备进程组 `memory.current` 峰值都不

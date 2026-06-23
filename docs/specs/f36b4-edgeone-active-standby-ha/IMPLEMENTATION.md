@@ -5,6 +5,8 @@
 - Added `src/ha.rs` with HA mode, role state machine, runtime status view, and Tencent TC3-signed EdgeOne client calls.
 - Added HA startup role detection from EdgeOne current origin.
 - Added runtime EdgeOne authority refresh so a running old active enters `recovery` when the origin moves away, and an externally pointed standby only becomes `provisional_master` until administrator finalize.
+- Added HA peer inventory parsing through `HA_PEER_NODES_JSON`, real admin `peerNodes[]` aggregation, internal-only peer status/finalize endpoints, and `planned cutover` orchestration initiated from the current `full_master`.
+- Added normalized HA control-plane timeline storage through `ha_control_plane_events`, admin timeline query, and hourly 7-day retention GC.
 - Replaced SQLite snapshot export/import with deprecated `410 Gone` responses so HA cannot transfer full database files.
 - Added admin/internal endpoints for HA status, zstd NDJSON state baseline, zstd NDJSON outbox events, event acknowledgement, promote, finalize, and recovery import.
 - Added per-node HA source settings persistence and admin API so the current instance can store a private source override, switch between direct origin and source group, and optionally apply the saved source to EdgeOne immediately. The startup config now also accepts `HA_SOURCE_KIND` and `HA_SOURCE_ORIGIN_GROUP_ID` as per-node defaults, while `EDGEONE_EXPECTED_ORIGIN_*` stays direct-origin only.
@@ -113,6 +115,7 @@
 - Added API bindings for HA status, promote, and finalize.
 - Added shared `HaStatusBanner` with admin and user presentation modes.
 - Added admin HA service node panel with active-standby status details, including node inventory, role, origin, health, EdgeOne domain/current/expected origin, EdgeOne API configuration, sync timestamps, basic traffic/full write gates, recovery status, message, and row-level promote/finalize actions.
+- Reworked the HA settings page into a control plane that reads real `peerNodes[]`, exposes planned-cutover actions for eligible standby candidates, and shows a 7-day timeline with collapsible technical details.
 - Moved the full admin HA panel into the System Settings high-availability subpage at `/admin/system-settings/ha`; normal admin business pages no longer render HA UI, and abnormal states only render a compact link to the HA settings page.
 - Added promote/finalize actions for degraded admin states inside the HA settings page only.
 - Added user console banner for degraded HA states.
@@ -124,6 +127,8 @@
 
 - Storybook canvas: `Components/HaStatusBanner/SourceDialogSubmitFailure`
   - evidence_note: The submit-failure story now actively triggers the failed `保存并切换 EdgeOne 到此源站` path and renders the formal destructive alert with a stronger clay-native error peak, mode-specific recovery guidance, auto-focus on the failure region, a clearer raw-response disclosure, and de-emphasized footer actions while the failure is present. The captured dialog screenshot is stored at `docs/specs/f36b4-edgeone-active-standby-ha/assets/ha-source-dialog-submit-failure-alert.png`, measured `672x952`, and bound to `60388584700da855bb1e015402aab9baa4951314`. `trim_whitespace.py` re-ran and reported `no_meaningful_whitespace`, so the original crop remained canonical.
+- web demo: `http://127.0.0.1:12400/admin/system-settings/ha?demo=1`
+  - evidence_note: The HA node inventory now renders node names as explicit links, and clicking `demo-standby` opens `/admin/system-settings/ha/nodes/demo-standby` with node metadata plus the last 7 days of interaction logs merged with operation-linked EdgeOne audit events. Desktop and mobile captures are stored at `docs/specs/f36b4-edgeone-active-standby-ha/assets/ha-node-detail-web-demo-desktop.png` and `docs/specs/f36b4-edgeone-active-standby-ha/assets/ha-node-detail-web-demo-mobile.png`. `trim_whitespace.py` was executed for both raw captures and returned `action=unchanged` with `reason=ambiguous_border`, so the raw crop remains the canonical final evidence.
 
 ## Validation
 

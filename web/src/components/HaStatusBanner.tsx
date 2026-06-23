@@ -1,8 +1,16 @@
-import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck, Settings2 } from 'lucide-react'
+import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck } from 'lucide-react'
 
-import type { HaStatus } from '../api'
+import type { HaStatus, HaTimelineEvent } from '../api'
 import type { AdminTranslations } from '../i18n'
 import { useLanguage, useTranslate } from '../i18n'
+import {
+  formatHaPeerMessage,
+  formatHaRecoveryStatus,
+  formatHaStatusMessage,
+  formatHaTimelineDetail,
+  formatHaTimelineStatusLabel,
+  formatHaTimelineSummary,
+} from '../lib/haCopy'
 import { Button } from './ui/button'
 import { StatusBadge, type StatusTone } from './StatusBadge'
 
@@ -12,20 +20,54 @@ interface HaStatusBannerProps {
   strings?: AdminTranslations['systemSettings']['ha']
   language?: 'en' | 'zh'
   adminVariant?: 'panel' | 'compact'
+  onConfigureSource?: () => void
   onPromote?: () => void
   onFinalize?: () => void
-  onConfigureSource?: () => void
+  onPlannedCutover?: (targetNodeId: string) => void
   busy?: boolean
   compactHref?: string
   compactTitle?: string
   compactDescription?: string
   compactActionLabel?: string
   onCompactClick?: () => void
+  onOpenNodeDetails?: (nodeId: string) => void
+  timeline?: HaTimelineEvent[]
+  timelineLoading?: boolean
+  onLoadMoreTimeline?: (() => void) | null
+  hasMoreTimeline?: boolean
 }
 
-function formatTimestamp(value: number | null): string {
+function localeFor(language: 'en' | 'zh'): string {
+  return language === 'zh' ? 'zh-CN' : 'en-US'
+}
+
+function formatTimestamp(value: number | null, language: 'en' | 'zh'): string {
   if (value == null) return '—'
-  return new Date(value * 1000).toLocaleString()
+  return new Intl.DateTimeFormat(localeFor(language), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000))
+}
+
+function formatCompactTimestamp(value: number | null, language: 'en' | 'zh'): string {
+  if (value == null) return '—'
+  return new Intl.DateTimeFormat(localeFor(language), {
+    month: language === 'zh' ? 'numeric' : 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000))
+}
+
+function formatDateTimeAttr(value: number | null): string | undefined {
+  if (value == null) return undefined
+  return new Date(value * 1000).toISOString()
 }
 
 function formatLag(value: number | null, language: 'en' | 'zh'): string {
@@ -54,22 +96,28 @@ interface HaNodeRow {
   key: string
   nodeId: string
   relation: string
+  isLocalNode: boolean
   role: string
   origin: string
   health: string
   healthTone: StatusTone
   lastSync: string
+  lastSyncTitle?: string
+  lastSyncDateTime?: string
   promotedAt: string
-  actionKind: 'promote' | 'finalize' | 'serving' | 'blocked' | 'remote'
-  canConfigureSource?: boolean
+  promotedAtTitle?: string
+  promotedAtDateTime?: string
+  actionKind: 'promote' | 'finalize' | 'serving' | 'blocked' | 'planned_cutover' | 'observe'
+  targetNodeId?: string
 }
 
-function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSettings']['ha']): HaNodeRow[] {
+function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSettings']['ha'], language: 'en' | 'zh'): HaNodeRow[] {
   const rows: HaNodeRow[] = [
     {
       key: 'local',
       nodeId: status.nodeId,
       relation: strings.thisAdminNodeLabel,
+      isLocalNode: true,
       role: roleLabel(status.role, strings),
       origin: status.edgeoneCurrentTarget ?? status.nodePublicOrigin ?? '—',
       health:
@@ -88,11 +136,21 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
             : status.role === 'standby'
               ? 'info'
               : 'error',
-      lastSync: formatTimestamp(status.lastSyncAt),
+      lastSync: formatCompactTimestamp(status.lastSyncAt, language),
+      lastSyncTitle: formatTimestamp(status.lastSyncAt, language),
+      lastSyncDateTime: formatDateTimeAttr(status.lastSyncAt),
       promotedAt:
         status.role === 'full_master' || status.role === 'provisional_master'
-          ? formatTimestamp(status.lastEdgeoneCheckAt)
+          ? formatCompactTimestamp(status.lastEdgeoneCheckAt, language)
           : '—',
+      promotedAtTitle:
+        status.role === 'full_master' || status.role === 'provisional_master'
+          ? formatTimestamp(status.lastEdgeoneCheckAt, language)
+          : undefined,
+      promotedAtDateTime:
+        status.role === 'full_master' || status.role === 'provisional_master'
+          ? formatDateTimeAttr(status.lastEdgeoneCheckAt)
+          : undefined,
       actionKind:
         status.role === 'standby'
           ? 'promote'
@@ -101,41 +159,48 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
             : status.role === 'full_master'
               ? 'serving'
               : 'blocked',
-      canConfigureSource: true,
     },
   ]
-
-  const remoteOrigins = [status.edgeoneOrigin, status.edgeoneExpectedOrigin]
-    .map((origin) => origin?.trim())
-    .filter((origin): origin is string => Boolean(origin && origin !== status.nodePublicOrigin))
-
-  for (const origin of Array.from(new Set(remoteOrigins))) {
+  for (const peer of status.peerNodes ?? []) {
+    const relation = peer.roleHint === 'standby_candidate'
+      ? strings.relationStandbyCandidate
+      : strings.relationObserver
+    const healthTone: StatusTone = peer.stale
+      ? 'warning'
+      : peer.role === 'full_master'
+        ? 'success'
+        : peer.role === 'standby'
+          ? 'info'
+          : peer.role === 'recovery'
+            ? 'error'
+            : 'neutral'
+    const health = peer.stale
+      ? strings.healthStale
+      : peer.recoveryStatus
+        ? strings.healthRecoveryRequired
+        : peer.plannedCutoverEligible
+          ? strings.healthReadyStandby
+          : peer.role === 'full_master'
+            ? strings.healthServingWrites
+            : formatHaPeerMessage(peer, strings)
+              ?? (peer.role === 'standby' ? strings.healthConfigured : '—')
     rows.push({
-      key: `remote-${origin}`,
-      nodeId: origin === status.edgeoneExpectedOrigin ? 'configured-peer' : 'edgeone-origin',
-      relation: origin === status.edgeoneExpectedOrigin ? strings.configuredPeerLabel : strings.edgeoneTargetLabel,
-      role:
-        status.edgeoneOrigin === origin
-          ? strings.roleFullMaster
-          : status.edgeoneExpectedOrigin === origin
-            ? strings.roleStandby
-            : strings.roleRecovery,
-      origin,
-      health:
-        status.edgeoneOrigin === origin
-          ? strings.healthServingEdgeone
-          : status.edgeoneExpectedOrigin === origin
-            ? strings.healthNotRouted
-            : strings.healthConfigured,
-      healthTone:
-        status.edgeoneOrigin === origin
-          ? 'success'
-          : status.edgeoneExpectedOrigin === origin
-            ? 'warning'
-            : 'neutral',
-      lastSync: origin === status.edgeoneExpectedOrigin ? formatTimestamp(status.lastSyncAt) : '—',
-      promotedAt: status.edgeoneOrigin === origin ? formatTimestamp(status.lastEdgeoneCheckAt) : '—',
-      actionKind: 'remote',
+      key: `peer-${peer.nodeId}`,
+      nodeId: peer.nodeId,
+      relation,
+      isLocalNode: false,
+      role: peer.role ? roleLabel(peer.role, strings) : '—',
+      origin: peer.publicOrigin ?? '—',
+      health,
+      healthTone,
+      lastSync: formatCompactTimestamp(peer.lastSyncAt, language),
+      lastSyncTitle: formatTimestamp(peer.lastSyncAt, language),
+      lastSyncDateTime: formatDateTimeAttr(peer.lastSyncAt),
+      promotedAt: formatCompactTimestamp(peer.lastSeenAt, language),
+      promotedAtTitle: formatTimestamp(peer.lastSeenAt, language),
+      promotedAtDateTime: formatDateTimeAttr(peer.lastSeenAt),
+      actionKind: peer.plannedCutoverEligible ? 'planned_cutover' : 'observe',
+      targetNodeId: peer.nodeId,
     })
   }
 
@@ -152,15 +217,21 @@ export default function HaStatusBanner({
   strings,
   language,
   adminVariant = 'panel',
+  onConfigureSource,
   onPromote,
   onFinalize,
-  onConfigureSource,
+  onPlannedCutover,
   busy = false,
   compactHref,
   compactTitle,
   compactDescription,
   compactActionLabel,
   onCompactClick,
+  timeline = [],
+  timelineLoading = false,
+  onLoadMoreTimeline = null,
+  hasMoreTimeline = false,
+  onOpenNodeDetails,
 }: HaStatusBannerProps): JSX.Element | null {
   const fallbackStrings = useTranslate().admin.systemSettings.ha
   const fallbackLanguage = useLanguage().language
@@ -186,7 +257,7 @@ export default function HaStatusBanner({
           ? labels.panelDescriptionRecovery
           : labels.panelDescriptionFullMaster
   const toneClass = status.role === 'full_master' ? 'ha-status-banner-active' : ''
-  const rows = buildNodeRows(status, labels)
+  const rows = buildNodeRows(status, labels, lang)
   const authorityLabel = status.allowsFullWrites
     ? labels.authorityFullWrites
     : status.allowsBasicBusiness
@@ -235,7 +306,18 @@ export default function HaStatusBanner({
             <h2 id="ha-node-panel-title">{title}</h2>
             <p>{detail}</p>
           </div>
-          <div className="ha-node-panel-state">
+          <div className="ha-node-panel-head-actions">
+            {onConfigureSource ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="ha-node-configure-button"
+                onClick={onConfigureSource}
+              >
+                {labels.configureSource}
+              </Button>
+            ) : null}
             <StatusBadge tone={authorityTone}>{authorityLabel}</StatusBadge>
           </div>
         </div>
@@ -248,7 +330,7 @@ export default function HaStatusBanner({
           <div><dt>{labels.summaryExpectedSource}</dt><dd>{sourceKindLabel(status.edgeoneExpectedSourceKind, labels)}</dd></div>
           <div><dt>{labels.summarySyncLag}</dt><dd>{formatLag(status.syncLagSeconds, lang)}</dd></div>
           <div><dt>{labels.summaryEdgeoneApi}</dt><dd>{status.edgeoneApiConfigured ? labels.healthServingEdgeone : labels.healthNotRouted}</dd></div>
-          <div><dt>{labels.summaryRecovery}</dt><dd>{status.recoveryStatus ?? '—'}</dd></div>
+          <div><dt>{labels.summaryRecovery}</dt><dd>{formatHaRecoveryStatus(status.recoveryStatus, labels) ?? '—'}</dd></div>
         </dl>
 
         <div className="ha-node-list" aria-label={labels.nodeInventoryTitle}>
@@ -258,39 +340,58 @@ export default function HaStatusBanner({
           </div>
           <div className="ha-node-grid" role="table" aria-label={labels.nodeInventoryTitle}>
             <div className="ha-node-grid-row ha-node-grid-head" role="row">
-              <div role="columnheader">{labels.nodeHeader}</div>
-              <div role="columnheader">{labels.roleHeader}</div>
-              <div role="columnheader">{labels.originHeader}</div>
-              <div role="columnheader">{labels.healthHeader}</div>
-              <div role="columnheader">{labels.lastSyncHeader}</div>
-              <div role="columnheader">{labels.promotedAtHeader}</div>
-              <div role="columnheader">{labels.actionHeader}</div>
+              <div className="ha-node-cell ha-node-cell--identity" role="columnheader">{labels.nodeHeader}</div>
+              <div className="ha-node-cell ha-node-cell--role" role="columnheader">{labels.roleHeader}</div>
+              <div className="ha-node-cell ha-node-cell--origin" role="columnheader">{labels.originHeader}</div>
+              <div className="ha-node-cell ha-node-cell--health" role="columnheader">{labels.healthHeader}</div>
+              <div className="ha-node-cell ha-node-cell--time" role="columnheader">{labels.lastSyncHeader}</div>
+              <div className="ha-node-cell ha-node-cell--time" role="columnheader">{labels.promotedAtHeader}</div>
+              <div className="ha-node-cell ha-node-cell--action" role="columnheader">{labels.actionHeader}</div>
             </div>
             {rows.map((row) => (
               <div className="ha-node-grid-row" role="row" key={row.key}>
-                <div role="cell" className="ha-node-identity">
-                  <strong>{row.nodeId}</strong>
+                <div
+                  role="cell"
+                  className="ha-node-cell ha-node-cell--identity ha-node-identity"
+                  data-label={labels.nodeHeader}
+                >
+                  {onOpenNodeDetails && !row.isLocalNode ? (
+                    <button
+                      type="button"
+                      className="ha-node-link"
+                      onClick={() => onOpenNodeDetails(row.nodeId)}
+                    >
+                      <strong>{row.nodeId}</strong>
+                    </button>
+                  ) : (
+                    <strong>{row.nodeId}</strong>
+                  )}
                   <span>{row.relation}</span>
                 </div>
-                <div role="cell">{row.role}</div>
-                <div role="cell"><code>{row.origin}</code></div>
-                <div role="cell"><StatusBadge tone={row.healthTone}>{row.health}</StatusBadge></div>
-                <div role="cell">{row.lastSync}</div>
-                <div role="cell">{row.promotedAt}</div>
-                <div role="cell" className="ha-node-action">
-                  {row.canConfigureSource && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="ha-node-action-button"
-                      onClick={onConfigureSource}
-                      disabled={busy || !onConfigureSource}
-                    >
-                      <Settings2 className="h-4 w-4" aria-hidden="true" />
-                      {labels.configureSource}
-                    </Button>
-                  )}
+                <div role="cell" className="ha-node-cell ha-node-cell--role" data-label={labels.roleHeader}>
+                  {row.role}
+                </div>
+                <div role="cell" className="ha-node-cell ha-node-cell--origin" data-label={labels.originHeader}>
+                  <code>{row.origin}</code>
+                </div>
+                <div role="cell" className="ha-node-cell ha-node-cell--health" data-label={labels.healthHeader}>
+                  <StatusBadge tone={row.healthTone}>{row.health}</StatusBadge>
+                </div>
+                <div role="cell" className="ha-node-cell ha-node-cell--time" data-label={labels.lastSyncHeader}>
+                  <time dateTime={row.lastSyncDateTime} title={row.lastSyncTitle}>
+                    {row.lastSync}
+                  </time>
+                </div>
+                <div role="cell" className="ha-node-cell ha-node-cell--time" data-label={labels.promotedAtHeader}>
+                  <time dateTime={row.promotedAtDateTime} title={row.promotedAtTitle}>
+                    {row.promotedAt}
+                  </time>
+                </div>
+                <div
+                  role="cell"
+                  className="ha-node-cell ha-node-cell--action ha-node-action"
+                  data-label={labels.actionHeader}
+                >
                   {row.actionKind === 'promote' && onPromote && (
                     <Button
                       type="button"
@@ -323,8 +424,25 @@ export default function HaStatusBanner({
                   {row.actionKind === 'blocked' && (
                     <span className="ha-node-action-note">{labels.actionRecoverFirst}</span>
                   )}
-                  {row.actionKind === 'remote' && (
-                    <span className="ha-node-action-note">{labels.actionUseThatNodeAdmin}</span>
+                  {row.actionKind === 'planned_cutover' && row.targetNodeId && onPlannedCutover && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="warning"
+                      className="ha-node-action-button"
+                      onClick={() => onPlannedCutover(row.targetNodeId!)}
+                      disabled={busy}
+                    >
+                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                      {labels.actionPlannedCutover}
+                    </Button>
+                  )}
+                  {row.actionKind === 'observe' && (
+                    <span className="ha-node-action-note">
+                      {row.relation === labels.relationStandbyCandidate
+                        ? labels.actionNotEligibleNow
+                        : labels.actionObserveOnly}
+                    </span>
                   )}
                 </div>
               </div>
@@ -332,10 +450,67 @@ export default function HaStatusBanner({
           </div>
         </div>
 
-        {status.message && (
+        <div className="ha-node-list" aria-label={labels.plannedCutoverTitle}>
+          <div className="ha-node-list-title">
+            <Crown size={18} aria-hidden="true" />
+            <span>{labels.plannedCutoverTitle}</span>
+          </div>
+          <div className="ha-status-message">
+            <span>{labels.plannedCutoverDescription}</span>
+          </div>
+        </div>
+
+        <div className="ha-node-list" aria-label={labels.timelineTitle}>
+          <div className="ha-node-list-title">
+            <RotateCcw size={18} aria-hidden="true" />
+            <span>{labels.timelineTitle}</span>
+          </div>
+          {timeline.length === 0 ? (
+            <div className="ha-status-message">
+              <span>{timelineLoading ? labels.timelineLoading : labels.timelineEmpty}</span>
+            </div>
+          ) : (
+            <div className="ha-timeline-list">
+              {timeline.map((event) => (
+                <details key={event.id} className="ha-timeline-item">
+                  <summary>
+                    <span>{formatHaTimelineSummary(event, labels)}</span>
+                    <StatusBadge
+                      tone={
+                        event.status === 'success'
+                          ? 'success'
+                          : event.status === 'running'
+                            ? 'warning'
+                            : event.status === 'error'
+                              ? 'error'
+                            : 'neutral'
+                      }
+                    >
+                      {formatHaTimelineStatusLabel(event.status, labels)}
+                    </StatusBadge>
+                  </summary>
+                  <div className="ha-timeline-meta">
+                    <div>{formatTimestamp(event.createdAt, lang)}</div>
+                    {formatHaTimelineDetail(event, labels) ? <p>{formatHaTimelineDetail(event, labels)}</p> : null}
+                    {event.technicalDetails ? (
+                      <pre>{JSON.stringify(event.technicalDetails, null, 2)}</pre>
+                    ) : null}
+                  </div>
+                </details>
+              ))}
+              {hasMoreTimeline && onLoadMoreTimeline && (
+                <Button type="button" variant="outline" size="sm" onClick={onLoadMoreTimeline} disabled={timelineLoading}>
+                  {timelineLoading ? labels.timelineLoading : labels.timelineLoadMore}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {formatHaStatusMessage(status, labels) && (
           <div className="ha-status-message">
             <RotateCcw size={16} aria-hidden="true" />
-            <span>{status.message}</span>
+            <span>{formatHaStatusMessage(status, labels)}</span>
           </div>
         )}
       </section>

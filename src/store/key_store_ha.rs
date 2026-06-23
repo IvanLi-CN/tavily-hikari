@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 #[derive(Clone, Debug)]
 pub struct HaBaselineExport {
     pub channel: HaSyncChannel,
@@ -67,6 +69,7 @@ pub struct HaEventsApplySession {
 const HA_SCHEMA_VERSION: i64 = 2;
 const HA_CONTROL_OUTBOX_RETENTION_SECS: i64 = 72 * 60 * 60;
 const HA_CHANNEL_EXPORT_RETENTION_SECS: i64 = 92 * 24 * 60 * 60;
+const HA_CONTROL_PLANE_EVENT_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 
 const HA_CONTROL_BASELINE_TABLES: &[&str] = &[
     "announcements",
@@ -713,6 +716,222 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub(crate) async fn insert_ha_control_plane_event(
+        &self,
+        event: &HaControlPlaneEventInsert,
+    ) -> Result<i64, ProxyError> {
+        let technical_details_json = event
+            .technical_details
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|err| ProxyError::Other(err.to_string()))?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO ha_control_plane_events (
+                event_kind, category, status, node_id, operation_id, summary,
+                detail, technical_details_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&event.event_kind)
+        .bind(event.category.as_str())
+        .bind(event.status.as_str())
+        .bind(event.node_id.as_deref())
+        .bind(event.operation_id.as_deref())
+        .bind(&event.summary)
+        .bind(event.detail.as_deref())
+        .bind(technical_details_json)
+        .bind(self.backend_time.now_ts())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    pub(crate) async fn list_ha_control_plane_events(
+        &self,
+        cursor: Option<i64>,
+        limit: i64,
+        node_id: Option<&str>,
+        category: Option<HaControlPlaneEventCategory>,
+    ) -> Result<Vec<HaControlPlaneEventView>, ProxyError> {
+        let threshold = self.backend_time.now_ts() - HA_CONTROL_PLANE_EVENT_RETENTION_SECS;
+        let sql = r#"
+            SELECT id, event_kind, category, status, node_id, operation_id, summary, detail,
+                   technical_details_json, created_at
+              FROM ha_control_plane_events
+             WHERE created_at >= ?
+               AND (? IS NULL OR id < ?)
+               AND (? IS NULL OR node_id = ?)
+               AND (? IS NULL OR category = ?)
+             ORDER BY id DESC
+             LIMIT ?
+        "#;
+        let rows = sqlx::query(sql)
+            .bind(threshold)
+            .bind(cursor)
+            .bind(cursor)
+            .bind(node_id)
+            .bind(node_id)
+            .bind(category.map(HaControlPlaneEventCategory::as_str))
+            .bind(category.map(HaControlPlaneEventCategory::as_str))
+            .bind(limit.clamp(1, 200))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let category_raw: String = row.try_get("category")?;
+                let status_raw: String = row.try_get("status")?;
+                let technical_details = row
+                    .try_get::<Option<String>, _>("technical_details_json")?
+                    .map(|raw| {
+                        serde_json::from_str(&raw)
+                            .map_err(|err| ProxyError::Other(format!("invalid HA timeline details: {err}")))
+                    })
+                    .transpose()?;
+                Ok(HaControlPlaneEventView {
+                    id: row.try_get("id")?,
+                    event_kind: row.try_get("event_kind")?,
+                    category: HaControlPlaneEventCategory::parse(&category_raw).ok_or_else(|| {
+                        ProxyError::Other(format!("invalid HA timeline category: {category_raw}"))
+                    })?,
+                    status: HaControlPlaneEventStatus::parse(&status_raw).ok_or_else(|| {
+                        ProxyError::Other(format!("invalid HA timeline status: {status_raw}"))
+                    })?,
+                    node_id: row.try_get("node_id")?,
+                    operation_id: row.try_get("operation_id")?,
+                    summary: row.try_get("summary")?,
+                    detail: row.try_get("detail")?,
+                    technical_details,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) async fn list_ha_control_plane_events_for_node_interactions(
+        &self,
+        cursor: Option<i64>,
+        limit: i64,
+        node_id: &str,
+    ) -> Result<Vec<HaControlPlaneEventView>, ProxyError> {
+        let threshold = self.backend_time.now_ts() - HA_CONTROL_PLANE_EVENT_RETENTION_SECS;
+        let direct_limit = limit.clamp(1, 200).saturating_mul(3);
+        let direct_rows = sqlx::query(
+            r#"
+            SELECT id, event_kind, category, status, node_id, operation_id, summary, detail,
+                   technical_details_json, created_at
+              FROM ha_control_plane_events
+             WHERE created_at >= ?
+               AND (? IS NULL OR id < ?)
+               AND node_id = ?
+             ORDER BY id DESC
+             LIMIT ?
+            "#,
+        )
+        .bind(threshold)
+        .bind(cursor)
+        .bind(cursor)
+        .bind(node_id)
+        .bind(direct_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut events = direct_rows
+            .into_iter()
+            .map(Self::decode_ha_control_plane_event_row)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let operation_ids = events
+            .iter()
+            .filter_map(|event| event.operation_id.as_deref())
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        if !operation_ids.is_empty() {
+            let placeholders = std::iter::repeat_n("?", operation_ids.len()).collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                r#"
+                SELECT id, event_kind, category, status, node_id, operation_id, summary, detail,
+                       technical_details_json, created_at
+                  FROM ha_control_plane_events
+                 WHERE created_at >= ?
+                   AND (? IS NULL OR id < ?)
+                   AND category = ?
+                   AND operation_id IN ({placeholders})
+                 ORDER BY id DESC
+                 LIMIT ?
+                "#
+            );
+            let mut query = sqlx::query(&sql)
+                .bind(threshold)
+                .bind(cursor)
+                .bind(cursor)
+                .bind(HaControlPlaneEventCategory::Edgeone.as_str());
+            for operation_id in &operation_ids {
+                query = query.bind(operation_id);
+            }
+            let edgeone_rows = query.bind(direct_limit).fetch_all(&self.pool).await?;
+            events.extend(
+                edgeone_rows
+                    .into_iter()
+                    .map(Self::decode_ha_control_plane_event_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+
+        let mut deduped = HashMap::new();
+        for event in events {
+            deduped.entry(event.id).or_insert(event);
+        }
+        let mut merged = deduped.into_values().collect::<Vec<_>>();
+        merged.sort_by(|left, right| {
+            right
+                .id
+                .cmp(&left.id)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        merged.truncate(limit.clamp(1, 200).saturating_add(1) as usize);
+        Ok(merged)
+    }
+
+    pub(crate) async fn gc_ha_control_plane_events(&self) -> Result<i64, ProxyError> {
+        let threshold = self.backend_time.now_ts() - HA_CONTROL_PLANE_EVENT_RETENTION_SECS;
+        let result = sqlx::query("DELETE FROM ha_control_plane_events WHERE created_at < ?")
+            .bind(threshold)
+            .execute(&self.pool)
+            .await?;
+        Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
+    }
+
+    fn decode_ha_control_plane_event_row(
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<HaControlPlaneEventView, ProxyError> {
+        let category_raw: String = row.try_get("category")?;
+        let status_raw: String = row.try_get("status")?;
+        let technical_details = row
+            .try_get::<Option<String>, _>("technical_details_json")?
+            .map(|raw| {
+                serde_json::from_str(&raw)
+                    .map_err(|err| ProxyError::Other(format!("invalid HA timeline details: {err}")))
+            })
+            .transpose()?;
+        Ok(HaControlPlaneEventView {
+            id: row.try_get("id")?,
+            event_kind: row.try_get("event_kind")?,
+            category: HaControlPlaneEventCategory::parse(&category_raw)
+                .ok_or_else(|| ProxyError::Other(format!("invalid HA timeline category: {category_raw}")))?,
+            status: HaControlPlaneEventStatus::parse(&status_raw)
+                .ok_or_else(|| ProxyError::Other(format!("invalid HA timeline status: {status_raw}")))?,
+            node_id: row.try_get("node_id")?,
+            operation_id: row.try_get("operation_id")?,
+            summary: row.try_get("summary")?,
+            detail: row.try_get("detail")?,
+            technical_details,
+            created_at: row.try_get("created_at")?,
+        })
     }
 
     pub(crate) async fn claim_ha_recovery_batch(

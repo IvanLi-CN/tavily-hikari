@@ -116,6 +116,140 @@ impl HaSourceKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HaPeerRoleHint {
+    StandbyCandidate,
+    Observer,
+}
+
+impl HaPeerRoleHint {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StandbyCandidate => "standby_candidate",
+            Self::Observer => "observer",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HaControlPlaneEventCategory {
+    PlannedCutover,
+    ManualFailover,
+    Edgeone,
+    Peer,
+    Sync,
+    Recovery,
+    Role,
+}
+
+impl HaControlPlaneEventCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PlannedCutover => "planned_cutover",
+            Self::ManualFailover => "manual_failover",
+            Self::Edgeone => "edgeone",
+            Self::Peer => "peer",
+            Self::Sync => "sync",
+            Self::Recovery => "recovery",
+            Self::Role => "role",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "planned_cutover" => Some(Self::PlannedCutover),
+            "manual_failover" => Some(Self::ManualFailover),
+            "edgeone" => Some(Self::Edgeone),
+            "peer" => Some(Self::Peer),
+            "sync" => Some(Self::Sync),
+            "recovery" => Some(Self::Recovery),
+            "role" => Some(Self::Role),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HaControlPlaneEventStatus {
+    Info,
+    Running,
+    Success,
+    Warning,
+    Error,
+}
+
+impl HaControlPlaneEventStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Running => "running",
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "info" => Some(Self::Info),
+            "running" => Some(Self::Running),
+            "success" => Some(Self::Success),
+            "warning" => Some(Self::Warning),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct HaControlPlaneEventInsert {
+    pub event_kind: String,
+    pub category: HaControlPlaneEventCategory,
+    pub status: HaControlPlaneEventStatus,
+    pub node_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub technical_details: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaPeerNodeConfig {
+    pub node_id: String,
+    pub admin_base_url: String,
+    pub public_origin: String,
+    pub role_hint: HaPeerRoleHint,
+}
+
+impl HaPeerNodeConfig {
+    pub fn validate(&self) -> Result<Self, String> {
+        let node_id = self.node_id.trim();
+        if node_id.is_empty() {
+            return Err("HA peer nodeId is required".to_string());
+        }
+        let admin_base_url = self.admin_base_url.trim().trim_end_matches('/');
+        if admin_base_url.is_empty() {
+            return Err(format!("HA peer {node_id} adminBaseUrl is required"));
+        }
+        reqwest::Url::parse(admin_base_url)
+            .map_err(|err| format!("HA peer {node_id} adminBaseUrl must be a valid URL: {err}"))?;
+        let public_origin = self.public_origin.trim();
+        if public_origin.is_empty() {
+            return Err(format!("HA peer {node_id} publicOrigin is required"));
+        }
+        Ok(Self {
+            node_id: node_id.to_string(),
+            admin_base_url: admin_base_url.to_string(),
+            public_origin: public_origin.to_string(),
+            role_hint: self.role_hint,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaSourceSettings {
@@ -220,6 +354,30 @@ pub fn parse_origin_scheme(raw: &str) -> Option<OriginScheme> {
     OriginScheme::parse(raw)
 }
 
+pub fn parse_ha_peer_nodes_json(raw: &str) -> Result<Vec<HaPeerNodeConfig>, String> {
+    let parsed: Vec<HaPeerNodeConfig> =
+        serde_json::from_str(raw).map_err(|err| format!("invalid HA_PEER_NODES_JSON: {err}"))?;
+    let mut validated = Vec::with_capacity(parsed.len());
+    let mut seen_node_ids = std::collections::HashSet::new();
+    let mut standby_candidates = 0usize;
+    for peer in parsed {
+        let peer = peer.validate()?;
+        if !seen_node_ids.insert(peer.node_id.clone()) {
+            return Err(format!("duplicate HA peer nodeId: {}", peer.node_id));
+        }
+        if peer.role_hint == HaPeerRoleHint::StandbyCandidate {
+            standby_candidates += 1;
+        }
+        validated.push(peer);
+    }
+    if standby_candidates > 1 {
+        return Err(
+            "HA_PEER_NODES_JSON may contain at most one roleHint=standby_candidate".to_string(),
+        );
+    }
+    Ok(validated)
+}
+
 #[derive(Clone, Debug)]
 pub struct HaConfig {
     pub mode: HaMode,
@@ -241,6 +399,7 @@ pub struct HaConfig {
     pub sync_source_url: Option<String>,
     pub internal_token: Option<String>,
     pub sync_interval_secs: u64,
+    pub peer_nodes: Vec<HaPeerNodeConfig>,
 }
 
 impl Default for HaConfig {
@@ -265,6 +424,7 @@ impl Default for HaConfig {
             sync_source_url: None,
             internal_token: None,
             sync_interval_secs: 15,
+            peer_nodes: Vec::new(),
         }
     }
 }
@@ -319,7 +479,7 @@ impl HaConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaSourceSettingsView {
     pub source_kind: HaSourceKind,
@@ -330,7 +490,25 @@ pub struct HaSourceSettingsView {
     pub target: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaPeerNodeView {
+    pub node_id: String,
+    pub public_origin: Option<String>,
+    pub role: Option<HaNodeRole>,
+    pub allows_basic_business: bool,
+    pub allows_full_writes: bool,
+    pub last_sync_at: Option<i64>,
+    pub sync_lag_seconds: Option<i64>,
+    pub recovery_status: Option<String>,
+    pub message: Option<String>,
+    pub last_seen_at: Option<i64>,
+    pub stale: bool,
+    pub role_hint: HaPeerRoleHint,
+    pub planned_cutover_eligible: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaStatusView {
     pub mode: HaMode,
@@ -358,6 +536,42 @@ pub struct HaStatusView {
     pub sync_lag_seconds: Option<i64>,
     pub recovery_status: Option<String>,
     pub message: Option<String>,
+    pub peer_nodes: Vec<HaPeerNodeView>,
+    pub planned_cutover_eligible: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaControlPlaneEventView {
+    pub id: i64,
+    pub event_kind: String,
+    pub category: HaControlPlaneEventCategory,
+    pub status: HaControlPlaneEventStatus,
+    pub node_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub technical_details: Option<Value>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaTimelinePage {
+    pub events: Vec<HaControlPlaneEventView>,
+    pub next_cursor: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaNodeDetailView {
+    pub current_node_id: String,
+    pub node: HaPeerNodeView,
+    pub edgeone_domain: Option<String>,
+    pub edgeone_current_target: Option<String>,
+    pub edgeone_current_source_kind: Option<HaSourceKind>,
+    pub ha_source_effective: Option<HaSourceSettingsView>,
+    pub timeline: HaTimelinePage,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -573,12 +787,20 @@ impl HaRuntime {
     }
 
     pub async fn refresh_authoritative_role(&self) -> Result<HaStatusView, String> {
+        self.refresh_authoritative_role_with_audit()
+            .await
+            .map(|(status, _audit)| status)
+    }
+
+    pub async fn refresh_authoritative_role_with_audit(
+        &self,
+    ) -> Result<(HaStatusView, Option<EdgeOneAuditEntry>), String> {
         if !self.edgeone_authority_enabled() {
-            return Ok(self.status().await);
+            return Ok((self.status().await, None));
         }
 
-        let target = match self.edgeone.describe_current_target().await {
-            Ok(target) => target,
+        let (target, audit_entry) = match self.edgeone.describe_current_target_with_audit().await {
+            Ok((target, audit_entry)) => (target, Some(audit_entry)),
             Err(err) => {
                 let mut state = self.state.write().await;
                 state.message = Some(format!("EdgeOne authority refresh failed: {err}"));
@@ -627,7 +849,7 @@ impl HaRuntime {
                 (false, HaNodeRole::Recovery) => {}
             }
         }
-        Ok(self.status().await)
+        Ok((self.status().await, audit_entry))
     }
 
     pub async fn status(&self) -> HaStatusView {
@@ -696,6 +918,8 @@ impl HaRuntime {
             sync_lag_seconds,
             recovery_status: state.recovery_status.clone(),
             message: state.message.clone(),
+            peer_nodes: Vec::new(),
+            planned_cutover_eligible: false,
         }
     }
 
@@ -749,6 +973,10 @@ impl HaRuntime {
 
     pub fn sync_interval_secs(&self) -> u64 {
         self.config.sync_interval_secs.clamp(5, 15)
+    }
+
+    pub fn peer_nodes(&self) -> Vec<HaPeerNodeConfig> {
+        self.config.peer_nodes.clone()
     }
 
     pub async fn role(&self) -> HaNodeRole {
@@ -853,6 +1081,25 @@ impl HaRuntime {
             state.message = Some("failover finalized by administrator".to_string());
         }
         Ok(self.status().await)
+    }
+
+    pub async fn switch_edgeone_target_with_audit(
+        &self,
+        target_settings: HaSourceSettings,
+    ) -> Result<(HaStatusView, Vec<EdgeOneAuditEntry>), String> {
+        if self.config.mode == HaMode::Single {
+            return Ok((self.status().await, Vec::new()));
+        }
+        let audit = self
+            .edgeone
+            .modify_target_with_audit(&target_settings)
+            .await?;
+        {
+            let mut state = self.state.write().await;
+            state.edgeone_origin = target_settings.effective_target();
+            state.last_edgeone_check_at = Some(self.backend_time.now_ts());
+        }
+        Ok((self.status().await, vec![audit]))
     }
 
     pub async fn enter_recovery(&self, message: String) -> HaStatusView {

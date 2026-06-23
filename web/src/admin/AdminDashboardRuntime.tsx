@@ -27,6 +27,7 @@ import LanguageSwitcher from '../components/LanguageSwitcher'
 import NotFoundFallbackPreview from '../components/NotFoundFallbackPreview'
 import HaStatusBanner from '../components/HaStatusBanner'
 import HaSourceSettingsDialog from './HaSourceSettingsDialog'
+import HaNodeDetailPanel from './HaNodeDetailPanel'
 import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components/AdminSidebarUtility'
 import { Button } from '../components/ui/button'
 import {
@@ -143,6 +144,7 @@ import {
   modulePath,
   parseAdminPath,
   systemSettingsHaPath,
+  systemSettingsHaNodePath,
   buildAdminUsersPath,
   tokenDetailPath,
   unboundTokenUsagePath,
@@ -252,8 +254,11 @@ import {
   fetchAdminUserUsageSeries,
   fetchAdminRegistrationSettings,
   fetchAdminHaStatus,
+  fetchHaNodeDetail,
+  fetchHaTimeline,
   finalizeHaFailover,
   promoteHaNode,
+  runPlannedCutover,
   fetchTokenBrokenKeys,
   updateAdminUserQuota,
   updateAdminRegistrationSettings,
@@ -282,6 +287,9 @@ import {
   type StickyNode,
   type StickyUserRow,
   type ForwardProxyProgressEvent,
+  type HaTimelineEvent,
+  type HaTimelinePage,
+  type HaNodeDetail,
   type HaStatus,
   fetchForwardProxySettings,
   fetchSystemSettingsEnvelope,
@@ -339,6 +347,30 @@ const LazyUserDetailTokenTable = lazy(async () =>
     default: module.UserDetailTokenTable,
   })),
 )
+
+function formatHaSourceKindLabel(
+  kind: HaStatus['edgeoneCurrentSourceKind'],
+  strings: AdminTranslations['systemSettings']['ha'],
+): string {
+  if (kind === 'direct') return strings.sourceKindDirect
+  if (kind === 'origin_group') return strings.sourceKindOriginGroup
+  return '—'
+}
+
+function formatHaEffectiveSourceConfig(
+  status: HaStatus | null,
+  strings: AdminTranslations['systemSettings']['ha'],
+): string {
+  const settings = status?.haSourceEffective ?? status?.haSourceOverride ?? status?.haSourceDefaults
+  if (!settings) return '—'
+  if (settings.sourceKind === 'origin_group') {
+    return settings.originGroupId?.trim() || '—'
+  }
+  const scheme = settings.directOriginScheme ? settings.directOriginScheme.toUpperCase() : '—'
+  const host = settings.directOriginHost?.trim() || '—'
+  const port = settings.directOriginPort ?? '—'
+  return `${scheme} · ${host}:${port}`
+}
 
 const ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID = 'announcements-header-action-slot'
 
@@ -1927,6 +1959,14 @@ function AdminDashboard(): JSX.Element {
   const [haStatus, setHaStatus] = useState<HaStatus | null>(null)
   const [haBusy, setHaBusy] = useState(false)
   const [haSourceDialogOpen, setHaSourceDialogOpen] = useState(false)
+  const [haTimeline, setHaTimeline] = useState<HaTimelineEvent[]>([])
+  const [haTimelineNextCursor, setHaTimelineNextCursor] = useState<number | null>(null)
+  const [haTimelineLoading, setHaTimelineLoading] = useState(false)
+  const [haNodeDetail, setHaNodeDetail] = useState<HaNodeDetail | null>(null)
+  const [haNodeDetailLoading, setHaNodeDetailLoading] = useState(false)
+  const [haNodeDetailNextCursor, setHaNodeDetailNextCursor] = useState<number | null>(null)
+  const [haCutoverTargetNodeId, setHaCutoverTargetNodeId] = useState<string | null>(null)
+  const [haCutoverDialogOpen, setHaCutoverDialogOpen] = useState(false)
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const secretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
@@ -7464,6 +7504,8 @@ function AdminDashboard(): JSX.Element {
         ? route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
           ? 'system-settings-ha'
           : route.module
+        : route.name === 'ha-node'
+          ? 'system-settings-ha'
         : route.name === 'key'
           ? 'keys'
           : route.name === 'user'
@@ -7478,6 +7520,8 @@ function AdminDashboard(): JSX.Element {
   const activeModule: AdminModuleId =
     route.name === 'module'
       ? route.module
+      : route.name === 'ha-node'
+        ? 'system-settings'
       : route.name === 'key'
         ? 'keys'
         : route.name === 'user'
@@ -8599,14 +8643,101 @@ function AdminDashboard(): JSX.Element {
     }
   }, [])
 
+  const refreshHaTimeline = useCallback(async (cursor?: number | null, append = false) => {
+    setHaTimelineLoading(true)
+    try {
+      const page = await fetchHaTimeline({ cursor: cursor ?? null, limit: 20 })
+      setHaTimeline((current) => (append ? [...current, ...page.events] : page.events))
+      setHaTimelineNextCursor(page.nextCursor ?? null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'HA timeline load failed')
+    } finally {
+      setHaTimelineLoading(false)
+    }
+  }, [setError])
+
+  const refreshHaNodeDetail = useCallback(async (
+    nodeId: string,
+    cursor?: number | null,
+    append = false,
+  ) => {
+    setHaNodeDetailLoading(true)
+    try {
+      const detail = await fetchHaNodeDetail(nodeId, { cursor: cursor ?? null, limit: 20 })
+      setHaNodeDetail((current) => {
+        if (!append || !current || current.node.nodeId !== detail.node.nodeId) return detail
+        return {
+          ...detail,
+          timeline: {
+            events: [...current.timeline.events, ...detail.timeline.events],
+            nextCursor: detail.timeline.nextCursor,
+          },
+        }
+      })
+      setHaNodeDetailNextCursor(detail.timeline.nextCursor ?? null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'HA node detail load failed')
+    } finally {
+      setHaNodeDetailLoading(false)
+    }
+  }, [setError])
+
+  const handleOpenCutoverDialog = useCallback((targetNodeId: string) => {
+    setHaCutoverTargetNodeId(targetNodeId)
+    setHaCutoverDialogOpen(true)
+  }, [])
+
+  const handleOpenHaNodeDetail = useCallback((nodeId: string) => {
+    navigateToPath(systemSettingsHaNodePath(nodeId))
+  }, [navigateToPath])
+
+  const handleRunPlannedCutover = useCallback(async () => {
+    if (!haCutoverTargetNodeId) return
+    setHaBusy(true)
+    try {
+      await runPlannedCutover(haCutoverTargetNodeId)
+      setHaStatus(await fetchAdminHaStatus())
+      await refreshHaTimeline(null, false)
+      setHaCutoverDialogOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'HA planned cutover failed')
+    } finally {
+      setHaBusy(false)
+    }
+  }, [haCutoverTargetNodeId, refreshHaTimeline])
+
   const handleHaSourceSettingsSaved = useCallback((nextStatus: HaStatus) => {
     setHaStatus(nextStatus)
     setHaSourceDialogOpen(false)
   }, [])
 
+  const showNotFound = route.name === 'not-found'
+  const showSystemSettings = activeModule === 'system-settings'
+  const systemSettingsView = showSystemSettings && route.name === 'module'
+    ? route.systemSettingsView ?? 'general'
+    : route.name === 'ha-node'
+      ? 'ha'
+      : 'general'
+  const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
+
+  useEffect(() => {
+    if (!showSystemSettingsHa) return
+    void refreshHaTimeline(null, false)
+  }, [refreshHaTimeline, showSystemSettingsHa])
+
+  useEffect(() => {
+    if (route.name !== 'ha-node') {
+      setHaNodeDetail(null)
+      setHaNodeDetailNextCursor(null)
+      return
+    }
+    void refreshHaNodeDetail(route.nodeId, null, false)
+  }, [refreshHaNodeDetail, route])
+
   const isSystemSettingsHaRoute =
     route.name === 'module' && route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
-  const adminHaCompactAlert = isSystemSettingsHaRoute ? null : (
+  const isSystemSettingsHaNodeRoute = route.name === 'ha-node'
+  const adminHaCompactAlert = isSystemSettingsHaRoute || isSystemSettingsHaNodeRoute ? null : (
     <HaStatusBanner
       status={haStatus}
       audience="admin"
@@ -8626,10 +8757,16 @@ function AdminDashboard(): JSX.Element {
       strings={systemSettingsStrings.ha}
       language={language}
       adminVariant="panel"
+      onConfigureSource={() => setHaSourceDialogOpen(true)}
       busy={haBusy}
       onPromote={handlePromoteHaNode}
       onFinalize={handleFinalizeHaFailover}
-      onConfigureSource={() => setHaSourceDialogOpen(true)}
+      onPlannedCutover={handleOpenCutoverDialog}
+      onOpenNodeDetails={handleOpenHaNodeDetail}
+      timeline={haTimeline}
+      timelineLoading={haTimelineLoading}
+      onLoadMoreTimeline={haTimelineNextCursor != null ? () => void refreshHaTimeline(haTimelineNextCursor, true) : null}
+      hasMoreTimeline={haTimelineNextCursor != null}
     />
   )
 
@@ -9347,7 +9484,6 @@ function AdminDashboard(): JSX.Element {
       </AdminShell>
     )
   }
-  const showNotFound = route.name === 'not-found'
   const notFoundPath = route.name === 'not-found' ? route.path : ''
   const showDashboard = activeModule === 'dashboard' && !showNotFound
   const showRankings = activeModule === 'rankings' && !showNotFound
@@ -9359,12 +9495,7 @@ function AdminDashboard(): JSX.Element {
   const showAnnouncements = activeModule === 'announcements'
   const showRecharges = activeModule === 'recharges'
   const showAlerts = activeModule === 'alerts'
-  const showSystemSettings = activeModule === 'system-settings'
-  const systemSettingsView = showSystemSettings && route.name === 'module'
-    ? route.systemSettingsView ?? 'general'
-    : 'general'
   const showSystemSettingsGeneral = showSystemSettings && systemSettingsView === 'general'
-  const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
   const showProxySettings = activeModule === 'proxy-settings'
   const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
 
@@ -9480,7 +9611,9 @@ function AdminDashboard(): JSX.Element {
         return systemSettingsView === 'ha'
           ? {
               title: systemSettingsStrings.ha.title,
-              description: systemSettingsStrings.ha.description,
+              description: route.name === 'ha-node'
+                ? undefined
+                : systemSettingsStrings.ha.description,
             }
           : {
               title: systemSettingsStrings.title,
@@ -9923,7 +10056,7 @@ function AdminDashboard(): JSX.Element {
           {moduleDesktopUtility}
           {adminHaCompactAlert}
 
-      {!showNotFound && isStackedAdminLayout && (
+      {!showNotFound && isStackedAdminLayout && route.name !== 'ha-node' && (
         showRankings ? (
           <section className="surface app-header admin-usage-stacked-intro">
             <div className="admin-usage-stacked-intro-main">
@@ -9955,7 +10088,7 @@ function AdminDashboard(): JSX.Element {
         )
       )}
 
-      {!showNotFound && !isStackedAdminLayout && (
+      {!showNotFound && !isStackedAdminLayout && route.name !== 'ha-node' && (
         <AdminCompactIntro
           title={moduleDesktopIntro.title}
           description={moduleDesktopIntro.description}
@@ -11810,7 +11943,66 @@ function AdminDashboard(): JSX.Element {
 
       {showSystemSettingsHa && (
         <section className="admin-settings-ha-page">
-          {adminHaPanel}
+          {route.name === 'ha-node' ? (
+            <HaNodeDetailPanel
+              detail={haNodeDetail}
+              strings={systemSettingsStrings.ha}
+              language={language}
+              loading={haNodeDetailLoading}
+              onBack={() => navigateToPath(systemSettingsHaPath())}
+              onConfigureSource={() => setHaSourceDialogOpen(true)}
+              onLoadMoreTimeline={haNodeDetailNextCursor != null
+                ? () => void refreshHaNodeDetail(route.nodeId, haNodeDetailNextCursor, true)
+                : null}
+              hasMoreTimeline={haNodeDetailNextCursor != null}
+            />
+          ) : adminHaPanel}
+          <Dialog open={haCutoverDialogOpen} onOpenChange={setHaCutoverDialogOpen}>
+              <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>{systemSettingsStrings.ha.dialogPlannedCutoverTitle}</DialogTitle>
+                <DialogDescription>{systemSettingsStrings.ha.dialogPlannedCutoverDescription}</DialogDescription>
+              </DialogHeader>
+              <dl className="grid gap-3 rounded-[18px] border border-border/60 bg-muted/30 px-4 py-4 text-sm sm:grid-cols-2">
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverTargetLabel}:</strong>{' '}
+                  {haCutoverTargetNodeId ?? '—'}
+                </div>
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverRouteLabel}:</strong>{' '}
+                  {haStatus?.edgeoneCurrentTarget ?? haStatus?.edgeoneOrigin ?? '—'}
+                </div>
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverTargetRouteLabel}:</strong>{' '}
+                  {haStatus?.peerNodes.find((peer) => peer.nodeId === haCutoverTargetNodeId)?.publicOrigin ?? '—'}
+                </div>
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverDomainLabel}:</strong>{' '}
+                  {haStatus?.edgeoneDomain ?? '—'}
+                </div>
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverCurrentSourceLabel}:</strong>{' '}
+                  {formatHaSourceKindLabel(haStatus?.edgeoneCurrentSourceKind ?? null, systemSettingsStrings.ha)}
+                </div>
+                <div>
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverExpectedRouteLabel}:</strong>{' '}
+                  {haStatus?.edgeoneExpectedTarget ?? haStatus?.edgeoneExpectedOrigin ?? '—'}
+                </div>
+                <div className="sm:col-span-2">
+                  <strong>{systemSettingsStrings.ha.dialogPlannedCutoverEffectiveSourceLabel}:</strong>{' '}
+                  {formatHaEffectiveSourceConfig(haStatus, systemSettingsStrings.ha)}
+                </div>
+              </dl>
+              <DialogFooter className="modal-action">
+                <Button type="button" variant="outline" onClick={() => setHaCutoverDialogOpen(false)}>
+                  {systemSettingsStrings.ha.dialogPlannedCutoverCancel}
+                </Button>
+                <Button type="button" variant="warning" onClick={() => void handleRunPlannedCutover()} disabled={haBusy || !haCutoverTargetNodeId}>
+                  {systemSettingsStrings.ha.dialogPlannedCutoverConfirm}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <HaSourceSettingsDialog
             open={haSourceDialogOpen}
             status={haStatus}

@@ -328,6 +328,10 @@ struct Cli {
     #[arg(long, env = "HA_SYNC_INTERVAL_SECS", default_value_t = 15)]
     ha_sync_interval_secs: u64,
 
+    /// Static HA peer inventory JSON used by the admin control plane.
+    #[arg(long, env = "HA_PEER_NODES_JSON")]
+    ha_peer_nodes_json: Option<String>,
+
     /// Runtime log formatter (`json` by default, `text` for fallback grep workflows).
     #[arg(long, env = "RUNTIME_LOG_FORMAT", value_enum, default_value_t = RuntimeLogFormat::Json)]
     log_format: RuntimeLogFormat,
@@ -540,6 +544,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|value| !value.is_empty()),
         test_price_enabled: cli.linuxdo_credit_test_price_enabled,
     };
+    let ha_peer_nodes = cli
+        .ha_peer_nodes_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(tavily_hikari::parse_ha_peer_nodes_json)
+        .transpose()?
+        .unwrap_or_default();
     let ha_config = HaConfig {
         mode: ha_mode,
         node_id: cli.node_id.trim().to_string(),
@@ -563,6 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sync_source_url: trim_optional(cli.ha_sync_source_url),
         internal_token: trim_optional(cli.ha_internal_token),
         sync_interval_secs: cli.ha_sync_interval_secs,
+        peer_nodes: ha_peer_nodes,
     };
 
     let static_dir = cli.static_dir.or_else(|| {

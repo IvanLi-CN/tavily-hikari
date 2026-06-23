@@ -7,7 +7,7 @@ import { AdminPageFrame, DashboardPageCanvas } from './AdminPagesStoryRuntime'
 
 type Story = StoryObj
 
-const storyHaStandbyStatus: HaStatus = {
+const dashboardHaAttentionStatus: HaStatus = {
   mode: 'active_standby',
   nodeId: 'node-b',
   nodePublicOrigin: '203.0.113.10:58087',
@@ -47,6 +47,99 @@ const storyHaStandbyStatus: HaStatus = {
   syncLagSeconds: 8,
   recoveryStatus: null,
   message: 'standby is synchronized and ready for manual promotion',
+  peerNodes: [
+    {
+      nodeId: 'node-a',
+      publicOrigin: '203.0.113.9:58087',
+      role: 'full_master',
+      allowsBasicBusiness: true,
+      allowsFullWrites: true,
+      lastSyncAt: 1_700_000_000,
+      syncLagSeconds: 2,
+      recoveryStatus: null,
+      message: 'active node is serving traffic',
+      lastSeenAt: 1_700_000_001,
+      stale: false,
+      roleHint: 'standby_candidate',
+      plannedCutoverEligible: false,
+    },
+  ],
+  plannedCutoverEligible: false,
+}
+
+const systemSettingsHaStatus: HaStatus = {
+  mode: 'active_standby',
+  nodeId: 'node-a',
+  nodePublicOrigin: '203.0.113.9:58087',
+  role: 'full_master',
+  degraded: false,
+  allowsBasicBusiness: true,
+  allowsFullWrites: true,
+  edgeoneDomain: 'api.example.com',
+  edgeoneOrigin: '203.0.113.9:58087',
+  edgeoneExpectedOrigin: null,
+  edgeoneCurrentTarget: '203.0.113.9:58087',
+  edgeoneExpectedTarget: null,
+  edgeoneCurrentSourceKind: 'direct',
+  edgeoneExpectedSourceKind: 'direct',
+  edgeoneCurrentOriginGroupId: null,
+  edgeoneExpectedOriginGroupId: null,
+  haSourceDefaults: {
+    sourceKind: 'direct',
+    directOriginScheme: 'https',
+    directOriginHost: '203.0.113.9',
+    directOriginPort: 58087,
+    originGroupId: null,
+    target: '203.0.113.9:58087',
+  },
+  haSourceOverride: null,
+  haSourceEffective: {
+    sourceKind: 'direct',
+    directOriginScheme: 'https',
+    directOriginHost: '203.0.113.9',
+    directOriginPort: 58087,
+    originGroupId: null,
+    target: '203.0.113.9:58087',
+  },
+  edgeoneApiConfigured: true,
+  lastEdgeoneCheckAt: 1_700_000_000,
+  lastSyncAt: 1_700_000_002,
+  syncLagSeconds: 0,
+  recoveryStatus: null,
+  message: 'full master is ready to drain traffic for planned maintenance',
+  peerNodes: [
+    {
+      nodeId: 'node-b',
+      publicOrigin: '203.0.113.10:58087',
+      role: 'standby',
+      allowsBasicBusiness: false,
+      allowsFullWrites: false,
+      lastSyncAt: 1_700_000_018,
+      syncLagSeconds: 4,
+      recoveryStatus: null,
+      message: 'standby is synchronized and ready',
+      lastSeenAt: 1_700_000_020,
+      stale: false,
+      roleHint: 'standby_candidate',
+      plannedCutoverEligible: true,
+    },
+    {
+      nodeId: 'node-c',
+      publicOrigin: '203.0.113.11:58087',
+      role: 'standby',
+      allowsBasicBusiness: false,
+      allowsFullWrites: false,
+      lastSyncAt: 1_700_000_010,
+      syncLagSeconds: 14,
+      recoveryStatus: null,
+      message: 'peer status probe is older than 30 seconds',
+      lastSeenAt: 1_699_999_920,
+      stale: true,
+      roleHint: 'observer',
+      plannedCutoverEligible: false,
+    },
+  ],
+  plannedCutoverEligible: false,
 }
 
 function DashboardHaAttentionPageCanvas(): JSX.Element {
@@ -56,7 +149,7 @@ function DashboardHaAttentionPageCanvas(): JSX.Element {
     <DashboardPageCanvas
       beforeIntro={(
         <HaStatusBanner
-          status={storyHaStandbyStatus}
+          status={dashboardHaAttentionStatus}
           audience="admin"
           adminVariant="compact"
           compactHref="/admin/system-settings/ha"
@@ -76,12 +169,27 @@ function SystemSettingsHaPageCanvas(): JSX.Element {
     <AdminPageFrame activeModule="system-settings-ha">
       <section className="admin-settings-ha-page">
         <HaStatusBanner
-          status={storyHaStandbyStatus}
+          status={systemSettingsHaStatus}
           audience="admin"
           strings={admin.systemSettings.ha}
           language={language}
           adminVariant="panel"
-          onPromote={() => undefined}
+          onPlannedCutover={() => undefined}
+          timeline={[
+            {
+              id: 501,
+              eventKind: 'planned_cutover_succeeded',
+              category: 'planned_cutover',
+              status: 'success',
+              nodeId: 'node-a',
+              operationId: 'ha-op-success',
+              summary: 'planned cutover completed to node-b',
+              detail: 'Target peer finalized and this node moved into recovery.',
+              technicalDetails: { targetNodeId: 'node-b' },
+              createdAt: 1_700_000_060,
+            },
+          ]}
+          hasMoreTimeline
         />
       </section>
     </AdminPageFrame>
@@ -94,7 +202,7 @@ export const SystemSettingsHa: Story = {
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
     const text = canvasElement.textContent ?? ''
-    if (!text.includes('HA 服务节点') || !text.includes('节点清单')) {
+    if (!text.includes('HA 服务节点') || !text.includes('节点清单') || !text.includes('计划内切流') || !text.includes('7 天时间线')) {
       throw new Error('Expected the HA settings page to render the full service-node panel.')
     }
     const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')

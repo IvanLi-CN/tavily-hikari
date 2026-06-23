@@ -1691,6 +1691,7 @@ pub(super) async fn spawn_ha_admin_server(
 
     let app = Router::new()
         .route("/api/admin/ha/status", get(get_admin_ha_status))
+        .route("/api/internal/ha/status", get(get_internal_ha_status))
         .route(
             "/api/admin/ha/snapshot",
             get(get_admin_ha_snapshot)
@@ -1700,8 +1701,12 @@ pub(super) async fn spawn_ha_admin_server(
         .route("/api/admin/ha/baseline", get(get_admin_ha_baseline))
         .route("/api/admin/ha/events", get(get_admin_ha_events))
         .route("/api/admin/ha/events/ack", post(post_admin_ha_events_ack))
+        .route("/api/admin/ha/timeline", get(get_admin_ha_timeline))
         .route("/api/admin/ha/source", put(put_admin_ha_source_settings))
         .route("/api/admin/ha/promote", post(post_admin_ha_promote))
+        .route("/api/admin/ha/planned-cutover", post(post_admin_ha_planned_cutover))
+        .route("/api/admin/ha/finalize", post(post_admin_ha_finalize))
+        .route("/api/internal/ha/finalize", post(post_internal_ha_finalize))
         .route("/api/admin/ha/recovery/import", post(post_admin_ha_recovery_import))
         .with_state(state);
 

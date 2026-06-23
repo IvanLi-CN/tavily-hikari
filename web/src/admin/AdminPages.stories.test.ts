@@ -339,7 +339,8 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain(translations.zh.admin.systemSettings.ha.panelTitle)
     expect(markup).toContain(translations.zh.admin.systemSettings.ha.nodeInventoryTitle)
-    expect(markup).toContain(translations.zh.admin.systemSettings.ha.promoteToMaster)
+    expect(markup).toContain(translations.zh.admin.systemSettings.ha.actionPlannedCutover)
+    expect(markup).toContain(translations.zh.admin.systemSettings.ha.timelineTitle)
   })
 
   it('renders abnormal HA attention on dashboard without the full node panel', () => {
