@@ -1,4 +1,4 @@
-import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck, Settings2 } from 'lucide-react'
+import { ArrowRight, CircleAlert, Crown, RotateCcw, Server, ShieldCheck } from 'lucide-react'
 
 import type { HaStatus, HaTimelineEvent } from '../api'
 import type { AdminTranslations } from '../i18n'
@@ -22,7 +22,6 @@ interface HaStatusBannerProps {
   adminVariant?: 'panel' | 'compact'
   onPromote?: () => void
   onFinalize?: () => void
-  onConfigureSource?: () => void
   onPlannedCutover?: (targetNodeId: string) => void
   busy?: boolean
   compactHref?: string
@@ -107,7 +106,6 @@ interface HaNodeRow {
   promotedAtTitle?: string
   promotedAtDateTime?: string
   actionKind: 'promote' | 'finalize' | 'serving' | 'blocked' | 'planned_cutover' | 'observe'
-  canConfigureSource?: boolean
   targetNodeId?: string
 }
 
@@ -158,7 +156,6 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
             : status.role === 'full_master'
               ? 'serving'
               : 'blocked',
-      canConfigureSource: true,
     },
   ]
   for (const peer of status.peerNodes ?? []) {
@@ -219,7 +216,6 @@ export default function HaStatusBanner({
   adminVariant = 'panel',
   onPromote,
   onFinalize,
-  onConfigureSource,
   onPlannedCutover,
   busy = false,
   compactHref,
@@ -381,19 +377,6 @@ export default function HaStatusBanner({
                   className="ha-node-cell ha-node-cell--action ha-node-action"
                   data-label={labels.actionHeader}
                 >
-                  {row.canConfigureSource && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="ha-node-action-button"
-                      onClick={onConfigureSource}
-                      disabled={busy || !onConfigureSource}
-                    >
-                      <Settings2 className="h-4 w-4" aria-hidden="true" />
-                      {labels.configureSource}
-                    </Button>
-                  )}
                   {row.actionKind === 'promote' && onPromote && (
                     <Button
                       type="button"

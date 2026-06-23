@@ -128,8 +128,8 @@ describe('HaStatusBanner Storybook proofs', () => {
     const renderStory = stories.OriginGroupSourceDialog.render as (() => JSX.Element) | undefined
     const text = await renderIntoDom(renderStory?.() ?? <></>)
 
-    expect(text).toContain(translations.zh.admin.systemSettings.ha.configureSource)
     expect(text).toContain(translations.zh.admin.systemSettings.ha.sourceKindOriginGroup)
+    expect(text).toContain('eo-origin-group-ha-demo')
   })
 
   it('keeps the direct source settings dialog story available', () => {

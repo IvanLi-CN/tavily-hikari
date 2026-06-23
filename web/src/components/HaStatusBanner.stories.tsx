@@ -434,7 +434,6 @@ export const OriginGroupSourceDialog: Story = {
           audience="admin"
           strings={translations.zh.admin.systemSettings.ha}
           language="zh"
-          onConfigureSource={() => undefined}
         />
         <HaSourceSettingsDialog
           open
@@ -501,7 +500,6 @@ export const DirectSourceDialog: Story = {
             audience="admin"
             strings={translations.zh.admin.systemSettings.ha}
             language="zh"
-            onConfigureSource={() => undefined}
           />
           <HaSourceSettingsDialog
             open
@@ -540,7 +538,6 @@ export const StandbySourceDialog: Story = {
           audience="admin"
           strings={translations.zh.admin.systemSettings.ha}
           language="zh"
-          onConfigureSource={() => undefined}
         />
         <HaSourceSettingsDialog
           open
@@ -590,7 +587,6 @@ export const SourceDialogSubmitFailure: Story = {
             audience="admin"
             strings={translations.zh.admin.systemSettings.ha}
             language="zh"
-            onConfigureSource={() => undefined}
           />
           <HaSourceSettingsDialog
             open

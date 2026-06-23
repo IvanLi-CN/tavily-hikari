@@ -71,6 +71,7 @@ const meta = {
     strings: translations.zh.admin.systemSettings.ha,
     language: 'zh',
     onBack: () => undefined,
+    onConfigureSource: () => undefined,
     hasMoreTimeline: false,
   },
 } satisfies Meta<typeof HaNodeDetailPanel>

@@ -606,6 +606,10 @@
   background: linear-gradient(180deg, hsl(var(--muted) / 0.22), hsl(var(--card) / 0.82));
 }
 
+.ha-node-detail-configure-button {
+  flex: 0 0 auto;
+}
+
 .ha-node-detail-config-label {
   color: hsl(var(--muted-foreground));
   font-size: 0.72rem;
@@ -858,6 +862,10 @@
 
   .ha-node-detail-card-head .status-badge {
     justify-self: start;
+  }
+
+  .ha-node-detail-configure-button {
+    width: 100%;
   }
 
   .ha-node-detail-overview-facts,

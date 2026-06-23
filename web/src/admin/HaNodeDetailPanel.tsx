@@ -1,4 +1,4 @@
-import { ArrowLeft, RotateCcw, Route, Server } from 'lucide-react'
+import { ArrowLeft, RotateCcw, Route, Server, Settings2 } from 'lucide-react'
 
 import type { HaNodeDetail, HaTimelineEvent } from '../api'
 import type { AdminTranslations } from '../i18n'
@@ -131,6 +131,7 @@ export interface HaNodeDetailPanelProps {
   language: 'en' | 'zh'
   loading?: boolean
   onBack: () => void
+  onConfigureSource?: () => void
   onLoadMoreTimeline?: (() => void) | null
   hasMoreTimeline?: boolean
 }
@@ -141,6 +142,7 @@ export default function HaNodeDetailPanel({
   language,
   loading = false,
   onBack,
+  onConfigureSource,
   onLoadMoreTimeline = null,
   hasMoreTimeline = false,
 }: HaNodeDetailPanelProps): JSX.Element {
@@ -268,9 +270,23 @@ export default function HaNodeDetailPanel({
         </article>
 
         <article className="ha-node-detail-card ha-node-detail-card--edgeone" aria-label={strings.nodeDetailEdgeoneTitle}>
-          <div className="ha-node-list-title">
-            <Route size={18} aria-hidden="true" />
-            <span>{strings.nodeDetailEdgeoneTitle}</span>
+          <div className="ha-node-detail-card-head">
+            <div className="ha-node-list-title">
+              <Route size={18} aria-hidden="true" />
+              <span>{strings.nodeDetailEdgeoneTitle}</span>
+            </div>
+            {onConfigureSource ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="ha-node-detail-configure-button"
+                onClick={onConfigureSource}
+              >
+                <Settings2 className="h-4 w-4" aria-hidden="true" />
+                {strings.configureSource}
+              </Button>
+            ) : null}
           </div>
           <dl className="ha-node-detail-edgeone-grid">
             <div>
