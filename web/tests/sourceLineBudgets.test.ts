@@ -33,9 +33,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3600,
+      max: 3700,
       reason:
-        'API barrel still carries HA source settings, admin settings, auth-token retention contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, auth-token retention contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
@@ -89,9 +89,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/types.ts',
     {
-      max: 1650,
+      max: 1760,
       reason:
-        'HA source settings mode-specific failure copy, admin jobs maintenance strings, the expanded admin rankings contract, and auth-token retention settings copy remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, and auth-token retention settings copy remain in the shared catalog contract.',
     },
   ],
   [
