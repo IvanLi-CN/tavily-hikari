@@ -277,12 +277,13 @@
         "--lib"
       ],
       "include_prefixes": [
-      "tests::jobs_and_request_log_retention::abandon_",
-      "tests::jobs_and_request_log_retention::abandoned_",
-      "tests::jobs_and_request_log_retention::auth_",
-      "tests::account_quota_and_billing::begin_",
+        "tests::jobs_and_request_log_retention::abandon_",
+        "tests::jobs_and_request_log_retention::abandoned_",
+        "tests::jobs_and_request_log_retention::auth_",
+        "tests::account_quota_and_billing::begin_",
         "tests::account_quota_and_billing::billing_",
         "tests::ha_baseline_streaming_and_sessions::",
+        "tests::ha_outbox_and_compaction::ha_outbox_",
         "tests::ha_outbox_and_compaction::db_",
         "tests::account_quota_and_billing::monthly_",
         "tests::usage_series_and_backfills::monthly_",
