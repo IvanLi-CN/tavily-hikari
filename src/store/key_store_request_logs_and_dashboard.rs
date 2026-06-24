@@ -2417,8 +2417,7 @@ impl KeyStore {
         })
     }
 
-    pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
-        self.flush_request_stats_writes().await?;
+    pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
         let totals_row = sqlx::query(
             r#"
             SELECT
@@ -2495,6 +2494,11 @@ impl KeyStore {
             total_quota_limit: quotas_row.try_get("total_quota_limit")?,
             total_quota_remaining: quotas_row.try_get("total_quota_remaining")?,
         })
+    }
+
+    pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
+        self.flush_request_stats_writes().await?;
+        self.fetch_summary_without_flush().await
     }
 
     async fn fetch_visible_request_log_floor_since(

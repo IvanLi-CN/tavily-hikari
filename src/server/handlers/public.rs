@@ -982,9 +982,9 @@ async fn sse_dashboard(
             match compute_signatures(&state).await {
                 Ok((sig, latest_id)) => {
                     if last_sig.is_none() || sig != last_sig || latest_id != last_log_id {
-                        if let Some(event) = build_snapshot_event(&state).await {
+                        if let Some((event, emitted_sig)) = build_snapshot_event(&state).await {
                             yield Ok(event);
-                            last_sig = sig;
+                            last_sig = Some(emitted_sig);
                             last_log_id = latest_id;
                         } else {
                             let degraded = Event::default().event("degraded").data("{}");
@@ -1160,6 +1160,10 @@ async fn build_dashboard_overview_payload(
         .proxy
         .dashboard_rollup_freshness_signature(summary_windows.previous_month_start)
         .await?;
+    let pending_dashboard_rollup_signature = state
+        .proxy
+        .pending_dashboard_rollup_freshness_signature()
+        .await;
     let dashboard_api_key_lifecycle_signature = state
         .proxy
         .dashboard_api_key_lifecycle_signature(summary_windows.previous_month_start)
@@ -1324,6 +1328,7 @@ async fn build_dashboard_overview_payload(
                 summary_windows.month_start,
             ],
             dashboard_rollup_signature,
+            pending_dashboard_rollup_signature,
             dashboard_api_key_lifecycle_signature,
             dashboard_quarantine_lifecycle_signature,
             dashboard_exhausted_lifecycle_signature,
@@ -1365,14 +1370,6 @@ async fn dashboard_recent_alerts_freshness(
     state.proxy.recent_alerts_summary(window_hours).await
 }
 
-fn dashboard_summary_window_starts(now: chrono::DateTime<Local>) -> [i64; 3] {
-    [
-        dashboard_start_of_local_day_utc_ts(now),
-        dashboard_previous_local_day_start_utc_ts(now),
-        dashboard_start_of_local_month_utc_ts(now),
-    ]
-}
-
 fn dashboard_retention_since(retention_days: i64, now: chrono::DateTime<Local>) -> i64 {
     let days = retention_days.max(0);
     if days == 0 {
@@ -1383,10 +1380,6 @@ fn dashboard_retention_since(retention_days: i64, now: chrono::DateTime<Local>) 
         .checked_sub_days(chrono::Days::new((days - 1) as u64))
         .unwrap_or_else(|| now.date_naive());
     dashboard_local_midnight_utc_ts(keep_from_date, now)
-}
-
-fn dashboard_summary_window_starts_now(now: chrono::DateTime<Local>) -> [i64; 3] {
-    dashboard_summary_window_starts(now)
 }
 
 fn dashboard_start_of_local_day_utc_ts(now: chrono::DateTime<Local>) -> i64 {
@@ -1407,6 +1400,43 @@ fn dashboard_start_of_local_month_utc_ts(now: chrono::DateTime<Local>) -> i64 {
     dashboard_local_midnight_utc_ts(first_day, now)
 }
 
+fn dashboard_next_local_day_start_utc_ts(current_day_start_utc_ts: i64) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(current_day_start_utc_ts, 0).single() else {
+        return current_day_start_utc_ts.saturating_add(86_400);
+    };
+    let local_dt = utc_dt.with_timezone(&Local);
+    let next_date = local_dt
+        .date_naive()
+        .succ_opt()
+        .unwrap_or_else(|| local_dt.date_naive());
+    dashboard_local_midnight_utc_ts(next_date, local_dt)
+}
+
+fn dashboard_previous_local_month_start_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let (year, month) = if now.month() == 1 {
+        (now.year() - 1, 12)
+    } else {
+        (now.year(), now.month() - 1)
+    };
+    let first_day =
+        chrono::NaiveDate::from_ymd_opt(year, month, 1).expect("valid previous month date");
+    dashboard_local_midnight_utc_ts(first_day, now)
+}
+
+fn dashboard_shift_local_month_start_utc_ts(current_month_start_utc_ts: i64, delta_months: i32) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(current_month_start_utc_ts, 0).single() else {
+        return current_month_start_utc_ts;
+    };
+    let local_dt = utc_dt.with_timezone(&Local);
+    let total_months = local_dt.year() * 12 + local_dt.month0() as i32 + delta_months;
+    let shifted_year = total_months.div_euclid(12);
+    let shifted_month0 = total_months.rem_euclid(12);
+    let shifted_month = (shifted_month0 + 1) as u32;
+    let shifted_day = chrono::NaiveDate::from_ymd_opt(shifted_year, shifted_month, 1)
+        .expect("valid shifted month date");
+    dashboard_local_midnight_utc_ts(shifted_day, local_dt)
+}
+
 fn dashboard_local_midnight_utc_ts(
     date: chrono::NaiveDate,
     fallback_now: chrono::DateTime<Local>,
@@ -1422,37 +1452,45 @@ fn dashboard_local_midnight_utc_ts(
 async fn compute_dashboard_overview_freshness(
     state: &Arc<AppState>,
 ) -> Result<DashboardOverviewFreshness, ProxyError> {
-    let summary = state.proxy.summary().await?;
-    let summary_windows = state.proxy.summary_windows().await?;
-    let quota_sample_window_start = summary_windows
-        .yesterday_start
-        .min(start_of_month_dt(state.proxy.backend_time().now_utc()).timestamp());
+    let summary = state.proxy.summary_without_flush().await?;
+    let now_local = state.proxy.backend_time().local_now();
+    let now_utc = now_local.with_timezone(&Utc);
+    let today_start = dashboard_start_of_local_day_utc_ts(now_local);
+    let yesterday_start = dashboard_previous_local_day_start_utc_ts(now_local);
+    let month_start = dashboard_start_of_local_month_utc_ts(now_local);
+    let month_period_end = dashboard_next_local_day_start_utc_ts(today_start)
+        .max(dashboard_shift_local_month_start_utc_ts(month_start, 1));
+    let previous_month_start = dashboard_previous_local_month_start_utc_ts(now_local);
+    let quota_sample_window_start = yesterday_start.min(start_of_month_dt(now_utc).timestamp());
     let dashboard_rollup_signature = state
         .proxy
-        .dashboard_rollup_freshness_signature(summary_windows.previous_month_start)
+        .dashboard_rollup_freshness_signature_without_flush(previous_month_start)
         .await?;
+    let pending_dashboard_rollup_signature = state
+        .proxy
+        .pending_dashboard_rollup_freshness_signature()
+        .await;
     let dashboard_api_key_lifecycle_signature = state
         .proxy
-        .dashboard_api_key_lifecycle_signature(summary_windows.previous_month_start)
+        .dashboard_api_key_lifecycle_signature(previous_month_start)
         .await?;
     let dashboard_quarantine_lifecycle_signature = state
         .proxy
-        .dashboard_quarantine_lifecycle_signature(summary_windows.previous_month_start)
+        .dashboard_quarantine_lifecycle_signature(previous_month_start)
         .await?;
     let dashboard_exhausted_lifecycle_signature = state
         .proxy
-        .dashboard_exhausted_lifecycle_signature(
-            summary_windows.previous_month_start,
-            summary_windows.month_period_end,
-        )
+        .dashboard_exhausted_lifecycle_signature(previous_month_start, month_period_end)
         .await?;
     let dashboard_quota_sample_signature = state
         .proxy
-        .dashboard_quota_sample_signature(quota_sample_window_start, summary_windows.today_end)
+        .dashboard_quota_sample_signature(
+            quota_sample_window_start,
+            state.proxy.backend_time().now_ts().saturating_add(1),
+        )
         .await?;
     let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
-    let summary_window_starts =
-        dashboard_summary_window_starts_now(state.proxy.backend_time().local_now());
+    let summary_window_starts = [today_start, yesterday_start, month_start];
     let (request_log_retention_days, retention_since) =
         dashboard_request_log_retention(state).await?;
     let trend_request_logs = state
@@ -1508,6 +1546,7 @@ async fn compute_dashboard_overview_freshness(
         summary_last_activity: summary.last_activity,
         summary_window_starts,
         dashboard_rollup_signature,
+        pending_dashboard_rollup_signature,
         dashboard_api_key_lifecycle_signature,
         dashboard_quarantine_lifecycle_signature,
         dashboard_exhausted_lifecycle_signature,
@@ -1661,7 +1700,7 @@ async fn load_dashboard_overview_snapshot(
     }
 }
 
-async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
+async fn build_snapshot_event(state: &Arc<AppState>) -> Option<(Event, SummarySig)> {
     let overview = load_dashboard_overview_snapshot(state).await.ok()?;
     let payload = DashboardSnapshot {
         keys: overview.payload.exhausted_keys.clone(),
@@ -1670,7 +1709,12 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
     };
 
     let json = serde_json::to_string(&payload).ok()?;
-    Some(Event::default().event("snapshot").data(json))
+    Some((
+        Event::default().event("snapshot").data(json),
+        SummarySig {
+            freshness: overview.freshness,
+        },
+    ))
 }
 
 async fn compute_signatures(

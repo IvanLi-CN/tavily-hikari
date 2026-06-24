@@ -1,20 +1,8 @@
 impl KeyStore {
-    pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
-        &self,
-    ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ProxyError::Database)
-    }
-
-    pub(crate) async fn fetch_dashboard_rollup_freshness_signature(
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
         &self,
         range_start: i64,
     ) -> Result<[i64; 4], ProxyError> {
-        self.flush_request_stats_writes().await?;
         let row = sqlx::query(
             r#"
             SELECT
@@ -35,6 +23,26 @@ impl KeyStore {
             row.try_get("max_bucket_start")?,
             row.try_get("bucket_secs_sum")?,
         ])
+    }
+
+    pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
+        &self,
+    ) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        self.flush_request_stats_writes().await?;
+        self.fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
+            .await
     }
 
     pub(crate) async fn fetch_dashboard_api_key_lifecycle_signature(

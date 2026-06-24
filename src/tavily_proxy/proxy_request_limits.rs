@@ -485,6 +485,10 @@ impl TavilyProxy {
         self.key_store.fetch_summary().await
     }
 
+    pub async fn summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
+        self.key_store.fetch_summary_without_flush().await
+    }
+
     /// Admin dashboard period summary windows based on server-local day/month boundaries.
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
         const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(0);
@@ -648,6 +652,30 @@ impl TavilyProxy {
         self.key_store
             .fetch_dashboard_rollup_freshness_signature(range_start)
             .await
+    }
+
+    pub async fn dashboard_rollup_freshness_signature_without_flush(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        self.key_store
+            .fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
+            .await
+    }
+
+    pub async fn pending_dashboard_rollup_freshness_signature(&self) -> [i64; 10] {
+        self.key_store
+            .request_stats_coalescer
+            .pending_dashboard_freshness_signature()
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn debug_enqueue_dashboard_credit_rollups(&self, created_at: i64, credits: i64) {
+        self.key_store
+            .request_stats_coalescer
+            .enqueue_dashboard_credit_rollups(created_at, credits)
+            .await;
     }
 
     pub async fn dashboard_api_key_lifecycle_signature(

@@ -236,6 +236,12 @@ month-tail public metrics scan.
 - If an owner-facing read depends on coalesced rollups, prefer a freshness-gated flush over an
   unconditional flush. This keeps near-real-time semantics without turning every public/admin read
   into a write barrier under SQLite's single-writer budget.
+- Do not let an SSE freshness poll become that write barrier by accident. In this service,
+  `/api/events` was polling every 2 seconds; when its freshness path called the same
+  `summary_windows` / rollup-flush helpers as the dashboard rebuild, it re-heated SQLite write
+  contention even before a human opened a heavier admin page. Keep the poll path on cheap
+  no-flush reads plus pending-coalescer signatures, and reserve the actual flush for the shared
+  snapshot rebuild that will be emitted to clients.
 - When request-path billing needs both a history row and a ledger row, keep them in one SQLite
   transaction before adding retries. Retrying two independent writes can duplicate the history row
   and only masks the actual contention bug.

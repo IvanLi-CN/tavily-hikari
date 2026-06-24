@@ -74,6 +74,11 @@ reads:
   day/month anchors, forward-proxy counts, retention window anchor, latest visible request-log id,
   exhausted-key ids, disabled-token coverage, recent-job signatures, recent-alert aggregates, and
   the current hour anchor.
+- When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
+  “rebuild payload”. The probe path should use non-flushing summary / rollup reads plus a pending
+  coalescer signature, while the actual shared-snapshot rebuild may flush once. Reusing the rebuild
+  freshness as the emitted SSE signature prevents the next 2s poll from seeing a stale pre-rebuild
+  signature and rebuilding again immediately.
 - Treat optional dashboard feeds as `last-good` data instead of all-or-nothing prerequisites. If
   disabled-token or recent-job reads fail, keep the core overview payload serving and let the
   optional slice surface `error`/empty coverage semantics on the next snapshot rather than timing

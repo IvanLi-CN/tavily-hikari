@@ -569,21 +569,21 @@ fn subtract_summary_window_metrics(
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DashboardRequestRollupCounts {
-    total_requests: i64,
-    success_count: i64,
-    error_count: i64,
-    quota_exhausted_count: i64,
-    valuable_success_count: i64,
-    valuable_failure_count: i64,
-    valuable_failure_429_count: i64,
-    other_success_count: i64,
-    other_failure_count: i64,
-    unknown_count: i64,
-    mcp_non_billable: i64,
-    mcp_billable: i64,
-    api_non_billable: i64,
-    api_billable: i64,
-    local_estimated_credits: i64,
+    pub(crate) total_requests: i64,
+    pub(crate) success_count: i64,
+    pub(crate) error_count: i64,
+    pub(crate) quota_exhausted_count: i64,
+    pub(crate) valuable_success_count: i64,
+    pub(crate) valuable_failure_count: i64,
+    pub(crate) valuable_failure_429_count: i64,
+    pub(crate) other_success_count: i64,
+    pub(crate) other_failure_count: i64,
+    pub(crate) unknown_count: i64,
+    pub(crate) mcp_non_billable: i64,
+    pub(crate) mcp_billable: i64,
+    pub(crate) api_non_billable: i64,
+    pub(crate) api_billable: i64,
+    pub(crate) local_estimated_credits: i64,
 }
 
 impl DashboardRequestRollupCounts {
@@ -2680,6 +2680,45 @@ impl RequestStatsCoalescer {
         }
         .unwrap_or(oldest_created_at);
         Some((oldest_created_at, newest_created_at))
+    }
+
+    pub(crate) async fn pending_dashboard_freshness_signature(&self) -> [i64; 10] {
+        let state = self.state.lock().await;
+        let mut entries = state
+            .pending_dashboard_rollups
+            .iter()
+            .map(|(&(bucket_start, bucket_secs), counts)| (bucket_start, bucket_secs, *counts))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(bucket_start, bucket_secs, _)| (*bucket_start, *bucket_secs));
+
+        let mut signature = [0_i64; 10];
+        signature[0] = entries.len() as i64;
+        signature[1] = state.oldest_pending_created_at.unwrap_or_default();
+        signature[2] = state.newest_pending_created_at.unwrap_or_default();
+        signature[3] = state.flushing_oldest_created_at.unwrap_or_default();
+        signature[4] = state.flushing_newest_created_at.unwrap_or_default();
+
+        for (bucket_start, bucket_secs, counts) in entries {
+            signature[5] += bucket_start;
+            signature[6] += bucket_secs;
+            signature[7] += counts.total_requests
+                + counts.success_count
+                + counts.error_count
+                + counts.quota_exhausted_count
+                + counts.valuable_success_count
+                + counts.valuable_failure_count
+                + counts.valuable_failure_429_count
+                + counts.other_success_count
+                + counts.other_failure_count
+                + counts.unknown_count;
+            signature[8] += counts.local_estimated_credits;
+            signature[9] += counts.mcp_non_billable
+                + counts.mcp_billable
+                + counts.api_non_billable
+                + counts.api_billable;
+        }
+
+        signature
     }
 
     pub(crate) async fn wait_until_flushed(&self) {
