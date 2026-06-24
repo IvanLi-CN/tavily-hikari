@@ -1,4 +1,9 @@
 impl KeyStore {
+    async fn create_index(&self, sql: &str) -> Result<(), ProxyError> {
+        sqlx::query(sql).execute(&self.pool).await?;
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn acquire_test_schema_init_guard() -> tokio::sync::OwnedSemaphorePermit {
         static LOCK: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
@@ -2782,30 +2787,20 @@ impl KeyStore {
         sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
             .execute(&self.pool)
             .await?;
-        sqlx::query(
+        for sql in [
             r#"CREATE INDEX IF NOT EXISTS idx_ha_outbox_resource
                ON ha_outbox(resource, resource_id, seq)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_ha_outbox_created
                ON ha_outbox(created_at, seq)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_ha_outbox_resource_created_seq
+               ON ha_outbox(resource, created_at, seq)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_ha_billing_outbox_created
                ON ha_billing_outbox(created_at, seq)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_ha_runtime_outbox_created
                ON ha_runtime_outbox(created_at, seq)"#,
-        )
-        .execute(&self.pool)
-        .await?;
+        ] {
+            self.create_index(sql).await?;
+        }
 
         sqlx::query(
             r#"

@@ -485,6 +485,10 @@ impl TavilyProxy {
         self.key_store.fetch_summary().await
     }
 
+    pub async fn summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
+        self.key_store.fetch_summary_without_flush().await
+    }
+
     /// Admin dashboard period summary windows based on server-local day/month boundaries.
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
         const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(0);
@@ -638,6 +642,92 @@ impl TavilyProxy {
     pub async fn latest_dashboard_quota_sync_sample_at(&self) -> Result<Option<i64>, ProxyError> {
         self.key_store
             .fetch_latest_dashboard_quota_sync_sample_at()
+            .await
+    }
+
+    pub async fn dashboard_rollup_freshness_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        self.key_store
+            .fetch_dashboard_rollup_freshness_signature(range_start)
+            .await
+    }
+
+    pub async fn dashboard_rollup_freshness_signature_without_flush(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        self.key_store
+            .fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
+            .await
+    }
+
+    pub async fn pending_dashboard_rollup_freshness_signature(&self) -> [i64; 10] {
+        self.key_store
+            .request_stats_coalescer
+            .pending_dashboard_freshness_signature()
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn debug_enqueue_dashboard_credit_rollups(&self, created_at: i64, credits: i64) {
+        self.key_store
+            .request_stats_coalescer
+            .enqueue_dashboard_credit_rollups(created_at, credits)
+            .await;
+    }
+
+    pub async fn dashboard_api_key_lifecycle_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        self.key_store
+            .fetch_dashboard_api_key_lifecycle_signature(range_start)
+            .await
+    }
+
+    pub async fn dashboard_quarantine_lifecycle_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        self.key_store
+            .fetch_dashboard_quarantine_lifecycle_signature(range_start)
+            .await
+    }
+
+    pub async fn dashboard_exhausted_lifecycle_signature(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        self.key_store
+            .fetch_dashboard_exhausted_lifecycle_signature(range_start, range_end)
+            .await
+    }
+
+    pub async fn dashboard_quota_sample_signature(
+        &self,
+        window_start: i64,
+        window_end: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        self.key_store
+            .fetch_dashboard_quota_sample_signature(window_start, window_end)
+            .await
+    }
+
+    pub async fn dashboard_stale_key_count(
+        &self,
+        hot_active_since: i64,
+        hot_stale_before: i64,
+        cold_stale_before: i64,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .fetch_dashboard_stale_key_count(
+                hot_active_since,
+                hot_stale_before,
+                cold_stale_before,
+            )
             .await
     }
 

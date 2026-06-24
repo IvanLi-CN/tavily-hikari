@@ -2256,21 +2256,23 @@ impl KeyStore {
 
     pub(crate) async fn fetch_latest_visible_request_log_id(
         &self,
+        since: Option<i64>,
     ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT id
-            FROM request_logs
-            WHERE visibility = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_optional(&self.pool)
-        .await
-        .map(|value| value.flatten())
-        .map_err(ProxyError::from)
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM request_logs WHERE visibility = ",
+        );
+        builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        if let Some(since) = since {
+            builder.push(" AND created_at >= ").push_bind(since);
+        }
+        builder.push(" ORDER BY created_at DESC, id DESC LIMIT 1");
+
+        builder
+            .build_query_scalar::<Option<i64>>()
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.flatten())
+            .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_recent_visible_request_log_signature(

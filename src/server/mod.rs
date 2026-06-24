@@ -27,9 +27,7 @@ use axum::{
     routing::{any, delete, get, patch, post, put},
 };
 use base64::Engine as _;
-#[cfg(test)]
-use chrono::Local;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
 use futures_util::stream as futures_stream;
 use futures_util::{Stream, StreamExt};
 use nanoid::nanoid;
@@ -44,27 +42,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use url::form_urlencoded;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummarySig {
-    summary: [i64; 10],
-    summary_last_activity: Option<i64>,
-    today: [i64; 15],
-    yesterday: [i64; 15],
-    month: [i64; 17],
-    month_series_current: Vec<[i64; 11]>,
-    month_series_comparison: Vec<[i64; 11]>,
-    summary_window_starts: [i64; 3],
-    proxy: Option<(i64, i64)>,
-    exhausted_keys: Vec<String>,
-    disabled_tokens: Vec<String>,
-    disabled_tokens_error: bool,
-    disabled_tokens_truncated: bool,
-    recent_jobs: Vec<(i64, String, Option<i64>)>,
-    request_log_retention_days: i64,
-    recent_request_logs: Vec<(i64, i64)>,
-    hourly_window_anchor: i64,
-    recent_alerts_total_events: i64,
-    recent_alerts_grouped_count: i64,
-    recent_alerts_counts: Vec<(String, i64)>,
-    recent_alerts_top_groups: Vec<(String, i64, i64)>,
+    freshness: DashboardOverviewFreshness,
 }
 use std::time::Duration;
 use tavily_hikari::{

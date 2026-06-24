@@ -4,7 +4,7 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-04-06
-- Last: 2026-04-17
+- Last: 2026-06-24
 
 ## 背景
 
@@ -97,6 +97,8 @@
 - dashboard route 不再通过通用 `loadData()` 拉 `summary`、token page 或 token groups。
 - `loadDashboardOverview()` 必须收敛为单请求模型，只调用 `fetchDashboardOverview()`。
 - SSE 正常可用时，dashboard 活态增量更新只依赖 `snapshot`；不得再保留独立的 30 秒 dashboard signals polling。
+- SSE `compute_signatures()` 不得再调用会触发 flush-on-read 的 `summary_windows` / month-series
+  热路径；它只能消费 cheap freshness contract 与最近一次 shared snapshot freshness。
 - SSE 断线或 degraded 后，fallback polling 只能刷新 shell data + overview，不得回退到 `loadData()` 与 `loadDashboardOverview()` 双通路并发。
 - 手动刷新 dashboard 时，也只能触发 shell data + overview 的一次刷新。
 - `summary_windows` 与 `hourlyRequestWindow` 必须在日志写入的同一事务路径内保持近实时更新；不得依赖单独的异步 materialize job 才能看到当前小时变化。
@@ -116,6 +118,7 @@
   - `summary` 计数与 `summary.last_activity`
   - `forwardProxy` 节点可用数 / 总数
   - `recent_request_logs_signature` 与 request-log retention 口径
+  - `pending_dashboard_rollup_signature`
   - `exhaustedKeys` ID 子集
   - `recentJobs` 签名子集
   - `disabledTokens` ID 子集与 `tokenCoverage`
@@ -168,6 +171,7 @@
 - `2026-06-21`：`cargo test` 全量通过，覆盖 `dashboard_overview_snapshot_is_reused_within_the_same_freshness_wave`、`dashboard_overview_returns_lightweight_segments` 与 `admin_dashboard_sse_snapshot_includes_overview_segments`；确认 HTTP overview 与 SSE snapshot 在同一 freshness wave 内复用 shared snapshot。
 - `2026-06-21`：`cargo clippy -- -D warnings` 通过。
 - `2026-06-21`：101 只读复核确认当前线上唯一数据源链路为 `/home/ivan/srv/ai/docker-compose.yml` -> 容器 `tavily-hikari` -> volume `ai-tavily-hikari-data` -> `/srv/app/data/tavily_proxy.db` + `/srv/app/data/tavily_proxy-observability.db`。容器内受控 `overview` 请求在 `2026-06-21 13:47 +08:00` 约 `4.70s` 返回，且近期 slow log 仍可见 `observability.request_logs` 相关慢语句，说明这次优化仍需经部署后才能在 101 消除热路径宽扫。
+- `2026-06-24`：`cargo test dashboard_overview_snapshot -- --nocapture`、`cargo test log_catalog_and_dashboard_sse -- --nocapture`、`cargo test` 全量、`cargo clippy -- -D warnings`、`cd web && bun run build` 通过；确认 SSE freshness probe 已切到 no-flush summary/rollup 合同 + pending rollup signature，且 `snapshot` 事件会回写 rebuild 后的 freshness，避免 2 秒轮询紧接着重复重建 shared snapshot。
 
 ## 实现里程碑
 
@@ -204,3 +208,7 @@
 - 2026-06-23: 为 `/api/dashboard/overview` 与 shared snapshot cache-hit/rebuild 补齐默认
   structured perf events，稳定输出 `elapsed_ms`、runtime memory headroom 与 snapshot 结果范围，作为
   低内存回归与线上定位的默认证据面。
+- 2026-06-24: 将 dashboard freshness probe 从 flush-on-read `summary_windows` 路径拆出，改为
+  no-flush summary/rollup contract + pending coalescer signature，并让 SSE `snapshot` 使用 rebuild
+  后的 freshness 作为已发送签名；同时将 dashboard snapshot/SSE 回归测试拆分到独立模块以满足
+  Rust 行数预算门禁。

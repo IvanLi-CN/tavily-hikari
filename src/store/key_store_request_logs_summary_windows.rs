@@ -1,4 +1,60 @@
 impl KeyStore {
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS bucket_count,
+                COALESCE(MAX(updated_at), 0) AS max_updated_at,
+                COALESCE(MAX(bucket_start), 0) AS max_bucket_start,
+                COALESCE(SUM(bucket_secs), 0) AS bucket_secs_sum,
+                COALESCE(SUM(total_requests), 0) AS total_requests_sum,
+                COALESCE(SUM(success_count), 0) AS success_count_sum,
+                COALESCE(SUM(error_count), 0) AS error_count_sum,
+                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count_sum,
+                COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count_sum,
+                COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count_sum,
+                COALESCE(SUM(valuable_failure_429_count), 0) AS valuable_failure_429_count_sum,
+                COALESCE(SUM(other_success_count), 0) AS other_success_count_sum,
+                COALESCE(SUM(other_failure_count), 0) AS other_failure_count_sum,
+                COALESCE(SUM(unknown_count), 0) AS unknown_count_sum,
+                COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable_sum,
+                COALESCE(SUM(mcp_billable), 0) AS mcp_billable_sum,
+                COALESCE(SUM(api_non_billable), 0) AS api_non_billable_sum,
+                COALESCE(SUM(api_billable), 0) AS api_billable_sum,
+                COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits_sum
+            FROM dashboard_request_rollup_buckets
+            WHERE bucket_start >= ?
+            "#,
+        )
+        .bind(range_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("bucket_count")?,
+            row.try_get("max_updated_at")?,
+            row.try_get("max_bucket_start")?,
+            row.try_get("bucket_secs_sum")?,
+            row.try_get("total_requests_sum")?,
+            row.try_get("success_count_sum")?,
+            row.try_get("error_count_sum")?,
+            row.try_get("quota_exhausted_count_sum")?,
+            row.try_get("valuable_success_count_sum")?,
+            row.try_get("valuable_failure_count_sum")?,
+            row.try_get("valuable_failure_429_count_sum")?,
+            row.try_get("other_success_count_sum")?,
+            row.try_get("other_failure_count_sum")?,
+            row.try_get("unknown_count_sum")?,
+            row.try_get("mcp_non_billable_sum")?,
+            row.try_get("mcp_billable_sum")?,
+            row.try_get("api_non_billable_sum")?,
+            row.try_get("api_billable_sum")?,
+            row.try_get("local_estimated_credits_sum")?,
+        ])
+    }
+
     pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
@@ -8,6 +64,192 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        self.flush_request_stats_writes().await?;
+        self.fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
+            .await
+    }
+
+    pub(crate) async fn fetch_dashboard_api_key_lifecycle_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS key_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_keys
+            WHERE created_at >= ?
+            "#,
+        )
+        .bind(range_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("key_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
+    pub(crate) async fn fetch_dashboard_quarantine_lifecycle_signature(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS quarantine_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_key_quarantines
+            WHERE created_at >= ?
+            "#,
+        )
+        .bind(range_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("quarantine_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
+    pub(crate) async fn fetch_dashboard_exhausted_lifecycle_signature(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS exhausted_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND operation_code = ?
+              AND reason_code = ?
+              AND created_at >= ?
+              AND created_at < ?
+            "#,
+        )
+        .bind(MAINTENANCE_SOURCE_SYSTEM)
+        .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(range_start)
+        .bind(range_end)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("exhausted_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
+    pub(crate) async fn fetch_dashboard_quota_sample_signature(
+        &self,
+        window_start: i64,
+        window_end: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        if window_end <= window_start {
+            return Ok([0, 0, 0, 0]);
+        }
+        let row = sqlx::query(
+            r#"
+            WITH window_rows AS (
+                SELECT key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+            ),
+            sampled_keys AS (
+                SELECT DISTINCT key_id FROM window_rows
+            ),
+            baseline_rows AS (
+                SELECT s.key_id, s.quota_remaining, s.captured_at
+                FROM api_key_quota_sync_samples s
+                INNER JOIN (
+                    SELECT key_id, MAX(captured_at) AS captured_at
+                    FROM api_key_quota_sync_samples
+                    WHERE captured_at < ?
+                      AND key_id IN (SELECT key_id FROM sampled_keys)
+                    GROUP BY key_id
+                ) latest
+                    ON latest.key_id = s.key_id
+                   AND latest.captured_at = s.captured_at
+            ),
+            signature_rows AS (
+                SELECT key_id, quota_remaining, captured_at
+                FROM window_rows
+                UNION ALL
+                SELECT key_id, quota_remaining, captured_at
+                FROM baseline_rows
+            )
+            SELECT
+                COALESCE(COUNT(*), 0) AS sample_count,
+                COALESCE(MAX(captured_at), 0) AS max_captured_at,
+                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
+                COALESCE(SUM(quota_remaining), 0) AS remaining_sum
+            FROM signature_rows
+            "#,
+        )
+        .bind(window_start)
+        .bind(window_end)
+        .bind(window_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("sample_count")?,
+            row.try_get("max_captured_at")?,
+            row.try_get("captured_at_sum")?,
+            row.try_get("remaining_sum")?,
+        ])
+    }
+
+    pub(crate) async fn fetch_dashboard_stale_key_count(
+        &self,
+        hot_active_since: i64,
+        hot_stale_before: i64,
+        cold_stale_before: i64,
+    ) -> Result<i64, ProxyError> {
+        sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(COUNT(*), 0)
+            FROM api_keys
+            WHERE deleted_at IS NULL
+              AND status <> ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND CASE
+                  WHEN last_used_at >= ? THEN (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                  )
+                  ELSE (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                  )
+              END
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(hot_active_since)
+        .bind(hot_stale_before)
+        .bind(cold_stale_before)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_summary_windows(

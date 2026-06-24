@@ -39,6 +39,7 @@ mod tests {
     mod alerts_and_ha_startup_roles;
     mod api_keys_and_registration;
     mod core_support_and_parsing;
+    mod dashboard_overview_snapshot;
     mod linuxdo_oauth_and_admin_keys;
     mod log_catalog_and_dashboard_sse;
     mod mcp_billing_and_sessions;

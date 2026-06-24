@@ -18,10 +18,20 @@ struct AppState {
 struct DashboardOverviewFreshness {
     summary: [i64; 10],
     summary_last_activity: Option<i64>,
+    summary_window_starts: [i64; 3],
+    dashboard_rollup_signature: [i64; 19],
+    pending_dashboard_rollup_signature: [i64; 10],
+    dashboard_api_key_lifecycle_signature: [i64; 3],
+    dashboard_quarantine_lifecycle_signature: [i64; 3],
+    dashboard_exhausted_lifecycle_signature: [i64; 3],
+    dashboard_quota_sample_signature: [i64; 4],
+    dashboard_stale_key_count: i64,
     forward_proxy: Option<(i64, i64)>,
     exhausted_keys: Vec<String>,
     latest_quota_sync_sample_at: Option<i64>,
     latest_request_log_id: Option<i64>,
+    recent_request_logs: Vec<(i64, i64)>,
+    trend_request_logs: Vec<(i64, i64)>,
     recent_jobs: Vec<(i64, String, Option<i64>)>,
     disabled_tokens: Vec<String>,
     disabled_tokens_error: bool,
@@ -32,6 +42,7 @@ struct DashboardOverviewFreshness {
     recent_alerts_top_groups: Vec<(String, i64, i64)>,
     request_log_retention_days: i64,
     hourly_window_anchor: i64,
+    retention_since: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +56,8 @@ struct DashboardOverviewCacheState {
     cached: Option<CachedDashboardOverviewSnapshot>,
     loading: bool,
     notify: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    build_count: usize,
 }
 
 impl Default for DashboardOverviewCacheState {
@@ -53,6 +66,8 @@ impl Default for DashboardOverviewCacheState {
             cached: None,
             loading: false,
             notify: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            build_count: 0,
         }
     }
 }

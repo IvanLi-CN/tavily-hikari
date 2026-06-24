@@ -126,6 +126,11 @@ month-tail public metrics scan.
   that caused `billing_ledger` and runtime quota tables to bloat `ha_outbox` even in effectively
   single-node production. Keep HA channels explicit: `control` small-state, `billing` dedicated
   ledger truth, and `runtime` minimal correctness state.
+- For control-channel cursor validation, match the SQLite index to the actual predicate shape.
+  This service validates `SELECT MIN(seq) ... WHERE created_at >= ? AND resource IN (...)`; the
+  plain `(created_at, seq)` index is not enough once retained backlog grows. Keep a
+  `(resource, created_at, seq)` index and a query-plan regression test so the planner does not
+  fall back to scanning by time and filtering resources row-by-row.
 - Do not stop at splitting HA channels if the replication path still materializes a whole baseline
   or whole event batch in memory. In this service the next failure mode after channel split was a
   billing baseline path that still built one giant NDJSON string on the active node and one giant
@@ -135,6 +140,10 @@ month-tail public metrics scan.
   service, standby still looked “fenced” from the outside while `quota_sync`, usage rollups, GC,
   and maintenance schedulers were quietly enqueueing and writing into SQLite. That is enough to
   break a long-running HA apply transaction even when the request path is fully blocked.
+- When diagnosing memory growth alongside lock pressure, report cgroup memory and process RSS/HWM
+  together. On 101 the observed shape was `memory_current_bytes` near `3GB` while
+  `process_rss_bytes` stayed around `560MB`; that is evidence to first reduce dashboard/HA/SQLite
+  read-write amplification before calling it a heap leak.
 - If HA sync persists node-state or watermark metadata through a coalescing writer, flush that
   metadata at safe boundaries between channel apply sessions. Waiting until the end of the whole
   sync loop can make the next channel's `BEGIN IMMEDIATE` collide with delayed bookkeeping writes
@@ -227,6 +236,12 @@ month-tail public metrics scan.
 - If an owner-facing read depends on coalesced rollups, prefer a freshness-gated flush over an
   unconditional flush. This keeps near-real-time semantics without turning every public/admin read
   into a write barrier under SQLite's single-writer budget.
+- Do not let an SSE freshness poll become that write barrier by accident. In this service,
+  `/api/events` was polling every 2 seconds; when its freshness path called the same
+  `summary_windows` / rollup-flush helpers as the dashboard rebuild, it re-heated SQLite write
+  contention even before a human opened a heavier admin page. Keep the poll path on cheap
+  no-flush reads plus pending-coalescer signatures, and reserve the actual flush for the shared
+  snapshot rebuild that will be emitted to clients.
 - When request-path billing needs both a history row and a ledger row, keep them in one SQLite
   transaction before adding retries. Retrying two independent writes can duplicate the history row
   and only masks the actual contention bug.
