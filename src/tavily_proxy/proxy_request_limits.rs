@@ -648,7 +648,7 @@ impl TavilyProxy {
     pub async fn dashboard_rollup_freshness_signature(
         &self,
         range_start: i64,
-    ) -> Result<[i64; 8], ProxyError> {
+    ) -> Result<[i64; 19], ProxyError> {
         self.key_store
             .fetch_dashboard_rollup_freshness_signature(range_start)
             .await
@@ -657,7 +657,7 @@ impl TavilyProxy {
     pub async fn dashboard_rollup_freshness_signature_without_flush(
         &self,
         range_start: i64,
-    ) -> Result<[i64; 8], ProxyError> {
+    ) -> Result<[i64; 19], ProxyError> {
         self.key_store
             .fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
             .await

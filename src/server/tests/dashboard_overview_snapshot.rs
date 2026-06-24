@@ -447,12 +447,14 @@ async fn dashboard_overview_freshness_notices_same_second_rollup_updates() {
     sqlx::query(
         r#"
         UPDATE dashboard_request_rollup_buckets
-        SET total_requests = 9,
-            success_count = 7,
-            error_count = 2,
-            valuable_success_count = 7,
-            valuable_failure_count = 2,
-            api_billable = 9,
+        SET total_requests = 2,
+            success_count = 2,
+            error_count = 0,
+            valuable_success_count = 0,
+            valuable_failure_count = 0,
+            other_success_count = 2,
+            api_billable = 0,
+            api_non_billable = 2,
             updated_at = ?
         WHERE bucket_start = ?
           AND bucket_secs = 86400
@@ -470,7 +472,7 @@ async fn dashboard_overview_freshness_notices_same_second_rollup_updates() {
     assert_ne!(
         after_update.freshness.dashboard_rollup_signature,
         after_insert.freshness.dashboard_rollup_signature,
-        "same-second rollup metric changes should still invalidate the cached overview freshness signature",
+        "same-second rollup classification changes should still invalidate the cached overview freshness signature even when coarse totals stay the same",
     );
 
     let _ = std::fs::remove_file(db_path);

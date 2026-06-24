@@ -19,7 +19,7 @@ struct DashboardOverviewFreshness {
     summary: [i64; 10],
     summary_last_activity: Option<i64>,
     summary_window_starts: [i64; 3],
-    dashboard_rollup_signature: [i64; 8],
+    dashboard_rollup_signature: [i64; 19],
     pending_dashboard_rollup_signature: [i64; 10],
     dashboard_api_key_lifecycle_signature: [i64; 3],
     dashboard_quarantine_lifecycle_signature: [i64; 3],

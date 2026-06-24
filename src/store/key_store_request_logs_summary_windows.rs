@@ -2,7 +2,7 @@ impl KeyStore {
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
         &self,
         range_start: i64,
-    ) -> Result<[i64; 8], ProxyError> {
+    ) -> Result<[i64; 19], ProxyError> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -13,6 +13,17 @@ impl KeyStore {
                 COALESCE(SUM(total_requests), 0) AS total_requests_sum,
                 COALESCE(SUM(success_count), 0) AS success_count_sum,
                 COALESCE(SUM(error_count), 0) AS error_count_sum,
+                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count_sum,
+                COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count_sum,
+                COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count_sum,
+                COALESCE(SUM(valuable_failure_429_count), 0) AS valuable_failure_429_count_sum,
+                COALESCE(SUM(other_success_count), 0) AS other_success_count_sum,
+                COALESCE(SUM(other_failure_count), 0) AS other_failure_count_sum,
+                COALESCE(SUM(unknown_count), 0) AS unknown_count_sum,
+                COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable_sum,
+                COALESCE(SUM(mcp_billable), 0) AS mcp_billable_sum,
+                COALESCE(SUM(api_non_billable), 0) AS api_non_billable_sum,
+                COALESCE(SUM(api_billable), 0) AS api_billable_sum,
                 COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits_sum
             FROM dashboard_request_rollup_buckets
             WHERE bucket_start >= ?
@@ -29,6 +40,17 @@ impl KeyStore {
             row.try_get("total_requests_sum")?,
             row.try_get("success_count_sum")?,
             row.try_get("error_count_sum")?,
+            row.try_get("quota_exhausted_count_sum")?,
+            row.try_get("valuable_success_count_sum")?,
+            row.try_get("valuable_failure_count_sum")?,
+            row.try_get("valuable_failure_429_count_sum")?,
+            row.try_get("other_success_count_sum")?,
+            row.try_get("other_failure_count_sum")?,
+            row.try_get("unknown_count_sum")?,
+            row.try_get("mcp_non_billable_sum")?,
+            row.try_get("mcp_billable_sum")?,
+            row.try_get("api_non_billable_sum")?,
+            row.try_get("api_billable_sum")?,
             row.try_get("local_estimated_credits_sum")?,
         ])
     }
@@ -47,7 +69,7 @@ impl KeyStore {
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature(
         &self,
         range_start: i64,
-    ) -> Result<[i64; 8], ProxyError> {
+    ) -> Result<[i64; 19], ProxyError> {
         self.flush_request_stats_writes().await?;
         self.fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
             .await
