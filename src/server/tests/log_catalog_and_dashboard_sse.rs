@@ -2364,6 +2364,11 @@ use super::upstream_support_and_manual_jobs::*;
             snapshot.freshness.latest_request_log_id,
             "SSE freshness probe should stay aligned with the retention-filtered request-log visibility contract",
         );
+        assert_eq!(
+            sig.freshness.recent_request_logs,
+            snapshot.freshness.recent_request_logs,
+            "SSE freshness probe should track the same displayed recent-log signature as the shared overview snapshot",
+        );
         assert_eq!(latest_id, snapshot.freshness.latest_request_log_id);
 
         let _ = std::fs::remove_file(db_path);
@@ -2488,6 +2493,112 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(
             second.freshness.latest_request_log_id, None,
             "freshness probe should stay aligned with retention-filtered payload semantics",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_snapshot_rebuilds_when_displayed_log_signature_changes() {
+        let db_path = temp_db_path("dashboard-overview-log-order-freshness");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-log-order-freshness".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let newest_created_at = Utc::now().timestamp();
+        let newest_id = sqlx::query(
+            r#"
+            INSERT INTO observability.request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_body, response_body, forwarded_headers,
+                dropped_headers, created_at
+            ) VALUES (NULL, NULL, 'POST', '/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '', '', ?)
+            "#,
+        )
+        .bind(newest_created_at)
+        .execute(&pool)
+        .await
+        .expect("insert newest request log")
+        .last_insert_rowid();
+        let first = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("first overview snapshot");
+        assert_eq!(
+            first.payload.recent_logs.first().map(|log| log.id),
+            Some(newest_id),
+            "dashboard payload should keep the most recent log first by created_at/id ordering",
+        );
+        assert_eq!(
+            first.freshness.latest_request_log_id,
+            Some(newest_id),
+            "snapshot freshness should track the same most recent visible log as the retention-filtered payload",
+        );
+        assert_eq!(
+            first.freshness.recent_request_logs,
+            vec![(newest_id, newest_created_at)],
+            "freshness should include the displayed recent-log signature",
+        );
+
+        reset_dashboard_overview_build_count(&state).await;
+
+        let older_id = sqlx::query(
+            r#"
+            INSERT INTO observability.request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_body, response_body, forwarded_headers,
+                dropped_headers, created_at
+            ) VALUES (NULL, NULL, 'POST', '/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '', '', ?)
+            "#,
+        )
+        .bind(newest_created_at - 3600)
+        .execute(&pool)
+        .await
+        .expect("insert older request log")
+        .last_insert_rowid();
+        assert!(
+            older_id > newest_id,
+            "second insert should get a higher id while remaining older by created_at",
+        );
+
+        let second = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("second overview snapshot");
+
+        assert!(
+            dashboard_overview_build_count(&state).await >= 1,
+            "displayed recent-log changes should rebuild the shared snapshot even when the newest log id is unchanged",
+        );
+        assert_eq!(second.freshness.latest_request_log_id, Some(newest_id));
+        assert_eq!(
+            second.freshness.recent_request_logs,
+            vec![(newest_id, newest_created_at), (older_id, newest_created_at - 3600)],
+            "freshness should stay aligned with the displayed recent-log ordering",
+        );
+        assert_eq!(
+            second.payload.recent_logs.iter().map(|log| log.id).collect::<Vec<_>>(),
+            vec![newest_id, older_id],
+            "rebuilding should refresh the displayed recent-log rows after an older retained log is inserted",
         );
 
         let _ = std::fs::remove_file(db_path);

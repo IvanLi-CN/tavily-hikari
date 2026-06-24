@@ -23,6 +23,7 @@ struct DashboardOverviewFreshness {
     exhausted_keys: Vec<String>,
     latest_quota_sync_sample_at: Option<i64>,
     latest_request_log_id: Option<i64>,
+    recent_request_logs: Vec<(i64, i64)>,
     recent_jobs: Vec<(i64, String, Option<i64>)>,
     disabled_tokens: Vec<String>,
     disabled_tokens_error: bool,

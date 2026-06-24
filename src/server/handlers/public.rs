@@ -1178,7 +1178,11 @@ async fn build_dashboard_overview_payload(
         .into_iter()
         .take(DASHBOARD_RECENT_LOGS_LIMIT)
         .collect();
-    let latest_request_log_id = recent_logs.iter().map(|log| log.id).max();
+    let recent_request_logs = recent_logs
+        .iter()
+        .map(|log| (log.id, log.created_at))
+        .collect::<Vec<_>>();
+    let latest_request_log_id = recent_logs.first().map(|log| log.id);
     let recent_jobs = state
         .proxy
         .list_recent_jobs(DASHBOARD_RECENT_JOBS_LIMIT)
@@ -1293,6 +1297,7 @@ async fn build_dashboard_overview_payload(
             exhausted_keys: exhausted_key_ids,
             latest_quota_sync_sample_at: state.proxy.latest_dashboard_quota_sync_sample_at().await?,
             latest_request_log_id,
+            recent_request_logs,
             recent_jobs: recent_job_signatures,
             disabled_tokens: disabled_token_ids,
             disabled_tokens_error,
@@ -1387,10 +1392,11 @@ async fn compute_dashboard_overview_freshness(
         dashboard_summary_window_starts_now(state.proxy.backend_time().local_now());
     let (request_log_retention_days, retention_since) =
         dashboard_request_log_retention(state).await?;
-    let latest_request_log_id = state
+    let recent_request_logs = state
         .proxy
-        .latest_visible_request_log_id(Some(retention_since))
+        .recent_request_log_signature(DASHBOARD_RECENT_LOGS_LIMIT, retention_since)
         .await?;
+    let latest_request_log_id = recent_request_logs.first().map(|(id, _)| *id);
     let exhausted_keys = state
         .proxy
         .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
@@ -1437,6 +1443,7 @@ async fn compute_dashboard_overview_freshness(
         exhausted_keys,
         latest_quota_sync_sample_at: state.proxy.latest_dashboard_quota_sync_sample_at().await?,
         latest_request_log_id,
+        recent_request_logs,
         recent_jobs,
         disabled_tokens: disabled_tokens
             .iter()
