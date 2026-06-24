@@ -1158,7 +1158,7 @@ async fn build_dashboard_overview_payload(
         .min(start_of_month_dt(state.proxy.backend_time().now_utc()).timestamp());
     let dashboard_rollup_signature = state
         .proxy
-        .dashboard_rollup_freshness_signature(summary_windows.previous_month_start)
+        .dashboard_rollup_freshness_signature_without_flush(summary_windows.previous_month_start)
         .await?;
     let pending_dashboard_rollup_signature = state
         .proxy
