@@ -62,6 +62,11 @@
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/public-offline-shell.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/console-offline-shell.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/admin-offline-shell.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/offline-banner-web-off.png`
+
+## 后续微调
+
+- 2026-06-24: 统一离线提示 banner 的图标从 `mdi:earth-off` 微调为 `mdi:web-off`，以匹配“经纬线地球 + 无网络斜杠”的语义预期。
 
 ## 已知未完成验证
 

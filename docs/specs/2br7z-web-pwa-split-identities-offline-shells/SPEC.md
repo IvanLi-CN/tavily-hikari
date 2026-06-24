@@ -158,6 +158,7 @@
 - `97cccf60` 公共首页离线壳：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/public-offline-shell.png`
 - `97cccf60` 用户控制台离线壳：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/console-offline-shell.png`
 - `97cccf60` 管理员后台离线壳：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/admin-offline-shell.png`
+- 统一离线提示 banner 图标调整：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/offline-banner-web-off.png`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -178,3 +179,4 @@
 - 2026-06-24: 创建 spec，冻结双身份 PWA、离线壳与管理员缓存预算控制的实现合同。
 - 2026-06-24: 完成 Vite multipage 双 manifest / 双 service worker 生成、PWA 图标产线、前端入口注册、Rust 静态托管与主界面离线提示第一版。
 - 2026-06-24: 补齐 Chromium 离线视觉证据，确认 public identity 离线访问 `/admin` 不会命中 cached admin shell。
+- 2026-06-24: 将统一离线提示 banner 图标从 `mdi:earth-off` 调整为更贴近无网络语义的 `mdi:web-off`，并更新对应视觉证据。

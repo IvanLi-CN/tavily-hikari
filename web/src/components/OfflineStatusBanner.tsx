@@ -12,7 +12,7 @@ export default function OfflineStatusBanner({
   return (
     <section className="surface error-banner offline-status-banner" role="status" aria-live="polite">
       <div className="offline-status-banner-icon" aria-hidden="true">
-        <Icon icon="mdi:earth-off" width={20} height={20} />
+        <Icon icon="mdi:web-off" width={20} height={20} />
       </div>
       <div className="offline-status-banner-copy">
         <strong>{title}</strong>
