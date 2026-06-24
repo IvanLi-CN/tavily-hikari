@@ -2972,8 +2972,8 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
         .await
         .expect("compute signatures before alerts");
     let before_sig = before_sig.expect("summary signature before alerts");
-    assert_eq!(before_sig.recent_alerts_total_events, 0);
-    assert_eq!(before_sig.recent_alerts_grouped_count, 0);
+    assert_eq!(before_sig.freshness.recent_alerts_total_events, 0);
+    assert_eq!(before_sig.freshness.recent_alerts_grouped_count, 0);
 
     let now = Utc::now().timestamp();
     let pool = connect_sqlite_test_pool(&db_str).await;
@@ -3009,10 +3009,10 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
         .await
         .expect("compute signatures after alerts");
     let after_sig = after_sig.expect("summary signature after alerts");
-    assert_eq!(after_sig.recent_alerts_total_events, 1);
-    assert_eq!(after_sig.recent_alerts_grouped_count, 1);
+    assert_eq!(after_sig.freshness.recent_alerts_total_events, 1);
+    assert_eq!(after_sig.freshness.recent_alerts_grouped_count, 1);
     assert_eq!(
-        after_sig.recent_alerts_counts,
+        after_sig.freshness.recent_alerts_counts,
         vec![
             (
                 tavily_hikari::ALERT_TYPE_UPSTREAM_RATE_LIMITED_429.to_string(),

@@ -1719,8 +1719,11 @@ impl TavilyProxy {
         self.key_store.fetch_recent_logs(limit, Some(retention_since)).await
     }
 
-    pub async fn latest_visible_request_log_id(&self) -> Result<Option<i64>, ProxyError> {
-        self.key_store.fetch_latest_visible_request_log_id().await
+    pub async fn latest_visible_request_log_id(
+        &self,
+        since: Option<i64>,
+    ) -> Result<Option<i64>, ProxyError> {
+        self.key_store.fetch_latest_visible_request_log_id(since).await
     }
 
     pub async fn recent_request_log_signature(

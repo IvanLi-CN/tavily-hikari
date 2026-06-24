@@ -68,6 +68,16 @@ reads:
   immediately when summary totals, request-log signature, exhausted-key subset, disabled-token
   coverage, recent jobs, recent alerts, forward-proxy counts, quota-sync freshness, or current-hour
   anchor changes.
+- Keep the dashboard freshness contract cheap. The SSE `/api/events` loop should watch a bounded
+  freshness probe, not re-serialize `summaryWindows` and month-series payloads every two seconds.
+  In this service the low-cost contract is enough when it includes summary totals, local
+  day/month anchors, forward-proxy counts, retention window anchor, latest visible request-log id,
+  exhausted-key ids, disabled-token coverage, recent-job signatures, recent-alert aggregates, and
+  the current hour anchor.
+- Treat optional dashboard feeds as `last-good` data instead of all-or-nothing prerequisites. If
+  disabled-token or recent-job reads fail, keep the core overview payload serving and let the
+  optional slice surface `error`/empty coverage semantics on the next snapshot rather than timing
+  out the whole admin page.
 - Keep default structured perf logs on the owner-facing read path itself. Dashboard overview/shared
   snapshot and recent-request list/catalog endpoints should emit stable `component=admin_read event=...` records with `elapsed_ms`, route/scope metadata, and runtime memory headroom so low
   memory protection can be triggered and diagnosed without ad-hoc debug builds.
@@ -126,6 +136,11 @@ reads:
 - Treat this as the anti-pattern signature: if overview freshness, snapshot polling, or month-series
   reads keep touching `observability.request_logs` outside a minute-tail fallback, the read path
   will contend with live writes and grow with retained history.
+- On 2026-06-24 a stricter in-container replay on the same stack regressed further:
+  `curl -m 20 http://127.0.0.1:8787/api/dashboard/overview` timed out with
+  `HTTP 000 TOTAL 19.999741`, while the real `/admin/dashboard` shell still rendered and multiple
+  tiles stayed stuck on `正在加载仪表盘数据…`. That combination is the signal that the dashboard
+  shared-snapshot path itself has become the bottleneck, not the shell or auth path.
 
 ## Guardrails / Reuse Notes
 

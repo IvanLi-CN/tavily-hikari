@@ -18,6 +18,7 @@ struct AppState {
 struct DashboardOverviewFreshness {
     summary: [i64; 10],
     summary_last_activity: Option<i64>,
+    summary_window_starts: [i64; 3],
     forward_proxy: Option<(i64, i64)>,
     exhausted_keys: Vec<String>,
     latest_quota_sync_sample_at: Option<i64>,
@@ -32,6 +33,7 @@ struct DashboardOverviewFreshness {
     recent_alerts_top_groups: Vec<(String, i64, i64)>,
     request_log_retention_days: i64,
     hourly_window_anchor: i64,
+    retention_since: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +47,8 @@ struct DashboardOverviewCacheState {
     cached: Option<CachedDashboardOverviewSnapshot>,
     loading: bool,
     notify: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    build_count: usize,
 }
 
 impl Default for DashboardOverviewCacheState {
@@ -53,6 +57,8 @@ impl Default for DashboardOverviewCacheState {
             cached: None,
             loading: false,
             notify: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            build_count: 0,
         }
     }
 }

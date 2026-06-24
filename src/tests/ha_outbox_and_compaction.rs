@@ -1,5 +1,15 @@
 use super::*;
 
+async fn explain_query_plan_details(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+    sqlx::query(sql)
+        .fetch_all(pool)
+        .await
+        .expect("explain query plan")
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("detail").expect("plan detail"))
+        .collect()
+}
+
 #[tokio::test]
 async fn standalone_ha_outbox_gc_deletes_expired_rows_across_channels_in_bounded_batches() {
     let db_path = temp_db_path("ha-outbox-gc-bounded-control-only");
@@ -70,6 +80,12 @@ async fn standalone_ha_outbox_gc_deletes_expired_rows_across_channels_in_bounded
         .execute(&pool)
         .await
         .expect("create control outbox index");
+    sqlx::query(
+        r#"CREATE INDEX idx_ha_outbox_resource_created_seq ON ha_outbox(resource, created_at, seq)"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create control outbox resource/time index");
     sqlx::query(
         r#"CREATE INDEX idx_ha_billing_outbox_created ON ha_billing_outbox(created_at, seq)"#,
     )
@@ -210,6 +226,64 @@ async fn standalone_ha_outbox_gc_deletes_expired_rows_across_channels_in_bounded
     assert_eq!(old_control_remaining, 1);
     assert_eq!(billing_remaining, 1);
     assert_eq!(runtime_remaining, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn ha_outbox_cursor_validation_query_prefers_resource_created_seq_index() {
+    let db_path = temp_db_path("ha-outbox-cursor-query-plan");
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true),
+    )
+    .await
+    .expect("open sqlite pool");
+    sqlx::query(
+        r#"
+        CREATE TABLE ha_outbox (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            op TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            checksum TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create ha_outbox");
+    sqlx::query(
+        r#"CREATE INDEX idx_ha_outbox_resource_created_seq ON ha_outbox(resource, created_at, seq)"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create resource/time index");
+    sqlx::query(r#"CREATE INDEX idx_ha_outbox_created ON ha_outbox(created_at, seq)"#)
+        .execute(&pool)
+        .await
+        .expect("create created/seq index");
+
+    let plan = explain_query_plan_details(
+        &pool,
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT MIN(seq)
+        FROM ha_outbox
+        WHERE created_at >= 0
+          AND resource IN ('meta', 'users', 'api_keys', 'api_key_quarantines', 'api_key_maintenance_records', 'system_settings', 'scheduled_jobs')
+        "#,
+    )
+    .await;
+    let joined = plan.join("\n");
+    assert!(
+        joined.contains("idx_ha_outbox_resource_created_seq"),
+        "expected resource/time/seq index in query plan, got:\n{joined}"
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

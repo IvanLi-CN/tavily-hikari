@@ -126,6 +126,11 @@ month-tail public metrics scan.
   that caused `billing_ledger` and runtime quota tables to bloat `ha_outbox` even in effectively
   single-node production. Keep HA channels explicit: `control` small-state, `billing` dedicated
   ledger truth, and `runtime` minimal correctness state.
+- For control-channel cursor validation, match the SQLite index to the actual predicate shape.
+  This service validates `SELECT MIN(seq) ... WHERE created_at >= ? AND resource IN (...)`; the
+  plain `(created_at, seq)` index is not enough once retained backlog grows. Keep a
+  `(resource, created_at, seq)` index and a query-plan regression test so the planner does not
+  fall back to scanning by time and filtering resources row-by-row.
 - Do not stop at splitting HA channels if the replication path still materializes a whole baseline
   or whole event batch in memory. In this service the next failure mode after channel split was a
   billing baseline path that still built one giant NDJSON string on the active node and one giant
@@ -135,6 +140,10 @@ month-tail public metrics scan.
   service, standby still looked “fenced” from the outside while `quota_sync`, usage rollups, GC,
   and maintenance schedulers were quietly enqueueing and writing into SQLite. That is enough to
   break a long-running HA apply transaction even when the request path is fully blocked.
+- When diagnosing memory growth alongside lock pressure, report cgroup memory and process RSS/HWM
+  together. On 101 the observed shape was `memory_current_bytes` near `3GB` while
+  `process_rss_bytes` stayed around `560MB`; that is evidence to first reduce dashboard/HA/SQLite
+  read-write amplification before calling it a heap leak.
 - If HA sync persists node-state or watermark metadata through a coalescing writer, flush that
   metadata at safe boundaries between channel apply sessions. Waiting until the end of the whole
   sync loop can make the next channel's `BEGIN IMMEDIATE` collide with delayed bookkeeping writes

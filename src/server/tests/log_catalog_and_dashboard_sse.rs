@@ -2311,10 +2311,60 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("compute signatures");
         let sig = sig.expect("summary signature");
-        assert_eq!(sig.summary[4], 1);
-        assert_eq!(sig.summary[5], 0);
-        assert_eq!(sig.summary[6], 1);
+        assert_eq!(sig.freshness.summary[4], 1);
+        assert_eq!(sig.freshness.summary[5], 0);
+        assert_eq!(sig.freshness.summary[6], 1);
         assert!(latest_id.is_none());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn compute_signatures_reuses_dashboard_boundary_contract() {
+        let db_path = temp_db_path("summary-signatures-dashboard-boundaries");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-signature-boundaries".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+
+        let snapshot = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("overview snapshot");
+        let (sig, latest_id) = compute_signatures(&state)
+            .await
+            .expect("compute signatures");
+        let sig = sig.expect("summary signature");
+
+        assert_eq!(
+            sig.freshness.summary_window_starts,
+            snapshot.freshness.summary_window_starts,
+            "SSE freshness probe should reuse the same cheap local day/month boundary contract as the cached overview snapshot",
+        );
+        assert_eq!(
+            sig.freshness.latest_request_log_id,
+            snapshot.freshness.latest_request_log_id,
+            "SSE freshness probe should stay aligned with the retention-filtered request-log visibility contract",
+        );
+        assert_eq!(latest_id, snapshot.freshness.latest_request_log_id);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2350,20 +2400,94 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("first overview snapshot");
 
-        reset_dashboard_overview_build_count();
+        reset_dashboard_overview_build_count(&state).await;
 
         let _snapshot_event = build_snapshot_event(&state)
             .await
             .expect("snapshot event");
 
         assert_eq!(
-            dashboard_overview_build_count(),
+            dashboard_overview_build_count(&state).await,
             0,
             "SSE snapshot should reuse the shared overview cache instead of rebuilding within the same refresh wave",
         );
         assert!(
             !first.payload.month_series.current.is_empty(),
             "snapshot should still expose the expected month series payload",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_snapshot_ignores_retained_out_request_logs_in_freshness_probe() {
+        let db_path = temp_db_path("dashboard-overview-retained-log-freshness");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-retained-log-freshness".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let first = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("first overview snapshot");
+        assert!(
+            first.freshness.latest_request_log_id.is_none(),
+            "fresh snapshot should start without recent request logs",
+        );
+
+        let retention_days = effective_request_logs_retention_days();
+        let retained_out_created_at = Utc::now()
+            .checked_sub_signed(ChronoDuration::days(retention_days + 1))
+            .expect("retained-out timestamp")
+            .timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO observability.request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_body, response_body, forwarded_headers,
+                dropped_headers, created_at
+            ) VALUES (NULL, NULL, 'POST', '/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '', '', ?)
+            "#,
+        )
+        .bind(retained_out_created_at)
+        .execute(&pool)
+        .await
+        .expect("insert retained-out request log");
+
+        reset_dashboard_overview_build_count(&state).await;
+
+        let second = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("second overview snapshot");
+
+        assert_eq!(
+            dashboard_overview_build_count(&state).await,
+            0,
+            "retained-out request logs should not make the shared snapshot freshness diverge and force rebuilds",
+        );
+        assert_eq!(
+            second.freshness.latest_request_log_id, None,
+            "freshness probe should stay aligned with retention-filtered payload semantics",
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -2402,7 +2526,7 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("first overview snapshot");
         let _ = first;
 
-        reset_dashboard_overview_build_count();
+        reset_dashboard_overview_build_count(&state).await;
 
         sqlx::query(
             "UPDATE api_keys SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?",
@@ -2424,7 +2548,7 @@ use super::upstream_support_and_manual_jobs::*;
             "freshness changes should bypass the recently loaded cache entry"
         );
         assert!(
-            dashboard_overview_build_count() >= 1,
+            dashboard_overview_build_count(&state).await >= 1,
             "overview snapshot should rebuild after freshness changes even inside the grace window"
         );
 
