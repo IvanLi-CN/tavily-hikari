@@ -211,6 +211,9 @@ jobs:
         with:
           bun-version-file: .bun-version
 
+      - name: Install PWA asset dependencies
+        run: python3 -m pip install --user Pillow
+
       - name: Build web assets
         working-directory: web
         env:
