@@ -201,6 +201,31 @@
   margin-top: 0;
 }
 
+.admin-ranking-card > .panel-header {
+  align-items: flex-start;
+}
+
+.admin-ranking-card > .panel-header > div {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-ranking-card > .panel-header h3 {
+  margin: 0;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.admin-ranking-card > .panel-header .panel-description {
+  line-height: 1.55;
+  min-height: calc(1.55em * 2);
+  text-wrap: pretty;
+}
+
 .admin-ranking-window-grid > .admin-ranking-card + .admin-ranking-card {
   margin-top: 0;
 }
