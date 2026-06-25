@@ -15,6 +15,7 @@ import {
   buildAdminTokensPath,
   buildAdminUsersOverviewPath,
   keyDetailPath,
+  rankingsPath,
   tokenDetailPath,
   unboundTokenUsagePath,
   userDetailPath,
@@ -111,6 +112,20 @@ const routeSwitchCases: RouteSwitchCase[] = [
     nextExpectation: {
       selector: '#user-detail-identity',
       text: 'User Detail',
+    },
+  },
+  {
+    name: 'rankings -> user detail -> rankings preserves tab',
+    startPath: rankingsPath('uniqueIp'),
+    nextPath: userDetailPath('user-demo-admin'),
+    nextExpectation: {
+      selector: '#user-detail-identity',
+      text: 'User Detail',
+    },
+    returnPath: rankingsPath('uniqueIp'),
+    returnExpectation: {
+      selector: '.admin-rankings-tab.is-active',
+      text: 'IP',
     },
   },
   {
@@ -234,6 +249,8 @@ async function mountAdminDashboard(initialPath: string): Promise<{ container: HT
   installDemoRuntime()
 
   const container = document.createElement('div')
+  container.style.width = '1440px'
+  container.style.minHeight = '1200px'
   document.body.appendChild(container)
   const root = createRoot(container)
 

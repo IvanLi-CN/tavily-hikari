@@ -8,11 +8,13 @@ import {
   buildAdminKeysPath,
   buildAdminUsersOverviewPath,
   buildAdminUsersPath,
+  getRankingsTabFromSearch,
   getAlertsViewFromSearch,
   isAdminUsersOverviewSortField,
   isSameAdminRoute,
   keyDetailPath,
   parseAdminPath,
+  rankingsPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
   tokenDetailPath,
@@ -39,6 +41,14 @@ describe('admin user tag routes', () => {
 
   it('parses the rankings module route', () => {
     expect(parseAdminPath('/admin/rankings')).toEqual({ name: 'module', module: 'rankings' })
+  })
+
+  it('builds and parses stable rankings tab paths', () => {
+    expect(rankingsPath()).toBe('/admin/rankings?tab=last24h')
+    expect(rankingsPath('uniqueIp')).toBe('/admin/rankings?tab=uniqueIp')
+    expect(getRankingsTabFromSearch('')).toBe('last24h')
+    expect(getRankingsTabFromSearch('?tab=businessCredits')).toBe('businessCredits')
+    expect(getRankingsTabFromSearch('?tab=invalid')).toBe('last24h')
   })
 
   it('parses the system settings module route', () => {

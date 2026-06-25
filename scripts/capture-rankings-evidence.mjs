@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
 const chromeExecutable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const evidenceDir = path.join(repoRoot, 'docs/specs/p7n4k-admin-user-rankings/assets')
-const liveBaseUrl = process.env.LIVE_BASE_URL ?? 'http://127.0.0.1:58087'
+const liveBaseUrl = process.env.LIVE_BASE_URL ?? 'http://127.0.0.1:55174'
 const rankingsUrl = `${liveBaseUrl.replace(/\/$/, '')}/admin/rankings?demo=true`
 const themeStorageKey = 'tavily-hikari-theme-mode'
 
@@ -27,6 +27,7 @@ async function capture({
   settleMs = 1500,
   fullPage = false,
   themeMode = 'light',
+  afterLoad,
 }) {
   const browser = await chromium.launch({
     executablePath: chromeExecutable,
@@ -46,6 +47,9 @@ async function capture({
       await page.locator(waitForSelector).first().waitFor({ timeout: 15000 })
     } else if (waitForText) {
       await page.getByText(waitForText).first().waitFor({ timeout: 15000 })
+    }
+    if (afterLoad) {
+      await afterLoad(page)
     }
     await page.waitForTimeout(settleMs)
     await page.screenshot({ path: output, fullPage })
@@ -82,8 +86,24 @@ await capture({
   themeMode: 'dark',
 })
 
+await capture({
+  url: `${rankingsUrl}&tab=businessCredits`,
+  viewport: { width: 1440, height: 1200 },
+  output: path.join(evidenceDir, 'web-demo-rankings-business-credits-highlight.png'),
+  waitForSelector: '.admin-ranking-chart-shell',
+  settleMs: 1200,
+  fullPage: false,
+  afterLoad: async (page) => {
+    await page.getByRole('radio', { name: '积分' }).waitFor({ timeout: 15000 })
+    const firstRow = page.getByRole('button', { name: /^1\. Alice Chen/ }).first()
+    await firstRow.hover()
+    await page.waitForTimeout(250)
+  },
+})
+
 console.log(JSON.stringify({
   webDemoDesktop: path.join(evidenceDir, 'web-demo-rankings-desktop.png'),
   webDemoMobile: path.join(evidenceDir, 'web-demo-rankings-mobile.png'),
   webDemoDarkDesktop: path.join(evidenceDir, 'web-demo-rankings-dark-desktop.png'),
+  webDemoBusinessCreditsHighlight: path.join(evidenceDir, 'web-demo-rankings-business-credits-highlight.png'),
 }, null, 2))

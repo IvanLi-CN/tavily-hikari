@@ -16,6 +16,9 @@
 - 2026-06-20: 修复 `rankings` 导航图标缺失的根因，补齐 `mdi:trophy-outline` 离线图标注册与 story/runtime 导航一致性。
 - 2026-06-21: 根据最新视觉验收反馈，榜单实现继续从“ECharts + DOM overlay”混合方案收口为纯 `ECharts custom series` 输出；旧的 `.admin-ranking-chart-overlay` 与 `.admin-ranking-row-label` 假标签层被彻底移除。
 - 2026-06-22: owner-facing 视觉证据从混用的 Storybook / live / chrome 过程截图收敛为统一 `web demo` 证据链，并清理重复资产与临时截图，避免同一排行模块继续残留两套验收口径。
+- 2026-06-25: 根据最新验收反馈，彻底否定“双轴 tabs”解读，合同锁定为六个独立单选 tab；路由改为单一 `tab` 查询参数，缺失或非法值统一规范化为 `last24h`。
+- 2026-06-25: 根据“返回过来后数据不能丢”的要求，排行 snapshot 真相源上提到 runtime；从用户详情返回、浏览器前进后退与 tab 切换都复用已有 snapshot，只做后台刷新，不再回骨架首屏。
+- 2026-06-25: 根据交互验收，排行项新增 click 跳转用户详情，以及 hover / focus 同用户跨三榜联动高亮，联动范围只限当前可见 tab 下的三张榜。
 
 ## Key Reasons / Replacements
 
@@ -27,6 +30,7 @@
 - 用户将新增维度定义为“IP”，且要求它与积分、主要调用并列，因此原双榜合同被替换为稳定三榜合同。
 - 用户继续指出“看起来不像成熟图表库实现”，因此最终证据与实现都必须证明：排行页只保留单一 chart surface，而不是图表下方再叠一层业务侧标签 DOM。
 - 用户明确要求截图必须来自 `web demo` 而不是 Storybook，因此最终 owner-facing 视觉证据统一切到 demo 路由，旧的 story/live 中间图不再保留在 spec 资产里。
+- 用户明确指出“这是六个独立 Tab”，因此旧的“指标 tab 只切单选态、不切内容”定义被彻底废弃，避免后续再次误读成双轴模型。
 
 ## References
 

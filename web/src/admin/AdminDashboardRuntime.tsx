@@ -134,16 +134,19 @@ import {
   type AdminPathRoute,
   type AdminTokensListContext,
   type AlertsCenterView,
+  type RankingTabKey,
   alertsPath,
   buildAdminKeysPath,
   buildAdminTokensPath,
   buildAdminUsersOverviewPath,
+  getRankingsTabFromSearch,
   getAlertsViewFromSearch,
   isAdminUsersOverviewSortField,
   isSameAdminRoute,
   keyDetailPath,
   modulePath,
   parseAdminPath,
+  rankingsPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
   buildAdminUsersPath,
@@ -1068,6 +1071,10 @@ function getAdminKeysRegionsFromLocation(): string[] {
   return Array.from(normalized)
 }
 
+function getAdminRankingsTabFromLocation(): RankingTabKey {
+  return getRankingsTabFromSearch(window.location.search)
+}
+
 function getUserTagIconSrc(icon: string | null | undefined): string | null {
   if (icon === 'linuxdo') {
     return '/linuxdo-logo.svg'
@@ -1740,6 +1747,7 @@ function AdminDashboard(): JSX.Element {
   const [rankingsConnectionState, setRankingsConnectionState] =
     useState<'connecting' | 'live' | 'degraded'>('connecting')
   const [rankingsReconnectNonce, setRankingsReconnectNonce] = useState(0)
+  const [rankingsTab, setRankingsTab] = useState<RankingTabKey>(getAdminRankingsTabFromLocation)
   const [dashboardMonthSeries, setDashboardMonthSeries] = useState<DashboardMonthSeries>(() => createEmptyDashboardMonthSeries())
   const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
@@ -1928,6 +1936,7 @@ function AdminDashboard(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
   const routeRef = useRef<AdminPathRoute>(route)
+  const lastRankingsPathRef = useRef<string | null>(null)
   const baseDataLoadedRef = useRef(false)
   const dashboardOverviewVersionRef = useRef(0)
   const unboundTokenUsageQueryKeyRef = useRef<string | null>(null)
@@ -2815,6 +2824,23 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     routeRef.current = route
   }, [route])
+
+  useEffect(() => {
+    if (route.name !== 'module' || route.module !== 'rankings') {
+      return
+    }
+
+    const nextTab = getRankingsTabFromSearch(locationSearch)
+    setRankingsTab(nextTab)
+
+    const normalizedLocation = rankingsPath(nextTab)
+    const currentLocation = `${window.location.pathname}${window.location.search}`
+    if (currentLocation !== normalizedLocation) {
+      window.history.replaceState(null, '', normalizedLocation)
+      setLocationSearch(new URL(normalizedLocation, window.location.origin).search)
+    }
+    lastRankingsPathRef.current = normalizedLocation
+  }, [locationSearch, route])
 
   const loadUnboundTokenUsage = useCallback(
     async ({
@@ -4423,6 +4449,13 @@ function AdminDashboard(): JSX.Element {
 
   const navigateModule = useCallback(
     (target: AdminNavTarget) => {
+      if (target === 'rankings') {
+        const currentTab = route.name === 'module' && route.module === 'rankings'
+          ? rankingsTab
+          : getAdminRankingsTabFromLocation()
+        navigateToPath(rankingsPath(currentTab))
+        return
+      }
       if (target === 'tokens') {
         const groupState = getAdminTokensGroupFromLocation()
         navigateToPath(
@@ -4474,7 +4507,7 @@ function AdminDashboard(): JSX.Element {
       }
       navigateToPath(modulePath(target))
     },
-    [buildUsersOverviewPath, navigateToPath, route],
+    [buildUsersOverviewPath, navigateToPath, rankingsTab, route],
   )
 
   const navigateKey = useCallback(
@@ -4589,6 +4622,9 @@ function AdminDashboard(): JSX.Element {
 
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
+      if (route.name === 'module' && route.module === 'rankings') {
+        lastRankingsPathRef.current = rankingsPath(rankingsTab)
+      }
       if (options?.preserveUsersContext) {
         const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
         navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder, collection))
@@ -4596,7 +4632,16 @@ function AdminDashboard(): JSX.Element {
       }
       navigateToPath(userDetailPath(id))
     },
-    [isUserUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+    [isUserUsageRoute, navigateToPath, rankingsTab, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+  )
+
+  const navigateRankingsTab = useCallback(
+    (tab: RankingTabKey) => {
+      const nextPath = rankingsPath(tab)
+      lastRankingsPathRef.current = nextPath
+      navigateToPath(nextPath)
+    },
+    [navigateToPath],
   )
 
   const buildUsersCollectionPath = useCallback(
@@ -8874,7 +8919,11 @@ function AdminDashboard(): JSX.Element {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() =>
+                onClick={() => {
+                  if (lastRankingsPathRef.current) {
+                    navigateToPath(lastRankingsPathRef.current)
+                    return
+                  }
                   navigateToPath(
                     buildUsersCollectionPath(
                       getAdminUsersQueryFromLocation(),
@@ -8884,7 +8933,7 @@ function AdminDashboard(): JSX.Element {
                       getAdminUsersSortDirectionFromLocation(),
                     ),
                   )
-                }
+                }}
               >
                 {usersStrings.detail.back}
               </Button>
@@ -10164,6 +10213,9 @@ function AdminDashboard(): JSX.Element {
           error={rankingsError}
           connectionState={rankingsConnectionState}
           showHeader={false}
+          activeTab={rankingsTab}
+          onTabChange={navigateRankingsTab}
+          onSelectUser={(userId) => navigateUser(userId)}
           onRetry={() => {
             setRankingsError(null)
             setRankingsConnectionState('connecting')
