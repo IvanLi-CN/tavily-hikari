@@ -198,6 +198,11 @@
   min-height: 392px;
   height: 100%;
   overflow: hidden;
+  margin-top: 0;
+}
+
+.admin-ranking-window-grid > .admin-ranking-card + .admin-ranking-card {
+  margin-top: 0;
 }
 
 .admin-ranking-card-body {
