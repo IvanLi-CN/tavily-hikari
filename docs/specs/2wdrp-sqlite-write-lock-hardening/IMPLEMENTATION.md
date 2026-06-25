@@ -314,6 +314,13 @@
   before returning.
 - Added request-stats coverage proving auth-token activity reads and admin rate-5m usage-series
   reads flush pending coalesced deltas before returning.
+- Added owner-facing read-path containment for dashboard/public metrics:
+  `/api/dashboard/overview`, admin SSE `snapshot`, `/api/public/metrics`, and public SSE `metrics`
+  now read no-flush summary / rollup paths first, then surface `freshness` metadata instead of
+  synchronously forcing `flush_request_stats_writes*()` before every response.
+- Added `last_good` snapshot reuse plus cold-start degraded fallback for dashboard/public metrics.
+  Under SQLite writer contention, owner-facing surfaces now return `200` + shape-valid payloads with
+  `freshness.state=stale|degraded` instead of timing out behind a write lock.
 - Added request-log catalog coverage proving catalog reads still self-heal after direct SQL
   `request_logs` mutations and rollup rebuild scenarios.
 - Added server-level regression coverage proving the admin logs page still returns rows/totals from
@@ -350,6 +357,13 @@
 - `cd web && bun run build`
 - `cargo test`
 - `cargo clippy -- -D warnings`
+- `cargo test public_metrics_http_returns_freshness_payload -- --nocapture`
+- `cargo test public_metrics_sse_emits_freshness_on_first_metrics_event -- --nocapture`
+- `cargo test dashboard_overview_returns_non_fresh_freshness_when_pending_rollups_exist -- --nocapture`
+- `cargo test admin_dashboard_sse_snapshot_includes_overview_segments -- --nocapture`
+- `cd web && bun test`
+- `cd web && bun run build`
+- `cd web && bun run build-storybook`
 - Full `cargo test --locked --all-features`
 - `cargo clippy -- -D warnings`
 - Shared testbox isolated run:

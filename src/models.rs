@@ -1476,7 +1476,7 @@ pub struct ForwardProxyDashboardSummary {
 }
 
 /// Successful request counters for public metrics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SuccessBreakdown {
     pub monthly_success: i64,
     pub daily_success: i64,

@@ -8,6 +8,9 @@ describe('DashboardOverview Storybook coverage', () => {
   it('keeps all six chart modes and the empty-selection story available', () => {
     expect(meta).toMatchObject({ title: 'Admin/Components/DashboardOverview' })
     expect(dashboardStories.Default).toMatchObject({})
+    expect(dashboardStories.FreshnessStaleLastGood).toMatchObject({})
+    expect(dashboardStories.FreshnessColdStartDegraded).toMatchObject({})
+    expect(dashboardStories.FreshnessGallery).toMatchObject({})
     expect(dashboardStories.TypesMode).toMatchObject({})
     expect(dashboardStories.ResultsDeltaMode).toMatchObject({})
     expect(dashboardStories.TypesDeltaMode).toMatchObject({})
@@ -63,6 +66,19 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(args?.monthSeries?.comparison).toEqual([])
     const markup = renderToStaticMarkup(createElement(meta.component, args as never))
     expect(markup).toContain('No retained previous-month comparison data.')
+  })
+
+  it('exposes stale and degraded freshness proof stories', () => {
+    expect(dashboardStories.FreshnessStaleLastGood.args?.freshness).toMatchObject({
+      state: 'stale',
+      source: 'last_good',
+      reason: 'sqlite_contention',
+    })
+    expect(dashboardStories.FreshnessColdStartDegraded.args?.freshness).toMatchObject({
+      state: 'degraded',
+      source: 'cold_start_fallback',
+      reason: 'cold_start_no_cache',
+    })
   })
 
   it('keeps the absolute charts on all-series defaults in the primary stories', () => {

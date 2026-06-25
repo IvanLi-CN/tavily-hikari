@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import type { DashboardMonthSeries, RecentAlertsSummary, SummaryWindowsResponse } from '../api'
-import DashboardOverview, { type DashboardMetricCard, type DashboardQuotaChargeCardData } from './DashboardOverview'
+import DashboardOverview, {
+  type DashboardMetricCard,
+  type DashboardQuotaChargeCardData,
+} from './DashboardOverview'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -47,6 +50,13 @@ const strings = {
   loading: 'Loading dashboard data…',
   summaryUnavailable: 'Unable to load the summary windows right now.',
   statusUnavailable: 'Unable to load the current site status right now.',
+  freshnessFresh: 'Dashboard data is fully up to date.',
+  freshnessStale: 'Showing coherent but slightly older dashboard data while rollups catch up.',
+  freshnessDegraded: 'Showing a degraded dashboard view. Some statistics are temporarily unavailable.',
+  freshnessPendingRollups: 'Pending rollups are still being absorbed, so this dashboard may lag slightly.',
+  freshnessSqliteContention: 'SQLite is contending on a write lock, so the last successful dashboard snapshot is shown.',
+  freshnessColdStart: 'Cold start fallback is active. Empty charts and zeroes do not represent authoritative traffic.',
+  freshnessOptionalFeedFailure: 'Some optional dashboard feeds are unavailable, but the core overview still loaded.',
   todayTitle: 'Today',
   todayDescription: 'Request-value signals up to now, compared with the same time yesterday.',
   monthTitle: 'This Month',
@@ -508,6 +518,13 @@ const zhStrings = {
   loading: '正在加载仪表盘数据…',
   summaryUnavailable: '暂时无法加载期间摘要。',
   statusUnavailable: '暂时无法加载站点当前状态。',
+  freshnessFresh: '仪表盘数据已同步到最新状态。',
+  freshnessStale: '当前展示的是可用但稍旧的数据，后台会继续自动追平。',
+  freshnessDegraded: '当前展示的是退化视图，部分统计可能暂不可用。',
+  freshnessPendingRollups: '仍有待吸收的聚合写入，当前展示的是可用但稍旧的数据。',
+  freshnessSqliteContention: 'SQLite 正在竞争写锁，当前先展示最近一次成功快照。',
+  freshnessColdStart: '冷启动期间暂时只能展示退化视图，空图和零值都不代表真实流量。',
+  freshnessOptionalFeedFailure: '部分辅助数据源暂不可用，但核心总览仍可查看。',
   todayTitle: '今日',
   todayDescription: '按调用价值查看截至当前的请求表现，并直接对比昨日同刻。',
   monthTitle: '本月',
@@ -733,6 +750,12 @@ export const Default: Story = {
     strings,
     overviewReady: true,
     statusLoading: false,
+    freshness: {
+      state: 'fresh',
+      source: 'live',
+      generatedAt: 1_782_000_000,
+      reason: 'up_to_date',
+    },
     todayMetrics,
     todayQuotaCharge,
     monthMetrics,
@@ -800,6 +823,147 @@ export const Default: Story = {
     onOpenRecentAlerts: () => {},
     onOpenToken: () => {},
     onOpenKey: () => {},
+  },
+}
+
+export const FreshnessStaleLastGood: Story = {
+  args: {
+    ...Default.args,
+    freshness: {
+      state: 'stale',
+      source: 'last_good',
+      generatedAt: 1_782_000_120,
+      reason: 'sqlite_contention',
+    },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Shows the dashboard freshness banner when SQLite writer contention forces the surface to reuse the last successful snapshot.',
+      },
+    },
+  },
+}
+
+export const FreshnessColdStartDegraded: Story = {
+  args: {
+    ...Default.args,
+    freshness: {
+      state: 'degraded',
+      source: 'cold_start_fallback',
+      generatedAt: 1_782_000_180,
+      reason: 'cold_start_no_cache',
+    },
+    summaryWindows: {
+      ...summaryWindows,
+      today: {
+        total_requests: 0,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 0,
+        valuable_failure_count: 0,
+        other_success_count: 0,
+        other_failure_count: 0,
+        unknown_count: 0,
+        upstream_exhausted_key_count: 0,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      yesterday: {
+        total_requests: 0,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 0,
+        valuable_failure_count: 0,
+        other_success_count: 0,
+        other_failure_count: 0,
+        unknown_count: 0,
+        upstream_exhausted_key_count: 0,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      month: {
+        total_requests: 0,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 0,
+        valuable_failure_count: 0,
+        other_success_count: 0,
+        other_failure_count: 0,
+        unknown_count: 0,
+        upstream_exhausted_key_count: 0,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+    },
+    hourlyRequestWindow: {
+      ...defaultHourlyRequestWindow,
+      buckets: [],
+    },
+    monthSeries: {
+      current: [],
+      comparison: [],
+    },
+    tokens: [],
+    keys: [],
+    logs: [],
+    jobs: [],
+    recentAlerts: {
+      windowHours: 24,
+      totalEvents: 0,
+      groupedCount: 0,
+      countsByType: [],
+      topGroups: [],
+    },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Shows the degraded cold-start fallback where charts and counters stay shape-valid but intentionally non-authoritative.',
+      },
+    },
+  },
+}
+
+export const FreshnessGallery: Story = {
+  args: {
+    ...(Default.args as typeof Default.args),
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story:
+          'Freshness contract proof gallery covering fresh, stale last-good, and degraded cold-start states on one stable canvas.',
+      },
+    },
+  },
+  render: (args) => {
+    const freshArgs = args
+    const staleArgs = FreshnessStaleLastGood.args ?? freshArgs
+    const degradedArgs = FreshnessColdStartDegraded.args ?? freshArgs
+
+    return (
+      <div style={{ display: 'grid', gap: 24 }}>
+        <section style={{ display: 'grid', gap: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18 }}>Fresh</h3>
+          <DashboardOverview {...freshArgs} />
+        </section>
+        <section style={{ display: 'grid', gap: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18 }}>Stale last-good fallback</h3>
+          <DashboardOverview {...staleArgs} />
+        </section>
+        <section style={{ display: 'grid', gap: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 18 }}>Degraded cold start</h3>
+          <DashboardOverview {...degradedArgs} />
+        </section>
+      </div>
+    )
   },
 }
 

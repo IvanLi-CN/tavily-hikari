@@ -3442,6 +3442,12 @@ export function DashboardPageCanvas({ beforeIntro }: { beforeIntro?: ReactNode }
         strings={admin.dashboard}
         overviewReady
         statusLoading={false}
+        freshness={{
+          state: 'fresh',
+          source: 'live',
+          generatedAt: Math.floor(Date.now() / 1000),
+          reason: 'up_to_date',
+        }}
         todayMetrics={todayMetrics}
         summaryWindows={summaryWindows}
         monthMetrics={monthMetrics}

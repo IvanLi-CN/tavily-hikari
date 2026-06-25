@@ -326,6 +326,12 @@ describe('admin user tag api helpers', () => {
       Promise.resolve(
         new Response(
           JSON.stringify({
+            freshness: {
+              state: 'stale',
+              source: 'last_good',
+              generatedAt: 1_775_535_500,
+              reason: 'sqlite_contention',
+            },
             summary: {
               total_requests: 1,
               success_count: 1,
@@ -470,6 +476,7 @@ describe('admin user tag api helpers', () => {
     const overview = await fetchDashboardOverview()
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/dashboard/overview')
+    expect(overview.freshness.state).toBe('stale')
     expect(overview.siteStatus.activeKeys).toBe(1)
     expect(overview.trend.request).toHaveLength(8)
     expect(overview.hourlyRequestWindow.buckets).toHaveLength(49)
@@ -479,6 +486,31 @@ describe('admin user tag api helpers', () => {
     expect(overview.tokenCoverage).toBe('ok')
     expect(overview.recentAlerts.totalEvents).toBe(3)
     expect(overview.recentAlerts.topGroups[0]?.latestEvent.request?.id).toBe(91)
+  })
+
+  it('loads public metrics freshness without changing the request URL shape', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({
+        monthlySuccess: 1,
+        dailySuccess: 2,
+        freshness: {
+          state: 'degraded',
+          source: 'cold_start_fallback',
+          generatedAt: 1_775_535_900,
+          reason: 'cold_start_no_cache',
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const metrics = await fetchPublicMetrics()
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/public/metrics')
+    expect(metrics.freshness?.state).toBe('degraded')
+    expect(metrics.freshness?.source).toBe('cold_start_fallback')
   })
 
   it('loads the admin user rankings snapshot from the dedicated endpoint', async () => {

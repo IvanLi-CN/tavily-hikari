@@ -48,11 +48,18 @@
   - `disabledTokens`
   - `tokenCoverage`
   - `recentAlerts`
+  - `freshness`
 - `summary` 与 `summaryWindows` 结构必须继续与既有接口保持一致。
 - `tokenCoverage` 仅允许：
   - `ok`
   - `truncated`
   - `error`
+- `freshness` 合同固定为：
+  - `state=fresh|stale|degraded`
+  - `source=live|last_good|cold_start_fallback`
+  - `generatedAt=<unix 秒>`
+  - `reason` 至少覆盖 `pending_rollups`、`sqlite_contention`、`optional_feed_failure`、
+    `cold_start_no_cache`
 
 ### admin SSE `snapshot`
 
@@ -72,6 +79,7 @@
   - `disabledTokens`
   - `tokenCoverage`
   - `recentAlerts`
+  - `freshness`
 - 为兼容历史 dashboard 客户端，继续保留 `keys` 与 `logs` 字段，但其内容改为与 `exhaustedKeys` / `recentLogs` 同步的轻量子集，不再返回旧的全量分页载荷。
 
 ### dashboard 轻量查询约束
@@ -147,7 +155,13 @@
 - dashboard 首屏不再重复触发 summary/bootstrap 双重加载。
 - 新写入一条 request log 后，不等待后台 job，`summaryWindows.today` 与 `summaryWindows.month` 的请求计数和 `local_estimated_credits` 即可反映到 overview / snapshot。
 - SSE 正常时，dashboard 不再维持旧的 30 秒 signals polling；SSE 断线后 fallback polling 只刷新 shell data + overview。
+- owner-facing dashboard 读路径不得再把同步 `flush_request_stats_writes()` 当作前置条件；
+  `summary`、`summaryWindows`、`hourlyRequestWindow` 必须优先使用 no-flush / last-good 路径，
+  再由 `freshness` 显式表达 live、stale 与 degraded 状态。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test src/api.test.ts src/admin/dashboardHourlyCharts.test.ts`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过。
+- 在 writer lock 存在时，`GET /api/dashboard/overview` 与 admin SSE 首条 `snapshot` 仍需在有界时间内返回
+  `200` + 合法 `freshness`；有 `last-good` 时允许 `state=stale`，无 `last-good` 时返回
+  `state=degraded` 的 shape-valid payload，而不是 timeout / 500 / 无限 loading。
 
 ## 当前验证记录
 
@@ -172,6 +186,14 @@
 - `2026-06-21`：`cargo clippy -- -D warnings` 通过。
 - `2026-06-21`：101 只读复核确认当前线上唯一数据源链路为 `/home/ivan/srv/ai/docker-compose.yml` -> 容器 `tavily-hikari` -> volume `ai-tavily-hikari-data` -> `/srv/app/data/tavily_proxy.db` + `/srv/app/data/tavily_proxy-observability.db`。容器内受控 `overview` 请求在 `2026-06-21 13:47 +08:00` 约 `4.70s` 返回，且近期 slow log 仍可见 `observability.request_logs` 相关慢语句，说明这次优化仍需经部署后才能在 101 消除热路径宽扫。
 - `2026-06-24`：`cargo test dashboard_overview_snapshot -- --nocapture`、`cargo test log_catalog_and_dashboard_sse -- --nocapture`、`cargo test` 全量、`cargo clippy -- -D warnings`、`cd web && bun run build` 通过；确认 SSE freshness probe 已切到 no-flush summary/rollup 合同 + pending rollup signature，且 `snapshot` 事件会回写 rebuild 后的 freshness，避免 2 秒轮询紧接着重复重建 shared snapshot。
+- `2026-06-24`：`cargo test public_metrics_http_returns_freshness_payload -- --nocapture`、
+  `cargo test public_metrics_sse_emits_freshness_on_first_metrics_event -- --nocapture`、
+  `cargo test dashboard_overview_returns_non_fresh_freshness_when_pending_rollups_exist -- --nocapture`、
+  `cargo test admin_dashboard_sse_snapshot_includes_overview_segments -- --nocapture` 通过，确认
+  dashboard/admin SSE/public metrics/public SSE 共享同一 freshness 合同。
+- `2026-06-24`：`cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`
+  通过；前端已将 admin/public surface 的 `fresh|stale|degraded` 视图固定到 Storybook 证据面，
+  不再依赖真实页面临时态截图。
 
 ## 实现里程碑
 
@@ -187,12 +209,21 @@
 - 本次优化引入 dashboard 专用 rollup 表，后续若要扩展更多 dashboard 维度，需继续维持写入同事务 upsert 与 bounded rebuild 的幂等性。
 - `snapshot` 仍保留兼容别名 `keys` / `logs`；若后续确认没有其它消费者，可再做一次协议瘦身。
 - dashboard 现有 Storybook 证据主要证明 UI 结构保留，不直接证明网络负载下降；性能收益仍以接口去重、payload 收缩与查询复用为主。
+- 当前 spec 的 freshness 合同只锁定 dashboard/admin SSE 与 public metrics/public SSE；`/api/summary`、
+  `/api/logs`、`/api/token/metrics` 等其它 surface 仍需单独 topic 决策，避免把 `degraded`
+  语义无边界外扩。
 
 ## Visual Evidence
 
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构。
   PR: include
   ![管理仪表盘总览轻量快照验收图](./assets/dashboard-overview-performance-proof.png)
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/FreshnessGallery`; state: `admin dashboard freshness gallery`; evidence_note: 同一张画布固定展示 dashboard `fresh`、`stale last-good` 与 `degraded cold-start` 三态，验证 owner-facing 页面不再靠无限 loading 或 500 表达 SQLite 竞争。
+  PR: include
+  ![管理仪表盘 freshness 三态](./assets/dashboard-overview-freshness-gallery.png)
+- source_type: `storybook_canvas`; story_id_or_title: `Public/PublicHomeHeroCard/FreshnessGallery`; state: `public homepage freshness gallery`; evidence_note: 固定展示 public metrics `fresh`、`stale last-good` 与 `degraded cold-start` 三态，验证零值/空态必须由 `freshness` 解释，而不是被视为 authoritative truth。
+  PR: include
+  ![公共首页 freshness 三态](./assets/public-home-freshness-gallery.png)
 
 ## Change log
 
@@ -212,3 +243,6 @@
   no-flush summary/rollup contract + pending coalescer signature，并让 SSE `snapshot` 使用 rebuild
   后的 freshness 作为已发送签名；同时将 dashboard snapshot/SSE 回归测试拆分到独立模块以满足
   Rust 行数预算门禁。
+- 2026-06-24: 将 dashboard/admin SSE/public metrics/public SSE 统一到 `freshness` 合同，并把
+  overview/public metrics 的 owner-facing 读路径从 request-stats 同步 flush 写屏障上拆开；live
+  失败时优先复用 `last_good`，冷启动无缓存时返回 `200 + degraded` 的 shape-valid fallback。

@@ -66,7 +66,22 @@ function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
         publicStrings={strings}
         metricsLoading={false}
         summaryLoading={false}
-        metrics={{ monthlySuccess: 1240, dailySuccess: 87 }}
+        metrics={{
+          monthlySuccess: 1240,
+          dailySuccess: 87,
+          freshness: {
+            state: 'fresh',
+            source: 'live',
+            generatedAt: 1_782_000_000,
+            reason: 'up_to_date',
+          },
+        }}
+        freshness={{
+          state: 'fresh',
+          source: 'live',
+          generatedAt: 1_782_000_000,
+          reason: 'up_to_date',
+        }}
         availableKeys={7}
         totalKeys={12}
         error={null}

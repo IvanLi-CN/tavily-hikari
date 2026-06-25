@@ -2314,6 +2314,11 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
+                Err(sqlx::Error::Database(err))
+                    if err.message().contains("no transaction is active") =>
+                {
+                    break;
+                }
                 Err(err) => panic!("release write lock: {err}"),
             }
         }

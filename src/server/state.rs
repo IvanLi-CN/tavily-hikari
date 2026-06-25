@@ -85,6 +85,17 @@ static MAINTENANCE_WORKER_WAKES: OnceLock<
 static MAINTENANCE_REMOTE_IO_SLOTS: OnceLock<
     std::sync::Mutex<HashMap<usize, std::sync::Weak<Semaphore>>>,
 > = OnceLock::new();
+type PublicMetricsCache = Arc<Mutex<HashMap<String, CachedPublicMetricsSnapshot>>>;
+type PublicMetricsCacheWeakMap = HashMap<usize, std::sync::Weak<Mutex<HashMap<String, CachedPublicMetricsSnapshot>>>>;
+
+static PUBLIC_METRICS_CACHES: OnceLock<std::sync::Mutex<PublicMetricsCacheWeakMap>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CachedPublicMetricsSnapshot {
+    metrics: SuccessBreakdown,
+    generated_at: i64,
+}
 
 fn db_maintenance_gate() -> &'static RwLock<()> {
     DB_MAINTENANCE_GATE.get_or_init(|| RwLock::new(()))
@@ -129,6 +140,20 @@ fn maintenance_remote_io_slot_for_state(state: &AppState) -> Arc<Semaphore> {
 
 fn dashboard_overview_cache_for_state(state: &AppState) -> Arc<Mutex<DashboardOverviewCacheState>> {
     state.dashboard_overview_cache.clone()
+}
+
+fn public_metrics_cache_for_state(
+    state: &AppState,
+) -> PublicMetricsCache {
+    let key = state as *const AppState as usize;
+    let caches = PUBLIC_METRICS_CACHES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut caches = caches.lock().expect("public metrics cache map lock");
+    if let Some(cache) = caches.get(&key).and_then(std::sync::Weak::upgrade) {
+        return cache;
+    }
+    let cache = Arc::new(Mutex::new(HashMap::new()));
+    caches.insert(key, Arc::downgrade(&cache));
+    cache
 }
 
 fn try_acquire_maintenance_remote_io_slot_for_state(

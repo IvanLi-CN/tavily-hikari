@@ -5,6 +5,7 @@ import type {
   AuthToken,
   DashboardHourlyRequestWindow,
   DashboardMonthSeries,
+  FreshnessView,
   JobLogView,
   RecentAlertsSummary,
   RequestLog,
@@ -83,6 +84,13 @@ export interface DashboardOverviewStrings {
   loading: string
   summaryUnavailable: string
   statusUnavailable: string
+  freshnessFresh: string
+  freshnessStale: string
+  freshnessDegraded: string
+  freshnessPendingRollups: string
+  freshnessSqliteContention: string
+  freshnessColdStart: string
+  freshnessOptionalFeedFailure: string
   todayTitle: string
   todayDescription: string
   monthTitle: string
@@ -145,6 +153,7 @@ interface DashboardOverviewProps {
   strings: DashboardOverviewStrings
   overviewReady: boolean
   statusLoading: boolean
+  freshness: FreshnessView | null
   todayMetrics: DashboardMetricCard[]
   todayQuotaCharge?: DashboardQuotaChargeCardData | null
   monthMetrics: DashboardMetricCard[]
@@ -170,6 +179,16 @@ interface DashboardOverviewProps {
   initialTypeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
   chartPersistenceKey?: string | null
   chartLabelTimeZone?: string | null
+}
+
+function describeFreshness(strings: DashboardOverviewStrings, freshness: FreshnessView | null): string | null {
+  if (!freshness) return null
+  if (freshness.state === 'fresh') return strings.freshnessFresh
+  if (freshness.reason === 'pending_rollups') return strings.freshnessPendingRollups
+  if (freshness.reason === 'sqlite_contention') return strings.freshnessSqliteContention
+  if (freshness.reason === 'cold_start_no_cache') return strings.freshnessColdStart
+  if (freshness.reason === 'optional_feed_failure') return strings.freshnessOptionalFeedFailure
+  return freshness.state === 'degraded' ? strings.freshnessDegraded : strings.freshnessStale
 }
 
 function readChartColorVar(name: string, fallback: string): string {
@@ -464,6 +483,7 @@ export default function DashboardOverview({
   strings,
   overviewReady,
   statusLoading,
+  freshness,
   todayMetrics,
   todayQuotaCharge,
   monthMetrics,
@@ -850,9 +870,15 @@ export default function DashboardOverview({
   const alertGroupCount = overviewReady && recentAlerts.totalEvents > 0 ? 1 : 0
   const priorityCount = riskItems.length + alertGroupCount
   const focusMetric = todayTotalMetric ?? monthTotalMetric ?? statusMetrics[0] ?? null
+  const freshnessLabel = describeFreshness(strings, freshness)
 
   return (
     <div className="dashboard-overview-stack">
+      {freshnessLabel ? (
+        <section className={`surface panel ${freshness?.state === 'fresh' ? '' : 'dashboard-summary-fallback'}`}>
+          <div className="panel-description">{freshnessLabel}</div>
+        </section>
+      ) : null}
       <section className="surface panel dashboard-priority-panel" aria-label={strings.riskTitle}>
         <div className="dashboard-priority-copy">
           <span className={`dashboard-priority-kicker${priorityCount > 0 ? ' dashboard-priority-kicker-warn' : ''}`}>

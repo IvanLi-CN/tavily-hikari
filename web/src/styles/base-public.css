@@ -142,6 +142,37 @@
 
 .public-home-auth-status { display: inline-flex; align-items: center; justify-content: center; gap: 8px; max-width: min(100%, 520px); margin: 18px auto 0; padding: 8px 13px; border: 1px solid hsl(var(--border) / 0.82); border-radius: 999px; background: hsl(var(--muted) / 0.58); color: hsl(var(--muted-foreground)); font-size: 0.92rem; font-weight: 600; line-height: 1.35; }
 .public-home-auth-status-error { border-color: hsl(var(--warning) / 0.4); background: hsl(var(--warning) / 0.13); color: hsl(var(--foreground)); }
+.public-home-freshness {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(100%, 760px);
+  margin: 16px auto 0;
+  padding: 10px 14px;
+  border: 1px solid hsl(var(--border) / 0.82);
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.58);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.public-home-freshness-fresh {
+  border-color: hsl(var(--success) / 0.26);
+  background: hsl(var(--success) / 0.12);
+  color: hsl(var(--success));
+}
+.public-home-freshness-stale {
+  border-color: hsl(var(--warning) / 0.32);
+  background: hsl(var(--warning) / 0.14);
+  color: hsl(var(--foreground));
+}
+.public-home-freshness-degraded {
+  border-color: hsl(var(--destructive) / 0.24);
+  background: hsl(var(--destructive) / 0.12);
+  color: hsl(var(--foreground));
+}
 .auth-status-button { cursor: wait; opacity: 0.88; }
 .auth-status-button[disabled] { pointer-events: none; }
 
