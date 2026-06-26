@@ -45,8 +45,8 @@ pub use runtime_logging::{
     capture_runtime_memory_snapshot, emit_legacy_stdio_event, init_runtime_logging,
 };
 pub use store::{
-    HaApplyResult, HaBaselineApplySession, HaEventsApplySession, HaEventsReadSession, PerfLogScope,
-    emit_low_memory_protection_decision,
+    DbLogStatus, HaApplyResult, HaBaselineApplySession, HaEventsApplySession, HaEventsReadSession,
+    PerfLogScope, emit_low_memory_protection_decision, emit_perf_log,
 };
 pub use tavily_proxy::*;
 

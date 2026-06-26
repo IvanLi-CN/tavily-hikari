@@ -573,6 +573,12 @@ impl TavilyProxy {
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
             summary_windows_cache: Arc::new(Mutex::new(SummaryWindowsCacheState::default())),
+            dashboard_quota_charge_cache: Arc::new(Mutex::new(
+                DashboardQuotaChargeCacheState::default(),
+            )),
+            dashboard_recent_alerts_cache: Arc::new(Mutex::new(
+                DashboardRecentAlertsCacheState::default(),
+            )),
             dashboard_hourly_request_window_cache: Arc::new(Mutex::new(
                 DashboardHourlyRequestWindowCacheState::default(),
             )),

@@ -2221,6 +2221,59 @@ async fn ha_sync_watermark_reads_pending_overlay_before_flush() {
 }
 
 #[tokio::test]
+async fn ha_channel_outbox_stats_reports_count_age_and_ack_lag() {
+    let db_path = temp_db_path("ha-outbox-stats");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-outbox-stats".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let now = Utc::now().timestamp();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        r#"
+        INSERT INTO ha_outbox (kind, resource, resource_id, op, payload_json, created_at, checksum)
+        VALUES ('upsert', 'meta', 'request_rate_limit_v1', 'upsert', '{}', ?, 'checksum-a')
+        "#,
+    )
+    .bind(now - 120)
+    .execute(&pool)
+    .await
+    .expect("insert first outbox row");
+    sqlx::query(
+        r#"
+        INSERT INTO ha_outbox (kind, resource, resource_id, op, payload_json, created_at, checksum)
+        VALUES ('upsert', 'meta', 'global_ip_limit_v1', 'upsert', '{}', ?, 'checksum-b')
+        "#,
+    )
+    .bind(now - 30)
+    .execute(&pool)
+    .await
+    .expect("insert second outbox row");
+    proxy
+        .ack_ha_peer_watermark(tavily_hikari::HaSyncChannel::Control, "standby-a", 1)
+        .await
+        .expect("ack watermark");
+
+    let stats = proxy
+        .ha_channel_outbox_stats(tavily_hikari::HaSyncChannel::Control, Some("standby-a"))
+        .await
+        .expect("read outbox stats");
+    assert_eq!(stats.row_count, 2);
+    assert!(stats.oldest_age_secs >= 100);
+    assert_eq!(stats.ack_lag, 1);
+
+    pool.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn ha_event_apply_preserves_foreign_keys_and_composite_deletes() {
     let db_path = temp_db_path("ha-event-apply-keys");
     let db_str = db_path.to_string_lossy().to_string();

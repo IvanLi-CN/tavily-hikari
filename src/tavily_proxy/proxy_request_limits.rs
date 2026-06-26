@@ -1,4 +1,174 @@
 impl TavilyProxy {
+    pub(crate) async fn dashboard_quota_charge_snapshot(
+        &self,
+        bounds: SummaryWindowBounds,
+        stale_key_count: i64,
+    ) -> Result<DashboardQuotaChargeSnapshot, ProxyError> {
+        let token = self
+            .key_store
+            .fetch_dashboard_quota_charge_token(
+                stale_key_count,
+                bounds.month_quota_charge_start,
+                bounds.today_end,
+            )
+            .await?;
+
+        loop {
+            let waiter = {
+                let mut cache = self.dashboard_quota_charge_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && cached.token == token
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let mut load_guard =
+                DashboardQuotaChargeLoadGuard::new(self.dashboard_quota_charge_cache.clone());
+            let rebuild_started = Instant::now();
+            let snapshot = self.key_store.fetch_dashboard_quota_charge_snapshot(bounds).await;
+            crate::emit_perf_log(
+                crate::DbLogStatus::Info,
+                "admin_read",
+                "dashboard_overview_phase",
+                rebuild_started.elapsed(),
+                crate::PerfLogScope {
+                    route: Some("/api/dashboard/overview"),
+                    scope: Some("dashboard"),
+                    phase: Some("quota_charge_rebuild"),
+                    degraded: Some(if snapshot.is_ok() { "ok" } else { "error" }),
+                    ..Default::default()
+                },
+            );
+            let mut cache = self.dashboard_quota_charge_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = snapshot.as_ref() {
+                cache.cached = Some(CachedDashboardQuotaChargeSnapshot {
+                    token,
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            load_guard.disarm();
+            return snapshot;
+        }
+    }
+
+    pub async fn dashboard_recent_alerts_summary(
+        &self,
+        window_hours: i64,
+    ) -> Result<RecentAlertsSummary, ProxyError> {
+        let token = self
+            .key_store
+            .fetch_recent_alerts_summary_token(window_hours)
+            .await?;
+
+        loop {
+            let waiter = {
+                let mut cache = self.dashboard_recent_alerts_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && cached.token == token
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let mut load_guard =
+                DashboardRecentAlertsLoadGuard::new(self.dashboard_recent_alerts_cache.clone());
+            let rebuild_started = Instant::now();
+            let summary = self.key_store.fetch_recent_alerts_summary(window_hours).await;
+            crate::emit_perf_log(
+                crate::DbLogStatus::Info,
+                "admin_read",
+                "dashboard_overview_phase",
+                rebuild_started.elapsed(),
+                crate::PerfLogScope {
+                    route: Some("/api/dashboard/overview"),
+                    scope: Some("dashboard"),
+                    phase: Some("recent_alerts_rebuild"),
+                    degraded: Some(if summary.is_ok() { "ok" } else { "last_good_or_error" }),
+                    ..Default::default()
+                },
+            );
+            let mut cache = self.dashboard_recent_alerts_cache.lock().await;
+            cache.loading = false;
+            match summary {
+                Ok(mut value) => {
+                    value.coverage = "ok".to_string();
+                    value.stale = false;
+                    value.error = None;
+                    cache.cached = Some(CachedDashboardRecentAlertsSummary {
+                        token,
+                        value: value.clone(),
+                    });
+                    cache.notify.notify_waiters();
+                    load_guard.disarm();
+                    return Ok(value);
+                }
+                Err(err) => {
+                    if let Some(cached) = cache.cached.as_ref() {
+                        let mut stale = cached.value.clone();
+                        stale.coverage = "last_good".to_string();
+                        stale.stale = true;
+                        stale.error = Some(err.to_string());
+                        cache.notify.notify_waiters();
+                        load_guard.disarm();
+                        return Ok(stale);
+                    }
+                    cache.notify.notify_waiters();
+                    load_guard.disarm();
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    pub async fn dashboard_quota_charge_token(
+        &self,
+        stale_key_count: i64,
+        month_quota_charge_start: i64,
+        today_end: i64,
+    ) -> Result<[i64; 6], ProxyError> {
+        self.key_store
+            .fetch_dashboard_quota_charge_token(
+                stale_key_count,
+                month_quota_charge_start,
+                today_end,
+            )
+            .await
+    }
+
+    pub async fn dashboard_recent_alerts_token(
+        &self,
+        window_hours: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        self.key_store
+            .fetch_recent_alerts_summary_token(window_hours)
+            .await
+    }
+
     pub async fn user_rankings_snapshot(&self) -> Result<UserRankingsSnapshot, ProxyError> {
         const USER_RANKINGS_CACHE_TTL: Duration = Duration::from_secs(10);
         const USER_RANKINGS_REFRESH_INTERVAL_SECS: i64 = 10;
@@ -830,20 +1000,43 @@ impl TavilyProxy {
         let today_elapsed = today_end.saturating_sub(today_start);
         let yesterday_end = yesterday_start.saturating_add(today_elapsed);
 
-        self.key_store
-            .fetch_summary_windows(SummaryWindowBounds {
-                today_start,
-                today_end,
-                today_period_end,
-                yesterday_start,
-                yesterday_end,
-                month_start,
-                month_quota_charge_start,
-                month_period_end,
-                previous_month_start,
-                previous_month_end: month_start,
-            })
-            .await
+        let bounds = SummaryWindowBounds {
+            today_start,
+            today_end,
+            today_period_end,
+            yesterday_start,
+            yesterday_end,
+            month_start,
+            month_quota_charge_start,
+            month_period_end,
+            previous_month_start,
+            previous_month_end: month_start,
+        };
+        let now_ts = today_end.saturating_sub(1);
+        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
+        let hot_stale_before = now_ts.saturating_sub(15 * 60);
+        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
+        let stale_key_count = self
+            .dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
+            .await?;
+        let mut windows = self.key_store.fetch_summary_windows(bounds).await?;
+        let quota_charge = self
+            .dashboard_quota_charge_snapshot(bounds, stale_key_count)
+            .await?;
+        windows.today.quota_charge.upstream_actual_credits = quota_charge.today.upstream_actual_credits;
+        windows.today.quota_charge.sampled_key_count = quota_charge.today.sampled_key_count;
+        windows.today.quota_charge.stale_key_count = quota_charge.today.stale_key_count;
+        windows.today.quota_charge.latest_sync_at = quota_charge.today.latest_sync_at;
+        windows.yesterday.quota_charge.upstream_actual_credits =
+            quota_charge.yesterday.upstream_actual_credits;
+        windows.yesterday.quota_charge.sampled_key_count = quota_charge.yesterday.sampled_key_count;
+        windows.yesterday.quota_charge.stale_key_count = quota_charge.yesterday.stale_key_count;
+        windows.yesterday.quota_charge.latest_sync_at = quota_charge.yesterday.latest_sync_at;
+        windows.month.quota_charge.upstream_actual_credits = quota_charge.month.upstream_actual_credits;
+        windows.month.quota_charge.sampled_key_count = quota_charge.month.sampled_key_count;
+        windows.month.quota_charge.stale_key_count = quota_charge.month.stale_key_count;
+        windows.month.quota_charge.latest_sync_at = quota_charge.month.latest_sync_at;
+        Ok(windows)
     }
 
     pub async fn dashboard_month_series(

@@ -1,4 +1,193 @@
 impl KeyStore {
+    pub(crate) async fn fetch_dashboard_quota_charge_token(
+        &self,
+        stale_key_count: i64,
+        month_quota_charge_start: i64,
+        today_end: i64,
+    ) -> Result<[i64; 6], ProxyError> {
+        let latest_sync_at = self
+            .fetch_latest_dashboard_quota_sync_sample_at()
+            .await?
+            .unwrap_or_default();
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS sample_count,
+                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
+                COALESCE(SUM(quota_remaining), 0) AS quota_remaining_sum,
+                COALESCE(COUNT(DISTINCT key_id), 0) AS sampled_key_count
+            FROM api_key_quota_sync_samples
+            WHERE captured_at >= ?
+              AND captured_at < ?
+            "#,
+        )
+        .bind(month_quota_charge_start)
+        .bind(today_end)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            latest_sync_at,
+            row.try_get("sample_count")?,
+            row.try_get("captured_at_sum")?,
+            row.try_get("quota_remaining_sum")?,
+            row.try_get("sampled_key_count")?,
+            stale_key_count,
+        ])
+    }
+
+    pub(crate) async fn fetch_dashboard_quota_charge_snapshot(
+        &self,
+        bounds: SummaryWindowBounds,
+    ) -> Result<DashboardQuotaChargeSnapshot, ProxyError> {
+        let SummaryWindowBounds {
+            today_start,
+            today_end,
+            yesterday_start,
+            yesterday_end,
+            month_quota_charge_start,
+            ..
+        } = bounds;
+        let sample_window_start = yesterday_start.min(month_quota_charge_start);
+        let now_ts = today_end.saturating_sub(1);
+        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
+        let hot_stale_before = now_ts.saturating_sub(15 * 60);
+        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
+
+        let sample_rows = sqlx::query(
+            r#"
+            WITH window_rows AS (
+                SELECT key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+            ),
+            sampled_keys AS (
+                SELECT DISTINCT key_id FROM window_rows
+            ),
+            baseline_rows AS (
+                SELECT s.key_id, s.quota_remaining, s.captured_at
+                FROM api_key_quota_sync_samples s
+                INNER JOIN (
+                    SELECT key_id, MAX(captured_at) AS captured_at
+                    FROM api_key_quota_sync_samples
+                    WHERE captured_at < ?
+                      AND key_id IN (SELECT key_id FROM sampled_keys)
+                    GROUP BY key_id
+                ) latest
+                    ON latest.key_id = s.key_id
+                   AND latest.captured_at = s.captured_at
+            )
+            SELECT key_id, quota_remaining, captured_at
+            FROM window_rows
+            UNION ALL
+            SELECT key_id, quota_remaining, captured_at
+            FROM baseline_rows
+            ORDER BY key_id ASC, captured_at ASC
+            "#,
+        )
+        .bind(sample_window_start)
+        .bind(today_end)
+        .bind(sample_window_start)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let stale_key_count = self
+            .fetch_dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
+            .await?;
+
+        let mut today_charge = QuotaChargeAccumulator::default();
+        let mut yesterday_charge = QuotaChargeAccumulator::default();
+        let mut month_charge = QuotaChargeAccumulator::default();
+        let mut today_sampled_keys = std::collections::HashSet::new();
+        let mut yesterday_sampled_keys = std::collections::HashSet::new();
+        let mut month_sampled_keys = std::collections::HashSet::new();
+        let mut current_key: Option<String> = None;
+        let mut previous_sample: Option<QuotaSyncSampleRow> = None;
+
+        for row in sample_rows {
+            let key_id: String = row.try_get("key_id")?;
+            if current_key.as_deref() != Some(key_id.as_str()) {
+                current_key = Some(key_id.clone());
+                previous_sample = None;
+            }
+
+            let sample = QuotaSyncSampleRow {
+                quota_remaining: row.try_get("quota_remaining")?,
+                captured_at: row.try_get("captured_at")?,
+            };
+            let delta = previous_sample
+                .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
+                .unwrap_or(0);
+
+            if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
+                month_charge.upstream_actual_credits += delta;
+                month_sampled_keys.insert(key_id.clone());
+                if month_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    month_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+            if sample.captured_at >= today_start && sample.captured_at < today_end {
+                today_charge.upstream_actual_credits += delta;
+                today_sampled_keys.insert(key_id.clone());
+                if today_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    today_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+            if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
+                yesterday_charge.upstream_actual_credits += delta;
+                yesterday_sampled_keys.insert(key_id.clone());
+                if yesterday_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    yesterday_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+
+            previous_sample = Some(sample);
+        }
+
+        today_charge.sampled_key_count = today_sampled_keys.len() as i64;
+        today_charge.stale_key_count = stale_key_count;
+        yesterday_charge.sampled_key_count = yesterday_sampled_keys.len() as i64;
+        yesterday_charge.stale_key_count = stale_key_count;
+        month_charge.sampled_key_count = month_sampled_keys.len() as i64;
+        month_charge.stale_key_count = stale_key_count;
+
+        Ok(DashboardQuotaChargeSnapshot {
+            today: SummaryQuotaCharge {
+                upstream_actual_credits: today_charge.upstream_actual_credits,
+                sampled_key_count: today_charge.sampled_key_count,
+                stale_key_count: today_charge.stale_key_count,
+                latest_sync_at: today_charge.latest_sync_at,
+                ..Default::default()
+            },
+            yesterday: SummaryQuotaCharge {
+                upstream_actual_credits: yesterday_charge.upstream_actual_credits,
+                sampled_key_count: yesterday_charge.sampled_key_count,
+                stale_key_count: yesterday_charge.stale_key_count,
+                latest_sync_at: yesterday_charge.latest_sync_at,
+                ..Default::default()
+            },
+            month: SummaryQuotaCharge {
+                upstream_actual_credits: month_charge.upstream_actual_credits,
+                sampled_key_count: month_charge.sampled_key_count,
+                stale_key_count: month_charge.stale_key_count,
+                latest_sync_at: month_charge.latest_sync_at,
+                ..Default::default()
+            },
+        })
+    }
+
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
         &self,
         range_start: i64,
@@ -270,11 +459,6 @@ impl KeyStore {
             previous_month_end,
         } = bounds;
         let mut tx = self.pool.begin().await?;
-        let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        let now_ts = today_end.saturating_sub(1);
-        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
-        let hot_stale_before = now_ts.saturating_sub(15 * 60);
-        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
         let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
             &mut tx,
             SECS_PER_MINUTE,
@@ -352,165 +536,17 @@ impl KeyStore {
         .fetch_one(&mut *tx)
         .await?;
 
-        let sample_rows = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                INNER JOIN (
-                    SELECT key_id, MAX(captured_at) AS captured_at
-                    FROM api_key_quota_sync_samples
-                    WHERE captured_at < ?
-                      AND key_id IN (SELECT key_id FROM sampled_keys)
-                    GROUP BY key_id
-                ) latest
-                    ON latest.key_id = s.key_id
-                   AND latest.captured_at = s.captured_at
-            )
-            SELECT key_id, quota_remaining, captured_at
-            FROM window_rows
-            UNION ALL
-            SELECT key_id, quota_remaining, captured_at
-            FROM baseline_rows
-            ORDER BY key_id ASC, captured_at ASC
-            "#,
-        )
-        .bind(sample_window_start)
-        .bind(today_end)
-        .bind(sample_window_start)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let stale_key_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(COUNT(*), 0)
-            FROM api_keys
-            WHERE deleted_at IS NULL
-              AND status <> ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_quarantines aq
-                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
-              )
-              AND CASE
-                  WHEN last_used_at >= ? THEN (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-                  )
-                  ELSE (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-                  )
-              END
-            "#,
-        )
-        .bind(STATUS_EXHAUSTED)
-        .bind(hot_active_since)
-        .bind(hot_stale_before)
-        .bind(cold_stale_before)
-        .fetch_one(&mut *tx)
-        .await?;
-
         tx.commit().await?;
-
-        let mut today_charge = QuotaChargeAccumulator::default();
-        let mut yesterday_charge = QuotaChargeAccumulator::default();
-        let mut month_charge = QuotaChargeAccumulator::default();
-        let mut today_sampled_keys = std::collections::HashSet::new();
-        let mut yesterday_sampled_keys = std::collections::HashSet::new();
-        let mut month_sampled_keys = std::collections::HashSet::new();
-        let mut current_key: Option<String> = None;
-        let mut previous_sample: Option<QuotaSyncSampleRow> = None;
-
-        for row in sample_rows {
-            let key_id: String = row.try_get("key_id")?;
-            if current_key.as_deref() != Some(key_id.as_str()) {
-                current_key = Some(key_id.clone());
-                previous_sample = None;
-            }
-
-            let sample = QuotaSyncSampleRow {
-                quota_remaining: row.try_get("quota_remaining")?,
-                captured_at: row.try_get("captured_at")?,
-            };
-            let delta = previous_sample
-                .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
-                .unwrap_or(0);
-
-            if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
-                month_charge.upstream_actual_credits += delta;
-                month_sampled_keys.insert(key_id.clone());
-                if month_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    month_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-            if sample.captured_at >= today_start && sample.captured_at < today_end {
-                today_charge.upstream_actual_credits += delta;
-                today_sampled_keys.insert(key_id.clone());
-                if today_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    today_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-            if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
-                yesterday_charge.upstream_actual_credits += delta;
-                yesterday_sampled_keys.insert(key_id.clone());
-                if yesterday_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    yesterday_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-
-            previous_sample = Some(sample);
-        }
-
-        today_charge.sampled_key_count = today_sampled_keys.len() as i64;
-        today_charge.stale_key_count = stale_key_count;
-        yesterday_charge.sampled_key_count = yesterday_sampled_keys.len() as i64;
-        yesterday_charge.stale_key_count = stale_key_count;
-        month_charge.sampled_key_count = month_sampled_keys.len() as i64;
-        month_charge.stale_key_count = stale_key_count;
 
         Ok(SummaryWindows {
             today: SummaryWindowMetrics {
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("today_upstream_exhausted_key_count")?,
-                quota_charge: SummaryQuotaCharge {
-                    upstream_actual_credits: today_charge.upstream_actual_credits,
-                    sampled_key_count: today_charge.sampled_key_count,
-                    stale_key_count: today_charge.stale_key_count,
-                    latest_sync_at: today_charge.latest_sync_at,
-                    ..today_metrics.quota_charge
-                },
                 ..today_metrics
             },
             yesterday: SummaryWindowMetrics {
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("yesterday_upstream_exhausted_key_count")?,
-                quota_charge: SummaryQuotaCharge {
-                    upstream_actual_credits: yesterday_charge.upstream_actual_credits,
-                    sampled_key_count: yesterday_charge.sampled_key_count,
-                    stale_key_count: yesterday_charge.stale_key_count,
-                    latest_sync_at: yesterday_charge.latest_sync_at,
-                    ..yesterday_metrics.quota_charge
-                },
                 ..yesterday_metrics
             },
             month: SummaryWindowMetrics {
@@ -522,10 +558,7 @@ impl KeyStore {
                     local_estimated_credits: month_charge_metrics
                         .quota_charge
                         .local_estimated_credits,
-                    upstream_actual_credits: month_charge.upstream_actual_credits,
-                    sampled_key_count: month_charge.sampled_key_count,
-                    stale_key_count: month_charge.stale_key_count,
-                    latest_sync_at: month_charge.latest_sync_at,
+                    ..month_metrics.quota_charge
                 },
                 ..month_metrics
             },

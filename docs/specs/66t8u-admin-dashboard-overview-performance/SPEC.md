@@ -4,7 +4,7 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-04-06
-- Last: 2026-06-24
+- Last: 2026-06-26
 
 ## 背景
 
@@ -136,6 +136,14 @@
 - forward proxy 窗口统计在同一 manager 内使用短 TTL + singleflight 风格缓存，避免管理端刷新周期内 settings/live stats 反复触发同一 7d scan；响应 shape 与统计口径保持不变。
 - dashboard 与管理端列表共享 SQLite worker 时，重读接口必须使用有界并发保护，避免 dashboard overview 被其它 admin 慢查询拖入 worker 饱和。
 - 全局 request-log catalog 读取已从 shared heavy-read 保护中拆出，并改为 rollup-backed 查询；dashboard overview 不得通过 legacy `/api/logs` 重新引入 request log facets 宽表扫描。
+- shared snapshot 的 cache-hit freshness contract 必须保持 cheap token 路径：
+  - 允许读取 `summary` 计数签名、`dashboard_request_rollup_buckets` freshness、`latest_dashboard_quota_sync_sample_at`、`dashboard_stale_key_count`
+  - 允许读取轻量 recent-log/job/token signatures 与独立 recent-alerts freshness token
+  - 不得在 cache-hit freshness probe 上执行 quota sample window/baseline CTE
+  - 不得在 cache-hit freshness probe 上执行 alerts grouped CTE
+- `summaryWindows.quota_charge` 必须保持原有返回 shape，但其重型 sample delta 计算要从 shared snapshot critical path 中拆出到独立 quota cache；cheap freshness 仅由 sample token、窗口边界与 stale-key 计数驱动。
+- `recentAlerts` 必须保留在 overview payload 内，但要使用独立 recent-alerts cache；core overview 不得因为 alerts grouped query 慢或临时错误而阻塞整包重建，必要时返回上一份 last-good 聚合结果。
+- `/api/alerts/events` 与 `/api/alerts/groups` 必须优先以 `auth_token_logs` 为数据面，只在字段缺失且存在 `request_log_id` 时按需回退 `observability.request_logs`，避免再依赖 request body JSON 提取来完成 request-kind 分组与过滤。
 
 ## 验收标准
 
@@ -148,6 +156,8 @@
 - 新写入一条 request log 后，不等待后台 job，`summaryWindows.today` 与 `summaryWindows.month` 的请求计数和 `local_estimated_credits` 即可反映到 overview / snapshot。
 - SSE 正常时，dashboard 不再维持旧的 30 秒 signals polling；SSE 断线后 fallback polling 只刷新 shell data + overview。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test src/api.test.ts src/admin/dashboardHourlyCharts.test.ts`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过。
+- dashboard cache-hit freshness probe 不再执行 quota sample heavy CTE，也不再执行 alerts grouped CTE；相应回归测试必须直接断言 baseline-only backfill 不会触发 shared snapshot rebuild。
+- `recentAlerts`、`summaryWindows.quota_charge` 与 alerts events/groups 的外部返回 shape 保持不变，但内部必须改为独立缓存 / auth-token-first 读路径。
 
 ## 当前验证记录
 
@@ -172,6 +182,7 @@
 - `2026-06-21`：`cargo clippy -- -D warnings` 通过。
 - `2026-06-21`：101 只读复核确认当前线上唯一数据源链路为 `/home/ivan/srv/ai/docker-compose.yml` -> 容器 `tavily-hikari` -> volume `ai-tavily-hikari-data` -> `/srv/app/data/tavily_proxy.db` + `/srv/app/data/tavily_proxy-observability.db`。容器内受控 `overview` 请求在 `2026-06-21 13:47 +08:00` 约 `4.70s` 返回，且近期 slow log 仍可见 `observability.request_logs` 相关慢语句，说明这次优化仍需经部署后才能在 101 消除热路径宽扫。
 - `2026-06-24`：`cargo test dashboard_overview_snapshot -- --nocapture`、`cargo test log_catalog_and_dashboard_sse -- --nocapture`、`cargo test` 全量、`cargo clippy -- -D warnings`、`cd web && bun run build` 通过；确认 SSE freshness probe 已切到 no-flush summary/rollup 合同 + pending rollup signature，且 `snapshot` 事件会回写 rebuild 后的 freshness，避免 2 秒轮询紧接着重复重建 shared snapshot。
+- `2026-06-26`：`cargo test dashboard_overview_snapshot -- --nocapture`、`cargo test alerts_and_ha -- --nocapture`、`cargo test log_catalog_and_dashboard_sse -- --nocapture`、`cargo clippy -- -D warnings`、`cd web && bun run build` 通过；确认 shared snapshot freshness 已改为 cheap quota token + recent-alert token 合同，baseline-only quota backfill 不再触发 shared snapshot rebuild，同时 alerts events/groups 与 dashboard recent alerts 改为 `auth_token_logs` 优先的轻量读路径。
 
 ## 实现里程碑
 
@@ -180,7 +191,8 @@
 - [x] M3: dashboard 风险区改走轻量子集查询与 SSE snapshot 复用
 - [x] M4: 前端 dashboard 首屏加载去重，移除旧的 signals polling
 - [x] M5: Storybook/mock 视觉证据补齐
-- [ ] M6: PR 收口与 merge-ready 状态同步
+- [x] M6: shared snapshot 重型 quota/alerts 依赖拆分、phase-level perf 事件补齐与 alerts hot path 收敛
+- [ ] M7: PR 收口与 merge-ready 状态同步
 
 ## 风险与开放点
 
@@ -212,3 +224,4 @@
   no-flush summary/rollup contract + pending coalescer signature，并让 SSE `snapshot` 使用 rebuild
   后的 freshness 作为已发送签名；同时将 dashboard snapshot/SSE 回归测试拆分到独立模块以满足
   Rust 行数预算门禁。
+- 2026-06-26: 将 shared snapshot freshness 进一步收敛为 cheap quota charge token + recent-alerts token，新增独立 `DashboardQuotaChargeCache` / `DashboardRecentAlertsCache`，让 cache-hit 不再触发 quota sample baseline/window CTE 与 alerts grouped CTE；同时将 alerts events/groups/dashboard recent alerts 改为 `auth_token_logs` 优先、`request_logs` 按需回退，并补齐 quota/alerts/serialize phase-level perf 事件。

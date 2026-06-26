@@ -9,6 +9,7 @@ use sqlx::Row;
 use sqlx::SqliteConnection;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
+use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tracing::log::LevelFilter;
 use tracing::{error, info, warn};
@@ -122,7 +123,7 @@ pub(crate) fn sqlite_transient_write_retry_delay(attempt: usize) -> Duration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DbLogStatus {
+pub enum DbLogStatus {
     Info,
     Slow,
     Error,
@@ -205,15 +206,35 @@ pub(crate) fn log_db_operation_error(
 pub struct PerfLogScope<'a> {
     pub route: Option<&'a str>,
     pub scope: Option<&'a str>,
+    pub phase: Option<&'a str>,
     pub page_size: Option<i64>,
     pub row_count: Option<usize>,
     pub payload_bytes: Option<usize>,
     pub compressed_bytes: Option<u64>,
     pub degraded: Option<&'a str>,
     pub channel: Option<&'a str>,
+    pub outbox_row_count: Option<i64>,
+    pub outbox_oldest_age_secs: Option<i64>,
+    pub outbox_ack_lag: Option<i64>,
 }
 
-pub(crate) fn emit_perf_log(
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LowMemoryDecisionKey {
+    component: &'static str,
+    route: String,
+    scope: String,
+    phase: String,
+    degraded: String,
+    channel: String,
+}
+
+fn low_memory_decision_cache() -> &'static StdMutex<HashMap<LowMemoryDecisionKey, Instant>> {
+    static CACHE: StdOnceLock<StdMutex<HashMap<LowMemoryDecisionKey, Instant>>> =
+        StdOnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+pub fn emit_perf_log(
     level: DbLogStatus,
     component: &'static str,
     event: &'static str,
@@ -230,12 +251,16 @@ pub(crate) fn emit_perf_log(
                 elapsed_ms = elapsed.as_millis() as u64,
                 route = scope.route.unwrap_or(""),
                 scope = scope.scope.unwrap_or(""),
+                phase = scope.phase.unwrap_or(""),
                 page_size = scope.page_size.unwrap_or_default(),
                 row_count = scope.row_count.unwrap_or_default() as u64,
                 payload_bytes = scope.payload_bytes.unwrap_or_default() as u64,
                 compressed_bytes = scope.compressed_bytes.unwrap_or_default(),
                 degraded = scope.degraded.unwrap_or(""),
                 channel = scope.channel.unwrap_or(""),
+                outbox_row_count = scope.outbox_row_count.unwrap_or_default(),
+                outbox_oldest_age_secs = scope.outbox_oldest_age_secs.unwrap_or_default(),
+                outbox_ack_lag = scope.outbox_ack_lag.unwrap_or_default(),
                 memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
                 memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
                 headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -254,12 +279,16 @@ pub(crate) fn emit_perf_log(
                 elapsed_ms = elapsed.as_millis() as u64,
                 route = scope.route.unwrap_or(""),
                 scope = scope.scope.unwrap_or(""),
+                phase = scope.phase.unwrap_or(""),
                 page_size = scope.page_size.unwrap_or_default(),
                 row_count = scope.row_count.unwrap_or_default() as u64,
                 payload_bytes = scope.payload_bytes.unwrap_or_default() as u64,
                 compressed_bytes = scope.compressed_bytes.unwrap_or_default(),
                 degraded = scope.degraded.unwrap_or(""),
                 channel = scope.channel.unwrap_or(""),
+                outbox_row_count = scope.outbox_row_count.unwrap_or_default(),
+                outbox_oldest_age_secs = scope.outbox_oldest_age_secs.unwrap_or_default(),
+                outbox_ack_lag = scope.outbox_ack_lag.unwrap_or_default(),
                 memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
                 memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
                 headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -278,12 +307,16 @@ pub(crate) fn emit_perf_log(
                 elapsed_ms = elapsed.as_millis() as u64,
                 route = scope.route.unwrap_or(""),
                 scope = scope.scope.unwrap_or(""),
+                phase = scope.phase.unwrap_or(""),
                 page_size = scope.page_size.unwrap_or_default(),
                 row_count = scope.row_count.unwrap_or_default() as u64,
                 payload_bytes = scope.payload_bytes.unwrap_or_default() as u64,
                 compressed_bytes = scope.compressed_bytes.unwrap_or_default(),
                 degraded = scope.degraded.unwrap_or(""),
                 channel = scope.channel.unwrap_or(""),
+                outbox_row_count = scope.outbox_row_count.unwrap_or_default(),
+                outbox_oldest_age_secs = scope.outbox_oldest_age_secs.unwrap_or_default(),
+                outbox_ack_lag = scope.outbox_ack_lag.unwrap_or_default(),
                 memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
                 memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
                 headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -299,6 +332,30 @@ pub(crate) fn emit_perf_log(
 }
 
 pub fn emit_low_memory_protection_decision(component: &'static str, scope: PerfLogScope<'_>) {
+    let key = LowMemoryDecisionKey {
+        component,
+        route: scope.route.unwrap_or("").to_string(),
+        scope: scope.scope.unwrap_or("").to_string(),
+        phase: scope.phase.unwrap_or("").to_string(),
+        degraded: scope.degraded.unwrap_or("").to_string(),
+        channel: scope.channel.unwrap_or("").to_string(),
+    };
+    let now = Instant::now();
+    let should_emit = {
+        let mut cache = low_memory_decision_cache()
+            .lock()
+            .expect("low memory decision cache lock");
+        match cache.get(&key).copied() {
+            Some(last) if now.saturating_duration_since(last) < Duration::from_secs(30) => false,
+            _ => {
+                cache.insert(key, now);
+                true
+            }
+        }
+    };
+    if !should_emit {
+        return;
+    }
     emit_perf_log(
         DbLogStatus::Info,
         component,
@@ -3021,6 +3078,10 @@ mod tests {
         assert_eq!(perf["page_size"], 50);
         assert_eq!(perf["row_count"], 12);
         assert_eq!(perf["degraded"], "full");
+        assert_eq!(perf["phase"], "");
+        assert_eq!(perf["outbox_row_count"], 0);
+        assert_eq!(perf["outbox_oldest_age_secs"], 0);
+        assert_eq!(perf["outbox_ack_lag"], 0);
         assert!(perf.get("memory_current_bytes").is_some());
         assert!(perf.get("memory_limit_bytes").is_some());
         assert!(perf.get("headroom_bytes").is_some());
@@ -3035,5 +3096,36 @@ mod tests {
         assert!(decision.get("memory_current_bytes").is_some());
         assert!(decision.get("memory_limit_bytes").is_some());
         assert!(decision.get("headroom_bytes").is_some());
+    }
+
+    #[test]
+    fn low_memory_protection_duplicate_logs_are_sampled() {
+        let output = capture_tracing_output(EnvFilter::new("info"), || {
+            emit_low_memory_protection_decision(
+                "admin_read",
+                PerfLogScope {
+                    route: Some("/api/logs/list"),
+                    scope: Some("global"),
+                    phase: Some("cache_serve"),
+                    degraded: Some("cache_hit"),
+                    ..Default::default()
+                },
+            );
+            emit_low_memory_protection_decision(
+                "admin_read",
+                PerfLogScope {
+                    route: Some("/api/logs/list"),
+                    scope: Some("global"),
+                    phase: Some("cache_serve"),
+                    degraded: Some("cache_hit"),
+                    ..Default::default()
+                },
+            );
+        });
+        let records = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
     }
 }

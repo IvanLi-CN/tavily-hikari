@@ -4,7 +4,7 @@
 
 - Status: active
 - Created: 2026-06-23
-- Last: 2026-06-23
+- Last: 2026-06-26
 
 ## 背景
 
@@ -36,7 +36,7 @@
   - `component`
   - `event`
   - `elapsed_ms`
-  - 作用域字段：`route` / `scope` / `channel` / `page_size` / `row_count` / `degraded`
+  - 作用域字段：`route` / `scope` / `phase` / `channel` / `page_size` / `row_count` / `degraded`
   - 预算字段：`memory_current_bytes` / `memory_limit_bytes` / `headroom_bytes`
 - 若可得，补充：
   - `process_rss_bytes`
@@ -47,6 +47,9 @@
   - `payload_bytes`
   - `compressed_bytes`
   - `high_watermark`
+  - `outbox_row_count`
+  - `outbox_oldest_age_secs`
+  - `outbox_ack_lag`
 
 ## Required Perf Events
 
@@ -60,11 +63,19 @@
 - Dashboard / shared snapshot:
   - `component=admin_read event=dashboard_snapshot_cache_hit`
   - `component=admin_read event=dashboard_snapshot_rebuilt`
+  - `component=admin_read event=dashboard_overview_phase phase=freshness_probe`
+  - `component=admin_read event=dashboard_overview_phase phase=cache_wait`
+  - `component=admin_read event=dashboard_overview_phase phase=quota_charge_rebuild`
+  - `component=admin_read event=dashboard_overview_phase phase=recent_alerts_rebuild`
+  - `component=admin_read event=dashboard_overview_phase phase=overview_payload_build`
+  - `component=admin_read event=dashboard_overview_phase phase=overview_serialize`
 - Owner-facing recent request reads:
   - `component=admin_read event=request_logs_catalog_completed`
   - `component=admin_read event=request_logs_list_completed`
   - `component=admin_read event=token_logs_catalog_completed`
   - `component=admin_read event=token_logs_list_completed`
+  - `component=admin_read event=/api/alerts/events phase=alerts_projection`
+  - `component=admin_read event=/api/alerts/groups phase=alerts_grouping`
   - `component=admin_read event=low_memory_protection_decision`
 - Forward proxy / xray startup:
   - `component=forward_proxy event=startup_runtime_begin`
@@ -77,8 +88,11 @@
 - `cargo test --lib runtime_logging::tests::runtime_memory_helpers_parse_status_and_cgroup_values -- --nocapture`
 - `cargo test --lib runtime_logging::tests::runtime_perf_scope_exposes_elapsed_and_memory_fields -- --nocapture`
 - `cargo test --lib store::tests::perf_logs_are_info_level_and_include_memory_budget_fields -- --nocapture`
+- `cargo test alerts_and_ha -- --nocapture`
+- `cargo test log_catalog_and_dashboard_sse -- --nocapture`
 
 ## Notes
 
 - 这张 spec 是 PR1/PR2 共用的程序级合同真相源。
 - PR2 需要在此基础上把 low-memory 自动退化与 `256MiB` 稳定运行验收写成最终真相。
+- 高频 `low_memory_protection_decision` 与 HA export/sync 信息应按状态跃迁或轻量采样输出，默认日志不再依赖密集重复 INFO 来做定位。

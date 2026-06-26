@@ -474,6 +474,55 @@ impl KeyStore {
         Self::ha_channel_high_watermark_on_conn(&mut conn, channel).await
     }
 
+    pub(crate) async fn ha_channel_outbox_stats(
+        &self,
+        channel: HaSyncChannel,
+        peer_node_id: Option<&str>,
+    ) -> Result<HaOutboxStats, ProxyError> {
+        let mut conn = self.pool.acquire().await?;
+        let row_count = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT COUNT(*) FROM {}",
+            quote_sqlite_identifier(ha_channel_event_table(channel))
+        ))
+        .fetch_one(&mut *conn)
+        .await?
+        .max(0);
+        let oldest_created_at = sqlx::query_scalar::<_, Option<i64>>(&format!(
+            "SELECT MIN(created_at) FROM {}",
+            quote_sqlite_identifier(ha_channel_event_table(channel))
+        ))
+        .fetch_one(&mut *conn)
+        .await?;
+        let acked_seq = match peer_node_id {
+            Some(peer_node_id) => {
+                sqlx::query_scalar::<_, Option<i64>>(
+                    r#"
+                    SELECT acked_seq
+                      FROM ha_peer_watermarks
+                     WHERE peer_node_id = ?
+                       AND channel = ?
+                    "#,
+                )
+                .bind(peer_node_id)
+                .bind(channel.as_str())
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten()
+                .unwrap_or(0)
+            }
+            None => 0,
+        };
+        let high_watermark = Self::ha_channel_high_watermark_on_conn(&mut conn, channel).await?;
+        let now = self.backend_time.now_ts();
+        Ok(HaOutboxStats {
+            row_count,
+            oldest_age_secs: oldest_created_at
+                .map(|created_at| now.saturating_sub(created_at).max(0))
+                .unwrap_or(0),
+            ack_lag: high_watermark.saturating_sub(acked_seq).max(0),
+        })
+    }
+
     pub(crate) async fn begin_ha_baseline_read(
         &self,
         channel: HaSyncChannel,
