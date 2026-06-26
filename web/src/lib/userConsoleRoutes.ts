@@ -2,6 +2,7 @@ export type UserConsoleLandingSection = 'dashboard' | 'tokens'
 
 export type UserConsoleRoute
   = | { name: 'landing'; section: UserConsoleLandingSection | null }
+    | { name: 'oauthCallback'; provider: string }
     | { name: 'token'; id: string }
     | { name: 'tokenLogs'; id: string }
 
@@ -27,6 +28,15 @@ export function normalizeUserConsolePathname(pathname: string): string {
 
 export function parseUserConsolePath(pathname: string): UserConsoleRoute {
   const normalizedPath = normalizeUserConsolePathname(pathname)
+  const oauthCallbackMatch = normalizedPath.match(/^\/console\/oauth\/([^/?#]+)\/callback$/)
+  if (oauthCallbackMatch) {
+    try {
+      return { name: 'oauthCallback', provider: decodeURIComponent(oauthCallbackMatch[1]) }
+    } catch {
+      return { name: 'landing', section: null }
+    }
+  }
+
   const tokenLogsMatch = normalizedPath.match(/^\/console\/tokens\/([^/?#]+)\/logs$/)
   if (tokenLogsMatch) {
     try {
@@ -56,6 +66,9 @@ export function parseUserConsolePath(pathname: string): UserConsoleRoute {
 }
 
 export function userConsoleRouteToPath(route: UserConsoleRoute): string {
+  if (route.name === 'oauthCallback') {
+    return `/console/oauth/${encodeURIComponent(route.provider)}/callback`
+  }
   if (route.name === 'token' || route.name === 'tokenLogs') {
     const suffix = route.name === 'tokenLogs' ? '/logs' : ''
     return `/console/tokens/${encodeURIComponent(route.id)}${suffix}`

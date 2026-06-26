@@ -2336,7 +2336,7 @@ pub(super) fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
         token_url: "https://connect.linux.do/oauth2/token".to_string(),
         userinfo_url: "https://connect.linux.do/api/user".to_string(),
         scope: "user".to_string(),
-        redirect_url: Some("http://127.0.0.1/auth/linuxdo/callback".to_string()),
+        redirect_url: Some("http://127.0.0.1/console/oauth/linuxdo/callback".to_string()),
         refresh_token_crypt_key: Some(*b"0123456789abcdef0123456789abcdef"),
         user_sync_enabled: true,
         user_sync_at: (6, 20),
@@ -2381,13 +2381,14 @@ pub(super) async fn spawn_user_oauth_server_with_options(
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/console", get(serve_console_index))
-        .route("/console/*path", get(serve_console_index))
+        .route("/console/*path", get(serve_console_shell))
         .route("/registration-paused", get(serve_registration_paused_index))
         .route(
             "/auth/linuxdo",
             get(get_linuxdo_auth).post(post_linuxdo_auth),
         )
         .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
+        .route("/auth/linuxdo/finalize", post(post_linuxdo_finalize))
         .route("/api/profile", get(get_profile))
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))

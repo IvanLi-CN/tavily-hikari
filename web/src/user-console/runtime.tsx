@@ -26,6 +26,7 @@ import TokenLogsHeader, {
 } from './TokenLogsHeader'
 import TokenLogsPanel from './TokenLogsPanel'
 import AccessStatePanel from './AccessStatePanel'
+import OAuthCallbackPanel from './OAuthCallbackPanel'
 import { UserConsoleAnnouncementsSection } from './Announcements'
 import DebugInfoSharingToggle from './DebugInfoSharingToggle'
 import OfflineStatusBanner from '../components/OfflineStatusBanner'
@@ -113,6 +114,7 @@ import {
 import { MobileGuideDropdown, buildGuideContent, resolveGuideSamples } from './guide'
 import { EN, ZH } from './text'
 import { useOfflineState } from '../pwa/useOfflineState'
+import { useOAuthCallbackFlow } from './useOAuthCallbackFlow'
 
 export const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 export const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
@@ -274,9 +276,10 @@ function statusTone(status: string): StatusTone {
   return 'neutral'
 }
 
-type UserConsoleViewKey = 'dashboard' | 'tokens' | 'tokenDetail'
+type UserConsoleViewKey = 'dashboard' | 'tokens' | 'tokenDetail' | 'oauthCallback'
 
 function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
+  if (route.name === 'oauthCallback') return 'oauthCallback'
   if (route.name === 'token' || route.name === 'tokenLogs') return 'tokenDetail'
   if (route.section === 'tokens') return 'tokens'
   return 'dashboard'
@@ -316,6 +319,7 @@ function isConsoleEntryPath(pathname: string): boolean {
   return normalizedPath === '/console'
     || normalizedPath === '/console/dashboard'
     || normalizedPath === '/console/tokens'
+    || /^\/console\/oauth\/[^/]+\/callback$/.test(normalizedPath)
     || normalizedPath.startsWith('/console/tokens/')
 }
 
@@ -488,7 +492,8 @@ function resolveGuideRevealContextKey(route: ConsoleRoute, tokens: UserTokenSumm
   if (route.name === 'token' || route.name === 'tokenLogs') {
     return `token:${route.id}`
   }
-  return `landing:${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`
+  const landingSection = route.name === 'landing' ? route.section ?? 'landing' : route.name
+  return `landing:${landingSection}:${tokens.map((token) => token.tokenId).join(',')}`
 }
 
 function isActiveGuideRevealContext(revealedContextKey: string | null, currentContextKey: string | null): boolean {
@@ -1358,6 +1363,19 @@ export default function UserConsole(): JSX.Element {
     return false
   }, [clearSensitiveConsoleState])
 
+  const {
+    isOAuthCallbackRoute,
+    model: oauthCallbackModel,
+    restartAuth: restartOAuthCallbackAuth,
+  } = useOAuthCallbackFlow({
+    route,
+    providers: text.header.providers,
+    text: text.oauthCallback,
+    abortActiveConsoleLoads,
+    setLoading,
+    setError,
+  })
+
   const stopLandingOverviewLive = useLandingOverviewLive({
     consoleAvailability,
     route,
@@ -1458,6 +1476,9 @@ export default function UserConsole(): JSX.Element {
   }, [abortActiveConsoleLoads, clearConsoleData, clearSensitiveConsoleState, redirectAfterLogoutIfNeeded, text.errors.load, todayWindow])
 
   useEffect(() => {
+    if (route.name === 'oauthCallback') {
+      return
+    }
     const controller = new AbortController()
     const runId = baseLoadRunIdRef.current + 1
     baseLoadRunIdRef.current = runId
@@ -1470,7 +1491,7 @@ export default function UserConsole(): JSX.Element {
         baseLoadAbortRef.current = null
       }
     }
-  }, [reloadBase])
+  }, [reloadBase, route.name])
 
   useEffect(() => {
     if (!dashboard) return
@@ -1610,7 +1631,14 @@ export default function UserConsole(): JSX.Element {
     setApiProbe(clearedProbeState.apiProbe)
     setProbeBubble(null)
     setManualCopyBubble(null)
-  }, [abortActiveProbeRun, route.name === 'token' || route.name === 'tokenLogs' ? route.id : route.section ?? 'landing'])
+  }, [
+    abortActiveProbeRun,
+    route.name === 'token' || route.name === 'tokenLogs'
+      ? route.id
+      : route.name === 'landing'
+        ? route.section ?? 'landing'
+        : route.name,
+  ])
 
   const abortPendingTokenSecretRequest = useCallback((tokenId: string) => {
     const controller = tokenSecretRequestAbortRef.current.get(tokenId)
@@ -1675,7 +1703,9 @@ export default function UserConsole(): JSX.Element {
     setGuideTokenError(null)
   }, [
     consoleAvailability,
-    route.name === 'token' || route.name === 'tokenLogs' ? route.id : `${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`,
+    route.name === 'token' || route.name === 'tokenLogs'
+      ? route.id
+      : `${route.name === 'landing' ? route.section ?? 'landing' : route.name}:${tokens.map((token) => token.tokenId).join(',')}`,
   ])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
@@ -2040,21 +2070,24 @@ export default function UserConsole(): JSX.Element {
   const subtitle = text.subtitle
   const currentView = useMemo(() => resolveUserConsoleView(route), [route])
   const currentViewTitle = text.header.views[currentView]
-  const currentViewDescription = currentView === 'dashboard'
+  const baseCurrentViewDescription = currentView === 'dashboard'
     ? text.dashboard.description
     : currentView === 'tokens'
       ? text.tokens.description
       : text.detail.subtitle
   const sessionDisplayName = useMemo(() => {
+    if (isOAuthCallbackRoute) return null
     const name = resolveUserConsoleIdentityName(profile)
     if (name) return name
     if (profile?.userLoggedIn === true) return text.header.unknownUser
     if (profile?.isAdmin) return text.header.adminLabel
     return null
-  }, [profile, text.header.adminLabel, text.header.unknownUser])
+  }, [isOAuthCallbackRoute, profile, text.header.adminLabel, text.header.unknownUser])
   const sessionProviderLabel = useMemo(
-    () => resolveUserConsoleProviderLabel(profile?.userProvider, text.header.providers),
-    [profile?.userProvider, text.header.providers],
+    () => isOAuthCallbackRoute
+      ? null
+      : resolveUserConsoleProviderLabel(profile?.userProvider, text.header.providers),
+    [isOAuthCallbackRoute, profile?.userProvider, text.header.providers],
   )
 
   const guideToken = guideTokenVisible ? guideTokenValue ?? maskedGuideToken : maskedGuideToken
@@ -2085,16 +2118,19 @@ export default function UserConsole(): JSX.Element {
   )
 
   const anyProbeRunning = mcpProbe.state === 'running' || apiProbe.state === 'running'
-  const adminHref = getUserConsoleAdminHref(profile)
+  const adminHref = isOAuthCallbackRoute ? null : getUserConsoleAdminHref(profile)
   const consoleUnavailable = consoleAvailability === 'disabled'
   const consoleLoggedOut = consoleAvailability === 'logged_out' && showLoggedOutState
   const consoleNeedsLogin = consoleAvailability === 'logged_out' && !showLoggedOutState
-  const consoleEmptyState = consoleUnavailable || consoleLoggedOut || consoleNeedsLogin
-  const logoutVisible = profile?.userLoggedIn === true
+  const consoleEmptyState = !isOAuthCallbackRoute && (consoleUnavailable || consoleLoggedOut || consoleNeedsLogin)
+  const logoutVisible = !isOAuthCallbackRoute && profile?.userLoggedIn === true
   const showTokenListLoading = loading && tokens.length === 0, showEmptyTokens = !loading && tokens.length === 0
   const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
   const rechargeMinMonths = rechargeConfig?.minMonths ?? 1, rechargeMaxMonths = rechargeConfig?.maxMonths ?? 12
   const showRechargePanel = rechargeConfig?.visible ?? false
+  const currentViewDescription = isOAuthCallbackRoute
+    ? oauthCallbackModel.description
+    : baseCurrentViewDescription
   const [enabledTokenCount, tokenDailySuccessTotal] = useMemo(
     () => [tokens.filter((token) => token.enabled).length, tokens.reduce((count, token) => count + token.dailySuccess, 0)],
     [tokens],
@@ -2595,15 +2631,15 @@ export default function UserConsole(): JSX.Element {
         sessionLabel={text.header.session}
         sessionDisplayName={sessionDisplayName}
         sessionProviderLabel={sessionProviderLabel}
-        sessionAvatarUrl={profile?.userAvatarUrl}
+        sessionAvatarUrl={isOAuthCallbackRoute ? null : profile?.userAvatarUrl}
         adminLabel={text.header.adminLabel}
-        isAdmin={profile?.isAdmin === true}
+        isAdmin={isOAuthCallbackRoute ? false : profile?.isAdmin === true}
         adminHref={adminHref}
         adminActionLabel={publicStrings.adminButton}
         adminMenuLabel={text.header.adminMenuAction}
-        announcementsLabel={consoleEmptyState ? null : announcementButtonLabel}
-        announcementCount={consoleEmptyState ? 0 : visibleAnnouncementCount}
-        onOpenAnnouncements={consoleEmptyState ? undefined : () => setAnnouncementHistoryOpen(true)}
+        announcementsLabel={consoleEmptyState || isOAuthCallbackRoute ? null : announcementButtonLabel}
+        announcementCount={consoleEmptyState || isOAuthCallbackRoute ? 0 : visibleAnnouncementCount}
+        onOpenAnnouncements={consoleEmptyState || isOAuthCallbackRoute ? undefined : () => setAnnouncementHistoryOpen(true)}
         logoutVisible={logoutVisible}
         isLoggingOut={isLoggingOut}
         logoutLabel={text.header.logout}
@@ -2614,8 +2650,22 @@ export default function UserConsole(): JSX.Element {
       {consoleUnavailable && <AccessStatePanel state="unavailable" text={text} onHome={goHome} />}
       {consoleLoggedOut && <AccessStatePanel state="logged_out" text={text} onHome={goHome} />}
       {consoleNeedsLogin && <AccessStatePanel state="login_required" text={text} onHome={goHome} />}
+      {isOAuthCallbackRoute && (
+        <OAuthCallbackPanel
+          model={oauthCallbackModel}
+          onRestart={restartOAuthCallbackAuth}
+          onHome={goHome}
+        />
+      )}
 
-      <HaStatusBanner status={haStatus} audience="user" strings={useTranslate().admin.systemSettings.ha} language={language} />
+      {!isOAuthCallbackRoute && (
+        <HaStatusBanner
+          status={haStatus}
+          audience="user"
+          strings={useTranslate().admin.systemSettings.ha}
+          language={language}
+        />
+      )}
 
       {!consoleEmptyState && offline.isOffline ? (
         <OfflineStatusBanner
@@ -2627,7 +2677,7 @@ export default function UserConsole(): JSX.Element {
       {!consoleEmptyState && error && <section className="surface error-banner">{error}</section>}
 
       <UserConsoleAnnouncementsSection
-        hidden={consoleEmptyState}
+        hidden={consoleEmptyState || isOAuthCallbackRoute}
         language={language}
         text={text}
         activeAnnouncements={activeAnnouncements}

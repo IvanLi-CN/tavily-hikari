@@ -34,13 +34,13 @@
 
 - 行为保持兼容：发起 OAuth 登录，但不带候选 token。
 
-## GET /auth/linuxdo/callback
+## POST /auth/linuxdo/finalize
 
 - Scope: external
 - Change: Modify
 - Auth: none
 
-### Query
+### Body
 
 - `code` (required)
 - `state` (required)
@@ -55,4 +55,4 @@
 
 ### Error
 
-- 与既有行为一致（`400/401/5xx` 语义不变）。
+- 与 finalize 既有行为一致（`400/403/502/5xx` 语义不变）。

@@ -1492,28 +1492,6 @@ fn hash_oauth_binding(nonce: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
-fn map_oauth_upstream_transport_error(err: &reqwest::Error) -> StatusCode {
-    if err.is_timeout() {
-        StatusCode::GATEWAY_TIMEOUT
-    } else {
-        StatusCode::BAD_GATEWAY
-    }
-}
-
-fn map_oauth_upstream_status(status: reqwest::StatusCode) -> StatusCode {
-    if status.is_server_error() {
-        return StatusCode::BAD_GATEWAY;
-    }
-    match status {
-        reqwest::StatusCode::BAD_REQUEST => StatusCode::BAD_REQUEST,
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            StatusCode::UNAUTHORIZED
-        }
-        reqwest::StatusCode::TOO_MANY_REQUESTS => StatusCode::SERVICE_UNAVAILABLE,
-        _ => StatusCode::BAD_GATEWAY,
-    }
-}
-
 async fn post_admin_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

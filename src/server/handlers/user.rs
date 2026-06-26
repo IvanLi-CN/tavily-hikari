@@ -45,6 +45,8 @@ impl UserTokenLogView {
 struct LinuxDoCallbackQuery {
     code: Option<String>,
     state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +59,99 @@ struct LinuxDoTokenResponse {
 #[derive(Debug, Deserialize)]
 struct LinuxDoAuthForm {
     token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDoFinalizeRequest {
+    code: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LinuxDoFinalizeOutcome {
+    Success,
+    InvalidState,
+    RegistrationPaused,
+    InactiveUser,
+    UpstreamFailure,
+    ServerError,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDoFinalizeResponse {
+    outcome: LinuxDoFinalizeOutcome,
+    provider: &'static str,
+    redirect_to: Option<&'static str>,
+    detail: Option<String>,
+}
+
+impl LinuxDoFinalizeResponse {
+    fn success() -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::Success,
+            provider: "linuxdo",
+            redirect_to: Some("/console"),
+            detail: None,
+        }
+    }
+
+    fn invalid_state(detail: impl Into<String>) -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::InvalidState,
+            provider: "linuxdo",
+            redirect_to: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    fn registration_paused() -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::RegistrationPaused,
+            provider: "linuxdo",
+            redirect_to: Some("/registration-paused"),
+            detail: None,
+        }
+    }
+
+    fn inactive_user() -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::InactiveUser,
+            provider: "linuxdo",
+            redirect_to: None,
+            detail: Some("linuxdo account is inactive".to_string()),
+        }
+    }
+
+    fn upstream_failure(detail: impl Into<String>) -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::UpstreamFailure,
+            provider: "linuxdo",
+            redirect_to: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    fn server_error(detail: impl Into<String>) -> Self {
+        Self {
+            outcome: LinuxDoFinalizeOutcome::ServerError,
+            provider: "linuxdo",
+            redirect_to: None,
+            detail: Some(detail.into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LinuxDoFinalizeResult {
+    Success { session_token: String },
+    InvalidState { detail: String },
+    RegistrationPaused,
+    InactiveUser,
+    UpstreamFailure { detail: String },
+    ServerError { detail: String },
 }
 
 #[derive(Debug)]
@@ -81,20 +176,6 @@ enum LinuxDoSyncError {
     },
     Crypto(String),
     Storage(String),
-}
-
-impl LinuxDoSyncError {
-    fn status_code(&self) -> StatusCode {
-        match self {
-            Self::Transport { source, .. } => map_oauth_upstream_transport_error(source),
-            Self::UpstreamStatus { status, .. } => map_oauth_upstream_status(*status),
-            Self::Parse { .. }
-            | Self::InvalidPayload(_)
-            | Self::ProviderUserIdMismatch { .. }
-            | Self::Crypto(_)
-            | Self::Storage(_) => StatusCode::BAD_GATEWAY,
-        }
-    }
 }
 
 impl std::fmt::Display for LinuxDoSyncError {
@@ -519,6 +600,292 @@ async fn start_linuxdo_auth(
         .into_response())
 }
 
+async fn finalize_linuxdo_login(
+    state: &AppState,
+    code: &str,
+    oauth_state: &str,
+    binding_hash: &str,
+) -> LinuxDoFinalizeResult {
+    let cfg = &state.linuxdo_oauth;
+    let state_payload = match state
+        .proxy
+        .consume_oauth_login_state_with_binding_and_token(
+            "linuxdo",
+            oauth_state,
+            Some(binding_hash),
+        )
+        .await
+    {
+        Ok(Some(payload)) => payload,
+        Ok(None) => {
+            return LinuxDoFinalizeResult::InvalidState {
+                detail: "oauth state is missing, expired, or already used".to_string(),
+            };
+        }
+        Err(err) => {
+            eprintln!("consume linuxdo oauth state error: {err}");
+            return LinuxDoFinalizeResult::ServerError {
+                detail: "failed to consume oauth login state".to_string(),
+            };
+        }
+    };
+    let preferred_token_id = state_payload.bind_token_id;
+
+    let client = reqwest::Client::new();
+    let (profile, token_payload) =
+        match fetch_linuxdo_profile_from_authorization_code(&client, cfg, code).await {
+            Ok(result) => result,
+            Err(err) => {
+                eprintln!("linuxdo finalize oauth flow error: {err}");
+                return LinuxDoFinalizeResult::UpstreamFailure {
+                    detail: err.to_string(),
+                };
+            }
+        };
+    let provider_user_id = profile.provider_user_id.clone();
+    let allow_registration = match state.proxy.allow_registration().await {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("read allow registration during linuxdo finalize error: {err}");
+            return LinuxDoFinalizeResult::ServerError {
+                detail: "failed to read registration policy".to_string(),
+            };
+        }
+    };
+    if !allow_registration {
+        let existing_account = match state
+            .proxy
+            .oauth_account_exists("linuxdo", &provider_user_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("query linuxdo oauth account existence error: {err}");
+                return LinuxDoFinalizeResult::ServerError {
+                    detail: "failed to read existing linuxdo account binding".to_string(),
+                };
+            }
+        };
+        if !existing_account {
+            return LinuxDoFinalizeResult::RegistrationPaused;
+        }
+    }
+    let username = profile.username.clone();
+
+    let user = match state.proxy.upsert_oauth_account(&profile).await {
+        Ok(user) => user,
+        Err(err) => {
+            eprintln!("upsert linuxdo oauth account error: {err}");
+            return LinuxDoFinalizeResult::ServerError {
+                detail: "failed to persist linuxdo account".to_string(),
+            };
+        }
+    };
+    let sync_attempted_at = state.proxy.backend_time().now_ts();
+    if let Err(err) = persist_linuxdo_refresh_token_best_effort(
+        state,
+        &provider_user_id,
+        token_payload.refresh_token.as_deref(),
+    )
+    .await
+    {
+        eprintln!("persist linuxdo refresh token error: {err}");
+        if let Err(mark_err) = state
+            .proxy
+            .record_oauth_account_profile_sync_failure(
+                "linuxdo",
+                &provider_user_id,
+                sync_attempted_at,
+                &err.to_string(),
+            )
+            .await
+        {
+            eprintln!("record linuxdo finalize sync failure error: {mark_err}");
+        }
+    } else if let Err(err) = state
+        .proxy
+        .record_oauth_account_profile_sync_success("linuxdo", &provider_user_id, sync_attempted_at)
+        .await
+    {
+        eprintln!("record linuxdo finalize sync success error: {err}");
+    }
+    if !profile.active {
+        return LinuxDoFinalizeResult::InactiveUser;
+    }
+
+    let note = format!(
+        "linuxdo:{}",
+        username.clone().unwrap_or_else(|| provider_user_id.clone())
+    );
+    if let Err(err) = state
+        .proxy
+        .ensure_user_token_binding_with_preferred(
+            &user.user_id,
+            Some(&note),
+            preferred_token_id.as_deref(),
+        )
+        .await
+    {
+        eprintln!("ensure user token binding error: {err}");
+        return LinuxDoFinalizeResult::ServerError {
+            detail: "failed to ensure user token binding".to_string(),
+        };
+    }
+
+    let session = match state
+        .proxy
+        .create_user_session(&user, cfg.session_max_age_secs)
+        .await
+    {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("create user session error: {err}");
+            return LinuxDoFinalizeResult::ServerError {
+                detail: "failed to create user session".to_string(),
+            };
+        }
+    };
+    LinuxDoFinalizeResult::Success {
+        session_token: session.token,
+    }
+}
+
+fn linuxdo_finalize_json_response(
+    payload: LinuxDoFinalizeResponse,
+    use_secure_cookie: bool,
+    session_cookie: Option<HeaderValue>,
+) -> Result<Response<Body>, StatusCode> {
+    let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
+    let mut response = Json(payload).into_response();
+    if let Some(cookie) = session_cookie {
+        response.headers_mut().append(SET_COOKIE, cookie);
+    }
+    response
+        .headers_mut()
+        .append(SET_COOKIE, clear_binding_cookie);
+    Ok(response)
+}
+
+async fn render_linuxdo_callback_diagnostic(
+    cfg: &LinuxDoOAuthOptions,
+    query: &LinuxDoCallbackQuery,
+) -> Result<Response<Body>, StatusCode> {
+    let configured_redirect = cfg.redirect_url.as_deref().unwrap_or("(not configured)");
+    let received_flags = [
+        query.code.as_deref().filter(|value| !value.trim().is_empty()).map(|_| "code"),
+        query.state.as_deref().filter(|value| !value.trim().is_empty()).map(|_| "state"),
+        query.error.as_deref().filter(|value| !value.trim().is_empty()).map(|_| "error"),
+        query.error_description
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| "error_description"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(", ");
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinuxDo OAuth callback moved</title>
+    <style>
+      :root {{
+        color-scheme: light dark;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }}
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at top, rgba(34, 197, 94, 0.12), transparent 32%),
+          linear-gradient(180deg, rgba(248, 250, 252, 1), rgba(241, 245, 249, 1));
+        color: #0f172a;
+      }}
+      @media (prefers-color-scheme: dark) {{
+        body {{
+          background:
+            radial-gradient(circle at top, rgba(34, 197, 94, 0.16), transparent 32%),
+            linear-gradient(180deg, rgba(2, 6, 23, 1), rgba(15, 23, 42, 1));
+          color: #e2e8f0;
+        }}
+      }}
+      main {{
+        width: min(100%, 760px);
+        border-radius: 28px;
+        border: 1px solid rgba(148, 163, 184, 0.26);
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 30px 90px -48px rgba(15, 23, 42, 0.42);
+        padding: 28px;
+      }}
+      @media (prefers-color-scheme: dark) {{
+        main {{
+          background: rgba(15, 23, 42, 0.86);
+        }}
+      }}
+      h1 {{ margin: 0 0 12px; font-size: 1.8rem; }}
+      p {{ margin: 0 0 12px; line-height: 1.65; }}
+      code {{
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.16);
+      }}
+      pre {{
+        margin: 18px 0;
+        padding: 14px 16px;
+        border-radius: 20px;
+        overflow: auto;
+        background: rgba(15, 23, 42, 0.08);
+      }}
+      @media (prefers-color-scheme: dark) {{
+        pre {{
+          background: rgba(148, 163, 184, 0.14);
+        }}
+      }}
+      a {{
+        color: inherit;
+        font-weight: 700;
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>LinuxDo OAuth callback moved</h1>
+      <p>
+        <code>GET /auth/linuxdo/callback</code> is now a diagnostics-only endpoint. Normal login completion must land on the
+        frontend callback route and then call <code>POST /auth/linuxdo/finalize</code>.
+      </p>
+      <p>
+        Update the LinuxDo app redirect URI and <code>LINUXDO_OAUTH_REDIRECT_URL</code> so they point at the frontend callback path.
+      </p>
+      <pre>Configured redirect URI: {configured_redirect}
+Received query keys: {received_flags}</pre>
+      <p>
+        If you reached this page during a login attempt, the redirect URI is still pointed at the legacy backend callback.
+      </p>
+      <p><a href="/">Return home</a></p>
+    </main>
+  </body>
+</html>"#,
+        received_flags = if received_flags.is_empty() {
+            "(none)"
+        } else {
+            received_flags.as_str()
+        },
+    );
+    Response::builder()
+        .status(StatusCode::CONFLICT)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 async fn get_linuxdo_auth(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -542,168 +909,84 @@ async fn post_linuxdo_auth(
 
 async fn get_linuxdo_callback(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Query(query): Query<LinuxDoCallbackQuery>,
 ) -> Result<Response<Body>, StatusCode> {
     let cfg = &state.linuxdo_oauth;
     if !cfg.is_enabled_and_configured() {
         return Err(StatusCode::NOT_FOUND);
     }
+    render_linuxdo_callback_diagnostic(cfg, &query).await
+}
+
+async fn post_linuxdo_finalize(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LinuxDoFinalizeRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    let cfg = &state.linuxdo_oauth;
+    if !cfg.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
     let use_secure_cookie = wants_secure_cookie(&headers);
-    let code = query
-        .code
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-    let oauth_state = query
-        .state
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-    let (Some(code), Some(oauth_state)) = (code, oauth_state) else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    let binding_nonce = cookie_value(&headers, OAUTH_LOGIN_BINDING_COOKIE_NAME)
+    let code = payload.code.trim();
+    let oauth_state = payload.state.trim();
+    if code.is_empty() || oauth_state.is_empty() {
+        return linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::invalid_state("missing code or state"),
+            use_secure_cookie,
+            None,
+        );
+    }
+    let Some(binding_nonce) = cookie_value(&headers, OAUTH_LOGIN_BINDING_COOKIE_NAME)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    else {
+        return linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::invalid_state("missing oauth binding cookie"),
+            use_secure_cookie,
+            None,
+        );
+    };
+
     let binding_hash = hash_oauth_binding(&binding_nonce);
-
-    let state_payload = state
-        .proxy
-        .consume_oauth_login_state_with_binding_and_token("linuxdo", oauth_state, Some(&binding_hash))
-        .await
-        .map_err(|err| {
-            eprintln!("consume linuxdo oauth state error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let Some(state_payload) = state_payload else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    let redirect_to = state_payload.redirect_to;
-    let preferred_token_id = state_payload.bind_token_id;
-
-    let client = reqwest::Client::new();
-    let (profile, token_payload) = fetch_linuxdo_profile_from_authorization_code(&client, cfg, code)
-        .await
-        .map_err(|err| {
-            eprintln!("linuxdo callback oauth flow error: {err}");
-            err.status_code()
-        })?;
-    let provider_user_id = profile.provider_user_id.clone();
-    let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
-        eprintln!("read allow registration during linuxdo callback error: {err}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if !allow_registration {
-        let existing_account = state
-            .proxy
-            .oauth_account_exists("linuxdo", &provider_user_id)
-            .await
-            .map_err(|err| {
-                eprintln!("query linuxdo oauth account existence error: {err}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        if !existing_account {
-            let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
-            let mut response = Redirect::temporary("/registration-paused").into_response();
-            response
-                .headers_mut()
-                .append(SET_COOKIE, clear_binding_cookie);
-            return Ok(response);
-        }
-    }
-    let username = profile.username.clone();
-
-    let user = state
-        .proxy
-        .upsert_oauth_account(&profile)
-        .await
-        .map_err(|err| {
-            eprintln!("upsert linuxdo oauth account error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let sync_attempted_at = state.proxy.backend_time().now_ts();
-    if let Err(err) = persist_linuxdo_refresh_token_best_effort(
-        state.as_ref(),
-        &provider_user_id,
-        token_payload.refresh_token.as_deref(),
-    )
-    .await
-    {
-        eprintln!("persist linuxdo refresh token error: {err}");
-        if let Err(mark_err) = state
-            .proxy
-            .record_oauth_account_profile_sync_failure(
-                "linuxdo",
-                &provider_user_id,
-                sync_attempted_at,
-                &err.to_string(),
+    let result = finalize_linuxdo_login(state.as_ref(), code, oauth_state, &binding_hash).await;
+    match result {
+        LinuxDoFinalizeResult::Success { session_token } => {
+            let session_cookie =
+                user_session_set_cookie(&session_token, cfg.session_max_age_secs, use_secure_cookie)?;
+            linuxdo_finalize_json_response(
+                LinuxDoFinalizeResponse::success(),
+                use_secure_cookie,
+                Some(session_cookie),
             )
-            .await
-        {
-            eprintln!("record linuxdo callback sync failure error: {mark_err}");
         }
-    } else if let Err(err) = state
-        .proxy
-        .record_oauth_account_profile_sync_success("linuxdo", &provider_user_id, sync_attempted_at)
-        .await
-    {
-        eprintln!("record linuxdo callback sync success error: {err}");
+        LinuxDoFinalizeResult::InvalidState { detail } => linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::invalid_state(detail),
+            use_secure_cookie,
+            None,
+        ),
+        LinuxDoFinalizeResult::RegistrationPaused => linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::registration_paused(),
+            use_secure_cookie,
+            None,
+        ),
+        LinuxDoFinalizeResult::InactiveUser => linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::inactive_user(),
+            use_secure_cookie,
+            None,
+        ),
+        LinuxDoFinalizeResult::UpstreamFailure { detail } => linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::upstream_failure(detail),
+            use_secure_cookie,
+            None,
+        ),
+        LinuxDoFinalizeResult::ServerError { detail } => linuxdo_finalize_json_response(
+            LinuxDoFinalizeResponse::server_error(detail),
+            use_secure_cookie,
+            None,
+        ),
     }
-    if !profile.active {
-        let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
-        let mut response =
-            (StatusCode::FORBIDDEN, "linuxdo account is inactive").into_response();
-        response
-            .headers_mut()
-            .append(SET_COOKIE, clear_binding_cookie);
-        return Ok(response);
-    }
-
-    let note = format!(
-        "linuxdo:{}",
-        username.clone().unwrap_or_else(|| provider_user_id.clone())
-    );
-    state
-        .proxy
-        .ensure_user_token_binding_with_preferred(
-            &user.user_id,
-            Some(&note),
-            preferred_token_id.as_deref(),
-        )
-        .await
-        .map_err(|err| {
-            eprintln!("ensure user token binding error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let session = state
-        .proxy
-        .create_user_session(&user, cfg.session_max_age_secs)
-        .await
-        .map_err(|err| {
-            eprintln!("create user session error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let cookie =
-        user_session_set_cookie(&session.token, cfg.session_max_age_secs, use_secure_cookie)?;
-    let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
-
-    let default_target = if spa_file_exists(state.as_ref(), "console.html").await {
-        "/console"
-    } else if spa_file_exists(state.as_ref(), "index.html").await {
-        "/"
-    } else {
-        "/api/profile"
-    };
-    let target = redirect_to.unwrap_or_else(|| default_target.to_string());
-    let mut response = Redirect::temporary(&target).into_response();
-    response.headers_mut().append(SET_COOKIE, cookie);
-    response
-        .headers_mut()
-        .append(SET_COOKIE, clear_binding_cookie);
-    Ok(response)
 }
 
 async fn post_user_logout(

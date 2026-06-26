@@ -28,17 +28,20 @@
 - New field
   - `allowRegistration: boolean`
 
-## GET `/auth/linuxdo/callback`
+## POST `/auth/linuxdo/finalize`
 
 - Auth: none
 - Change: modify
+- Body
+  - `code: string`
+  - `state: string`
 - New behavior
   - when `allowRegistration=false` and no existing local binding matches `(provider=linuxdo, provider_user_id)`:
-    - return `307` with `Location: /registration-paused`
+    - return `403` with JSON body `{"ok":false,"outcome":"registration_paused","redirectTo":"/registration-paused"}`
     - clear OAuth binding cookie
     - do not create/update local user session, oauth binding, or user-token binding
 - Existing behavior retained
-  - existing local LinuxDo users still complete login and receive normal redirect/session handling
+  - existing local LinuxDo users still complete login and receive the normal finalize success payload plus session handling
 
 ## GET `/registration-paused`
 

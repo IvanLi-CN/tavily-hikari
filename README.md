@@ -137,7 +137,7 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                             | OAuth2 token endpoint (default `https://connect.linux.do/oauth2/token`).                                             |
 | `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`                       | OAuth2 user profile endpoint (default `https://connect.linux.do/api/user`).                                          |
 | `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                                     | OAuth scope (default `user`).                                                                                        |
-| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`                       | Callback URL on this service (for example `https://tavily.ivanli.cc/auth/linuxdo/callback`).                         |
+| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`                       | Frontend callback URL on this service (for example `https://tavily.ivanli.cc/console/oauth/linuxdo/callback`).       |
 | `--linuxdo-oauth-refresh-token-crypt-key` / `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` | Encrypts persisted LinuxDo refresh tokens (32 raw bytes or base64/base64url encoded 32-byte key).                    |
 | `--linuxdo-oauth-user-sync-enabled` / `LINUXDO_OAUTH_USER_SYNC_ENABLED`             | Enable the daily LinuxDo offline user sync scheduler (default `true`).                                               |
 | `--linuxdo-oauth-user-sync-at` / `LINUXDO_OAUTH_USER_SYNC_AT`                       | Daily LinuxDo offline sync time in server local time, format `HH:mm` (default `06:20`).                              |
@@ -245,7 +245,7 @@ Tavily Hikari can expose Linux DO Connect OAuth2 login for regular users, indepe
 export LINUXDO_OAUTH_ENABLED=true
 export LINUXDO_OAUTH_CLIENT_ID='<your-linuxdo-client-id>'
 export LINUXDO_OAUTH_CLIENT_SECRET='<your-linuxdo-client-secret>'
-export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callback'
+export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/console/oauth/linuxdo/callback'
 export LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY='<32-byte-secret-or-base64>'
 export LINUXDO_OAUTH_USER_SYNC_ENABLED=true
 export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
@@ -254,6 +254,12 @@ export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
 - Homepage behavior:
   - When not logged in, area ① shows a **Sign in with Linux DO** button.
   - After login, area ① is hidden and area ② auto-fills the user's bound `th-...` token.
+- Callback handoff behavior:
+  - LinuxDo should redirect the browser to `/console/oauth/linuxdo/callback`, not the legacy backend callback path.
+  - The callback page stays inside the `/console` shell, shows a provider-specific "connecting" state, then posts `code` + `state` to `POST /auth/linuxdo/finalize`.
+  - Successful finalize sets the user session cookie and automatically enters `/console`.
+  - Provider denial, invalid/expired state, timeout, and upstream failures stay on the callback page with fresh restart + home CTAs.
+  - When new-user registration is paused, finalize redirects to `/registration-paused` instead of showing a generic failure card.
 - Token policy:
   - First Linux DO login automatically creates and binds one Hikari access token.
   - Later logins reuse the same binding; no extra token is created.
@@ -271,7 +277,8 @@ export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
   - Sync failures such as `invalid_grant`, transport errors, or userinfo mismatches keep the previous trust level, existing user session, and current `linuxdo_l*` tag until the next successful refresh or a user re-login.
 - New endpoints:
   - `GET /auth/linuxdo`
-  - `GET /auth/linuxdo/callback`
+  - `POST /auth/linuxdo/finalize`
+  - `GET /auth/linuxdo/callback` (diagnostics only; no longer the official login completion path)
   - `GET /api/user/token`
   - `POST /api/user/logout`
 

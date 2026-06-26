@@ -2614,30 +2614,23 @@ colo=LAX
         let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
             .expect("oauth binding cookie");
 
-        let callback_url = format!(
-            "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
-            addr
-        );
         let callback_resp = no_redirect
-            .get(&callback_url)
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "e2e-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
-        assert_eq!(
-            callback_resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("/console")
-        );
-
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
         let user_cookie = find_cookie_pair(callback_resp.headers(), USER_SESSION_COOKIE_NAME)
             .expect("user session cookie");
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(finalize_body.get("outcome").and_then(|value| value.as_str()), Some("success"));
+        assert_eq!(
+            finalize_body.get("redirectTo").and_then(|value| value.as_str()),
+            Some("/console")
+        );
         let token_resp = Client::new()
             .get(format!("http://{}/api/user/token", addr))
             .header(reqwest::header::COOKIE, user_cookie.clone())
@@ -2781,28 +2774,26 @@ colo=LAX
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
-                addr
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "e2e-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
-        assert_eq!(
-            callback_resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("/registration-paused")
-        );
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
         let clear_binding_cookie =
             find_cookie_pair(callback_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
                 .expect("cleared binding cookie");
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(
+            finalize_body.get("outcome").and_then(|value| value.as_str()),
+            Some("registration_paused")
+        );
+        assert_eq!(
+            finalize_body.get("redirectTo").and_then(|value| value.as_str()),
+            Some("/registration-paused")
+        );
         assert!(
             clear_binding_cookie.ends_with('='),
             "expected oauth binding cookie to be cleared"
@@ -2886,6 +2877,7 @@ colo=LAX
                 get(get_linuxdo_auth).post(post_linuxdo_auth),
             )
             .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
+            .route("/auth/linuxdo/finalize", post(post_linuxdo_finalize))
             .route("/api/profile", get(get_profile))
             .with_state(state);
 
@@ -2923,24 +2915,18 @@ colo=LAX
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
-                addr
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "e2e-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
         assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
-        assert_eq!(
-            callback_resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("/registration-paused")
+            finalize_body.get("outcome").and_then(|value| value.as_str()),
+            Some("registration_paused")
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -3014,27 +3000,25 @@ colo=LAX
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
-                addr
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "e2e-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
-        assert_eq!(
-            callback_resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("/console")
-        );
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
         let user_cookie = find_cookie_pair(callback_resp.headers(), USER_SESSION_COOKIE_NAME)
             .expect("user session cookie");
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(
+            finalize_body.get("outcome").and_then(|value| value.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            finalize_body.get("redirectTo").and_then(|value| value.as_str()),
+            Some("/console")
+        );
         assert!(
             user_cookie.starts_with(&format!("{USER_SESSION_COOKIE_NAME}=")),
             "expected existing user login to create a user session"

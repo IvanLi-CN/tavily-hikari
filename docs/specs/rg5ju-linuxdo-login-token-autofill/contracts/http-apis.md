@@ -13,24 +13,41 @@
   - `404` 当 OAuth 未启用
   - `500` 生成登录 state 失败
 
-## LinuxDo OAuth callback（GET /auth/linuxdo/callback）
+## LinuxDo OAuth finalize（POST /auth/linuxdo/finalize）
 
 - 范围（Scope）: external
-- 变更（Change）: New
+- 变更（Change）: Modify
 - 鉴权（Auth）: none
 
-### Query
+### Body
 
 - `code`（required）
 - `state`（required）
 
 ### 响应
 
-- Success: `302 /` 并设置 `hikari_user_session` cookie（HttpOnly, SameSite=Lax）
+- Success:
+  - `200`
+  - body: `{"ok":true,"outcome":"success","redirectTo":"/console"}`
+  - 设置 `hikari_user_session` cookie（HttpOnly, SameSite=Lax）
 - Error:
-  - `400` 参数缺失/非法 state
-  - `401` OAuth 换 token 或 userinfo 失败
-  - `500` 本地持久化失败
+  - `400` 参数缺失/非法 state（`outcome=invalid_state`）
+  - `403` 用户被禁用（`outcome=inactive_user`）
+  - `403` 暂停注册分流（`outcome=registration_paused`，`redirectTo=/registration-paused`）
+  - `502` OAuth 换 token 或 userinfo 失败（`outcome=upstream_failure`）
+  - `500` 本地持久化失败（`outcome=server_error`）
+
+## LinuxDo OAuth callback diagnostics（GET /auth/linuxdo/callback）
+
+- 范围（Scope）: external
+- 变更（Change）: Modify
+- 鉴权（Auth）: none
+
+### 响应
+
+- `409` 诊断性 HTML
+- 用于提示当前 `LINUXDO_OAUTH_REDIRECT_URL` 应指向 `/console/oauth/linuxdo/callback`
+- 不再承担正式登录完成路径
 
 ## User logout（POST /api/user/logout）
 

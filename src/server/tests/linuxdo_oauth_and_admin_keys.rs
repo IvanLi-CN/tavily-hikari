@@ -210,17 +210,16 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "test-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(finalize_body.get("outcome").and_then(|value| value.as_str()), Some("success"));
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let (ciphertext, nonce, trust_level, attempted_at, success_at, sync_error) =
@@ -302,21 +301,27 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "test-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(callback_resp.status(), reqwest::StatusCode::FORBIDDEN);
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
+        let cleared_binding_cookie = callback_resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| value.starts_with(&format!("{OAUTH_LOGIN_BINDING_COOKIE_NAME}=")));
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(
+            finalize_body.get("outcome").and_then(|value| value.as_str()),
+            Some("inactive_user")
+        );
         assert!(
-            callback_resp
-                .headers()
-                .get_all(reqwest::header::SET_COOKIE)
-                .iter()
-                .filter_map(|value| value.to_str().ok())
-                .any(|value| value.starts_with(&format!("{OAUTH_LOGIN_BINDING_COOKIE_NAME}="))),
+            cleared_binding_cookie,
             "inactive callbacks should still clear the OAuth binding cookie"
         );
 
@@ -344,6 +349,161 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("count user sessions");
         assert_eq!(session_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_finalize_allows_login_when_ha_blocks_full_writes() {
+        let db_path = temp_db_path("linuxdo-finalize-provisional-master");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "callback-access-token".to_string(),
+                authorization_refresh_token: Some("callback-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-ha-finalize-user",
+                    "username": "linuxdo_ha_finalize_user",
+                    "name": "LinuxDO HA Finalize User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "unused-refresh-access-token".to_string(),
+                refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+                refresh_profile: json!({
+                    "id": "linuxdo-ha-finalize-user",
+                    "username": "linuxdo_ha_finalize_user",
+                    "name": "LinuxDO HA Finalize User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_error: None,
+            })
+            .await;
+
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let edgeone_app = Router::new().fallback(post(|| async {
+            Json(serde_json::json!({
+                "Response": {
+                    "RequestId": "test-edgeone-linuxdo-finalize"
+                }
+            }))
+        }));
+        let edgeone_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let edgeone_addr = edgeone_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(edgeone_listener, edgeone_app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+            mode: tavily_hikari::HaMode::ActiveStandby,
+            node_id: "node-linuxdo-finalize".to_string(),
+            database_path: Some(db_str.clone()),
+            node_public_host: Some("127.0.0.1".to_string()),
+            node_public_port: Some(58101),
+            edgeone_zone_id: Some("zone-test".to_string()),
+            edgeone_domain: Some("hikari.example.test".to_string()),
+            edgeone_secret_id: Some("secret-id".to_string()),
+            edgeone_secret_key: Some("secret-key".to_string()),
+            edgeone_api_endpoint: format!("http://{edgeone_addr}"),
+            ..tavily_hikari::HaConfig::default()
+        });
+        ha.promote_self_to_provisional(true)
+            .await
+            .expect("promote through fake EdgeOne");
+
+        let static_dir = temp_static_dir("linuxdo-user-oauth-ha-finalize");
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: Some(static_dir),
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+
+        let app = Router::new()
+            .route("/", get(serve_index))
+            .route("/console", get(serve_console_index))
+            .route("/console/*path", get(serve_console_shell))
+            .route("/registration-paused", get(serve_registration_paused_index))
+            .route(
+                "/auth/linuxdo",
+                get(get_linuxdo_auth).post(post_linuxdo_auth),
+            )
+            .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
+            .route("/auth/linuxdo/finalize", post(post_linuxdo_finalize))
+            .route("/api/profile", get(get_profile))
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let binding_nonce = "linuxdo-ha-finalize-binding";
+        let binding_hash = {
+            use base64::Engine as _;
+            let digest = Sha256::digest(binding_nonce.as_bytes());
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+        };
+        let login_state = proxy
+            .create_oauth_login_state_with_binding_and_token(
+                "linuxdo",
+                None,
+                600,
+                Some(&binding_hash),
+                None,
+            )
+            .await
+            .expect("create oauth login state");
+
+        let callback_resp = Client::new()
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
+            .header(
+                reqwest::header::COOKIE,
+                format!("{OAUTH_LOGIN_BINDING_COOKIE_NAME}={binding_nonce}"),
+            )
+            .json(&json!({ "code": "test-code", "state": login_state }))
+            .send()
+            .await
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
+        let user_cookie = find_cookie_pair(callback_resp.headers(), USER_SESSION_COOKIE_NAME)
+            .expect("user session cookie");
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(
+            finalize_body.get("outcome").and_then(|value| value.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            finalize_body.get("redirectTo").and_then(|value| value.as_str()),
+            Some("/console")
+        );
+        assert!(
+            user_cookie.starts_with(&format!("{USER_SESSION_COOKIE_NAME}=")),
+            "finalize should still create a user session while HA blocks full writes"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -412,17 +572,16 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("oauth binding cookie");
 
         let callback_resp = client
-            .get(format!(
-                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
-            ))
+            .post(format!("http://{addr}/auth/linuxdo/finalize"))
             .header(reqwest::header::COOKIE, binding_cookie)
+            .json(&json!({ "code": "test-code", "state": state }))
             .send()
             .await
-            .expect("oauth callback");
-        assert_eq!(
-            callback_resp.status(),
-            reqwest::StatusCode::TEMPORARY_REDIRECT
-        );
+            .expect("oauth finalize");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::OK);
+        let finalize_body: serde_json::Value =
+            callback_resp.json().await.expect("oauth finalize body");
+        assert_eq!(finalize_body.get("outcome").and_then(|value| value.as_str()), Some("success"));
 
         let (ciphertext, nonce, trust_level, attempted_at, success_at, sync_error) =
             fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-callback-error-user").await;
@@ -434,6 +593,36 @@ use super::upstream_support_and_manual_jobs::*;
         let sync_error = sync_error.expect("sync error recorded");
         assert!(sync_error.contains("refresh-token storage error"));
         assert!(sync_error.contains("refresh token persistence failed"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_linuxdo_callback_route_serves_diagnostic_response() {
+        let db_path = temp_db_path("legacy-linuxdo-callback-diagnostic");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let addr = spawn_user_oauth_server(proxy).await;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://{addr}/auth/linuxdo/callback?code=legacy-code&state=legacy-state"
+            ))
+            .send()
+            .await
+            .expect("legacy callback diagnostic");
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        let body = response.text().await.expect("diagnostic body");
+        assert!(
+            body.contains("POST /auth/linuxdo/finalize"),
+            "diagnostic response should point operators at the new finalize endpoint"
+        );
+        assert!(
+            body.contains("/console/oauth/linuxdo/callback"),
+            "diagnostic response should mention the frontend callback redirect URI"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

@@ -12,6 +12,10 @@
 - `auth_tokens` 已存在，但没有“用户身份 -> token”的绑定模型，导致用户态 token 获取依赖手工分发。
 - 目标站点 `https://tavily.ivanli.cc/` 需要在首页实现一致且可理解的登录入口（区域①）和 token 自动填充（区域②）。
 
+## 关联规格
+
+- `docs/specs/n8x4p-linuxdo-oauth-frontend-callback/SPEC.md`
+
 ## 目标 / 非目标
 
 ### Goals
@@ -68,8 +72,8 @@
 ### Core flows
 
 - 用户点击首页 Linux DO 登录按钮，跳转 `/auth/linuxdo`，后端生成 state 并重定向到 LinuxDo authorize。
-- LinuxDo 回调 `/auth/linuxdo/callback`，后端完成 code 换 token、拉用户信息、upsert 本地用户与 oauth 绑定、创建用户会话 cookie。
-- 登录成功后首页加载 profile，若 `userLoggedIn=true` 则调用 `/api/user/token` 自动填充 token 输入框并写 hash。
+- LinuxDo 回调 `/console/oauth/linuxdo/callback`，前端 callback 页展示连接态，并调用 `POST /auth/linuxdo/finalize` 完成 code 换 token、userinfo、oauth 绑定与用户会话建立。
+- finalize 成功后默认进入 `/console`；后续当首页加载 profile 且 `userLoggedIn=true` 时，仍调用 `/api/user/token` 自动填充 token 输入框并写 hash。
 
 ### Edge cases / errors
 
@@ -81,14 +85,15 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                 | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                |
-| ---------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | ---------------------------- |
-| LinuxDo OAuth Start          | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Browser             | `GET /auth/linuxdo`          |
-| LinuxDo OAuth Callback       | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Browser             | `GET /auth/linuxdo/callback` |
-| User Logout                  | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Web SPA             | `POST /api/user/logout`      |
-| User Token Query             | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Web SPA             | `GET /api/user/token`        |
-| Profile optional fields      | HTTP         | external      | Modify         | ./contracts/http-apis.md | Backend         | Web SPA             | 扩展 `/api/profile`          |
-| User auth persistence tables | DB           | internal      | New            | ./contracts/db.md        | Backend         | Backend             | 新增 5 张表                  |
+| 接口（Name）                 | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                                 |
+| ---------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | --------------------------------------------- |
+| LinuxDo OAuth Start          | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Browser             | `GET /auth/linuxdo`                           |
+| LinuxDo OAuth Finalize       | HTTP         | external      | Modify         | ./contracts/http-apis.md | Backend         | Browser, Web SPA    | `POST /auth/linuxdo/finalize`                 |
+| Legacy LinuxDo Callback      | HTTP         | external      | Modify         | ./contracts/http-apis.md | Backend         | Browser             | `GET /auth/linuxdo/callback` diagnostics only |
+| User Logout                  | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Web SPA             | `POST /api/user/logout`                       |
+| User Token Query             | HTTP         | external      | New            | ./contracts/http-apis.md | Backend         | Web SPA             | `GET /api/user/token`                         |
+| Profile optional fields      | HTTP         | external      | Modify         | ./contracts/http-apis.md | Backend         | Web SPA             | 扩展 `/api/profile`                           |
+| User auth persistence tables | DB           | internal      | New            | ./contracts/db.md        | Backend         | Backend             | 新增 5 张表                                   |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -103,8 +108,8 @@
   Then 区域①显示 Linux DO 登录按钮，区域②不自动填充。
 
 - Given 用户通过 LinuxDo 授权成功回调
-  When 返回首页
-  Then 区域①隐藏，区域②自动填入 `th-...` token 并写入 hash。
+  When `/console/oauth/linuxdo/callback` 完成 finalize 并建立会话
+  Then 默认进入 `/console`，且后续访问首页时区域①隐藏、区域②可自动填入 `th-...` token 并写入 hash。
 
 - Given 用户首次登录
   When 回调完成

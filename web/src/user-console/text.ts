@@ -17,6 +17,7 @@ export const EN = {
       dashboard: 'Account Overview',
       tokens: 'Token List',
       tokenDetail: 'Token Detail',
+      oauthCallback: 'OAuth Callback',
     },
     providers: {
       linuxdo: 'LinuxDo',
@@ -155,6 +156,67 @@ export const EN = {
     title: 'Sign in to open your console',
     description: 'Dashboard and token data appear here after you sign in with LinuxDo.',
     action: 'Sign in with LinuxDo',
+  },
+  oauthCallback: {
+    badge: 'OAuth Callback',
+    status: {
+      connecting: {
+        title: 'Talking to {provider}',
+        description: 'Please wait while we verify the callback and open your console session.',
+      },
+      success: {
+        title: '{provider} connected',
+        description: 'Your console session is ready. Redirecting to `/console` now.',
+      },
+      providerDenied: {
+        title: '{provider} authorization was cancelled',
+        description: 'The provider did not grant access, so no console session was created.',
+      },
+      invalidRequest: {
+        title: 'This callback link is incomplete',
+        description: 'The provider return did not include the required authorization fields.',
+      },
+      invalidState: {
+        title: 'This login attempt has expired',
+        description: 'The callback can no longer be verified. Start a fresh {provider} login to continue.',
+      },
+      inactiveUser: {
+        title: '{provider} account unavailable',
+        description: 'This LinuxDo account is currently marked inactive and cannot open a console session.',
+      },
+      timeout: {
+        title: 'The connection took too long',
+        description: 'We did not receive a completion signal in time. Start a fresh {provider} login instead of retrying this callback.',
+      },
+      upstreamFailure: {
+        title: 'We could not finish the {provider} handshake',
+        description: 'The service could not exchange the authorization with {provider} right now.',
+      },
+      serverError: {
+        title: 'This callback could not be completed',
+        description: 'The console could not finish the local sign-in flow. Start a fresh {provider} login when ready.',
+      },
+      unsupportedProvider: {
+        title: 'This provider is not available here yet',
+        description: 'This callback shell is ready for future providers, but this deployment currently only supports LinuxDo.',
+      },
+    },
+    steps: {
+      returned: 'OAuth callback returned',
+      verify: 'Secure state verification',
+      session: 'Console session ready',
+    },
+    actions: {
+      retry: 'Reconnect with {provider}',
+      home: 'Back to Home',
+    },
+    notes: {
+      connecting: 'Keep this tab open for a moment while the console finishes the handoff.',
+      redirecting: 'You are being forwarded to your console workspace.',
+      timeout: 'For safety, the previous authorization code will not be reused.',
+      providerDetail: 'Provider detail: {detail}',
+      technicalDetail: 'Technical detail: {detail}',
+    },
   },
   detail: {
     title: 'Token Detail',
@@ -313,6 +375,7 @@ export const ZH = {
       dashboard: '账户概览',
       tokens: 'Token 列表',
       tokenDetail: 'Token 详情',
+      oauthCallback: 'OAuth 回调',
     },
     providers: {
       linuxdo: 'LinuxDo',
@@ -451,6 +514,67 @@ export const ZH = {
     title: '登录后即可打开控制台',
     description: '使用 LinuxDo 登录后，这里就会显示你的仪表盘与 Token 数据。',
     action: '使用 LinuxDo 登录',
+  },
+  oauthCallback: {
+    badge: 'OAuth 回调',
+    status: {
+      connecting: {
+        title: '正在与 {provider} 通信',
+        description: '请稍候，正在校验回调并为你建立控制台会话。',
+      },
+      success: {
+        title: '{provider} 已连接',
+        description: '控制台会话已经准备好，正在跳转到 `/console`。',
+      },
+      providerDenied: {
+        title: '{provider} 授权已取消',
+        description: '提供方没有授予访问权限，因此这次不会创建控制台会话。',
+      },
+      invalidRequest: {
+        title: '这条回调链接不完整',
+        description: '提供方返回里缺少必要的授权字段，无法继续完成登录。',
+      },
+      invalidState: {
+        title: '这次登录尝试已经失效',
+        description: '当前回调已无法通过校验，请重新发起一次 {provider} 登录。',
+      },
+      inactiveUser: {
+        title: '{provider} 账户当前不可用',
+        description: '这个 LinuxDo 账户当前被标记为 inactive，暂时无法打开控制台会话。',
+      },
+      timeout: {
+        title: '等待时间有点久了',
+        description: '我们没有在超时预算内拿到完成信号。请重新发起一次 {provider} 登录，不要重试这次旧回调。',
+      },
+      upstreamFailure: {
+        title: '暂时无法完成与 {provider} 的握手',
+        description: '服务端暂时无法和 {provider} 完成授权交换。',
+      },
+      serverError: {
+        title: '这次回调没能完成',
+        description: '控制台没能完成本地登录收口。准备好后请重新发起一次 {provider} 登录。',
+      },
+      unsupportedProvider: {
+        title: '当前部署还不支持这个提供方',
+        description: '这套回调壳已预留多提供方入口，但当前部署暂时只接入 LinuxDo。',
+      },
+    },
+    steps: {
+      returned: 'OAuth 回调已返回',
+      verify: '安全状态校验',
+      session: '控制台会话就绪',
+    },
+    actions: {
+      retry: '重新连接 {provider}',
+      home: '返回首页',
+    },
+    notes: {
+      connecting: '请先别关掉这个页面，控制台正在完成最后的承接。',
+      redirecting: '马上带你进入控制台工作区。',
+      timeout: '为了安全起见，旧授权码不会被重复使用。',
+      providerDetail: '提供方信息：{detail}',
+      technicalDetail: '技术细节：{detail}',
+    },
   },
   detail: {
     title: 'Token 详情',

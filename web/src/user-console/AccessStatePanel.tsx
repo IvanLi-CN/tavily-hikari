@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { USER_CONSOLE_LOGIN_START_PATH } from './oauthCallback'
 import type { EN } from './text'
 
 type AccessText = Pick<typeof EN, 'unavailable' | 'loggedOut' | 'loginRequired'>
@@ -13,8 +14,8 @@ export default function AccessStatePanel({ state, text, onHome }: AccessStatePan
   const model = state === 'unavailable'
     ? { icon: 'mdi:account-off-outline', copy: text.unavailable, action: onHome }
     : state === 'logged_out'
-      ? { icon: 'mdi:logout-variant', copy: text.loggedOut, action: () => { window.location.href = '/auth/linuxdo' } }
-      : { icon: 'mdi:account-arrow-right-outline', copy: text.loginRequired, action: () => { window.location.href = '/auth/linuxdo' } }
+      ? { icon: 'mdi:logout-variant', copy: text.loggedOut, action: () => { window.location.href = USER_CONSOLE_LOGIN_START_PATH } }
+      : { icon: 'mdi:account-arrow-right-outline', copy: text.loginRequired, action: () => { window.location.href = USER_CONSOLE_LOGIN_START_PATH } }
 
   return (
     <section className="surface panel access-panel">

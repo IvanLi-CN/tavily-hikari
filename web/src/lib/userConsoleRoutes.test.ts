@@ -11,6 +11,7 @@ describe('userConsoleRoutes', () => {
     expect(parseUserConsolePath('/console')).toEqual({ name: 'landing', section: null })
     expect(parseUserConsolePath('/console/dashboard')).toEqual({ name: 'landing', section: 'dashboard' })
     expect(parseUserConsolePath('/console/tokens')).toEqual({ name: 'landing', section: 'tokens' })
+    expect(parseUserConsolePath('/console/oauth/linuxdo/callback')).toEqual({ name: 'oauthCallback', provider: 'linuxdo' })
   })
 
   it('falls back to the default landing view for unknown path suffixes', () => {
@@ -28,6 +29,7 @@ describe('userConsoleRoutes', () => {
     expect(parseUserConsolePath('/console/dashboard/')).toEqual({ name: 'landing', section: 'dashboard' })
     expect(parseUserConsolePath('/console/tokens/')).toEqual({ name: 'landing', section: 'tokens' })
     expect(parseUserConsolePath('/console.html/tokens')).toEqual({ name: 'landing', section: 'tokens' })
+    expect(parseUserConsolePath('/console.html/oauth/linuxdo/callback')).toEqual({ name: 'oauthCallback', provider: 'linuxdo' })
   })
 
   it('keeps token detail paths on the dedicated detail route', () => {
@@ -47,6 +49,7 @@ describe('userConsoleRoutes', () => {
     expect(userConsoleRouteToPath({ name: 'landing', section: null })).toBe('/console')
     expect(userConsoleRouteToPath({ name: 'landing', section: 'dashboard' })).toBe('/console/dashboard')
     expect(userConsoleRouteToPath({ name: 'landing', section: 'tokens' })).toBe('/console/tokens')
+    expect(userConsoleRouteToPath({ name: 'oauthCallback', provider: 'linuxdo' })).toBe('/console/oauth/linuxdo/callback')
     expect(userConsoleRouteToPath({ name: 'token', id: 'a/b' })).toBe('/console/tokens/a%2Fb')
     expect(userConsoleRouteToPath({ name: 'tokenLogs', id: 'a/b' })).toBe('/console/tokens/a%2Fb/logs')
   })
