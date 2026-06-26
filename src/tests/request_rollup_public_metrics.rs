@@ -413,3 +413,69 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn public_success_breakdown_without_flush_returns_immediately_under_writer_lock() {
+    let db_path = temp_db_path("public-success-breakdown-no-flush-writer-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-public-success-no-flush-lock".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let now = Utc::now().timestamp();
+    let created_at = now.saturating_sub(10);
+    let window = TimeRangeUtc {
+        start: now.saturating_sub(300),
+        end: now.saturating_add(60),
+    };
+
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(Some(&key_id), created_at, OUTCOME_SUCCESS)
+        .await;
+
+    let lock_options = SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+        .await
+        .expect("open lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("lock writer");
+
+    let public = tokio::time::timeout(
+        Duration::from_millis(500),
+        proxy.success_breakdown_without_flush(Some(window)),
+    )
+    .await
+    .expect("public metrics should not block under writer lock")
+    .expect("public success breakdown");
+
+    assert_eq!(public.monthly_success, 0);
+    assert_eq!(public.daily_success, 0);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release writer lock");
+    lock_conn.close().await.expect("close lock connection");
+
+    let _ = std::fs::remove_file(db_path);
+}

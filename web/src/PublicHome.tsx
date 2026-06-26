@@ -258,7 +258,11 @@ function PublicHome(): JSX.Element {
       try {
         const data = JSON.parse(ev.data)
         if (data?.public) {
-          setMetrics({ monthlySuccess: data.public.monthlySuccess, dailySuccess: data.public.dailySuccess })
+          setMetrics({
+            monthlySuccess: data.public.monthlySuccess,
+            dailySuccess: data.public.dailySuccess,
+            freshness: data.public.freshness ?? data.freshness ?? null,
+          })
         }
         if (data?.token) {
           const next: TokenMetrics = {
@@ -540,6 +544,7 @@ function PublicHome(): JSX.Element {
       <PublicHomeHeroCard
         publicStrings={publicStrings}
         metrics={metrics}
+        freshness={metrics?.freshness ?? null}
         availableKeys={availableKeys}
         totalKeys={totalKeys}
         error={error}

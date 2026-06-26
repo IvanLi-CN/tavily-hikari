@@ -1226,6 +1226,20 @@ use super::upstream_support_and_manual_jobs::*;
             "summary should exist"
         );
         assert!(
+            snapshot_json
+                .pointer("/freshness/generatedAt")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot should expose freshness generatedAt",
+        );
+        assert!(
+            snapshot_json
+                .pointer("/freshness/state")
+                .and_then(|value| value.as_str())
+                .is_some(),
+            "snapshot should expose freshness state",
+        );
+        assert!(
             snapshot_json.get("summaryWindows").is_some(),
             "summaryWindows should exist"
         );

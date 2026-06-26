@@ -139,6 +139,7 @@ export interface DashboardMonthSeries {
 }
 
 export interface DashboardOverviewResponse {
+  freshness: FreshnessView
   summary: Summary
   summaryWindows: SummaryWindowsResponse
   hourlyRequestWindow: DashboardHourlyRequestWindow
@@ -293,6 +294,14 @@ export interface AlertsPage<T> {
 export interface PublicMetrics {
   monthlySuccess: number
   dailySuccess: number
+  freshness?: FreshnessView | null
+}
+
+export interface FreshnessView {
+  state: 'fresh' | 'stale' | 'degraded'
+  source: 'live' | 'last_good' | 'cold_start_fallback'
+  generatedAt: number
+  reason: string
 }
 
 export interface TokenMetrics {

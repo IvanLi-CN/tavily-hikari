@@ -1777,6 +1777,7 @@ function AdminDashboard(): JSX.Element {
     topGroups: [],
   })
   const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
+  const [dashboardFreshness, setDashboardFreshness] = useState<DashboardSnapshotEvent['freshness'] | null>(null)
   const [tokensPage, setTokensPage] = useState(() => getAdminTokensPageFromLocation())
   const [tokensPerPage, setTokensPerPage] = useState(() => getAdminTokensPerPageFromLocation())
   const [tokensTotal, setTokensTotal] = useState(0)
@@ -2752,6 +2753,7 @@ function AdminDashboard(): JSX.Element {
         }
         const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
         if (!overviewStale) {
+          setDashboardFreshness(overview.freshness)
           setSummary(overview.summary)
           setDashboardSummaryWindows(overview.summaryWindows)
           setDashboardMonthSeries(overview.monthSeries)
@@ -2776,6 +2778,7 @@ function AdminDashboard(): JSX.Element {
         if (overviewStale) {
           return
         }
+        setDashboardFreshness(null)
         setSummary(null)
         setDashboardSummaryWindows(null)
         setDashboardMonthSeries(createEmptyDashboardMonthSeries())
@@ -4378,6 +4381,7 @@ function AdminDashboard(): JSX.Element {
         try {
           const data = JSON.parse(ev.data) as DashboardSnapshotEvent
           setSseConnected(true)
+          setDashboardFreshness(data.freshness)
           setSummary(data.summary)
           if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
             dashboardOverviewVersionRef.current += 1
@@ -10182,6 +10186,7 @@ function AdminDashboard(): JSX.Element {
           strings={adminStrings.dashboard}
           overviewReady={dashboardOverviewLoaded}
           statusLoading={dashboardStatusLoading}
+          freshness={dashboardFreshness}
           todayMetrics={todayMetrics}
           todayQuotaCharge={todayQuotaCharge}
           monthMetrics={monthMetrics}

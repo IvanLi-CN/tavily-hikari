@@ -921,6 +921,12 @@ function demoDashboardOverview(now = Date.now()) {
     }
   })
   return {
+    freshness: {
+      state: 'fresh',
+      source: 'live',
+      generatedAt: Math.floor(now / 1000),
+      reason: 'up_to_date',
+    },
     summary: demoSummary(now),
     summaryWindows,
     hourlyRequestWindow: {
@@ -1730,7 +1736,16 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/summary/windows') return jsonResponse(demoSummaryWindows())
   if (path === '/api/dashboard/overview') return jsonResponse(demoDashboardOverview())
   if (path === '/api/user/dashboard/overview') return jsonResponse(demoUserDashboardOverview())
-  if (path === '/api/public/metrics') return jsonResponse({ monthlySuccess: 23710, dailySuccess: 714 })
+  if (path === '/api/public/metrics') return jsonResponse({
+    monthlySuccess: 23710,
+    dailySuccess: 714,
+    freshness: {
+      state: 'fresh',
+      source: 'live',
+      generatedAt: nowSeconds(),
+      reason: 'up_to_date',
+    },
+  })
   if (path === '/api/token/metrics') return jsonResponse({
     monthlySuccess: 8400,
     dailySuccess: 388,
@@ -2144,7 +2159,16 @@ class DemoEventSource {
     }
     if (path === '/api/public/events') {
       this.emit('metrics', {
-        public: { monthlySuccess: 23710, dailySuccess: 714 },
+        public: {
+          monthlySuccess: 23710,
+          dailySuccess: 714,
+          freshness: {
+            state: 'fresh',
+            source: 'live',
+            generatedAt: nowSeconds(),
+            reason: 'up_to_date',
+          },
+        },
         token: {
           monthlySuccess: 8400,
           dailySuccess: 388,
@@ -2156,12 +2180,27 @@ class DemoEventSource {
           quotaMonthlyUsed: 8400,
           quotaMonthlyLimit: 24000,
         },
+        freshness: {
+          state: 'fresh',
+          source: 'live',
+          generatedAt: nowSeconds(),
+          reason: 'up_to_date',
+        },
       })
       this.refreshTimer = window.setInterval(() => {
         if (this.readyState !== DemoEventSource.OPEN) return
         const pulse = demoPulse()
         this.emit('metrics', {
-          public: { monthlySuccess: 23710 + (pulse % 6) * 20, dailySuccess: 714 + (pulse % 5) * 3 },
+          public: {
+            monthlySuccess: 23710 + (pulse % 6) * 20,
+            dailySuccess: 714 + (pulse % 5) * 3,
+            freshness: {
+              state: 'fresh',
+              source: 'live',
+              generatedAt: nowSeconds(),
+              reason: 'up_to_date',
+            },
+          },
           token: {
             monthlySuccess: 8400 + (pulse % 6) * 12,
             dailySuccess: 388 + (pulse % 5) * 2,
@@ -2172,6 +2211,12 @@ class DemoEventSource {
             quotaDailyLimit: 1600,
             quotaMonthlyUsed: 8400 + (pulse % 6) * 12,
             quotaMonthlyLimit: 24000,
+          },
+          freshness: {
+            state: 'fresh',
+            source: 'live',
+            generatedAt: nowSeconds(),
+            reason: 'up_to_date',
           },
         })
       }, 6000)

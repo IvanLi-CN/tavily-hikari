@@ -2,7 +2,7 @@ import React, { type ReactNode } from 'react'
 import BrandLockup from './BrandLockup'
 import { Icon } from '../lib/icons'
 
-import type { PublicMetrics } from '../api'
+import type { FreshnessView, PublicMetrics } from '../api'
 import type { Translations } from '../i18n'
 import RollingNumber from './RollingNumber'
 import { Button } from './ui/button'
@@ -12,6 +12,7 @@ export interface PublicHomeHeroCardProps {
   metricsLoading: boolean
   summaryLoading: boolean
   metrics: PublicMetrics | null
+  freshness: FreshnessView | null
   availableKeys: number | null
   totalKeys: number | null
   error: string | null
@@ -37,6 +38,7 @@ function PublicHomeHeroCard({
   metricsLoading,
   summaryLoading,
   metrics,
+  freshness,
   availableKeys,
   totalKeys,
   error,
@@ -68,6 +70,14 @@ function PublicHomeHeroCard({
       <span>{publicStrings.linuxDoLogin.button}</span>
     </>
   )
+  const freshnessLabel = describeFreshness(publicStrings, freshness)
+  const freshnessToneClassName = freshness == null
+    ? ''
+    : freshness.state === 'fresh'
+      ? ' public-home-freshness-fresh'
+      : freshness.state === 'stale'
+        ? ' public-home-freshness-stale'
+        : ' public-home-freshness-degraded'
 
   return (
     <section className="surface public-home-hero">
@@ -175,6 +185,27 @@ function PublicHomeHeroCard({
           </div>
         </div>
       </div>
+      {freshnessLabel ? (
+        <div
+          className={`public-home-freshness${freshnessToneClassName}`}
+          role="status"
+          aria-live="polite"
+        >
+          <Icon
+            icon={
+              freshness?.state === 'fresh'
+                ? 'mdi:check-circle-outline'
+                : freshness?.state === 'stale'
+                  ? 'mdi:clock-alert-outline'
+                  : 'mdi:alert-circle-outline'
+            }
+            width={18}
+            height={18}
+            aria-hidden="true"
+          />
+          <span>{freshnessLabel}</span>
+        </div>
+      ) : null}
       {shouldShowActions && (
         <div className="public-home-actions">
           {showAuthStatus && (
@@ -240,6 +271,19 @@ function PublicHomeHeroCard({
       )}
     </section>
   )
+}
+
+function describeFreshness(
+  strings: Translations['public'],
+  freshness: FreshnessView | null,
+): string | null {
+  if (!freshness) return null
+  if (freshness.state === 'fresh') return strings.freshness.fresh
+  if (freshness.reason === 'pending_rollups') return strings.freshness.pendingRollups
+  if (freshness.reason === 'sqlite_contention') return strings.freshness.sqliteContention
+  if (freshness.reason === 'cold_start_no_cache') return strings.freshness.coldStart
+  if (freshness.reason === 'optional_feed_failure') return strings.freshness.optionalFeedFailure
+  return freshness.state === 'degraded' ? strings.freshness.degraded : strings.freshness.stale
 }
 
 export default PublicHomeHeroCard

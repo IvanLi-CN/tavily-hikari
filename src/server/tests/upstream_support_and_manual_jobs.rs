@@ -1428,6 +1428,37 @@ pub(super) async fn spawn_proxy_server(proxy: TavilyProxy, usage_base: String) -
     spawn_proxy_server_with_dev(proxy, usage_base, false).await
 }
 
+pub(super) async fn spawn_public_metrics_server(proxy: TavilyProxy) -> SocketAddr {
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    let app = Router::new()
+        .route("/api/public/metrics", get(get_public_metrics))
+        .route("/api/public/events", get(sse_public))
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    addr
+}
+
 pub(super) async fn spawn_proxy_server_with_dev(
     proxy: TavilyProxy,
     usage_base: String,

@@ -118,6 +118,10 @@ month-tail public metrics scan.
 - Batch request-derived rollups. `request_logs` should write synchronously, but dashboard/API-key
   usage, auth-token activity counters, account request-rate buckets, and catalog rollups should be
   coalesced and flushed in bounded windows instead of being updated per request.
+- Once request-derived rollups are coalesced, do not undo that benefit on the owner-facing read
+  path. Admin/public summary surfaces should prefer no-flush reads plus explicit freshness metadata,
+  and only let one bounded rebuild decide whether a `live`, `last_good`, or `cold_start_fallback`
+  response is appropriate.
 - If those observability-heavy tables move into an attached sidecar SQLite file, treat them as
   rebuildable/eventually consistent views rather than HA-trigger-replicated truth. SQLite attached
   database triggers cannot safely write back into `main`, so the HA outbox should stay focused on
@@ -253,6 +257,9 @@ month-tail public metrics scan.
 - If public metrics only need success counts, do not reuse a generic retained-log summary scan for a
   month-tail fallback. Subtract the retained tail from the last daily rollup bucket with a bounded
   success-count query instead of reintroducing a wide `WITH scoped_logs AS (...)` scan.
+- For dashboard/public reads under SQLite contention, `200 + degraded` is often the safer contract
+  than `500` or timeout, provided the payload stays shape-valid and callers are forced to consume an
+  explicit freshness contract instead of treating fallback zeroes as authoritative data.
 - Do not let lock-contention tests depend on real wall-clock sleep just to cross a retry window or a
   one-second timestamp boundary. Prefer deterministic state shaping or a controlled time seam so the
   test still exercises the production retry logic without paying real-time cost.

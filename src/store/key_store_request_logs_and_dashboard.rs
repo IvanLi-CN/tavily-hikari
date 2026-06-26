@@ -2782,6 +2782,20 @@ impl KeyStore {
     ) -> Result<SuccessBreakdown, ProxyError> {
         self.flush_request_stats_writes_if_public_metrics_stale(month_start, day_start, day_end)
             .await?;
+        self.fetch_success_breakdown_from_dashboard_rollups_without_flush(
+            month_start,
+            day_start,
+            day_end,
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_success_breakdown_from_dashboard_rollups_without_flush(
+        &self,
+        month_start: i64,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<SuccessBreakdown, ProxyError> {
         let now = self.backend_time.now_ts();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)

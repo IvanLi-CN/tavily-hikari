@@ -257,6 +257,13 @@ impl KeyStore {
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
         self.flush_request_stats_writes().await?;
+        self.fetch_summary_windows_without_flush(bounds).await
+    }
+
+    pub(crate) async fn fetch_summary_windows_without_flush(
+        &self,
+        bounds: SummaryWindowBounds,
+    ) -> Result<SummaryWindows, ProxyError> {
         let SummaryWindowBounds {
             today_start,
             today_end,
@@ -550,6 +557,22 @@ impl KeyStore {
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
         self.flush_request_stats_writes().await?;
+        self.fetch_dashboard_hourly_request_window_without_flush(
+            current_hour_start,
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_dashboard_hourly_request_window_without_flush(
+        &self,
+        current_hour_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
         if bucket_seconds <= 0 || visible_buckets <= 0 || retained_buckets <= 0 {
             return Ok(DashboardHourlyRequestWindow {
                 bucket_seconds,

@@ -22,6 +22,15 @@ export interface PublicTranslations {
     daily: { title: string; subtitle: string }
     pool: { title: string; subtitle: string }
   }
+  freshness: {
+    fresh: string
+    stale: string
+    degraded: string
+    pendingRollups: string
+    sqliteContention: string
+    coldStart: string
+    optionalFeedFailure: string
+  }
   adminButton: string
   adminLoginButton: string
   linuxDoLogin: {
@@ -217,6 +226,13 @@ export interface AdminTranslationsShape {
     loading: string
     summaryUnavailable: string
     statusUnavailable: string
+    freshnessFresh: string
+    freshnessStale: string
+    freshnessDegraded: string
+    freshnessPendingRollups: string
+    freshnessSqliteContention: string
+    freshnessColdStart: string
+    freshnessOptionalFeedFailure: string
     todayTitle: string
     todayDescription: string
     monthTitle: string

@@ -179,10 +179,10 @@ async fn dashboard_snapshot_event_uses_rebuilt_freshness_after_pending_rollups()
         dashboard_overview_build_count(&state).await >= 1,
         "pending rollup drift should trigger a shared snapshot rebuild",
     );
-    assert_ne!(
+    assert_eq!(
         emitted_sig.freshness.pending_dashboard_rollup_signature,
         probe_sig.freshness.pending_dashboard_rollup_signature,
-        "emitted snapshot freshness should reflect the rebuilt post-flush state, not the stale pre-rebuild probe",
+        "emitted snapshot freshness should carry the rebuilt no-flush pending rollup signature instead of silently forcing a flush-on-read fallback",
     );
 
     let _ = std::fs::remove_file(db_path);

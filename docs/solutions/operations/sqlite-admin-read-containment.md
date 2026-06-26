@@ -89,6 +89,14 @@ reads:
 - For public metrics or SSE surfaces backed by request-stat rollups, gate synchronous flushes on
   persisted freshness plus the oldest pending coalesced write. Do not force a flush on every public
   read once the rollup window is already current enough.
+- When admin and public read paths share one request-stat rollup family, keep one freshness
+  contract across HTTP and SSE. In this service the reusable shape is:
+  `state=fresh|stale|degraded`, `source=live|last_good|cold_start_fallback`,
+  `generatedAt=<unix seconds>`, `reason=pending_rollups|sqlite_contention|optional_feed_failure|cold_start_no_cache`.
+- If the live owner-facing rebuild loses to SQLite writer contention, prefer `last_good` coherent
+  payload reuse before falling back to an empty/error shell. Only use `cold_start_fallback` when no
+  prior successful snapshot exists, and keep the payload shape valid so the UI can stop spinning and
+  render an explicit degraded state.
 - Move alert events/groups/recent summary/catalog to SQL-side pagination and aggregation. Pulling
   all matching alert events into Rust and then sorting, grouping, or paginating in memory does not
   survive a retained `auth_token_logs` window.
@@ -179,6 +187,9 @@ reads:
   time window for every admin refresh.
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
+- Treat `0` / empty placeholder counts in a degraded payload as transport scaffolding, not truth.
+  The consumer must read `freshness.state` before interpreting a sparse owner-facing snapshot as a
+  real absence of traffic.
 
 ## References
 

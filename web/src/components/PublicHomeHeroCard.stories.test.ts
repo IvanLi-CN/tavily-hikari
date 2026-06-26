@@ -43,4 +43,16 @@ describe('PublicHomeHeroCard Storybook proofs', () => {
     expect(markup).toContain('/relay-mesh-lockup-dark.png')
     expect(markup).not.toContain('Sign in with Linux DO')
   })
+
+  it('exposes stale and degraded freshness proof stories', () => {
+    expect(heroStories.MetricsStaleFallback.args?.freshness).toMatchObject({
+      state: 'stale',
+      reason: 'sqlite_contention',
+    })
+    expect(heroStories.MetricsColdStartDegraded.args?.freshness).toMatchObject({
+      state: 'degraded',
+      reason: 'cold_start_no_cache',
+    })
+    expect(heroStories.FreshnessGallery).toMatchObject({})
+  })
 })

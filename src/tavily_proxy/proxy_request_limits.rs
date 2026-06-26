@@ -531,6 +531,11 @@ impl TavilyProxy {
         }
     }
 
+    pub async fn summary_windows_without_flush(&self) -> Result<SummaryWindows, ProxyError> {
+        self.summary_windows_without_flush_at(self.backend_time.local_now())
+            .await
+    }
+
     pub async fn dashboard_hourly_request_window(
         &self,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
@@ -581,6 +586,13 @@ impl TavilyProxy {
         }
     }
 
+    pub async fn dashboard_hourly_request_window_without_flush(
+        &self,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        self.dashboard_hourly_request_window_without_flush_at(self.backend_time.now_utc())
+            .await
+    }
+
     pub(crate) async fn dashboard_hourly_request_window_at(
         &self,
         now: chrono::DateTime<Utc>,
@@ -593,6 +605,26 @@ impl TavilyProxy {
 
         self.key_store
             .fetch_dashboard_hourly_request_window(
+                current_hour_start,
+                DASHBOARD_HOURLY_BUCKET_SECS,
+                DASHBOARD_HOURLY_VISIBLE_BUCKETS,
+                DASHBOARD_HOURLY_RETAINED_BUCKETS,
+            )
+            .await
+    }
+
+    pub(crate) async fn dashboard_hourly_request_window_without_flush_at(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        const DASHBOARD_HOURLY_BUCKET_SECS: i64 = 3600;
+        const DASHBOARD_HOURLY_VISIBLE_BUCKETS: i64 = 25;
+        const DASHBOARD_HOURLY_RETAINED_BUCKETS: i64 = 49;
+
+        let current_hour_start = start_of_local_hour_utc_ts(now.with_timezone(&Local));
+
+        self.key_store
+            .fetch_dashboard_hourly_request_window_without_flush(
                 current_hour_start,
                 DASHBOARD_HOURLY_BUCKET_SECS,
                 DASHBOARD_HOURLY_VISIBLE_BUCKETS,
@@ -618,6 +650,37 @@ impl TavilyProxy {
 
         self.key_store
             .fetch_summary_windows(SummaryWindowBounds {
+                today_start,
+                today_end,
+                today_period_end,
+                yesterday_start,
+                yesterday_end,
+                month_start,
+                month_quota_charge_start,
+                month_period_end,
+                previous_month_start,
+                previous_month_end: month_start,
+            })
+            .await
+    }
+
+    pub(crate) async fn summary_windows_without_flush_at(
+        &self,
+        now: chrono::DateTime<Local>,
+    ) -> Result<SummaryWindows, ProxyError> {
+        let today_start = start_of_local_day_utc_ts(now);
+        let yesterday_start = previous_local_day_start_utc_ts(now);
+        let month_start = start_of_local_month_utc_ts(now);
+        let month_period_end = crate::shift_local_month_start_utc_ts(month_start, 1);
+        let previous_month_start = previous_local_month_start_utc_ts(now);
+        let month_quota_charge_start = start_of_month(now.with_timezone(&Utc)).timestamp();
+        let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
+        let today_period_end = next_local_day_start_utc_ts(today_start);
+        let today_elapsed = today_end.saturating_sub(today_start);
+        let yesterday_end = yesterday_start.saturating_add(today_elapsed);
+
+        self.key_store
+            .fetch_summary_windows_without_flush(SummaryWindowBounds {
                 today_start,
                 today_end,
                 today_period_end,
@@ -670,12 +733,28 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn request_stats_freshness_created_at_bounds(&self) -> Option<(i64, i64)> {
+        self.key_store
+            .request_stats_coalescer
+            .freshness_created_at_bounds()
+            .await
+    }
+
     #[doc(hidden)]
     pub async fn debug_enqueue_dashboard_credit_rollups(&self, created_at: i64, credits: i64) {
         self.key_store
             .request_stats_coalescer
             .enqueue_dashboard_credit_rollups(created_at, credits)
             .await;
+    }
+
+    #[doc(hidden)]
+    pub async fn debug_defer_request_stats_flush_deadline(&self, delay: Duration) {
+        let mut state = self.key_store.request_stats_coalescer.state.lock().await;
+        if RequestStatsCoalescer::pending_key_count(&state) > 0 {
+            state.flush_deadline = Some(Instant::now() + delay);
+            self.key_store.request_stats_coalescer.wake.notify_one();
+        }
     }
 
     pub async fn dashboard_api_key_lifecycle_signature(
@@ -742,6 +821,23 @@ impl TavilyProxy {
             daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
         self.key_store
             .fetch_success_breakdown_from_dashboard_rollups(
+                month_start,
+                resolved_daily_window.start,
+                resolved_daily_window.end,
+            )
+            .await
+    }
+
+    pub async fn success_breakdown_without_flush(
+        &self,
+        daily_window: Option<TimeRangeUtc>,
+    ) -> Result<SuccessBreakdown, ProxyError> {
+        let now = self.backend_time.now_utc();
+        let month_start = start_of_month(now).timestamp();
+        let resolved_daily_window =
+            daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
+        self.key_store
+            .fetch_success_breakdown_from_dashboard_rollups_without_flush(
                 month_start,
                 resolved_daily_window.start,
                 resolved_daily_window.end,

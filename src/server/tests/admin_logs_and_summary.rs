@@ -226,7 +226,7 @@ use super::upstream_support_and_manual_jobs::*;
         .await
         .expect("insert quarantine");
         let admin_password = "detail-auth-password";
-        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let admin_addr = spawn_builtin_keys_admin_server(proxy.clone(), admin_password).await;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -285,6 +285,283 @@ use super::upstream_support_and_manual_jobs::*;
                 .get("quarantine")
                 .and_then(|value| value.get("reasonDetail")),
             None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_returns_non_fresh_freshness_when_pending_rollups_exist() {
+        let db_path = temp_db_path("dashboard-overview-pending-rollups-stale");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-pending-rollups-stale".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+
+        proxy
+            .debug_enqueue_dashboard_credit_rollups(Utc::now().timestamp(), 7)
+            .await;
+        let snapshot = load_dashboard_overview_snapshot(&state)
+            .await
+            .expect("dashboard overview snapshot");
+        let payload_json = serde_json::to_value(&snapshot.payload)
+            .expect("serialize dashboard overview payload");
+        let freshness_state = payload_json
+            .pointer("/freshness/state")
+            .and_then(|value| value.as_str())
+            .expect("freshness state");
+        assert_ne!(freshness_state, "fresh");
+        assert_eq!(snapshot.payload.freshness.reason, "pending_rollups");
+        assert!(
+            snapshot.payload.summary.total_requests >= 0,
+            "summary should remain shape-valid",
+        );
+        assert!(
+            snapshot.payload.summary_windows.today.total_requests >= 0,
+            "summary windows should remain shape-valid",
+        );
+        assert!(
+            !snapshot.payload.hourly_request_window.buckets.is_empty(),
+            "hourly window should remain shape-valid",
+        );
+        assert!(
+            snapshot.payload.freshness.generated_at > 0,
+            "freshness should expose generatedAt"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_returns_degraded_payload_instead_of_timing_out_under_writer_lock() {
+        let db_path = temp_db_path("dashboard-overview-writer-lock-degraded");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-writer-lock-degraded".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+
+        proxy
+            .debug_enqueue_dashboard_credit_rollups(Utc::now().timestamp(), 7)
+            .await;
+        proxy
+            .debug_defer_request_stats_flush_deadline(Duration::from_secs(5))
+            .await;
+
+        let lock_options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(false)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+            .await
+            .expect("open writer lock connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("hold writer lock");
+
+        let snapshot = tokio::time::timeout(
+            Duration::from_secs(2),
+            load_dashboard_overview_snapshot_for_owner(&state),
+        )
+        .await
+        .expect("dashboard overview should not time out under writer lock")
+        .expect("dashboard overview snapshot");
+        let payload_json = serde_json::to_value(&snapshot.payload)
+            .expect("serialize dashboard overview payload");
+        let freshness_state = payload_json
+            .pointer("/freshness/state")
+            .and_then(|value| value.as_str())
+            .expect("freshness state");
+        assert_eq!(freshness_state, "degraded");
+        assert_eq!(snapshot.payload.freshness.reason, "cold_start_no_cache");
+        assert!(
+            snapshot.payload.summary.total_requests >= 0,
+            "summary should remain shape-valid",
+        );
+        assert!(
+            snapshot.payload.summary_windows.today.total_requests >= 0,
+            "summary windows should remain shape-valid",
+        );
+        assert!(
+            snapshot.payload.hourly_request_window.buckets.is_empty(),
+            "cold-start fallback should use empty hourly buckets instead of blocking",
+        );
+        assert!(
+            snapshot.payload.freshness.generated_at > 0,
+            "freshness should expose generatedAt"
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release writer lock");
+        lock_conn
+            .close()
+            .await
+            .expect("close writer lock connection");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn public_metrics_http_returns_freshness_payload() {
+        let db_path = temp_db_path("public-metrics-http-freshness");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-public-metrics-http-freshness".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let public_addr = spawn_public_metrics_server(proxy.clone()).await;
+        proxy
+            .debug_enqueue_dashboard_credit_rollups(Utc::now().timestamp(), 3)
+            .await;
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+        let resp = tokio::time::timeout(
+            Duration::from_millis(800),
+            client
+                .get(format!("http://{}/api/public/metrics", public_addr))
+                .send(),
+        )
+        .await
+        .expect("public metrics should not time out")
+        .expect("public metrics request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("public metrics json");
+        assert!(
+            body.get("monthlySuccess").and_then(|value| value.as_i64()).is_some(),
+            "monthly success should stay shape-valid",
+        );
+        assert!(
+            body.get("dailySuccess").and_then(|value| value.as_i64()).is_some(),
+            "daily success should stay shape-valid",
+        );
+        assert_eq!(
+            body.pointer("/freshness/reason")
+                .and_then(|value| value.as_str()),
+            Some("pending_rollups")
+        );
+        assert_ne!(
+            body.pointer("/freshness/state")
+                .and_then(|value| value.as_str()),
+            Some("fresh")
+        );
+        assert!(
+            body.pointer("/freshness/generatedAt")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "freshness should expose generatedAt",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn public_metrics_sse_emits_freshness_on_first_metrics_event() {
+        let db_path = temp_db_path("public-metrics-sse-freshness");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-public-metrics-sse-freshness".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let public_addr = spawn_public_metrics_server(proxy.clone()).await;
+        proxy
+            .debug_enqueue_dashboard_credit_rollups(Utc::now().timestamp(), 5)
+            .await;
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+        let mut resp = client
+            .get(format!("http://{}/api/public/events", public_addr))
+            .send()
+            .await
+            .expect("public events request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let event = read_sse_event_until(
+            &mut resp,
+            |chunk| chunk.contains("event: metrics"),
+            "public metrics event",
+        )
+        .await;
+        let payload: serde_json::Value = decode_sse_json_text(&event);
+
+        assert_eq!(
+            payload
+                .pointer("/public/freshness/reason")
+                .and_then(|value| value.as_str()),
+            Some("pending_rollups")
+        );
+        assert_eq!(
+            payload
+                .pointer("/freshness/reason")
+                .and_then(|value| value.as_str()),
+            Some("pending_rollups")
+        );
+        assert!(
+            payload
+                .pointer("/public/freshness/generatedAt")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "public payload freshness should expose generatedAt",
+        );
+        assert!(
+            payload
+                .pointer("/public/monthlySuccess")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "public monthly success should remain shape-valid",
         );
 
         let _ = std::fs::remove_file(db_path);

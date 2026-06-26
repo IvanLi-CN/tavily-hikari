@@ -314,6 +314,7 @@ struct SummaryView {
 struct PublicMetricsView {
     monthly_success: i64,
     daily_success: i64,
+    freshness: Option<FreshnessView>,
 }
 
 // ---- Access Token views ----

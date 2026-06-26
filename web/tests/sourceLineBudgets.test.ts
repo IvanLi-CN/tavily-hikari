@@ -33,17 +33,17 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3700,
+      max: 3760,
       reason:
-        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, auth-token retention contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, auth-token retention contracts, user-list contracts, dashboard/public freshness contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
     'src/api/demo.ts',
     {
-      max: 2250,
+      max: 2270,
       reason:
-        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
+        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, and freshness fallback proofs on the shared demo shell.',
     },
   ],
   [
@@ -57,9 +57,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api.test.ts',
     {
-      max: 1700,
+      max: 1725,
       reason:
-        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, and the expanded admin rankings endpoint until the largest runtime suites are split out.',
+        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, the expanded admin rankings endpoint, and dashboard/public freshness contract assertions until the largest runtime suites are split out.',
     },
   ],
   [
@@ -73,25 +73,25 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/translations/en.ts',
     {
-      max: 1575,
+      max: 1595,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, and the auth-token retention settings copy are still stored in the shared English runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the auth-token retention settings copy, and freshness fallback copy are still stored in the shared English runtime catalog.',
     },
   ],
   [
     'src/i18n/translations/zh.ts',
     {
-      max: 1575,
+      max: 1595,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, and the auth-token retention settings copy are still stored in the shared Chinese runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the auth-token retention settings copy, and freshness fallback copy are still stored in the shared Chinese runtime catalog.',
     },
   ],
   [
     'src/i18n/types.ts',
     {
-      max: 1760,
+      max: 1780,
       reason:
-        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, and auth-token retention settings copy remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, auth-token retention settings copy, and freshness contract strings remain in the shared catalog contract.',
     },
   ],
   [

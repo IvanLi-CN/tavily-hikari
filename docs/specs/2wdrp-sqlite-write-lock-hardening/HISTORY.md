@@ -158,3 +158,12 @@
 - The fix line stayed narrow: request-path pending billing now retries inside one bounded
   transaction, request-stats flush now retries with batch-aware requeue proof and structured
   contention logs, and public success metrics stop using the retained-log wide-scan fallback.
+
+## 2026-06-24
+
+- Extended the same write-lock hardening line to owner-facing dashboard and public metrics reads.
+- `/api/dashboard/overview`, admin SSE `snapshot`, `/api/public/metrics`, and public SSE `metrics`
+  now share one explicit `freshness` contract and no longer treat synchronous request-stats flush
+  as a mandatory read barrier.
+- SQLite writer contention now prefers `last_good` snapshot reuse; when no cache exists yet, the
+  service returns `200 + degraded` shape-valid fallbacks instead of timing out or surfacing 500s.
