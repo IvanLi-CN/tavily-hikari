@@ -76,6 +76,7 @@ impl TavilyProxy {
                 continue;
             }
 
+            let mut load_guard = AnalysisPressureLoadGuard::new(self.analysis_pressure_cache.clone());
             let generated_at = self.backend_time.now_ts();
             let snapshot = self.analysis_pressure_snapshot_uncached(generated_at).await;
             let mut cache = self.analysis_pressure_cache.lock().await;
@@ -87,6 +88,7 @@ impl TavilyProxy {
                 });
             }
             cache.notify.notify_waiters();
+            load_guard.disarm();
             return snapshot;
         }
     }

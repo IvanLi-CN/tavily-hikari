@@ -510,6 +510,38 @@ impl Drop for UserRankingsLoadGuard {
     }
 }
 
+struct AnalysisPressureLoadGuard {
+    state: Arc<Mutex<AnalysisPressureCacheState>>,
+    armed: bool,
+}
+
+impl AnalysisPressureLoadGuard {
+    fn new(state: Arc<Mutex<AnalysisPressureCacheState>>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AnalysisPressureLoadGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut cache = state.lock().await;
+            if cache.loading {
+                cache.loading = false;
+                cache.notify.notify_waiters();
+            }
+        });
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
