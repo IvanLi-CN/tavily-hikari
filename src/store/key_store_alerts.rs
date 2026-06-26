@@ -815,7 +815,7 @@ impl KeyStore {
                 }
                 ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432 => {
                     query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND rl.tavily_status_code = 432",
+                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432",
                     );
                 }
                 ALERT_TYPE_USER_REQUEST_RATE_LIMITED => {
@@ -825,7 +825,7 @@ impl KeyStore {
                 }
                 ALERT_TYPE_USER_QUOTA_EXHAUSTED => {
                     query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(rl.tavily_status_code, 0) <> 432 AND atl.counts_business_quota <> 0",
+                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code, 0) <> 432 AND atl.counts_business_quota <> 0",
                     );
                 }
                 ALERT_TYPE_UPSTREAM_KEY_BLOCKED => {
@@ -907,7 +907,7 @@ impl KeyStore {
                 printf('atl:%020lld', atl.id) AS row_sort_id,
                 CASE
                     WHEN atl.failure_kind = 'upstream_rate_limited_429' THEN 'upstream_rate_limited_429'
-                    WHEN atl.result_status = 'quota_exhausted' AND rl.tavily_status_code = 432 THEN 'upstream_usage_limit_432'
+                    WHEN atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432 THEN 'upstream_usage_limit_432'
                     WHEN atl.result_status = 'quota_exhausted' AND atl.counts_business_quota = 0 THEN 'user_request_rate_limited'
                     WHEN atl.result_status = 'quota_exhausted' THEN 'user_quota_exhausted'
                     ELSE ''
