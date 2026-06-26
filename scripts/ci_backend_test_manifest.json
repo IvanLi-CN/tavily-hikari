@@ -366,7 +366,7 @@
         "server::tests::admin_logs_and_summary::public_",
         "server::tests::admin_token_filters_and_maintenance::public_",
         "server::tests::api_keys_and_registration::announcement_",
-        "server::tests::alerts_and_ha::alerts_",
+        "server::tests::alerts_and_ha_dashboard_defaults::alerts_",
         "server::tests::alerts_and_ha::compute_",
         "server::tests::dashboard_overview_snapshot::compute_",
         "server::tests::log_catalog_and_dashboard_sse::compute_"

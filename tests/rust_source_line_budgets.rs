@@ -6,8 +6,8 @@ const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
         "src/models.rs",
-        3175,
-        "Alert center semantic DTO growth plus the pressure moving-average DTOs both extend the shared model surface while the broader extraction pass remains pending.",
+        3200,
+        "Alert center semantic DTO growth plus the pressure and snapshot contracts both extend the shared model surface while the broader extraction pass remains pending.",
     ),
     (
         "src/server/tests/admin_users_and_tokens.rs",

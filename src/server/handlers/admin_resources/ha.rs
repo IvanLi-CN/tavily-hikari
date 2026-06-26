@@ -98,6 +98,7 @@ fn emit_ha_perf_event(
     row_count: usize,
     payload_bytes: usize,
     compressed_bytes: u64,
+    outbox: &tavily_hikari::HaOutboxStats,
 ) {
     let memory = tavily_hikari::capture_runtime_memory_snapshot();
     tracing::info!(
@@ -108,6 +109,9 @@ fn emit_ha_perf_event(
         row_count = row_count as u64,
         payload_bytes = payload_bytes as u64,
         compressed_bytes,
+        outbox_row_count = outbox.row_count,
+        outbox_oldest_age_secs = outbox.oldest_age_secs,
+        outbox_ack_lag = outbox.ack_lag,
         memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
         memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
         headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -654,6 +658,10 @@ async fn build_ha_baseline_reader(
         ));
     }
     rewind_ha_temp_output_file(&mut reader).await?;
+    let outbox = proxy
+        .ha_channel_outbox_stats(channel, None)
+        .await
+        .map_err(map_ha_export_error)?;
     emit_ha_perf_event(
         "baseline_export_completed",
         started.elapsed(),
@@ -661,6 +669,7 @@ async fn build_ha_baseline_reader(
         export.row_count,
         export.payload_bytes,
         compressed_bytes,
+        &outbox,
     );
     Ok(HaBaselineReader { reader, export })
 }
@@ -704,6 +713,10 @@ async fn build_ha_events_reader(
         if compressed_bytes <= max_compressed_bytes {
             preflight.close().await.map_err(internal_error)?;
             rewind_ha_temp_output_file(&mut reader).await?;
+            let outbox = proxy
+                .ha_channel_outbox_stats(channel, None)
+                .await
+                .map_err(map_ha_export_error)?;
             emit_ha_perf_event(
                 "events_export_completed",
                 started.elapsed(),
@@ -711,6 +724,7 @@ async fn build_ha_events_reader(
                 export.row_count,
                 export.payload_bytes,
                 compressed_bytes,
+                &outbox,
             );
             return Ok(HaEventsReader { reader, export });
         }

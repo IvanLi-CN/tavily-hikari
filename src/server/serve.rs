@@ -687,6 +687,10 @@ async fn run_ha_standby_sync_once(
             }
             let result = apply_ha_baseline_response_stream(&state.proxy, channel, response).await?;
             next_seq = result.high_watermark;
+            let outbox = state
+                .proxy
+                .ha_channel_outbox_stats(channel, Some(&local_node_id))
+                .await?;
             let memory = tavily_hikari::capture_runtime_memory_snapshot();
             tracing::info!(
                 component = "ha",
@@ -698,6 +702,9 @@ async fn run_ha_standby_sync_once(
                 payload_bytes = result.payload_bytes as u64,
                 high_watermark = result.high_watermark,
                 baseline_applied = true,
+                outbox_row_count = outbox.row_count,
+                outbox_oldest_age_secs = outbox.oldest_age_secs,
+                outbox_ack_lag = outbox.ack_lag,
                 memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
                 memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
                 headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -837,6 +844,10 @@ async fn run_ha_standby_sync_once(
                 .await?;
             state.proxy.flush_ha_state_writes().await?;
         }
+        let outbox = state
+            .proxy
+            .ha_channel_outbox_stats(channel, Some(&local_node_id))
+            .await?;
         let memory = tavily_hikari::capture_runtime_memory_snapshot();
         tracing::info!(
             component = "ha",
@@ -849,6 +860,9 @@ async fn run_ha_standby_sync_once(
             high_watermark = result.high_watermark,
             after_seq = applied_seq,
             next_seq,
+            outbox_row_count = outbox.row_count,
+            outbox_oldest_age_secs = outbox.oldest_age_secs,
+            outbox_ack_lag = outbox.ack_lag,
             memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
             memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
             headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -956,6 +970,7 @@ async fn apply_ha_baseline_response_stream(
         }
     }
     let result = session.finish().await.map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
+    let outbox = proxy.ha_channel_outbox_stats(channel, None).await?;
     let memory = tavily_hikari::capture_runtime_memory_snapshot();
     tracing::info!(
         component = "ha",
@@ -964,6 +979,9 @@ async fn apply_ha_baseline_response_stream(
         channel = channel.as_str(),
         row_count = result.row_count as u64,
         payload_bytes = result.payload_bytes as u64,
+        outbox_row_count = outbox.row_count,
+        outbox_oldest_age_secs = outbox.oldest_age_secs,
+        outbox_ack_lag = outbox.ack_lag,
         memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
         memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
         headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
@@ -1011,6 +1029,7 @@ async fn apply_ha_events_response_stream(
         }
     }
     let result = session.finish().await.map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
+    let outbox = proxy.ha_channel_outbox_stats(channel, None).await?;
     let memory = tavily_hikari::capture_runtime_memory_snapshot();
     tracing::info!(
         component = "ha",
@@ -1019,6 +1038,9 @@ async fn apply_ha_events_response_stream(
         channel = channel.as_str(),
         row_count = result.row_count as u64,
         payload_bytes = result.payload_bytes as u64,
+        outbox_row_count = outbox.row_count,
+        outbox_oldest_age_secs = outbox.oldest_age_secs,
+        outbox_ack_lag = outbox.ack_lag,
         memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
         memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
         headroom_bytes = memory.headroom_bytes.unwrap_or_default(),

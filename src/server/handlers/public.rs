@@ -1153,9 +1153,6 @@ async fn build_dashboard_overview_payload(
     let summary_windows = state.proxy.summary_windows().await?;
     let hourly_request_window = state.proxy.dashboard_hourly_request_window().await?;
     let month_series = state.proxy.dashboard_month_series(&summary_windows).await?;
-    let quota_sample_window_start = summary_windows
-        .yesterday_start
-        .min(start_of_month_dt(state.proxy.backend_time().now_utc()).timestamp());
     let dashboard_rollup_signature = state
         .proxy
         .dashboard_rollup_freshness_signature_without_flush(summary_windows.previous_month_start)
@@ -1179,10 +1176,6 @@ async fn build_dashboard_overview_payload(
             summary_windows.month_period_end,
         )
         .await?;
-    let dashboard_quota_sample_signature = state
-        .proxy
-        .dashboard_quota_sample_signature(quota_sample_window_start, summary_windows.today_end)
-        .await?;
     let now_ts = state.proxy.backend_time().now_ts();
     let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
     let hot_stale_before = now_ts.saturating_sub(15 * 60);
@@ -1190,6 +1183,14 @@ async fn build_dashboard_overview_payload(
     let dashboard_stale_key_count = state
         .proxy
         .dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
+        .await?;
+    let dashboard_quota_charge_token = state
+        .proxy
+        .dashboard_quota_charge_token(
+            dashboard_stale_key_count,
+            start_of_month_dt(state.proxy.backend_time().now_utc()).timestamp(),
+            summary_windows.today_end,
+        )
         .await?;
     let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
     let (request_log_retention_days, retention_since) =
@@ -1232,15 +1233,10 @@ async fn build_dashboard_overview_payload(
         .unwrap_or_default();
     let recent_alerts = state
         .proxy
-        .recent_alerts_summary(24)
+        .dashboard_recent_alerts_summary(24)
         .await
-        .unwrap_or(tavily_hikari::RecentAlertsSummary {
-            window_hours: 24,
-            total_events: 0,
-            grouped_count: 0,
-            counts_by_type: tavily_hikari::default_alert_type_counts(),
-            top_groups: Vec::new(),
-        });
+        .unwrap_or_else(|_| tavily_hikari::RecentAlertsSummary::default());
+    let recent_alerts_token = state.proxy.dashboard_recent_alerts_token(24).await?;
     let (mut disabled_tokens, token_coverage) = match state
         .proxy
         .list_dashboard_disabled_tokens(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
@@ -1340,7 +1336,7 @@ async fn build_dashboard_overview_payload(
             dashboard_api_key_lifecycle_signature,
             dashboard_quarantine_lifecycle_signature,
             dashboard_exhausted_lifecycle_signature,
-            dashboard_quota_sample_signature,
+            dashboard_quota_charge_token,
             dashboard_stale_key_count,
             forward_proxy: Some((forward_proxy.available_nodes, forward_proxy.total_nodes)),
             exhausted_keys: exhausted_key_ids,
@@ -1352,6 +1348,7 @@ async fn build_dashboard_overview_payload(
             disabled_tokens: disabled_token_ids,
             disabled_tokens_error,
             disabled_tokens_truncated: disabled_token_truncated,
+            recent_alerts_token,
             recent_alerts_total_events: recent_alerts.total_events,
             recent_alerts_grouped_count: recent_alerts.grouped_count,
             recent_alerts_counts: recent_alert_counts,
@@ -1376,7 +1373,7 @@ async fn dashboard_recent_alerts_freshness(
     state: &Arc<AppState>,
     window_hours: i64,
 ) -> Result<tavily_hikari::RecentAlertsSummary, ProxyError> {
-    state.proxy.recent_alerts_summary(window_hours).await
+    state.proxy.dashboard_recent_alerts_summary(window_hours).await
 }
 
 fn dashboard_retention_since(retention_days: i64, now: chrono::DateTime<Local>) -> i64 {
@@ -1470,7 +1467,6 @@ async fn compute_dashboard_overview_freshness(
     let month_period_end = dashboard_next_local_day_start_utc_ts(today_start)
         .max(dashboard_shift_local_month_start_utc_ts(month_start, 1));
     let previous_month_start = dashboard_previous_local_month_start_utc_ts(now_local);
-    let quota_sample_window_start = yesterday_start.min(start_of_month_dt(now_utc).timestamp());
     let dashboard_rollup_signature = state
         .proxy
         .dashboard_rollup_freshness_signature_without_flush(previous_month_start)
@@ -1491,13 +1487,6 @@ async fn compute_dashboard_overview_freshness(
         .proxy
         .dashboard_exhausted_lifecycle_signature(previous_month_start, month_period_end)
         .await?;
-    let dashboard_quota_sample_signature = state
-        .proxy
-        .dashboard_quota_sample_signature(
-            quota_sample_window_start,
-            state.proxy.backend_time().now_ts().saturating_add(1),
-        )
-        .await?;
     let now_ts = state.proxy.backend_time().now_ts();
     let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
     let hot_stale_before = now_ts.saturating_sub(15 * 60);
@@ -1505,6 +1494,14 @@ async fn compute_dashboard_overview_freshness(
     let dashboard_stale_key_count = state
         .proxy
         .dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
+        .await?;
+    let dashboard_quota_charge_token = state
+        .proxy
+        .dashboard_quota_charge_token(
+            dashboard_stale_key_count,
+            start_of_month_dt(now_utc).timestamp(),
+            state.proxy.backend_time().now_ts().saturating_add(1),
+        )
         .await?;
     let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
     let summary_window_starts = [today_start, yesterday_start, month_start];
@@ -1538,15 +1535,10 @@ async fn compute_dashboard_overview_freshness(
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
         .unwrap_or_default();
-    let recent_alerts = dashboard_recent_alerts_freshness(state, 24).await.unwrap_or(
-        tavily_hikari::RecentAlertsSummary {
-            window_hours: 24,
-            total_events: 0,
-            grouped_count: 0,
-            counts_by_type: tavily_hikari::default_alert_type_counts(),
-            top_groups: Vec::new(),
-        },
-    );
+    let recent_alerts = dashboard_recent_alerts_freshness(state, 24)
+        .await
+        .unwrap_or_else(|_| tavily_hikari::RecentAlertsSummary::default());
+    let recent_alerts_token = state.proxy.dashboard_recent_alerts_token(24).await?;
     Ok(DashboardOverviewFreshness {
         summary: [
             summary.total_requests,
@@ -1567,7 +1559,7 @@ async fn compute_dashboard_overview_freshness(
         dashboard_api_key_lifecycle_signature,
         dashboard_quarantine_lifecycle_signature,
         dashboard_exhausted_lifecycle_signature,
-        dashboard_quota_sample_signature,
+        dashboard_quota_charge_token,
         dashboard_stale_key_count,
         forward_proxy: Some((forward_proxy.available_nodes, forward_proxy.total_nodes)),
         exhausted_keys,
@@ -1583,6 +1575,7 @@ async fn compute_dashboard_overview_freshness(
             .collect(),
         disabled_tokens_error,
         disabled_tokens_truncated: disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT,
+        recent_alerts_token,
         recent_alerts_total_events: recent_alerts.total_events,
         recent_alerts_grouped_count: recent_alerts.grouped_count,
         recent_alerts_counts: recent_alerts
@@ -1622,11 +1615,38 @@ async fn load_dashboard_overview_snapshot(
         };
 
         if let Some(waiter) = waiter {
+            tavily_hikari::emit_perf_log(
+                tavily_hikari::DbLogStatus::Info,
+                "admin_read",
+                "dashboard_overview_phase",
+                Duration::ZERO,
+                tavily_hikari::PerfLogScope {
+                    route: Some("/api/dashboard/overview"),
+                    scope: Some("dashboard"),
+                    phase: Some("cache_wait"),
+                    degraded: Some("shared_snapshot"),
+                    ..Default::default()
+                },
+            );
             waiter.await;
             continue;
         }
 
+        let freshness_started = Instant::now();
         let freshness = compute_dashboard_overview_freshness(state).await?;
+        tavily_hikari::emit_perf_log(
+            tavily_hikari::DbLogStatus::Info,
+            "admin_read",
+            "dashboard_overview_phase",
+            freshness_started.elapsed(),
+            tavily_hikari::PerfLogScope {
+                route: Some("/api/dashboard/overview"),
+                scope: Some("dashboard"),
+                phase: Some("freshness_probe"),
+                degraded: Some("cheap_token"),
+                ..Default::default()
+            },
+        );
 
         let waiter = {
             let mut cache = cache_handle.lock().await;
@@ -1638,27 +1658,23 @@ async fn load_dashboard_overview_snapshot(
                     tavily_hikari::PerfLogScope {
                         route: Some("dashboard_shared_snapshot"),
                         scope: Some("dashboard"),
+                        phase: Some("cache_serve"),
                         degraded: Some("cache_hit"),
                         ..Default::default()
                     },
                 );
-                let memory = perf.memory();
-                tracing::info!(
-                    component = "admin_read",
-                    event = "dashboard_snapshot_cache_hit",
-                    elapsed_ms = perf.elapsed_ms(),
-                    route = "dashboard_shared_snapshot",
-                    scope = "dashboard",
-                    degraded = "cache_hit",
-                    memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
-                    memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
-                    headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
-                    process_rss_bytes = memory.process_rss_bytes.unwrap_or_default(),
-                    child_process_rss_bytes = memory.child_process_rss_bytes.unwrap_or_default(),
-                    process_group_rss_bytes = memory.process_group_rss_bytes.unwrap_or_default(),
-                    process_hwm_bytes = memory.process_hwm_bytes.unwrap_or_default(),
-                    process_swap_bytes = memory.process_swap_bytes.unwrap_or_default(),
-                    "admin read perf"
+                tavily_hikari::emit_perf_log(
+                    tavily_hikari::DbLogStatus::Info,
+                    "admin_read",
+                    "dashboard_snapshot_cache_hit",
+                    Duration::from_millis(perf.elapsed_ms()),
+                    tavily_hikari::PerfLogScope {
+                        route: Some("dashboard_shared_snapshot"),
+                        scope: Some("dashboard"),
+                        phase: Some("cache_serve"),
+                        degraded: Some("cache_hit"),
+                        ..Default::default()
+                    },
                 );
                 return Ok(cached.snapshot.clone());
             }
@@ -1675,7 +1691,21 @@ async fn load_dashboard_overview_snapshot(
             continue;
         }
 
+        let payload_started = Instant::now();
         let result = build_dashboard_overview_payload(state).await;
+        tavily_hikari::emit_perf_log(
+            tavily_hikari::DbLogStatus::Info,
+            "admin_read",
+            "dashboard_overview_phase",
+            payload_started.elapsed(),
+            tavily_hikari::PerfLogScope {
+                route: Some("/api/dashboard/overview"),
+                scope: Some("dashboard"),
+                phase: Some("overview_payload_build"),
+                degraded: Some("rebuilt"),
+                ..Default::default()
+            },
+        );
         let mut cache = cache_handle.lock().await;
         cache.loading = false;
         if let Ok(snapshot) = result.as_ref() {
@@ -1688,29 +1718,25 @@ async fn load_dashboard_overview_snapshot(
                 tavily_hikari::PerfLogScope {
                     route: Some("dashboard_shared_snapshot"),
                     scope: Some("dashboard"),
+                    phase: Some("cache_serve"),
                     row_count: Some(snapshot.payload.recent_logs.len()),
                     degraded: Some("rebuilt"),
                     ..Default::default()
                 },
             );
-            let memory = perf.memory();
-            tracing::info!(
-                component = "admin_read",
-                event = "dashboard_snapshot_rebuilt",
-                elapsed_ms = perf.elapsed_ms(),
-                route = "dashboard_shared_snapshot",
-                scope = "dashboard",
-                degraded = "rebuilt",
-                row_count = snapshot.payload.recent_logs.len() as u64,
-                memory_current_bytes = memory.memory_current_bytes.unwrap_or_default(),
-                memory_limit_bytes = memory.memory_limit_bytes.unwrap_or_default(),
-                headroom_bytes = memory.headroom_bytes.unwrap_or_default(),
-                process_rss_bytes = memory.process_rss_bytes.unwrap_or_default(),
-                child_process_rss_bytes = memory.child_process_rss_bytes.unwrap_or_default(),
-                process_group_rss_bytes = memory.process_group_rss_bytes.unwrap_or_default(),
-                process_hwm_bytes = memory.process_hwm_bytes.unwrap_or_default(),
-                process_swap_bytes = memory.process_swap_bytes.unwrap_or_default(),
-                "admin read perf"
+            tavily_hikari::emit_perf_log(
+                tavily_hikari::DbLogStatus::Info,
+                "admin_read",
+                "dashboard_snapshot_rebuilt",
+                Duration::from_millis(perf.elapsed_ms()),
+                tavily_hikari::PerfLogScope {
+                    route: Some("dashboard_shared_snapshot"),
+                    scope: Some("dashboard"),
+                    phase: Some("cache_serve"),
+                    row_count: Some(snapshot.payload.recent_logs.len()),
+                    degraded: Some("rebuilt"),
+                    ..Default::default()
+                },
             );
         }
         cache.notify.notify_waiters();
@@ -1726,7 +1752,22 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<(Event, SummarySi
         overview: overview.payload,
     };
 
+    let serialize_started = Instant::now();
     let json = serde_json::to_string(&payload).ok()?;
+    tavily_hikari::emit_perf_log(
+        tavily_hikari::DbLogStatus::Info,
+        "admin_read",
+        "dashboard_overview_phase",
+        serialize_started.elapsed(),
+        tavily_hikari::PerfLogScope {
+            route: Some("/api/dashboard/overview"),
+            scope: Some("dashboard"),
+            phase: Some("overview_serialize"),
+            row_count: Some(payload.logs.len()),
+            degraded: Some("snapshot_sse"),
+            ..Default::default()
+        },
+    );
     Some((
         Event::default().event("snapshot").data(json),
         SummarySig {

@@ -723,6 +723,41 @@ fn alert_group_id(event: &AlertEventRecord) -> String {
 }
 
 impl KeyStore {
+    pub(crate) async fn fetch_recent_alerts_summary_token(
+        &self,
+        window_hours: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        let clamped_window_hours = window_hours.clamp(1, 24 * 30);
+        let since = self
+            .backend_time
+            .now_ts()
+            .saturating_sub(clamped_window_hours.saturating_mul(3600));
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS row_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0) AS created_at_sum,
+                COALESCE(SUM(COALESCE(request_log_id, 0)), 0) AS request_log_id_sum
+            FROM auth_token_logs
+            WHERE created_at >= ?
+              AND (
+                    failure_kind = 'upstream_rate_limited_429'
+                 OR result_status = 'quota_exhausted'
+              )
+            "#,
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([
+            row.try_get("row_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+            row.try_get("request_log_id_sum")?,
+        ])
+    }
+
     fn alert_subject_kind_sql(alias: &str) -> String {
         format!(
             "CASE \
@@ -780,7 +815,7 @@ impl KeyStore {
                 }
                 ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432 => {
                     query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND rl.tavily_status_code = 432",
+                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432",
                     );
                 }
                 ALERT_TYPE_USER_REQUEST_RATE_LIMITED => {
@@ -790,7 +825,7 @@ impl KeyStore {
                 }
                 ALERT_TYPE_USER_QUOTA_EXHAUSTED => {
                     query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(rl.tavily_status_code, 0) <> 432 AND atl.counts_business_quota <> 0",
+                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code, 0) <> 432 AND atl.counts_business_quota <> 0",
                     );
                 }
                 ALERT_TYPE_UPSTREAM_KEY_BLOCKED => {
@@ -850,17 +885,14 @@ impl KeyStore {
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        let stored_request_kind_sql = "atl.request_kind_key";
-        let effective_request_kind_sql = request_log_request_kind_key_sql(
+        let effective_request_kind_sql = token_log_request_kind_key_sql(
             "COALESCE(rl.path, atl.path)",
-            "rl.request_body",
-            stored_request_kind_sql,
+            "COALESCE(atl.request_kind_key, rl.request_kind_key)",
         );
         let effective_request_kind_label_sql =
             canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let maintenance_request_kind_sql = request_log_request_kind_key_sql(
+        let maintenance_request_kind_sql = token_log_request_kind_key_sql(
             "COALESCE(atl.path, rl.path)",
-            "rl.request_body",
             "COALESCE(atl.request_kind_key, rl.request_kind_key)",
         );
         let maintenance_request_kind_label_sql =
@@ -875,7 +907,7 @@ impl KeyStore {
                 printf('atl:%020lld', atl.id) AS row_sort_id,
                 CASE
                     WHEN atl.failure_kind = 'upstream_rate_limited_429' THEN 'upstream_rate_limited_429'
-                    WHEN atl.result_status = 'quota_exhausted' AND rl.tavily_status_code = 432 THEN 'upstream_usage_limit_432'
+                    WHEN atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432 THEN 'upstream_usage_limit_432'
                     WHEN atl.result_status = 'quota_exhausted' AND atl.counts_business_quota = 0 THEN 'user_request_rate_limited'
                     WHEN atl.result_status = 'quota_exhausted' THEN 'user_quota_exhausted'
                     ELSE ''
@@ -884,9 +916,9 @@ impl KeyStore {
                 atl.token_id AS token_id,
                 COALESCE(atl.api_key_id, rl.api_key_id) AS key_id,
                 atl.request_log_id AS request_log_id,
-                atl.method AS method,
-                atl.path AS path,
-                atl.query AS query,
+                COALESCE(NULLIF(TRIM(atl.method), ''), rl.method) AS method,
+                COALESCE(NULLIF(TRIM(atl.path), ''), rl.path) AS path,
+                COALESCE(atl.query, rl.query) AS query,
                 {effective_request_kind_sql} AS request_kind_key,
                 {effective_request_kind_label_sql} AS request_kind_label,
                 atl.request_kind_detail AS request_kind_detail,
@@ -901,7 +933,20 @@ impl KeyStore {
                 NULL AS reason_summary,
                 NULL AS reason_detail
             FROM auth_token_logs atl
-            LEFT JOIN observability.request_logs rl ON rl.id = atl.request_log_id
+            LEFT JOIN observability.request_logs rl
+              ON rl.id = atl.request_log_id
+             AND (
+                    atl.method IS NULL
+                 OR atl.method = ''
+                 OR atl.path IS NULL
+                 OR atl.path = ''
+                 OR atl.request_kind_key IS NULL
+                 OR atl.request_kind_key = ''
+                 OR atl.request_kind_label IS NULL
+                 OR atl.request_kind_label = ''
+                 OR atl.api_key_id IS NULL
+                 OR atl.query IS NULL
+                )
             LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
             LEFT JOIN users u ON u.id = b.user_id
             WHERE (
@@ -932,8 +977,8 @@ impl KeyStore {
                 COALESCE(m.auth_token_id, atl.token_id) AS token_id,
                 m.key_id AS key_id,
                 COALESCE(m.request_log_id, atl.request_log_id) AS request_log_id,
-                COALESCE(atl.method, rl.method) AS method,
-                COALESCE(atl.path, rl.path) AS path,
+                COALESCE(NULLIF(TRIM(atl.method), ''), rl.method) AS method,
+                COALESCE(NULLIF(TRIM(atl.path), ''), rl.path) AS path,
                 COALESCE(atl.query, rl.query) AS query,
                 {maintenance_request_kind_sql} AS request_kind_key,
                 {maintenance_request_kind_label_sql} AS request_kind_label,
@@ -950,7 +995,20 @@ impl KeyStore {
                 m.reason_detail AS reason_detail
             FROM api_key_maintenance_records m
             LEFT JOIN auth_token_logs atl ON atl.id = m.auth_token_log_id
-            LEFT JOIN observability.request_logs rl ON rl.id = COALESCE(m.request_log_id, atl.request_log_id)
+            LEFT JOIN observability.request_logs rl
+              ON rl.id = COALESCE(m.request_log_id, atl.request_log_id)
+             AND (
+                    atl.id IS NULL
+                 OR atl.method IS NULL
+                 OR atl.method = ''
+                 OR atl.path IS NULL
+                 OR atl.path = ''
+                 OR atl.request_kind_key IS NULL
+                 OR atl.request_kind_key = ''
+                 OR atl.request_kind_label IS NULL
+                 OR atl.request_kind_label = ''
+                 OR atl.query IS NULL
+                )
             LEFT JOIN user_token_bindings b ON b.token_id = COALESCE(m.auth_token_id, atl.token_id)
             LEFT JOIN users u ON u.id = b.user_id
             WHERE COALESCE(m.reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
@@ -986,6 +1044,7 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
+        let started = Instant::now();
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1020,6 +1079,22 @@ impl KeyStore {
             .into_iter()
             .filter_map(Self::build_alert_event_from_projection)
             .collect::<Vec<_>>();
+
+        emit_perf_log(
+            DbLogStatus::Info,
+            "admin_read",
+            "alerts_projection",
+            started.elapsed(),
+            PerfLogScope {
+                route: Some("/api/alerts/events"),
+                scope: Some("alerts"),
+                phase: Some("alerts_projection"),
+                page_size: Some(per_page),
+                row_count: Some(items.len()),
+                degraded: Some("auth_token_logs_first"),
+                ..Default::default()
+            },
+        );
 
         Ok(PaginatedAlertEvents {
             items,
@@ -1565,6 +1640,7 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<AlertGroupRecord>, i64), ProxyError> {
+        let started = Instant::now();
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1591,6 +1667,21 @@ impl KeyStore {
         let latest_events_by_row_sort_id =
             self.fetch_group_latest_events_by_projection(filters, &groups).await?;
         let items = Self::build_alert_group_records(groups, latest_events_by_row_sort_id);
+        emit_perf_log(
+            DbLogStatus::Info,
+            "admin_read",
+            "alerts_grouping",
+            started.elapsed(),
+            PerfLogScope {
+                route: Some("/api/alerts/groups"),
+                scope: Some("alerts"),
+                phase: Some("alerts_grouping"),
+                page_size: Some(per_page),
+                row_count: Some(items.len()),
+                degraded: Some("auth_token_logs_first"),
+                ..Default::default()
+            },
+        );
         Ok((items, total))
     }
 
@@ -2107,6 +2198,9 @@ impl KeyStore {
             grouped_count,
             counts_by_type,
             top_groups,
+            coverage: "ok".to_string(),
+            stale: false,
+            error: None,
         })
     }
 }

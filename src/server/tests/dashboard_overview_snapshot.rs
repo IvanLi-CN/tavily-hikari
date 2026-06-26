@@ -1020,7 +1020,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_month_quota_samples_backfill(
 }
 
 #[tokio::test]
-async fn dashboard_overview_snapshot_rebuilds_when_quota_baseline_backfills() {
+async fn dashboard_overview_snapshot_ignores_quota_baseline_backfills_for_cheap_freshness() {
     let db_path = temp_db_path("dashboard-overview-quota-baseline-backfill");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -1095,7 +1095,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_quota_baseline_backfills() {
         .month
         .quota_charge
         .latest_sync_at;
-    let first_quota_signature = first.freshness.dashboard_quota_sample_signature;
+    let first_quota_signature = first.freshness.dashboard_quota_charge_token;
 
     reset_dashboard_overview_build_count(&state).await;
 
@@ -1123,24 +1123,25 @@ async fn dashboard_overview_snapshot_rebuilds_when_quota_baseline_backfills() {
         .await
         .expect("second overview snapshot");
 
-    assert!(
-        dashboard_overview_build_count(&state).await >= 1,
-        "baseline quota sample backfills should rebuild the shared snapshot",
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "baseline quota sample backfills should not invalidate the cheap freshness contract",
     );
-    assert_ne!(
-        second.freshness.dashboard_quota_sample_signature,
+    assert_eq!(
+        second.freshness.dashboard_quota_charge_token,
         first_quota_signature,
-        "quota freshness signature should include baseline rows that feed quota charge calculations",
+        "cheap quota token should stay stable when only pre-window baseline rows change",
     );
     assert_eq!(
         second.payload.summary_windows.month.quota_charge.latest_sync_at,
         first_latest_sync,
-        "baseline backfills should not need a newer in-window sample timestamp to refresh the cache",
+        "baseline backfills should not need a newer in-window sample timestamp to keep cache hit stable",
     );
-    assert!(
-        second.payload.summary_windows.month.quota_charge.upstream_actual_credits
-            > first_upstream_actual,
-        "backfilled baseline rows should change the derived upstream actual credits",
+    assert_eq!(
+        second.payload.summary_windows.month.quota_charge.upstream_actual_credits,
+        first_upstream_actual,
+        "core overview should serve the cached quota slice until the cheap token changes",
     );
 
     let _ = std::fs::remove_file(db_path);

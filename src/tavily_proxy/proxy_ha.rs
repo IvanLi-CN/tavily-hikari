@@ -225,6 +225,16 @@ impl TavilyProxy {
         self.key_store.ha_channel_high_watermark(channel).await
     }
 
+    pub async fn ha_channel_outbox_stats(
+        &self,
+        channel: HaSyncChannel,
+        peer_node_id: Option<&str>,
+    ) -> Result<HaOutboxStats, ProxyError> {
+        self.key_store
+            .ha_channel_outbox_stats(channel, peer_node_id)
+            .await
+    }
+
     pub async fn flush_ha_state_writes(&self) -> Result<(), ProxyError> {
         self.ha_state_coalescer.wake.notify_one();
         self.ha_state_coalescer.wait_until_flushed().await;

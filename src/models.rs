@@ -1293,6 +1293,24 @@ pub struct RecentAlertsSummary {
     pub grouped_count: i64,
     pub counts_by_type: Vec<AlertTypeCount>,
     pub top_groups: Vec<AlertGroupRecord>,
+    pub coverage: String,
+    pub stale: bool,
+    pub error: Option<String>,
+}
+
+impl Default for RecentAlertsSummary {
+    fn default() -> Self {
+        Self {
+            window_hours: 24,
+            total_events: 0,
+            grouped_count: 0,
+            counts_by_type: default_alert_type_counts(),
+            top_groups: Vec::new(),
+            coverage: "ok".to_string(),
+            stale: false,
+            error: None,
+        }
+    }
 }
 
 pub const ANNOUNCEMENT_DISPLAY_MODAL: &str = "modal";
@@ -1359,6 +1377,20 @@ pub struct SummaryQuotaCharge {
     pub sampled_key_count: i64,
     pub stale_key_count: i64,
     pub latest_sync_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DashboardQuotaChargeSnapshot {
+    pub today: SummaryQuotaCharge,
+    pub yesterday: SummaryQuotaCharge,
+    pub month: SummaryQuotaCharge,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HaOutboxStats {
+    pub row_count: i64,
+    pub oldest_age_secs: i64,
+    pub ack_lag: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
