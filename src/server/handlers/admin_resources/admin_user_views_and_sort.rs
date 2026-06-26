@@ -60,10 +60,9 @@ enum AdminUnboundTokenUsageSortField {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AdminQuotaView {
-    hourly_any_limit: i64,
-    hourly_limit: i64,
-    daily_limit: i64,
-    monthly_limit: i64,
+    business_calls_1h_limit: i64,
+    daily_credits_limit: i64,
+    monthly_credits_limit: i64,
     inherits_defaults: bool,
 }
 
@@ -76,10 +75,9 @@ struct AdminUserTagView {
     icon: Option<String>,
     system_key: Option<String>,
     effect_kind: String,
-    hourly_any_delta: i64,
-    hourly_delta: i64,
-    daily_delta: i64,
-    monthly_delta: i64,
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
     user_count: i64,
 }
 
@@ -92,10 +90,9 @@ struct AdminUserTagBindingView {
     icon: Option<String>,
     system_key: Option<String>,
     effect_kind: String,
-    hourly_any_delta: i64,
-    hourly_delta: i64,
-    daily_delta: i64,
-    monthly_delta: i64,
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
     source: String,
 }
 
@@ -108,10 +105,9 @@ struct AdminUserQuotaBreakdownView {
     tag_name: Option<String>,
     source: Option<String>,
     effect_kind: String,
-    hourly_any_delta: i64,
-    hourly_delta: i64,
-    daily_delta: i64,
-    monthly_delta: i64,
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,14 +122,10 @@ struct AdminUserSummaryView {
     api_key_count: i64,
     request_rate: tavily_hikari::RequestRateView,
     business_calls_1h: AdminBusinessCalls1hSummaryView,
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    quota_hourly_used: i64,
-    quota_hourly_limit: i64,
-    quota_daily_used: i64,
-    quota_daily_limit: i64,
-    quota_monthly_used: i64,
-    quota_monthly_limit: i64,
+    daily_credits_used: i64,
+    daily_credits_limit: i64,
+    monthly_credits_used: i64,
+    monthly_credits_limit: i64,
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
@@ -152,6 +144,7 @@ struct AdminBusinessCalls1hSummaryView {
     success_count: i64,
     failure_count: i64,
     total_count: i64,
+    limit: i64,
     window_minutes: i64,
 }
 
@@ -247,14 +240,10 @@ struct AdminUserDetailView {
     api_key_count: i64,
     request_rate: tavily_hikari::RequestRateView,
     business_calls_1h: AdminBusinessCalls1hSummaryView,
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    quota_hourly_used: i64,
-    quota_hourly_limit: i64,
-    quota_daily_used: i64,
-    quota_daily_limit: i64,
-    quota_monthly_used: i64,
-    quota_monthly_limit: i64,
+    daily_credits_used: i64,
+    daily_credits_limit: i64,
+    monthly_credits_used: i64,
+    monthly_credits_limit: i64,
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
@@ -479,10 +468,9 @@ struct ListUnboundTokenUsageResponse {
 
 fn build_admin_quota_view(quota: &tavily_hikari::AdminQuotaLimitSet) -> AdminQuotaView {
     AdminQuotaView {
-        hourly_any_limit: quota.hourly_any_limit,
-        hourly_limit: quota.hourly_limit,
-        daily_limit: quota.daily_limit,
-        monthly_limit: quota.monthly_limit,
+        business_calls_1h_limit: quota.hourly_limit,
+        daily_credits_limit: quota.daily_limit,
+        monthly_credits_limit: quota.monthly_limit,
         inherits_defaults: quota.inherits_defaults,
     }
 }
@@ -495,10 +483,9 @@ fn build_admin_user_tag_view(tag: &tavily_hikari::AdminUserTag) -> AdminUserTagV
         icon: tag.icon.clone(),
         system_key: tag.system_key.clone(),
         effect_kind: tag.effect_kind.clone(),
-        hourly_any_delta: tag.hourly_any_delta,
-        hourly_delta: tag.hourly_delta,
-        daily_delta: tag.daily_delta,
-        monthly_delta: tag.monthly_delta,
+        business_calls_1h_delta: tag.hourly_delta,
+        daily_credits_delta: tag.daily_delta,
+        monthly_credits_delta: tag.monthly_delta,
         user_count: tag.user_count,
     }
 }
@@ -513,10 +500,9 @@ fn build_admin_user_tag_binding_view(
         icon: binding.icon.clone(),
         system_key: binding.system_key.clone(),
         effect_kind: binding.effect_kind.clone(),
-        hourly_any_delta: binding.hourly_any_delta,
-        hourly_delta: binding.hourly_delta,
-        daily_delta: binding.daily_delta,
-        monthly_delta: binding.monthly_delta,
+        business_calls_1h_delta: binding.hourly_delta,
+        daily_credits_delta: binding.daily_delta,
+        monthly_credits_delta: binding.monthly_delta,
         source: binding.source.clone(),
     }
 }
@@ -531,10 +517,9 @@ fn build_admin_quota_breakdown_view(
         tag_name: entry.tag_name.clone(),
         source: entry.source.clone(),
         effect_kind: entry.effect_kind.clone(),
-        hourly_any_delta: entry.hourly_any_delta,
-        hourly_delta: entry.hourly_delta,
-        daily_delta: entry.daily_delta,
-        monthly_delta: entry.monthly_delta,
+        business_calls_1h_delta: entry.hourly_delta,
+        daily_credits_delta: entry.daily_delta,
+        monthly_credits_delta: entry.monthly_delta,
     }
 }
 
@@ -596,16 +581,13 @@ fn build_admin_user_summary_view(
             success_count: summary.business_calls_1h.success_count,
             failure_count: summary.business_calls_1h.failure_count,
             total_count: summary.business_calls_1h.total_count,
+            limit: summary.business_calls_1h.limit,
             window_minutes: summary.business_calls_1h.window_minutes,
         },
-        hourly_any_used: summary.hourly_any_used,
-        hourly_any_limit: summary.hourly_any_limit,
-        quota_hourly_used: summary.quota_hourly_used,
-        quota_hourly_limit: summary.quota_hourly_limit,
-        quota_daily_used: summary.quota_daily_used,
-        quota_daily_limit: summary.quota_daily_limit,
-        quota_monthly_used: summary.quota_monthly_used,
-        quota_monthly_limit: summary.quota_monthly_limit,
+        daily_credits_used: summary.quota_daily_used,
+        daily_credits_limit: summary.quota_daily_limit,
+        monthly_credits_used: summary.quota_monthly_used,
+        monthly_credits_limit: summary.quota_monthly_limit,
         daily_success: summary.daily_success,
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,

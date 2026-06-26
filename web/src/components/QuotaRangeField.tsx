@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { Input } from './ui/input'
 
 interface QuotaRangeFieldProps {
-  label: string
+  label: ReactNode
   sliderName: string
   sliderMin: number
   sliderMax: number

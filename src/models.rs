@@ -462,6 +462,7 @@ pub struct TokenQuotaVerdict {
     pub daily_limit: i64,
     pub monthly_used: i64,
     pub monthly_limit: i64,
+    hourly_enforced: bool,
 }
 
 impl TokenQuotaVerdict {
@@ -473,6 +474,45 @@ impl TokenQuotaVerdict {
         monthly_used_raw: i64,
         monthly_limit: i64,
     ) -> Self {
+        Self::new_with_hourly_enforcement(
+            hourly_used_raw,
+            hourly_limit,
+            daily_used_raw,
+            daily_limit,
+            monthly_used_raw,
+            monthly_limit,
+            true,
+        )
+    }
+
+    pub fn new_without_hourly_enforcement(
+        hourly_used_raw: i64,
+        hourly_limit: i64,
+        daily_used_raw: i64,
+        daily_limit: i64,
+        monthly_used_raw: i64,
+        monthly_limit: i64,
+    ) -> Self {
+        Self::new_with_hourly_enforcement(
+            hourly_used_raw,
+            hourly_limit,
+            daily_used_raw,
+            daily_limit,
+            monthly_used_raw,
+            monthly_limit,
+            false,
+        )
+    }
+
+    fn new_with_hourly_enforcement(
+        hourly_used_raw: i64,
+        hourly_limit: i64,
+        daily_used_raw: i64,
+        daily_limit: i64,
+        monthly_used_raw: i64,
+        monthly_limit: i64,
+        hourly_enforced: bool,
+    ) -> Self {
         let hourly_limit = hourly_limit.max(0);
         let daily_limit = daily_limit.max(0);
         let monthly_limit = monthly_limit.max(0);
@@ -482,7 +522,7 @@ impl TokenQuotaVerdict {
 
         let mut exceeded_window = None;
         let mut allowed = true;
-        if hourly_limit == 0 || hourly_used_raw > hourly_limit {
+        if hourly_enforced && (hourly_limit == 0 || hourly_used_raw > hourly_limit) {
             exceeded_window = Some(QuotaWindow::Hour);
             allowed = false;
         }
@@ -507,10 +547,11 @@ impl TokenQuotaVerdict {
             daily_limit,
             monthly_used,
             monthly_limit,
+            hourly_enforced,
         }
     }
 
-    pub(crate) fn effective_window(&self) -> Option<QuotaWindow> {
+    pub fn effective_window(&self) -> Option<QuotaWindow> {
         if let Some(window) = self.exceeded_window {
             return Some(window);
         }
@@ -523,13 +564,13 @@ impl TokenQuotaVerdict {
         if self.daily_used >= self.daily_limit {
             return Some(QuotaWindow::Day);
         }
-        if self.hourly_used >= self.hourly_limit {
+        if self.hourly_enforced && self.hourly_used >= self.hourly_limit {
             return Some(QuotaWindow::Hour);
         }
         None
     }
 
-    pub(crate) fn projected_window(&self, delta: i64) -> Option<QuotaWindow> {
+    pub fn projected_window(&self, delta: i64) -> Option<QuotaWindow> {
         if let Some(window) = self.effective_window() {
             return Some(window);
         }
@@ -540,7 +581,7 @@ impl TokenQuotaVerdict {
             if self.daily_used.saturating_add(delta) > self.daily_limit {
                 return Some(QuotaWindow::Day);
             }
-            if self.hourly_used.saturating_add(delta) > self.hourly_limit {
+            if self.hourly_enforced && self.hourly_used.saturating_add(delta) > self.hourly_limit {
                 return Some(QuotaWindow::Hour);
             }
         }
@@ -1686,12 +1727,31 @@ pub struct UserDashboardSummary {
     pub recharge: LinuxDoCreditRechargeSummary,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BusinessCalls1hSummary {
     pub success_count: i64,
     pub failure_count: i64,
     pub total_count: i64,
+    pub limit: i64,
     pub window_minutes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BusinessCalls1hLimitVerdict {
+    pub allowed: bool,
+    pub summary: BusinessCalls1hSummary,
+}
+
+impl BusinessCalls1hLimitVerdict {
+    pub fn new(summary: BusinessCalls1hSummary) -> Self {
+        let limit = summary.limit.max(0);
+        let total_count = summary.total_count.max(0);
+        Self {
+            allowed: limit > 0 && total_count < limit,
+            summary,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

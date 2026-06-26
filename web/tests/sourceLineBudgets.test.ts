@@ -33,7 +33,7 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3700,
+      max: 3720,
       reason:
         'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, auth-token retention contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },

@@ -267,21 +267,15 @@ fn tavily_mcp_reserved_credits(tool: &str, options: &Value) -> i64 {
 }
 
 fn quota_exhausted_now(verdict: &TokenQuotaVerdict) -> bool {
-    verdict.hourly_used >= verdict.hourly_limit
-        || verdict.daily_used >= verdict.daily_limit
-        || verdict.monthly_used >= verdict.monthly_limit
+    verdict.effective_window().is_some()
 }
 
 fn quota_would_exceed(verdict: &TokenQuotaVerdict, delta: i64) -> bool {
     if delta <= 0 {
-        return false;
+        return quota_exhausted_now(verdict);
     }
 
-    let hourly_remaining = verdict.hourly_limit.saturating_sub(verdict.hourly_used);
-    let daily_remaining = verdict.daily_limit.saturating_sub(verdict.daily_used);
-    let monthly_remaining = verdict.monthly_limit.saturating_sub(verdict.monthly_used);
-
-    hourly_remaining < delta || daily_remaining < delta || monthly_remaining < delta
+    verdict.projected_window(delta).is_some()
 }
 
 #[axum::debug_handler]
@@ -851,6 +845,62 @@ async fn proxy_tavily_http_endpoint(
     }
 
     if let Some(ref tid) = auth_token_id {
+        if !using_dev_open_admin_fallback {
+            let business_calls_limit = if let Some(subject) = billing_subject.as_deref() {
+                state
+                    .proxy
+                    .peek_token_business_calls_1h_limit_for_subject(subject)
+                    .await
+            } else {
+                state.proxy.peek_token_business_calls_1h_limit(tid).await
+            };
+            match business_calls_limit {
+                Ok(Some(verdict)) => {
+                    if !verdict.allowed {
+                        let message = build_business_calls_1h_limit_error_message(&verdict);
+                        let _ = state
+                            .proxy
+                            .record_token_attempt(
+                                tid,
+                                &method,
+                                &path,
+                                None,
+                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                                None,
+                                false,
+                                "quota_exhausted",
+                                Some(&message),
+                            )
+                            .await;
+                        let resp = business_calls_1h_limit_exceeded_response(&verdict)?;
+                        return Ok(resp);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("business calls 1h limit check failed for {path}: {err}");
+                    if let Some(tid) = auth_token_id.as_deref() {
+                        let msg = err.to_string();
+                        let _ = state
+                            .proxy
+                            .record_token_attempt(
+                                tid,
+                                &method,
+                                &path,
+                                None,
+                                Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
+                                None,
+                                false,
+                                "error",
+                                Some(msg.as_str()),
+                            )
+                            .await;
+                    }
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+
         match if let Some(subject) = billing_subject.as_deref() {
             state.proxy.peek_token_quota_for_subject(subject).await
         } else {

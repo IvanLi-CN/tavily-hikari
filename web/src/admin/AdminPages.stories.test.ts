@@ -417,7 +417,7 @@ describe('AdminPages Storybook proofs', () => {
       ),
     )
 
-    expect(markup).toContain('业务 1h')
+    expect(markup).toContain('业务请求 1h')
     expect(markup).toContain('36')
     expect(markup).toContain('34')
     expect(markup).toContain('2')

@@ -28,6 +28,8 @@ export function AnchoredInfoDisclosure({
   onBlur,
   onClick,
   onFocus,
+  onMouseEnter,
+  onMouseLeave,
   type = 'button',
   ...buttonProps
 }: AnchoredInfoDisclosureProps): JSX.Element {
@@ -97,6 +99,19 @@ export function AnchoredInfoDisclosure({
     setOpen(false)
   }
 
+  const handleMouseEnter = (event: MouseEvent<HTMLButtonElement>) => {
+    onMouseEnter?.(event)
+    if (event.defaultPrevented) return
+    setOpen(true)
+  }
+
+  const handleMouseLeave = (event: MouseEvent<HTMLButtonElement>) => {
+    onMouseLeave?.(event)
+    if (event.defaultPrevented) return
+    if (document.activeElement === triggerRef.current) return
+    setOpen(false)
+  }
+
   return (
     <>
       <button
@@ -110,6 +125,8 @@ export function AnchoredInfoDisclosure({
         onClick={handleClick}
         onFocus={handleFocus}
         onBlur={handleBlur}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       >
         {children}
       </button>

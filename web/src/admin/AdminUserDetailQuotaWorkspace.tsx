@@ -1,4 +1,5 @@
 import { Button } from '../components/ui/button'
+import { UsageMetricLabel } from '../components/UsageMetricLabel'
 import QuotaRangeField from '../components/QuotaRangeField'
 import { StatusBadge } from '../components/StatusBadge'
 import type { AdminUserDetail, AdminUserQuotaBreakdownEntry } from '../api'
@@ -59,19 +60,24 @@ export function AdminUserDetailQuotaWorkspace({
   const quotaFields = [
     {
       field: 'hourlyLimit',
-      label: usersStrings.quota.hourly,
+      label: (
+        <UsageMetricLabel label={usersStrings.quota.hourly} kind="businessCalls1h" language={language} />
+      ),
+      ariaLabel: usersStrings.quota.hourly,
       used: detail.quotaHourlyUsed,
       currentLimit: detail.quotaBase.hourlyLimit,
     },
     {
       field: 'dailyLimit',
-      label: usersStrings.quota.daily,
+      label: <UsageMetricLabel label={usersStrings.quota.daily} kind="dailyCredits" language={language} />,
+      ariaLabel: usersStrings.quota.daily,
       used: detail.quotaDailyUsed,
       currentLimit: detail.quotaBase.dailyLimit,
     },
     {
       field: 'monthlyLimit',
-      label: usersStrings.quota.monthly,
+      label: <UsageMetricLabel label={usersStrings.quota.monthly} kind="monthlyCredits" language={language} />,
+      ariaLabel: usersStrings.quota.monthly,
       used: detail.quotaMonthlyUsed,
       currentLimit: detail.quotaBase.monthlyLimit,
     },
@@ -122,7 +128,7 @@ export function AdminUserDetailQuotaWorkspace({
                 sliderMin={0}
                 sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
                 sliderValue={getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)}
-                sliderAriaLabel={item.label}
+                sliderAriaLabel={item.ariaLabel}
                 sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
                 onSliderChange={(nextValue) => {
                   const nextIndex = clampQuotaSliderStageIndex(sliderSeed.stages, nextValue)
@@ -131,7 +137,7 @@ export function AdminUserDetailQuotaWorkspace({
                 helperText={<>{formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}</>}
                 inputName={item.field}
                 inputValue={formatQuotaDraftInput(draftValue)}
-                inputAriaLabel={`${item.label} input`}
+                inputAriaLabel={`${item.ariaLabel} input`}
                 onInputChange={(nextValue) => onQuotaDraftChange(item.field, nextValue)}
               />
             )
@@ -159,6 +165,7 @@ export function AdminUserDetailQuotaWorkspace({
         <UserDetailQuotaBreakdown
           entries={breakdownEntries}
           usersStrings={usersStrings}
+          language={language}
           formatQuotaLimitValue={formatQuotaLimitValue}
           formatSignedQuotaDelta={formatSignedQuotaDelta}
         />

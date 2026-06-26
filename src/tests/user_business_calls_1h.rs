@@ -248,7 +248,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     assert_eq!(series.points.len(), 288);
     let latest = series.points.last().expect("latest business calls point");
     assert_eq!(latest.pressure, Some(2));
-    assert_eq!(latest.limit_value, None);
+    assert_eq!(latest.limit_value, Some(0));
 
     let success_bucket = (now - 10 * 60) - (now - 10 * 60).rem_euclid(SECS_PER_FIVE_MINUTES);
     let failure_bucket = (now - 5 * 60) - (now - 5 * 60).rem_euclid(SECS_PER_FIVE_MINUTES);
@@ -362,7 +362,7 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
         .expect("load backfilled series");
     let latest = series.points.last().expect("latest backfilled point");
     assert_eq!(latest.pressure, Some(2));
-    assert_eq!(latest.limit_value, None);
+    assert_eq!(latest.limit_value, Some(0));
 
     let historical_success_bucket =
         (now - 20 * 60) - (now - 20 * 60).rem_euclid(SECS_PER_FIVE_MINUTES);

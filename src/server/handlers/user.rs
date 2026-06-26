@@ -1032,14 +1032,11 @@ async fn get_user_token(
 struct UserDashboardView {
     debug_info_shared: bool,
     request_rate: tavily_hikari::RequestRateView,
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    quota_hourly_used: i64,
-    quota_hourly_limit: i64,
-    quota_daily_used: i64,
-    quota_daily_limit: i64,
-    quota_monthly_used: i64,
-    quota_monthly_limit: i64,
+    business_calls_1h: tavily_hikari::BusinessCalls1hSummary,
+    daily_credits_used: i64,
+    daily_credits_limit: i64,
+    monthly_credits_used: i64,
+    monthly_credits_limit: i64,
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
@@ -1052,14 +1049,11 @@ impl From<tavily_hikari::UserDashboardSummary> for UserDashboardView {
         Self {
             debug_info_shared: summary.debug_info_shared,
             request_rate: summary.request_rate,
-            hourly_any_used: summary.hourly_any_used,
-            hourly_any_limit: summary.hourly_any_limit,
-            quota_hourly_used: summary.quota_hourly_used,
-            quota_hourly_limit: summary.quota_hourly_limit,
-            quota_daily_used: summary.quota_daily_used,
-            quota_daily_limit: summary.quota_daily_limit,
-            quota_monthly_used: summary.quota_monthly_used,
-            quota_monthly_limit: summary.quota_monthly_limit,
+            business_calls_1h: summary.business_calls_1h,
+            daily_credits_used: summary.quota_daily_used,
+            daily_credits_limit: summary.quota_daily_limit,
+            monthly_credits_used: summary.quota_monthly_used,
+            monthly_credits_limit: summary.quota_monthly_limit,
             daily_success: summary.daily_success,
             daily_failure: summary.daily_failure,
             monthly_success: summary.monthly_success,
@@ -1111,18 +1105,18 @@ impl From<tavily_hikari::UserDashboardProgressCard> for UserDashboardProgressCar
 #[serde(rename_all = "camelCase")]
 struct UserDashboardOverviewProgressView {
     request_rate: UserDashboardProgressCardView,
-    quota_hourly: UserDashboardProgressCardView,
-    quota_daily: UserDashboardProgressCardView,
-    quota_monthly: UserDashboardProgressCardView,
+    business_calls_1h: UserDashboardProgressCardView,
+    daily_credits: UserDashboardProgressCardView,
+    monthly_credits: UserDashboardProgressCardView,
 }
 
 impl From<tavily_hikari::UserDashboardOverviewProgress> for UserDashboardOverviewProgressView {
     fn from(progress: tavily_hikari::UserDashboardOverviewProgress) -> Self {
         Self {
             request_rate: progress.request_rate.into(),
-            quota_hourly: progress.quota_hourly.into(),
-            quota_daily: progress.quota_daily.into(),
-            quota_monthly: progress.quota_monthly.into(),
+            business_calls_1h: progress.quota_hourly.into(),
+            daily_credits: progress.quota_daily.into(),
+            monthly_credits: progress.quota_monthly.into(),
         }
     }
 }
@@ -1273,14 +1267,11 @@ struct UserTokenSummaryView {
     note: Option<String>,
     last_used_at: Option<i64>,
     request_rate: tavily_hikari::RequestRateView,
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    quota_hourly_used: i64,
-    quota_hourly_limit: i64,
-    quota_daily_used: i64,
-    quota_daily_limit: i64,
-    quota_monthly_used: i64,
-    quota_monthly_limit: i64,
+    business_calls_1h: tavily_hikari::BusinessCalls1hSummary,
+    daily_credits_used: i64,
+    daily_credits_limit: i64,
+    monthly_credits_used: i64,
+    monthly_credits_limit: i64,
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
@@ -1883,36 +1874,23 @@ async fn get_linuxdo_credit_notify(
     Ok((StatusCode::OK, "success"))
 }
 
-fn user_token_quota_values(token: &AuthToken) -> (i64, i64, i64, i64, i64, i64) {
-    token
-        .quota
-        .as_ref()
-        .map(|q| {
-            (
-                q.hourly_used,
-                q.hourly_limit,
-                q.daily_used,
-                q.daily_limit,
-                q.monthly_used,
-                q.monthly_limit,
-            )
-        })
-        .unwrap_or((
-            0,
-            effective_token_hourly_limit(),
-            0,
-            effective_token_daily_limit(),
-            0,
-            effective_token_monthly_limit(),
-        ))
-}
-
 async fn build_user_token_detail_view(
     state: &Arc<AppState>,
     user_id: &str,
     token_id: &str,
     daily_window: Option<tavily_hikari::TimeRangeUtc>,
 ) -> Result<UserTokenSummaryView, (StatusCode, String)> {
+    let shared_summary = state
+        .proxy
+        .user_dashboard_summary(user_id, daily_window)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail shared summary error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load shared quota".to_string(),
+            )
+        })?;
     let tokens = state
         .proxy
         .list_user_tokens(user_id)
@@ -1954,15 +1932,6 @@ async fn build_user_token_detail_view(
                 .proxy
                 .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
         });
-    let (hourly_any_used, hourly_any_limit) = (request_rate.hourly_used, request_rate.hourly_limit);
-    let (
-        quota_hourly_used,
-        quota_hourly_limit,
-        quota_daily_used,
-        quota_daily_limit,
-        quota_monthly_used,
-        quota_monthly_limit,
-    ) = user_token_quota_values(&token);
 
     Ok(UserTokenSummaryView {
         token_id: token.id,
@@ -1970,14 +1939,11 @@ async fn build_user_token_detail_view(
         note: token.note,
         last_used_at: token.last_used_at,
         request_rate: request_rate.request_rate(),
-        hourly_any_used,
-        hourly_any_limit,
-        quota_hourly_used,
-        quota_hourly_limit,
-        quota_daily_used,
-        quota_daily_limit,
-        quota_monthly_used,
-        quota_monthly_limit,
+        business_calls_1h: shared_summary.business_calls_1h,
+        daily_credits_used: shared_summary.quota_daily_used,
+        daily_credits_limit: shared_summary.quota_daily_limit,
+        monthly_credits_used: shared_summary.quota_monthly_used,
+        monthly_credits_limit: shared_summary.quota_monthly_limit,
         daily_success,
         daily_failure,
         monthly_success,
@@ -2067,6 +2033,17 @@ async fn get_user_tokens(
                 "failed to load token hourly limits".to_string(),
             )
         })?;
+    let shared_summary = state
+        .proxy
+        .user_dashboard_summary(&user_session.user.user_id, daily_window)
+        .await
+        .map_err(|err| {
+            eprintln!("list user tokens shared summary error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load shared quota".to_string(),
+            )
+        })?;
     let mut items = Vec::with_capacity(tokens.len());
     for token in tokens {
         let (monthly_success, daily_success, daily_failure) = state
@@ -2080,14 +2057,6 @@ async fn get_user_tokens(
                     "failed to load token metrics".to_string(),
                 )
             })?;
-        let (
-            quota_hourly_used,
-            quota_hourly_limit,
-            quota_daily_used,
-            quota_daily_limit,
-            quota_monthly_used,
-            quota_monthly_limit,
-        ) = user_token_quota_values(&token);
         let request_rate = hourly_any
             .get(&token.id)
             .cloned()
@@ -2096,22 +2065,17 @@ async fn get_user_tokens(
                     .proxy
                     .default_request_rate_verdict(tavily_hikari::RequestRateScope::Token)
             });
-        let (hourly_any_used, hourly_any_limit) =
-            (request_rate.hourly_used, request_rate.hourly_limit);
         items.push(UserTokenSummaryView {
             token_id: token.id,
             enabled: token.enabled,
             note: token.note,
             last_used_at: token.last_used_at,
             request_rate: request_rate.request_rate(),
-            hourly_any_used,
-            hourly_any_limit,
-            quota_hourly_used,
-            quota_hourly_limit,
-            quota_daily_used,
-            quota_daily_limit,
-            quota_monthly_used,
-            quota_monthly_limit,
+            business_calls_1h: shared_summary.business_calls_1h.clone(),
+            daily_credits_used: shared_summary.quota_daily_used,
+            daily_credits_limit: shared_summary.quota_daily_limit,
+            monthly_credits_used: shared_summary.quota_monthly_used,
+            monthly_credits_limit: shared_summary.quota_monthly_limit,
             daily_success,
             daily_failure,
             monthly_success,

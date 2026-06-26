@@ -1,4 +1,7 @@
+import type { ReactNode } from 'react'
+
 import type { RequestRate } from '../api'
+import { UsageMetricLabel } from '../components/UsageMetricLabel'
 
 interface DashboardQuotaGridText {
   hourly: string
@@ -17,6 +20,7 @@ interface DashboardQuotaGridProps {
   monthlyUsed: number
   monthlyLimit: number
   formatNumber: (value: number) => string
+  language: 'en' | 'zh'
 }
 
 export default function DashboardQuotaGrid({
@@ -30,7 +34,20 @@ export default function DashboardQuotaGrid({
   monthlyUsed,
   monthlyLimit,
   formatNumber,
+  language,
 }: DashboardQuotaGridProps): JSX.Element {
+  const helpLabels: Record<'hourly' | 'daily' | 'monthly', ReactNode> = {
+    hourly: (
+      <UsageMetricLabel label={text.hourly} kind="businessCalls1h" language={language} className="quota-stat-label" />
+    ),
+    daily: (
+      <UsageMetricLabel label={text.daily} kind="dailyCredits" language={language} className="quota-stat-label" />
+    ),
+    monthly: (
+      <UsageMetricLabel label={text.monthly} kind="monthlyCredits" language={language} className="quota-stat-label" />
+    ),
+  }
+
   return (
     <div className="access-stats">
       <div className="access-stat quota-stat-card">
@@ -41,21 +58,21 @@ export default function DashboardQuotaGrid({
         </div>
       </div>
       <div className="access-stat quota-stat-card">
-        <div className="quota-stat-label">{text.hourly}</div>
+        <div>{helpLabels.hourly}</div>
         <div className="quota-stat-value">
           {formatNumber(hourlyUsed)}
           <span>/ {formatNumber(hourlyLimit)}</span>
         </div>
       </div>
       <div className="access-stat quota-stat-card">
-        <div className="quota-stat-label">{text.daily}</div>
+        <div>{helpLabels.daily}</div>
         <div className="quota-stat-value">
           {formatNumber(dailyUsed)}
           <span>/ {formatNumber(dailyLimit)}</span>
         </div>
       </div>
       <div className="access-stat quota-stat-card">
-        <div className="quota-stat-label">{text.monthly}</div>
+        <div>{helpLabels.monthly}</div>
         <div className="quota-stat-value">
           {formatNumber(monthlyUsed)}
           <span>/ {formatNumber(monthlyLimit)}</span>

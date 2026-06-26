@@ -1008,7 +1008,7 @@ impl TokenQuota {
                         .store
                         .fetch_account_monthly_count(&user_id, month_start)
                         .await?;
-                    TokenQuotaVerdict::new(
+                    TokenQuotaVerdict::new_without_hourly_enforcement(
                         hourly_used,
                         limits.hourly_limit,
                         daily_used,
@@ -1034,7 +1034,7 @@ impl TokenQuota {
                         .store
                         .increment_account_monthly_quota(&user_id, month_start)
                         .await?;
-                    TokenQuotaVerdict::new(
+                    TokenQuotaVerdict::new_without_hourly_enforcement(
                         hourly_used,
                         limits.hourly_limit,
                         daily_used,
@@ -1187,7 +1187,7 @@ impl TokenQuota {
                     .store
                     .fetch_account_monthly_count(user_id, month_start)
                     .await?;
-                Ok(TokenQuotaVerdict::new(
+                Ok(TokenQuotaVerdict::new_without_hourly_enforcement(
                     hourly_used,
                     limits.hourly_limit,
                     daily_used,
@@ -1344,7 +1344,7 @@ impl TokenQuota {
                 let monthly_used = account_monthly_totals.get(&user_id).copied().unwrap_or(0);
                 verdicts.insert(
                     token_id,
-                    TokenQuotaVerdict::new(
+                    TokenQuotaVerdict::new_without_hourly_enforcement(
                         hourly_used,
                         limits.hourly_limit,
                         daily_used,
@@ -1749,11 +1749,23 @@ impl UserBusinessCalls1hWindow {
                         success_count: counts.success_count,
                         failure_count: counts.failure_count,
                         total_count: counts.total_count(),
+                        limit: 0,
                         window_minutes: self.window_minutes,
                     },
                 )
             })
             .collect()
+    }
+
+    pub async fn snapshot_for_user(&self, user_id: &str) -> BusinessCalls1hSummary {
+        self.snapshot_for_users(&[user_id.to_string()])
+            .await
+            .remove(user_id)
+            .unwrap_or(BusinessCalls1hSummary {
+                limit: 0,
+                window_minutes: self.window_minutes,
+                ..BusinessCalls1hSummary::default()
+            })
     }
 
     pub(crate) async fn usage_series(&self, user_id: &str) -> Vec<AdminUserBusinessCalls1hPoint> {
@@ -1834,6 +1846,47 @@ impl UserBusinessCalls1hWindow {
             .into_iter()
             .map(|(user_id, counts)| CurrentUserBusinessCalls1hRow { user_id, counts })
             .collect()
+    }
+}
+
+impl TavilyProxy {
+    async fn business_calls_1h_limit_verdict_for_subject(
+        &self,
+        subject: &QuotaSubject,
+    ) -> Result<Option<BusinessCalls1hLimitVerdict>, ProxyError> {
+        let QuotaSubject::Account(user_id) = subject else {
+            return Ok(None);
+        };
+        let mut summary = self
+            .user_business_calls_1h_window
+            .snapshot_for_user(user_id)
+            .await;
+        summary.limit = self
+            .key_store
+            .resolve_account_quota_resolution(user_id)
+            .await?
+            .effective
+            .hourly_limit
+            .max(0);
+        Ok(Some(BusinessCalls1hLimitVerdict::new(summary)))
+    }
+
+    pub async fn peek_token_business_calls_1h_limit(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<BusinessCalls1hLimitVerdict>, ProxyError> {
+        let subject = self.token_quota.resolve_subject(token_id).await?;
+        self.business_calls_1h_limit_verdict_for_subject(&subject)
+            .await
+    }
+
+    pub async fn peek_token_business_calls_1h_limit_for_subject(
+        &self,
+        billing_subject: &str,
+    ) -> Result<Option<BusinessCalls1hLimitVerdict>, ProxyError> {
+        let subject = QuotaSubject::from_billing_subject(billing_subject)?;
+        self.business_calls_1h_limit_verdict_for_subject(&subject)
+            .await
     }
 }
 

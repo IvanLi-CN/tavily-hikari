@@ -60,6 +60,7 @@ import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { Table } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
+import { UsageMetricLabel } from '../components/UsageMetricLabel'
 import { AnchoredInfoDisclosure } from '../components/ui/anchored-info-disclosure'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
@@ -9076,9 +9077,15 @@ function AdminDashboard(): JSX.Element {
                   <dd>{formatNumber(detail.tokenCount)}</dd>
                 </div>
                 <div>
-                  <dt>{usersStrings.usage.table.businessOneHour}</dt>
+                  <dt>
+                    <UsageMetricLabel
+                      label={usersStrings.quota.hourly}
+                      kind="businessCalls1h"
+                      language={language}
+                    />
+                  </dt>
                   <dd>
-                    {formatNumber(detail.businessCalls1h.totalCount)}
+                    {formatQuotaUsagePair(detail.businessCalls1h.totalCount, detail.businessCalls1h.limit)}
                     <span className="admin-table-value-secondary" style={{ display: 'block' }}>
                       {language === 'zh'
                         ? `成 ${formatNumber(detail.businessCalls1h.successCount)} / 败 ${formatNumber(detail.businessCalls1h.failureCount)}`

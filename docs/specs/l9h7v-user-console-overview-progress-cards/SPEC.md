@@ -33,15 +33,15 @@
 - 把 `/console` shell 收敛成可用于超宽屏的全宽布局，并让 `Console Home`、充值区、Token 列表都进入新的宽屏节奏。
 - 将概览区重构为两层信息架构：
   - 上层 3 张大号汇总卡：`今日成功`、`今日失败`、`本月成功（UTC）`
-  - 下层 4 张大号趋势卡：`5 分钟请求频率`、`小时配额`、`日配额`、`月配额`
+  - 下层 4 张大号趋势卡：`5 分钟请求频率`、`每小时业务请求次数限额`、`每日积分限额`、`每月积分限额`
 - 趋势卡必须展示真实用量背景图与上限横虚线，并让周期内未来时段保留 `null` 空占位，不得填 0、不得裁掉空间。
 - 新增 landing 专用 `GET /api/user/dashboard/overview` 与 `GET /api/user/dashboard/events`，首屏 HTTP，后续 SSE changed-only，服务端最多每 5 秒发一帧，无变化仅发 `ping`。
 - 保持旧 `GET /api/user/dashboard` 完整兼容，不把旧 dashboard 合同升级成全能趋势接口。
 - 为 current-period 进度图补齐轻量读模型：
   - `requestRate`：真实 rolling `5m`
-  - `quotaHourly`：当前小时 5 分钟粒度
-  - `quotaDaily`：当前服务器本地自然日按小时粒度
-  - `quotaMonthly`：当前 UTC 月按 UTC 日粒度
+  - `businessCalls1h`：滚动 1 小时业务请求次数口径
+  - `dailyCredits`：当前服务器本地自然日按小时粒度
+  - `monthlyCredits`：当前 UTC 月按 UTC 日粒度
 - 补齐 Storybook 宽屏 / 移动端入口与视觉证据。
 
 ### Non-goals
@@ -95,9 +95,9 @@
     - 结构与既有 `UserDashboard` 等价
   - `progress`
     - `requestRate`
-    - `quotaHourly`
-    - `quotaDaily`
-    - `quotaMonthly`
+    - `businessCalls1h`
+    - `dailyCredits`
+    - `monthlyCredits`
 - 每个 progress card 返回：
   - `used`
   - `limit`
@@ -123,12 +123,14 @@
   - 表示真实 rolling `5m`，不是自然 5 分钟整窗。
   - 图上不做人造“未来空位”语义，只表达最近 rolling 窗口内的真实占用变化。
 - `quotaHourly`
-  - 表示当前小时从 `hh:00` 到 `hh:59:59` 的进度图。
-  - 未来 5 分钟 bucket 保留 `null`。
-- `quotaDaily`
+  - 本轮已废弃，不再作为用户控制台对外 contract。
+- `businessCalls1h`
+  - 表示滚动 1 小时内实际打到上游的业务请求次数。
+  - 点位来自内存态 `UserBusinessCalls1hWindow`，不新增 hourly credits rollup。
+- `dailyCredits`
   - 表示当前服务器本地自然日进度图。
   - 未来小时 bucket 保留 `null`。
-- `quotaMonthly`
+- `monthlyCredits`
   - 表示当前 UTC 月进度图。
   - 未来 UTC 日 bucket 保留 `null`。
 - 所有趋势卡的上限虚线都允许被真实值越过，不得截断图或强制 clamp 到 limit。
@@ -136,8 +138,8 @@
 ## 读模型约束
 
 - 优先复用现有 `account_usage_rollup_buckets` 与 limit snapshot 表，避免扫描原始 `auth_token_logs`。
-- 为 `quotaHourly` 增加 `business_credits / five_minute` rollup。
-- 为 `quotaMonthly` 增加 `business_credits / utc_day` rollup，避免把服务器本地 `day` bucket 误用于 UTC 月内逐日进度。
+- `businessCalls1h` 直接复用内存态 `UserBusinessCalls1hWindow`，不新增 rollup 表或 hourly credits 聚合。
+- `monthlyCredits` 继续使用现有 `business_credits / utc_day` 聚合，避免把服务器本地 `day` bucket 误用于 UTC 月内逐日进度。
 - `requestRate` 当前窗口直接读取真实内存 limiter subject 时间戳，构造 rolling series，不写回数据库。
 
 ## UI / 体验契约
@@ -157,7 +159,7 @@
 - landing 首屏只做一次 overview HTTP；SSE 建立后不再触发多接口定时刷新。
 - 趋势卡中：
   - `requestRate` 严格体现 rolling `5m`
-  - `quotaHourly` / `quotaDaily` / `quotaMonthly` 的未来时段为 `null`
+  - `dailyCredits` / `monthlyCredits` 的未来时段为 `null`
   - limit 线可被实际值越过
 - `/console` 在手机、常规桌面、超宽屏下都保持可读；token detail 不出现新趋势图。
 - 至少通过：
@@ -172,6 +174,9 @@
 - Storybook `Console Home` 宽屏概览
   - 资产：`docs/specs/l9h7v-user-console-overview-progress-cards/assets/console-home-wide.png`
   - 说明：验证 `/console` 全宽 shell、3 张汇总卡、4 张趋势卡、上限虚线与未来空占位。
+- Storybook `Console Home` 业务额度命名与解释
+  - 资产：`docs/specs/l9h7v-user-console-overview-progress-cards/assets/console-home-business-quota-tooltip.png`
+  - 说明：验证用户控制台已统一显示“每小时业务请求次数限额 / 每日积分限额 / 每月积分限额”，并提供点击/聚焦可触发的字段解释入口。
 - Browser preview `Console Home` 汇总数字字形修复
   - 资产：`docs/specs/l9h7v-user-console-overview-progress-cards/assets/console-home-summary-typography.png`
   - 说明：验证 3 张汇总卡改为稳定的静态等宽数字排版，不再出现逐位滚动组件放大后的拆字问题。

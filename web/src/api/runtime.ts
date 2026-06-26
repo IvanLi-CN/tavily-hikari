@@ -19,6 +19,12 @@ import {
   normalizeUserTokenSummary,
   normalizeUserTokenSummaryList,
 } from './userConsoleNormalization'
+import {
+  normalizeAdminUserDetail,
+  normalizeAdminUserSummaryPage,
+  normalizeAdminUserTag,
+  normalizeAdminUserTagList,
+} from './adminUserNormalization'
 
 export interface Summary {
   total_requests: number
@@ -2085,6 +2091,7 @@ export interface BusinessCalls1hSummary {
   successCount: number
   failureCount: number
   totalCount: number
+  limit: number
   windowMinutes: number
 }
 
@@ -3139,7 +3146,9 @@ export function fetchAdminUsers(
     params.set('sort', sort)
     params.set('order', order ?? 'desc')
   }
-  return requestJson(`/api/users?${params.toString()}`, { signal })
+  return requestJson<unknown>(`/api/users?${params.toString()}`, { signal }).then(
+    normalizeAdminUserSummaryPage,
+  )
 }
 
 export function fetchAdminUnboundTokenUsage(
@@ -3194,7 +3203,7 @@ export function fetchTokenBrokenKeys(
 
 export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<AdminUserDetail> {
   const encoded = encodeURIComponent(id)
-  return requestJson(`/api/users/${encoded}`, { signal })
+  return requestJson<unknown>(`/api/users/${encoded}`, { signal }).then(normalizeAdminUserDetail)
 }
 
 export async function createAdminUserToken(id: string): Promise<AuthTokenSecret> {
@@ -3243,24 +3252,24 @@ export async function updateAdminUserBrokenKeyLimit(
 }
 
 export function fetchAdminUserTags(signal?: AbortSignal): Promise<AdminUserTag[]> {
-  return requestJson<{ items: AdminUserTag[] }>('/api/user-tags', { signal }).then((response) => response.items)
+  return requestJson<unknown>('/api/user-tags', { signal }).then(normalizeAdminUserTagList)
 }
 
 export function createAdminUserTag(payload: UpsertAdminUserTagPayload): Promise<AdminUserTag> {
-  return requestJson('/api/user-tags', {
+  return requestJson<unknown>('/api/user-tags', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-  })
+  }).then(normalizeAdminUserTag)
 }
 
 export function updateAdminUserTag(id: string, payload: UpsertAdminUserTagPayload): Promise<AdminUserTag> {
   const encoded = encodeURIComponent(id)
-  return requestJson(`/api/user-tags/${encoded}`, {
+  return requestJson<unknown>(`/api/user-tags/${encoded}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-  })
+  }).then(normalizeAdminUserTag)
 }
 
 export async function deleteAdminUserTag(id: string): Promise<void> {

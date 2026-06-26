@@ -149,6 +149,8 @@ export function normalizeUserDashboard(value: unknown): UserDashboard {
   const source = isRecordLike(value) ? value : {}
   const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
   const hourlyAnyLimit = readNumber(source, 'hourlyAnyLimit', 'hourly_any_limit', 60)
+  const businessCalls1hSource = source.businessCalls1h ?? source.business_calls_1h
+  const businessCalls1h = isRecordLike(businessCalls1hSource) ? businessCalls1hSource : {}
   return {
     debugInfoShared: readBoolean(source, 'debugInfoShared', 'debug_info_shared'),
     requestRate: normalizeRequestRate(source.requestRate ?? source.request_rate, {
@@ -159,12 +161,42 @@ export function normalizeUserDashboard(value: unknown): UserDashboard {
     }),
     hourlyAnyUsed,
     hourlyAnyLimit,
-    quotaHourlyUsed: readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
-    quotaHourlyLimit: readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
-    quotaDailyUsed: readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
-    quotaDailyLimit: readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
-    quotaMonthlyUsed: readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
-    quotaMonthlyLimit: readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    quotaHourlyUsed: readNumber(
+      businessCalls1h,
+      'totalCount',
+      'total_count',
+      readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
+    ),
+    quotaHourlyLimit: readNumber(
+      businessCalls1h,
+      'limit',
+      'limit',
+      readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
+    ),
+    quotaDailyUsed: readNumber(
+      source,
+      'dailyCreditsUsed',
+      'daily_credits_used',
+      readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+    ),
+    quotaDailyLimit: readNumber(
+      source,
+      'dailyCreditsLimit',
+      'daily_credits_limit',
+      readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
+    ),
+    quotaMonthlyUsed: readNumber(
+      source,
+      'monthlyCreditsUsed',
+      'monthly_credits_used',
+      readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+    ),
+    quotaMonthlyLimit: readNumber(
+      source,
+      'monthlyCreditsLimit',
+      'monthly_credits_limit',
+      readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    ),
     dailySuccess: readNumber(source, 'dailySuccess', 'daily_success'),
     dailyFailure: readNumber(source, 'dailyFailure', 'daily_failure'),
     monthlySuccess: readNumber(source, 'monthlySuccess', 'monthly_success'),
@@ -180,9 +212,24 @@ export function normalizeUserDashboardOverview(value: unknown): UserDashboardOve
     summary: normalizeUserDashboard(source.summary),
     progress: {
       requestRate: normalizeUserDashboardProgressCard(progress.requestRate ?? progress.request_rate),
-      quotaHourly: normalizeUserDashboardProgressCard(progress.quotaHourly ?? progress.quota_hourly),
-      quotaDaily: normalizeUserDashboardProgressCard(progress.quotaDaily ?? progress.quota_daily),
-      quotaMonthly: normalizeUserDashboardProgressCard(progress.quotaMonthly ?? progress.quota_monthly),
+      quotaHourly: normalizeUserDashboardProgressCard(
+        progress.businessCalls1h
+          ?? progress.business_calls_1h
+          ?? progress.quotaHourly
+          ?? progress.quota_hourly,
+      ),
+      quotaDaily: normalizeUserDashboardProgressCard(
+        progress.dailyCredits
+          ?? progress.daily_credits
+          ?? progress.quotaDaily
+          ?? progress.quota_daily,
+      ),
+      quotaMonthly: normalizeUserDashboardProgressCard(
+        progress.monthlyCredits
+          ?? progress.monthly_credits
+          ?? progress.quotaMonthly
+          ?? progress.quota_monthly,
+      ),
     },
   }
 }
@@ -192,6 +239,8 @@ export function normalizeUserTokenSummary(value: unknown): UserTokenSummary {
   const tokenId = readString(source, 'tokenId', 'id') || readString(source, 'tokenId', 'token_id')
   const hourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
   const hourlyAnyLimit = readNumber(source, 'hourlyAnyLimit', 'hourly_any_limit', 60)
+  const businessCalls1hSource = source.businessCalls1h ?? source.business_calls_1h
+  const businessCalls1h = isRecordLike(businessCalls1hSource) ? businessCalls1hSource : {}
   return {
     tokenId,
     enabled: readBoolean(source, 'enabled', 'enabled'),
@@ -205,24 +254,64 @@ export function normalizeUserTokenSummary(value: unknown): UserTokenSummary {
     }),
     hourlyAnyUsed,
     hourlyAnyLimit,
-    quotaHourlyUsed: readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
-    quotaHourlyLimit: readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
-    quotaDailyUsed: readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
-    quotaDailyLimit: readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
-    quotaMonthlyUsed: readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
-    quotaMonthlyLimit: readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    quotaHourlyUsed: readNumber(
+      businessCalls1h,
+      'totalCount',
+      'total_count',
+      readNumber(source, 'quotaHourlyUsed', 'quota_hourly_used'),
+    ),
+    quotaHourlyLimit: readNumber(
+      businessCalls1h,
+      'limit',
+      'limit',
+      readNumber(source, 'quotaHourlyLimit', 'quota_hourly_limit'),
+    ),
+    quotaDailyUsed: readNumber(
+      source,
+      'dailyCreditsUsed',
+      'daily_credits_used',
+      readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+    ),
+    quotaDailyLimit: readNumber(
+      source,
+      'dailyCreditsLimit',
+      'daily_credits_limit',
+      readNumber(source, 'quotaDailyLimit', 'quota_daily_limit'),
+    ),
+    quotaMonthlyUsed: readNumber(
+      source,
+      'monthlyCreditsUsed',
+      'monthly_credits_used',
+      readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+    ),
+    quotaMonthlyLimit: readNumber(
+      source,
+      'monthlyCreditsLimit',
+      'monthly_credits_limit',
+      readNumber(source, 'quotaMonthlyLimit', 'quota_monthly_limit'),
+    ),
     dailySuccess: readNumber(
       source,
       'dailySuccess',
       'daily_success',
-      readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+      readNumber(
+        source,
+        'dailyCreditsUsed',
+        'daily_credits_used',
+        readNumber(source, 'quotaDailyUsed', 'quota_daily_used'),
+      ),
     ),
     dailyFailure: readNumber(source, 'dailyFailure', 'daily_failure'),
     monthlySuccess: readNumber(
       source,
       'monthlySuccess',
       'monthly_success',
-      readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+      readNumber(
+        source,
+        'monthlyCreditsUsed',
+        'monthly_credits_used',
+        readNumber(source, 'quotaMonthlyUsed', 'quota_monthly_used'),
+      ),
     ),
   }
 }

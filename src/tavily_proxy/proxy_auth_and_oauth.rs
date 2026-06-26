@@ -678,16 +678,6 @@ impl TavilyProxy {
             .user_business_calls_1h_window
             .snapshot_for_users(&deduped_user_ids)
             .await;
-        let minute_bucket = now.timestamp() - (now.timestamp() % SECS_PER_MINUTE);
-        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let hourly_totals = self
-            .key_store
-            .sum_account_usage_buckets_bulk(
-                &deduped_user_ids,
-                GRANULARITY_MINUTE,
-                hour_window_start,
-            )
-            .await?;
         let daily_totals = self
             .key_store
             .sum_account_usage_buckets_bulk(
@@ -751,15 +741,22 @@ impl TavilyProxy {
                     UserDashboardSummary {
                         debug_info_shared: debug_info_shared.get(&user_id).copied().unwrap_or(false),
                         request_rate: request_rate.request_rate(),
-                        business_calls_1h: business_calls_1h.get(&user_id).cloned().unwrap_or(
-                            BusinessCalls1hSummary {
-                                window_minutes: 60,
-                                ..BusinessCalls1hSummary::default()
-                            },
-                        ),
+                        business_calls_1h: {
+                            let mut summary = business_calls_1h.get(&user_id).cloned().unwrap_or(
+                                BusinessCalls1hSummary {
+                                    window_minutes: 60,
+                                    ..BusinessCalls1hSummary::default()
+                                },
+                            );
+                            summary.limit = limits.hourly_limit;
+                            summary
+                        },
                         hourly_any_used: request_rate.hourly_used,
                         hourly_any_limit: request_rate.hourly_limit,
-                        quota_hourly_used: hourly_totals.get(&user_id).copied().unwrap_or(0),
+                        quota_hourly_used: business_calls_1h
+                            .get(&user_id)
+                            .map(|summary| summary.total_count)
+                            .unwrap_or(0),
                         quota_hourly_limit: limits.hourly_limit,
                         quota_daily_used: daily_totals.get(&user_id).copied().unwrap_or(0)
                             + legacy_daily_totals.get(&user_id).copied().unwrap_or(0),

@@ -680,7 +680,7 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         .expect("hourly current point");
     assert_eq!(
         overview.progress.quota_hourly.points[hourly_current_index].value,
-        Some(5)
+        Some(0)
     );
     assert!(
         overview.progress.quota_hourly.points[hourly_current_index + 1..]

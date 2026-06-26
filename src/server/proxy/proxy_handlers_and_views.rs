@@ -933,6 +933,45 @@ async fn proxy_handler(
             return Ok(resp);
         }
 
+        if billable_flag && !using_dev_open_admin_fallback {
+            match if let Some(subject) = billing_subject.as_deref() {
+                state
+                    .proxy
+                    .peek_token_business_calls_1h_limit_for_subject(subject)
+                    .await
+            } else {
+                state.proxy.peek_token_business_calls_1h_limit(tid).await
+            } {
+                Ok(Some(verdict)) => {
+                    if !verdict.allowed {
+                        let message = build_business_calls_1h_limit_error_message(&verdict);
+                        let _ = state
+                            .proxy
+                            .record_token_attempt_with_kind(
+                                tid,
+                                &method,
+                                &path,
+                                query.as_deref(),
+                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                                None,
+                                false,
+                                "quota_exhausted",
+                                Some(&message),
+                                &request_kind,
+                            )
+                            .await;
+                        let response = business_calls_1h_limit_exceeded_response(&verdict)?;
+                        return Ok(response);
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("business calls 1h limit check failed: {err}");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+
         // 2) 业务配额（小时 / 日 / 月）只对 MCP 工具调用生效。
         if billable_flag {
             match if let Some(subject) = billing_subject.as_deref() {
@@ -1707,6 +1746,22 @@ fn request_limit_exceeded_response(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+fn business_calls_1h_limit_exceeded_response(
+    verdict: &BusinessCalls1hLimitVerdict,
+) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": "quota_exhausted",
+        "window": format!("{}m", verdict.summary.window_minutes),
+        "businessCalls1h": verdict.summary,
+    });
+
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 fn quota_exceeded_response(
     verdict: &TokenQuotaVerdict,
     projected_delta: Option<i64>,
@@ -1746,6 +1801,13 @@ fn build_request_limit_error_message(verdict: &TokenHourlyRequestVerdict) -> Str
     )
 }
 
+fn build_business_calls_1h_limit_error_message(verdict: &BusinessCalls1hLimitVerdict) -> String {
+    format!(
+        "business request count cap exceeded on rolling {}m window (limit {}, used {})",
+        verdict.summary.window_minutes, verdict.summary.limit, verdict.summary.total_count
+    )
+}
+
 fn build_quota_error_message(verdict: &TokenQuotaVerdict, projected_delta: Option<i64>) -> String {
     let delta = projected_delta.unwrap_or(0);
     let (limit, used) = quota_window_stats(verdict, delta);
@@ -1754,10 +1816,7 @@ fn build_quota_error_message(verdict: &TokenQuotaVerdict, projected_delta: Optio
 }
 
 fn quota_window_stats(verdict: &TokenQuotaVerdict, projected_delta: i64) -> (i64, i64) {
-    match verdict
-        .window_name_for_delta(projected_delta)
-        .unwrap_or("hour")
-    {
+    match verdict.window_name_for_delta(projected_delta).unwrap_or("month") {
         "month" => (verdict.monthly_limit, verdict.monthly_used),
         "day" => (verdict.daily_limit, verdict.daily_used),
         _ => (verdict.hourly_limit, verdict.hourly_used),

@@ -118,7 +118,7 @@ afterEach(() => {
 })
 
 describe('UserDetailSharedUsagePanel tab presentation', () => {
-  it('orders windows from shortest to longest while keeping 1h as the default active series', async () => {
+  it('orders windows from shortest to longest while keeping business 1h as the default active series', async () => {
     const { container, root } = await mountPanel()
 
     const labels = Array.from(container.querySelectorAll<HTMLButtonElement>('button[role="radio"]'))
@@ -126,13 +126,12 @@ describe('UserDetailSharedUsagePanel tab presentation', () => {
 
     expect(labels).toEqual([
       ZH.admin.users.detail.sharedUsageTabs.fiveMinute,
-      ZH.admin.users.detail.sharedUsageTabs.oneHour,
       ZH.admin.users.detail.sharedUsageTabs.businessOneHour,
       ZH.admin.users.detail.sharedUsageTabs.daily,
       ZH.admin.users.detail.sharedUsageTabs.monthly,
       ZH.admin.users.detail.sharedUsageTabs.ip,
     ])
-    expect(container.querySelector<HTMLElement>('.admin-user-shared-usage-panel')?.dataset.activeSeries).toBe('quota1h')
+    expect(container.querySelector<HTMLElement>('.admin-user-shared-usage-panel')?.dataset.activeSeries).toBe('businessCalls1h')
 
     await act(async () => {
       root.unmount()
@@ -184,7 +183,7 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     const loader = createAbortableLoader()
     const { container, root } = await mountPanel({ loadSeries: loader.loadSeries })
 
-    expect(loader.requests.quota1h?.length).toBe(1)
+    expect(loader.requests.businessCalls1h?.length).toBe(1)
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoading)
 
     await act(async () => {
@@ -193,15 +192,15 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     await flushEffects()
 
     expect(loader.requests.rate5m?.length).toBe(1)
-    expect(loader.requests.quota1h?.[0]?.signal.aborted).toBe(false)
+    expect(loader.requests.businessCalls1h?.[0]?.signal.aborted).toBe(false)
 
     await act(async () => {
-      clickTab(container, ZH.admin.users.detail.sharedUsageTabs.oneHour)
+      clickTab(container, ZH.admin.users.detail.sharedUsageTabs.businessOneHour)
     })
     await flushEffects()
 
-    expect(loader.requests.quota1h?.length).toBe(1)
-    loader.requests.quota1h?.[0]?.deferred.resolve(buildEmptySeries(120))
+    expect(loader.requests.businessCalls1h?.length).toBe(1)
+    loader.requests.businessCalls1h?.[0]?.deferred.resolve(buildEmptySeries(120))
     await flushEffects()
 
     expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageLoading)
@@ -235,8 +234,8 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     const secondLoader = createAbortableLoader()
     const { container, root } = await mountPanel({ loadSeries: firstLoader.loadSeries })
 
-    expect(firstLoader.requests.quota1h?.length).toBe(1)
-    firstLoader.requests.quota1h?.[0]?.deferred.resolve(buildEmptySeries(120))
+    expect(firstLoader.requests.businessCalls1h?.length).toBe(1)
+    firstLoader.requests.businessCalls1h?.[0]?.deferred.resolve(buildEmptySeries(120))
     await flushEffects()
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageEmpty)
 
@@ -254,10 +253,10 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     })
     await flushEffects()
 
-    expect(secondLoader.requests.quota1h?.length).toBe(1)
+    expect(secondLoader.requests.businessCalls1h?.length).toBe(1)
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageLoading)
 
-    secondLoader.requests.quota1h?.[0]?.deferred.resolve(buildEmptySeries(200))
+    secondLoader.requests.businessCalls1h?.[0]?.deferred.resolve(buildEmptySeries(200))
     await flushEffects()
     expect(container.textContent).toContain(ZH.admin.users.detail.sharedUsageEmpty)
 

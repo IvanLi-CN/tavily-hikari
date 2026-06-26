@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export type AnchoredFloatingPlacement = 'top' | 'bottom' | 'left' | 'right'
 export type AnchoredFloatingAlign = 'start' | 'center' | 'end'
@@ -9,6 +9,9 @@ export interface AnchoredFloatingPosition {
   placement: AnchoredFloatingPlacement
   arrowOffset: number
 }
+
+const useIsomorphicLayoutEffect =
+  typeof window === 'undefined' ? useEffect : useLayoutEffect
 
 interface UseAnchoredFloatingLayerOptions {
   open: boolean
@@ -116,7 +119,7 @@ export function useAnchoredFloatingLayer<T extends HTMLElement>({
   const layerRef = useRef<T | null>(null)
   const [position, setPosition] = useState<AnchoredFloatingPosition | null>(null)
 
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (!open || !anchorEl || typeof window === 'undefined') {
       setPosition(null)
       return

@@ -1,10 +1,12 @@
 import type { AdminUserQuotaBreakdownEntry } from '../api'
+import { UsageMetricLabel } from '../components/UsageMetricLabel'
 import type { AdminTranslations } from '../i18n'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 
 interface UserDetailQuotaBreakdownProps {
   entries: AdminUserQuotaBreakdownEntry[]
   usersStrings: AdminTranslations['users']
+  language: 'en' | 'zh'
   formatQuotaLimitValue: (value: number) => string
   formatSignedQuotaDelta: (value: number) => string
 }
@@ -54,6 +56,7 @@ function buildBreakdownViewModel(
 export function UserDetailQuotaBreakdown({
   entries,
   usersStrings,
+  language,
   formatQuotaLimitValue,
   formatSignedQuotaDelta,
 }: UserDetailQuotaBreakdownProps): JSX.Element {
@@ -69,9 +72,15 @@ export function UserDetailQuotaBreakdown({
               <th>{usersStrings.effectiveQuota.columns.item}</th>
               <th>{usersStrings.effectiveQuota.columns.source}</th>
               <th>{usersStrings.effectiveQuota.columns.effect}</th>
-              <th>{usersStrings.quota.hourly}</th>
-              <th>{usersStrings.quota.daily}</th>
-              <th>{usersStrings.quota.monthly}</th>
+              <th>
+                <UsageMetricLabel label={usersStrings.quota.hourly} kind="businessCalls1h" language={language} />
+              </th>
+              <th>
+                <UsageMetricLabel label={usersStrings.quota.daily} kind="dailyCredits" language={language} />
+              </th>
+              <th>
+                <UsageMetricLabel label={usersStrings.quota.monthly} kind="monthlyCredits" language={language} />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -130,15 +139,30 @@ export function UserDetailQuotaBreakdown({
 
               <div className="admin-user-mobile-metric-grid admin-user-breakdown-metric-grid">
                 <div className="admin-user-mobile-metric-card">
-                  <span className="admin-user-mobile-metric-label">{usersStrings.quota.hourly}</span>
+                  <UsageMetricLabel
+                    label={usersStrings.quota.hourly}
+                    kind="businessCalls1h"
+                    language={language}
+                    className="admin-user-mobile-metric-label"
+                  />
                   <strong>{formatBreakdownValue(entry, view.isAbsoluteRow, entry.hourlyDelta)}</strong>
                 </div>
                 <div className="admin-user-mobile-metric-card">
-                  <span className="admin-user-mobile-metric-label">{usersStrings.quota.daily}</span>
+                  <UsageMetricLabel
+                    label={usersStrings.quota.daily}
+                    kind="dailyCredits"
+                    language={language}
+                    className="admin-user-mobile-metric-label"
+                  />
                   <strong>{formatBreakdownValue(entry, view.isAbsoluteRow, entry.dailyDelta)}</strong>
                 </div>
                 <div className="admin-user-mobile-metric-card admin-user-mobile-metric-card--span-2">
-                  <span className="admin-user-mobile-metric-label">{usersStrings.quota.monthly}</span>
+                  <UsageMetricLabel
+                    label={usersStrings.quota.monthly}
+                    kind="monthlyCredits"
+                    language={language}
+                    className="admin-user-mobile-metric-label"
+                  />
                   <strong>{formatBreakdownValue(entry, view.isAbsoluteRow, entry.monthlyDelta)}</strong>
                 </div>
               </div>

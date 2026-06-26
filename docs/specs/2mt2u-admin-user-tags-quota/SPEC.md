@@ -15,9 +15,9 @@
 ### Goals
 
 - 新增用户标签模型，支持 custom tag 的增删改查与用户绑标/解绑。
-- 固定提供 5 个 LinuxDo 系统标签：`linuxdo_l0..linuxdo_l4`，显示名 `L0..L4`，图标键 `linuxdo`，默认 delta 直接镜像旧 token 默认额度（`hourlyAny/hourly/daily/monthly`）。
+- 固定提供 5 个 LinuxDo 系统标签：`linuxdo_l0..linuxdo_l4`，显示名 `L0..L4`，图标键 `linuxdo`，默认 delta 直接镜像当前用户基线额度语义（`requestRate/businessCalls1h/dailyCredits/monthlyCredits`）；其中 `requestRate` 仅保留兼容控制面限制，不再作为业务额度入口展示。
 - 基于 `oauth_accounts.trust_level` 做系统标签同步：初始化回填历史 LinuxDo 用户，后续 LinuxDo 登录时维持“每用户最多一个当前等级标签”。
-- 将账户额度改为“用户基线 + 标签叠加”的有效额度模型，并让 `block_all` 标签可同时阻断 hourly-any 与 business quota。
+- 将账户额度改为“用户基线 + 标签叠加”的有效额度模型，并让 `block_all` 标签可同时阻断 `requestRate` 与业务额度。
 - 在 admin 用户列表与详情页展示标签、基线额度、有效额度与计算明细。
 
 ### Non-goals
@@ -91,8 +91,12 @@
   And admin 详情中的 `quotaBreakdown` 总是追加一条最终 `effective` 行，明确展示钳制后的最终额度。
 
 - Given 用户绑定 `block_all` 标签
-  When 发起 hourly-any 或 business quota 校验
+  When 发起 `requestRate` 或业务额度校验
   Then 请求被阻断，admin UI 中对应有效额度展示为 `0`。
+
+- Given 管理员查看用户详情、标签目录或用量列表
+  When 页面展示 business 额度
+  Then 对外只出现“每小时业务请求次数限额 / 每日积分限额 / 每月积分限额”三类业务额度命名，不再暴露旧 hourly credits 独立入口。
 
 - Given custom tag 被删除
   When 再次读取用户详情或标签列表
@@ -150,6 +154,8 @@
   ![标签删除二次确认](./assets/admin-users-tags-delete-dialog.png)
 - 用户详情页
   ![用户详情页](./assets/admin-user-detail.png)
+- 用户详情额度解释态
+  ![用户详情额度解释态](./assets/admin-user-detail-quota-tooltip.png)
 
 ## 风险 / 开放问题 / 假设
 
@@ -162,3 +168,4 @@
 - 2026-03-09: 冻结快车道 spec、DB / HTTP contracts，并落地 `user_tags` / `user_tag_bindings`、LinuxDo 系统标签 seed / 回填、基线额度 + 标签叠加、`block_all` 限流语义，以及 admin 列表/详情标签与额度拆解 UI。
 - 2026-03-09: 通过 `cargo clippy -- -D warnings`、`cargo test`、`cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并在 `http://127.0.0.1:55173/admin/users` 与 `http://127.0.0.1:55173/admin/users/demo-user` 完成真实浏览器验收。
 - 2026-03-10: 根据主人确认补齐 5 张管理端视觉证据，统一归档到 `docs/specs/2mt2u-admin-user-tags-quota/assets/`，并修正标签目录编辑卡片与非编辑卡片的基线对齐。
+- 2026-06-26: 管理端标签/额度相关 UI 与合同同步切换到“每小时业务请求次数限额 / 每日积分限额 / 每月积分限额”；用户详情与用量页补充指标解释交互，business 1h 成为唯一小时业务额度入口。

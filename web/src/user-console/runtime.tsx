@@ -2939,6 +2939,7 @@ export default function UserConsole(): JSX.Element {
               monthlyUsed={detail?.quotaMonthlyUsed ?? 0}
               monthlyLimit={detail?.quotaMonthlyLimit ?? 0}
               formatNumber={formatNumber}
+              language={language}
             />
 
             <TokenSecretField

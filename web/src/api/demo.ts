@@ -610,6 +610,7 @@ function createDemoUser(
       successCount: number
       failureCount: number
       totalCount: number
+      limit: number
       windowMinutes: number
     }
     lastLoginAt: number
@@ -657,6 +658,7 @@ function createDemoUser(
       successCount: Math.max(0, Math.min(hourlyUsed, dailySuccess)),
       failureCount: Math.max(0, Math.min(2, dailyFailure)),
       totalCount: Math.max(0, Math.min(hourlyUsed, dailySuccess) + Math.max(0, Math.min(2, dailyFailure))),
+      limit: hourlyLimit,
       windowMinutes: 60,
     },
     monthlyBrokenCount: userId === 'user-ops' ? 3 : 1,

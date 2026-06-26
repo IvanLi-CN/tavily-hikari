@@ -32,7 +32,6 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, LineController, LineEle
 
 const USAGE_TAB_ORDER: readonly AdminUserUsagePanelTab[] = [
   'rate5m',
-  'quota1h',
   'businessCalls1h',
   'quota24h',
   'quotaMonth',
@@ -298,7 +297,7 @@ export function UserDetailSharedUsagePanel({
   usersStrings,
   language,
   loadSeries,
-  initialSeries = 'quota1h',
+  initialSeries = 'businessCalls1h',
   ipTimeline = [],
   ipAddresses24h = [],
   ipAddresses7d = [],
@@ -308,7 +307,9 @@ export function UserDetailSharedUsagePanel({
   description,
 }: UserDetailSharedUsagePanelProps): JSX.Element {
   const { resolvedTheme } = useTheme()
-  const [activeSeries, setActiveSeries] = useState<AdminUserUsagePanelTab>(initialSeries)
+  const [activeSeries, setActiveSeries] = useState<AdminUserUsagePanelTab>(
+    initialSeries === 'quota1h' ? 'businessCalls1h' : initialSeries,
+  )
   const [seriesCache, setSeriesCache] = useState<Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>>({})
   const [statusBySeries, setStatusBySeries] = useState<Partial<Record<AdminUserUsageSeriesKey, LoadStatus>>>({})
   const [hoverTooltip, setHoverTooltip] = useState<SharedUsageTooltipState | null>(null)
@@ -771,7 +772,6 @@ export function UserDetailSharedUsagePanel({
             onChange={setActiveSeries}
             options={[
               { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
-              { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
               { value: 'businessCalls1h', label: usersStrings.detail.sharedUsageTabs.businessOneHour },
               { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
               { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },
@@ -788,7 +788,6 @@ export function UserDetailSharedUsagePanel({
             onChange={setActiveSeries}
             options={[
               { value: 'rate5m', label: usersStrings.detail.sharedUsageTabs.fiveMinute },
-              { value: 'quota1h', label: usersStrings.detail.sharedUsageTabs.oneHour },
               { value: 'businessCalls1h', label: usersStrings.detail.sharedUsageTabs.businessOneHour },
               { value: 'quota24h', label: usersStrings.detail.sharedUsageTabs.daily },
               { value: 'quotaMonth', label: usersStrings.detail.sharedUsageTabs.monthly },

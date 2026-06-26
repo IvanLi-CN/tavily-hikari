@@ -1,8 +1,11 @@
+import type { ReactNode } from 'react'
+
 import type {
   UserDashboardOverview,
   UserDashboardOverviewSeriesPoint,
   UserDashboardProgressCard,
 } from '../api'
+import { UsageMetricLabel } from '../components/UsageMetricLabel'
 import type { Language } from '../i18n'
 
 interface UserDashboardOverviewText {
@@ -259,7 +262,7 @@ function ProgressCard({
   marker,
   formatNumber,
 }: {
-  label: string
+  label: ReactNode
   card: UserDashboardProgressCard | null
   loading: boolean
   accent: 'request' | 'hour' | 'day' | 'month'
@@ -356,7 +359,14 @@ export default function UserDashboardOverview({
           formatNumber={formatNumber}
         />
         <ProgressCard
-          label={text.hourly}
+          label={
+            <UsageMetricLabel
+              label={text.hourly}
+              kind="businessCalls1h"
+              language={language}
+              className="user-console-progress-card-label"
+            />
+          }
           card={progress?.quotaHourly ?? null}
           loading={loading}
           accent="hour"
@@ -364,7 +374,14 @@ export default function UserDashboardOverview({
           formatNumber={formatNumber}
         />
         <ProgressCard
-          label={text.daily}
+          label={
+            <UsageMetricLabel
+              label={text.daily}
+              kind="dailyCredits"
+              language={language}
+              className="user-console-progress-card-label"
+            />
+          }
           card={progress?.quotaDaily ?? null}
           loading={loading}
           accent="day"
@@ -372,7 +389,14 @@ export default function UserDashboardOverview({
           formatNumber={formatNumber}
         />
         <ProgressCard
-          label={text.monthly}
+          label={
+            <UsageMetricLabel
+              label={text.monthly}
+              kind="monthlyCredits"
+              language={language}
+              className="user-console-progress-card-label"
+            />
+          }
           card={progress?.quotaMonthly ?? null}
           loading={loading}
           accent="month"

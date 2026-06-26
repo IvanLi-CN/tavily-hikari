@@ -255,9 +255,25 @@ impl TavilyProxy {
         &self,
         user_id: &str,
     ) -> Result<AdminUserBusinessCalls1hSeries, ProxyError> {
+        let limit = self
+            .key_store
+            .resolve_account_quota_resolution(user_id)
+            .await?
+            .effective
+            .hourly_limit
+            .max(0);
         Ok(AdminUserBusinessCalls1hSeries {
-            limit: 0,
-            points: self.user_business_calls_1h_window.usage_series(user_id).await,
+            limit,
+            points: self
+                .user_business_calls_1h_window
+                .usage_series(user_id)
+                .await
+                .into_iter()
+                .map(|mut point| {
+                    point.limit_value = point.pressure.map(|_| limit);
+                    point
+                })
+                .collect(),
         })
     }
 }

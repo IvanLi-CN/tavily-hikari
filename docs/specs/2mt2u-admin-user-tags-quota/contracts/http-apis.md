@@ -14,12 +14,12 @@
   - `displayName: string`
   - `icon?: string | null`
   - `effectKind: 'quota_delta' | 'block_all'`
-  - `hourlyAnyDelta: number`
-  - `hourlyDelta: number`
-  - `dailyDelta: number`
-  - `monthlyDelta: number`
+  - `businessCalls1hDelta: number`
+  - `dailyCreditsDelta: number`
+  - `monthlyCreditsDelta: number`
 - Notes
   - 仅允许创建 custom tag。
+  - 旧 `hourlyAnyDelta` 只保留服务端兼容入口，不再属于对外合同。
 
 ## PATCH `/api/user-tags/:tagId`
 
@@ -68,16 +68,22 @@
 - Notes
   - 自动同步的 LinuxDo 系统标签会像其他 tag 一样出现在 `tags` 与 `quotaBreakdown` 中，并把默认 delta 叠加到 `effectiveQuota`。
   - `quotaBreakdown` 始终包含一条最终 `effective` 行，反映经过 `max(0, value)` 钳制后的最终有效额度。
+  - 用户详情 summary / detail 对外只返回：
+    - `requestRate`
+    - `businessCalls1h`
+    - `dailyCreditsUsed` / `dailyCreditsLimit`
+    - `monthlyCreditsUsed` / `monthlyCreditsLimit`
+  - 不再返回旧 `quotaHourly*`、`quotaDaily*`、`quotaMonthly*`、`hourlyAny*` 平铺字段。
 
 ## PATCH `/api/users/:id/quota`
 
 - Auth: admin only
 - Path unchanged.
-- Body shape unchanged:
-  - `hourlyAnyLimit: number`
+- Body shape:
   - `hourlyLimit: number`
   - `dailyLimit: number`
   - `monthlyLimit: number`
 - Semantics changed:
   - Writes user base quota only.
   - If payload equals current env defaults, server may set `inherits_defaults=1`; otherwise `inherits_defaults=0`.
+  - 旧 `hourlyAnyLimit` 若被 legacy caller 送入，服务端接受但忽略。

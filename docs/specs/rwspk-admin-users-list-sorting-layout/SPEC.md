@@ -17,7 +17,7 @@
 
 ### Goals
 
-- 为用户列表增加服务端排序，覆盖 `1h（任意）`、`1h（业务）`、`24h`、`月度`、`日成功/失败`、`月成功/失败`、`最近活动`、`最近登录`。
+- 为用户列表增加服务端排序，覆盖 `5m 限流`、`业务请求 1h`、`24h`、`月度`、`日成功/失败`、`月成功/失败`、`最近活动`、`最近登录`。
 - 排序基于“过滤后的全量用户集合”，先聚合、排序，再分页，避免只排当前页。
 - 列表响应新增 `monthlyFailure`，并用成功率 + 失败数取代现有成功数展示。
 - 桌面表格改成紧凑双行单元格：
@@ -68,6 +68,11 @@
   - 新增 `sort`：`hourlyAnyUsed | quotaHourlyUsed | quotaDailyUsed | quotaMonthlyUsed | dailySuccessRate | monthlySuccessRate | lastActivity | lastLoginAt`
   - 新增 `order`：`asc | desc`
   - 当 `sort` 缺失时，保持默认排序 `lastLoginAt DESC, userId ASC`。
+- 对外列标签语义同步为：
+  - `hourlyAnyUsed` => `5m 限流`
+  - `quotaHourlyUsed` => `业务请求 1h`
+  - `quotaDailyUsed` => `每日积分限额`
+  - `quotaMonthlyUsed` => `每月积分限额`
 - `/api/users` 响应
   - `AdminUserSummaryView` 与 `AdminUserDetailView` 新增 `monthlyFailure`。
 - 排序语义

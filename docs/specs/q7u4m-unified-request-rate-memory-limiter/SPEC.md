@@ -17,7 +17,7 @@
 - 将 raw any-request limiter 从 SQLite bucket 切换为**单实例内存滑动窗口**，统一规则固定为 **5 分钟 60 次**。
 - 统一 subject 解析：绑定用户的 token 走 `user` 维度共享窗口；未绑定 token 走 `token` 维度独立窗口。
 - `/mcp` 与受鉴权的 `/api/tavily/*` 都命中新 limiter，并在 429 时返回可消费的 `Retry-After` 与统一 `requestRate` 视图。
-- 后端 DTO 与前端展示统一收敛到 `requestRate { used, limit, windowMinutes, scope }`；`hourlyAny*` 仅保留一轮 deprecated alias 兼容读。
+- 后端 DTO 与前端展示统一收敛到 `requestRate { used, limit, windowMinutes, scope }`；bound-user 侧旧 `hourlyAny*` 平铺 alias 已移除，只保留 `requestRate` 嵌套对象。
 - 管理端移除 raw-limit 编辑入口；legacy `hourlyAnyLimit` 写入继续兼容接收，但不再影响生效策略。
 
 ## Non-goals
@@ -57,7 +57,9 @@
   - `requestRate.limit`
   - `requestRate.windowMinutes`
   - `requestRate.scope` (`user` | `token`)
-- 继续保留 `hourlyAnyUsed` / `hourlyAnyLimit` 作为 deprecated alias：
+- 非 bound-user 场景可继续保留 legacy alias 用于兼容过渡：
+  - `hourlyAnyUsed`
+  - `hourlyAnyLimit`
   - 数据来源改为同一个内存 request-rate snapshot
   - 不再表示真实“hourly configurable limiter”
 - 429 payload 统一返回：
@@ -65,6 +67,7 @@
   - `Retry-After`
   - 文案改为 rolling `5m` window 语义
 - Admin / User Console 只展示新 request-rate 文案，不再显示或编辑 “hourly any”。
+- 绑定用户相关 summary/detail/overview 合同不再额外输出 `hourlyAnyUsed` / `hourlyAnyLimit`。
 
 ### 4. Legacy write compatibility
 

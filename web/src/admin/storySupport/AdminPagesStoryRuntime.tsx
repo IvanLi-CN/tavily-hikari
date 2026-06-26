@@ -1212,7 +1212,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     apiKeyCount: 3,
     tags: MOCK_ALICE_TAGS,
     requestRate: createRequestRate(58, 60, 'user'),
-    businessCalls1h: { successCount: 34, failureCount: 2, totalCount: 36, windowMinutes: 60 },
+    businessCalls1h: { successCount: 34, failureCount: 2, totalCount: 36, limit: 120, windowMinutes: 60 },
     hourlyAnyUsed: 58,
     hourlyAnyLimit: 60,
     quotaHourlyUsed: 1_118,
@@ -1241,7 +1241,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     apiKeyCount: 2,
     tags: MOCK_BOB_TAGS,
     requestRate: createRequestRate(60, 60, 'user'),
-    businessCalls1h: { successCount: 58, failureCount: 4, totalCount: 62, windowMinutes: 60 },
+    businessCalls1h: { successCount: 58, failureCount: 4, totalCount: 62, limit: 60, windowMinutes: 60 },
     hourlyAnyUsed: 60,
     hourlyAnyLimit: 60,
     quotaHourlyUsed: 602,
@@ -1270,7 +1270,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     apiKeyCount: 0,
     tags: [],
     requestRate: createRequestRate(0, 60, 'user'),
-    businessCalls1h: { successCount: 0, failureCount: 0, totalCount: 0, windowMinutes: 60 },
+    businessCalls1h: { successCount: 0, failureCount: 0, totalCount: 0, limit: 500, windowMinutes: 60 },
     hourlyAnyUsed: 0,
     hourlyAnyLimit: 60,
     quotaHourlyUsed: 0,
@@ -5918,7 +5918,7 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
   )
 }
 function UserDetailPageCanvas({
-  initialUsageSeries = 'quota1h',
+  initialUsageSeries = 'businessCalls1h',
   initialDetail = MOCK_USER_DETAIL,
 }: {
   initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
@@ -6216,6 +6216,7 @@ function UserDetailPageCanvas({
         <UserDetailQuotaBreakdown
           entries={detail.quotaBreakdown}
           usersStrings={users}
+          language={language}
           formatQuotaLimitValue={formatQuotaLimitValue}
           formatSignedQuotaDelta={formatSignedQuotaDelta}
         />
@@ -7137,8 +7138,8 @@ export const UserDetail: Story = {
     ) {
       throw new Error('Expected the shared usage panel content to avoid a nested card surface.')
     }
-    if (usagePanel.dataset.loadedSeries !== 'quota1h') {
-      throw new Error(`Expected the default story to lazy-load only quota1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
+    if (usagePanel.dataset.loadedSeries !== 'businessCalls1h') {
+      throw new Error(`Expected the default story to lazy-load only businessCalls1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
     }
     if (canvasElement.textContent?.includes('封禁数限额')) {
       throw new Error('Expected user detail story to hide the per-user blocked-key limit card.')
@@ -7146,7 +7147,7 @@ export const UserDetail: Story = {
     if (canvasElement.textContent?.includes('更早的历史超出可追溯范围')) {
       throw new Error('Expected the shared usage partial-history hint to stay out of the always-visible panel copy.')
     }
-    if (!canvasElement.textContent?.includes('账户共享请求频率、业务额度消耗与 IP 活跃趋势。')) {
+    if (!canvasElement.textContent?.includes('账户共享请求限流、每小时业务请求次数、积分消耗与 IP 活跃趋势。')) {
       throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
     }
 
@@ -7186,7 +7187,7 @@ export const UserDetail: Story = {
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
       .map((item) => item.textContent?.trim())
-    const expectedTabLabels = ['5m', '1h', '24h', '月', 'IP']
+    const expectedTabLabels = ['5m', '业务请求 1h', '24h', '月', 'IP']
     if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
       throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
     }
@@ -7244,7 +7245,7 @@ export const UserDetail: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
 
     const loadedSeries = usagePanel.dataset.loadedSeries?.split(',').filter(Boolean) ?? []
-    const expected = ['quota1h', 'rate5m', 'quota24h', 'quotaMonth']
+    const expected = ['businessCalls1h', 'rate5m', 'quota24h', 'quotaMonth']
     if (expected.some((value) => !loadedSeries.includes(value))) {
       throw new Error(`Expected shared usage tabs to lazy-load all series after interaction, received ${loadedSeries.join(',')}.`)
     }
@@ -7338,7 +7339,7 @@ export const UserDetailBusinessCalls1h: Story = {
     if (usagePanel?.dataset.activeSeries !== 'businessCalls1h') {
       throw new Error('Expected the business calls story to open the business 1h tab.')
     }
-    if (!canvasElement.textContent?.includes('业务 1h')) {
+    if (!canvasElement.textContent?.includes('业务请求 1h')) {
       throw new Error('Expected the business calls story to include the business 1h label.')
     }
     if (!canvasElement.textContent?.includes('36')) {
