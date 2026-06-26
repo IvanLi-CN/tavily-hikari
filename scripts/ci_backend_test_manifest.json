@@ -426,6 +426,7 @@
       ],
       "include_prefixes": [
         "server::tests::api_keys_and_registration::linuxdo_",
+        "server::tests::linuxdo_oauth_and_admin_keys::legacy_",
         "server::tests::linuxdo_oauth_and_admin_keys::linuxdo_",
         "server::tests::upstream_support_and_manual_jobs::linuxdo_",
         "server::tests::api_keys_and_registration::forward_",
