@@ -1,4 +1,5 @@
 import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
+import { adminPressureTranslations } from '../adminPressureTranslations'
 import type { TranslationShape } from '../types'
 
 export const EN: TranslationShape = {
@@ -213,8 +214,10 @@ export const EN: TranslationShape = {
       },
       nav: {
         dashboard: 'Dashboard',
+        analysis: 'Analysis',
         usage: 'Usage',
         rankings: 'Rankings',
+        pressure: 'Pressure',
         tokens: 'Tokens',
         keys: 'API Keys',
         requests: 'Requests',
@@ -348,6 +351,7 @@ export const EN: TranslationShape = {
         statusDegraded: 'Live updates degraded',
         staleHint: 'Showing the latest successful snapshot. Fresh data will resume automatically after reconnect.',
       },
+      pressure: adminPressureTranslations.en,
       modules: {
         comingSoon: 'Coming soon',
         users: {

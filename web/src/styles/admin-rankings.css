@@ -501,3 +501,59 @@
   }
 
 }
+
+.pressure-analysis-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pressure-analysis-page > .surface.panel {
+  overflow: hidden;
+}
+
+.pressure-analysis-page > .surface.panel > .panel-header {
+  margin-bottom: 12px;
+}
+
+.pressure-chart-shell {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.pressure-chart-shell-line {
+  height: 320px;
+}
+
+.pressure-chart-shell-distribution {
+  height: 280px;
+}
+
+.pressure-distribution-histogram {
+  overflow: hidden;
+}
+
+.pressure-analysis-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .pressure-analysis-page {
+    gap: 14px;
+  }
+
+  .pressure-analysis-page > .surface.panel > .panel-header {
+    margin-bottom: 10px;
+  }
+
+  .pressure-chart-shell-line {
+    height: 280px;
+  }
+
+  .pressure-chart-shell-distribution {
+    height: 240px;
+  }
+}

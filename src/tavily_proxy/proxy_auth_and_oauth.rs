@@ -975,6 +975,13 @@ impl TavilyProxy {
         self.key_store.get_admin_user_identity(user_id).await
     }
 
+    pub async fn get_admin_user_identities(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, AdminUserIdentity>, ProxyError> {
+        self.key_store.get_admin_user_identities(user_ids).await
+    }
+
     /// Admin: resolve token owners in bulk for management views.
     pub async fn get_admin_token_owners(
         &self,

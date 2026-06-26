@@ -912,6 +912,22 @@ async fn get_user_usage_series(
     Ok(Json(payload))
 }
 
+async fn get_analysis_pressure_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AnalysisPressureSnapshot>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    state
+        .proxy
+        .analysis_pressure_snapshot()
+        .await
+        .map(Json)
+        .map_err(|err| admin_proxy_error_response("get analysis pressure snapshot error", err))
+}
+
 #[axum::debug_handler]
 async fn create_user_token(
     State(state): State<Arc<AppState>>,

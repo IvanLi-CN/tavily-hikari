@@ -831,7 +831,16 @@ export function TokenDetailStoryCanvas({
 
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: 'Dashboard', icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
-    { target: 'user-usage', label: 'Usage', icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    {
+      target: 'analysis',
+      label: 'Analysis',
+      icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
+      children: [
+        { target: 'analysis-rankings', label: 'Rankings' },
+        { target: 'analysis-usage', label: 'Usage' },
+        { target: 'analysis-pressure', label: 'Pressure' },
+      ],
+    },
     { target: 'tokens', label: 'Tokens', icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: 'API Keys', icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: 'Requests', icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },

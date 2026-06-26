@@ -7,6 +7,7 @@ import {
 import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRechargeAction, handleDemoAdminRecharges, type DemoRechargeOrder } from './demoAdminRecharge'
 import { createDemoHaStatus, handleDemoHaRoute } from './demoHa'
 import { rankingsStorySnapshot } from '../admin/rankingsStoryData'
+import { buildDemoAnalysisPressureSnapshot } from './demoAnalysisPressure'
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 type DemoListener = EventListenerOrEventListenerObject
 declare global {
@@ -1821,6 +1822,9 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
 
   if (path === '/api/users') return jsonResponse(buildListPage(filterDemoUsers(url), url))
   if (path === '/api/users/rankings') return jsonResponse(demoUserRankingsSnapshot())
+  if (path === '/api/analysis/pressure') {
+    return jsonResponse(buildDemoAnalysisPressureSnapshot(nowSeconds, filterDemoUsers))
+  }
   if (path === '/api/users/rankings/events') return textResponse('demo event stream is provided by the browser demo runtime\n')
   if (path.startsWith('/api/users/')) return handleUserRoute(path, url, method, init)
   if (path === '/api/user-tags') return handleUserTags(path, method, init)

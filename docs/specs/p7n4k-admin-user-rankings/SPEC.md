@@ -4,7 +4,8 @@
 
 ## Summary
 
-- 新增独立 `/admin/rankings` 管理台模块，以 `24h / 7d / 30d / 主要调用 / 积分 / IP` 六个单选 tab 组织排行视图。
+- `排行` 不再作为独立一级模块；当前 canonical 信息架构收敛为 `分析 -> 排行`，页面主路由迁到 `/admin/analysis/rankings`，旧 `/admin/rankings` 保留为兼容别名。
+- 排行视图仍使用 `24h / 7d / 30d / 主要调用 / 积分 / IP` 六个单选 tab 组织内容，并继续作为 `analysis` 父模块下的一个子模块存在。
 - 每个时间窗固定三张榜：`成功主要调用`、`积分消耗` 与 `IP`，各取 `TOP20` 用户，按 `value desc, userId asc` 排序。
 - 新增 admin-only HTTP 快照 `GET /api/users/rankings` 与独立 SSE `GET /api/users/rankings/events`；SSE 建连首帧即发 `snapshot`，之后每 10 秒推送。
 - 排行身份统一返回 `userId / displayName / username / avatarUrl`；前端展示优先级为 `displayName > username > userId`，优先显示真实头像，缺失或加载失败时回退为稳定 mock 头像。
@@ -18,7 +19,8 @@
   - `GET /api/users/rankings/events`
   - 用户排行快照缓存、SSE snapshot stream、公开头像安全解析复用。
 - Web admin
-  - 新增 `rankings` route/nav/module，路径固定 `/admin/rankings`。
+  - 将 `rankings` 收拢到 `analysis` 父模块，canonical 路径固定 `/admin/analysis/rankings`。
+  - 旧 `/admin/rankings` 继续解析到同一页面逻辑，但不再作为侧栏独立入口。
   - 新增横向柱状图页面、HTTP 首屏拉取、独立 SSE 活态更新、稳定 mock avatar fallback。
   - 新增 Storybook 页面级 stories 与最小合同测试。
 - Docs
@@ -89,9 +91,18 @@
 - 为避免核心排行信息只存在于 canvas，页面必须补充同榜单同内容的语义 DOM fallback，供辅助技术读取。
 - 头像 URL 只使用服务端安全解析后的公开 `avatarUrl`；无头像或加载失败必须回退为稳定 mock 头像，不得整屏退化为字母圆牌。
 
+## Information Architecture Contract
+
+- admin 一级侧栏只保留 `分析` 父项；其下固定三个子模块：
+  - `用量` -> `/admin/analysis/usage`
+  - `排行` -> `/admin/analysis/rankings`
+  - `压力` -> `/admin/analysis/pressure`
+- `排行` 作为子模块时，父项高亮与子导航状态必须保持一致；旧 `/admin/rankings` 访问时也必须映射到相同 active state。
+
 ## Acceptance
 
-- `/admin/rankings` 作为独立 admin 模块出现在导航中，不影响 `/admin/users/usage` 与 `/admin/tokens/leaderboard`。
+- `/admin/analysis/rankings` 稳定渲染排行页，旧 `/admin/rankings` 仍能进入同一页面逻辑。
+- 侧栏不再存在独立 `排行` 一级入口，而是统一挂在 `分析` 父项下，不影响 `/admin/users/usage` 与 `/admin/tokens/leaderboard` 的兼容访问。
 - HTTP 与 SSE `snapshot` payload 结构完全一致。
 - 24h / 7d / 30d 三个窗口都返回 `primarySuccessTop`、`businessCreditsTop` 与 `uniqueIpTop` 三榜，且每榜最多 20 行。
 - 排序固定为 `value desc, userId asc`。

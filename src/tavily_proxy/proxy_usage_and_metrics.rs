@@ -404,6 +404,9 @@ impl TavilyProxy {
             self.user_business_calls_1h_window
                 .record_event(&event.user_id, event.created_at, outcome)
                 .await;
+            self.key_store
+                .upsert_server_pressure_event(event.created_at, &event.result_status)
+                .await?;
         }
         Ok(())
     }
@@ -903,6 +906,9 @@ impl TavilyProxy {
             self.user_business_calls_1h_window
                 .record_event(&event.user_id, event.created_at, outcome)
                 .await;
+            self.key_store
+                .upsert_server_pressure_event(event.created_at, &event.result_status)
+                .await?;
         }
         Ok(log_id)
     }

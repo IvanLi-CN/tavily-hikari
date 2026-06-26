@@ -72,6 +72,7 @@ import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavT
 import AdminOverlayHost from './AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './DashboardOverview'
 import AdminUserRankingsPage, { RankingsMeta } from './AdminUserRankingsPage'
+import PressureAnalysisScreen from './PressureAnalysisScreen'
 import AdminJobTriggerMenu from './AdminJobTriggerMenu'
 import { AnchoredApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import {
@@ -129,11 +130,13 @@ import {
 import { useAdminStackedLayout } from '../lib/responsive'
 import { formatRequestRateScope, formatRequestRateSummary, resolveRequestRate } from '../requestRate'
 import {
+  type AdminAnalysisView,
   type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
   type AdminTokensListContext,
   type AlertsCenterView,
+  analysisPath,
   alertsPath,
   buildAdminKeysPath,
   buildAdminTokensPath,
@@ -254,6 +257,7 @@ import {
   fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
   fetchAdminUserUsageSeries,
+  fetchAdminAnalysisPressure,
   fetchAdminRegistrationSettings,
   fetchAdminHaStatus,
   fetchHaNodeDetail,
@@ -271,6 +275,7 @@ import {
   bindAdminUserTag,
   unbindAdminUserTag,
   type AdminUserSummary,
+  type AnalysisPressureSnapshot,
   type AdminUserListStats,
   type AdminUnboundTokenUsageSortField,
   type AdminUnboundTokenUsageSummary,
@@ -1740,6 +1745,9 @@ function AdminDashboard(): JSX.Element {
   const [rankingsConnectionState, setRankingsConnectionState] =
     useState<'connecting' | 'live' | 'degraded'>('connecting')
   const [rankingsReconnectNonce, setRankingsReconnectNonce] = useState(0)
+  const [pressureSnapshot, setPressureSnapshot] = useState<AnalysisPressureSnapshot | null>(null)
+  const [pressureLoading, setPressureLoading] = useState(false)
+  const [pressureError, setPressureError] = useState<string | null>(null)
   const [dashboardMonthSeries, setDashboardMonthSeries] = useState<DashboardMonthSeries>(() => createEmptyDashboardMonthSeries())
   const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
@@ -1859,8 +1867,9 @@ function AdminDashboard(): JSX.Element {
   const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(() => getAdminUsersSortDirectionFromLocation())
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
   const isUsersModuleRoute = route.name === 'module' && route.module === 'users'
-  const isUserUsageRoute = route.name === 'user-usage'
-  const isUsersCollectionRoute = isUsersModuleRoute || isUserUsageRoute
+  const isAnalysisUsageRoute =
+    route.name === 'module' && route.module === 'analysis' && route.analysisView === 'usage'
+  const isUsersCollectionRoute = isUsersModuleRoute || isAnalysisUsageRoute
   const [usersError, setUsersError] = useState<string | null>(null)
   const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
   const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
@@ -2812,6 +2821,27 @@ function AdminDashboard(): JSX.Element {
     [],
   )
 
+  const loadAnalysisPressure = useCallback(
+    async (signal?: AbortSignal) => {
+      setPressureLoading(true)
+      try {
+        const snapshot = await fetchAdminAnalysisPressure(signal)
+        if (signal?.aborted) return
+        setPressureSnapshot(snapshot)
+        setPressureError(null)
+      } catch (err) {
+        if (signal?.aborted) return
+        console.error(err)
+        setPressureError(err instanceof Error ? err.message : 'Unexpected error occurred')
+      } finally {
+        if (!signal?.aborted) {
+          setPressureLoading(false)
+        }
+      }
+    },
+    [],
+  )
+
   useEffect(() => {
     routeRef.current = route
   }, [route])
@@ -3399,7 +3429,7 @@ function AdminDashboard(): JSX.Element {
   }, [loadDashboardOverview, loadData, loadShellData, route])
 
   useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'rankings')) {
+    if (!(route.name === 'module' && route.module === 'analysis' && route.analysisView === 'rankings')) {
       return
     }
 
@@ -3408,6 +3438,16 @@ function AdminDashboard(): JSX.Element {
     void loadUserRankings(controller.signal)
     return () => controller.abort()
   }, [loadUserRankings, rankingsReconnectNonce, route])
+
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'analysis' && route.analysisView === 'pressure')) {
+      return
+    }
+
+    const controller = new AbortController()
+    void loadAnalysisPressure(controller.signal)
+    return () => controller.abort()
+  }, [loadAnalysisPressure, route])
 
   useLayoutEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
@@ -4051,7 +4091,7 @@ function AdminDashboard(): JSX.Element {
     setUsersTagFilterId((previous) => (previous === locationTagFilterId ? previous : locationTagFilterId))
     setUsersSort((previous) => (previous === normalizedSort ? previous : normalizedSort))
     setUsersSortOrder((previous) => (previous === normalizedSortOrder ? previous : normalizedSortOrder))
-  }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
+  }, [isAnalysisUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
 
   useEffect(() => {
     if (route.name !== 'unbound-token-usage') return
@@ -4235,7 +4275,7 @@ function AdminDashboard(): JSX.Element {
   }, [sseConnected, sseFallbackActive, loadData, loadDashboardOverview, loadShellData, loadUnboundTokenUsage, route])
 
   useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'rankings')) {
+    if (!(route.name === 'module' && route.module === 'analysis' && route.analysisView === 'rankings')) {
       return
     }
 
@@ -4411,7 +4451,9 @@ function AdminDashboard(): JSX.Element {
     setRoute((previous) => (isSameAdminRoute(previous, nextRoute) ? previous : nextRoute))
   }, [])
   const buildUsersOverviewPath = useCallback(() => {
-    const useUsersState = route.name === 'module' && route.module === 'users' || route.name === 'user-usage'
+    const useUsersState =
+      (route.name === 'module' && route.module === 'users')
+      || (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'usage')
     return buildAdminUsersOverviewPath(
       useUsersState ? usersQuery : getAdminUsersQueryFromLocation(),
       useUsersState ? usersTagFilterId : getAdminUsersTagFilterFromLocation(),
@@ -4439,7 +4481,7 @@ function AdminDashboard(): JSX.Element {
         )
         return
       }
-      if (target === 'user-usage') {
+      if (target === 'analysis-usage') {
         navigateToPath(
           userUsagePath(
             getAdminUsersQueryFromLocation(),
@@ -4451,10 +4493,18 @@ function AdminDashboard(): JSX.Element {
         )
         return
       }
+      if (target === 'analysis-rankings') {
+        navigateToPath(analysisPath('rankings'))
+        return
+      }
+      if (target === 'analysis-pressure') {
+        navigateToPath(analysisPath('pressure'))
+        return
+      }
       if (
         target === 'users'
         && (
-          route.name === 'user-usage'
+          (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'usage')
           || route.name === 'user'
           || route.name === 'user-tags'
           || route.name === 'user-tag-editor'
@@ -4590,13 +4640,13 @@ function AdminDashboard(): JSX.Element {
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
       if (options?.preserveUsersContext) {
-        const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+        const collection = isAnalysisUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
         navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder, collection))
         return
       }
       navigateToPath(userDetailPath(id))
     },
-    [isUserUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+    [isAnalysisUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
   )
 
   const buildUsersCollectionPath = useCallback(
@@ -4607,11 +4657,11 @@ function AdminDashboard(): JSX.Element {
       sort?: AdminUsersSortField | null,
       order?: SortDirection | null,
     ) => (
-      isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage'
+      isAnalysisUsageRoute || getAdminUsersCollectionFromLocation() === 'usage'
         ? userUsagePath(query, tagId, page, sort, order)
         : buildAdminUsersPath(query, tagId, page, sort, order)
     ),
-    [isUserUsageRoute],
+    [isAnalysisUsageRoute],
   )
 
   const navigateUsersSearch = useCallback(
@@ -4785,9 +4835,9 @@ function AdminDashboard(): JSX.Element {
     const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
     const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
     const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
-    const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+    const collection = isAnalysisUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
     navigateToPath(userTagsPath(query, tagId, page, sort, order, collection))
-  }, [isUserUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
+  }, [isAnalysisUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateUserTagCreate = useCallback(() => {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
@@ -4847,8 +4897,11 @@ function AdminDashboard(): JSX.Element {
             loadDashboardOverview(controller.signal),
           ]
         : [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
-    if (route.name === 'module' && route.module === 'rankings') {
+    if (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'rankings') {
       tasks.push(loadUserRankings(controller.signal))
+    }
+    if (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'pressure') {
+      tasks.push(loadAnalysisPressure(controller.signal))
     }
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
@@ -5736,7 +5789,8 @@ function AdminDashboard(): JSX.Element {
   const forwardProxyErrorStatsBlocking = isBlockingLoadState(forwardProxyErrorStatsLoadState)
   const activeModuleBlocking =
     (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
-    || (route.name === 'module' && route.module === 'rankings' && rankingsLoading)
+    || (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'rankings' && rankingsLoading)
+    || (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'pressure' && pressureLoading)
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
     || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
     || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
@@ -7479,8 +7533,16 @@ function AdminDashboard(): JSX.Element {
 
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
-    { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
-    { target: 'rankings', label: adminStrings.nav.rankings, icon: <Icon icon="mdi:trophy-outline" width={18} height={18} /> },
+    {
+      target: 'analysis',
+      label: adminStrings.nav.analysis,
+      icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
+      children: [
+        { target: 'analysis-rankings', label: adminStrings.nav.rankings },
+        { target: 'analysis-usage', label: adminStrings.nav.usage },
+        { target: 'analysis-pressure', label: adminStrings.nav.pressure },
+      ],
+    },
     { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
@@ -7501,11 +7563,15 @@ function AdminDashboard(): JSX.Element {
     { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
   const activeNavItem: AdminNavTarget =
-    route.name === 'user-usage'
-      ? 'user-usage'
-      : route.name === 'module'
-        ? route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
-          ? 'system-settings-ha'
+    route.name === 'module'
+      ? route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
+        ? 'system-settings-ha'
+        : route.module === 'analysis'
+          ? route.analysisView === 'usage'
+            ? 'analysis-usage'
+            : route.analysisView === 'pressure'
+              ? 'analysis-pressure'
+              : 'analysis-rankings'
           : route.module
         : route.name === 'ha-node'
           ? 'system-settings-ha'
@@ -7528,7 +7594,6 @@ function AdminDashboard(): JSX.Element {
       : route.name === 'key'
         ? 'keys'
         : route.name === 'user'
-            || route.name === 'user-usage'
             || route.name === 'user-tags'
             || route.name === 'user-tag-editor'
           ? 'users'
@@ -9225,7 +9290,7 @@ function AdminDashboard(): JSX.Element {
     </>
   )
 
-  if (route.name === 'user-usage') {
+  if (route.name === 'module' && route.module === 'analysis' && route.analysisView === 'usage') {
     const userUsageUpdatedTimeForScreen = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
     const userUsageSidebarUtility = (
       <AdminShellSidebarUtility>
@@ -9489,7 +9554,14 @@ function AdminDashboard(): JSX.Element {
   }
   const notFoundPath = route.name === 'not-found' ? route.path : ''
   const showDashboard = activeModule === 'dashboard' && !showNotFound
-  const showRankings = activeModule === 'rankings' && !showNotFound
+  const showAnalysis = activeModule === 'analysis' && !showNotFound
+  const analysisView: AdminAnalysisView =
+    route.name === 'module' && route.module === 'analysis'
+      ? (route.analysisView ?? 'rankings')
+      : 'rankings'
+  const showRankings = showAnalysis && analysisView === 'rankings'
+  const showAnalysisUsage = showAnalysis && analysisView === 'usage'
+  const showPressure = showAnalysis && analysisView === 'pressure'
   const showTokens = activeModule === 'tokens'
   const showKeys = activeModule === 'keys'
   const showRequests = activeModule === 'requests'
@@ -9569,10 +9641,21 @@ function AdminDashboard(): JSX.Element {
           title: headerStrings.title,
           description: headerStrings.subtitle,
         }
-      case 'rankings':
-        return {
-          title: adminStrings.rankings.title,
-        }
+      case 'analysis':
+        return analysisView === 'usage'
+          ? {
+              title: adminStrings.users.usage.title,
+              description: adminStrings.users.usage.description,
+            }
+          : analysisView === 'pressure'
+            ? {
+                title: adminStrings.pressure.title,
+                description: adminStrings.pressure.description,
+              }
+            : {
+                title: adminStrings.rankings.title,
+                description: adminStrings.rankings.description,
+              }
       case 'tokens':
         return {
           title: tokenStrings.title,
@@ -10107,6 +10190,8 @@ function AdminDashboard(): JSX.Element {
               )
               : showTokens
               ? renderTokenToolbar()
+              : showPressure
+                ? undefined
               : showKeys && isAdmin
                   ? renderKeyQuickAddToolbar()
                   : showUsers
@@ -10168,6 +10253,21 @@ function AdminDashboard(): JSX.Element {
             setRankingsError(null)
             setRankingsConnectionState('connecting')
             setRankingsReconnectNonce((current) => current + 1)
+          }}
+        />
+      )}
+
+      {showPressure && (
+        <PressureAnalysisScreen
+          snapshot={pressureSnapshot}
+          loading={pressureLoading}
+          error={pressureError}
+          language={language}
+          strings={adminStrings.pressure}
+          onRetry={() => {
+            setPressureError(null)
+            const controller = new AbortController()
+            void loadAnalysisPressure(controller.signal)
           }}
         />
       )}

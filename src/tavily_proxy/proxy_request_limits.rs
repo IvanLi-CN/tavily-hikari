@@ -48,6 +48,204 @@ impl TavilyProxy {
         }
     }
 
+    pub async fn analysis_pressure_snapshot(&self) -> Result<AnalysisPressureSnapshot, ProxyError> {
+        const ANALYSIS_PRESSURE_CACHE_TTL: Duration = Duration::from_secs(10);
+
+        loop {
+            let waiter = {
+                let mut cache = self.analysis_pressure_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && self
+                        .backend_time
+                        .instant_now()
+                        .saturating_duration_since(cached.generated_at)
+                        < ANALYSIS_PRESSURE_CACHE_TTL
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let generated_at = self.backend_time.now_ts();
+            let snapshot = self.analysis_pressure_snapshot_uncached(generated_at).await;
+            let mut cache = self.analysis_pressure_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = snapshot.as_ref() {
+                cache.cached = Some(CachedAnalysisPressureSnapshot {
+                    generated_at: self.backend_time.instant_now(),
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            return snapshot;
+        }
+    }
+
+    async fn analysis_pressure_snapshot_uncached(
+        &self,
+        generated_at: i64,
+    ) -> Result<AnalysisPressureSnapshot, ProxyError> {
+        let local_now = self.backend_time.local_now();
+        let current_five_minute_bucket_start =
+            generated_at - generated_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+        let current_hour_bucket_start = start_of_local_hour_utc_ts(local_now);
+        let current_24h_start = current_five_minute_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+        let previous_24h_start = current_24h_start - SECS_PER_DAY;
+        let seven_day_start = current_hour_bucket_start - 167 * SECS_PER_HOUR;
+
+        let current_24h_buckets = self
+            .key_store
+            .fetch_server_pressure_points(
+                "five_minute",
+                current_24h_start,
+                current_five_minute_bucket_start + SECS_PER_FIVE_MINUTES,
+            )
+            .await?;
+        let previous_24h_buckets = self
+            .key_store
+            .fetch_server_pressure_points(
+                "five_minute",
+                previous_24h_start,
+                previous_24h_start + 288 * SECS_PER_FIVE_MINUTES,
+            )
+            .await?;
+        let current_24h_bucket_slots = build_pressure_slot_series(
+            current_24h_start,
+            288,
+            SECS_PER_FIVE_MINUTES,
+            &current_24h_buckets,
+        );
+        let previous_24h_bucket_slots = build_pressure_slot_series(
+            previous_24h_start,
+            288,
+            SECS_PER_FIVE_MINUTES,
+            &previous_24h_buckets,
+        );
+        let current_24h_slots = build_rolling_pressure_series(
+            &current_24h_bucket_slots,
+            SECS_PER_FIVE_MINUTES,
+            SECS_PER_HOUR,
+        );
+        let previous_24h_slots_raw = build_rolling_pressure_series(
+            &previous_24h_bucket_slots,
+            SECS_PER_FIVE_MINUTES,
+            SECS_PER_HOUR,
+        );
+        let previous_pressure = previous_24h_slots_raw
+            .last()
+            .map(|point| point.pressure)
+            .unwrap_or_default();
+        let previous_24h_slots = previous_24h_slots_raw
+            .into_iter()
+            .map(|mut point| {
+                point.display_bucket_start =
+                    point.bucket_start.saturating_add(previous_to_current_display_shift_secs(
+                        point.bucket_start,
+                        local_now,
+                    ));
+                point
+            })
+            .collect::<Vec<_>>();
+
+        let current_distribution = self.user_business_calls_1h_window.current_distribution().await;
+        let mut active_rows = current_distribution
+            .iter()
+            .filter(|row| row.counts.total_count() > 0)
+            .collect::<Vec<_>>();
+        active_rows.sort_by(|left, right| {
+            right
+                .counts
+                .total_count()
+                .cmp(&left.counts.total_count())
+                .then_with(|| left.user_id.cmp(&right.user_id))
+        });
+        let identities = self
+            .get_admin_user_identities(
+                &active_rows
+                    .iter()
+                    .map(|row| row.user_id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let all_user_stats = self.get_admin_user_list_stats().await?;
+        let rows = active_rows
+            .into_iter()
+            .map(|row| {
+                let identity = identities.get(&row.user_id);
+                AnalysisCurrentUserPressureRow {
+                    user_id: row.user_id.clone(),
+                    display_name: identity.and_then(|user| user.display_name.clone()),
+                    username: identity.and_then(|user| user.username.clone()),
+                    avatar_url: None,
+                    pressure: row.counts.total_count(),
+                    success_count: row.counts.success_count,
+                    failure_count: row.counts.failure_count,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut row_pressures = rows.iter().map(|row| row.pressure).collect::<Vec<_>>();
+        row_pressures.sort_unstable();
+        let active_users = rows.len() as i64;
+        let zero_pressure_users = all_user_stats.total_users.saturating_sub(active_users);
+        let current_pressure = rows.iter().map(|row| row.pressure).sum::<i64>();
+
+        let server_7d_bucket_points = build_pressure_slot_series(
+            seven_day_start,
+            168,
+            SECS_PER_HOUR,
+            &self
+                .key_store
+                .fetch_server_pressure_points(
+                    "hour",
+                    seven_day_start,
+                    current_hour_bucket_start + SECS_PER_HOUR,
+                )
+                .await?,
+        );
+        let server_7d_points =
+            build_rolling_pressure_series(&server_7d_bucket_points, SECS_PER_HOUR, SECS_PER_HOUR);
+
+        Ok(AnalysisPressureSnapshot {
+            generated_at,
+            server_24h: AnalysisServerPressure24h {
+                window_minutes: 60,
+                bucket_seconds: SECS_PER_FIVE_MINUTES,
+                current_peak: peak_pressure_point(&current_24h_slots),
+                previous_peak: peak_pressure_point(&previous_24h_slots),
+                current: current_24h_slots.clone(),
+                previous: previous_24h_slots,
+            },
+            current_user_distribution: AnalysisCurrentUserPressureDistribution {
+                window_minutes: 60,
+                rows,
+                summary: AnalysisCurrentUserPressureSummary {
+                    active_users,
+                    zero_pressure_users,
+                    median: percentile_pressure(&row_pressures, 50),
+                    p90: percentile_pressure(&row_pressures, 90),
+                    peak: row_pressures.last().copied().unwrap_or_default(),
+                    current_pressure,
+                    vs_yesterday_delta: current_pressure - previous_pressure,
+                },
+            },
+            server_7d: AnalysisServerPressure7d {
+                bucket_seconds: SECS_PER_HOUR,
+                peak: peak_pressure_point(&server_7d_points),
+                points: server_7d_points,
+            },
+        })
+    }
+
     pub fn current_request_rate_limit(&self) -> i64 {
         self.token_request_limit.current_request_limit()
     }
@@ -939,4 +1137,105 @@ impl TavilyProxy {
             .revoke_mcp_session(proxy_session_id, reason)
             .await
     }
+}
+
+fn build_pressure_slot_series(
+    start: i64,
+    count: usize,
+    bucket_seconds: i64,
+    points: &[AnalysisPressurePoint],
+) -> Vec<AnalysisPressurePoint> {
+    let lookup = points
+        .iter()
+        .map(|point| (point.bucket_start, point.clone()))
+        .collect::<HashMap<_, _>>();
+    (0..count)
+        .map(|index| {
+            let bucket_start = start + index as i64 * bucket_seconds;
+            lookup
+                .get(&bucket_start)
+                .cloned()
+                .unwrap_or(AnalysisPressurePoint {
+                    bucket_start,
+                    display_bucket_start: bucket_start,
+                    pressure: 0,
+                    success_count: 0,
+                    failure_count: 0,
+                })
+        })
+        .collect()
+}
+
+fn build_rolling_pressure_series(
+    bucket_points: &[AnalysisPressurePoint],
+    bucket_seconds: i64,
+    window_seconds: i64,
+) -> Vec<AnalysisPressurePoint> {
+    let max_buckets = (window_seconds / bucket_seconds).max(1) as usize;
+    let mut rolling_success = 0_i64;
+    let mut rolling_failure = 0_i64;
+    let mut recent = std::collections::VecDeque::<(i64, i64)>::new();
+
+    bucket_points
+        .iter()
+        .map(|point| {
+            rolling_success += point.success_count;
+            rolling_failure += point.failure_count;
+            recent.push_back((point.success_count, point.failure_count));
+            while recent.len() > max_buckets {
+                if let Some((success, failure)) = recent.pop_front() {
+                    rolling_success -= success;
+                    rolling_failure -= failure;
+                }
+            }
+
+            AnalysisPressurePoint {
+                bucket_start: point.bucket_start,
+                display_bucket_start: point.display_bucket_start,
+                pressure: rolling_success + rolling_failure,
+                success_count: rolling_success,
+                failure_count: rolling_failure,
+            }
+        })
+        .collect()
+}
+
+fn previous_to_current_display_shift_secs(
+    previous_bucket_start: i64,
+    fallback_now: chrono::DateTime<Local>,
+) -> i64 {
+    let Some(previous_utc) = chrono::Utc.timestamp_opt(previous_bucket_start, 0).single() else {
+        return SECS_PER_DAY;
+    };
+    let previous_local = previous_utc.with_timezone(&Local);
+    let current_date = previous_local
+        .date_naive()
+        .succ_opt()
+        .unwrap_or_else(|| previous_local.date_naive());
+    let naive = current_date.and_time(previous_local.time());
+    local_naive_datetime_utc_ts(naive, fallback_now).saturating_sub(previous_bucket_start)
+}
+
+fn peak_pressure_point(points: &[AnalysisPressurePoint]) -> Option<AnalysisPressurePeak> {
+    points
+        .iter()
+        .max_by(|left, right| {
+            left.pressure
+                .cmp(&right.pressure)
+                .then_with(|| right.bucket_start.cmp(&left.bucket_start))
+        })
+        .map(|point| AnalysisPressurePeak {
+            bucket_start: point.bucket_start,
+            display_bucket_start: point.display_bucket_start,
+            pressure: point.pressure,
+        })
+}
+
+fn percentile_pressure(values: &[i64], percentile: usize) -> i64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let clamped = percentile.clamp(0, 100);
+    let index = ((values.len() - 1) * clamped) / 100;
+    values[index]
 }

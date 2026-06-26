@@ -577,6 +577,7 @@ impl TavilyProxy {
                 DashboardHourlyRequestWindowCacheState::default(),
             )),
             user_rankings_cache: Arc::new(Mutex::new(UserRankingsCacheState::default())),
+            analysis_pressure_cache: Arc::new(Mutex::new(AnalysisPressureCacheState::default())),
             ha_state_coalescer,
             token_billing_locks: shared_token_billing_locks(),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -591,6 +592,7 @@ impl TavilyProxy {
         proxy.spawn_ha_state_coalescer();
         proxy.spawn_request_stats_coalescer();
         proxy.user_business_calls_1h_window.backfill_recent().await?;
+        proxy.key_store.rebuild_server_pressure_buckets().await?;
         info!(
             component = "forward_proxy",
             event = "startup_runtime_graph_deferred",

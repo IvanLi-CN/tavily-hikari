@@ -315,8 +315,8 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
             upstream_operation,
             created_at
         ) VALUES
-            ('key-backfill-success', 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, NULL, ?),
-            ('key-backfill-failure', 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, NULL, ?),
+            ('key-backfill-success', 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?),
+            ('key-backfill-failure', 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?),
             (NULL, 'POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?),
             (NULL, 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, NULL, ?),
             (NULL, 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)

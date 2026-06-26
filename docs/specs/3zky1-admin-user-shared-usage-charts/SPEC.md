@@ -19,10 +19,11 @@
 
 - 在用户详情页新增独立的“共享额度趋势”面板，位于有效额度拆解之后、token 列表之前。
 - 共享趋势使用 `5m / 1h / 24h / 月` 四个 tab，默认仍激活 `1h`，并按需加载数据。
-- 在 `/admin/users/usage` 新增只读 `业务 1h` 列，在 `/admin/users/:id` 新增同口径摘要。
+- 在 `/admin/analysis/usage` 新增只读 `业务 1h` 列，在 `/admin/users/:id` 新增同口径摘要；旧 `/admin/users/usage` 保留为兼容别名。
 - 在用户详情共享趋势面板新增 `业务 1h` tab，展示 5 分钟 success/failure 堆叠柱与 rolling 1h pressure 折线。
 - 后端新增用户级共享额度趋势接口 `GET /api/users/:id/usage-series`，返回稳定 bucket 序列、当前 limit 与按 bucket 回放的历史 `limitValue`。
 - 后端新增真实 `businessCalls1h` 真相源：以 `request_logs` 原始事件为基础，按 user 维度维护最近 25h 的单实例内存滑动窗口，并在启动时 bounded 回填最近 25h 符合条件的实际上游业务调用。
+- `businessCalls1h` 继续作为用户级 pressure 真相源，复用到新的 `分析 -> 压力` 子模块的“当前 1h 用户 pressure 分布”，不再额外维护第二套用户压力统计口径。
 - 新增持久化 rollup 表 `account_usage_rollup_buckets`，分别承载账户共享请求频率与业务 credits 聚合。
 - 新增额度历史快照表，按时间回放请求限流与账户有效额度。
 - 用户详情 token 列表只展示 token 自有字段，移除账户共享额度字段，新增 `累计请求` 与 `创建时间`。
@@ -31,7 +32,7 @@
 ## Non-goals
 
 - 不修改 token 详情页自身的额度趋势接口或展示口径。
-- 不修改 `/admin/users` 管理总览布局；本轮集合页范围固定为 `/admin/users/usage`。
+- 不修改 `/admin/users` 管理总览布局；集合页逻辑仍只覆盖原 users usage surface，但 canonical 入口迁到 `/admin/analysis/usage`。
 - 不伪造不可考的更早额度历史；在无法确认的时间段内，limit 线显示缺口（`null`）而不是平铺当前值。
 - 不伪造超出可追溯窗口的月度历史；历史缺口使用 `null` 呈现无数据。
 - 不把 `quota_exhausted`、本地 pre-upstream block 或其他未实际上游的请求计入业务调用 success/failure。
@@ -43,7 +44,7 @@
 - 后端持久化 rollup 表、bounded rebuild、retention cleanup 与用户详情趋势接口。
 - 后端 user 维度业务调用 rolling 1h 内存窗口、25h bounded 回填、`/api/users` 与 `/api/users/:id` 新摘要字段，以及 `businessCalls1h` usage series。
 - 用户详情页新增共享额度趋势卡片、tabs 懒加载缓存、limit 虚线与空/错/部分历史态。
-- `/admin/users/usage` 新增只读 `业务 1h` 列与对应 mobile 卡片文案。
+- `/admin/analysis/usage` 新增只读 `业务 1h` 列与对应 mobile 卡片文案，并保留 `/admin/users/usage` alias。
 - 用户详情 token 列表的字段调整、i18n 文案更新、Storybook 画布与截图证据。
 
 ### Out of scope
@@ -150,6 +151,7 @@
 - `success` 仅指 `result_status = success`。
 - `failure` 指已经实际上游、但 `result_status != success && result_status != quota_exhausted` 的业务调用。
 - `quota_exhausted` 与所有 pre-upstream blocked 请求完全排除，不进入 success/failure，也不进入 pressure。
+- 同一语义也作为 `分析 -> 压力` 子模块里用户分布图的用户侧真相源，避免同一“压力”概念在 admin 内部分叉。
 
 ### `GET /api/users/:id`
 
@@ -179,7 +181,7 @@
   - pressure 使用独立折线 dataset
   - 不绘制 limit 虚线
 - 月度历史缺口显示为无数据提示，不伪装成 `0`。
-- `/admin/users/usage` 新增 `业务 1h` 列，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序。
+- `/admin/analysis/usage` 新增 `业务 1h` 列，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序；旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
 - token 列表说明文案需明确：这里只展示 token 自己的状态、时间与成功统计，共享额度请看上方趋势图。
 - token 列表右上角提供“添加令牌”按钮；每行操作区提供删除按钮，但当用户仅剩 1 个 token 时必须禁用删除。
 
@@ -429,7 +431,7 @@
 - capture_scope: `browser-viewport`
 - requested_viewport: `1440x1600`
 - viewport_strategy: `devtools-emulate`
-- submission_gate: `pending-owner-approval`
+- submission_gate: `approved`
 - PR: include
 - evidence_note:
   `Shared Usage Trends` 的 `Biz 1h` 图表证据已按面板级范围刷新，用于确认 5 分钟 `success/failure` 柱段保持同桶堆叠，而 `pressure` 继续作为独立折线显示；图例仍明确区分 `Success / Failure / Pressure`，与 `series=businessCalls1h` 的返回形状一致。由于整页渐变边框会让空白裁剪脚本判定为 `ambiguous_border`，最终证据改为受控 viewport 截图后的面板级裁图。

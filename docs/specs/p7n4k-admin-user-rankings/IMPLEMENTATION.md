@@ -10,11 +10,12 @@
 
 ## Coverage / rollout summary
 
-- 新增独立 `/admin/rankings` 管理台模块，以 `24h / 7d / 30d / 主要调用 / 积分 / IP` 六个单选 tab 组织排行内容区。
+- admin 信息架构已收敛为 `分析 -> 用量 / 排行 / 压力`；排行 canonical 路由迁到 `/admin/analysis/rankings`，旧 `/admin/rankings` 仅保留为兼容别名，不再作为独立一级侧栏入口。
+- 排行页继续使用 `24h / 7d / 30d / 主要调用 / 积分 / IP` 六个单选 tab 组织内容区。
 - 每个时间窗固定三张榜：`成功主要调用`、`积分消耗` 与 `IP`，每榜最多 `TOP20` 用户，排序为 `value desc, userId asc`。
 - 后端新增 `GET /api/users/rankings` 与 `GET /api/users/rankings/events`；HTTP 与 SSE `snapshot` payload 同形，SSE 建连后立即首帧并按 10 秒节奏推送。
 - 数据路径扩展为用户级 `primary_success` rollup、`business_credits` 聚合与 `request_logs` 唯一 `client_ip` 统计；查询继续使用 rollup 聚合加 partial bucket 补扫，避免每次刷新回扫 30 天原始日志。
-- 页面首屏走 HTTP 快照，后续通过独立 SSE 实时更新；路由与导航作为独立 admin 模块接入，不影响历史 `/admin/users/usage` 与 `/admin/tokens/leaderboard`。
+- 页面首屏走 HTTP 快照，后续通过独立 SSE 实时更新；路由与导航已并入共享 `analysis` 父模块，不影响历史 `/admin/users/usage` 与 `/admin/tokens/leaderboard` 兼容入口。
 - 前端最终采用 `Apache ECharts + echarts-for-react` 的 `custom series` 横向排行图；每张榜为单一 chart surface，用户身份以 `rank + avatar + 单一显示名` 形式内嵌于 chart，不再拆出图外重复身份列，也不再显示 secondary identity。
 - 旧的 `.admin-ranking-chart-overlay / .admin-ranking-row-label` DOM 覆盖层已移除；当前页面只保留三张 chart canvas 与语义 DOM fallback，不再混用第二套图外身份层。
 - 页面主视图已收敛为六个单选 tab 驱动的单一三榜内容区：内容区始终按 `主要调用 → 积分 → IP` 展示，时间范围 tab 负责切换数据窗口，排行维度 tab 不再切出第二种 `24h / 7d / 30d` 三卡布局。

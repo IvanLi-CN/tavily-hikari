@@ -1,6 +1,7 @@
 export type Language = 'en' | 'zh'
 
 import type { AdminRechargeTranslations, SystemSettingsTotpTranslationKey, SystemSettingsTrustedClientIpTranslationKey } from './adminRechargeTranslationTypes'
+import type { AdminPressureTranslations } from './adminPressureTranslationTypes'
 
 export interface LanguageContextValue {
   language: Language
@@ -207,8 +208,9 @@ export interface AdminTranslationsShape {
     error: string
   }
   nav: {
-    dashboard: string; usage: string; tokens: string; keys: string; requests: string; jobs: string; users: string
+    dashboard: string; analysis: string; usage: string; tokens: string; keys: string; requests: string; jobs: string; users: string
     rankings: string
+    pressure: string
     announcements: string
     recharges: string
     alerts: string; systemSettings: string; proxySettings: string
@@ -335,6 +337,7 @@ export interface AdminTranslationsShape {
     statusDegraded: string
     staleHint: string
   }
+  pressure: AdminPressureTranslations
   modules: {
     comingSoon: string
     users: {

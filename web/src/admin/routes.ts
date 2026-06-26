@@ -11,6 +11,7 @@ export type AdminUsersCollectionView = 'users' | 'usage'
 export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
 export type AlertsCenterView = 'events' | 'groups'
 export type AdminSystemSettingsView = 'general' | 'ha'
+export type AdminAnalysisView = 'rankings' | 'usage' | 'pressure'
 
 export interface AdminTokensListContext {
   query?: string | null
@@ -26,6 +27,7 @@ export interface AdminTokensListContext {
 
 export type AdminModuleId =
   | 'dashboard'
+  | 'analysis'
   | 'rankings'
   | 'tokens'
   | 'keys'
@@ -39,7 +41,12 @@ export type AdminModuleId =
   | 'proxy-settings'
 
 export type AdminPathRoute =
-  | { name: 'module'; module: AdminModuleId; systemSettingsView?: AdminSystemSettingsView }
+  | {
+      name: 'module'
+      module: AdminModuleId
+      systemSettingsView?: AdminSystemSettingsView
+      analysisView?: AdminAnalysisView
+    }
   | { name: 'ha-node'; nodeId: string }
   | { name: 'not-found'; path: string }
   | { name: 'token'; id: string }
@@ -94,8 +101,20 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === ADMIN_BASE || path === `${ADMIN_BASE}/dashboard`) {
     return { name: 'module', module: 'dashboard' }
   }
+  if (path === `${ADMIN_BASE}/analysis`) {
+    return { name: 'module', module: 'analysis', analysisView: 'rankings' }
+  }
+  if (path === `${ADMIN_BASE}/analysis/usage`) {
+    return { name: 'module', module: 'analysis', analysisView: 'usage' }
+  }
+  if (path === `${ADMIN_BASE}/analysis/rankings`) {
+    return { name: 'module', module: 'analysis', analysisView: 'rankings' }
+  }
+  if (path === `${ADMIN_BASE}/analysis/pressure`) {
+    return { name: 'module', module: 'analysis', analysisView: 'pressure' }
+  }
   if (path === `${ADMIN_BASE}/rankings`) {
-    return { name: 'module', module: 'rankings' }
+    return { name: 'module', module: 'analysis', analysisView: 'rankings' }
   }
   if (path === `${ADMIN_BASE}/tokens`) {
     return { name: 'module', module: 'tokens' }
@@ -129,7 +148,7 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
     return { name: 'module', module: 'recharges' }
   }
   if (path === `${ADMIN_BASE}/users/usage`) {
-    return { name: 'user-usage' }
+    return { name: 'module', module: 'analysis', analysisView: 'usage' }
   }
   if (path === `${ADMIN_BASE}/users/tags`) {
     return { name: 'user-tags' }
@@ -186,6 +205,10 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
       return left.module === right.module
         && (left.systemSettingsView ?? 'general') === (right.systemSettingsView ?? 'general')
     }
+    if (left.module === 'analysis' || right.module === 'analysis') {
+      return left.module === right.module
+        && (left.analysisView ?? 'rankings') === (right.analysisView ?? 'rankings')
+    }
     return left.module === right.module
   }
   if (left.name === 'ha-node' && right.name === 'ha-node') {
@@ -223,8 +246,13 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
 }
 
 export function modulePath(module: AdminModuleId): string {
+  if (module === 'analysis') return `${ADMIN_BASE}/analysis/rankings`
   if (module === 'dashboard') return `${ADMIN_BASE}/dashboard`
   return `${ADMIN_BASE}/${module}`
+}
+
+export function analysisPath(view: AdminAnalysisView = 'rankings'): string {
+  return `${ADMIN_BASE}/analysis/${view}`
 }
 
 export function systemSettingsHaPath(): string {
@@ -488,7 +516,7 @@ export function userUsagePath(
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
 ): string {
-  return appendUsersContext(`${ADMIN_BASE}/users/usage`, query, tagId, page, sort, order)
+  return appendUsersContext(`${ADMIN_BASE}/analysis/usage`, query, tagId, page, sort, order)
 }
 
 export function userDetailPath(

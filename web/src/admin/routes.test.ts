@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 
 import {
+  analysisPath,
   announcementCreatePath,
   announcementEditPath,
   announcementListPath,
@@ -29,16 +30,19 @@ describe('admin user tag routes', () => {
     expect(parseAdminPath('/admin/users/tags')).toEqual({ name: 'user-tags' })
   })
 
-  it('parses the dedicated user usage page before user detail fallback', () => {
-    expect(parseAdminPath('/admin/users/usage')).toEqual({ name: 'user-usage' })
+  it('parses the dedicated user usage page as an analysis usage alias before user detail fallback', () => {
+    expect(parseAdminPath('/admin/users/usage')).toEqual({ name: 'module', module: 'analysis', analysisView: 'usage' })
   })
 
   it('parses the unbound token usage page before token detail fallback', () => {
     expect(parseAdminPath('/admin/tokens/leaderboard')).toEqual({ name: 'unbound-token-usage' })
   })
 
-  it('parses the rankings module route', () => {
-    expect(parseAdminPath('/admin/rankings')).toEqual({ name: 'module', module: 'rankings' })
+  it('parses the analysis routes and rankings alias', () => {
+    expect(parseAdminPath('/admin/analysis')).toEqual({ name: 'module', module: 'analysis', analysisView: 'rankings' })
+    expect(parseAdminPath('/admin/analysis/rankings')).toEqual({ name: 'module', module: 'analysis', analysisView: 'rankings' })
+    expect(parseAdminPath('/admin/analysis/pressure')).toEqual({ name: 'module', module: 'analysis', analysisView: 'pressure' })
+    expect(parseAdminPath('/admin/rankings')).toEqual({ name: 'module', module: 'analysis', analysisView: 'rankings' })
   })
 
   it('parses the system settings module route', () => {
@@ -98,7 +102,9 @@ describe('admin user tag routes', () => {
     expect(getAlertsViewFromSearch('')).toBe('groups')
     expect(getAlertsViewFromSearch('?view=events')).toBe('events')
     expect(userTagsPath()).toBe('/admin/users/tags')
-    expect(userUsagePath()).toBe('/admin/users/usage')
+    expect(analysisPath()).toBe('/admin/analysis/rankings')
+    expect(analysisPath('pressure')).toBe('/admin/analysis/pressure')
+    expect(userUsagePath()).toBe('/admin/analysis/usage')
     expect(unboundTokenUsagePath()).toBe('/admin/tokens/leaderboard')
     expect(unboundTokenUsagePath('ops', 2, 'quotaMonthlyUsed', 'asc')).toBe(
       '/admin/tokens/leaderboard?q=ops&page=2&sort=quotaMonthlyUsed&order=asc',
@@ -136,7 +142,7 @@ describe('admin user tag routes', () => {
       '/admin/users/tags?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
     expect(userUsagePath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
-      '/admin/users/usage?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
+      '/admin/analysis/usage?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
     expect(userTagCreatePath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
       '/admin/users/tags/new?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
@@ -210,8 +216,19 @@ describe('admin user tag routes', () => {
     ).toBe(false)
   })
 
-  it('compares user usage routes as the same logical page', () => {
-    expect(isSameAdminRoute({ name: 'user-usage' }, { name: 'user-usage' })).toBe(true)
+  it('compares analysis routes by logical subview', () => {
+    expect(
+      isSameAdminRoute(
+        { name: 'module', module: 'analysis', analysisView: 'usage' },
+        { name: 'module', module: 'analysis', analysisView: 'usage' },
+      ),
+    ).toBe(true)
+    expect(
+      isSameAdminRoute(
+        { name: 'module', module: 'analysis', analysisView: 'usage' },
+        { name: 'module', module: 'analysis', analysisView: 'pressure' },
+      ),
+    ).toBe(false)
   })
 
   it('compares HA node routes by node id', () => {

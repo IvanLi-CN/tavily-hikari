@@ -19,6 +19,7 @@
 - 把 `AdminDashboardRuntime` 收敛成稳定父壳：只保留稳定 hooks、共享状态、路由解析、导航回调、overlay wiring 与 route dispatch。
 - 将高风险 route family 拆成独立 screen 组件，screen 只接收 plain props / callbacks，不再直接读取 `window.location`、`history` 或重新编排 fetch/hook 生命周期。
 - 让 `user-usage`、`unbound-token-usage`、`user`、`token`、`key`、`user-tags`、`user-tag-editor` 这些路由在同一修复面内完成结构收敛。
+- 让新的 `analysis` 父模块与 `analysis/usage`、`analysis/rankings`、`analysis/pressure` 子路由纳入同一稳定 route dispatch，不把 analysis 子导航重新做成 route-specific hook 分支。
 - 为 route 切换建立本地 red-capable 回归回路，明确抓住 hook-order / 白屏 / 空 main / 标题缺失三类症状。
 - 让 Storybook proof 复用同一套 screen contract 或同构 render helper，不再复制整棵 route JSX。
 
@@ -35,9 +36,11 @@
 - `web/src/admin/AdminDashboardRuntime.tsx`
   - 将 route-specific JSX 从单体大函数拆成稳定 dispatch + screen 调用。
   - 保持共享 hooks 只在统一入口执行。
+- `web/src/admin/routes.ts`
+  - 增加 `analysis` 父模块解析、`/admin/analysis/*` canonical paths 与旧 `/admin/rankings`、`/admin/users/usage` 兼容别名。
 - `web/src/admin/screens/**`
   - 新增 route screen 组件与可复用 helper。
-  - 统一 users usage / unbound token usage / detail/editor 族的 props contract。
+  - 统一 users usage / analysis pressure / unbound token usage / detail/editor 族的 props contract。
 - `web/src/admin/AdminDashboardRuntime.route-switch.test.tsx`
   - 新增 route-switch 回归。
 - `web/test/happydom.ts`
@@ -63,17 +66,18 @@
 - `user-tag-editor`
 - `user`
 - `user-usage`
+- `analysis`
 - `unbound-token-usage`
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 从模块页切换到 `user-usage` / `unbound-token-usage` / `user` / `token` / `key` / `user-tags` / `user-tag-editor`
+- Given 从模块页切换到 `analysis/usage` / `analysis/rankings` / `analysis/pressure` / `unbound-token-usage` / `user` / `token` / `key` / `user-tags` / `user-tag-editor`
   When 连续切换与返回
   Then 不会出现 React hook-order 报错，`main` 不会白屏，关键标题 / 表格壳层仍存在。
 
-- Given 运行 `cd web && bun test src/admin/AdminDashboardRuntime.route-switch.test.tsx`
+- Given 运行 route parser / story / route-switch 回归
   When 作为回归守卫执行
-  Then 该命令能稳定覆盖模块页 -> 专属路由页 -> 返回模块页的路径。
+  Then 回归应稳定覆盖 `analysis` 子模块切换、旧 alias 解析，以及模块页 -> 专属路由页 -> 返回模块页的路径。
 
 - Given `cd web && bun test`
   When 全量执行
@@ -124,6 +128,30 @@
   viewport_strategy: `storybook-viewport`
 
   ![UserDetailCompact storybook canvas](./assets/user-detail-compact.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-pages--pressure`
+  state: `Analysis / Pressure desktop render with three chart-only panels`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  requested_viewport: `1440x2200`
+  viewport_strategy: `storybook-viewport`
+  submission_gate: `approved`
+  PR: include
+
+  ![Analysis pressure desktop](./assets/analysis-pressure/pressure-desktop.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-pages--pressure-mobile`
+  state: `Analysis / Pressure mobile stacked render with three chart-only panels`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  requested_viewport: `390x2600`
+  viewport_strategy: `storybook-viewport`
+  submission_gate: `approved`
+  PR: include
+
+  ![Analysis pressure mobile](./assets/analysis-pressure/pressure-mobile.png)
 
 ## 实现里程碑（Milestones）
 

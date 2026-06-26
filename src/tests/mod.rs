@@ -38,6 +38,7 @@ mod request_rollup_public_metrics;
 mod support;
 mod usage_series_and_backfills;
 mod user_business_calls_1h;
+mod user_pressure_analysis;
 mod user_tokens_and_pending_billing;
 
 use support::*;

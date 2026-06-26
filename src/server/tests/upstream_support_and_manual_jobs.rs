@@ -2292,6 +2292,7 @@ pub(super) async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password
         .route("/api/dashboard/overview", get(get_dashboard_overview))
         .route("/api/summary", get(fetch_summary))
         .route("/api/summary/windows", get(fetch_summary_windows))
+        .route("/api/analysis/pressure", get(get_analysis_pressure_snapshot))
         .route("/api/logs", get(list_logs))
         .route("/api/logs/list", get(list_logs_cursor))
         .route("/api/logs/catalog", get(get_logs_catalog))

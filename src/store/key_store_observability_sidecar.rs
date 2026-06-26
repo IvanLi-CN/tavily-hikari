@@ -359,6 +359,30 @@ impl KeyStore {
             sqlx::query(sql).execute(pool).await?;
         }
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.server_pressure_buckets (
+                bucket_kind TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                failure_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (bucket_kind, bucket_start)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        for sql in [
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_kind_time
+               ON server_pressure_buckets(bucket_kind, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_time
+               ON server_pressure_buckets(bucket_start DESC)"#,
+        ] {
+            sqlx::query(sql).execute(pool).await?;
+        }
+
         Ok(())
     }
 
@@ -704,6 +728,7 @@ impl KeyStore {
                 self.backend_time.now_ts(),
             )
             .await?;
+            self.rebuild_server_pressure_buckets().await?;
             self.rebuild_request_log_catalog_rollups().await?;
             Ok::<(), ProxyError>(())
         }

@@ -2314,6 +2314,11 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
+                Err(sqlx::Error::Database(err))
+                    if err.message().contains("no transaction is active") =>
+                {
+                    break;
+                }
                 Err(err) => panic!("release write lock: {err}"),
             }
         }
@@ -2430,10 +2435,12 @@ async fn request_kind_backfill_batch_retries_after_transient_write_lock() {
 
     let release_lock = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        sqlx::query("COMMIT")
-            .execute(&mut lock_conn)
-            .await
-            .expect("release write lock");
+        match sqlx::query("COMMIT").execute(&mut lock_conn).await {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(err))
+                if err.message().contains("no transaction is active") => {}
+            Err(err) => panic!("release write lock: {err}"),
+        }
     });
 
     let report = run_request_kind_canonical_backfill_with_pool(

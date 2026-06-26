@@ -24,6 +24,8 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.RankingsEmpty).toMatchObject({})
     expect(adminPageStories.RankingsLoading).toMatchObject({})
     expect(adminPageStories.RankingsMobile).toMatchObject({})
+    expect(adminPageStories.Pressure).toMatchObject({})
+    expect(adminPageStories.PressureMobile).toMatchObject({})
     expect(adminPageStories.RequestsResultFilterOpen).toMatchObject({})
     expect(adminPageStories.KeyDetailRecentRequests).toMatchObject({})
     expect(adminPageStories.TokenDetailRecentRequests).toMatchObject({})
@@ -117,7 +119,8 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('用户排行')
-    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-nav-item-parent-active')
+    expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain('admin-ranking-chart-shell')
   })
 
@@ -134,7 +137,8 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('用户排行')
-    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-nav-item-parent-active')
+    expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain('admin-ranking-chart-shell')
   })
 
@@ -167,7 +171,27 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('admin-ranking-skeleton-stage')
-    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-nav-item-parent-active')
+    expect(markup).toContain('admin-nav-subitem-active')
+  })
+
+  it('renders the pressure route story with analysis nav active state and chart shells', () => {
+    const renderStory = adminPageStories.Pressure.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('最近 24 小时服务器 1 小时窗口压力')
+    expect(markup).toContain('当前 1 小时用户压力分布')
+    expect(markup).toContain('最近 7 天服务器小时压力')
+    expect(markup).toContain('admin-nav-subitem-active')
+    expect(markup).toContain('pressure-analysis-page')
   })
 
   it('renders the jobs story with manual trigger controls and source labels', () => {

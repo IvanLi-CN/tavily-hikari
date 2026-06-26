@@ -16,6 +16,7 @@
 - 2026-06-20: 修复 `rankings` 导航图标缺失的根因，补齐 `mdi:trophy-outline` 离线图标注册与 story/runtime 导航一致性。
 - 2026-06-21: 根据最新视觉验收反馈，榜单实现继续从“ECharts + DOM overlay”混合方案收口为纯 `ECharts custom series` 输出；旧的 `.admin-ranking-chart-overlay` 与 `.admin-ranking-row-label` 假标签层被彻底移除。
 - 2026-06-22: owner-facing 视觉证据从混用的 Storybook / live / chrome 过程截图收敛为统一 `web demo` 证据链，并清理重复资产与临时截图，避免同一排行模块继续残留两套验收口径。
+- 2026-06-25: admin 信息架构新增 `分析` 父模块后，排行从独立一级模块收拢为 `分析 -> 排行` 子模块；canonical 路由迁到 `/admin/analysis/rankings`，旧 `/admin/rankings` 保留为兼容别名。
 
 ## Key Reasons / Replacements
 
@@ -27,6 +28,7 @@
 - 用户将新增维度定义为“IP”，且要求它与积分、主要调用并列，因此原双榜合同被替换为稳定三榜合同。
 - 用户继续指出“看起来不像成熟图表库实现”，因此最终证据与实现都必须证明：排行页只保留单一 chart surface，而不是图表下方再叠一层业务侧标签 DOM。
 - 用户明确要求截图必须来自 `web demo` 而不是 Storybook，因此最终 owner-facing 视觉证据统一切到 demo 路由，旧的 story/live 中间图不再保留在 spec 资产里。
+- admin 运营入口现在需要把排行、用量与压力放到同一分析语义下，因此排行不再单独占据一级导航位，避免 admin 模块粒度继续分叉。
 
 ## References
 

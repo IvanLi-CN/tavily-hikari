@@ -9,6 +9,7 @@ import type {
   ApiKeyBulkAction,
   AdminUnboundTokenUsageSortField,
   AdminUnboundTokenUsageSummary,
+  AnalysisPressureSnapshot,
   AdminUserDetail,
   AdminUserSummary,
   AdminUsersSortField,
@@ -82,6 +83,7 @@ import {
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from '../AdminShell'
 import AdminJobTriggerMenu from '../AdminJobTriggerMenu'
 import AdminUserRankingsPage, { RankingsMeta } from '../AdminUserRankingsPage'
+import PressureAnalysisScreen from '../PressureAnalysisScreen'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
 import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
 import { UserRechargeQuotaCalendar } from '../UserRechargeQuotaCalendar'
@@ -154,6 +156,88 @@ const defaultDashboardHourlyRequestWindow = buildDashboardHourlyRequestWindowFix
     apiBillable: (index % 5) + 4,
   }),
 })
+
+const pressureStorySnapshot: AnalysisPressureSnapshot = {
+  generatedAt: now,
+  server24h: {
+    windowMinutes: 60,
+    bucketSeconds: 300,
+    current: Array.from({ length: 288 }, (_item, index) => {
+      const displayBucketStart = now - (287 - index) * 300
+      const pressure = Math.max(0, 18 + Math.round(Math.sin(index / 14) * 22) + ((index * 9) % 19))
+      const failureCount = pressure > 0 ? Math.round(pressure * 0.12) : 0
+      const successCount = Math.max(0, pressure - failureCount)
+      return {
+        bucketStart: displayBucketStart,
+        displayBucketStart,
+        pressure,
+        successCount,
+        failureCount,
+      }
+    }),
+    previous: Array.from({ length: 288 }, (_item, index) => {
+      const displayBucketStart = now - (287 - index) * 300
+      const pressure = Math.max(0, 12 + Math.round(Math.cos(index / 12) * 18) + ((index * 5) % 13))
+      const failureCount = pressure > 0 ? Math.round(pressure * 0.09) : 0
+      const successCount = Math.max(0, pressure - failureCount)
+      return {
+        bucketStart: displayBucketStart - 86400,
+        displayBucketStart,
+        pressure,
+        successCount,
+        failureCount,
+      }
+    }),
+    currentPeak: { bucketStart: now - 3600, displayBucketStart: now - 3600, pressure: 64 },
+    previousPeak: { bucketStart: now - 86400 - 5400, displayBucketStart: now - 5400, pressure: 51 },
+  },
+  currentUserDistribution: {
+    windowMinutes: 60,
+    rows: [
+      { userId: 'usr_noa', displayName: 'Noa Jin', username: 'noa', avatarUrl: null, pressure: 2, successCount: 2, failureCount: 0 },
+      { userId: 'usr_iris', displayName: 'Iris Lin', username: 'iris', avatarUrl: null, pressure: 4, successCount: 4, failureCount: 0 },
+      { userId: 'usr_ella', displayName: 'Ella Zhou', username: 'ella', avatarUrl: null, pressure: 5, successCount: 4, failureCount: 1 },
+      { userId: 'usr_daisy', displayName: 'Daisy Sun', username: 'daisy', avatarUrl: null, pressure: 7, successCount: 6, failureCount: 1 },
+      { userId: 'usr_fiona', displayName: 'Fiona Qiu', username: 'fiona', avatarUrl: null, pressure: 9, successCount: 8, failureCount: 1 },
+      { userId: 'usr_charlie', displayName: 'Charlie Li', username: 'charlie', avatarUrl: null, pressure: 11, successCount: 10, failureCount: 1 },
+      { userId: 'usr_harper', displayName: 'Harper Xu', username: 'harper', avatarUrl: null, pressure: 12, successCount: 11, failureCount: 1 },
+      { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob', avatarUrl: null, pressure: 16, successCount: 14, failureCount: 2 },
+      { userId: 'usr_jasper', displayName: 'Jasper Wu', username: 'jasper', avatarUrl: null, pressure: 18, successCount: 16, failureCount: 2 },
+      { userId: 'usr_charlotte', displayName: 'Charlotte Gu', username: 'charlotte', avatarUrl: null, pressure: 19, successCount: 17, failureCount: 2 },
+      { userId: 'usr_kevin', displayName: 'Kevin Shen', username: 'kevin', avatarUrl: null, pressure: 24, successCount: 21, failureCount: 3 },
+      { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice', avatarUrl: null, pressure: 31, successCount: 28, failureCount: 3 },
+      { userId: 'usr_luna', displayName: 'Luna He', username: 'luna', avatarUrl: null, pressure: 37, successCount: 33, failureCount: 4 },
+      { userId: 'usr_mika', displayName: 'Mika Du', username: 'mika', avatarUrl: null, pressure: 49, successCount: 44, failureCount: 5 },
+      { userId: 'usr_owen', displayName: 'Owen Pei', username: 'owen', avatarUrl: null, pressure: 68, successCount: 61, failureCount: 7 },
+    ],
+    summary: {
+      activeUsers: 15,
+      zeroPressureUsers: 3,
+      median: 12,
+      p90: 49,
+      peak: 68,
+      currentPressure: 314,
+      vsYesterdayDelta: 14,
+    },
+  },
+  server7d: {
+    bucketSeconds: 3600,
+    points: Array.from({ length: 168 }, (_item, index) => {
+      const displayBucketStart = now - (167 - index) * 3600
+      const pressure = Math.max(0, 20 + Math.round(Math.cos(index / 7) * 16) + ((index * 4) % 13))
+      const failureCount = pressure > 0 ? Math.round(pressure * 0.08) : 0
+      const successCount = Math.max(0, pressure - failureCount)
+      return {
+        bucketStart: displayBucketStart,
+        displayBucketStart,
+        pressure,
+        successCount,
+        failureCount,
+      }
+    }),
+    peak: { bucketStart: now - 18 * 3600, displayBucketStart: now - 18 * 3600, pressure: 58 },
+  },
+}
 
 function useAdminTranslations(): AdminTranslations {
   const { language } = useLanguage()
@@ -3035,8 +3119,16 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
     { target: 'dashboard', label: strings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
-    { target: 'user-usage', label: strings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
-    { target: 'rankings', label: strings.nav.rankings, icon: <Icon icon="mdi:trophy-outline" width={18} height={18} /> },
+    {
+      target: 'analysis',
+      label: strings.nav.analysis,
+      icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
+      children: [
+        { target: 'analysis-rankings', label: strings.nav.rankings },
+        { target: 'analysis-usage', label: strings.nav.usage },
+        { target: 'analysis-pressure', label: strings.nav.pressure },
+      ],
+    },
     { target: 'tokens', label: strings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: strings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
@@ -3093,9 +3185,19 @@ export function AdminPageFrame({
           title: admin.tokens.title,
           description: admin.tokens.description,
         }
-      case 'rankings':
+      case 'analysis-rankings':
         return {
           title: admin.rankings.title,
+        }
+      case 'analysis-usage':
+        return {
+          title: admin.users.usage.title,
+          description: admin.users.usage.description,
+        }
+      case 'analysis-pressure':
+        return {
+          title: admin.pressure.title,
+          description: admin.pressure.description,
         }
       case 'keys':
         return {
@@ -3676,7 +3778,7 @@ function RankingsPageCanvas({
   )
 
   return (
-    <AdminPageFrame activeModule="rankings" actions={rankingsHeaderMeta}>
+    <AdminPageFrame activeModule="analysis-rankings" actions={rankingsHeaderMeta}>
       <AdminUserRankingsPage
         strings={admin.rankings}
         language={language}
@@ -3687,6 +3789,32 @@ function RankingsPageCanvas({
         showHeader={false}
         onRetry={() => {}}
         initialTab={initialTab}
+      />
+    </AdminPageFrame>
+  )
+}
+
+function PressurePageCanvas({
+  snapshot = pressureStorySnapshot,
+  loading = false,
+  error = null,
+}: {
+  snapshot?: AnalysisPressureSnapshot | null
+  loading?: boolean
+  error?: string | null
+} = {}): JSX.Element {
+  const admin = useAdminTranslations()
+  const { language } = useLanguage()
+
+  return (
+    <AdminPageFrame activeModule="analysis-pressure">
+      <PressureAnalysisScreen
+        snapshot={snapshot}
+        loading={loading}
+        error={error}
+        language={language}
+        strings={admin.pressure}
+        onRetry={() => {}}
       />
     </AdminPageFrame>
   )
@@ -5032,7 +5160,7 @@ function UsersUsagePageCanvas({
 
   return (
     <AdminPageFrame
-      activeModule="user-usage"
+      activeModule="analysis-usage"
       overlays={
         <StoryMonthlyBrokenDrawer
           open={monthlyBrokenDrawer != null}
@@ -6470,6 +6598,20 @@ export const RankingsLoading: Story = {
 
 export const RankingsMobile: Story = {
   render: () => <RankingsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+}
+
+export const Pressure: Story = {
+  render: () => <PressurePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const PressureMobile: Story = {
+  render: () => <PressurePageCanvas />,
   parameters: {
     viewport: { defaultViewport: '0390-device-iphone-14' },
   },

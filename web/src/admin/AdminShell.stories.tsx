@@ -20,7 +20,16 @@ function navIcon(name: string): JSX.Element {
 
 const NAV_ITEMS: AdminNavItem[] = [
   { target: 'dashboard', label: 'Dashboard', icon: navIcon('mdi:view-dashboard-outline') },
-  { target: 'user-usage', label: 'Usage', icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+  {
+    target: 'analysis',
+    label: 'Analysis',
+    icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
+    children: [
+      { target: 'analysis-rankings', label: 'Rankings' },
+      { target: 'analysis-usage', label: 'Usage' },
+      { target: 'analysis-pressure', label: 'Pressure' },
+    ],
+  },
   { target: 'tokens', label: 'Tokens', icon: navIcon('mdi:key-chain-variant') },
   { target: 'keys', label: 'API Keys', icon: navIcon('mdi:key-outline') },
   { target: 'requests', label: 'Requests', icon: navIcon('mdi:file-document-outline') },

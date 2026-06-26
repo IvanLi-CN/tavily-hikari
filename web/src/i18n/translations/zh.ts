@@ -1,4 +1,5 @@
 import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
+import { adminPressureTranslations } from '../adminPressureTranslations'
 import type { TranslationShape } from '../types'
 
 export const ZH: TranslationShape = {
@@ -212,8 +213,10 @@ export const ZH: TranslationShape = {
       },
       nav: {
         dashboard: '仪表盘',
+        analysis: '分析',
         usage: '用量',
-        rankings: '用户排行',
+        rankings: '排行',
+        pressure: '压力',
         tokens: '访问令牌',
         keys: 'API Keys',
         requests: '请求日志',
@@ -347,6 +350,7 @@ export const ZH: TranslationShape = {
         statusDegraded: '实时更新异常',
         staleHint: '当前展示最近一次成功快照，连接恢复后会自动刷新。',
       },
+      pressure: adminPressureTranslations.zh,
       modules: {
         comingSoon: '即将支持',
         users: {

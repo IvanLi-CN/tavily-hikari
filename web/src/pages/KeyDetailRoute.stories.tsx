@@ -299,7 +299,16 @@ function KeyDetailRouteSurface({
 
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
-    { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    {
+      target: 'analysis',
+      label: adminStrings.nav.analysis,
+      icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
+      children: [
+        { target: 'analysis-rankings', label: adminStrings.nav.rankings },
+        { target: 'analysis-usage', label: adminStrings.nav.usage },
+        { target: 'analysis-pressure', label: adminStrings.nav.pressure },
+      ],
+    },
     { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
     { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },

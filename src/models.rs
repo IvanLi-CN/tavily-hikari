@@ -1662,6 +1662,84 @@ pub struct BusinessCalls1hSummary {
     pub window_minutes: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisPressureSnapshot {
+    pub generated_at: i64,
+    pub server_24h: AnalysisServerPressure24h,
+    pub current_user_distribution: AnalysisCurrentUserPressureDistribution,
+    pub server_7d: AnalysisServerPressure7d,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisPressurePoint {
+    pub bucket_start: i64,
+    pub display_bucket_start: i64,
+    pub pressure: i64,
+    pub success_count: i64,
+    pub failure_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisServerPressure24h {
+    pub window_minutes: i64,
+    pub bucket_seconds: i64,
+    pub current: Vec<AnalysisPressurePoint>,
+    pub previous: Vec<AnalysisPressurePoint>,
+    pub current_peak: Option<AnalysisPressurePeak>,
+    pub previous_peak: Option<AnalysisPressurePeak>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisServerPressure7d {
+    pub bucket_seconds: i64,
+    pub points: Vec<AnalysisPressurePoint>,
+    pub peak: Option<AnalysisPressurePeak>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisPressurePeak {
+    pub bucket_start: i64,
+    pub display_bucket_start: i64,
+    pub pressure: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisCurrentUserPressureDistribution {
+    pub window_minutes: i64,
+    pub rows: Vec<AnalysisCurrentUserPressureRow>,
+    pub summary: AnalysisCurrentUserPressureSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisCurrentUserPressureRow {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub username: Option<String>,
+    pub avatar_url: Option<String>,
+    pub pressure: i64,
+    pub success_count: i64,
+    pub failure_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisCurrentUserPressureSummary {
+    pub active_users: i64,
+    pub zero_pressure_users: i64,
+    pub median: i64,
+    pub p90: i64,
+    pub peak: i64,
+    pub current_pressure: i64,
+    pub vs_yesterday_delta: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct UserLogMetricsSummary {
     pub daily_success: i64,

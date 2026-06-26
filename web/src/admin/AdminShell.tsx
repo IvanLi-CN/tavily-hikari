@@ -5,9 +5,14 @@ import { createPortal } from 'react-dom'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 
 import AdminNavButton from './AdminNavButton'
-import type { AdminModuleId } from './routes'
+import type { AdminAnalysisView, AdminModuleId } from './routes'
 
-export type AdminNavTarget = AdminModuleId | 'user-usage' | 'system-settings-ha'
+export type AdminNavTarget =
+  | AdminModuleId
+  | 'analysis-usage'
+  | 'analysis-rankings'
+  | 'analysis-pressure'
+  | 'system-settings-ha'
 
 export interface AdminNavSubItem {
   target: AdminNavTarget

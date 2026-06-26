@@ -6,13 +6,13 @@ const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
         "src/models.rs",
-        3070,
-        "Alert center semantic mother-child grouping expanded the shared alert/event DTO contracts while the broader model extraction remains pending.",
+        3150,
+        "Alert center semantic DTO growth and the new admin analysis pressure snapshot contracts both extend the shared model surface while the broader extraction pass remains pending.",
     ),
     (
         "src/server/tests/admin_users_and_tokens.rs",
-        3440,
-        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage, rankings six-tab/IP payload assertions, and adjacent admin slices converge before a broader extraction pass.",
+        3760,
+        "Admin user HTTP/SSE integration coverage still lives in the legacy consolidated server test file while active-user rollup coverage, rankings six-tab/IP payload assertions, and the new analysis pressure contract converge before a broader extraction pass.",
     ),
     (
         "src/tests/jobs_and_request_log_retention.rs",

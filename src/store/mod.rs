@@ -2814,6 +2814,7 @@ include!("key_store_request_stats_flush_and_public_metrics.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_request_logs_summary_windows.rs");
 include!("key_store_user_rankings.rs");
+include!("key_store_analysis_pressure.rs");
 include!("key_store_meta.rs");
 include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");
