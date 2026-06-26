@@ -7,6 +7,8 @@
 [![Docs](https://img.shields.io/badge/docs-github--pages-1f6feb)](https://ivanli-cn.github.io/tavily-hikari/)
 [![Docs-zh](https://img.shields.io/badge/docs-zh--CN-blue)](README.zh-CN.md)
 
+![Tavily Hikari social preview](docs/assets/tavily-hikari-social-preview.png)
+
 Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes multiple API keys, anonymizes upstream traffic, stores full audit logs in SQLite, and ships with a React + Vite web console for realtime visibility.
 
 > Looking for the Chinese documentation? Check [`README.zh-CN.md`](README.zh-CN.md).

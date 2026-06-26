@@ -198,6 +198,36 @@
   min-height: 392px;
   height: 100%;
   overflow: hidden;
+  margin-top: 0;
+}
+
+.admin-ranking-card > .panel-header {
+  align-items: flex-start;
+}
+
+.admin-ranking-card > .panel-header > div {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-ranking-card > .panel-header h3 {
+  margin: 0;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.admin-ranking-card > .panel-header .panel-description {
+  line-height: 1.55;
+  min-height: calc(1.55em * 2);
+  text-wrap: pretty;
+}
+
+.admin-ranking-window-grid > .admin-ranking-card + .admin-ranking-card {
+  margin-top: 0;
 }
 
 .admin-ranking-card-body {
@@ -219,7 +249,7 @@
   height: 688px;
   min-width: 0;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .admin-ranking-chart-canvas {
@@ -227,8 +257,46 @@
   min-height: 100%;
 }
 
+.admin-ranking-chart-hit-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.admin-ranking-chart-hit-target {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  z-index: 2;
+  pointer-events: auto;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  transition: box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.admin-ranking-chart-hit-target:hover,
+.admin-ranking-chart-hit-target:focus-visible,
+.admin-ranking-chart-hit-target.is-interactive {
+  background: hsl(var(--background) / 0.08);
+  box-shadow: inset 0 0 0 1px hsl(var(--background) / 0.52);
+}
+
+.admin-ranking-chart-hit-target:focus-visible {
+  outline: 0;
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--background) / 0.52),
+    0 0 0 2px hsl(var(--ring) / 0.34);
+}
+
 .admin-ranking-scale-hint {
   margin: 0;
+}
+
+.admin-ranking-inline-actions {
+  display: flex;
+  margin-top: 10px;
 }
 
 .admin-ranking-empty-state,
@@ -473,26 +541,6 @@
   .admin-ranking-chart-shell {
     min-height: 272px;
     height: auto;
-  }
-
-  .admin-ranking-row-label {
-    gap: 8px;
-    padding-right: 10px;
-  }
-
-  .admin-ranking-row-rank {
-    flex-basis: 24px;
-    font-size: 0.74rem;
-  }
-
-  .admin-ranking-row-avatar {
-    width: 20px;
-    height: 20px;
-    flex-basis: 20px;
-  }
-
-  .admin-ranking-row-name {
-    font-size: 0.78rem;
   }
 
   .admin-ranking-skeleton-item {

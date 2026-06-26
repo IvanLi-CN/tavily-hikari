@@ -12,6 +12,7 @@ export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
 export type AlertsCenterView = 'events' | 'groups'
 export type AdminSystemSettingsView = 'general' | 'ha'
 export type AdminAnalysisView = 'rankings' | 'usage' | 'pressure'
+export type RankingTabKey = 'last24h' | 'last7d' | 'last30d' | 'primarySuccess' | 'businessCredits' | 'uniqueIp'
 
 export interface AdminTokensListContext {
   query?: string | null
@@ -63,6 +64,7 @@ export type AdminPathRoute =
 const ADMIN_BASE = '/admin'
 const DEFAULT_KEYS_PER_PAGE = 20
 const DEFAULT_TOKENS_PER_PAGE = 20
+const DEFAULT_RANKINGS_TAB: RankingTabKey = 'last24h'
 const TOKEN_PER_PAGE_OPTIONS = [20, 50, 100, 200] as const
 const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'quotaDailyUsed',
@@ -70,6 +72,14 @@ const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'recentIpCount7d',
   'lastActivity',
   'lastLoginAt',
+])
+const RANKING_TABS = new Set<RankingTabKey>([
+  'last24h',
+  'last7d',
+  'last30d',
+  'primarySuccess',
+  'businessCredits',
+  'uniqueIp',
 ])
 
 function normalizeTokenPerPage(value?: number | null): number {
@@ -253,6 +263,18 @@ export function modulePath(module: AdminModuleId): string {
 
 export function analysisPath(view: AdminAnalysisView = 'rankings'): string {
   return `${ADMIN_BASE}/analysis/${view}`
+}
+
+export function getRankingsTabFromSearch(search: string): RankingTabKey {
+  const rawValue = new URLSearchParams(search).get('tab')?.trim()
+  return rawValue && RANKING_TABS.has(rawValue as RankingTabKey)
+    ? rawValue as RankingTabKey
+    : DEFAULT_RANKINGS_TAB
+}
+
+export function rankingsPath(tab?: RankingTabKey | null): string {
+  const normalizedTab = tab && RANKING_TABS.has(tab) ? tab : DEFAULT_RANKINGS_TAB
+  return `${ADMIN_BASE}/rankings?tab=${encodeURIComponent(normalizedTab)}`
 }
 
 export function systemSettingsHaPath(): string {

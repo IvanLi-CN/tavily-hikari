@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 
 import ReactEChartsCore from 'echarts-for-react/lib/core'
 import * as echarts from 'echarts/core'
@@ -21,11 +21,13 @@ type RankingTabKey = RankingWindowKey | RankingMetricKey
 type RankingsConnectionState = 'connecting' | 'live' | 'degraded'
 type EChartsOption = ComposeOption<TooltipComponentOption | CustomSeriesOption>
 type AvatarLoadState = 'loaded' | 'failed'
+
 const DEFAULT_RANKINGS_REFRESH_INTERVAL_SECS = 10
 const DESKTOP_RANKING_ROW_HEIGHT = 32
 const MOBILE_RANKING_ROW_HEIGHT = 28
 const RANKING_CHART_BASE_HEIGHT = 48
 const RANKING_SLOT_COUNT = 20
+
 type RankingCardDefinition = {
   key: string
   title: string
@@ -34,11 +36,28 @@ type RankingCardDefinition = {
   color: string
 }
 
+type RankingChartInteractiveRow = {
+  row: AdminUserRankingRow
+  top: number
+  height: number
+}
+
 type RankingsMetaProps = {
   strings: AdminTranslations['rankings']
   snapshot: AdminUserRankingsSnapshot | null
   connectionState: RankingsConnectionState
   language: Language
+}
+
+type RankingsChartCardProps = {
+  title: string
+  description: string
+  rows: AdminUserRankingRow[]
+  strings: AdminTranslations['rankings']
+  color: string
+  interactiveUserId: string | null
+  onInteractiveUserChange: (userId: string | null) => void
+  onSelectUser?: (userId: string) => void
 }
 
 export type { RankingMetricKey, RankingTabKey, RankingWindowKey }
@@ -104,10 +123,9 @@ function measureIdentityColumnMetrics({
     const avatarWidth = compact ? 22 : 24
     const avatarGap = compact ? 10 : 12
     const contentPadding = compact ? 12 : 14
-    const textBlockWidth = widestTextWidth
     return {
-      totalWidth: avatarWidth + avatarGap + textBlockWidth + contentPadding,
-      nameWidth: textBlockWidth,
+      totalWidth: avatarWidth + avatarGap + widestTextWidth + contentPadding,
+      nameWidth: widestTextWidth,
     }
   } finally {
     probe.remove()
@@ -123,10 +141,23 @@ function formatTimestamp(unixSeconds: number, language: Language): string {
   }).format(new Date(unixSeconds * 1000))
 }
 
+function rankingRowHeight(compact: boolean): number {
+  return compact ? MOBILE_RANKING_ROW_HEIGHT : DESKTOP_RANKING_ROW_HEIGHT
+}
+
 function rankingChartHeight(rowCount: number, compact: boolean): number {
   const clampedRowCount = Math.max(rowCount, RANKING_SLOT_COUNT)
-  const rowHeight = compact ? MOBILE_RANKING_ROW_HEIGHT : DESKTOP_RANKING_ROW_HEIGHT
-  return Math.max(320, clampedRowCount * rowHeight + RANKING_CHART_BASE_HEIGHT)
+  return Math.max(320, clampedRowCount * rankingRowHeight(compact) + RANKING_CHART_BASE_HEIGHT)
+}
+
+function buildInteractiveRows(rows: AdminUserRankingRow[], compact: boolean): RankingChartInteractiveRow[] {
+  const rowHeight = rankingRowHeight(compact)
+  const chartPaddingTop = compact ? 10 : 12
+  return rows.map((row, index) => ({
+    row,
+    top: chartPaddingTop + index * rowHeight,
+    height: rowHeight,
+  }))
 }
 
 function connectionToneClass(state: RankingsConnectionState): string {
@@ -143,29 +174,25 @@ function connectionIcon(state: RankingsConnectionState): string {
 
 function useLoadedAvatarUrls(rows: AdminUserRankingRow[]): ReadonlySet<string> {
   const avatarUrls = useMemo(
-    () => Array.from(new Set(rows.map((row) => normalizeRankingAvatarUrl(row.user.avatarUrl)).filter((value): value is string => Boolean(value)))),
+    () => Array.from(
+      new Set(rows.map((row) => normalizeRankingAvatarUrl(row.user.avatarUrl)).filter((value): value is string => Boolean(value))),
+    ),
     [rows],
   )
   const [avatarStates, setAvatarStates] = useState<Record<string, AvatarLoadState>>({})
 
   useEffect(() => {
     if (typeof Image === 'undefined') return
-
-    const pendingUrls = avatarUrls.filter((url) => avatarStates[url] === undefined)
-    if (pendingUrls.length === 0) return
-
-    let cancelled = false
     const images: HTMLImageElement[] = []
 
-    for (const url of pendingUrls) {
+    for (const url of avatarUrls) {
+      if (avatarStates[url] !== undefined) continue
       const image = new Image()
       image.referrerPolicy = 'no-referrer'
       image.onload = () => {
-        if (cancelled) return
         setAvatarStates((current) => (current[url] === 'loaded' ? current : { ...current, [url]: 'loaded' }))
       }
       image.onerror = () => {
-        if (cancelled) return
         setAvatarStates((current) => (current[url] === 'failed' ? current : { ...current, [url]: 'failed' }))
       }
       image.src = url
@@ -173,7 +200,6 @@ function useLoadedAvatarUrls(rows: AdminUserRankingRow[]): ReadonlySet<string> {
     }
 
     return () => {
-      cancelled = true
       for (const image of images) {
         image.onload = null
         image.onerror = null
@@ -218,17 +244,19 @@ function RankingsBarChart({
   color,
   domainMax,
   descriptionId,
+  interactiveUserId,
 }: {
   rows: AdminUserRankingRow[]
   strings: AdminTranslations['rankings']
   color: string
   domainMax: number
   descriptionId: string
+  interactiveUserId: string | null
 }): JSX.Element {
   const compact = useViewportMode() === 'small'
   const loadedAvatarUrls = useLoadedAvatarUrls(rows)
   const axisColor = readChartColorVar('--foreground', '#332f3a')
-  const { totalWidth: measuredIdentityWidth, nameWidth: measuredNameWidth } = measureIdentityColumnMetrics({
+  const { nameWidth: measuredNameWidth } = measureIdentityColumnMetrics({
     rows,
     strings,
     compact,
@@ -247,15 +275,19 @@ function RankingsBarChart({
   const rowValueFontSize = compact ? 12 : 13
   const rowRankFontSize = compact ? 11 : 12
   const chartHeight = rankingChartHeight(rows.length, compact)
-  const avatarUrlsByUserId = useMemo(() => new Map(
-    rows.map((row) => {
-      const realAvatarUrl = normalizeRankingAvatarUrl(row.user.avatarUrl)
-      const avatarUrl = realAvatarUrl && loadedAvatarUrls.has(realAvatarUrl)
-        ? realAvatarUrl
-        : buildRankingMockAvatarDataUrl(row.user, strings.userFallback)
-      return [row.user.userId, avatarUrl]
-    }),
-  ), [loadedAvatarUrls, rows, strings.userFallback])
+  const avatarUrlsByUserId = useMemo(
+    () =>
+      new Map(
+        rows.map((row) => {
+          const realAvatarUrl = normalizeRankingAvatarUrl(row.user.avatarUrl)
+          const avatarUrl = realAvatarUrl && loadedAvatarUrls.has(realAvatarUrl)
+            ? realAvatarUrl
+            : buildRankingMockAvatarDataUrl(row.user, strings.userFallback)
+          return [row.user.userId, avatarUrl]
+        }),
+      ),
+    [loadedAvatarUrls, rows, strings.userFallback],
+  )
 
   const option = useMemo<EChartsOption>(() => ({
     animation: false,
@@ -287,7 +319,7 @@ function RankingsBarChart({
           const fullWidth = api.getWidth()
           const fullHeight = api.getHeight()
           const slotHeight = Math.max(
-            compact ? MOBILE_RANKING_ROW_HEIGHT : DESKTOP_RANKING_ROW_HEIGHT,
+            rankingRowHeight(compact),
             (fullHeight - chartPaddingTop - chartPaddingBottom) / RANKING_SLOT_COUNT,
           )
           const centerY = chartPaddingTop + params.dataIndexInside * slotHeight + slotHeight / 2
@@ -314,6 +346,7 @@ function RankingsBarChart({
           const avatarUrl =
             avatarUrlsByUserId.get(row.user.userId) ??
             buildRankingMockAvatarDataUrl(row.user, strings.userFallback)
+          const isInteractiveMatch = row.user.userId === interactiveUserId
 
           return {
             type: 'group',
@@ -329,7 +362,14 @@ function RankingsBarChart({
                   height: barHeight,
                   r: [8, 999, 999, 8],
                 },
-                style: { fill: color },
+                style: {
+                  fill: isInteractiveMatch ? withOpacity(color, 0.94) : color,
+                  shadowColor: isInteractiveMatch ? withOpacity(color, 0.42) : 'transparent',
+                  shadowBlur: isInteractiveMatch ? 8 : 0,
+                  shadowOffsetY: isInteractiveMatch ? 2 : 0,
+                  lineWidth: isInteractiveMatch ? 1.5 : 0,
+                  stroke: isInteractiveMatch ? 'rgba(255, 255, 255, 0.72)' : 'transparent',
+                },
                 silent: true,
               },
               {
@@ -382,8 +422,8 @@ function RankingsBarChart({
                     },
                     style: {
                       fill: 'transparent',
-                      stroke: 'rgba(255, 255, 255, 0.78)',
-                      lineWidth: 1,
+                      stroke: isInteractiveMatch ? 'rgba(255, 255, 255, 0.96)' : 'rgba(255, 255, 255, 0.78)',
+                      lineWidth: isInteractiveMatch ? 1.5 : 1,
                     },
                     silent: true,
                   },
@@ -432,9 +472,9 @@ function RankingsBarChart({
       },
     ],
   }), [
-    axisColor,
     avatarSize,
     avatarUrlsByUserId,
+    axisColor,
     barHeight,
     chartPaddingBottom,
     chartPaddingLeft,
@@ -443,7 +483,7 @@ function RankingsBarChart({
     color,
     compact,
     domainMax,
-    measuredIdentityWidth,
+    interactiveUserId,
     measuredNameWidth,
     rankWidth,
     rowLabelGap,
@@ -477,15 +517,14 @@ function RankingsChartCard({
   rows,
   strings,
   color,
-}: {
-  title: string
-  description: string
-  rows: AdminUserRankingRow[]
-  strings: AdminTranslations['rankings']
-  color: string
-}): JSX.Element {
+  interactiveUserId,
+  onInteractiveUserChange,
+  onSelectUser,
+}: RankingsChartCardProps): JSX.Element {
   const descriptionId = useId()
+  const compact = useViewportMode() === 'small'
   const domainMax = rows.length > 0 ? buildTopBarDomainMax(rows[0]?.value ?? 0) : 1
+  const interactiveRows = useMemo(() => buildInteractiveRows(rows, compact), [compact, rows])
 
   return (
     <article className="surface panel admin-ranking-card">
@@ -512,7 +551,36 @@ function RankingsChartCard({
           <div className="admin-ranking-chart-layout">
             <RankingsSemanticList id={descriptionId} title={title} rows={rows} strings={strings} />
             <div className="admin-ranking-chart-shell">
-              <RankingsBarChart rows={rows} strings={strings} color={color} domainMax={domainMax} descriptionId={descriptionId} />
+              <RankingsBarChart
+                rows={rows}
+                strings={strings}
+                color={color}
+                domainMax={domainMax}
+                descriptionId={descriptionId}
+                interactiveUserId={interactiveUserId}
+              />
+              <div className="admin-ranking-chart-hit-layer">
+                {interactiveRows.map(({ row, top, height }) => {
+                  const label = `${row.rank}. ${formatDisplayName(row, strings.userFallback)}`
+                  const active = row.user.userId === interactiveUserId
+                  return (
+                    <button
+                      key={`${title}:${row.user.userId}:${row.rank}`}
+                      type="button"
+                      className={`admin-ranking-chart-hit-target ${active ? 'is-interactive' : ''}`}
+                      style={{ top, height }}
+                      aria-label={label}
+                      onMouseEnter={() => onInteractiveUserChange(row.user.userId)}
+                      onMouseLeave={() => onInteractiveUserChange(null)}
+                      onFocus={() => onInteractiveUserChange(row.user.userId)}
+                      onBlur={() => onInteractiveUserChange(null)}
+                      onClick={() => onSelectUser?.(row.user.userId)}
+                    >
+                      <span className="sr-only">{label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}
@@ -572,22 +640,45 @@ function RankingsLoadingCard({
   )
 }
 
-function buildLoadingCards(strings: AdminTranslations['rankings']): Array<Pick<RankingCardDefinition, 'key' | 'title' | 'description'>> {
+function buildLoadingCards(
+  strings: AdminTranslations['rankings'],
+  activeTab: RankingTabKey,
+): Array<Pick<RankingCardDefinition, 'key' | 'title' | 'description'>> {
+  if (isWindowTab(activeTab)) {
+    return [
+      {
+        key: `${activeTab}-loading-primary-success`,
+        title: strings.metrics.primarySuccess,
+        description: strings.primarySuccessDescription,
+      },
+      {
+        key: `${activeTab}-loading-business-credits`,
+        title: strings.metrics.businessCredits,
+        description: strings.businessCreditsDescription,
+      },
+      {
+        key: `${activeTab}-loading-unique-ip`,
+        title: strings.metrics.uniqueIp,
+        description: strings.uniqueIpDescription,
+      },
+    ]
+  }
+
   return [
     {
-      key: 'loading-primary-success',
-      title: strings.metrics.primarySuccess,
-      description: strings.primarySuccessDescription,
+      key: `${activeTab}-loading-last24h`,
+      title: strings.windows.last24h,
+      description: descriptionForMetric(strings, activeTab),
     },
     {
-      key: 'loading-business-credits',
-      title: strings.metrics.businessCredits,
-      description: strings.businessCreditsDescription,
+      key: `${activeTab}-loading-last7d`,
+      title: strings.windows.last7d,
+      description: descriptionForMetric(strings, activeTab),
     },
     {
-      key: 'loading-unique-ip',
-      title: strings.metrics.uniqueIp,
-      description: strings.uniqueIpDescription,
+      key: `${activeTab}-loading-last30d`,
+      title: strings.windows.last30d,
+      description: descriptionForMetric(strings, activeTab),
     },
   ]
 }
@@ -596,55 +687,97 @@ function isWindowTab(value: RankingTabKey): value is RankingWindowKey {
   return value === 'last24h' || value === 'last7d' || value === 'last30d'
 }
 
-function defaultWindowForTab(value: RankingTabKey): RankingWindowKey {
-  return isWindowTab(value) ? value : 'last24h'
+function buildTabLabel(strings: AdminTranslations['rankings'], value: RankingTabKey): string {
+  return isWindowTab(value) ? strings.windows[value] : strings.metrics[value]
 }
 
-function buildTabLabel(strings: AdminTranslations['rankings'], value: RankingTabKey): string {
-  if (value === 'last24h' || value === 'last7d' || value === 'last30d') {
-    return strings.windows[value]
-  }
+function rowsForMetric(windowData: AdminUserRankingsSnapshot[RankingWindowKey], metric: RankingMetricKey): AdminUserRankingRow[] {
+  if (metric === 'primarySuccess') return windowData.primarySuccessTop
+  if (metric === 'businessCredits') return windowData.businessCreditsTop
+  return windowData.uniqueIpTop
+}
 
-  return strings.metrics[value]
+function descriptionForMetric(strings: AdminTranslations['rankings'], metric: RankingMetricKey): string {
+  if (metric === 'primarySuccess') return strings.primarySuccessDescription
+  if (metric === 'businessCredits') return strings.businessCreditsDescription
+  return strings.uniqueIpDescription
+}
+
+function colorForMetric(
+  metric: RankingMetricKey,
+  colors: { primaryColor: string; creditColor: string; uniqueIpColor: string },
+): string {
+  if (metric === 'primarySuccess') return colors.primaryColor
+  if (metric === 'businessCredits') return colors.creditColor
+  return colors.uniqueIpColor
 }
 
 function buildRankingCards({
-  selectedWindow,
+  activeTab,
   snapshot,
   strings,
   primaryColor,
   creditColor,
   uniqueIpColor,
 }: {
-  selectedWindow: RankingWindowKey
+  activeTab: RankingTabKey
   snapshot: AdminUserRankingsSnapshot
   strings: AdminTranslations['rankings']
   primaryColor: string
   creditColor: string
   uniqueIpColor: string
 }): RankingCardDefinition[] {
-  const windowData = snapshot[selectedWindow]
+  if (isWindowTab(activeTab)) {
+    const windowData = snapshot[activeTab]
+    return [
+      {
+        key: `${activeTab}-primary-success`,
+        title: strings.metrics.primarySuccess,
+        description: strings.primarySuccessDescription,
+        rows: windowData.primarySuccessTop,
+        color: primaryColor,
+      },
+      {
+        key: `${activeTab}-business-credits`,
+        title: strings.metrics.businessCredits,
+        description: strings.businessCreditsDescription,
+        rows: windowData.businessCreditsTop,
+        color: creditColor,
+      },
+      {
+        key: `${activeTab}-unique-ip`,
+        title: strings.metrics.uniqueIp,
+        description: strings.uniqueIpDescription,
+        rows: windowData.uniqueIpTop,
+        color: uniqueIpColor,
+      },
+    ]
+  }
+
+  const colors = { primaryColor, creditColor, uniqueIpColor }
+  const metric = activeTab
+  const color = colorForMetric(metric, colors)
   return [
     {
-      key: `${selectedWindow}-primary-success`,
-      title: strings.metrics.primarySuccess,
-      description: strings.primarySuccessDescription,
-      rows: windowData.primarySuccessTop,
-      color: primaryColor,
+      key: `${metric}-last24h`,
+      title: strings.windows.last24h,
+      description: descriptionForMetric(strings, metric),
+      rows: rowsForMetric(snapshot.last24h, metric),
+      color,
     },
     {
-      key: `${selectedWindow}-business-credits`,
-      title: strings.metrics.businessCredits,
-      description: strings.businessCreditsDescription,
-      rows: windowData.businessCreditsTop,
-      color: creditColor,
+      key: `${metric}-last7d`,
+      title: strings.windows.last7d,
+      description: descriptionForMetric(strings, metric),
+      rows: rowsForMetric(snapshot.last7d, metric),
+      color,
     },
     {
-      key: `${selectedWindow}-unique-ip`,
-      title: strings.metrics.uniqueIp,
-      description: strings.uniqueIpDescription,
-      rows: windowData.uniqueIpTop,
-      color: uniqueIpColor,
+      key: `${metric}-last30d`,
+      title: strings.windows.last30d,
+      description: descriptionForMetric(strings, metric),
+      rows: rowsForMetric(snapshot.last30d, metric),
+      color,
     },
   ]
 }
@@ -711,7 +844,9 @@ export default function AdminUserRankingsPage({
   error,
   connectionState,
   onRetry,
-  initialTab = 'last24h',
+  activeTab = 'last24h',
+  onTabChange,
+  onSelectUser,
   showHeader = true,
 }: {
   strings: AdminTranslations['rankings']
@@ -721,13 +856,12 @@ export default function AdminUserRankingsPage({
   error: string | null
   connectionState: RankingsConnectionState
   onRetry: () => void
-  initialTab?: RankingTabKey
+  activeTab?: RankingTabKey
+  onTabChange?: (tab: RankingTabKey) => void
+  onSelectUser?: (userId: string) => void
   showHeader?: boolean
 }): JSX.Element {
-  const [activeTab, setActiveTab] = useState<RankingTabKey>(initialTab)
-  const [selectedWindow, setSelectedWindow] = useState<RankingWindowKey>(defaultWindowForTab(initialTab))
-  const pageRef = useRef<HTMLElement | null>(null)
-  const viewportMode = useViewportMode()
+  const [interactiveUserId, setInteractiveUserId] = useState<string | null>(null)
   const primaryColor = readChartColorVar('--dashboard-chart-result-primary-success', '#10b981')
   const creditColor = readChartColorVar('--dashboard-chart-type-api-billable', '#60a5fa')
   const uniqueIpColor = readChartColorVar('--info', '#0ea5e9')
@@ -735,35 +869,26 @@ export default function AdminUserRankingsPage({
     () => ['last24h', 'last7d', 'last30d', 'primarySuccess', 'businessCredits', 'uniqueIp'],
     [],
   )
-  useEffect(() => {
-    setActiveTab(initialTab)
-    setSelectedWindow(defaultWindowForTab(initialTab))
-  }, [initialTab])
-
-  const handleTabSelect = (tab: RankingTabKey): void => {
-    setActiveTab(tab)
-    if (isWindowTab(tab)) {
-      setSelectedWindow(tab)
-    }
-  }
 
   const renderedCards = useMemo(
-    () => (snapshot ? buildRankingCards({
-      selectedWindow,
-      snapshot,
-      strings,
-      primaryColor,
-      creditColor,
-      uniqueIpColor,
-    }) : []),
-    [creditColor, primaryColor, selectedWindow, snapshot, strings, uniqueIpColor],
+    () =>
+      snapshot
+        ? buildRankingCards({
+          activeTab,
+          snapshot,
+          strings,
+          primaryColor,
+          creditColor,
+          uniqueIpColor,
+        })
+        : [],
+    [activeTab, creditColor, primaryColor, snapshot, strings, uniqueIpColor],
   )
-  const loadingCards = useMemo(() => buildLoadingCards(strings), [strings])
+  const loadingCards = useMemo(() => buildLoadingCards(strings, activeTab), [activeTab, strings])
   const showLoadingSkeleton = loading && !snapshot
-  const showStackedTabs = viewportMode === 'small'
 
   return (
-    <section ref={pageRef} className="admin-rankings-page">
+    <section className="admin-rankings-page">
       {showHeader ? (
         <section className="surface panel">
           <div className="panel-header admin-rankings-header">
@@ -781,6 +906,13 @@ export default function AdminUserRankingsPage({
             <div className={`alert ${snapshot ? '' : 'alert-error'}`}>
               <div>{error}</div>
               {snapshot ? <div className="admin-ranking-stale-hint">{strings.staleHint}</div> : null}
+              {!snapshot ? (
+                <div className="admin-ranking-inline-actions">
+                  <button type="button" className="btn btn-outline btn-sm" onClick={onRetry}>
+                    {strings.retry}
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -800,7 +932,7 @@ export default function AdminUserRankingsPage({
                   aria-disabled={showLoadingSkeleton}
                   disabled={showLoadingSkeleton}
                   className={`admin-rankings-tab ${active ? 'is-active' : ''}`}
-                  onClick={() => handleTabSelect(tab)}
+                  onClick={() => onTabChange?.(tab)}
                 >
                   {buildTabLabel(strings, tab)}
                 </button>
@@ -814,6 +946,13 @@ export default function AdminUserRankingsPage({
         <div className={`alert ${snapshot ? '' : 'alert-error'}`}>
           <div>{error}</div>
           {snapshot ? <div className="admin-ranking-stale-hint">{strings.staleHint}</div> : null}
+          {!snapshot ? (
+            <div className="admin-ranking-inline-actions">
+              <button type="button" className="btn btn-outline btn-sm" onClick={onRetry}>
+                {strings.retry}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -841,6 +980,9 @@ export default function AdminUserRankingsPage({
                 rows={card.rows}
                 strings={strings}
                 color={card.color}
+                interactiveUserId={interactiveUserId}
+                onInteractiveUserChange={setInteractiveUserId}
+                onSelectUser={onSelectUser}
               />
             ))}
           </div>

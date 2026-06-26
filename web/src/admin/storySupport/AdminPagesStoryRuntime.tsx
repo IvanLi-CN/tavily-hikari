@@ -3756,12 +3756,12 @@ function TokensPageCanvas(): JSX.Element {
 }
 
 function RankingsPageCanvas({
-  initialTab = 'last24h',
+  activeTab = 'last24h',
   snapshot = rankingsStorySnapshot,
   loading = false,
   connectionState = 'live',
 }: {
-  initialTab?: React.ComponentProps<typeof AdminUserRankingsPage>['initialTab']
+  activeTab?: React.ComponentProps<typeof AdminUserRankingsPage>['activeTab']
   snapshot?: React.ComponentProps<typeof AdminUserRankingsPage>['snapshot']
   loading?: React.ComponentProps<typeof AdminUserRankingsPage>['loading']
   connectionState?: React.ComponentProps<typeof AdminUserRankingsPage>['connectionState']
@@ -3788,7 +3788,8 @@ function RankingsPageCanvas({
         connectionState={connectionState}
         showHeader={false}
         onRetry={() => {}}
-        initialTab={initialTab}
+        activeTab={activeTab}
+        onTabChange={() => {}}
       />
     </AdminPageFrame>
   )
@@ -6562,7 +6563,7 @@ export const Rankings: Story = {
 }
 
 export const RankingsDimension: Story = {
-  render: () => <RankingsPageCanvas initialTab="uniqueIp" />,
+  render: () => <RankingsPageCanvas activeTab="uniqueIp" />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

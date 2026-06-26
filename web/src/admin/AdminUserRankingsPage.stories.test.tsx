@@ -32,7 +32,7 @@ describe('AdminUserRankingsPage Storybook proofs', () => {
     expect(markup).toContain('1. Alice Chen: 184')
   })
 
-  it('renders the dimension story inside the same three-metric card layout', () => {
+  it('renders the metric-tab story inside the three-window card layout', () => {
     const renderStory = stories.DimensionView.render as ((args: Record<string, unknown>) => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
     const args = {
@@ -45,15 +45,15 @@ describe('AdminUserRankingsPage Storybook proofs', () => {
       createElement(ThemeProvider, null, createElement(TooltipProvider, null, storyNode)),
     )
 
-    expect(markup).toContain('主要调用')
-    expect(markup).toContain('积分')
-    expect(markup).toContain('IP')
+    expect(markup).toContain('最近 24 小时')
+    expect(markup).toContain('最近 7 天')
+    expect(markup).toContain('最近 30 天')
     expect(markup).toContain('按时间窗统计唯一 IP 数')
     expect(markup).toContain('1. Alice Chen: 42')
     expect(markup.match(/admin-ranking-chart-shell/g)?.length ?? 0).toBe(3)
-    expect(markup).not.toContain('<h3>最近 24 小时</h3>')
-    expect(markup).not.toContain('<h3>最近 7 天</h3>')
-    expect(markup).not.toContain('<h3>最近 30 天</h3>')
+    expect(markup).not.toContain('<h3>主要调用</h3>')
+    expect(markup).not.toContain('<h3>积分</h3>')
+    expect(markup).not.toContain('<h3>IP</h3>')
   })
 
   it('renders the empty story with the shared empty state copy', () => {
