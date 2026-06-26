@@ -97,19 +97,27 @@ impl TavilyProxy {
         &self,
         generated_at: i64,
     ) -> Result<AnalysisPressureSnapshot, ProxyError> {
+        const PRESSURE_WINDOW_SECONDS: i64 = SECS_PER_HOUR;
+        const PRESSURE_24H_POINT_COUNT: usize = 288;
+
         let local_now = self.backend_time.local_now();
         let current_five_minute_bucket_start =
             generated_at - generated_at.rem_euclid(SECS_PER_FIVE_MINUTES);
         let current_hour_bucket_start = start_of_local_hour_utc_ts(local_now);
-        let current_24h_start = current_five_minute_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+        let current_24h_start =
+            current_five_minute_bucket_start - (PRESSURE_24H_POINT_COUNT as i64 - 1) * SECS_PER_FIVE_MINUTES;
         let previous_24h_start = current_24h_start - SECS_PER_DAY;
         let seven_day_start = current_hour_bucket_start - 167 * SECS_PER_HOUR;
+        let pressure_warmup_bucket_count =
+            rolling_pressure_warmup_bucket_count(SECS_PER_FIVE_MINUTES, PRESSURE_WINDOW_SECONDS);
+        let pressure_warmup_seconds =
+            pressure_warmup_bucket_count as i64 * SECS_PER_FIVE_MINUTES;
 
         let current_24h_buckets = self
             .key_store
             .fetch_server_pressure_points(
                 "five_minute",
-                current_24h_start,
+                current_24h_start - pressure_warmup_seconds,
                 current_five_minute_bucket_start + SECS_PER_FIVE_MINUTES,
             )
             .await?;
@@ -117,31 +125,37 @@ impl TavilyProxy {
             .key_store
             .fetch_server_pressure_points(
                 "five_minute",
-                previous_24h_start,
-                previous_24h_start + 288 * SECS_PER_FIVE_MINUTES,
+                previous_24h_start - pressure_warmup_seconds,
+                previous_24h_start + PRESSURE_24H_POINT_COUNT as i64 * SECS_PER_FIVE_MINUTES,
             )
             .await?;
         let current_24h_bucket_slots = build_pressure_slot_series(
-            current_24h_start,
-            288,
+            current_24h_start - pressure_warmup_seconds,
+            PRESSURE_24H_POINT_COUNT + pressure_warmup_bucket_count,
             SECS_PER_FIVE_MINUTES,
             &current_24h_buckets,
         );
         let previous_24h_bucket_slots = build_pressure_slot_series(
-            previous_24h_start,
-            288,
+            previous_24h_start - pressure_warmup_seconds,
+            PRESSURE_24H_POINT_COUNT + pressure_warmup_bucket_count,
             SECS_PER_FIVE_MINUTES,
             &previous_24h_buckets,
         );
-        let current_24h_slots = build_rolling_pressure_series(
-            &current_24h_bucket_slots,
-            SECS_PER_FIVE_MINUTES,
-            SECS_PER_HOUR,
+        let current_24h_slots = trim_rolling_pressure_warmup(
+            build_rolling_pressure_series(
+                &current_24h_bucket_slots,
+                SECS_PER_FIVE_MINUTES,
+                PRESSURE_WINDOW_SECONDS,
+            ),
+            pressure_warmup_bucket_count,
         );
-        let previous_24h_slots_raw = build_rolling_pressure_series(
-            &previous_24h_bucket_slots,
-            SECS_PER_FIVE_MINUTES,
-            SECS_PER_HOUR,
+        let previous_24h_slots_raw = trim_rolling_pressure_warmup(
+            build_rolling_pressure_series(
+                &previous_24h_bucket_slots,
+                SECS_PER_FIVE_MINUTES,
+                PRESSURE_WINDOW_SECONDS,
+            ),
+            pressure_warmup_bucket_count,
         );
         let previous_pressure = previous_24h_slots_raw
             .last()
@@ -1173,7 +1187,7 @@ fn build_rolling_pressure_series(
     bucket_seconds: i64,
     window_seconds: i64,
 ) -> Vec<AnalysisPressurePoint> {
-    let max_buckets = (window_seconds / bucket_seconds).max(1) as usize;
+    let max_buckets = rolling_pressure_bucket_count(bucket_seconds, window_seconds);
     let mut rolling_success = 0_i64;
     let mut rolling_failure = 0_i64;
     let mut recent = std::collections::VecDeque::<(i64, i64)>::new();
@@ -1200,6 +1214,21 @@ fn build_rolling_pressure_series(
             }
         })
         .collect()
+}
+
+fn rolling_pressure_bucket_count(bucket_seconds: i64, window_seconds: i64) -> usize {
+    (window_seconds / bucket_seconds).max(1) as usize
+}
+
+fn rolling_pressure_warmup_bucket_count(bucket_seconds: i64, window_seconds: i64) -> usize {
+    rolling_pressure_bucket_count(bucket_seconds, window_seconds).saturating_sub(1)
+}
+
+fn trim_rolling_pressure_warmup(
+    points: Vec<AnalysisPressurePoint>,
+    warmup_bucket_count: usize,
+) -> Vec<AnalysisPressurePoint> {
+    points.into_iter().skip(warmup_bucket_count).collect()
 }
 
 fn previous_to_current_display_shift_secs(

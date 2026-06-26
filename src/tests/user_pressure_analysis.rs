@@ -345,3 +345,95 @@ async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets(
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn analysis_pressure_snapshot_warms_up_24h_rolling_window_edges() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_500_000);
+    let db_path = temp_db_path("analysis-pressure-snapshot-warmup");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "analysis-pressure-warmup".to_string(),
+            username: Some("warmup".to_string()),
+            name: Some("Warmup".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("analysis-pressure-warmup"))
+        .await
+        .expect("bind token");
+    let request_kind = TokenRequestKind::new("api:search", "API | search", None);
+    let now = manual_clock.now_ts();
+    let current_bucket_start = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let current_24h_start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+    let previous_24h_start = current_24h_start - SECS_PER_DAY;
+
+    seed_pressure_attempt(
+        &proxy,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        current_24h_start - 5 * SECS_PER_MINUTE,
+        OUTCOME_SUCCESS,
+        Some("http_search"),
+        &request_kind,
+    )
+    .await;
+    seed_pressure_attempt(
+        &proxy,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        previous_24h_start - 5 * SECS_PER_MINUTE,
+        OUTCOME_SUCCESS,
+        Some("http_search"),
+        &request_kind,
+    )
+    .await;
+
+    manual_clock.set_now_ts(now);
+    let snapshot = proxy
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot");
+
+    let current_first = snapshot
+        .server_24h
+        .current
+        .first()
+        .expect("first current pressure point");
+    assert_eq!(current_first.bucket_start, current_24h_start);
+    assert_eq!(current_first.pressure, 1);
+    assert_eq!(current_first.success_count, 1);
+    assert_eq!(current_first.failure_count, 0);
+
+    let previous_first = snapshot
+        .server_24h
+        .previous
+        .first()
+        .expect("first previous pressure point");
+    assert_eq!(previous_first.bucket_start, previous_24h_start);
+    assert_eq!(previous_first.pressure, 1);
+    assert_eq!(previous_first.success_count, 1);
+    assert_eq!(previous_first.failure_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
