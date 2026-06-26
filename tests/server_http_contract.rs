@@ -182,6 +182,7 @@ fn spawn_backend_process_with_urls(
     }
 
     let child = cmd
+        .env("TAVILY_DISABLE_BACKGROUND_TASKS", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
