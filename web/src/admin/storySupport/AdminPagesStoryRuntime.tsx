@@ -110,6 +110,7 @@ import ModulePlaceholder from '../ModulePlaceholder'
 import SystemSettingsModule from '../SystemSettingsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
+import { UsersUsageScreen } from '../screens/UsersUsageScreen'
 import { buildPressureDemoFixture } from '../../api/pressureDemoFixture'
 import {
   forwardProxyStorySavedAt,
@@ -5068,8 +5069,6 @@ function UsersUsagePageCanvas({
   const admin = useAdminTranslations()
   const { language } = useLanguage()
   const users = admin.users
-  const usageDailyRateLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
-  const usageMonthlyRateLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
   const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
   const {
@@ -5204,225 +5203,36 @@ function UsersUsagePageCanvas({
           </AdminSidebarUtilityCard>
         </AdminSidebarUtilityStack>
       </AdminShellSidebarUtility>
-
-      <div className="admin-desktop-only">
-        <AdminCompactIntro
-          title={users.usage.title}
-          description={users.usage.description}
-          actions={usageHeaderActions}
-        />
-      </div>
-      <div className="admin-stacked-only">
-        <section className="surface app-header admin-usage-stacked-intro">
-          <div className="admin-usage-stacked-intro-main">
-            <h1>{users.usage.title}</h1>
-            <p className="admin-compact-intro-description">{users.usage.description}</p>
-          </div>
-          <div className="admin-usage-stacked-intro-actions">{usageHeaderActions}</div>
-        </section>
-      </div>
-
-      {usersFilterStatusText && (
-        <p className="panel-description admin-usage-filter-status" data-testid="users-filter-status">
-          {usersFilterStatusText}
-        </p>
-      )}
-
-      <section className="surface panel">
-        <div className="table-wrapper jobs-table-wrapper">
-          {filteredUsers.length === 0 ? (
-            <div className="empty-state alert">{users.empty.none}</div>
-          ) : (
-            <table className="jobs-table admin-users-table admin-users-usage-table">
-              <thead>
-                <tr>
-                  <th>{users.usage.table.user}</th>
-                  <th>{users.usage.table.status}</th>
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.hourlyAny}
-                    field="hourlyAnyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.hourly}
-                    field="quotaHourlyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <th>{users.usage.table.businessOneHour}</th>
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.daily}
-                    field="quotaDailyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.monthly}
-                    field="quotaMonthlyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.monthlyBroken}
-                    field="monthlyBrokenCount"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.ipCount}
-                    field="recentIpCount7d"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.dailySuccessRate}
-                    displayLabel={usageDailyRateLabel}
-                    field="dailySuccessRate"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.monthlySuccessRate}
-                    displayLabel={usageMonthlyRateLabel}
-                    field="monthlySuccessRate"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.usage.table.lastUsed}
-                    field="lastActivity"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {sortedUsers.map((item) => {
-                  const requestRate = resolveRequestRate(item, 'user')
-                  const requestRateMetric = formatQuotaStackValue(requestRate.used, requestRate.limit)
-                  const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
-                  const businessCalls1hMetric = formatBusinessCalls1hStackValue(
-                    item.businessCalls1h.successCount,
-                    item.businessCalls1h.failureCount,
-                    language,
-                  )
-                  const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
-                  const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
-                  const monthlyBrokenMetric = formatMonthlyBrokenStackValue(
-                    item.monthlyBrokenCount,
-                    item.monthlyBrokenLimit,
-                  )
-                  const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
-                  const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
-                  const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
-                  const userLabel = item.displayName || item.username || item.userId
-                  return (
-                    <tr key={item.userId}>
-                      <td className="admin-users-identity-cell">
-                        <button
-                          type="button"
-                          className="link-button admin-users-identity-button"
-                          aria-label={users.actions.view}
-                          onClick={() => openAdminStory('admin-pages--user-detail')}
-                        >
-                          <strong>{item.displayName || item.username || item.userId}</strong>
-                        </button>
-                        <div className="panel-description admin-users-identity-meta">
-                          <code>{item.userId}</code>
-                          {item.username ? ` · @${item.username}` : ''}
-                        </div>
-                      </td>
-                      <td>
-                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
-                          {item.active ? users.status.active : users.status.inactive}
-                        </StatusBadge>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${requestRateMetric.primaryClassName ? ` ${requestRateMetric.primaryClassName}` : ''}`}>{requestRateMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{requestRateMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${hourlyMetric.primaryClassName ? ` ${hourlyMetric.primaryClassName}` : ''}`}>{hourlyMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{businessCalls1hMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{businessCalls1hMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <MonthlyBrokenCountTrigger
-                            count={item.monthlyBrokenCount}
-                            onOpen={() =>
-                              setMonthlyBrokenDrawer({
-                                label: userLabel,
-                                items: MOCK_MONTHLY_BROKEN_ITEMS[`user:${item.userId}`] ?? [],
-                              })}
-                            ariaLabel={users.brokenKeys.openDetails.replace('{label}', userLabel)}
-                            className={monthlyBrokenMetric.primaryClassName}
-                          />
-                          <span className="admin-table-value-secondary">{monthlyBrokenMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <span className="admin-table-value-primary">{formatNumber(item.recentIpCount7d)}</span>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{dailySuccessMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{dailySuccessMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{monthlySuccessMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{monthlySuccessMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{lastActivityMetric.primary}</span>
-                          {lastActivityMetric.secondary && (
-                            <span className="admin-table-value-secondary">{lastActivityMetric.secondary}</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </section>
+      <UsersUsageScreen
+        users={sortedUsers}
+        language={language}
+        usersStrings={users}
+        searchControls={usageHeaderActions}
+        filterStatusText={usersFilterStatusText}
+        loadState="ready"
+        loadingLabel={users.empty.loading}
+        errorLabel={users.empty.none}
+        activeSortField={effectiveSortField}
+        activeSortOrder={effectiveSortOrder}
+        onToggleSort={toggleSort}
+        onOpenUser={() => openAdminStory('admin-pages--user-detail')}
+        onOpenMonthlyBrokenDrawer={(userId, label) =>
+          setMonthlyBrokenDrawer({
+            label,
+            items: MOCK_MONTHLY_BROKEN_ITEMS[`user:${userId}`] ?? [],
+          })}
+        formatNumber={formatNumber}
+        formatTimestamp={formatTimestamp}
+        formatQuotaUsagePair={formatQuotaUsagePair}
+        formatQuotaStackValue={formatQuotaStackValue}
+        formatBusinessCalls1hStackValue={formatBusinessCalls1hStackValue}
+        formatSuccessRateStackValue={formatSuccessRateStackValue}
+        formatCompactSuccessRateValue={formatCompactSuccessRateValue}
+        formatStackedTimestamp={formatStackedTimestamp}
+        formatAdminUserListPrimary={(item) => item.displayName || item.username || item.userId}
+        formatAdminUserListMeta={(item) => (item.displayName && item.username ? `@${item.username}` : null)}
+        formatMonthlyBrokenStackValue={formatMonthlyBrokenStackValue}
+      />
     </AdminPageFrame>
   )
 }
@@ -6891,6 +6701,15 @@ export const UsersUsage: Story = {
     const searchInput = canvasElement.querySelector<HTMLInputElement>('input[name="user-usage-search"]')
     if (!searchInput) {
       throw new Error('Expected users usage story to render the usage search input.')
+    }
+    const headerTexts = Array.from(
+      canvasElement.querySelectorAll<HTMLTableCellElement>('.admin-users-usage-table thead th'),
+    ).map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+    if (headerTexts.filter((text) => text === '1h').length !== 1) {
+      throw new Error('Expected users usage story to expose exactly one 1h column.')
+    }
+    if (!headerTexts.includes('5m 限流')) {
+      throw new Error('Expected users usage story to keep the 5m rate column.')
     }
     if (getFirstRenderedUserLabel(canvasElement) !== 'Alice Wang') {
       throw new Error('Expected users usage story to start with Alice Wang as the first rendered row.')

@@ -181,7 +181,7 @@
   - `pressure` 使用独立实线 dataset
   - `limit` 使用独立虚线 dataset，并与 `pressure` 用不同颜色区分
 - 月度历史缺口显示为无数据提示，不伪装成 `0`。
-- `/admin/analysis/usage` 新增 `业务 1h` 列，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序；旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
+- `/admin/analysis/usage` 保留 `5m 限流` 列，并只保留一个小时语义列，列表短标签显示为 `1h`；不再额外显示独立 `1h` 额度列。该列继续承载 `业务 1h` 语义，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序；旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
 - token 列表说明文案需明确：这里只展示 token 自己的状态、时间与成功统计，共享额度请看上方趋势图。
 - token 列表右上角提供“添加令牌”按钮；每行操作区提供删除按钮，但当用户仅剩 1 个 token 时必须禁用删除。
 
@@ -259,7 +259,7 @@
 - capture_scope: `element`
 - requested_viewport: `none`
 - viewport_strategy: `storybook-viewport`
-- submission_gate: `pending-owner-approval`
+- submission_gate: `approved`
 - evidence_note: 当前 Storybook 用户详情默认落在 `每小时` tab，图中业务额度柱状值上方的虚线使用 `points[].limitValue` 按 bucket 回放历史小时额度快照，而不是整图平铺当前 limit；已检查空白裁剪，无需额外裁切；证据绑定当前实现提交。
 
 ![共享额度趋势默认每小时](./assets/user-detail-shared-usage-default.png)
@@ -397,12 +397,12 @@
 - story_id_or_title: `admin-pages--users-usage`
 - target_program: `mock-only`
 - capture_scope: `browser-viewport`
-- requested_viewport: `1440x1600`
+- requested_viewport: `1920x1100`
 - viewport_strategy: `devtools-emulate`
 - submission_gate: `approved`
 - PR: include
 - evidence_note:
-  `/admin/users/usage` 已新增 `业务 1h` 列，按 `success + failure` 展示最近 rolling 1h 总量，并在次级文案中显示 `S/F` 拆分；本 Storybook surface 已补齐与 runtime 同口径的列渲染，避免列表验收面与真实页面漂移。空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现提交。
+  `/admin/users/usage` 列表现只保留 `5m 限流` 与单一 `1h` 小时列，不再出现额外的独立 `1h` 额度列，也不再使用过长表头；该列继续承载 `业务 1h` 语义，按 `success + failure` 展示最近 rolling 1h 总量，并在次级文案中显示 `S/F` 拆分。Storybook surface 现直接复用真实 `UsersUsageScreen`，避免验收图与运行时列表口径漂移。空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现工作树。
 
 ![Users Usage 业务 1h 列](./assets/users-usage-business-1h-column.png)
 
