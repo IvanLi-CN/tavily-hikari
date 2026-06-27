@@ -159,6 +159,7 @@
   submission_gate: `approved`
   state: `mobile timeout recovery in dark user-console shell`
   evidence_note: 验证移动端 callback 超时后在真实 dark clay user-console shell 中仍保持完整信息层级、稳定左右 gutter 与按钮区纵向堆叠，并固定提供“重新连接 LinuxDo / 返回首页”双 CTA。
+  PR: include
   image:
   ![OAuth callback mobile timeout](./assets/oauth-callback-mobile-timeout.png)
 
