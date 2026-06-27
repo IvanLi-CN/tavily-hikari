@@ -912,7 +912,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if status.mode == tavily_hikari::HaMode::ActiveStandby && !status.role.allows_basic_business() {
         return (StatusCode::OK, "ok");
     }
-    if state.proxy.is_forward_proxy_xray_ready().await {
+    if state.proxy.is_forward_proxy_xray_ready_strict().await {
         (StatusCode::OK, "ok")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "xray not ready")

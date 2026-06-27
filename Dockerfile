@@ -56,8 +56,12 @@ COPY --from=builder /app/target/release/ha_outbox_cleanup_once /usr/local/bin/ha
 COPY --from=builder /app/target/release/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/xray /usr/local/share/xray
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh
 # Copy prebuilt web assets (produced by CI before Docker build)
 COPY web/dist /srv/app/web
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-healthcheck.sh
 
 ENV PROXY_DB_PATH=/srv/app/data/tavily_proxy.db \
     PROXY_BIND=0.0.0.0 \
@@ -71,7 +75,7 @@ LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
 VOLUME ["/srv/app/data"]
 EXPOSE 8787
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=18 CMD curl --fail --silent http://127.0.0.1:8787/health || exit 1
+HEALTHCHECK --interval=5s --timeout=5s --start-period=20s --retries=18 CMD ["/usr/local/bin/docker-healthcheck.sh"]
 
-ENTRYPOINT ["tavily-hikari"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD []

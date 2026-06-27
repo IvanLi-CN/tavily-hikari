@@ -1,5 +1,3 @@
-const FORWARD_PROXY_STARTUP_SUBSCRIPTION_FETCH_CONCURRENCY: usize = 4;
-
 impl TavilyProxy {
     pub async fn refresh_forward_proxy_subscriptions(&self) -> Result<(), ProxyError> {
         self.refresh_forward_proxy_subscriptions_with_progress(None)
@@ -142,6 +140,7 @@ impl TavilyProxy {
     ) -> Result<HashMap<String, Vec<String>>, ProxyError> {
         let mut fetched = HashMap::new();
         let mut fetched_any_subscription = false;
+        let startup_fetch_concurrency = subscription_urls.len().max(1);
 
         let results = futures_util::stream::iter(subscription_urls.iter().map(|subscription_url| {
             let subscription_url = subscription_url.clone();
@@ -158,7 +157,9 @@ impl TavilyProxy {
                 (subscription_url, urls)
             }
         }))
-        .buffer_unordered(FORWARD_PROXY_STARTUP_SUBSCRIPTION_FETCH_CONCURRENCY)
+        // Cold startup blocks readiness on this fetch, so one wave must cover the whole configured
+        // set instead of turning 5-8 slow feeds into multiple timeout-sized batches.
+        .buffer_unordered(startup_fetch_concurrency)
         .collect::<Vec<_>>()
         .await;
 
@@ -2033,7 +2034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_subscription_refresh_bounds_fetch_concurrency() {
+    async fn startup_subscription_refresh_does_not_batch_small_subscription_sets() {
         let current = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
         let app = Router::new()
@@ -2074,9 +2075,10 @@ mod tests {
         let peak = max_seen.load(Ordering::SeqCst);
         assert!(peak > 1, "startup fetches should still overlap");
         assert!(
-            peak <= FORWARD_PROXY_STARTUP_SUBSCRIPTION_FETCH_CONCURRENCY,
-            "startup fetches should be bounded"
+            peak > 4,
+            "startup fetches for a small configured set should not stall behind a 4-url batch cap"
         );
+        assert!(peak <= urls.len(), "startup fetches should not exceed the URL count");
 
         server.abort();
     }

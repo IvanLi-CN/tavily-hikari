@@ -264,7 +264,7 @@ async fn analysis_pressure_snapshot_uses_rolling_1h_and_excludes_non_upstream_ev
 }
 
 #[tokio::test]
-async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets() {
+async fn analysis_pressure_snapshot_background_rebuild_rehydrates_server_pressure_buckets() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_300_000);
     let db_path = temp_db_path("analysis-pressure-snapshot-backfill");
     let db_str = db_path.to_string_lossy().to_string();
@@ -338,6 +338,46 @@ async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets(
     .await
     .expect("reopen proxy");
 
+    let initial_snapshot = reopened
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot before background rebuild");
+    assert_eq!(
+        initial_snapshot
+            .server_24h
+            .current
+            .last()
+            .expect("latest current pressure point before rebuild")
+            .pressure,
+        0
+    );
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "reopened proxy should schedule exactly one background rebuild"
+    );
+    assert!(
+        !reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "background rebuild scheduling should be idempotent"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("count rebuilt server pressure buckets");
+            if bucket_count >= 2 {
+                return bucket_count;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("background rebuild should complete in time");
+
     let bucket_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
     )
@@ -363,6 +403,352 @@ async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets(
     assert_eq!(current_point.failure_count, 1);
     assert_eq!(snapshot.current_user_distribution.rows.len(), 1);
     assert_eq!(snapshot.current_user_distribution.rows[0].pressure, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_background_rebuild_retries_after_transient_failure() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_350_000);
+    let db_path = temp_db_path("analysis-pressure-background-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time.clone(),
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "analysis-pressure-retry".to_string(),
+            username: Some("retry".to_string()),
+            name: Some("Retry".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert retry user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("analysis-pressure-retry"))
+        .await
+        .expect("bind retry token");
+    let now = manual_clock.now_ts();
+    let request_kind = TokenRequestKind::new("api:search", "API | search", None);
+
+    seed_pressure_attempt(
+        &proxy,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        now - 120,
+        OUTCOME_SUCCESS,
+        Some("search"),
+        &request_kind,
+    )
+    .await;
+    drop(proxy);
+
+    manual_clock.set_now_ts(now);
+    let reopened = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("reopen proxy");
+
+    let lock_handle =
+        hold_sqlite_write_lock_for_test_for(&reopened.key_store.pool, Duration::from_secs(6)).await;
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "first background rebuild attempt should schedule"
+    );
+    assert!(
+        !reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "concurrent background rebuild attempts should still dedupe"
+    );
+    lock_handle
+        .await
+        .expect("held sqlite write lock should release cleanly");
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("count rebuilt server pressure buckets after automatic retry");
+            if bucket_count >= 1 {
+                return bucket_count;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("background rebuild should retry automatically after transient failure");
+
+    let snapshot = reopened
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot after retry rebuild");
+    let current_point = snapshot
+        .server_24h
+        .current
+        .last()
+        .expect("latest current pressure point after retry rebuild");
+    assert_eq!(current_point.pressure, 1);
+    assert_eq!(current_point.success_count, 1);
+    assert_eq!(current_point.failure_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_400_000);
+    let db_path = temp_db_path("analysis-pressure-background-cancel");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time.clone(),
+    )
+    .await
+    .expect("proxy created");
+    let now = manual_clock.now_ts();
+    sqlx::query(
+        r#"
+        INSERT INTO observability.request_logs (
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            counts_business_quota,
+            request_user_id,
+            upstream_operation,
+            created_at
+        ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'search', ?)
+        "#,
+    )
+    .bind("analysis-pressure-cancel-user")
+    .bind(now - 120)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed pressure request log");
+    drop(proxy);
+
+    manual_clock.set_now_ts(now);
+    let reopened = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("reopen proxy");
+
+    let lock_handle =
+        hold_sqlite_write_lock_for_test_for(&reopened.key_store.pool, Duration::from_secs(6)).await;
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "first background rebuild attempt should schedule"
+    );
+    reopened.cancel_server_pressure_buckets_rebuild();
+    lock_handle
+        .await
+        .expect("held sqlite write lock should release cleanly");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let cancelled_bucket_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("count buckets after cancelling rebuild");
+    assert_eq!(
+        cancelled_bucket_count, 0,
+        "cancelled rebuild must not keep writing after role demotion"
+    );
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "serving promotion should be able to reschedule rebuild after cancellation"
+    );
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("count rebuilt buckets after reschedule");
+            if bucket_count >= 1 {
+                return bucket_count;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("rescheduled rebuild should eventually repopulate server pressure buckets");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_450_000);
+    let db_path = temp_db_path("analysis-pressure-background-success-reschedule");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time.clone(),
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "analysis-pressure-success-reschedule".to_string(),
+            username: Some("success-reschedule".to_string()),
+            name: Some("Success Reschedule".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert success reschedule user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("analysis-pressure-success-reschedule"))
+        .await
+        .expect("bind success reschedule token");
+    let now = manual_clock.now_ts();
+    let request_kind = TokenRequestKind::new("api:search", "API | search", None);
+
+    seed_pressure_attempt(
+        &proxy,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        now - 120,
+        OUTCOME_SUCCESS,
+        Some("search"),
+        &request_kind,
+    )
+    .await;
+    drop(proxy);
+
+    manual_clock.set_now_ts(now);
+    let reopened = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("reopen proxy");
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "first background rebuild attempt should schedule"
+    );
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let total_pressure: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(success_count + failure_count), 0) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("sum rebuilt server pressure buckets after first success");
+            if total_pressure >= 1 {
+                return total_pressure;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("first background rebuild should complete in time");
+
+    seed_pressure_attempt(
+        &reopened,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        now - 60,
+        OUTCOME_ERROR,
+        Some("search"),
+        &request_kind,
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if reopened.spawn_server_pressure_buckets_rebuild_once() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("successful rebuild should release the latch so a later serving promotion can reschedule it");
+    reopened.cancel_server_pressure_buckets_rebuild();
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let total_pressure: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(success_count + failure_count), 0) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("sum rebuilt server pressure buckets after reschedule");
+            if total_pressure >= 2 {
+                return total_pressure;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("rescheduled rebuild should include newly imported request logs");
+
+    let snapshot = reopened
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot after successful reschedule");
+    let current_point = snapshot
+        .server_24h
+        .current
+        .last()
+        .expect("latest current pressure point after reschedule");
+    assert_eq!(current_point.pressure, 2);
+    assert_eq!(current_point.success_count, 1);
+    assert_eq!(current_point.failure_count, 1);
 
     let _ = std::fs::remove_file(db_path);
 }

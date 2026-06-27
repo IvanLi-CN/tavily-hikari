@@ -129,6 +129,9 @@ the 101 primary look like it had a leak whenever billing baseline export repeate
 - `HA_MODE=single` keeps the old eager forward-proxy runtime startup semantics, but
   `active_standby` standby/recovery roles now intentionally avoid prewarming xray/runtime before
   they are promoted back into business-serving roles.
+- Subsequent serving-health hardening does not weaken that HA minimal-health carve-out.
+  `standby` / `recovery` remain green without xray prewarm, while only business-serving roles lose
+  the temporary startup-grace shortcut and must wait for actual xray readiness.
 - Production-shaped standby proof exposed a second bug after the streaming refactor: standby still
   started business schedulers such as `quota_sync`, usage rollups, and request-log GC. Those jobs
   could write into the same SQLite file while HA apply sessions were trying to hold

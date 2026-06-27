@@ -51,6 +51,30 @@
   subscription source. If restored endpoints exist, startup skips the blocking remote refresh and
   proceeds to xray sync/runtime persistence; the existing maintenance scheduler performs
   subscription calibration after the service is running.
+- Serving-role `/health` now calls a strict forward-proxy readiness check that ignores the internal
+  startup grace window. `single`, `full_master`, and `provisional_master` stay red until the
+  forward-proxy runtime and shared xray are actually ready, while the accepted
+  `standby` / `recovery` HA carve-out remains unchanged.
+- `rebuild_server_pressure_buckets()` no longer blocks proxy construction or first healthy. Serving
+  roles trigger one background rebuild after the listener is already ready, invalidate the cached
+  analysis-pressure snapshot on success, and isolate rebuild failure to logs instead of business
+  readiness.
+- The same post-ready rebuild hook now runs on later HA promotions that restore a
+  `provisional_master` / `full_master` serving role, including the shared admin/internal finalize
+  path that persists HA status snapshots.
+- HA demotion now cancels any in-flight `server_pressure_buckets` rebuild generation before the
+  node finishes leaving business-serving mode, so standby/recovery do not keep detached rebuild
+  writes alive.
+- Each `server_pressure_buckets` rebuild now reads and replaces buckets from one transactional
+  request-log snapshot and rolls back if cancellation lands before commit, avoiding mixed snapshots
+  from concurrent request-log maintenance changes.
+- Cold startup now fans subscription-URL fetches across the whole configured set in one wave, so a
+  5-8 URL subscription config no longer stretches strict readiness across multiple 60-second
+  timeout batches before xray/runtime can finish initializing.
+- The container image `HEALTHCHECK` now polls the stricter `/health` contract with
+  `start-period=20s`, `interval=5s`, `timeout=5s`, and `retries=18`, while a builder-compatible
+  healthcheck gate keeps the first green transition near the intended 20-second floor without
+  relying on Docker 25-only `--start-interval`.
 - LinuxDo system tag binding backfill now uses a single indexed startup precheck and only repairs
   mismatched rows before readiness. A background scheduler periodically refreshes the bindings and
   quota snapshots after the service is already listening.

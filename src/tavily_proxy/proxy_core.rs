@@ -591,6 +591,8 @@ impl TavilyProxy {
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
             forward_proxy_runtime_started: Arc::new(AtomicBool::new(false)),
             forward_proxy_runtime_transition_lock: Arc::new(Mutex::new(())),
+            server_pressure_rebuild_started: Arc::new(AtomicBool::new(false)),
+            server_pressure_rebuild_generation: Arc::new(AtomicU64::new(0)),
             health_readiness_grace_until: backend_time
                 .deadline_after(options.health_readiness_grace_period),
             backend_time,
@@ -598,7 +600,6 @@ impl TavilyProxy {
         proxy.spawn_ha_state_coalescer();
         proxy.spawn_request_stats_coalescer();
         proxy.user_business_calls_1h_window.backfill_recent().await?;
-        proxy.key_store.rebuild_server_pressure_buckets().await?;
         info!(
             component = "forward_proxy",
             event = "startup_runtime_graph_deferred",
@@ -766,6 +767,7 @@ impl TavilyProxy {
     }
 
     async fn shutdown_forward_proxy_runtime_locked(&self) -> Result<(), ProxyError> {
+        self.cancel_server_pressure_buckets_rebuild();
         if !self
             .forward_proxy_runtime_started
             .swap(false, Ordering::SeqCst)
@@ -805,13 +807,21 @@ impl TavilyProxy {
     }
 
     pub async fn is_forward_proxy_xray_ready(&self) -> bool {
+        self.is_forward_proxy_xray_ready_with_grace(true).await
+    }
+
+    pub async fn is_forward_proxy_xray_ready_strict(&self) -> bool {
+        self.is_forward_proxy_xray_ready_with_grace(false).await
+    }
+
+    async fn is_forward_proxy_xray_ready_with_grace(&self, allow_grace: bool) -> bool {
         if !self
             .forward_proxy_runtime_started
             .load(Ordering::SeqCst)
         {
             return false;
         }
-        if self.backend_time.instant_now() < self.health_readiness_grace_until {
+        if allow_grace && self.backend_time.instant_now() < self.health_readiness_grace_until {
             return true;
         }
         let (requires_xray, endpoints_ready) = {
@@ -837,6 +847,143 @@ impl TavilyProxy {
         let mut xray = self.xray_supervisor.lock().await;
         let snapshot = xray.readiness_snapshot();
         snapshot.shared_process_running && snapshot.active_endpoint_handles > 0
+    }
+
+    pub(crate) fn cancel_server_pressure_buckets_rebuild(&self) {
+        self.server_pressure_rebuild_generation
+            .fetch_add(1, Ordering::SeqCst);
+        self.server_pressure_rebuild_started
+            .store(false, Ordering::SeqCst);
+    }
+
+    fn server_pressure_buckets_rebuild_is_active(&self, generation: u64) -> bool {
+        self.server_pressure_rebuild_started
+            .load(Ordering::SeqCst)
+            && self
+                .server_pressure_rebuild_generation
+                .load(Ordering::SeqCst)
+                == generation
+    }
+
+    pub fn spawn_server_pressure_buckets_rebuild_once(&self) -> bool {
+        let generation = self
+            .server_pressure_rebuild_generation
+            .load(Ordering::SeqCst);
+        if self
+            .server_pressure_rebuild_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        if self
+            .server_pressure_rebuild_generation
+            .load(Ordering::SeqCst)
+            != generation
+        {
+            self.server_pressure_rebuild_started
+                .store(false, Ordering::SeqCst);
+            return false;
+        }
+
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            let mut attempt = 0usize;
+            loop {
+                if !proxy.server_pressure_buckets_rebuild_is_active(generation) {
+                    return;
+                }
+                let started = Instant::now();
+                tracing::info!(
+                    component = "analysis_pressure",
+                    event = "server_pressure_buckets_rebuild_started",
+                    attempt = attempt + 1,
+                    "rebuilding server pressure buckets after listener readiness"
+                );
+                match proxy
+                    .key_store
+                    .rebuild_server_pressure_buckets_with_cancel(|| {
+                        proxy.server_pressure_buckets_rebuild_is_active(generation)
+                    })
+                    .await
+                {
+                    Ok(crate::store::ServerPressureBucketsRebuildOutcome::Completed) => {
+                        if proxy
+                            .server_pressure_rebuild_generation
+                            .load(Ordering::SeqCst)
+                            == generation
+                        {
+                            proxy
+                                .server_pressure_rebuild_started
+                                .store(false, Ordering::SeqCst);
+                        }
+                        proxy.invalidate_analysis_pressure_cache().await;
+                        tracing::info!(
+                            component = "analysis_pressure",
+                            event = "server_pressure_buckets_rebuild_completed",
+                            attempt = attempt + 1,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "server pressure buckets rebuild completed"
+                        );
+                        return;
+                    }
+                    Ok(crate::store::ServerPressureBucketsRebuildOutcome::Cancelled) => {
+                        tracing::info!(
+                            component = "analysis_pressure",
+                            event = "server_pressure_buckets_rebuild_cancelled",
+                            attempt = attempt + 1,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "server pressure buckets rebuild cancelled after role change"
+                        );
+                        return;
+                    }
+                    Err(err) if crate::store::is_transient_sqlite_write_error(&err) => {
+                        if !proxy.server_pressure_buckets_rebuild_is_active(generation) {
+                            return;
+                        }
+                        let retry_delay = Duration::from_secs(1);
+                        attempt += 1;
+                        tracing::warn!(
+                            component = "analysis_pressure",
+                            event = "server_pressure_buckets_rebuild_retry_scheduled",
+                            attempt,
+                            retry_delay_ms = retry_delay.as_millis() as u64,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            err = %err,
+                            "server pressure buckets rebuild hit transient contention; retrying in background"
+                        );
+                        proxy.backend_time.sleep(retry_delay).await;
+                    }
+                    Err(err) => {
+                        if proxy
+                            .server_pressure_rebuild_generation
+                            .load(Ordering::SeqCst)
+                            == generation
+                        {
+                            proxy
+                                .server_pressure_rebuild_started
+                                .store(false, Ordering::SeqCst);
+                        }
+                        tracing::warn!(
+                            component = "analysis_pressure",
+                            event = "server_pressure_buckets_rebuild_failed",
+                            attempt = attempt + 1,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            err = %err,
+                            "server pressure buckets rebuild failed"
+                        );
+                        return;
+                    }
+                }
+            }
+        });
+        true
+    }
+
+    async fn invalidate_analysis_pressure_cache(&self) {
+        let mut cache = self.analysis_pressure_cache.lock().await;
+        cache.cached = None;
+        cache.notify.notify_waiters();
     }
 
     pub async fn get_forward_proxy_settings(

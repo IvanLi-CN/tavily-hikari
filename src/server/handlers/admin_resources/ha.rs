@@ -350,7 +350,9 @@ async fn persist_ha_status_snapshot(
         .proxy
         .flush_ha_state_writes()
         .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let _ = spawn_post_ready_serving_tasks_for_role(state.clone(), status.role);
+    Ok(())
 }
 
 async fn record_ha_control_plane_event(

@@ -29,6 +29,7 @@ mod tests {
     use tokio::sync::Notify;
 
     mod admin_logs_and_summary;
+    mod admin_analysis_pressure;
     mod admin_token_owner_summary;
     mod admin_token_filters_and_maintenance;
     mod admin_users_and_tokens;

@@ -30,6 +30,10 @@
   startup behavior, but `active_standby` now defers forward-proxy/xray initialization until the node
   role allows business traffic. `standby`/`recovery` also skip the periodic forward-proxy maintenance
   loop and report `/health=ok` without requiring xray readiness.
+- Follow-up health hardening for serving roles keeps that HA carve-out intact: `standby` /
+  `recovery` still return `/health=ok` while xray/runtime warmup is intentionally skipped, but a
+  role that is currently allowed to serve business traffic no longer reports healthy from the
+  forward-proxy startup grace window before xray is actually ready.
 - Tightened standby/recovery startup so business background schedulers are role-gated alongside the
   deferred runtime graph. `quota_sync`, usage rollups, request-log/auth-token GC, LinuxDo sync,
   forward-proxy maintenance, and DB compaction no longer enqueue or run on standby startup; only the

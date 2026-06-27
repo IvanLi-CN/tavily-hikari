@@ -78,6 +78,24 @@ month-tail public metrics scan.
 - Restore safely attributable persisted subscription-backed proxy nodes from `forward_proxy_runtime`
   before attempting remote subscription refresh. If that restored graph exists, use it for startup
   readiness and leave remote subscription calibration to the maintenance scheduler.
+- Keep serving `/health` stricter than internal startup grace. If core serving traffic still
+  depends on forward-proxy runtime or shared xray readiness, return non-`200` immediately instead
+  of masking that gap with a grace-period green state; preserve any explicit HA standby/recovery
+  minimal-health carve-out separately.
+- If a derived observability rebuild is not core truth, do not keep it on the startup critical
+  path. Trigger it once after the listener is already serving, trigger it again when a later HA
+  promotion turns the node back into a business-serving role, keep failure isolated to logs or
+  stale/empty analysis views, and cancel or roll back the rebuild if the node is demoted before it
+  commits.
+- If strict cold startup still depends on subscription-backed forward-proxy runtime, do not let a
+  small configured subscription set spill into fixed-size timeout batches before readiness. Fan the
+  whole startup set out in one wave, and keep the fail-closed rule tied to “every subscription
+  fetch failed” rather than to a per-batch wall-clock artifact.
+- Align deploy health timing with that stricter contract. In this service the accepted image
+  baseline is `start-period=20s`, `interval=5s`, `timeout=5s`, and `retries=18`, with the
+  healthcheck command itself enforcing the 20-second minimum-success gate. That keeps old Docker
+  builders working while still stopping a fast successful probe from flipping the container healthy
+  before the intended startup hold window has elapsed.
 - Keep retention cleanup bounded. Large `request_logs` backlogs should be deleted in small batches
   with a runtime/batch budget and a catch-up delay, rather than one daily job holding or repeatedly
   contesting the writer until the whole backlog is gone.
