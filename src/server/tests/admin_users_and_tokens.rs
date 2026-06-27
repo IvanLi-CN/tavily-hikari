@@ -362,7 +362,13 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("reopen proxy with startup backfill");
 
         let admin_password = "admin-analysis-pressure-password";
+        let background_proxy = proxy.clone();
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        assert!(
+            background_proxy.spawn_server_pressure_buckets_rebuild_once(),
+            "serving admin harness should schedule background pressure rebuild"
+        );
+        let verification_pool = connect_sqlite_test_pool(&db_str).await;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -387,12 +393,12 @@ use super::upstream_support_and_manual_jobs::*;
 
         let pressure_resp = client
             .get(format!("http://{}/api/analysis/pressure", admin_addr))
-            .header(reqwest::header::COOKIE, admin_cookie)
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
             .send()
             .await
             .expect("analysis pressure request");
         assert_eq!(pressure_resp.status(), reqwest::StatusCode::OK);
-        let pressure_json: serde_json::Value = pressure_resp
+        let mut pressure_json: serde_json::Value = pressure_resp
             .json()
             .await
             .expect("analysis pressure json");
@@ -504,6 +510,34 @@ use super::upstream_support_and_manual_jobs::*;
                 .and_then(|value| value.as_i64()),
             Some(3)
         );
+        let rebuild_deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&verification_pool)
+            .await
+            .expect("count rebuilt server pressure buckets");
+            if bucket_count >= 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < rebuild_deadline,
+                "expected admin analysis pressure history buckets to recover after background rebuild, bucket_count={bucket_count}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let refreshed_resp = client
+            .get(format!("http://{}/api/analysis/pressure", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("analysis pressure refresh request");
+        assert_eq!(refreshed_resp.status(), reqwest::StatusCode::OK);
+        pressure_json = refreshed_resp
+            .json()
+            .await
+            .expect("analysis pressure refresh json");
         assert_eq!(
             pressure_json
                 .pointer("/server24h/currentPeak/pressure")
