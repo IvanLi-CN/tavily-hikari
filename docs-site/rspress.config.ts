@@ -18,7 +18,7 @@ const localStorybookDevOrigin = process.env.VITE_STORYBOOK_DEV_ORIGIN?.trim() ??
 export default defineConfig({
   root: 'docs',
   base: docsBase,
-  icon: assetWithBase('/favicon.svg'),
+  icon: 'docs/public/favicon.svg',
   logo: {
     light: assetWithBase('/assets/relay-mesh-lockup-light.png'),
     dark: assetWithBase('/assets/relay-mesh-lockup-dark.png'),

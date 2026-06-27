@@ -223,6 +223,10 @@ def asset_path(file_name: str) -> str:
     return f"{ASSETS_DIR_NAME}/{file_name}"
 
 
+def local_asset_path(file_name: str) -> str:
+    return file_name
+
+
 def remove_if_exists(path: Path) -> None:
     if path.exists():
         path.unlink()
@@ -330,37 +334,37 @@ def export_static_assets(public_dir: Path) -> None:
         public_dir / "favicon.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-mark-light.png"),
+        local_asset_path("relay-mesh-mark-light.png"),
         mark_light.width,
         mark_light.height,
         assets_dir / "relay-mesh-mark-light.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-mark-dark.png"),
+        local_asset_path("relay-mesh-mark-dark.png"),
         mark_dark.width,
         mark_dark.height,
         assets_dir / "relay-mesh-mark-dark.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-mark-mono-dark.png"),
+        local_asset_path("relay-mesh-mark-mono-dark.png"),
         mark_mono_dark.width,
         mark_mono_dark.height,
         assets_dir / "relay-mesh-mark-mono-dark.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-mark-mono-light.png"),
+        local_asset_path("relay-mesh-mark-mono-light.png"),
         mark_mono_light.width,
         mark_mono_light.height,
         assets_dir / "relay-mesh-mark-mono-light.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-icon-mono-dark.png"),
+        local_asset_path("relay-mesh-icon-mono-dark.png"),
         launcher_mono_dark.width,
         launcher_mono_dark.height,
         assets_dir / "relay-mesh-icon-mono-dark.svg",
     )
     write_svg_wrapper(
-        asset_path("relay-mesh-icon-mono-light.png"),
+        local_asset_path("relay-mesh-icon-mono-light.png"),
         launcher_mono_light.width,
         launcher_mono_light.height,
         assets_dir / "relay-mesh-icon-mono-light.svg",
