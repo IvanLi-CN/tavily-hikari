@@ -1,4 +1,6 @@
 const USER_OVERVIEW_REQUEST_RATE_BUCKET_SECS: i64 = 5;
+const USER_OVERVIEW_BUSINESS_CALLS_1H_POINT_COUNT: usize =
+    (SECS_PER_HOUR / SECS_PER_FIVE_MINUTES) as usize;
 
 fn fallback_limit_values(
     limit_values: Vec<Option<i64>>,
@@ -80,6 +82,36 @@ fn build_user_overview_current_period_points(
         .collect()
 }
 
+fn build_user_overview_business_calls_1h_points(
+    points: Vec<AdminUserBusinessCalls1hPoint>,
+    user_created_at: Option<i64>,
+    limit: i64,
+) -> Vec<UserDashboardOverviewSeriesPoint> {
+    let available_bucket_start =
+        user_created_at.map(|created_at| created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES));
+    let first_point_index = points
+        .len()
+        .saturating_sub(USER_OVERVIEW_BUSINESS_CALLS_1H_POINT_COUNT.max(1));
+
+    points
+        .into_iter()
+        .skip(first_point_index)
+        .map(|point| {
+            let value = if available_bucket_start.is_some_and(|start| point.bucket_start < start) {
+                None
+            } else {
+                point.pressure
+            };
+            UserDashboardOverviewSeriesPoint {
+                bucket_start: point.bucket_start,
+                display_bucket_start: point.display_bucket_start,
+                value,
+                limit_value: value.map(|_| limit),
+            }
+        })
+        .collect()
+}
+
 impl TavilyProxy {
     pub async fn user_dashboard_overview(
         &self,
@@ -103,6 +135,7 @@ impl TavilyProxy {
         let quota_hourly = self
             .build_user_dashboard_quota_hourly_progress(
                 user_id,
+                user_created_at,
                 summary.business_calls_1h.total_count,
                 summary.business_calls_1h.limit,
             )
@@ -182,21 +215,15 @@ impl TavilyProxy {
     async fn build_user_dashboard_quota_hourly_progress(
         &self,
         user_id: &str,
+        user_created_at: Option<i64>,
         used: i64,
         limit: i64,
     ) -> Result<UserDashboardProgressCard, ProxyError> {
-        let points = self
-            .user_business_calls_1h_window
-            .usage_series(user_id)
-            .await
-            .into_iter()
-            .map(|point| UserDashboardOverviewSeriesPoint {
-                bucket_start: point.bucket_start,
-                display_bucket_start: point.display_bucket_start,
-                value: point.pressure,
-                limit_value: point.pressure.map(|_| limit),
-            })
-            .collect();
+        let points = build_user_overview_business_calls_1h_points(
+            self.user_business_calls_1h_window.usage_series(user_id).await,
+            user_created_at,
+            limit,
+        );
 
         Ok(UserDashboardProgressCard {
             used,

@@ -671,6 +671,13 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         .await
         .expect("load user dashboard overview");
 
+    let hourly_first_visible_index = overview
+        .progress
+        .quota_hourly
+        .points
+        .iter()
+        .position(|point| point.value.is_some())
+        .expect("hourly first visible point");
     let hourly_current_index = overview
         .progress
         .quota_hourly
@@ -679,13 +686,30 @@ async fn user_dashboard_overview_quota_progress_preserves_future_slots_and_utc_m
         .rposition(|point| point.value.is_some())
         .expect("hourly current point");
     assert_eq!(
+        overview.progress.quota_hourly.points.len(),
+        (SECS_PER_HOUR / SECS_PER_FIVE_MINUTES) as usize
+    );
+    assert_eq!(
+        overview.progress.quota_hourly.points[hourly_first_visible_index].bucket_start,
+        current_hour_start
+    );
+    assert_eq!(
+        hourly_current_index,
+        overview.progress.quota_hourly.points.len() - 1
+    );
+    assert!(
+        overview.progress.quota_hourly.points[..hourly_first_visible_index]
+            .iter()
+            .all(|point| point.value.is_none())
+    );
+    assert_eq!(
         overview.progress.quota_hourly.points[hourly_current_index].value,
         Some(0)
     );
     assert!(
-        overview.progress.quota_hourly.points[hourly_current_index + 1..]
+        overview.progress.quota_hourly.points[hourly_first_visible_index..]
             .iter()
-            .all(|point| point.value.is_none())
+            .all(|point| point.value.is_some())
     );
 
     let daily_current_index = overview
