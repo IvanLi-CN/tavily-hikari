@@ -261,9 +261,9 @@
 ## Visual Evidence
 
 - Storybook canvas 组件证据：
-  - `Admin/Components/DashboardOverview / Default` 已改为“顶部三窗聚合计数 + 下方 24h 聚合告警列表”。
-  - 仪表盘近期告警顶部只保留最近 `1 小时 / 24 小时 / 7 天` 三张聚合计数卡。
-  - 24h 列表每条聚合记录都展示连续区间 `firstSeen -> lastSeen`，并保留主体、请求类型与最新摘要。
+  - `Admin/Components/DashboardOverview / RecentAlertsDesktopEvidence` 提供稳定桌面证据，近期告警区已重做为“紧凑概览条 + 队列表格”。
+  - 顶部概览区只保留最近 `1 小时 / 24 小时 / 7 天` 三窗聚合计数，以及当前 `24h` 聚合总数。
+  - 下方 `24h` 聚合列表按 `告警 / 请求类型 / 告警区间 / 命中` 四列对齐，每条记录都展示连续区间 `firstSeen -> lastSeen`、主体与最新摘要。
 
     ![仪表盘近期告警聚合摘要 Storybook 证据](assets/dashboard-alerts-24h-grouped-summary.png)
 

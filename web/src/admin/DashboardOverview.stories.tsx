@@ -115,6 +115,12 @@ const strings = {
     hour24: 'Last 24 hours',
     day7: 'Last 7 days',
   },
+  recentAlertsColumns: {
+    alert: 'Alert',
+    requestKind: 'Request kind',
+    timeRange: 'Alert window',
+    hits: 'Hits',
+  },
   recentAlertsHits: 'Grouped alerts',
   recentAlertsTimeRange: 'Alert window',
   recentAlertsEmpty: 'No alert events were recorded in the current 24-hour window.',
@@ -585,6 +591,12 @@ const zhStrings = {
     hour1: '最近 1 小时',
     hour24: '最近 24 小时',
     day7: '最近 7 天',
+  },
+  recentAlertsColumns: {
+    alert: '告警',
+    requestKind: '请求类型',
+    timeRange: '告警区间',
+    hits: '命中',
   },
   recentAlertsHits: '聚合告警',
   recentAlertsTimeRange: '告警区间',
@@ -1133,6 +1145,67 @@ export const FixedRangeWithGaps: Story = {
     const meta = canvasElement.querySelector('.dashboard-trend-meta')?.textContent ?? ''
     if (!meta.includes('Natural-day comparison')) {
       throw new Error(`Expected natural-day comparison metadata, received: ${meta}`)
+    }
+  },
+}
+
+export const RecentAlertsDesktopEvidence: Story = {
+  render: (args) => (
+    <div className="dashboard-recent-alerts-evidence" style={{ width: '1320px', maxWidth: '1320px', margin: '0 auto' }}>
+      <style>{`
+        .dashboard-recent-alerts-evidence .dashboard-alerts-summary__eyebrow {
+          display: flex !important;
+          grid-template-columns: none !important;
+        }
+
+        .dashboard-recent-alerts-evidence .dashboard-alerts-summary__metrics {
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        }
+
+        .dashboard-recent-alerts-evidence .dashboard-alerts-summary__table-head {
+          display: grid !important;
+        }
+
+        .dashboard-recent-alerts-evidence .dashboard-alerts-summary__row {
+          grid-template-columns: minmax(0, 2.3fr) minmax(140px, 0.9fr) minmax(0, 2fr) 88px !important;
+          gap: 14px !important;
+        }
+
+        .dashboard-recent-alerts-evidence .dashboard-alerts-summary__count {
+          justify-items: end !important;
+          text-align: right !important;
+        }
+      `}</style>
+      <DashboardOverview {...args} />
+    </div>
+  ),
+  args: {
+    ...Default.args,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Stable desktop-width canvas proof for the compact grouped alerts summary: top time-window counters and a queue-style 24-hour grouped list.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+
+    const alertsSummary = canvasElement.querySelector<HTMLElement>('.dashboard-alerts-summary')
+    if (alertsSummary == null) {
+      throw new Error('Expected recent alerts summary to render')
+    }
+
+    const metricChips = alertsSummary.querySelectorAll('.dashboard-alerts-summary__metric-chip')
+    if (metricChips.length !== 3) {
+      throw new Error(`Expected three alert window metric chips, received: ${metricChips.length}`)
+    }
+
+    const rows = alertsSummary.querySelectorAll('.dashboard-alerts-summary__row')
+    if (rows.length === 0) {
+      throw new Error('Expected grouped alert rows to render')
     }
   },
 }

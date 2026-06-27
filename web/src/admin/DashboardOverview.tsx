@@ -139,6 +139,12 @@ export interface DashboardOverviewStrings {
     hour24: string
     day7: string
   }
+  recentAlertsColumns: {
+    alert: string
+    requestKind: string
+    timeRange: string
+    hits: string
+  }
   recentAlertsHits: string
   recentAlertsTimeRange: string
   recentAlertsEmpty: string
@@ -486,6 +492,22 @@ function windowCountLabel(
       return strings.recentAlertsWindowLabels.hour24
     case 24 * 7:
       return strings.recentAlertsWindowLabels.day7
+    default:
+      return `${windowHours}h`
+  }
+}
+
+function compactWindowCountLabel(
+  strings: DashboardOverviewStrings,
+  windowHours: number,
+): string {
+  switch (windowHours) {
+    case 1:
+      return strings.recentAlertsWindowLabels.hour1.replace('Last ', '').replace('最近 ', '')
+    case 24:
+      return strings.recentAlertsWindowLabels.hour24.replace('Last ', '').replace('最近 ', '')
+    case 24 * 7:
+      return strings.recentAlertsWindowLabels.day7.replace('Last ', '').replace('最近 ', '')
     default:
       return `${windowHours}h`
   }
@@ -1082,40 +1104,56 @@ export default function DashboardOverview({
           <div className="empty-state alert">{strings.recentAlertsEmpty}</div>
         ) : (
           <div className="dashboard-alerts-summary">
-            <div className="dashboard-alerts-summary__metrics">
-              {recentAlerts.groupedCountWindows.map((item) => (
-                <article className="dashboard-alerts-summary__metric-card" key={item.windowHours}>
-                  <span>{windowCountLabel(strings, item.windowHours)}</span>
-                  <strong>{item.groupedCount}</strong>
-                </article>
-              ))}
+            <div className="dashboard-alerts-summary__overview">
+              <div className="dashboard-alerts-summary__eyebrow">
+                <span>{strings.recentAlertsDescription}</span>
+                <strong>{`${recentAlerts.groupedCount} ${strings.recentAlertsHits}`}</strong>
+              </div>
+              <div className="dashboard-alerts-summary__metrics">
+                {recentAlerts.groupedCountWindows.map((item) => (
+                  <article className="dashboard-alerts-summary__metric-chip" key={item.windowHours}>
+                    <span>{compactWindowCountLabel(strings, item.windowHours)}</span>
+                    <strong>{item.groupedCount}</strong>
+                  </article>
+                ))}
+              </div>
             </div>
-            <div className="dashboard-alerts-summary__groups">
+            <div className="dashboard-alerts-summary__groups" role="list">
+              <div className="dashboard-alerts-summary__table-head" aria-hidden="true">
+                <span>{strings.recentAlertsColumns.alert}</span>
+                <span>{strings.recentAlertsColumns.requestKind}</span>
+                <span>{strings.recentAlertsColumns.timeRange}</span>
+                <span>{strings.recentAlertsColumns.hits}</span>
+              </div>
               {recentAlerts.topGroups.map((group) => (
-                <article key={group.id} className="dashboard-alerts-summary__group-card">
-                  <div className="dashboard-alerts-summary__group-header">
+                <article key={group.id} className="dashboard-alerts-summary__row" role="listitem">
+                  <div className="dashboard-alerts-summary__identity">
                     <StatusBadge tone={alertSummaryTone(group.type)}>
                       {strings.recentAlertsTypeLabels[group.type]}
                     </StatusBadge>
-                    <strong>{group.subjectLabel}</strong>
-                    <span>x{group.count}</span>
+                    <div className="dashboard-alerts-summary__identity-copy">
+                      <strong>{group.subjectLabel}</strong>
+                      <span>{group.latestEvent.title}</span>
+                    </div>
                   </div>
-                  <div className="dashboard-alerts-summary__group-body">
-                    <span className="dashboard-alerts-summary__meta">
-                      {strings.recentAlertsHits}
-                    </span>
+                  <div className="dashboard-alerts-summary__request-kind">
                     {group.requestKind ? (
                       <RequestKindBadge
                         requestKindKey={group.requestKind.key}
                         requestKindLabel={group.requestKind.label}
                         size="sm"
                       />
-                    ) : null}
-                    <span className="dashboard-alerts-summary__time-range">
-                      <strong>{strings.recentAlertsTimeRange}</strong>
-                      <span>{`${formatAlertRange(group.firstSeen)} → ${formatAlertRange(group.lastSeen)}`}</span>
-                    </span>
-                    <span className="dashboard-alerts-summary__summary">{group.latestEvent.summary}</span>
+                    ) : (
+                      <span className="dashboard-alerts-summary__placeholder">—</span>
+                    )}
+                  </div>
+                  <div className="dashboard-alerts-summary__window">
+                    <strong>{`${formatAlertRange(group.firstSeen)} → ${formatAlertRange(group.lastSeen)}`}</strong>
+                    <span>{group.latestEvent.summary}</span>
+                  </div>
+                  <div className="dashboard-alerts-summary__count">
+                    <strong>x{group.count}</strong>
+                    <span>{windowCountLabel(strings, recentAlerts.windowHours)}</span>
                   </div>
                 </article>
               ))}

@@ -297,6 +297,12 @@ export interface AdminTranslationsShape {
       hour24: string
       day7: string
     }
+    recentAlertsColumns: {
+      alert: string
+      requestKind: string
+      timeRange: string
+      hits: string
+    }
     recentAlertsHits: string
     recentAlertsTimeRange: string
     recentAlertsEmpty: string

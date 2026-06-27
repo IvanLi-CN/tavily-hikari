@@ -310,6 +310,12 @@ export const ZH: TranslationShape = {
           hour24: '最近 24 小时',
           day7: '最近 7 天',
         },
+        recentAlertsColumns: {
+          alert: '告警',
+          requestKind: '请求类型',
+          timeRange: '告警区间',
+          hits: '命中',
+        },
         recentAlertsHits: '聚合告警',
         recentAlertsTimeRange: '告警区间',
         recentAlertsEmpty: '最近 24 小时暂无告警活动。',

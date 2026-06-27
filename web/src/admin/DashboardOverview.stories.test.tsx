@@ -16,6 +16,7 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(dashboardStories.TypesAreaHiddenMiddleSeries).toMatchObject({})
     expect(dashboardStories.HiddenSeriesEmpty).toMatchObject({})
     expect(dashboardStories.FixedRangeWithGaps).toMatchObject({})
+    expect(dashboardStories.RecentAlertsDesktopEvidence).toMatchObject({})
     expect(dashboardStories.NoPreviousMonthComparison).toMatchObject({})
   })
 
@@ -33,13 +34,17 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(markup).toContain('dashboard-summary-card-backdrop')
   })
 
-  it('renders three grouped alert window cards and range copy in the default story', () => {
+  it('renders the compact grouped alert summary table in the default story', () => {
     const args = dashboardStories.Default.args
     const markup = renderToStaticMarkup(createElement(meta.component, args as never))
-    expect(markup).toContain('Last 1 hour')
-    expect(markup).toContain('Last 24 hours')
-    expect(markup).toContain('Last 7 days')
+    expect(markup).toContain('1 hour')
+    expect(markup).toContain('24 hours')
+    expect(markup).toContain('7 days')
+    expect(markup).toContain('Request kind')
     expect(markup).toContain('Alert window')
+    expect(markup).toContain('Hits')
+    expect(markup).toContain('Alice Wang')
+    expect(markup).toContain('Tavily Search')
   })
 
   it('exposes a fixed-range gap story for visual evidence', () => {

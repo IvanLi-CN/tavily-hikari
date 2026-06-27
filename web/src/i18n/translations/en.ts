@@ -311,6 +311,12 @@ export const EN: TranslationShape = {
           hour24: 'Last 24 hours',
           day7: 'Last 7 days',
         },
+        recentAlertsColumns: {
+          alert: 'Alert',
+          requestKind: 'Request kind',
+          timeRange: 'Alert window',
+          hits: 'Hits',
+        },
         recentAlertsHits: 'Grouped alerts',
         recentAlertsTimeRange: 'Alert window',
         recentAlertsEmpty: 'No alert activity in the last 24 hours.',
