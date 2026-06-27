@@ -756,7 +756,7 @@ export const ZH: TranslationShape = {
           sharedUsageTabs: {
             oneHour: '1h',
             fiveMinute: '5m',
-            businessOneHour: '业务请求 1h',
+            businessOneHour: '每小时',
             daily: '24h',
             monthly: '月',
             ip: 'IP',

@@ -18,9 +18,9 @@
 ## Goals
 
 - 在用户详情页新增独立的“共享额度趋势”面板，位于有效额度拆解之后、token 列表之前。
-- 共享趋势使用 `5m / 1h / 24h / 月` 四个 tab，默认仍激活 `1h`，并按需加载数据。
+- 共享趋势使用 `5m / 每小时 / 24h / 月` 四个 tab，默认仍激活 `每小时`，并按需加载数据。
 - 在 `/admin/analysis/usage` 新增只读 `业务 1h` 列，在 `/admin/users/:id` 新增同口径摘要；旧 `/admin/users/usage` 保留为兼容别名。
-- 在用户详情共享趋势面板新增 `业务 1h` tab，展示 5 分钟 success/failure 堆叠柱与 rolling 1h pressure 折线。
+- 在用户详情共享趋势面板新增 `每小时` tab，展示 5 分钟 success/failure 堆叠柱、rolling 1h pressure 折线与历史小时额度 limit 虚线。
 - 后端新增用户级共享额度趋势接口 `GET /api/users/:id/usage-series`，返回稳定 bucket 序列、当前 limit 与按 bucket 回放的历史 `limitValue`。
 - 后端新增真实 `businessCalls1h` 真相源：以 `request_logs` 原始事件为基础，按 user 维度维护最近 25h 的单实例内存滑动窗口，并在启动时 bounded 回填最近 25h 符合条件的实际上游业务调用。
 - `businessCalls1h` 继续作为用户级 pressure 真相源，复用到新的 `分析 -> 压力` 子模块的“当前 1h 用户 pressure 分布”，不再额外维护第二套用户压力统计口径。
@@ -139,7 +139,7 @@
 - `quota1h`：最近 72 小时，按小时 bucket；`limit` 为当前账户 `effectiveQuota.hourlyLimit`，`points[].limitValue` 使用 `changed_at < bucket_end` 的最新小时额度快照。
 - `quota24h`：最近 7 天，按本地日 bucket；`limit` 为当前账户 `effectiveQuota.dailyLimit`，`points[].limitValue` 使用 `changed_at < bucket_end` 的最新日额度快照。
 - `quotaMonth`：最近 12 个月，按 UTC 月 bucket；`limit` 为当前账户 `effectiveQuota.monthlyLimit`，`points[].limitValue` 使用 `changed_at < bucket_end` 的最新月额度快照。
-- `businessCalls1h`：最近 24 小时、每 5 分钟采样，共 288 个点；`bars.success / bars.failure` 表示该 5 分钟自然桶内实际上游业务调用次数；`pressure` 表示该采样点向前 60 分钟窗口的总调用压力（`success + failure`）；`limitValue` 固定为 `null`，不伪造阈值线。
+- `businessCalls1h`：最近 24 小时、每 5 分钟采样，共 288 个点；`bars.success / bars.failure` 表示该 5 分钟自然桶内实际上游业务调用次数；`pressure` 表示该采样点向前 60 分钟窗口的总调用压力（`success + failure`）；`limitValue` 使用 `changed_at < point_end` 的最新小时额度快照回放，其中当前进行中的最后一个点按 `changed_at < now+1` 解析，避免提前泄露未来变更。
 - 若 bucket 无聚合值：
   - `bucketStart >= coverage_start` => 返回 `0`
   - `bucketStart < coverage_start` => 返回 `null`
@@ -170,16 +170,16 @@
 ## UI 规格
 
 - 用户详情页新增“共享额度趋势”区块，放在用户级额度/拆解之后、token 列表之前。
-- tabs 文案简写：`5m / 1h / 24h / 月`，默认 `1h`。
-- 在 tabs 中新增 `业务 1h`，但默认激活仍保持 `1h`。
-- 首屏只请求 `quota1h`；其他 tab 首次点开才请求，二次切回复用缓存。
+- tabs 文案简写：`5m / 每小时 / 24h / 月`，默认激活 `每小时`。
+- `每小时` tab 继续绑定 `businessCalls1h`，不恢复独立 `quota1h` tab。
+- 首屏只请求 `businessCalls1h`；其他 tab 首次点开才请求，二次切回复用缓存。
 - 图表使用现有 `SegmentedTabs` + `chart.js`：
   - 主数据使用柱状图
   - limit 使用独立虚线 dataset，数据源为 `points[].limitValue`
-- `业务 1h` 图表例外：
+- `每小时` 图表例外：
   - success / failure 使用同一根柱子的上下堆叠段
-  - pressure 使用独立折线 dataset
-  - 不绘制 limit 虚线
+  - `pressure` 使用独立实线 dataset
+  - `limit` 使用独立虚线 dataset，并与 `pressure` 用不同颜色区分
 - 月度历史缺口显示为无数据提示，不伪装成 `0`。
 - `/admin/analysis/usage` 新增 `业务 1h` 列，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序；旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
 - token 列表说明文案需明确：这里只展示 token 自己的状态、时间与成功统计，共享额度请看上方趋势图。
@@ -187,7 +187,7 @@
 
 ## 验收标准
 
-- 用户详情首屏默认展示 `1h` 图，且只请求一次 `quota1h`。
+- 用户详情首屏默认展示 `每小时` 图，且只请求一次 `businessCalls1h`。
 - 切换到 `5m / 24h / 月` 时才触发对应接口请求，二次切回不重复请求。
 - 四张图都带明显的上限虚线；虚线必须按 bucket 对应的历史 `limitValue` 绘制，不能整图平铺当前 limit。
 - token 列表不再出现任何账户共享额度字段或易误导文案。
@@ -246,11 +246,11 @@
 - requested_viewport: `1600x1000`
 - viewport_strategy: `devtools-emulate`
 - submission_gate: `approved`
-- evidence_note: 共享额度趋势 tab 已按时间尺度调整为 `5m / 1h / 24h / 月`；默认激活仍为 `1h`，说明文案明确区分 5m 请求频率与 1h/24h/月业务额度；空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现提交。
+- evidence_note: 共享额度趋势 tab 已按时间尺度调整为 `5m / 每小时 / 24h / 月`；默认激活为 `每小时`，说明文案明确区分 5m 请求频率与每小时/24h/月业务额度；空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现提交。
 
 ![共享额度趋势时间窗口顺序](./assets/user-detail-shared-usage-tabs-order.png)
 
-### 共享额度趋势（默认 1h）
+### 共享额度趋势（默认每小时）
 
 - asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-shared-usage-default.png`
 - source_type: `storybook_canvas`
@@ -260,9 +260,9 @@
 - requested_viewport: `none`
 - viewport_strategy: `storybook-viewport`
 - submission_gate: `pending-owner-approval`
-- evidence_note: 当前 Storybook 用户详情默认落在 `1h` tab，图中业务额度柱状值上方的虚线使用 `points[].limitValue` 按 bucket 回放历史额度快照，而不是整图平铺当前 limit；已检查空白裁剪，无需额外裁切；证据绑定 `e9f9df93e4b7a0f0493769d2979c8bfa8707599f`。
+- evidence_note: 当前 Storybook 用户详情默认落在 `每小时` tab，图中业务额度柱状值上方的虚线使用 `points[].limitValue` 按 bucket 回放历史小时额度快照，而不是整图平铺当前 limit；已检查空白裁剪，无需额外裁切；证据绑定当前实现提交。
 
-![共享额度趋势默认 1h](./assets/user-detail-shared-usage-default.png)
+![共享额度趋势默认每小时](./assets/user-detail-shared-usage-default.png)
 
 ### 共享额度趋势浮层明细
 
@@ -428,12 +428,12 @@
 - source_type: `storybook_canvas`
 - story_id_or_title: `admin-pages--user-detail-business-calls-1-h`
 - target_program: `mock-only`
-- capture_scope: `browser-viewport`
+- capture_scope: `element`
 - requested_viewport: `1440x1600`
-- viewport_strategy: `devtools-emulate`
+- viewport_strategy: `playwright-element-screenshot`
 - submission_gate: `approved`
 - PR: include
 - evidence_note:
-  `Shared Usage Trends` 的 `Biz 1h` 图表证据已按面板级范围刷新，用于确认 5 分钟 `success/failure` 柱段保持同桶堆叠，而 `pressure` 继续作为独立折线显示；图例仍明确区分 `Success / Failure / Pressure`，与 `series=businessCalls1h` 的返回形状一致。由于整页渐变边框会让空白裁剪脚本判定为 `ambiguous_border`，最终证据改为受控 viewport 截图后的面板级裁图。
+  `Shared Usage Trends` 的 `每小时` 图表证据已按面板级范围刷新，用于确认 5 分钟 `success/failure` 柱段保持同桶堆叠，`pressure` 继续作为独立实线显示，而历史小时额度 `limit` 以虚线按快照回放：各稳定区间保持分段平线，仅在额度快照变更点跳阶；图例明确区分 `成功 / 失败 / 压力 / 上限`，与 `series=businessCalls1h` 的返回形状一致。该证据通过 Storybook mock surface 的 `playwright` element screenshot 生成，并固定在中文 locale 下验证 `每小时` tab 文案。
 
 ![用户详情业务 1h 图表](./assets/user-detail-business-calls-1h-chart.png)

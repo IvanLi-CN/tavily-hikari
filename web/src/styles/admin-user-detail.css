@@ -462,10 +462,12 @@
 }
 
 .admin-user-shared-usage-legend-chip-line {
+  --admin-user-shared-usage-line-color: hsl(var(--warning));
+  --admin-user-shared-usage-line-style: dashed;
   position: relative;
   width: 18px;
   height: 0;
-  border-top: 2px dashed hsl(var(--warning));
+  border-top: 2px var(--admin-user-shared-usage-line-style) var(--admin-user-shared-usage-line-color);
   border-radius: 0;
 }
 

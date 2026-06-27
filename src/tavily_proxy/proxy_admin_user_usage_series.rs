@@ -255,6 +255,7 @@ impl TavilyProxy {
         &self,
         user_id: &str,
     ) -> Result<AdminUserBusinessCalls1hSeries, ProxyError> {
+        let now_ts = self.backend_time.now_ts();
         let limit = self
             .key_store
             .resolve_account_quota_resolution(user_id)
@@ -262,18 +263,35 @@ impl TavilyProxy {
             .effective
             .hourly_limit
             .max(0);
+        let mut points = self.user_business_calls_1h_window.usage_series(user_id).await;
+        let bucket_starts: Vec<i64> = points.iter().map(|point| point.bucket_start).collect();
+        let bucket_start_before = now_ts.saturating_add(1);
+        let first_bucket_end = bucket_starts
+            .get(1)
+            .copied()
+            .unwrap_or(bucket_start_before)
+            .max(bucket_starts.first().copied().unwrap_or(bucket_start_before));
+        let limit_values = resolve_bucket_limit_values(
+            &bucket_starts,
+            bucket_start_before,
+            &self
+                .key_store
+                .fetch_account_quota_limit_snapshots_for_window(
+                    user_id,
+                    first_bucket_end,
+                    bucket_start_before,
+                )
+                .await?,
+            |snapshot| snapshot.changed_at,
+            |snapshot| snapshot.select(AccountQuotaLimitSnapshotField::Hourly),
+        );
+        for (point, limit_value) in points.iter_mut().zip(limit_values.into_iter()) {
+            point.limit_value = limit_value;
+        }
+
         Ok(AdminUserBusinessCalls1hSeries {
             limit,
-            points: self
-                .user_business_calls_1h_window
-                .usage_series(user_id)
-                .await
-                .into_iter()
-                .map(|mut point| {
-                    point.limit_value = point.pressure.map(|_| limit);
-                    point
-                })
-                .collect(),
+            points,
         })
     }
 }

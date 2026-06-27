@@ -757,7 +757,7 @@ export const EN: TranslationShape = {
           sharedUsageTabs: {
             oneHour: '1h',
             fiveMinute: '5m',
-            businessOneHour: 'Biz Requests 1h',
+            businessOneHour: 'Hourly',
             daily: '24h',
             monthly: 'Month',
             ip: 'IP',

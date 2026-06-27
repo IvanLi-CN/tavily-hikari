@@ -1435,7 +1435,7 @@ const MOCK_USER_USAGE_SERIES: Record<AdminUserUsageSeriesKey, AdminUserUsageSeri
   },
   businessCalls1h: {
     kind: 'businessCalls1h',
-    limit: 0,
+    limit: 120,
     points: Array.from({ length: 288 }, (_, index) => ({
       bucketStart: now - (287 - index) * 300,
       bars: {
@@ -1443,7 +1443,7 @@ const MOCK_USER_USAGE_SERIES: Record<AdminUserUsageSeriesKey, AdminUserUsageSeri
         failure: index % 31 === 0 ? 1 : 0,
       },
       pressure: 18 + ((index * 7) % 24),
-      limitValue: null,
+      limitValue: index < 96 ? 80 : index < 192 ? 100 : 120,
     })),
   },
 }
@@ -7150,7 +7150,11 @@ export const UserDetailSharedUsageTooltip: Story = {
 
     const hoverTooltip = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-tooltip')
     const tooltipOpenWhileHovering = usagePanel.getAttribute('data-tooltip-open')
-    if (!hoverTooltip?.textContent?.includes('已用') || tooltipOpenWhileHovering !== 'true') {
+    if (
+      !hoverTooltip?.textContent?.includes('压力') ||
+      !hoverTooltip.textContent.includes('上限') ||
+      tooltipOpenWhileHovering !== 'true'
+    ) {
       throw new Error('Expected hovering the shared usage chart to open the floating detail bubble.')
     }
 
@@ -7261,7 +7265,7 @@ export const UserDetail: Story = {
 
     const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
       .map((item) => item.textContent?.trim())
-    const expectedTabLabels = ['5m', '业务请求 1h', '24h', '月', 'IP']
+    const expectedTabLabels = ['5m', '每小时', '24h', '月', 'IP']
     if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
       throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
     }
@@ -7413,8 +7417,11 @@ export const UserDetailBusinessCalls1h: Story = {
     if (usagePanel?.dataset.activeSeries !== 'businessCalls1h') {
       throw new Error('Expected the business calls story to open the business 1h tab.')
     }
-    if (!canvasElement.textContent?.includes('业务请求 1h')) {
-      throw new Error('Expected the business calls story to include the business 1h label.')
+    if (!canvasElement.textContent?.includes('每小时')) {
+      throw new Error('Expected the business calls story to include the hourly tab label.')
+    }
+    if (!canvasElement.textContent?.includes('上限')) {
+      throw new Error('Expected the business calls story legend to expose the historical limit line.')
     }
     if (!canvasElement.textContent?.includes('36')) {
       throw new Error('Expected the business calls story to expose the business 1h total summary.')
