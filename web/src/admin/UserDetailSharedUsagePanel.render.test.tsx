@@ -1,6 +1,7 @@
 import '../../test/happydom'
 
 import { afterEach, describe, expect, it } from 'bun:test'
+import { Chart as ChartJS } from 'chart.js'
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -223,6 +224,74 @@ describe('UserDetailSharedUsagePanel loading behavior', () => {
     expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsagePartialHint)
     expect(container.textContent).not.toContain('· 120')
     expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageEmpty)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
+  it('renders the business 1h legend with success, failure, pressure, and limit labels', async () => {
+    const { container, root } = await mountPanel({
+      loadSeries: async () => ({
+        kind: 'businessCalls1h',
+        limit: 120,
+        points: [
+          {
+            bucketStart: 1_776_200_400,
+            bars: { success: 5, failure: 1 },
+            pressure: 24,
+            limitValue: 120,
+          },
+        ],
+      }),
+    })
+
+    const legendText = container.querySelector('.admin-user-shared-usage-legend')?.textContent ?? ''
+    expect(legendText).toContain(ZH.admin.users.detail.sharedUsageLegendSuccess)
+    expect(legendText).toContain(ZH.admin.users.detail.sharedUsageLegendFailure)
+    expect(legendText).toContain(ZH.admin.users.detail.sharedUsageLegendPressure)
+    expect(legendText).toContain(ZH.admin.users.detail.sharedUsageLegendLimit)
+    expect(container.textContent).not.toContain(ZH.admin.users.detail.sharedUsageEmpty)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
+  it('keeps business pressure and limit lines out of the stacked bar totals', async () => {
+    const { container, root } = await mountPanel({
+      loadSeries: async () => ({
+        kind: 'businessCalls1h',
+        limit: 120,
+        points: [
+          {
+            bucketStart: 1_776_200_400,
+            bars: { success: 5, failure: 1 },
+            pressure: 24,
+            limitValue: 120,
+          },
+          {
+            bucketStart: 1_776_200_700,
+            bars: { success: 4, failure: 0 },
+            pressure: 24,
+            limitValue: 120,
+          },
+        ],
+      }),
+    })
+
+    const canvas = container.querySelector('canvas')
+    expect(canvas).not.toBeNull()
+    const chart = canvas ? ChartJS.getChart(canvas) : undefined
+    expect(chart).toBeDefined()
+
+    const stacks = chart?.data.datasets.map((dataset) => dataset.stack)
+    expect(stacks).toEqual([
+      'business-bars',
+      'business-bars',
+      'business-pressure-line',
+      'business-limit-line',
+    ])
 
     await act(async () => {
       root.unmount()

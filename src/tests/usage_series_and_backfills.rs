@@ -1896,6 +1896,91 @@ async fn admin_user_usage_series_rate5m_uses_historical_request_limit_snapshots(
 }
 
 #[tokio::test]
+async fn admin_user_usage_series_business_calls_1h_uses_historical_limit_snapshots() {
+    let db_path = temp_db_path("admin-user-usage-series-business-calls-limit-snapshots");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "usage-series-business-calls-snapshots".to_string(),
+            username: Some("usage_series_business_calls_snapshots".to_string()),
+            name: Some("Usage Series Business Calls Snapshots".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 600, 6_000, 60_000)
+        .await
+        .expect("update current business quota");
+    sqlx::query("DELETE FROM account_quota_limit_snapshots WHERE user_id = ?")
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear auto snapshots");
+
+    let now = Utc::now();
+    let current_bucket_start = now.timestamp() - now.timestamp().rem_euclid(SECS_PER_FIVE_MINUTES);
+    let start = current_bucket_start - 287 * SECS_PER_FIVE_MINUTES;
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(start)
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("backdate user creation");
+    sqlx::query(
+        r#"INSERT INTO account_quota_limit_snapshots
+           (user_id, changed_at, hourly_any_limit, hourly_limit, daily_limit, monthly_limit)
+           VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&user.user_id)
+    .bind(start + 72 * SECS_PER_FIVE_MINUTES + 60)
+    .bind(200)
+    .bind(200)
+    .bind(2_000)
+    .bind(20_000)
+    .bind(&user.user_id)
+    .bind(start + 144 * SECS_PER_FIVE_MINUTES + 60)
+    .bind(400)
+    .bind(400)
+    .bind(4_000)
+    .bind(40_000)
+    .bind(&user.user_id)
+    .bind(start + 216 * SECS_PER_FIVE_MINUTES + 60)
+    .bind(600)
+    .bind(600)
+    .bind(6_000)
+    .bind(60_000)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed deterministic business calls quota snapshots");
+
+    let series = proxy
+        .admin_user_business_calls_1h_series(&user.user_id)
+        .await
+        .expect("load business calls 1h series");
+
+    assert_eq!(series.limit, 600);
+    assert_eq!(series.points.len(), 288);
+    assert_eq!(series.points[71].limit_value, None);
+    assert_eq!(series.points[72].limit_value, Some(200));
+    assert_eq!(series.points[143].limit_value, Some(200));
+    assert_eq!(series.points[144].limit_value, Some(400));
+    assert_eq!(series.points[215].limit_value, Some(400));
+    assert_eq!(series.points[216].limit_value, Some(600));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn account_usage_rollup_rebuild_preserves_request_time_user_binding() {
     let db_path = temp_db_path("account-usage-rollup-request-user-snapshot");
     let db_str = db_path.to_string_lossy().to_string();

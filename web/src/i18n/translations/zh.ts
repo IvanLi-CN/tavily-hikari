@@ -732,7 +732,7 @@ export const ZH: TranslationShape = {
             status: '状态',
             hourlyAny: '5m 限流',
             hourly: '1h',
-            businessOneHour: '每小时业务请求次数',
+            businessOneHour: '1h',
             daily: '24h',
             monthly: '月度',
             monthlyBroken: '封禁数',
@@ -772,7 +772,7 @@ export const ZH: TranslationShape = {
           sharedUsageTabs: {
             oneHour: '1h',
             fiveMinute: '5m',
-            businessOneHour: '业务请求 1h',
+            businessOneHour: '每小时',
             daily: '24h',
             monthly: '月',
             ip: 'IP',

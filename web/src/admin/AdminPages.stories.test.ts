@@ -420,10 +420,11 @@ describe('AdminPages Storybook proofs', () => {
       ),
     )
 
-    expect(markup).toContain('业务请求 1h')
+    expect(markup).toContain('每小时')
     expect(markup).toContain('36')
     expect(markup).toContain('34')
     expect(markup).toContain('2')
+    expect(markup).toContain('上限')
   })
 
   it('renders the user detail stories with add and delete token controls', () => {

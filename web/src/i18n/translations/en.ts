@@ -733,7 +733,7 @@ export const EN: TranslationShape = {
             status: 'Status',
             hourlyAny: '5m Rate',
             hourly: '1h',
-            businessOneHour: 'Hourly Biz Requests',
+            businessOneHour: '1h',
             daily: '24h',
             monthly: 'Month',
             monthlyBroken: 'Blocked Keys',
@@ -773,7 +773,7 @@ export const EN: TranslationShape = {
           sharedUsageTabs: {
             oneHour: '1h',
             fiveMinute: '5m',
-            businessOneHour: 'Biz Requests 1h',
+            businessOneHour: 'Hourly',
             daily: '24h',
             monthly: 'Month',
             ip: 'IP',
