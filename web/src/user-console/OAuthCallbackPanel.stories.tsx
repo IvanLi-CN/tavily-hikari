@@ -19,8 +19,6 @@ interface OAuthCallbackScenario {
 
 interface SingleStateFrameProps {
   model: OAuthCallbackPanelModel
-  maxWidth: number
-  isMobile?: boolean
 }
 
 const providerLabel = ZH.header.providers.linuxdo
@@ -103,7 +101,7 @@ function ScenarioCard({ scenario }: { scenario: OAuthCallbackScenario }): JSX.El
   )
 }
 
-function SingleStateFrame({ model, maxWidth }: SingleStateFrameProps): JSX.Element {
+function SingleStateFrame({ model }: SingleStateFrameProps): JSX.Element {
   return (
     <main
       className="app-shell public-home user-console-shell"
@@ -137,13 +135,7 @@ function SingleStateFrame({ model, maxWidth }: SingleStateFrameProps): JSX.Eleme
         loggingOutLabel={ZH.header.loggingOut}
         onLogout={() => undefined}
       />
-      <div
-        style={{
-          width: '100%',
-          maxWidth,
-          margin: '0 auto',
-        }}
-      >
+      <div className="oauth-callback-stage">
         <OAuthCallbackPanel
           model={model}
           onRestart={() => undefined}
@@ -265,7 +257,7 @@ export const DesktopTimeout: Story = {
   args: {
     model: buildModel(scenarios[3]),
   },
-  render: (args) => <SingleStateFrame model={args.model} maxWidth={920} />,
+  render: (args) => <SingleStateFrame model={args.model} />,
 }
 
 export const DesktopConnecting: Story = {
@@ -282,7 +274,7 @@ export const DesktopConnecting: Story = {
   args: {
     model: buildModel(scenarios[0]),
   },
-  render: (args) => <SingleStateFrame model={args.model} maxWidth={920} />,
+  render: (args) => <SingleStateFrame model={args.model} />,
 }
 
 export const MobileTimeout: Story = {
@@ -299,7 +291,7 @@ export const MobileTimeout: Story = {
   args: {
     model: buildModel(scenarios[3]),
   },
-  render: (args) => <SingleStateFrame model={args.model} maxWidth={420} isMobile />,
+  render: (args) => <SingleStateFrame model={args.model} />,
 }
 
 export const DesktopSuccess: Story = {
@@ -316,7 +308,7 @@ export const DesktopSuccess: Story = {
   args: {
     model: buildModel(scenarios[5]),
   },
-  render: (args) => <SingleStateFrame model={args.model} maxWidth={920} />,
+  render: (args) => <SingleStateFrame model={args.model} />,
 }
 
 export const MobileSuccess: Story = {
@@ -333,5 +325,5 @@ export const MobileSuccess: Story = {
   args: {
     model: buildModel(scenarios[5]),
   },
-  render: (args) => <SingleStateFrame model={args.model} maxWidth={420} isMobile />,
+  render: (args) => <SingleStateFrame model={args.model} />,
 }

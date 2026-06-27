@@ -97,7 +97,15 @@
   line-height: 1;
 }
 
+.oauth-callback-stage {
+  width: 100%;
+  display: grid;
+}
+
 .oauth-callback-panel {
+  inline-size: min(100%, 58rem);
+  min-inline-size: min(100%, 21rem);
+  justify-self: center;
   display: grid;
   gap: 20px;
 }
@@ -434,6 +442,11 @@
 }
 
 @media (max-width: 767px) {
+  .oauth-callback-panel {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
   .oauth-callback-hero {
     padding: 18px;
   }

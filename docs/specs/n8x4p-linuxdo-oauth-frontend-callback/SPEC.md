@@ -125,13 +125,13 @@
 - source_type: `storybook_canvas`
   story_id_or_title: `User Console/Fragments/OAuth Callback/Desktop Connecting`
   target_program: `mock-only`
-  capture_scope: `browser-viewport`
+  capture_scope: `element`
   sensitive_exclusion: `N/A`
   requested_viewport: `1440-device-desktop`
   viewport_strategy: `storybook-viewport`
   submission_gate: `approved`
   state: `desktop connecting in dark user-console shell`
-  evidence_note: 验证桌面端 callback 首屏已回到真实 dark clay user-console shell 语境，包含共享 header、主题切换器、语言切换器、footer，以及“正在与 LinuxDo 通信”的承接态。
+  evidence_note: 验证桌面端 callback 首屏已回到真实 dark clay user-console shell 语境，承接卡片维持居中 bounded column，不再在宽屏下整块摊满，同时保留共享 header、主题切换器、语言切换器、footer，以及“正在与 LinuxDo 通信”的承接态。
   PR: include
   image:
   ![OAuth callback desktop connecting](./assets/oauth-callback-desktop-connecting.png)
@@ -152,13 +152,13 @@
 - source_type: `storybook_canvas`
   story_id_or_title: `User Console/Fragments/OAuth Callback/Mobile Timeout`
   target_program: `mock-only`
-  capture_scope: `browser-viewport`
+  capture_scope: `element`
   sensitive_exclusion: `N/A`
   requested_viewport: `390x844`
   viewport_strategy: `storybook-viewport`
   submission_gate: `approved`
   state: `mobile timeout recovery in dark user-console shell`
-  evidence_note: 验证移动端 callback 超时后在真实 dark clay user-console shell 中仍保持完整信息层级，按钮区纵向堆叠，并固定提供“重新连接 LinuxDo / 返回首页”双 CTA。
+  evidence_note: 验证移动端 callback 超时后在真实 dark clay user-console shell 中仍保持完整信息层级、稳定左右 gutter 与按钮区纵向堆叠，并固定提供“重新连接 LinuxDo / 返回首页”双 CTA。
   image:
   ![OAuth callback mobile timeout](./assets/oauth-callback-mobile-timeout.png)
 

@@ -2651,11 +2651,13 @@ export default function UserConsole(): JSX.Element {
       {consoleLoggedOut && <AccessStatePanel state="logged_out" text={text} onHome={goHome} />}
       {consoleNeedsLogin && <AccessStatePanel state="login_required" text={text} onHome={goHome} />}
       {isOAuthCallbackRoute && (
-        <OAuthCallbackPanel
-          model={oauthCallbackModel}
-          onRestart={restartOAuthCallbackAuth}
-          onHome={goHome}
-        />
+        <div className="oauth-callback-stage">
+          <OAuthCallbackPanel
+            model={oauthCallbackModel}
+            onRestart={restartOAuthCallbackAuth}
+            onHome={goHome}
+          />
+        </div>
       )}
 
       {!isOAuthCallbackRoute && (
