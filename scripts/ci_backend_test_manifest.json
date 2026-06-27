@@ -342,9 +342,10 @@
       "include_prefixes": [
         "server::tests::admin_logs_and_summary::admin_",
         "server::tests::admin_token_filters_and_maintenance::admin_",
-    "server::tests::admin_users_and_tokens::account_",
-    "server::tests::admin_users_and_tokens::admin_",
-    "server::tests::admin_users_and_tokens::analysis_",
+        "server::tests::admin_token_owner_summary::admin_",
+        "server::tests::admin_users_and_tokens::account_",
+        "server::tests::admin_users_and_tokens::admin_",
+        "server::tests::admin_users_and_tokens::analysis_",
         "server::tests::dashboard_overview_snapshot::admin_",
         "server::tests::log_catalog_and_dashboard_sse::admin_",
         "server::tests::mcp_rebalance_and_follow_up::admin_",
