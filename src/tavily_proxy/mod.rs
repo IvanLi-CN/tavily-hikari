@@ -686,6 +686,7 @@ pub struct TavilyProxy {
     pub(crate) low_quota_depletion_threshold: i64,
     pub(crate) forward_proxy_runtime_started: Arc<AtomicBool>,
     pub(crate) forward_proxy_runtime_transition_lock: Arc<Mutex<()>>,
+    server_pressure_rebuild_started: Arc<AtomicBool>,
     health_readiness_grace_until: tokio::time::Instant,
     pub(crate) backend_time: BackendTime,
 }

@@ -56,43 +56,42 @@ impl KeyStore {
         let updated_at = self.backend_time.now_ts();
         let five_minute_since = updated_at.saturating_sub(48 * SECS_PER_HOUR);
         let hour_since = updated_at.saturating_sub(8 * SECS_PER_DAY);
+        let snapshot_max_request_log_id: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM observability.request_logs")
+                .fetch_one(&self.pool)
+                .await?;
 
-        let five_minute_sql = r#"
-            INSERT INTO observability.server_pressure_buckets (
-                bucket_kind,
-                bucket_start,
-                bucket_secs,
-                success_count,
-                failure_count,
-                updated_at
-            )
+        let five_minute_rows = sqlx::query_as::<_, (i64, i64, i64)>(
+            r#"
             SELECT
-                'five_minute' AS bucket_kind,
                 (created_at / ?) * ? AS bucket_start,
-                ? AS bucket_secs,
                 SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN result_status != ? THEN 1 ELSE 0 END) AS failure_count,
-                ? AS updated_at
+                SUM(CASE WHEN result_status != ? THEN 1 ELSE 0 END) AS failure_count
             FROM observability.request_logs
             WHERE visibility = ?
               AND created_at >= ?
+              AND id <= ?
               AND request_user_id IS NOT NULL
               AND counts_business_quota = 1
               AND upstream_operation IS NOT NULL
               AND result_status != ?
             GROUP BY bucket_start
-        "#;
-        let hour_sql = r#"
-            INSERT INTO observability.server_pressure_buckets (
-                bucket_kind,
-                bucket_start,
-                bucket_secs,
-                success_count,
-                failure_count,
-                updated_at
-            )
+            ORDER BY bucket_start
+            "#,
+        )
+        .bind(SECS_PER_FIVE_MINUTES)
+        .bind(SECS_PER_FIVE_MINUTES)
+        .bind(OUTCOME_SUCCESS)
+        .bind(OUTCOME_SUCCESS)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(five_minute_since)
+        .bind(snapshot_max_request_log_id)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_all(&self.pool)
+        .await?;
+        let hour_rows = sqlx::query_as::<_, (i64, i64, i64)>(
+            r#"
             SELECT
-                'hour' AS bucket_kind,
                 CAST(
                     strftime(
                         '%s',
@@ -100,18 +99,53 @@ impl KeyStore {
                         'utc'
                     ) AS INTEGER
                 ) AS bucket_start,
-                ? AS bucket_secs,
                 SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN result_status != ? THEN 1 ELSE 0 END) AS failure_count,
-                ? AS updated_at
+                SUM(CASE WHEN result_status != ? THEN 1 ELSE 0 END) AS failure_count
             FROM observability.request_logs
             WHERE visibility = ?
               AND created_at >= ?
+              AND id <= ?
               AND request_user_id IS NOT NULL
               AND counts_business_quota = 1
               AND upstream_operation IS NOT NULL
               AND result_status != ?
             GROUP BY bucket_start
+            ORDER BY bucket_start
+            "#,
+        )
+        .bind(OUTCOME_SUCCESS)
+        .bind(OUTCOME_SUCCESS)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(hour_since)
+        .bind(snapshot_max_request_log_id)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_all(&self.pool)
+        .await?;
+        let insert_sql = r#"
+            INSERT INTO observability.server_pressure_buckets (
+                bucket_kind,
+                bucket_start,
+                bucket_secs,
+                success_count,
+                failure_count,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        "#;
+        let upsert_sql = r#"
+            INSERT INTO observability.server_pressure_buckets (
+                bucket_kind,
+                bucket_start,
+                bucket_secs,
+                success_count,
+                failure_count,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_kind, bucket_start) DO UPDATE SET
+                success_count = server_pressure_buckets.success_count + excluded.success_count,
+                failure_count = server_pressure_buckets.failure_count + excluded.failure_count,
+                updated_at = excluded.updated_at
         "#;
 
         let mut conn = begin_immediate_sqlite_connection_with_retry(
@@ -122,31 +156,87 @@ impl KeyStore {
         )
         .await?;
         let result = async {
+            let tail_rows = sqlx::query_as::<_, (i64, String)>(
+                r#"
+                SELECT created_at, result_status
+                FROM observability.request_logs
+                WHERE id > ?
+                  AND visibility = ?
+                  AND request_user_id IS NOT NULL
+                  AND counts_business_quota = 1
+                  AND upstream_operation IS NOT NULL
+                  AND result_status != ?
+                ORDER BY id
+                "#,
+            )
+            .bind(snapshot_max_request_log_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .fetch_all(&mut *conn)
+            .await?;
             sqlx::query("DELETE FROM observability.server_pressure_buckets")
                 .execute(&mut *conn)
                 .await?;
-            sqlx::query(five_minute_sql)
-                .bind(SECS_PER_FIVE_MINUTES)
-                .bind(SECS_PER_FIVE_MINUTES)
-                .bind(SECS_PER_FIVE_MINUTES)
-                .bind(OUTCOME_SUCCESS)
-                .bind(OUTCOME_SUCCESS)
-                .bind(updated_at)
-                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-                .bind(five_minute_since)
-                .bind(OUTCOME_QUOTA_EXHAUSTED)
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(hour_sql)
-                .bind(SECS_PER_HOUR)
-                .bind(OUTCOME_SUCCESS)
-                .bind(OUTCOME_SUCCESS)
-                .bind(updated_at)
-                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-                .bind(hour_since)
-                .bind(OUTCOME_QUOTA_EXHAUSTED)
-                .execute(&mut *conn)
-                .await?;
+            for (bucket_start, success_count, failure_count) in five_minute_rows {
+                sqlx::query(insert_sql)
+                    .bind("five_minute")
+                    .bind(bucket_start)
+                    .bind(SECS_PER_FIVE_MINUTES)
+                    .bind(success_count)
+                    .bind(failure_count)
+                    .bind(updated_at)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            for (bucket_start, success_count, failure_count) in hour_rows {
+                sqlx::query(insert_sql)
+                    .bind("hour")
+                    .bind(bucket_start)
+                    .bind(SECS_PER_HOUR)
+                    .bind(success_count)
+                    .bind(failure_count)
+                    .bind(updated_at)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            for (created_at, result_status) in tail_rows {
+                let success = if result_status == OUTCOME_SUCCESS {
+                    1_i64
+                } else {
+                    0_i64
+                };
+                let failure = if result_status == OUTCOME_SUCCESS {
+                    0_i64
+                } else {
+                    1_i64
+                };
+                let Some(utc_dt) = chrono::Utc.timestamp_opt(created_at, 0).single() else {
+                    continue;
+                };
+                let local_dt = utc_dt.with_timezone(&chrono::Local);
+                let five_minute_bucket_start =
+                    created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+                let hour_bucket_start = start_of_local_hour_utc_ts(local_dt);
+
+                sqlx::query(upsert_sql)
+                    .bind("five_minute")
+                    .bind(five_minute_bucket_start)
+                    .bind(SECS_PER_FIVE_MINUTES)
+                    .bind(success)
+                    .bind(failure)
+                    .bind(updated_at)
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query(upsert_sql)
+                    .bind("hour")
+                    .bind(hour_bucket_start)
+                    .bind(SECS_PER_HOUR)
+                    .bind(success)
+                    .bind(failure)
+                    .bind(updated_at)
+                    .execute(&mut *conn)
+                    .await?;
+            }
             sqlx::query("COMMIT").execute(&mut *conn).await?;
             Ok::<(), ProxyError>(())
         }

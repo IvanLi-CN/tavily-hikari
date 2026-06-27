@@ -52,6 +52,10 @@ source when a usable persisted runtime already exists.
   failures.
 - Keep forward-proxy startup from turning short SQLite writer contention into a long readiness
   delay.
+- Keep serving-role `/health` from reporting green before the forward-proxy runtime and shared xray
+  are actually ready for core business traffic.
+- Keep non-core derived observability rebuild work such as `server_pressure_buckets` out of the
+  listener-before-ready critical path.
 - Cover the lock-contention behavior with local tests that use only local/mock state.
 
 ## Non-goals
@@ -86,6 +90,17 @@ source when a usable persisted runtime already exists.
   their configured subscription ownership is unambiguous. When at least one restored subscription
   endpoint exists, startup must not block on remote refresh before xray sync/runtime persistence;
   without safely restorable endpoints, startup continues to wait for subscription readiness.
+- Serving-role `GET /health` must ignore the forward-proxy startup grace window. If the current
+  business-serving role still depends on local relay and shared xray/runtime is not actually ready,
+  `/health` must return non-`200` immediately instead of reporting a grace-period green state.
+- `active_standby` `standby` / `recovery` keep the accepted HA minimal-health carve-out: their
+  `/health` contract remains `200 ok` even when xray/runtime is intentionally not prewarmed.
+- `rebuild_server_pressure_buckets()` must not block listener bind, first strict `/health`, or
+  first healthy image status. Once the process is already serving business traffic, it may run once
+  as a best-effort background rebuild whose failure is isolated to logs/observability and does not
+  turn serving `/health` red.
+- The default image `HEALTHCHECK` must align with the stricter serving contract by using
+  `start-period=20s`, `interval=5s`, `timeout=5s`, and `retries=18`.
 - Scheduled job records must preserve the logical job type and record the trigger source separately
   as `scheduler`, `manual`, or `auto`. Manual runs must not be encoded by appending suffixes to
   `job_type`.
@@ -207,6 +222,15 @@ source when a usable persisted runtime already exists.
   restores the local runtime and completes without waiting for the slow remote refresh.
 - Without persisted subscription runtime, startup remains strict and waits for subscription
   readiness instead of reporting healthy from an empty proxy graph.
+- When a serving role needs shared xray relay, `/health` returns non-`200` immediately until the
+  runtime is actually ready even if the internal startup grace timer has not expired yet.
+- In `active_standby`, `standby` / `recovery` still return `200 ok` on `/health` while runtime/xray
+  prewarm is intentionally skipped.
+- `server_pressure_buckets` rebuild no longer appears on the listener-before-ready critical path.
+  After the process is already serving, one background rebuild repopulates historical buckets
+  without making owner-facing pressure analysis return `500`.
+- Under mock/local upstream startup, the image `HEALTHCHECK` becomes healthy only after the stricter
+  serving `/health` is truly green and remains stable within the `20s/5s/5s/18` timing contract.
 - With a large backlog of old request logs, one scheduler pass records bounded progress instead of
   running indefinitely; later catch-up passes eventually remove all rows older than the retention
   threshold.

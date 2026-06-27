@@ -158,3 +158,16 @@
 - The fix line stayed narrow: request-path pending billing now retries inside one bounded
   transaction, request-stats flush now retries with batch-aware requeue proof and structured
   contention logs, and public success metrics stop using the retained-log wide-scan fallback.
+
+## 2026-06-27
+
+- Tightened serving-role `/health` so the startup grace window no longer masks missing
+  forward-proxy runtime or shared xray readiness on `single`, `full_master`, or
+  `provisional_master`.
+- Preserved the accepted `f36b4` HA carve-out: `standby` / `recovery` still report `200 ok` on
+  `/health` while business runtime warmup is intentionally skipped.
+- Moved `server_pressure_buckets` historical rebuild out of the startup critical path into one
+  post-listener background rebuild, and shortened its writer-slot hold time by computing aggregate
+  rows before the final replace transaction.
+- Tightened the image `HEALTHCHECK` timing to `20s/5s/5s/18` so container healthy state tracks the
+  stricter serving contract more closely.

@@ -78,6 +78,18 @@ month-tail public metrics scan.
 - Restore safely attributable persisted subscription-backed proxy nodes from `forward_proxy_runtime`
   before attempting remote subscription refresh. If that restored graph exists, use it for startup
   readiness and leave remote subscription calibration to the maintenance scheduler.
+- Keep serving `/health` stricter than internal startup grace. If core serving traffic still
+  depends on forward-proxy runtime or shared xray readiness, return non-`200` immediately instead
+  of masking that gap with a grace-period green state; preserve any explicit HA standby/recovery
+  minimal-health carve-out separately.
+- If a derived observability rebuild is not core truth, do not keep it on the startup critical
+  path. Trigger it once after the listener is already serving, keep failure isolated to logs or
+  stale/empty analysis views, and shorten the live writer window by computing aggregates before the
+  final replace transaction.
+- Align deploy health timing with that stricter contract. In this service the accepted image
+  baseline is `start-period=20s`, `interval=5s`, `timeout=5s`, and `retries=18`, which avoids a
+  minute-long “starting” mask without letting containers flip healthy before serving readiness is
+  real.
 - Keep retention cleanup bounded. Large `request_logs` backlogs should be deleted in small batches
   with a runtime/batch budget and a catch-up delay, rather than one daily job holding or repeatedly
   contesting the writer until the whole backlog is gone.

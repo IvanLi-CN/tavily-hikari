@@ -51,6 +51,20 @@
   subscription source. If restored endpoints exist, startup skips the blocking remote refresh and
   proceeds to xray sync/runtime persistence; the existing maintenance scheduler performs
   subscription calibration after the service is running.
+- Serving-role `/health` now calls a strict forward-proxy readiness check that ignores the internal
+  startup grace window. `single`, `full_master`, and `provisional_master` stay red until the
+  forward-proxy runtime and shared xray are actually ready, while the accepted
+  `standby` / `recovery` HA carve-out remains unchanged.
+- `rebuild_server_pressure_buckets()` no longer blocks proxy construction or first healthy. Serving
+  roles trigger one background rebuild after the listener is already ready, invalidate the cached
+  analysis-pressure snapshot on success, and isolate rebuild failure to logs instead of business
+  readiness.
+- The server-pressure rebuild now computes aggregate rows before taking the SQLite write
+  transaction and only holds the writer slot during the final table replace, shrinking the live
+  rebuild write window.
+- The container image `HEALTHCHECK` now polls the stricter `/health` contract with
+  `start-period=20s`, `interval=5s`, `timeout=5s`, and `retries=18` so deploy green state tracks
+  real serving readiness more closely.
 - LinuxDo system tag binding backfill now uses a single indexed startup precheck and only repairs
   mismatched rows before readiness. A background scheduler periodically refreshes the bindings and
   quota snapshots after the service is already listening.

@@ -264,7 +264,7 @@ async fn analysis_pressure_snapshot_uses_rolling_1h_and_excludes_non_upstream_ev
 }
 
 #[tokio::test]
-async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets() {
+async fn analysis_pressure_snapshot_background_rebuild_rehydrates_server_pressure_buckets() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_300_000);
     let db_path = temp_db_path("analysis-pressure-snapshot-backfill");
     let db_str = db_path.to_string_lossy().to_string();
@@ -337,6 +337,46 @@ async fn analysis_pressure_snapshot_backfill_rehydrates_server_pressure_buckets(
     )
     .await
     .expect("reopen proxy");
+
+    let initial_snapshot = reopened
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot before background rebuild");
+    assert_eq!(
+        initial_snapshot
+            .server_24h
+            .current
+            .last()
+            .expect("latest current pressure point before rebuild")
+            .pressure,
+        0
+    );
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "reopened proxy should schedule exactly one background rebuild"
+    );
+    assert!(
+        !reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "background rebuild scheduling should be idempotent"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("count rebuilt server pressure buckets");
+            if bucket_count >= 2 {
+                return bucket_count;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("background rebuild should complete in time");
 
     let bucket_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",

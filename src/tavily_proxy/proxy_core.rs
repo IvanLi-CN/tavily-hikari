@@ -591,6 +591,7 @@ impl TavilyProxy {
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
             forward_proxy_runtime_started: Arc::new(AtomicBool::new(false)),
             forward_proxy_runtime_transition_lock: Arc::new(Mutex::new(())),
+            server_pressure_rebuild_started: Arc::new(AtomicBool::new(false)),
             health_readiness_grace_until: backend_time
                 .deadline_after(options.health_readiness_grace_period),
             backend_time,
@@ -598,7 +599,6 @@ impl TavilyProxy {
         proxy.spawn_ha_state_coalescer();
         proxy.spawn_request_stats_coalescer();
         proxy.user_business_calls_1h_window.backfill_recent().await?;
-        proxy.key_store.rebuild_server_pressure_buckets().await?;
         info!(
             component = "forward_proxy",
             event = "startup_runtime_graph_deferred",
@@ -805,13 +805,21 @@ impl TavilyProxy {
     }
 
     pub async fn is_forward_proxy_xray_ready(&self) -> bool {
+        self.is_forward_proxy_xray_ready_with_grace(true).await
+    }
+
+    pub async fn is_forward_proxy_xray_ready_strict(&self) -> bool {
+        self.is_forward_proxy_xray_ready_with_grace(false).await
+    }
+
+    async fn is_forward_proxy_xray_ready_with_grace(&self, allow_grace: bool) -> bool {
         if !self
             .forward_proxy_runtime_started
             .load(Ordering::SeqCst)
         {
             return false;
         }
-        if self.backend_time.instant_now() < self.health_readiness_grace_until {
+        if allow_grace && self.backend_time.instant_now() < self.health_readiness_grace_until {
             return true;
         }
         let (requires_xray, endpoints_ready) = {
@@ -837,6 +845,52 @@ impl TavilyProxy {
         let mut xray = self.xray_supervisor.lock().await;
         let snapshot = xray.readiness_snapshot();
         snapshot.shared_process_running && snapshot.active_endpoint_handles > 0
+    }
+
+    pub fn spawn_server_pressure_buckets_rebuild_once(&self) -> bool {
+        if self
+            .server_pressure_rebuild_started
+            .swap(true, Ordering::SeqCst)
+        {
+            return false;
+        }
+
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            tracing::info!(
+                component = "analysis_pressure",
+                event = "server_pressure_buckets_rebuild_started",
+                "rebuilding server pressure buckets after listener readiness"
+            );
+            match proxy.key_store.rebuild_server_pressure_buckets().await {
+                Ok(()) => {
+                    proxy.invalidate_analysis_pressure_cache().await;
+                    tracing::info!(
+                        component = "analysis_pressure",
+                        event = "server_pressure_buckets_rebuild_completed",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "server pressure buckets rebuild completed"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        component = "analysis_pressure",
+                        event = "server_pressure_buckets_rebuild_failed",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        err = %err,
+                        "server pressure buckets rebuild failed"
+                    );
+                }
+            }
+        });
+        true
+    }
+
+    async fn invalidate_analysis_pressure_cache(&self) {
+        let mut cache = self.analysis_pressure_cache.lock().await;
+        cache.cached = None;
+        cache.notify.notify_waiters();
     }
 
     pub async fn get_forward_proxy_settings(

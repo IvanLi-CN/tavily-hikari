@@ -71,7 +71,7 @@ LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
 VOLUME ["/srv/app/data"]
 EXPOSE 8787
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=18 CMD curl --fail --silent http://127.0.0.1:8787/health || exit 1
+HEALTHCHECK --interval=5s --timeout=5s --start-period=20s --retries=18 CMD curl --fail --silent http://127.0.0.1:8787/health || exit 1
 
 ENTRYPOINT ["tavily-hikari"]
 CMD []

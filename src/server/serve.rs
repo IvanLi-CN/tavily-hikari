@@ -500,6 +500,7 @@ pub async fn serve(
     spawn_ha_edgeone_authority_task(state.clone());
     spawn_ha_control_plane_gc_task(state.clone());
     spawn_background_tasks_for_current_role(state.clone()).await;
+    spawn_post_ready_serving_tasks_for_current_role(state.clone()).await;
 
     axum::serve(
         listener,
@@ -936,6 +937,21 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
     true
 }
 
+async fn spawn_post_ready_serving_tasks_for_current_role(state: Arc<AppState>) -> bool {
+    if !state.ha.role().await.allows_basic_business() {
+        return false;
+    }
+    if background_tasks_disabled_via_env() {
+        tracing::info!(
+            component = "startup",
+            event = "post_ready_tasks_disabled_via_env",
+            "post-ready non-core tasks disabled via TAVILY_DISABLE_BACKGROUND_TASKS"
+        );
+        return false;
+    }
+    state.proxy.spawn_server_pressure_buckets_rebuild_once()
+}
+
 async fn apply_ha_baseline_response_stream(
     proxy: &TavilyProxy,
     channel: tavily_hikari::HaSyncChannel,
@@ -1077,6 +1093,8 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                             err = %err,
                             "forward-proxy authority runtime role sync failed"
                         );
+                    } else {
+                        let _ = spawn_post_ready_serving_tasks_for_current_role(state.clone()).await;
                     }
                     let node_id = status.node_id.clone();
                     let edgeone_origin = status.edgeone_origin.clone();
