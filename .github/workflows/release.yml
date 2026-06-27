@@ -508,7 +508,8 @@ jobs:
           curl -fsS "http://127.0.0.1:${port}/console" | grep -qi '<html'
           curl -fsS "http://127.0.0.1:${port}/version.json" | grep -q '"version"'
           curl -fsS "http://127.0.0.1:${port}/favicon.svg" >/dev/null
-          curl -fsS "http://127.0.0.1:${port}/linuxdo-logo.svg" >/dev/null
+          curl -fsS "http://127.0.0.1:${port}/assets/linuxdo-logo.svg" >/dev/null
+          curl -fsS "http://127.0.0.1:${port}/assets/relay-mesh-lockup-light.png" >/dev/null
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v7
@@ -688,7 +689,8 @@ jobs:
           curl -fsS "http://127.0.0.1:${port}/console" | grep -qi '<html'
           curl -fsS "http://127.0.0.1:${port}/version.json" | grep -q '"version"'
           curl -fsS "http://127.0.0.1:${port}/favicon.svg" >/dev/null
-          curl -fsS "http://127.0.0.1:${port}/linuxdo-logo.svg" >/dev/null
+          curl -fsS "http://127.0.0.1:${port}/assets/linuxdo-logo.svg" >/dev/null
+          curl -fsS "http://127.0.0.1:${port}/assets/relay-mesh-lockup-light.png" >/dev/null
 
       - name: Upload portable binary artifacts
         uses: actions/upload-artifact@v7

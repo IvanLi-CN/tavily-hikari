@@ -14,6 +14,7 @@
 - release workflow 新增 `binary-portable` matrix：在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上安装 Zig 与固定版本的 `cargo-zigbuild`，分别构建 `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 版本，并打包为 `*-portable.tar.gz` 与 `.sha256`。
 - `prepare` job 额外从被 checkout 的目标源码树读取 release contract marker；只有目标树声明 `portable_release_contract=v1` 时才启用 `binary-portable` 与 portable 资产文案。这样当前 workflow 仍可用 `workflow_dispatch(head_sha=...)` 回填 pre-portable 历史提交，而不会把新 portable 构建强加到旧依赖树上。
 - portable matrix 在 smoke 前额外执行链接面检查：同时读取 `file`、`readelf -d` 与 `readelf -l`，要求产物保持 static/static-pie、没有 `PT_INTERP`、没有 `DT_NEEDED`，并显式拒绝 `glibc` / `OpenSSL` / `libsqlite3` 运行时依赖，避免仅靠 `ldd` 文本匹配漏过 glibc 动态链接回归。
+- 2026-06-27 的品牌资源 `/assets` 迁移后，release workflow 的 native/portable binary smoke 也同步改为探测 `/assets/linuxdo-logo.svg` 与 `/assets/relay-mesh-lockup-light.png`，不再保留失效的根路径 `/linuxdo-logo.svg` 断言；embedded HTTP 合同测试同步覆盖 PNG + SVG 品牌资产。
 - GitHub Release job 下载 binary artifacts 后用 `gh release upload --clobber --repo "${GITHUB_REPOSITORY}"` 上传资产；该 job 没有 checkout，不能依赖本地 `.git` 推断仓库。PR release comment 列出 binary
   资产名称，并包含新增的 portable 资产。
 - CI workflow 增加 embedded asset contract coverage，避免无外部静态目录的 binary 路径回归。

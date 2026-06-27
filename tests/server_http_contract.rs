@@ -898,7 +898,11 @@ async fn embedded_public_assets_are_served_without_static_dir() {
         "version.json should expose a version string"
     );
 
-    for path in ["/favicon.svg", "/assets/linuxdo-logo.svg"] {
+    for (path, content_type_prefix) in [
+        ("/favicon.svg", "image/svg+xml"),
+        ("/assets/linuxdo-logo.svg", "image/svg+xml"),
+        ("/assets/relay-mesh-lockup-light.png", "image/png"),
+    ] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
             .send()
@@ -910,8 +914,8 @@ async fn embedded_public_assets_are_served_without_static_dir() {
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("image/svg+xml")),
-            "asset content type should be svg: {path}"
+                .is_some_and(|value| value.starts_with(content_type_prefix)),
+            "asset content type should match {content_type_prefix}: {path}"
         );
         assert!(
             !response.bytes().await.expect("asset body").is_empty(),
