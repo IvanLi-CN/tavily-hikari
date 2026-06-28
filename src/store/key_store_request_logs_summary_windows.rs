@@ -594,8 +594,7 @@ impl KeyStore {
 
         let series_start = current_bucket_start
             .saturating_sub(bucket_seconds.saturating_mul(retained_buckets.saturating_sub(1)));
-        let series_end = current_bucket_start;
-        let aggregate_end_exclusive = current_bucket_start.saturating_add(bucket_seconds);
+        let series_end_exclusive = current_bucket_start.saturating_add(bucket_seconds);
         let bucket_alignment_offset = current_bucket_start.rem_euclid(bucket_seconds);
         let rows = sqlx::query(
             r#"
@@ -604,7 +603,7 @@ impl KeyStore {
                 UNION ALL
                 SELECT bucket_start + ?
                 FROM hour_series
-                WHERE bucket_start < ?
+                WHERE bucket_start + ? < ?
             ),
             aggregated AS (
                 SELECT
@@ -653,14 +652,15 @@ impl KeyStore {
         )
         .bind(series_start)
         .bind(bucket_seconds)
-        .bind(series_end)
+        .bind(bucket_seconds)
+        .bind(series_end_exclusive)
         .bind(bucket_alignment_offset)
         .bind(bucket_seconds)
         .bind(bucket_seconds)
         .bind(bucket_alignment_offset)
         .bind(SECS_PER_MINUTE)
         .bind(series_start)
-        .bind(aggregate_end_exclusive)
+        .bind(series_end_exclusive)
         .fetch_all(&self.pool)
         .await?;
 
