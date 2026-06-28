@@ -768,7 +768,7 @@ impl TavilyProxy {
     }
 
     async fn shutdown_forward_proxy_runtime_locked(&self) -> Result<(), ProxyError> {
-        self.cancel_server_pressure_buckets_rebuild();
+        self.cancel_server_pressure_buckets_rebuild().await;
         if !self
             .forward_proxy_runtime_started
             .swap(false, Ordering::SeqCst)
@@ -850,11 +850,19 @@ impl TavilyProxy {
         snapshot.shared_process_running && snapshot.active_endpoint_handles > 0
     }
 
-    pub(crate) fn cancel_server_pressure_buckets_rebuild(&self) {
-        self.server_pressure_rebuild_generation
-            .fetch_add(1, Ordering::SeqCst);
+    pub(crate) async fn cancel_server_pressure_buckets_rebuild(&self) {
+        let mut buffered = self.server_pressure_rebuild_buffered_events.lock().await;
+        let next_generation = self
+            .server_pressure_rebuild_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
         self.server_pressure_rebuild_started
             .store(false, Ordering::SeqCst);
+        for event in buffered.iter_mut() {
+            if event.generation < next_generation {
+                event.generation = next_generation;
+            }
+        }
     }
 
     fn server_pressure_buckets_rebuild_is_active(&self, generation: u64) -> bool {
@@ -864,6 +872,67 @@ impl TavilyProxy {
                 .server_pressure_rebuild_generation
                 .load(Ordering::SeqCst)
                 == generation
+    }
+
+    pub(crate) async fn record_server_pressure_event(
+        &self,
+        request_log_id: Option<i64>,
+        created_at: i64,
+        result_status: &str,
+    ) -> Result<(), ProxyError> {
+        let mut buffered = self.server_pressure_rebuild_buffered_events.lock().await;
+        let generation = self
+            .server_pressure_rebuild_generation
+            .load(Ordering::SeqCst);
+        if self.server_pressure_buckets_rebuild_is_active(generation) {
+            buffered.push(ServerPressureBufferedEvent {
+                generation,
+                request_log_id,
+                created_at,
+                result_status: result_status.to_string(),
+            });
+            return Ok(());
+        }
+        drop(buffered);
+        self.key_store
+            .upsert_server_pressure_event(created_at, result_status)
+            .await
+    }
+
+    async fn requeue_server_pressure_buffered_events(
+        &self,
+        mut events: Vec<ServerPressureBufferedEvent>,
+    ) {
+        if events.is_empty() {
+            return;
+        }
+        let generation = self
+            .server_pressure_rebuild_generation
+            .load(Ordering::SeqCst);
+        for event in &mut events {
+            event.generation = generation;
+        }
+        let mut buffered = self.server_pressure_rebuild_buffered_events.lock().await;
+        buffered.extend(events);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn inject_server_pressure_buffered_event_for_test(
+        &self,
+        request_log_id: Option<i64>,
+        created_at: i64,
+        result_status: &str,
+    ) {
+        let generation = self
+            .server_pressure_rebuild_generation
+            .load(Ordering::SeqCst);
+        let mut buffered = self.server_pressure_rebuild_buffered_events.lock().await;
+        buffered.push(ServerPressureBufferedEvent {
+            generation,
+            request_log_id,
+            created_at,
+            result_status: result_status.to_string(),
+        });
     }
 
     pub fn spawn_server_pressure_buckets_rebuild_once(&self) -> bool {
@@ -917,20 +986,28 @@ impl TavilyProxy {
                             let drained = std::mem::take(&mut *buffered);
                             let (matching, retained): (Vec<_>, Vec<_>) = drained
                                 .into_iter()
-                                .partition(|event| event.generation == generation);
+                                .partition(|event| event.generation <= generation);
                             *buffered = retained;
                             matching
                         };
-                        for event in buffered_events {
+                        let mut replay_index = 0usize;
+                        while replay_index < buffered_events.len() {
+                            let event = &buffered_events[replay_index];
                             if event
                                 .request_log_id
                                 .is_some_and(|request_log_id| {
                                     request_log_id <= upper_bound_request_log_id
                                 })
                             {
+                                replay_index += 1;
                                 continue;
                             }
                             if !proxy.server_pressure_buckets_rebuild_is_active(generation) {
+                                proxy
+                                    .requeue_server_pressure_buffered_events(
+                                        buffered_events[replay_index..].to_vec(),
+                                    )
+                                    .await;
                                 return;
                             }
                             if let Err(err) = proxy
@@ -941,6 +1018,11 @@ impl TavilyProxy {
                                 )
                                 .await
                             {
+                                proxy
+                                    .requeue_server_pressure_buffered_events(
+                                        buffered_events[replay_index..].to_vec(),
+                                    )
+                                    .await;
                                 if proxy
                                     .server_pressure_rebuild_generation
                                     .load(Ordering::SeqCst)
@@ -959,6 +1041,7 @@ impl TavilyProxy {
                                 );
                                 return;
                             }
+                            replay_index += 1;
                         }
                         if proxy
                             .server_pressure_rebuild_generation

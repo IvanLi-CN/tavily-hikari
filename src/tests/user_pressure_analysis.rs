@@ -590,7 +590,7 @@ async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
         reopened.spawn_server_pressure_buckets_rebuild_once(),
         "first background rebuild attempt should schedule"
     );
-    reopened.cancel_server_pressure_buckets_rebuild();
+    reopened.cancel_server_pressure_buckets_rebuild().await;
     lock_handle
         .await
         .expect("held sqlite write lock should release cleanly");
@@ -738,7 +738,7 @@ async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
     })
     .await
     .expect("successful rebuild should release the latch so a later serving promotion can reschedule it");
-    reopened.cancel_server_pressure_buckets_rebuild();
+    reopened.cancel_server_pressure_buckets_rebuild().await;
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -766,6 +766,112 @@ async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
         .current
         .last()
         .expect("latest current pressure point after reschedule");
+    assert_eq!(current_point.pressure, 2);
+    assert_eq!(current_point.success_count, 1);
+    assert_eq!(current_point.failure_count, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_cancel_requeues_buffered_events_for_next_generation() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_460_000);
+    let db_path = temp_db_path("analysis-pressure-cancel-requeues-buffered-events");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time.clone(),
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "analysis-pressure-cancel-requeue".to_string(),
+            username: Some("cancel-requeue".to_string()),
+            name: Some("Cancel Requeue".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert cancel requeue user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("analysis-pressure-cancel-requeue"))
+        .await
+        .expect("bind cancel requeue token");
+    let request_kind = TokenRequestKind::new("api:search", "API | search", None);
+    let now = manual_clock.now_ts();
+
+    seed_pressure_attempt(
+        &proxy,
+        &manual_clock,
+        now,
+        &token.id,
+        &user.user_id,
+        now - 180,
+        OUTCOME_SUCCESS,
+        Some("search"),
+        &request_kind,
+    )
+    .await;
+    drop(proxy);
+
+    let reopened = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("reopen proxy");
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "first background rebuild attempt should schedule"
+    );
+    reopened
+        .inject_server_pressure_buffered_event_for_test(Some(9_999), now - 30, OUTCOME_ERROR)
+        .await;
+    reopened.cancel_server_pressure_buckets_rebuild().await;
+
+    assert!(
+        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        "next serving generation should be able to reschedule rebuild"
+    );
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let total_pressure: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(success_count + failure_count), 0) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("sum rebuilt server pressure buckets after cancelled replay");
+            if total_pressure >= 2 {
+                return total_pressure;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("requeued buffered pressure event should be replayed by the next rebuild generation");
+
+    let snapshot = reopened
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot after requeued replay");
+    let current_point = snapshot
+        .server_24h
+        .current
+        .last()
+        .expect("latest current pressure point after requeued replay");
     assert_eq!(current_point.pressure, 2);
     assert_eq!(current_point.success_count, 1);
     assert_eq!(current_point.failure_count, 1);
