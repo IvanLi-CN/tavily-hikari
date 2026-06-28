@@ -186,3 +186,18 @@
   - `docs/specs/rg5ju-linuxdo-login-token-autofill/screenshots/home-logged-out-login-button.png`
   - `docs/specs/rg5ju-linuxdo-login-token-autofill/screenshots/home-logged-in-token-autofill.png`
   - `docs/specs/rg5ju-linuxdo-login-token-autofill/screenshots/home-backend-static-linuxdo-logo.png`
+
+## Visual Evidence
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1440-device-desktop
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: public-publichomeherocard--logged-out-no-token
+  state: linuxdo login primary button
+  evidence_note: verifies the Linux DO login CTA uses the primary gradient treatment with white readable text on the public home hero.
+  image:
+  ![Linux DO login primary button](./assets/linuxdo-login-button-light.png)

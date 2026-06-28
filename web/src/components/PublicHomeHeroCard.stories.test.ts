@@ -43,4 +43,28 @@ describe('PublicHomeHeroCard Storybook proofs', () => {
     expect(markup).toContain('/assets/relay-mesh-lockup-dark.png')
     expect(markup).not.toContain('Sign in with Linux DO')
   })
+
+  it('renders the Linux DO login action with the primary button treatment', () => {
+    const renderStory = meta.render as
+      | ((args: typeof heroStories.LoggedOutNoToken.args) => JSX.Element)
+      | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        null,
+        createElement(
+          ThemeProvider,
+          null,
+          renderStory?.(heroStories.LoggedOutNoToken.args ?? {}),
+        ),
+      ),
+    )
+
+    expect(markup).toContain('linuxdo-login-button')
+    expect(markup).toContain('from-[#A78BFA] to-[#7C3AED]')
+    expect(markup).toContain('text-primary-foreground')
+    expect(markup).not.toContain('linuxdo-login-button h-auto rounded-full border-foreground/20')
+  })
 })

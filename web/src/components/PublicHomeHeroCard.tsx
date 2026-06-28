@@ -32,6 +32,8 @@ export interface PublicHomeHeroCardProps {
 const heroSecondaryButtonClassName =
   'h-auto rounded-full border-foreground/20 bg-card/95 px-4 py-[0.72rem] text-foreground no-underline shadow-[0_10px_20px_-18px_hsl(var(--foreground)/0.5)] hover:-translate-y-[1px] hover:border-primary/50 hover:bg-card hover:text-foreground'
 
+const heroPrimaryButtonClassName = 'h-auto rounded-full px-4 py-[0.72rem]'
+
 function PublicHomeHeroCard({
   publicStrings,
   metricsLoading,
@@ -200,8 +202,7 @@ function PublicHomeHeroCard({
               ? (
                   <Button
                     type="button"
-                    variant="outline"
-                    className={`linuxdo-login-button ${heroSecondaryButtonClassName}`}
+                    className={`linuxdo-login-button ${heroPrimaryButtonClassName}`}
                     aria-label={publicStrings.linuxDoLogin.button}
                     onClick={onLinuxDoLogin}
                   >
@@ -209,7 +210,7 @@ function PublicHomeHeroCard({
                   </Button>
                 )
               : (
-                  <Button asChild variant="outline" className={`linuxdo-login-button ${heroSecondaryButtonClassName}`}>
+                  <Button asChild className={`linuxdo-login-button ${heroPrimaryButtonClassName}`}>
                     <a href={linuxDoHref} aria-label={publicStrings.linuxDoLogin.button}>
                       {linuxDoContent}
                     </a>
@@ -230,7 +231,7 @@ function PublicHomeHeroCard({
           {showAdminAction && (
             <Button
               type="button"
-              className="public-home-admin-button h-auto rounded-full px-4 py-[0.72rem]"
+              className={`public-home-admin-button ${heroPrimaryButtonClassName}`}
               onClick={onAdminActionClick}
             >
               {adminActionLabel}
