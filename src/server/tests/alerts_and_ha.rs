@@ -2137,6 +2137,11 @@ async fn ha_promote_records_edgeone_request_response_audit() {
         row.1
     );
     assert!(
+        row.1.contains("\"OriginType\":\"IP_DOMAIN\""),
+        "request audit should contain provider-compatible origin type: {}",
+        row.1
+    );
+    assert!(
         row.1.contains("\"HttpsOriginPort\":58101"),
         "request audit should contain origin port: {}",
         row.1

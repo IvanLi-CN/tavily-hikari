@@ -28,6 +28,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 
 - `DescribeAccelerationDomains` 用于查询加速域名当前源站，并判断当前 active 节点。
 - `ModifyAccelerationDomain` 用于将源站切换到目标节点 `IP:port`。
+- 直连源站切换到 EdgeOne 控制面时，`OriginInfo.OriginType` 必须发送 provider 兼容的字面值 `IP_DOMAIN`；小写 `ip_domain` 视为无效请求。
 - 节点切换必须记录 operation、请求、响应、错误和操作者审计。
 - 首个上线门槛是验证 EdgeOne 是否接受带端口的 origin；若不支持，主备节点必须监听相同端口。
 

@@ -107,6 +107,7 @@
   silently miss the production request-log/read-model layout.
 - Added recovery batch idempotency, HA sync watermarks, failover operation persistence, EdgeOne request/response audit persistence, and node state persistence.
 - Adjusted EdgeOne origin switching to require explicit origin protocol, host, and port configuration, send them as top-level EdgeOne API fields, and normalize EdgeOne describe responses that omit default ports.
+- Updated direct-origin EdgeOne switch payloads to send the provider-compatible `OriginInfo.OriginType=IP_DOMAIN`, and added regression coverage so admin HA source switching no longer sends the rejected lowercase literal.
 - Added full-master fencing for system settings, upstream key creation, user token management, user quota changes, registration settings, OAuth login start, recharge order creation, and payment notify.
 - Added basic-business fencing for external Tavily HTTP API, MCP root/subpaths, and Tavily usage routes; `standby` and `recovery` return 503 before auth/quota/upstream work.
 - Restricted non-force promote to `standby` callers so an active node cannot demote itself through an accidental promote operation.

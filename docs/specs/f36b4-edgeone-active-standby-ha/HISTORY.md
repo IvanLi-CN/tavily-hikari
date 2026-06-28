@@ -101,6 +101,18 @@ HA source settings originally drifted across layers: the frontend, demo fixtures
 
 The HA source settings dialog previously dumped raw backend failure text straight into the modal body, which was both visually inconsistent and hard to scan. The accepted interaction keeps local input validation beside the affected field and reserves form-level remote failures for a formal destructive alert with operator-friendly copy plus a default-collapsed technical-details disclosure.
 
+## EdgeOne Direct-Origin Payload Compatibility Revision
+
+Production validation on 101 showed that the HA admin “save and switch” path could not move a
+direct origin to a new `host:port` even when the target itself was reachable. The failure was not
+XP ingress routing; it was the downstream EdgeOne control-plane payload using lowercase
+`OriginInfo.OriginType=ip_domain`, which Tencent now rejects for direct origins.
+
+- The accepted direct-origin contract is provider-compatible `OriginInfo.OriginType=IP_DOMAIN`.
+- This compatibility detail is part of the HA source-switching control-plane contract and must stay
+  covered by regression tests, because a rejected switch leaves the node unable to adopt the new
+  effective source target without entering HA role drift.
+
 ## HA Control Plane Revision
 
 The earlier HA admin UI mixed real local state with inferred remote placeholders derived from

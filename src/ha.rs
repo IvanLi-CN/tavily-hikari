@@ -1263,7 +1263,7 @@ impl EdgeOneClient {
                     .unwrap_or_else(|| scheme.default_port());
                 payload["OriginProtocol"] = json!(scheme.edgeone_value());
                 payload["OriginInfo"] = json!({
-                    "OriginType": "ip_domain",
+                    "OriginType": "IP_DOMAIN",
                     "Origin": host,
                     "BackupOrigin": ""
                 });
