@@ -728,6 +728,13 @@ impl KeyStore {
                 self.backend_time.now_ts(),
             )
             .await?;
+            match self
+                .rebuild_server_pressure_buckets_with_cancel(|| true)
+                .await?
+            {
+                ServerPressureBucketsRebuildOutcome::Completed { .. }
+                | ServerPressureBucketsRebuildOutcome::Cancelled => {}
+            }
             self.rebuild_request_log_catalog_rollups().await?;
             Ok::<(), ProxyError>(())
         }

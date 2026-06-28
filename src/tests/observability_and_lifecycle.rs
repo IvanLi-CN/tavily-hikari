@@ -517,10 +517,13 @@ async fn observability_sidecar_migrate_moves_large_legacy_request_logs_offline()
         CREATE TABLE request_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             api_key_id TEXT,
+            request_user_id TEXT,
             method TEXT NOT NULL,
             path TEXT NOT NULL,
             result_status TEXT NOT NULL DEFAULT 'success',
             failure_kind TEXT,
+            counts_business_quota INTEGER,
+            upstream_operation TEXT,
             request_kind_key TEXT,
             visibility TEXT NOT NULL DEFAULT 'visible',
             created_at INTEGER NOT NULL,
@@ -603,11 +606,25 @@ async fn observability_sidecar_migrate_moves_large_legacy_request_logs_offline()
     .execute(&pool)
     .await
     .expect("insert api key");
-    for (id, created_at) in [(1_i64, 100_i64), (2, 200), (4, 400)] {
+    let now_ts = Utc::now().timestamp();
+    for (id, created_at) in [(1_i64, now_ts - 400), (2, now_ts - 300), (4, now_ts - 100)] {
         sqlx::query(
             r#"
-            INSERT INTO request_logs (id, api_key_id, method, path, result_status, failure_kind, request_kind_key, visibility, created_at)
-            VALUES (?, 'k1', 'POST', '/api/tavily/search', 'success', NULL, 'api:search', 'visible', ?)
+            INSERT INTO request_logs (
+                id,
+                api_key_id,
+                request_user_id,
+                method,
+                path,
+                result_status,
+                failure_kind,
+                counts_business_quota,
+                upstream_operation,
+                request_kind_key,
+                visibility,
+                created_at
+            )
+            VALUES (?, 'k1', 'user-k1', 'POST', '/api/tavily/search', 'success', NULL, 1, 'search', 'api:search', 'visible', ?)
             "#,
         )
         .bind(id)
@@ -617,8 +634,9 @@ async fn observability_sidecar_migrate_moves_large_legacy_request_logs_offline()
         .expect("seed request log");
     }
     sqlx::query(
-        "INSERT INTO request_logs (id, api_key_id, method, path, result_status, failure_kind, request_kind_key, visibility, created_at) VALUES (3, 'k1', 'POST', '/api/tavily/search', 'error', 'upstream_rate_limited_429', 'api:search', 'visible', 300)",
+        "INSERT INTO request_logs (id, api_key_id, request_user_id, method, path, result_status, failure_kind, counts_business_quota, upstream_operation, request_kind_key, visibility, created_at) VALUES (3, 'k1', 'user-k1', 'POST', '/api/tavily/search', 'error', 'upstream_rate_limited_429', 1, 'search', 'api:search', 'visible', ?)",
     )
+    .bind(now_ts - 200)
     .execute(&pool)
     .await
     .expect("seed 429 request log");
@@ -695,6 +713,20 @@ async fn observability_sidecar_migrate_moves_large_legacy_request_logs_offline()
     .await
     .expect("query api key usage 429 count");
     assert_eq!(api_key_usage_429_count, 1);
+    let pressure_bucket_total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM server_pressure_buckets
+        WHERE bucket_kind = 'five_minute'
+        "#,
+    )
+    .fetch_one(&migrated_pool)
+    .await
+    .expect("query migrated server pressure buckets");
+    assert_eq!(
+        pressure_bucket_total, 4,
+        "offline sidecar rebuild should repopulate server pressure buckets from migrated request logs"
+    );
     drop(migrated_pool);
 
     let rerun = run_observability_sidecar_migrate(&db_str, 2, false)

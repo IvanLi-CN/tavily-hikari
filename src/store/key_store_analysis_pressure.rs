@@ -14,7 +14,13 @@ impl KeyStore {
             "visibility",
             "created_at",
         ] {
-            if !Self::table_column_exists_in_pool(&self.pool, "request_logs", column).await? {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM observability.pragma_table_info('request_logs') WHERE name = ? LIMIT 1",
+            )
+            .bind(column)
+            .fetch_optional(&self.pool)
+            .await?;
+            if exists.is_none() {
                 return Ok(false);
             }
         }
