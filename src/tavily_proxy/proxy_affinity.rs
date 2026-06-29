@@ -1158,7 +1158,7 @@ impl TavilyProxy {
             };
 
             if candidate_key_id.is_none()
-                && let Some((key_id, owner_token_id)) = self
+                && let Some((key_id, owner_token_id, _expires_at)) = self
                     .key_store
                     .get_research_request_affinity(request_id, now)
                     .await?
@@ -1222,6 +1222,30 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn upsert_research_request_affinity(
+        &self,
+        request_id: &str,
+        key_id: &str,
+        token_id: &str,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        self.populate_research_request_affinity_caches(request_id, key_id, token_id, now)
+            .await;
+        self.key_store
+            .save_research_request_affinity(request_id, key_id, token_id, expires_at)
+            .await
+    }
+
+    pub async fn get_research_request_affinity(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        self.key_store
+            .get_research_request_affinity(request_id, self.backend_time.now_ts())
+            .await
+    }
+
     pub async fn is_research_request_owned_by(
         &self,
         request_id: &str,
@@ -1244,7 +1268,7 @@ impl TavilyProxy {
             .get_research_request_affinity(request_id, now)
             .await
         {
-            Ok(Some((key_id, owner_token_id))) => {
+            Ok(Some((key_id, owner_token_id, _expires_at))) => {
                 self.populate_research_request_affinity_caches(
                     request_id,
                     &key_id,

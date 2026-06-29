@@ -268,6 +268,10 @@ struct Cli {
     #[arg(long, env = "HA_SOURCE_ORIGIN_GROUP_ID")]
     ha_source_origin_group_id: Option<String>,
 
+    /// Allow standby nodes to serve core business traffic in origin-group dual-active mode.
+    #[arg(long, env = "HA_CORE_DUAL_ACTIVE", default_value_t = false)]
+    ha_core_dual_active: bool,
+
     /// Public EdgeOne origin scheme for this node: http, https, or follow.
     #[arg(long, env = "NODE_PUBLIC_SCHEME")]
     node_public_scheme: Option<String>,
@@ -561,6 +565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref()
             .and_then(tavily_hikari::parse_ha_source_kind),
         source_origin_group_id: trim_optional(cli.ha_source_origin_group_id),
+        core_dual_active: cli.ha_core_dual_active,
         node_public_scheme: trim_optional(cli.node_public_scheme),
         node_public_host: trim_optional(cli.node_public_host),
         node_public_port: cli.node_public_port,

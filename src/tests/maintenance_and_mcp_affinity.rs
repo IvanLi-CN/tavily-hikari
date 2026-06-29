@@ -2288,6 +2288,7 @@ async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
             &headers,
             true,
             None,
+            None,
         )
         .await
         .expect("research result request should complete");

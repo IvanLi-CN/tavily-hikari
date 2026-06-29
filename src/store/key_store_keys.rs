@@ -1135,10 +1135,10 @@ impl KeyStore {
         &self,
         request_id: &str,
         now: i64,
-    ) -> Result<Option<(String, String)>, ProxyError> {
-        let row = sqlx::query_as::<_, (String, String)>(
+    ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, i64)>(
             r#"
-            SELECT key_id, token_id
+            SELECT key_id, token_id, expires_at
             FROM research_requests
             WHERE request_id = ? AND expires_at > ?
             LIMIT 1
@@ -1162,7 +1162,7 @@ impl KeyStore {
             .await?;
         }
 
-        Ok(row)
+            Ok(row)
     }
 
     // ----- Access token helpers -----

@@ -1374,7 +1374,7 @@ fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
         loop {
             {
                 let _maintenance = acquire_db_maintenance_read_gate().await;
-                if state.ha.role().await.allows_basic_business()
+                if state.ha.status().await.allows_basic_business
                     && let Err(err) = state.proxy.maybe_run_forward_proxy_maintenance().await
                 {
                     eprintln!("forward-proxy-maintenance: {err}");

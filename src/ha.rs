@@ -83,6 +83,10 @@ impl HaNodeRole {
         matches!(self, Self::FullMaster | Self::ProvisionalMaster)
     }
 
+    pub fn allows_basic_business_legacy(self) -> bool {
+        matches!(self, Self::FullMaster | Self::ProvisionalMaster)
+    }
+
     pub fn allows_full_writes(self) -> bool {
         matches!(self, Self::FullMaster)
     }
@@ -385,6 +389,7 @@ pub struct HaConfig {
     pub database_path: Option<String>,
     pub source_kind: Option<HaSourceKind>,
     pub source_origin_group_id: Option<String>,
+    pub core_dual_active: bool,
     pub node_public_scheme: Option<String>,
     pub node_public_host: Option<String>,
     pub node_public_port: Option<u16>,
@@ -410,6 +415,7 @@ impl Default for HaConfig {
             database_path: None,
             source_kind: None,
             source_origin_group_id: None,
+            core_dual_active: false,
             node_public_scheme: None,
             node_public_host: None,
             node_public_port: None,
@@ -430,6 +436,19 @@ impl Default for HaConfig {
 }
 
 impl HaConfig {
+    pub fn dual_active_enabled(&self) -> bool {
+        self.mode == HaMode::ActiveStandby
+            && self.core_dual_active
+            && self.effective_source_kind() == Some(HaSourceKind::OriginGroup)
+    }
+
+    pub fn effective_source_kind(&self) -> Option<HaSourceKind> {
+        self.configured_source_settings()
+            .ok()
+            .flatten()
+            .map(|settings| settings.source_kind)
+    }
+
     pub fn active_standby_ready(&self) -> bool {
         self.mode == HaMode::ActiveStandby
             && self.configured_source_settings().ok().flatten().is_some()
@@ -516,6 +535,8 @@ pub struct HaStatusView {
     pub node_id: String,
     pub node_public_origin: Option<String>,
     pub role: HaNodeRole,
+    pub dual_active_enabled: bool,
+    pub full_master_node_id: Option<String>,
     pub degraded: bool,
     pub allows_basic_business: bool,
     pub allows_full_writes: bool,
@@ -620,6 +641,7 @@ pub struct EdgeOneAuditEntry {
 #[derive(Debug)]
 struct HaRuntimeState {
     role: HaNodeRole,
+    full_master_node_id: Option<String>,
     edgeone_origin: Option<String>,
     source_settings: Option<HaSourceSettings>,
     last_edgeone_check_at: Option<i64>,
@@ -652,6 +674,7 @@ impl HaRuntime {
             config: Arc::new(config),
             state: Arc::new(RwLock::new(HaRuntimeState {
                 role: initial_role,
+                full_master_node_id: None,
                 edgeone_origin: None,
                 source_settings: None,
                 last_edgeone_check_at: None,
@@ -689,6 +712,39 @@ impl HaRuntime {
                 Err(err)
             }
         }
+    }
+
+    pub async fn apply_dual_active_leader(
+        &self,
+        full_master_node_id: Option<String>,
+    ) -> Result<(), String> {
+        if !self.config.dual_active_enabled() {
+            return Ok(());
+        }
+        let now = self.backend_time.now_ts();
+        let mut state = self.state.write().await;
+        state.full_master_node_id = full_master_node_id.clone();
+        match full_master_node_id.as_deref() {
+            Some(node_id) if node_id == self.config.node_id => {
+                state.role = HaNodeRole::FullMaster;
+                state.recovery_status = None;
+                state.message = None;
+            }
+            Some(_) => {
+                state.recovery_status = None;
+                state.message = Some("dual-active leader key points to a peer".to_string());
+            }
+            None => {
+                state.role = HaNodeRole::Standby;
+                state.recovery_status = None;
+                state.message = Some(
+                    "dual-active leader key is missing; serving stays fenced until seeded"
+                        .to_string(),
+                );
+            }
+        }
+        state.last_edgeone_check_at = Some(now);
+        Ok(())
     }
 
     pub fn edgeone_authority_enabled(&self) -> bool {
@@ -800,6 +856,56 @@ impl HaRuntime {
             return Ok((self.status().await, None));
         }
 
+        if self.config.dual_active_enabled() {
+            let leader = self.state.read().await.full_master_node_id.clone();
+            let current_role = self.role().await;
+            let target_is_self = leader
+                .as_deref()
+                .is_some_and(|node_id| node_id == self.config.node_id);
+            let mut state = self.state.write().await;
+            state.last_edgeone_check_at = Some(self.backend_time.now_ts());
+            state.edgeone_origin = self
+                .effective_source_settings()
+                .ok()
+                .flatten()
+                .and_then(|settings| settings.effective_target());
+            match (leader, target_is_self, current_role) {
+                (
+                    Some(_),
+                    true,
+                    HaNodeRole::Standby | HaNodeRole::Recovery | HaNodeRole::ProvisionalMaster,
+                ) => {
+                    state.role = HaNodeRole::FullMaster;
+                    state.recovery_status = None;
+                    state.message =
+                        Some("dual-active leader key now points to this node".to_string());
+                }
+                (Some(_), true, HaNodeRole::FullMaster) => {
+                    state.recovery_status = None;
+                    state.message = None;
+                }
+                (Some(_), false, HaNodeRole::FullMaster | HaNodeRole::ProvisionalMaster) => {
+                    state.recovery_status = None;
+                    state.message = Some("dual-active leader key points to a peer".to_string());
+                }
+                (Some(_), false, HaNodeRole::Standby) => {
+                    state.message = None;
+                }
+                (Some(_), false, HaNodeRole::Recovery) => {
+                    state.message = Some("dual-active leader key points to a peer".to_string());
+                }
+                (None, _, _) => {
+                    state.role = HaNodeRole::Standby;
+                    state.recovery_status = None;
+                    state.message = Some(
+                        "dual-active leader key is missing; serving stays fenced until seeded"
+                            .to_string(),
+                    );
+                }
+            }
+            return Ok((self.status().await, None));
+        }
+
         let (target, audit_entry) = match self.edgeone.describe_current_target_with_audit().await {
             Ok((target, audit_entry)) => (target, Some(audit_entry)),
             Err(err) => {
@@ -866,6 +972,25 @@ impl HaRuntime {
                 .as_ref()
                 .and_then(|settings| settings.target_label())
         });
+        let dual_active_enabled = self.config.dual_active_enabled();
+        let allows_basic_business = if dual_active_enabled {
+            state.full_master_node_id.is_some()
+                && matches!(state.role, HaNodeRole::FullMaster | HaNodeRole::Standby)
+        } else {
+            state.role.allows_basic_business_legacy()
+        };
+        let allows_full_writes = if dual_active_enabled {
+            state
+                .full_master_node_id
+                .as_deref()
+                .is_some_and(|node_id| node_id == self.config.node_id)
+                && matches!(
+                    state.role,
+                    HaNodeRole::FullMaster | HaNodeRole::ProvisionalMaster
+                )
+        } else {
+            state.role.allows_full_writes()
+        };
         HaStatusView {
             mode: self.config.mode,
             node_id: self.config.node_id.clone(),
@@ -877,9 +1002,11 @@ impl HaRuntime {
                 .map(|origin| origin.authority())
                 .or_else(|| self.config.node_public_host.clone()),
             role: state.role,
+            dual_active_enabled,
+            full_master_node_id: state.full_master_node_id.clone(),
             degraded: state.role.is_degraded(),
-            allows_basic_business: state.role.allows_basic_business(),
-            allows_full_writes: state.role.allows_full_writes(),
+            allows_basic_business,
+            allows_full_writes,
             edgeone_domain: self.config.edgeone_domain.clone(),
             edgeone_origin: state.edgeone_origin.clone(),
             edgeone_expected_origin: expected_origin,
@@ -984,8 +1111,12 @@ impl HaRuntime {
         self.state.read().await.role
     }
 
+    pub fn dual_active_enabled(&self) -> bool {
+        self.config.dual_active_enabled()
+    }
+
     pub async fn allows_full_writes(&self) -> bool {
-        self.role().await.allows_full_writes()
+        self.status().await.allows_full_writes
     }
 
     pub async fn block_full_write_reason(&self) -> Option<String> {

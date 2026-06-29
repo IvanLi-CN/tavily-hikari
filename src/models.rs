@@ -930,7 +930,8 @@ pub(crate) struct ApiRouteAffinityContext {
     pub affinity_subject: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct McpSessionBinding {
     pub proxy_session_id: String,
     pub upstream_session_id: Option<String>,

@@ -1412,11 +1412,18 @@ impl TavilyProxy {
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
         client_ip: Option<&ClientIpInfo>,
+        fixed_research_request_key_id: Option<&str>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let research_request_id = extract_research_request_id_from_path(upstream_path);
-        let lease = self
-            .acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
-            .await?;
+        let lease = if let Some(fixed_key_id) = fixed_research_request_key_id {
+            self.key_store
+                .try_acquire_affinity_specific_key(fixed_key_id)
+                .await?
+                .ok_or(ProxyError::NoAvailableKeys)?
+        } else {
+            self.acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
+                .await?
+        };
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),

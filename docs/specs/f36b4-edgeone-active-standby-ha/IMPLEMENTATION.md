@@ -4,8 +4,9 @@
 
 - Added `src/ha.rs` with HA mode, role state machine, runtime status view, and Tencent TC3-signed EdgeOne client calls.
 - Added HA startup role detection from EdgeOne current origin.
+- Added dual-active leader-key startup seeding and authority refresh through `meta.ha_full_master_node_id_v1`, so `HA_CORE_DUAL_ACTIVE=1` with `HA_SOURCE_KIND=origin_group` uses the persisted leader key instead of treating the current EdgeOne route as the only serving authority.
 - Added runtime EdgeOne authority refresh so a running old active enters `recovery` when the origin moves away, and an externally pointed standby only becomes `provisional_master` until administrator finalize.
-- Added HA peer inventory parsing through `HA_PEER_NODES_JSON`, real admin `peerNodes[]` aggregation, internal-only peer status/finalize endpoints, and `planned cutover` orchestration initiated from the current `full_master`.
+- Added HA peer inventory parsing through `HA_PEER_NODES_JSON`, real admin `peerNodes[]` aggregation, internal-only peer status/finalize/query endpoints, and `planned cutover` orchestration initiated from the current `full_master` or the current leader key depending on route family.
 - Extended admin HA peer aggregation so each `peerNodes[]` item carries both `publicOrigin` and `sourceConfigTarget`, letting the node inventory render the configured source target instead of mixing live EdgeOne target and peer direct-entry labels in the same “源站” column.
 - Added normalized HA control-plane timeline storage through `ha_control_plane_events`, admin timeline query, and hourly 7-day retention GC.
 - Replaced SQLite snapshot export/import with deprecated `410 Gone` responses so HA cannot transfer full database files.
@@ -15,6 +16,7 @@
 - Hardened runtime EdgeOne authority parsing so `DescribeAccelerationDomains` merges the outer domain record's `OriginProtocol` / `HttpOriginPort` / `HttpsOriginPort` into `OriginDetail` before comparing the live target against this node's effective source settings. This keeps an active node from being mis-demoted to `recovery` when EdgeOne reports a custom direct-origin port such as `:1443` only on the outer record.
 - Locked the HA source settings request/response wire contract to lowercase `directOriginScheme` values (`http|https|follow`) by adding serde lowercase support on the shared Rust enum, while preserving the existing uppercase conversion for outbound EdgeOne payloads.
 - Added standby pull-based sync controlled by `HA_SYNC_SOURCE_URL`, `HA_INTERNAL_TOKEN`, and `HA_SYNC_INTERVAL_SECS`; active nodes no longer push snapshots.
+- Added peer lookup fallback for `mcp_sessions` and `research_requests`, with local-first lookups, a five-second total budget, and deterministic miss handling so the service can either resume the original session/key binding or fail without guessing a new key.
 - Reworked HA baseline export so active nodes stream zstd NDJSON directly from SQLite rows instead
   of materializing one giant baseline string before compression. The same active baseline route is
   now used for `billing_ledger`, so repeated billing baseline exports do not recreate the previous
@@ -113,6 +115,7 @@
 - Updated direct-origin EdgeOne switch payloads to send the provider-compatible `OriginInfo.OriginType=IP_DOMAIN`, and added regression coverage so admin HA source switching no longer sends the rejected lowercase literal.
 - Added full-master fencing for system settings, upstream key creation, user token management, user quota changes, registration settings, OAuth login start, recharge order creation, and payment notify.
 - Added basic-business fencing for external Tavily HTTP API, MCP root/subpaths, and Tavily usage routes; `standby` and `recovery` return 503 before auth/quota/upstream work.
+- Added dual-active serving eligibility so `standby` can serve core Tavily business when `HA_CORE_DUAL_ACTIVE=1` and the node is on an origin-group route, while `recovery` remains fenced and control-plane writes stay on `full_master`.
 - Restricted non-force promote to `standby` callers so an active node cannot demote itself through an accidental promote operation.
 - Added HA schema tables for node state, sync watermarks, failover operations, recovery batches, and EdgeOne audit logs.
 - Extended HA node state storage with direct-origin and source-group columns so the current instance can override the Env/CLI default source without joining HA sync.

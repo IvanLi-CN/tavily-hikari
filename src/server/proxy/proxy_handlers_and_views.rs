@@ -224,9 +224,7 @@ async fn proxy_handler(
                 let proxy_session_id = incoming_proxy_session_id
                     .as_deref()
                     .expect("response-only branch requires session id");
-                if state
-                    .proxy
-                    .get_active_mcp_session(proxy_session_id)
+                if lookup_active_mcp_session_local_or_peer(&state, proxy_session_id)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                     .is_none()
@@ -366,9 +364,7 @@ async fn proxy_handler(
         None
     };
     if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
-        let session = state
-            .proxy
-            .get_active_mcp_session(proxy_session_id)
+        let session = lookup_active_mcp_session_local_or_peer(&state, proxy_session_id)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

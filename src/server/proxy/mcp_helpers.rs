@@ -142,7 +142,9 @@ async fn wait_for_mcp_session_retry_window(
 ) -> Result<bool, ProxyError> {
     let mut waited = false;
     loop {
-        let Some(session) = state.proxy.get_active_mcp_session(proxy_session_id).await? else {
+        let Some(session) =
+            lookup_active_mcp_session_local_or_peer(state, proxy_session_id).await?
+        else {
             return Err(ProxyError::PinnedMcpSessionUnavailable);
         };
         let now = state.proxy.backend_time().now_ts();

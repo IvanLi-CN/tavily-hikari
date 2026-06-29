@@ -1,3 +1,5 @@
+const META_KEY_HA_FULL_MASTER_NODE_ID_V1: &str = "ha_full_master_node_id_v1";
+
 impl KeyStore {
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
@@ -38,5 +40,14 @@ impl KeyStore {
     pub(crate) async fn set_meta_i64(&self, key: &str, value: i64) -> Result<(), ProxyError> {
         let v = value.to_string();
         self.set_meta_string(key, &v).await
+    }
+
+    pub(crate) async fn get_ha_full_master_node_id(&self) -> Result<Option<String>, ProxyError> {
+        self.get_meta_string(META_KEY_HA_FULL_MASTER_NODE_ID_V1).await
+    }
+
+    pub(crate) async fn set_ha_full_master_node_id(&self, node_id: &str) -> Result<(), ProxyError> {
+        self.set_meta_string(META_KEY_HA_FULL_MASTER_NODE_ID_V1, node_id)
+            .await
     }
 }

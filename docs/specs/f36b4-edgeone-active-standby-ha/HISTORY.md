@@ -2,19 +2,21 @@
 
 ## Decision
 
-The project originally considered a master/slave split with multiple serving slaves and centralized token quota dispatch. The accepted direction is single-active active/standby because EdgeOne free tier is suitable as a single-domain origin switching control plane, not as an application load balancer.
+The project originally considered a master/slave split with multiple serving slaves and centralized token quota dispatch. The accepted direction is core-business dual-active plus control-plane single-write: EdgeOne origin-group routing can keep both business nodes serving, but only one node at a time owns control-plane writes and high-risk mutations.
 
 ## Rationale
 
-Single-active reduces quota, rebalance, conversation remapping, and upstream key ownership conflicts. Existing MCP Rebalance and API Rebalance remain single-active instance capabilities. Automatic failover intentionally stops at `provisional_master` so core API/MCP traffic recovers quickly while high-risk writes require an administrator decision.
+Dual-active reduces the service-side blast radius of a node becoming standby while still keeping one authoritative control writer. Existing MCP Rebalance and API Rebalance stay instance-local, the billing/runtime truth set converges by peer sync, and the key invariant is that we must not guess a new upstream key when a research result is being resumed on the other node.
 
 ## Accepted Semantics
 
-- EdgeOne current origin is the active-master authority, including while nodes are already running.
-- A node that was active and later observes EdgeOne pointing elsewhere must enter `recovery` and stop external business service.
-- A standby that observes EdgeOne pointing at itself is not silently trusted as `full_master`; it becomes `provisional_master` until an administrator finalizes.
+- `HA_CORE_DUAL_ACTIVE=1` with `HA_SOURCE_KIND=origin_group` enables the dual-active serving semantics.
+- `ha_full_master_node_id_v1` is the control-plane authority for the current writer.
+- `full_master` remains the only control-plane and full-write node; `standby` may serve core Tavily business in dual-active mode; `recovery` stays fenced.
+- `direct` keeps the legacy active/standby/finalize flow, including `provisional_master`.
+- `planned cutover` in dual-active mode switches the leader key directly; `finalize` is rejected in that route family.
 - Recovery import is mergeable-only. It must not import request or auth-token log rows, and it must not overwrite settings, current quota/token/key state, or rebalance authority state.
-- Non-force promote is a standby operation. Active-node promote attempts are rejected so operator error cannot produce a local double-active state.
+- Non-force promote stays a standby operation on the legacy `direct` path. Active-node promote attempts are rejected so operator error cannot produce a local double-active state.
 
 ## Small-State Sync Revision
 
@@ -148,11 +150,10 @@ The earlier HA admin UI mixed real local state with inferred remote placeholders
 `edgeoneOrigin` / `edgeoneExpectedOrigin`. That was acceptable for initial fault-recovery work but
 not for routine maintenance operations.
 
-- The accepted model is a single active-led control surface.
+- The accepted model is a single-writer control surface over a dual-active service plane.
 - Real peer inventory now comes from `HA_PEER_NODES_JSON`.
 - Only one peer may be marked `standby_candidate` in the current release.
-- `planned cutover` is the formal maintenance cutover path and is initiated only from the current
-  `full_master`.
+- `planned cutover` is the formal maintenance cutover path and is initiated from the current leader-key owner in dual-active mode, or from the current `full_master` on the legacy direct path.
 - Peer visibility and timeline retention are intentionally bounded: multiple peers may be observed,
   but only the eligible standby candidate can take planned cutover, and raw operator-visible
   control-plane events are retained for 7 days.

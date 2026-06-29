@@ -201,6 +201,15 @@ fn local_planned_cutover_eligible(status: &tavily_hikari::HaStatusView, now_ts: 
             .is_some_and(|value| now_ts.saturating_sub(value) <= HA_PEER_STALE_SECS)
 }
 
+fn ha_can_export_channel(status: &tavily_hikari::HaStatusView, channel: tavily_hikari::HaSyncChannel) -> bool {
+    match channel {
+        tavily_hikari::HaSyncChannel::Control => status.allows_full_writes,
+        tavily_hikari::HaSyncChannel::Billing | tavily_hikari::HaSyncChannel::Runtime => {
+            status.allows_basic_business
+        }
+    }
+}
+
 fn peer_view_from_status(
     config: &tavily_hikari::HaPeerNodeConfig,
     status: &tavily_hikari::HaStatusView,
@@ -337,7 +346,7 @@ async fn persist_ha_status_snapshot(
     state: &Arc<AppState>,
     status: &tavily_hikari::HaStatusView,
 ) -> Result<(), (StatusCode, String)> {
-    sync_forward_proxy_runtime_for_role(state.proxy.clone(), status.role)
+    sync_forward_proxy_runtime_for_status(state.proxy.clone(), status)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     state
@@ -356,7 +365,7 @@ async fn persist_ha_status_snapshot(
         .flush_ha_state_writes()
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let _ = spawn_post_ready_serving_tasks_for_role(state.clone(), status.role);
+    let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), status);
     Ok(())
 }
 
@@ -556,17 +565,14 @@ async fn get_admin_ha_baseline(
     if !is_ha_admin_or_internal(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    let channel = parse_ha_channel(query.channel.as_deref())?;
     let status = state.ha.status().await;
-    if !status.allows_basic_business {
+    if !ha_can_export_channel(&status, channel) {
         return Err((
             StatusCode::CONFLICT,
-            format!(
-                "HA baseline export requires active/provisional role, current role is {:?}",
-                status.role
-            ),
+            format!("HA baseline export requires serving role for {}", channel.as_str()),
         ));
     }
-    let channel = parse_ha_channel(query.channel.as_deref())?;
     let baseline = build_ha_baseline_reader(&state.proxy, channel, &status.node_id).await?;
     Response::builder()
         .status(StatusCode::OK)
@@ -789,17 +795,14 @@ async fn get_admin_ha_events(
     if !is_ha_admin_or_internal(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    let channel = parse_ha_channel(query.channel.as_deref())?;
     let status = state.ha.status().await;
-    if !status.allows_basic_business {
+    if !ha_can_export_channel(&status, channel) {
         return Err((
             StatusCode::CONFLICT,
-            format!(
-                "HA events export requires active/provisional role, current role is {:?}",
-                status.role
-            ),
+            format!("HA events export requires serving role for {}", channel.as_str()),
         ));
     }
-    let channel = parse_ha_channel(query.channel.as_deref())?;
     let after = query.after.unwrap_or(0).max(0);
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let events = build_ha_events_reader(&state.proxy, channel, after, limit).await?;
@@ -866,6 +869,54 @@ async fn get_internal_ha_status(
     Ok(Json(build_internal_ha_status(&state).await))
 }
 
+async fn get_internal_ha_mcp_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(proxy_session_id): Path<String>,
+) -> Result<Json<tavily_hikari::McpSessionBinding>, (StatusCode, String)> {
+    if !is_ha_internal_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let session = state
+        .proxy
+        .get_active_mcp_session(&proxy_session_id)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let Some(session) = session else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("unknown MCP session: {proxy_session_id}"),
+        ));
+    };
+    Ok(Json(session))
+}
+
+async fn get_internal_ha_research_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_ha_internal_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let affinity = state
+        .proxy
+        .get_research_request_affinity(&request_id)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let Some((key_id, token_id, expires_at)) = affinity else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("unknown research request: {request_id}"),
+        ));
+    };
+    Ok(Json(json!({
+        "keyId": key_id,
+        "tokenId": token_id,
+        "expiresAt": expires_at,
+    })))
+}
+
 async fn post_admin_ha_promote(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -873,6 +924,41 @@ async fn post_admin_ha_promote(
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
     if !is_admin_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    if state.ha.dual_active_enabled() {
+        let node_id = state.ha.status().await.node_id;
+        let before = state.ha.status().await;
+        state
+            .proxy
+            .set_ha_full_master_node_id(&node_id)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        state
+            .ha
+            .apply_dual_active_leader(Some(node_id.clone()))
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        let status = state.ha.status().await;
+        persist_ha_status_snapshot(&state, &status).await?;
+        record_ha_control_plane_event(
+            &state,
+            tavily_hikari::HaControlPlaneEventInsert {
+                event_kind: "manual_promote".to_string(),
+                category: tavily_hikari::HaControlPlaneEventCategory::ManualFailover,
+                status: tavily_hikari::HaControlPlaneEventStatus::Success,
+                node_id: Some(node_id.clone()),
+                operation_id: None,
+                summary: "Manual promote updated dual-active leader key".to_string(),
+                detail: status.message.clone(),
+                technical_details: Some(json!({
+                    "fromRole": before.role,
+                    "toRole": status.role,
+                    "dualActive": true,
+                })),
+            },
+        )
+        .await?;
+        return Ok(Json(status));
     }
     let before = state.ha.status().await;
     let result = state
@@ -933,6 +1019,12 @@ async fn post_admin_ha_finalize(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    if state.ha.dual_active_enabled() {
+        return Err((
+            StatusCode::CONFLICT,
+            "finalize is disabled in dual-active mode; update the leader key instead".to_string(),
+        ));
+    }
     let status = state
         .ha
         .finalize_failover()
@@ -966,6 +1058,12 @@ async fn post_internal_ha_finalize(
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
     if !is_ha_internal_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    if state.ha.dual_active_enabled() {
+        return Err((
+            StatusCode::CONFLICT,
+            "finalize is disabled in dual-active mode; update the leader key instead".to_string(),
+        ));
     }
     let status = state
         .ha
@@ -1178,6 +1276,111 @@ async fn post_admin_ha_planned_cutover(
 ) -> Result<Json<PlannedCutoverResponse>, (StatusCode, String)> {
     if !is_admin_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    if state.ha.dual_active_enabled() {
+        let local_before = build_internal_ha_status(&state).await;
+        if local_before.role != tavily_hikari::HaNodeRole::FullMaster {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "planned cutover requires full_master, current role is {}",
+                    local_before.role.as_str()
+                ),
+            ));
+        }
+        let peer = state
+            .ha
+            .peer_nodes()
+            .into_iter()
+            .find(|peer| peer.node_id == payload.target_node_id)
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("unknown planned cutover target: {}", payload.target_node_id),
+                )
+            })?;
+        if peer.role_hint != tavily_hikari::HaPeerRoleHint::StandbyCandidate {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "planned cutover target {} is not a standby_candidate",
+                    peer.node_id
+                ),
+            ));
+        }
+        let internal_token = state
+            .ha
+            .internal_token()
+            .ok_or_else(|| {
+                (
+                    StatusCode::CONFLICT,
+                    "planned cutover requires HA_INTERNAL_TOKEN".to_string(),
+                )
+            })?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let peer_before = fetch_internal_ha_status(&client, &peer, &internal_token)
+            .await
+            .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
+        let peer_last_probe = latest_probe_timestamp(&peer_before).ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!("peer {} has never reported a status probe", peer.node_id),
+            )
+        })?;
+        if state.proxy.backend_time().now_ts().saturating_sub(peer_last_probe) > HA_PEER_STALE_SECS {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("peer {} is stale for planned cutover", peer.node_id),
+            ));
+        }
+        if peer_before.role != tavily_hikari::HaNodeRole::Standby
+            || peer_before.recovery_status.is_some()
+            || peer_before
+                .sync_lag_seconds
+                .is_none_or(|value| value > HA_PLANNED_CUTOVER_MAX_LAG_SECS)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("peer {} failed planned cutover precheck", peer.node_id),
+            ));
+        }
+        state
+            .proxy
+            .set_ha_full_master_node_id(&peer.node_id)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        state
+            .ha
+            .apply_dual_active_leader(Some(peer.node_id.clone()))
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        let status = state.ha.status().await;
+        persist_ha_status_snapshot(&state, &status).await?;
+        record_ha_control_plane_event(
+            &state,
+            tavily_hikari::HaControlPlaneEventInsert {
+                event_kind: "planned_cutover_succeeded".to_string(),
+                category: tavily_hikari::HaControlPlaneEventCategory::PlannedCutover,
+                status: tavily_hikari::HaControlPlaneEventStatus::Success,
+                node_id: Some(peer.node_id.clone()),
+                operation_id: None,
+                summary: format!("Planned cutover updated leader to {}", peer.node_id),
+                detail: status.message.clone(),
+                technical_details: Some(json!({
+                    "targetNodeId": peer.node_id,
+                    "dualActive": true,
+                })),
+            },
+        )
+        .await?;
+        return Ok(Json(PlannedCutoverResponse {
+            operation_id: format!("dual-active-{}", state.proxy.backend_time().now_ts()),
+            status: "success".to_string(),
+            detail: None,
+        }));
     }
     let local_before = build_internal_ha_status(&state).await;
     if local_before.role != tavily_hikari::HaNodeRole::FullMaster {

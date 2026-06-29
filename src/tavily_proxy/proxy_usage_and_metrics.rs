@@ -147,6 +147,14 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn get_ha_full_master_node_id(&self) -> Result<Option<String>, ProxyError> {
+        self.key_store.get_ha_full_master_node_id().await
+    }
+
+    pub async fn set_ha_full_master_node_id(&self, node_id: &str) -> Result<(), ProxyError> {
+        self.key_store.set_ha_full_master_node_id(node_id).await
+    }
+
     pub async fn update_mcp_session_rebalance_metadata(
         &self,
         proxy_session_id: &str,

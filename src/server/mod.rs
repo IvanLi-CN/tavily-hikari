@@ -85,6 +85,7 @@ include!("handlers/admin_auth.rs");
 include!("handlers/user.rs");
 include!("handlers/admin_resources.rs");
 include!("serve.rs");
+include!("ha_peer_lookup.rs");
 include!("dto.rs");
 include!("proxy.rs");
 include!("tests.rs");

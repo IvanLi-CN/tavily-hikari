@@ -2129,6 +2129,8 @@ async fn ha_startup_role_check_failure_does_not_recover_previous_active() {
             .unwrap();
     });
 
+    let db_path = temp_db_path("ha-startup-role-check-failure");
+    let db_str = db_path.to_string_lossy().to_string();
     let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
         mode: tavily_hikari::HaMode::ActiveStandby,
         node_id: "node-previous-active".to_string(),
@@ -2142,8 +2144,19 @@ async fn ha_startup_role_check_failure_does_not_recover_previous_active() {
         ..tavily_hikari::HaConfig::default()
     });
 
-    let status =
-        reconcile_ha_startup_role(&ha, Some(tavily_hikari::HaNodeRole::FullMaster)).await;
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-alerts-ha-startup-role".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .unwrap();
+    let status = reconcile_ha_startup_role(
+        &proxy,
+        &ha,
+        Some(tavily_hikari::HaNodeRole::FullMaster),
+    )
+    .await;
     assert_eq!(status.role, tavily_hikari::HaNodeRole::Standby);
     assert!(
         status
@@ -2238,6 +2251,48 @@ async fn ha_promote_records_edgeone_request_response_audit() {
     );
     assert!(row.2.contains("edgeone-audit-test"));
     pool.close().await;
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn ha_finalize_is_rejected_in_dual_active_mode() {
+    let db_path = temp_db_path("ha-dual-active-finalize-rejected");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-dual-active-finalize-rejected".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-dual-finalize".to_string(),
+        database_path: Some(db_str.clone()),
+        source_kind: Some(tavily_hikari::HaSourceKind::OriginGroup),
+        source_origin_group_id: Some("eo-group-dual-finalize".to_string()),
+        core_dual_active: true,
+        edgeone_zone_id: Some("zone-test".to_string()),
+        edgeone_domain: Some("hikari.example.test".to_string()),
+        edgeone_secret_id: Some("secret-id".to_string()),
+        edgeone_secret_key: Some("secret-key".to_string()),
+        edgeone_api_endpoint: "http://127.0.0.1:9".to_string(),
+        ..tavily_hikari::HaConfig::default()
+    });
+    let addr = spawn_ha_admin_server(proxy, ha, true).await;
+
+    let response = Client::new()
+        .post(format!("http://{addr}/api/admin/ha/finalize"))
+        .send()
+        .await
+        .expect("finalize response");
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body = response.text().await.expect("finalize body");
+    assert!(
+        body.contains("dual-active mode"),
+        "dual-active finalize should be rejected: {body}"
+    );
+
     let _ = std::fs::remove_file(db_path);
 }
 

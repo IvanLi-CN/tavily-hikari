@@ -252,6 +252,8 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
         node_id: "node-post-ready-rebuild".to_string(),
         node_public_origin: None,
         role: tavily_hikari::HaNodeRole::FullMaster,
+        dual_active_enabled: false,
+        full_master_node_id: None,
         degraded: false,
         allows_basic_business: true,
         allows_full_writes: true,

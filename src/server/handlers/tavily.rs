@@ -422,41 +422,13 @@ async fn tavily_http_research_result(
         }
     }
 
-    if !using_dev_open_admin_fallback {
-        match state
-            .proxy
-            .is_research_request_owned_by(&request_id, auth_token_id.as_deref())
+    let research_lookup = if using_dev_open_admin_fallback {
+        None
+    } else {
+        match lookup_research_request_local_or_peer(&state, &request_id)
             .await
         {
-            Ok(true) => {}
-            Ok(false) => {
-                if let Some(tid) = auth_token_id.as_deref() {
-                    let _ = state
-                        .proxy
-                        .record_token_attempt(
-                            tid,
-                            &method,
-                            &path,
-                            None,
-                            Some(StatusCode::NOT_FOUND.as_u16() as i64),
-                            Some(StatusCode::NOT_FOUND.as_u16() as i64),
-                            false,
-                            "error",
-                            Some("research request not found"),
-                        )
-                        .await;
-                }
-                let payload = json!({
-                    "error": "research_request_not_found",
-                    "message": "research request not found",
-                });
-                let resp = Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                    .body(Body::from(payload.to_string()))
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                return Ok(resp);
-            }
+            Ok(value) => value,
             Err(err) => {
                 eprintln!("research request owner check failed for {path}: {err}");
                 if let Some(tid) = auth_token_id.as_deref() {
@@ -479,6 +451,34 @@ async fn tavily_http_research_result(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
+    };
+    if !using_dev_open_admin_fallback && research_lookup.is_none() {
+        if let Some(tid) = auth_token_id.as_deref() {
+            let _ = state
+                .proxy
+                .record_token_attempt(
+                    tid,
+                    &method,
+                    &path,
+                    None,
+                    Some(StatusCode::NOT_FOUND.as_u16() as i64),
+                    Some(StatusCode::NOT_FOUND.as_u16() as i64),
+                    false,
+                    "error",
+                    Some("research request not found"),
+                )
+                .await;
+        }
+        let payload = json!({
+            "error": "research_request_not_found",
+            "message": "research request not found",
+        });
+        let resp = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(CONTENT_TYPE, "application/json; charset=utf-8")
+            .body(Body::from(payload.to_string()))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(resp);
     }
 
     // NOTE: `GET /api/tavily/research/:request_id` is a *result retrieval* endpoint.
@@ -518,6 +518,7 @@ async fn tavily_http_research_result(
             &headers,
             true,
             Some(&client_ip),
+            research_lookup.as_ref().map(|lookup| lookup.key_id.as_str()),
         )
         .await;
 
