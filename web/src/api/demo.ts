@@ -8,6 +8,7 @@ import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRe
 import { createDemoHaStatus, handleDemoHaRoute } from './demoHa'
 import { rankingsStorySnapshot } from '../admin/rankingsStoryData'
 import { buildDemoAnalysisPressureSnapshot } from './demoAnalysisPressure'
+import type { RechargeQuote } from './recharge'
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 type DemoListener = EventListenerOrEventListenerObject
 declare global {
@@ -1765,6 +1766,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/user/token') return jsonResponse({ token: DEMO_TOKEN })
   if (path === '/api/user/dashboard') return jsonResponse(demoUserDashboardSummary())
   if (path === '/api/user/recharge/config') return jsonResponse(demoRechargeConfig())
+  if (path === '/api/user/recharge/quote' && method === 'POST') return jsonResponse(buildDemoRechargeQuote())
   if (path === '/api/user/recharge/orders') {
     if (method === 'POST') return handleCreateDemoRechargeOrder(init)
     return jsonResponse({ items: demoState.rechargeOrders })
@@ -2004,6 +2006,7 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
   const body = await readJsonBody(init)
   const credits = typeof body.credits === 'number' ? body.credits : 0
   const months = typeof body.months === 'number' ? body.months : 0
+  const quote = body.quote && typeof body.quote === 'object' ? body.quote as RechargeQuote : null
   const isTestOffer = credits === DEMO_TEST_RECHARGE_CREDITS && months === DEMO_TEST_RECHARGE_MONTHS
   const isRegularOffer = credits >= DEMO_RECHARGE_UNIT_CREDITS
     && credits <= 20_000
@@ -2014,10 +2017,11 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
   if (!isTestOffer && !isRegularOffer) {
     return jsonResponse({ message: 'Demo recharge only supports 1x1 test offer or regular 1000-credit steps.' }, 400)
   }
+  if (!quote || quote.requestedCredits !== credits || quote.requestedMonths !== months) {
+    return jsonResponse({ message: 'Demo recharge quote mismatch.' }, 400)
+  }
 
-  const amountLdc = isTestOffer
-    ? DEMO_TEST_RECHARGE_AMOUNT_LDC
-    : (credits / DEMO_RECHARGE_UNIT_CREDITS) * DEMO_RECHARGE_UNIT_PRICE_LDC * months
+  const amountLdc = quote.finalOrderMoneyCents / 100
   const outTradeNo = `ldc_demo_${Date.now()}`
   const paymentUrl = `${window.location.origin}/console/dashboard?demo_checkout=${encodeURIComponent(outTradeNo)}`
   const order: DemoRechargeOrder = {
@@ -2029,6 +2033,12 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
     credits,
     months,
     money: amountLdc.toFixed(2),
+    quoteMonthStart: quote.quoteMonthStart,
+    finalMoneyCents: quote.finalOrderMoneyCents,
+    finalHourlyDelta: quote.currentMonthFinalHourlyDelta,
+    finalDailyDelta: quote.currentMonthFinalDailyDelta,
+    finalMonthlyDelta: quote.currentMonthFinalMonthlyDelta,
+    monthEndClampApplied: quote.monthEndClampApplied,
     tradeNo: null,
     paymentUrl,
     createdAt: nowSeconds(),
@@ -2041,6 +2051,58 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
   }
   demoState.rechargeOrders.unshift(order)
   return jsonResponse({ order, paymentUrl })
+}
+
+function buildDemoRechargeQuote(): RechargeQuote {
+  const quoteMonthStart = monthStartSeconds()
+  return {
+    requestedCredits: 1000,
+    requestedMonths: 2,
+    quoteMonthStart,
+    remainingDaysInclusive: 3,
+    unitCredits: DEMO_RECHARGE_UNIT_CREDITS,
+    unitPriceCents: DEMO_RECHARGE_UNIT_PRICE_LDC * 100,
+    fullMonthHourlyDelta: 20,
+    fullMonthDailyDelta: 100,
+    fullMonthMonthlyDelta: 1000,
+    fullMonthMoneyCents: 5000,
+    currentMonthFinalHourlyDelta: 12,
+    currentMonthFinalDailyDelta: 60,
+    currentMonthFinalMonthlyDelta: 600,
+    currentMonthFinalMoneyCents: 3000,
+    fullOrderMoneyCents: 10000,
+    finalOrderMoneyCents: 8000,
+    monthEndClampApplied: true,
+    orderName: 'Linux.do Credit recharge',
+    schedule: [
+      {
+        monthIndex: 0,
+        monthStart: quoteMonthStart,
+        isCurrentMonth: true,
+        hourlyDelta: 12,
+        dailyDelta: 60,
+        monthlyDelta: 600,
+        fullMonthlyDelta: 1000,
+        monthMoneyCents: 3000,
+        monthDiscountCents: 2000,
+        monthEndClampApplied: true,
+        discountReason: 'remaining_days_inclusive',
+      },
+      {
+        monthIndex: 1,
+        monthStart: monthStartSeconds(1),
+        isCurrentMonth: false,
+        hourlyDelta: 20,
+        dailyDelta: 100,
+        monthlyDelta: 1000,
+        fullMonthlyDelta: 1000,
+        monthMoneyCents: 5000,
+        monthDiscountCents: 0,
+        monthEndClampApplied: false,
+        discountReason: null,
+      },
+    ],
+  }
 }
 
 function handleTavilyProbe(path: string): JsonValue {

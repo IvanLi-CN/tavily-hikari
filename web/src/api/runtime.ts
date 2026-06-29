@@ -2109,6 +2109,9 @@ export interface BusinessCalls1hSummary {
 
 export interface AdminUserRechargeAudit {
   currentMonthEntitlementCredits: number
+  currentMonthEntitlementHourlyDelta: number
+  currentMonthEntitlementDailyDelta: number
+  currentMonthEntitlementMonthlyDelta: number
   effectiveUntilMonthStart: number | null
   orders: AdminUserRechargeOrderAudit[]
   entitlements: AdminUserRechargeEntitlementAudit[]
@@ -2120,6 +2123,12 @@ export interface AdminUserRechargeOrderAudit {
   credits: number
   months: number
   money: string
+  quoteMonthStart: number
+  finalMoneyCents: number
+  finalHourlyDelta: number
+  finalDailyDelta: number
+  finalMonthlyDelta: number
+  monthEndClampApplied: boolean
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
@@ -2136,6 +2145,9 @@ export interface AdminUserRechargeEntitlementAudit {
   outTradeNo: string
   monthStart: number
   credits: number
+  hourlyDelta: number
+  dailyDelta: number
+  monthlyDelta: number
   createdAt: number
 }
 
@@ -2262,7 +2274,12 @@ export interface UserDashboard {
 }
 
 export interface UserDashboardRechargeSummary {
-  currentMonthStart: number; currentEntitlementCredits: number; effectiveUntilMonthStart: number | null
+  currentMonthStart: number
+  currentEntitlementCredits: number
+  currentEntitlementHourlyDelta: number
+  currentEntitlementDailyDelta: number
+  currentEntitlementMonthlyDelta: number
+  effectiveUntilMonthStart: number | null
 }
 
 export interface UserDashboardOverviewSeriesPoint {

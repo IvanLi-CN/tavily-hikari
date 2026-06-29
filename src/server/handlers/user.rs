@@ -1154,6 +1154,9 @@ struct UserDebugInfoSharingView {
 struct RechargeSummaryView {
     current_month_start: i64,
     current_entitlement_credits: i64,
+    current_entitlement_hourly_delta: i64,
+    current_entitlement_daily_delta: i64,
+    current_entitlement_monthly_delta: i64,
     effective_until_month_start: Option<i64>,
 }
 
@@ -1162,7 +1165,94 @@ impl From<tavily_hikari::LinuxDoCreditRechargeSummary> for RechargeSummaryView {
         Self {
             current_month_start: value.current_month_start,
             current_entitlement_credits: value.current_month_entitlement_credits,
+            current_entitlement_hourly_delta: value.current_month_entitlement_hourly_delta,
+            current_entitlement_daily_delta: value.current_month_entitlement_daily_delta,
+            current_entitlement_monthly_delta: value.current_month_entitlement_monthly_delta,
             effective_until_month_start: value.effective_until_month_start,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RechargeQuoteMonthView {
+    month_index: i64,
+    month_start: i64,
+    is_current_month: bool,
+    hourly_delta: i64,
+    daily_delta: i64,
+    monthly_delta: i64,
+    full_monthly_delta: i64,
+    month_money_cents: i64,
+    month_discount_cents: i64,
+    month_end_clamp_applied: bool,
+    discount_reason: Option<String>,
+}
+
+impl From<tavily_hikari::LinuxDoCreditRechargeQuoteMonth> for RechargeQuoteMonthView {
+    fn from(value: tavily_hikari::LinuxDoCreditRechargeQuoteMonth) -> Self {
+        Self {
+            month_index: value.month_index,
+            month_start: value.month_start,
+            is_current_month: value.is_current_month,
+            hourly_delta: value.hourly_delta,
+            daily_delta: value.daily_delta,
+            monthly_delta: value.monthly_delta,
+            full_monthly_delta: value.full_monthly_delta,
+            month_money_cents: value.month_money_cents,
+            month_discount_cents: value.month_discount_cents,
+            month_end_clamp_applied: value.month_end_clamp_applied,
+            discount_reason: value.discount_reason,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RechargeQuoteView {
+    requested_credits: i64,
+    requested_months: i64,
+    quote_month_start: i64,
+    remaining_days_inclusive: i64,
+    unit_credits: i64,
+    unit_price_cents: i64,
+    full_month_hourly_delta: i64,
+    full_month_daily_delta: i64,
+    full_month_monthly_delta: i64,
+    full_month_money_cents: i64,
+    current_month_final_hourly_delta: i64,
+    current_month_final_daily_delta: i64,
+    current_month_final_monthly_delta: i64,
+    current_month_final_money_cents: i64,
+    full_order_money_cents: i64,
+    final_order_money_cents: i64,
+    month_end_clamp_applied: bool,
+    order_name: String,
+    schedule: Vec<RechargeQuoteMonthView>,
+}
+
+impl From<tavily_hikari::LinuxDoCreditRechargeQuote> for RechargeQuoteView {
+    fn from(value: tavily_hikari::LinuxDoCreditRechargeQuote) -> Self {
+        Self {
+            requested_credits: value.requested_credits,
+            requested_months: value.requested_months,
+            quote_month_start: value.quote_month_start,
+            remaining_days_inclusive: value.remaining_days_inclusive,
+            unit_credits: value.unit_credits,
+            unit_price_cents: value.unit_price_cents,
+            full_month_hourly_delta: value.full_month_hourly_delta,
+            full_month_daily_delta: value.full_month_daily_delta,
+            full_month_monthly_delta: value.full_month_monthly_delta,
+            full_month_money_cents: value.full_month_money_cents,
+            current_month_final_hourly_delta: value.current_month_final_hourly_delta,
+            current_month_final_daily_delta: value.current_month_final_daily_delta,
+            current_month_final_monthly_delta: value.current_month_final_monthly_delta,
+            current_month_final_money_cents: value.current_month_final_money_cents,
+            full_order_money_cents: value.full_order_money_cents,
+            final_order_money_cents: value.final_order_money_cents,
+            month_end_clamp_applied: value.month_end_clamp_applied,
+            order_name: value.order_name,
+            schedule: value.schedule.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1175,6 +1265,12 @@ struct RechargeOrderView {
     credits: i64,
     months: i64,
     money: String,
+    quote_month_start: i64,
+    final_money_cents: i64,
+    final_hourly_delta: i64,
+    final_daily_delta: i64,
+    final_monthly_delta: i64,
+    month_end_clamp_applied: bool,
     trade_no: Option<String>,
     payment_url: Option<String>,
     created_at: i64,
@@ -1192,6 +1288,12 @@ impl From<tavily_hikari::LinuxDoCreditRechargeOrder> for RechargeOrderView {
             credits: value.credits,
             months: value.months,
             money: tavily_hikari::format_linuxdo_credit_money(value.money_cents),
+            quote_month_start: value.quote_month_start,
+            final_money_cents: value.final_money_cents,
+            final_hourly_delta: value.final_hourly_delta,
+            final_daily_delta: value.final_daily_delta,
+            final_monthly_delta: value.final_monthly_delta,
+            month_end_clamp_applied: value.month_end_clamp_applied,
             trade_no: value.trade_no,
             payment_url: value.payment_url,
             created_at: value.created_at,
@@ -1223,6 +1325,9 @@ struct RechargeConfigView {
     test_price_enabled: bool,
     current_month_start: i64,
     current_entitlement_credits: i64,
+    current_entitlement_hourly_delta: i64,
+    current_entitlement_daily_delta: i64,
+    current_entitlement_monthly_delta: i64,
     effective_until_month_start: Option<i64>,
 }
 
@@ -1234,9 +1339,17 @@ struct RechargeOrdersView {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateRechargeQuoteRequest {
+    credits: i64,
+    months: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateRechargeOrderRequest {
     credits: i64,
     months: i64,
+    quote: RechargeQuoteView,
 }
 
 #[derive(Debug, Serialize)]
@@ -1394,6 +1507,19 @@ async fn put_user_debug_info_sharing(
 
 fn linuxdo_credit_config_unavailable() -> (StatusCode, String) {
     (StatusCode::SERVICE_UNAVAILABLE, "recharge not configured".to_string())
+}
+
+fn user_local_month_start_utc_ts(now: chrono::DateTime<chrono::Local>) -> i64 {
+    let first_day = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
+        .expect("valid start of month date");
+    let naive = first_day
+        .and_hms_opt(0, 0, 0)
+        .expect("valid start of month time");
+    match chrono::Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc).timestamp(),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&chrono::Utc).timestamp(),
+        chrono::LocalResult::None => now.with_timezone(&chrono::Utc).timestamp(),
+    }
 }
 
 async fn user_recharge_gate_for_request(
@@ -1608,8 +1734,42 @@ async fn get_user_recharge_config(
         test_price_enabled: state.linuxdo_credit.test_price_enabled,
         current_month_start: summary.current_month_start,
         current_entitlement_credits: summary.current_month_entitlement_credits,
+        current_entitlement_hourly_delta: summary.current_month_entitlement_hourly_delta,
+        current_entitlement_daily_delta: summary.current_month_entitlement_daily_delta,
+        current_entitlement_monthly_delta: summary.current_month_entitlement_monthly_delta,
         effective_until_month_start: summary.effective_until_month_start,
     }))
+}
+
+async fn post_user_recharge_quote(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateRechargeQuoteRequest>,
+) -> Result<Json<RechargeQuoteView>, (StatusCode, String)> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    };
+    let (_, recharge_enabled) = user_recharge_gate_for_request(state.as_ref(), &headers).await?;
+    if !recharge_enabled {
+        return Err(linuxdo_credit_config_unavailable());
+    }
+    let price = state.linuxdo_credit.price_config();
+    let now = state.proxy.backend_time().now_ts();
+    let quote_month_start = user_local_month_start_utc_ts(state.proxy.backend_time().local_now());
+    let Some(quote) = tavily_hikari::linuxdo_credit_recharge_quote(
+        payload.credits,
+        payload.months,
+        price,
+        quote_month_start,
+        now,
+    ) else {
+        return Err((StatusCode::BAD_REQUEST, "unable to build recharge quote".to_string()));
+    };
+    let _ = user_session;
+    Ok(Json(quote.into()))
 }
 
 async fn get_user_recharge_orders(
@@ -1661,7 +1821,7 @@ async fn get_user_recharge_order(
 async fn post_user_recharge_order(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<CreateRechargeOrderRequest>,
+    Json(raw_payload): Json<serde_json::Value>,
 ) -> Result<Json<CreateRechargeOrderResponse>, (StatusCode, String)> {
     require_full_master_write(state.as_ref()).await?;
     if !state.linuxdo_oauth.is_enabled_and_configured() {
@@ -1674,15 +1834,38 @@ async fn post_user_recharge_order(
     if !recharge_enabled {
         return Err(linuxdo_credit_config_unavailable());
     }
+    let payload: CreateRechargeOrderRequest = serde_json::from_value(raw_payload)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let price = state.linuxdo_credit.price_config();
-    let Some(money_cents) =
-        tavily_hikari::linuxdo_credit_recharge_money_cents(payload.credits, payload.months, price)
-    else {
-        return Err((StatusCode::BAD_REQUEST, "invalid credits or months".to_string()));
-    };
     let now = state.proxy.backend_time().now_ts();
+    let quote_month_start = user_local_month_start_utc_ts(state.proxy.backend_time().local_now());
+    let Some(server_quote) = tavily_hikari::linuxdo_credit_recharge_quote(
+        payload.credits,
+        payload.months,
+        price,
+        quote_month_start,
+        now,
+    ) else {
+        return Err((StatusCode::BAD_REQUEST, "unable to build recharge quote".to_string()));
+    };
+    let quote_json = serde_json::to_value(&server_quote)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let client_quote_json = serde_json::to_value(&payload.quote)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    if quote_json != client_quote_json {
+        return Err((StatusCode::BAD_REQUEST, "quote mismatch".to_string()));
+    }
+    if payload.quote.quote_month_start != quote_month_start {
+        return Err((StatusCode::BAD_REQUEST, "quote month expired".to_string()));
+    }
+    if payload.quote.requested_credits != payload.credits
+        || payload.quote.requested_months != payload.months
+    {
+        return Err((StatusCode::BAD_REQUEST, "quote request mismatch".to_string()));
+    }
+    let money_cents = server_quote.final_order_money_cents;
     let out_trade_no = format!("ldc_{}", nanoid!(24));
-    let order_name = format!("Tavily Hikari {} credits x {} month(s)", payload.credits, payload.months);
+    let order_name = server_quote.order_name.clone();
     let mut order = tavily_hikari::LinuxDoCreditRechargeOrder {
         out_trade_no: out_trade_no.clone(),
         user_id: user_session.user.user_id.clone(),
@@ -1690,6 +1873,24 @@ async fn post_user_recharge_order(
         credits: payload.credits,
         months: payload.months,
         money_cents,
+        quote_month_start,
+        final_money_cents: server_quote.final_order_money_cents,
+        final_hourly_delta: server_quote.current_month_final_hourly_delta,
+        final_daily_delta: server_quote.current_month_final_daily_delta,
+        final_monthly_delta: server_quote.current_month_final_monthly_delta,
+        month_end_clamp_applied: server_quote.month_end_clamp_applied,
+        quote_snapshot_json: Some(
+            serde_json::to_string(&serde_json::json!({
+                "version": 1,
+                "source": "server_quote",
+                "request": {
+                    "credits": payload.credits,
+                    "months": payload.months,
+                },
+                "quote": server_quote,
+            }))
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?,
+        ),
         trade_no: None,
         payment_url: None,
         order_name: order_name.clone(),

@@ -66,7 +66,7 @@
     overflow-x: auto;
     width: 100%;
   }
-  .admin-recharge-table { min-width: 65rem; table-layout: fixed; width: 100%; }
+  .admin-recharge-table { min-width: 72rem; table-layout: fixed; width: 100%; }
   .admin-recharge-table th,
   .admin-recharge-table td { overflow-wrap: anywhere; vertical-align: top; }
   .admin-recharge-table th:nth-child(1),
@@ -78,13 +78,15 @@
   .admin-recharge-table th:nth-child(4),
   .admin-recharge-table td:nth-child(4) { width: 6.25rem; }
   .admin-recharge-table th:nth-child(5),
-  .admin-recharge-table td:nth-child(5),
+  .admin-recharge-table td:nth-child(5) { width: 8.25rem; }
   .admin-recharge-table th:nth-child(6),
   .admin-recharge-table td:nth-child(6),
   .admin-recharge-table th:nth-child(7),
-  .admin-recharge-table td:nth-child(7) { width: 7rem; }
+  .admin-recharge-table td:nth-child(7),
   .admin-recharge-table th:nth-child(8),
-  .admin-recharge-table td:nth-child(8) { width: 10.75rem; }
+  .admin-recharge-table td:nth-child(8) { width: 7rem; }
+  .admin-recharge-table th:nth-child(9),
+  .admin-recharge-table td:nth-child(9) { width: 10.75rem; }
   .admin-recharge-user-link {
     max-width: 100%;
     overflow-wrap: anywhere;
@@ -93,6 +95,11 @@
   }
   .admin-recharge-order-cell { display: grid; gap: 0.22rem; min-width: 0; }
   .admin-recharge-order-cell span { color: hsl(var(--foreground)); font-weight: 800; }
+  .admin-recharge-order-meta {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
   .admin-recharge-order-cell code {
     color: hsl(var(--muted-foreground));
     font-size: 0.78rem;

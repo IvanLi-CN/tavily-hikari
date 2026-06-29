@@ -696,7 +696,7 @@ impl TavilyProxy {
             .fetch_account_monthly_counts(&deduped_user_ids, month_start)
             .await?;
         let local_month_start = start_of_local_month_utc_ts(now.with_timezone(&Local));
-        let recharge_credits = self
+        let recharge_delta = self
             .key_store
             .sum_linuxdo_credit_recharge_entitlements_for_users(
                 &deduped_user_ids,
@@ -724,8 +724,7 @@ impl TavilyProxy {
                     .get(&user_id)
                     .cloned()
                     .unwrap_or_else(|| default_limits.clone());
-                let recharge_credits = recharge_credits.get(&user_id).copied().unwrap_or(0);
-                let recharge_delta = linuxdo_credit_recharge_quota_delta(recharge_credits);
+                let recharge_delta = recharge_delta.get(&user_id).copied().unwrap_or_default();
                 let metrics = log_metrics.get(&user_id).cloned().unwrap_or_default();
                 let request_rate =
                     request_rate_totals
@@ -760,6 +759,9 @@ impl TavilyProxy {
                         recharge: LinuxDoCreditRechargeSummary {
                             current_month_start: local_month_start,
                             current_month_entitlement_credits: recharge_delta.monthly_delta,
+                            current_month_entitlement_hourly_delta: recharge_delta.hourly_delta,
+                            current_month_entitlement_daily_delta: recharge_delta.daily_delta,
+                            current_month_entitlement_monthly_delta: recharge_delta.monthly_delta,
                             effective_until_month_start: None,
                         },
                     },

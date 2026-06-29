@@ -207,6 +207,7 @@ pub async fn serve(
             get(get_user_announcement_history),
         )
         .route("/api/user/recharge/config", get(get_user_recharge_config))
+        .route("/api/user/recharge/quote", post(post_user_recharge_quote))
         .route(
             "/api/user/recharge/orders",
             get(get_user_recharge_orders).post(post_user_recharge_order),

@@ -13,7 +13,9 @@ interface UserRechargeQuotaCalendarProps {
 
 interface MonthQuotaRow {
   monthStart: number
-  recharge: number
+  hourlyDelta: number
+  dailyDelta: number
+  monthlyDelta: number
 }
 
 export function UserRechargeQuotaCalendar({
@@ -29,13 +31,13 @@ export function UserRechargeQuotaCalendar({
     .filter((item) => item.kind === 'tag')
     .reduce((sum, item) => sum + item.monthlyCreditsDelta, 0)
   const locale = language === 'zh' ? 'zh-CN' : 'en-US'
-  const currentRecharge = detail.recharge?.currentMonthEntitlementCredits
-    ?? rows.find((row) => isSameLocalMonth(row.monthStart, Date.now() / 1000))?.recharge
+  const currentRecharge = detail.recharge?.currentMonthEntitlementMonthlyDelta
+    ?? rows.find((row) => isSameLocalMonth(row.monthStart, Date.now() / 1000))?.monthlyDelta
     ?? 0
   const effectiveUntil = detail.recharge?.effectiveUntilMonthStart
   const tableFacts = [
     formatTemplate(strings.currentMonthRecharge, { value: formatNumber(currentRecharge) }),
-    formatTemplate(strings.currentFinal, { value: formatNumber(detail.monthlyCreditsLimit) }),
+    formatTemplate(strings.currentFinal, { value: formatNumber(detail.quotaBase.monthlyCreditsLimit + tagDelta + currentRecharge) }),
     effectiveUntil
       ? formatTemplate(strings.effectiveUntil, { value: formatMonth(effectiveUntil, locale) })
       : strings.effectiveUntilEmpty,
@@ -74,12 +76,12 @@ export function UserRechargeQuotaCalendar({
               {rows.map((row) => (
                 <tr key={row.monthStart}>
                   <th scope="row">{formatMonth(row.monthStart, locale)}</th>
-                  <td>{formatNumber(detail.quotaBase.monthlyCreditsLimit)}</td>
-                  <td>{formatNumber(tagDelta)}</td>
-                  <td>{formatNumber(row.recharge)}</td>
-                  <td>{formatNumber(detail.quotaBase.monthlyCreditsLimit + tagDelta + row.recharge)}</td>
-                  <td>{formatNumber(detail.monthlyCreditsUsed)}</td>
-                </tr>
+                <td>{formatNumber(detail.quotaBase.monthlyCreditsLimit)}</td>
+                <td>{formatNumber(tagDelta)}</td>
+                <td>{formatNumber(row.monthlyDelta)}</td>
+                <td>{formatNumber(detail.quotaBase.monthlyCreditsLimit + tagDelta + row.monthlyDelta)}</td>
+                <td>{formatNumber(detail.monthlyCreditsUsed)}</td>
+              </tr>
               ))}
             </tbody>
             </table>
@@ -92,16 +94,25 @@ export function UserRechargeQuotaCalendar({
 
 function buildRechargeMonthRows(entitlements: AdminUserDetail['recharge']['entitlements']): MonthQuotaRow[] {
   if (entitlements.length === 0) return []
-  const totals = new Map<number, number>()
+  const totals = new Map<number, MonthQuotaRow>()
   for (const entitlement of entitlements) {
-    totals.set(entitlement.monthStart, (totals.get(entitlement.monthStart) ?? 0) + entitlement.credits)
+    const current = totals.get(entitlement.monthStart) ?? {
+      monthStart: entitlement.monthStart,
+      hourlyDelta: 0,
+      dailyDelta: 0,
+      monthlyDelta: 0,
+    }
+    current.hourlyDelta += entitlement.hourlyDelta
+    current.dailyDelta += entitlement.dailyDelta
+    current.monthlyDelta += entitlement.monthlyDelta
+    totals.set(entitlement.monthStart, current)
   }
   const starts = [...totals.keys()].sort((a, b) => a - b)
   const first = addLocalMonths(starts[0], -1)
   const last = addLocalMonths(starts[starts.length - 1], 1)
   const rows: MonthQuotaRow[] = []
   for (let cursor = first; cursor <= last; cursor = addLocalMonths(cursor, 1)) {
-    rows.push({ monthStart: cursor, recharge: totals.get(cursor) ?? 0 })
+    rows.push(totals.get(cursor) ?? { monthStart: cursor, hourlyDelta: 0, dailyDelta: 0, monthlyDelta: 0 })
   }
   return rows
 }

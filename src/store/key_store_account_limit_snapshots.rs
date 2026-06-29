@@ -386,7 +386,7 @@ impl KeyStore {
             });
         }
 
-        let recharge_credits = self
+        let recharge_delta = self
             .sum_linuxdo_credit_recharge_entitlements_for_month(
                 user_id,
                 start_of_local_month_utc_ts(self.backend_time.local_now()),
@@ -395,7 +395,7 @@ impl KeyStore {
         let effective = build_account_quota_resolution_with_recharge(
             base_limits,
             self.list_user_tag_bindings_for_user(user_id).await?,
-            linuxdo_credit_recharge_quota_delta(recharge_credits),
+            recharge_delta,
         )
         .effective;
         Ok(Some((known_since.unwrap_or(user_created_at), effective)))

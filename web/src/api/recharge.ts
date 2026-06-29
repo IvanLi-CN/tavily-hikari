@@ -3,6 +3,7 @@ import {
   normalizeRechargeConfig,
   normalizeRechargeOrder,
   normalizeRechargeOrderList,
+  normalizeRechargeQuote,
 } from './userConsoleNormalization'
 
 export interface RechargeConfig {
@@ -23,7 +24,46 @@ export interface RechargeConfig {
   testPriceEnabled: boolean
   currentMonthStart: number
   currentEntitlementCredits: number
+  currentEntitlementHourlyDelta: number
+  currentEntitlementDailyDelta: number
+  currentEntitlementMonthlyDelta: number
   effectiveUntilMonthStart: number | null
+}
+
+export interface RechargeQuoteMonth {
+  monthIndex: number
+  monthStart: number
+  isCurrentMonth: boolean
+  hourlyDelta: number
+  dailyDelta: number
+  monthlyDelta: number
+  fullMonthlyDelta: number
+  monthMoneyCents: number
+  monthDiscountCents: number
+  monthEndClampApplied: boolean
+  discountReason: string | null
+}
+
+export interface RechargeQuote {
+  requestedCredits: number
+  requestedMonths: number
+  quoteMonthStart: number
+  remainingDaysInclusive: number
+  unitCredits: number
+  unitPriceCents: number
+  fullMonthHourlyDelta: number
+  fullMonthDailyDelta: number
+  fullMonthMonthlyDelta: number
+  fullMonthMoneyCents: number
+  currentMonthFinalHourlyDelta: number
+  currentMonthFinalDailyDelta: number
+  currentMonthFinalMonthlyDelta: number
+  currentMonthFinalMoneyCents: number
+  fullOrderMoneyCents: number
+  finalOrderMoneyCents: number
+  monthEndClampApplied: boolean
+  orderName: string
+  schedule: RechargeQuoteMonth[]
 }
 
 export interface RechargeOrder {
@@ -32,6 +72,12 @@ export interface RechargeOrder {
   credits: number
   months: number
   money: string
+  quoteMonthStart: number
+  finalMoneyCents: number
+  finalHourlyDelta: number
+  finalDailyDelta: number
+  finalMonthlyDelta: number
+  monthEndClampApplied: boolean
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
@@ -54,8 +100,20 @@ export function fetchUserRechargeOrder(outTradeNo: string, signal?: AbortSignal)
     .then(normalizeRechargeOrder)
 }
 
-export async function createUserRechargeOrder(
+export function fetchUserRechargeQuote(
   input: { credits: number; months: number },
+  signal?: AbortSignal,
+): Promise<RechargeQuote> {
+  return requestJson<unknown>('/api/user/recharge/quote', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  }).then(normalizeRechargeQuote)
+}
+
+export async function createUserRechargeOrder(
+  input: { credits: number; months: number; quote: RechargeQuote },
   signal?: AbortSignal,
 ): Promise<{ order: RechargeOrder; paymentUrl: string }> {
   const response = await requestJson<{ order: unknown; paymentUrl: string }>('/api/user/recharge/orders', {

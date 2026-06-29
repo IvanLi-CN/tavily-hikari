@@ -10,6 +10,12 @@ export interface DemoRechargeOrder {
   credits: number
   months: number
   money: string
+  quoteMonthStart: number
+  finalMoneyCents: number
+  finalHourlyDelta: number
+  finalDailyDelta: number
+  finalMonthlyDelta: number
+  monthEndClampApplied: boolean
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
@@ -23,9 +29,10 @@ export interface DemoRechargeOrder {
 
 export function createDemoRechargeOrders(nowSeconds: NowSeconds, origin: string): DemoRechargeOrder[] {
   return [
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_paid_001', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'paid', 3000, 3, 450, -3600 * 5, -3600 * 4, null),
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_refund_002', 'user-research', 'Research Team', 'research-team', 'refunded', 1000, 1, 50, -86400 * 3, -86400 * 3 + 900, -86400),
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_only_003', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'refundOnly', 2000, 2, 200, -86400 * 10, -86400 * 10 + 1200, -86400 * 2),
+    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_paid_001', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'paid', 3000, 3, 450, false, -3600 * 5, -3600 * 4, null),
+    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_refund_002', 'user-research', 'Research Team', 'research-team', 'refunded', 1000, 1, 50, false, -86400 * 3, -86400 * 3 + 900, -86400),
+    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_only_003', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'refundOnly', 2000, 2, 200, false, -86400 * 10, -86400 * 10 + 1200, -86400 * 2),
+    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_expired_004', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'expired', 1000, 1, 50, true, -3600 * 2, null, null),
   ]
 }
 
@@ -40,6 +47,7 @@ function createDemoRechargeOrder(
   credits: number,
   months: number,
   amountLdc: number,
+  monthEndClampApplied: boolean,
   createdOffset: number,
   paidOffset: number | null,
   refundedOffset: number | null,
@@ -52,7 +60,13 @@ function createDemoRechargeOrder(
     status,
     credits,
     months,
-    money: amountLdc.toFixed(2),
+    money: monthEndClampApplied ? '30.00' : amountLdc.toFixed(2),
+    quoteMonthStart: monthStartSeconds(),
+    finalMoneyCents: Math.round(amountLdc * 100),
+    finalHourlyDelta: credits >= 1000 ? 20 * (credits / 1000) : credits,
+    finalDailyDelta: credits >= 1000 ? 100 * (credits / 1000) : credits,
+    finalMonthlyDelta: credits >= 1000 ? credits : credits,
+    monthEndClampApplied,
     tradeNo: paidOffset == null ? null : `linuxdo_${outTradeNo.slice(-3)}`,
     paymentUrl: paidOffset == null ? `${origin}/console/dashboard?demo_checkout=${encodeURIComponent(outTradeNo)}` : null,
     createdAt: nowSeconds(createdOffset),
@@ -74,6 +88,12 @@ export function demoAdminRechargeOrder(order: DemoRechargeOrder) {
     months: order.months,
     moneyCents: Math.round(Number(order.money) * 100),
     money: order.money,
+    quoteMonthStart: order.quoteMonthStart,
+    finalMoneyCents: order.finalMoneyCents,
+    finalHourlyDelta: order.finalHourlyDelta,
+    finalDailyDelta: order.finalDailyDelta,
+    finalMonthlyDelta: order.finalMonthlyDelta,
+    monthEndClampApplied: order.monthEndClampApplied,
     tradeNo: order.tradeNo,
     paymentUrl: order.paymentUrl,
     orderName: `Linux.do Credit ${order.credits} credits`,
@@ -146,12 +166,24 @@ export function demoAdminUserRechargeAudit(orders: DemoRechargeOrder[], userId: 
       outTradeNo: order.outTradeNo,
       monthStart: monthStartSeconds(month),
       credits: order.credits,
+      hourlyDelta: order.finalHourlyDelta,
+      dailyDelta: order.finalDailyDelta,
+      monthlyDelta: order.finalMonthlyDelta,
       createdAt: order.paidAt ?? order.createdAt,
     })))
   return {
     currentMonthEntitlementCredits: entitlements
       .filter((item) => item.monthStart === monthStartSeconds(0))
       .reduce((sum, item) => sum + item.credits, 0),
+    currentMonthEntitlementHourlyDelta: entitlements
+      .filter((item) => item.monthStart === monthStartSeconds(0))
+      .reduce((sum, item) => sum + item.hourlyDelta, 0),
+    currentMonthEntitlementDailyDelta: entitlements
+      .filter((item) => item.monthStart === monthStartSeconds(0))
+      .reduce((sum, item) => sum + item.dailyDelta, 0),
+    currentMonthEntitlementMonthlyDelta: entitlements
+      .filter((item) => item.monthStart === monthStartSeconds(0))
+      .reduce((sum, item) => sum + item.monthlyDelta, 0),
     effectiveUntilMonthStart: entitlements.length > 0
       ? Math.max(...entitlements.map((item) => item.monthStart))
       : null,
@@ -161,6 +193,12 @@ export function demoAdminUserRechargeAudit(orders: DemoRechargeOrder[], userId: 
       credits: order.credits,
       months: order.months,
       money: order.money,
+      quoteMonthStart: order.quoteMonthStart,
+      finalMoneyCents: order.finalMoneyCents,
+      finalHourlyDelta: order.finalHourlyDelta,
+      finalDailyDelta: order.finalDailyDelta,
+      finalMonthlyDelta: order.finalMonthlyDelta,
+      monthEndClampApplied: order.monthEndClampApplied,
       tradeNo: order.tradeNo,
       paymentUrl: order.paymentUrl,
       createdAt: order.createdAt,

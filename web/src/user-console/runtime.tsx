@@ -41,6 +41,7 @@ import {
   fetchUserDashboardOverview,
   fetchUserRechargeConfig,
   fetchUserRechargeOrders,
+  fetchUserRechargeQuote,
   createUserRechargeOrder,
   fetchUserTokenDetail,
   buildUserTokenEventsUrl,
@@ -66,6 +67,7 @@ import {
   type PublicTokenLog,
   type RechargeConfig,
   type RechargeOrder,
+  type RechargeQuote,
   type UserTokenEventSnapshot,
   type UserDashboard,
   type UserDashboardOverview as UserDashboardOverviewData,
@@ -1174,6 +1176,7 @@ export default function UserConsole(): JSX.Element {
   const offline = useOfflineState()
   const [rechargeCredits, setRechargeCredits] = useState(DEFAULT_RECHARGE_UNIT_CREDITS)
   const [rechargeMonths, setRechargeMonths] = useState(1)
+  const [rechargeQuote, setRechargeQuote] = useState<RechargeQuote | null>(null)
   const [rechargeBusy, setRechargeBusy] = useState(false)
   const [rechargeError, setRechargeError] = useState<string | null>(null)
 
@@ -1458,6 +1461,7 @@ export default function UserConsole(): JSX.Element {
         setRechargeMonths((current) =>
           Math.min(nextRechargeConfig.maxMonths, Math.max(nextRechargeConfig.minMonths, current)))
       }
+      setRechargeQuote(null)
       setError(null)
       setRechargeError(null)
     } catch (err) {
@@ -2136,13 +2140,46 @@ export default function UserConsole(): JSX.Element {
     [tokens],
   )
 
+  const rechargeSelection = useMemo(() => {
+    if (!rechargeConfig) {
+      return { credits: rechargeCredits, months: rechargeMonths }
+    }
+    return normalizeRechargeSelection(rechargeCredits, rechargeMonths, rechargeConfig)
+  }, [rechargeConfig, rechargeCredits, rechargeMonths])
+
+  useEffect(() => {
+    if (!rechargeConfig?.enabled) {
+      setRechargeQuote(null)
+      return
+    }
+    const controller = new AbortController()
+    setRechargeQuote(null)
+    setRechargeError(null)
+    fetchUserRechargeQuote(rechargeSelection, controller.signal)
+      .then((nextQuote) => {
+        if (!controller.signal.aborted) {
+          setRechargeQuote(nextQuote)
+        }
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        setRechargeError(formatTemplate(text.recharge.quoteFailed, {
+          message: getProbeErrorMessage(err),
+        }))
+      })
+    return () => controller.abort()
+  }, [rechargeConfig?.enabled, rechargeSelection, text.recharge.quoteFailed])
+
   const handleRechargeSubmit = useCallback(async () => {
-    if (!rechargeConfig?.enabled || rechargeBusy) return
-    const rechargeSelection = normalizeRechargeSelection(rechargeCredits, rechargeMonths, rechargeConfig)
+    if (!rechargeConfig?.enabled || rechargeBusy || !rechargeQuote) return
+    const submissionSelection = normalizeRechargeSelection(rechargeCredits, rechargeMonths, rechargeConfig)
     setRechargeBusy(true)
     setRechargeError(null)
     try {
-      const result = await createUserRechargeOrder(rechargeSelection)
+      const result = await createUserRechargeOrder({
+        ...submissionSelection,
+        quote: rechargeQuote,
+      })
       window.location.href = result.paymentUrl
     } catch (err) {
       setRechargeError(formatTemplate(text.recharge.createFailed, {
@@ -2150,7 +2187,7 @@ export default function UserConsole(): JSX.Element {
       }))
       setRechargeBusy(false)
     }
-  }, [rechargeBusy, rechargeConfig?.enabled, rechargeCredits, rechargeMonths, text.recharge.createFailed])
+  }, [rechargeBusy, rechargeConfig, rechargeCredits, rechargeMonths, rechargeQuote, text.recharge.createFailed])
 
   const scrollToLandingSection = useCallback((section: UserConsoleLandingSection, behavior: ScrollBehavior = 'auto') => {
     const target = section === 'dashboard' ? dashboardSectionRef.current : tokensSectionRef.current
@@ -2730,6 +2767,7 @@ export default function UserConsole(): JSX.Element {
                 text={text.recharge} dashboard={dashboard}
                 config={rechargeConfig} orders={rechargeOrders}
                 credits={rechargeCredits} months={rechargeMonths}
+                quote={rechargeQuote}
                 busy={rechargeBusy} error={rechargeError}
                 onCreditsChange={setRechargeCredits}
                 onMonthsChange={(value) => setRechargeMonths(Math.min(rechargeMaxMonths, Math.max(rechargeMinMonths, value)))}

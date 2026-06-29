@@ -1,6 +1,6 @@
 import { requestJson, type SortDirection } from './runtime'
 
-export type AdminRechargeStatus = 'pending' | 'paid' | 'failed' | 'refunding' | 'refunded' | 'refundOnly'
+export type AdminRechargeStatus = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded' | 'refundOnly'
 export type AdminRechargeSort = 'createdAt' | 'paidAt' | 'refundedAt' | 'status'
 export type AdminRechargeViewMode = 'flat' | 'user'
 
@@ -19,6 +19,12 @@ export interface AdminRechargeOrder {
   months: number
   moneyCents: number
   money: string
+  quoteMonthStart: number
+  finalMoneyCents: number
+  finalHourlyDelta: number
+  finalDailyDelta: number
+  finalMonthlyDelta: number
+  monthEndClampApplied: boolean
   tradeNo: string | null
   paymentUrl: string | null
   orderName: string

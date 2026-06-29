@@ -41,7 +41,7 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/demo.ts',
     {
-      max: 2250,
+      max: 2294,
       reason:
         'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
     },
@@ -105,15 +105,24 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3140,
+      max: 3169,
       reason: 'User console runtime still carries the route-level shell while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
     },
   ],
   [
     'src/UserConsole.stories.tsx',
     {
-      max: 1900,
-      reason: 'Console Storybook proof still keeps overview, recharge, failover, and token-detail acceptance states on one stable owner-facing story surface.',
+      max: 2200,
+      reason:
+        'Console Storybook proof now also keeps the month-end recharge quote, clamp, and expired-order evidence on the same stable owner-facing story surface.',
+    },
+  ],
+  [
+    'src/admin/AdminRechargeRecordsModule.tsx',
+    {
+      max: 640,
+      reason:
+        'Recharge records module now carries the final amount column, expired state, and clamp marker proof alongside the existing refund workflow until the admin recharge surface is split further.',
     },
   ],
   [

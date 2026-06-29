@@ -8,6 +8,13 @@
 - `credits INTEGER NOT NULL`
 - `months INTEGER NOT NULL`
 - `money_cents INTEGER NOT NULL`
+- `quote_month_start INTEGER NOT NULL DEFAULT 0`
+- `final_money_cents INTEGER NOT NULL DEFAULT 0`
+- `final_hourly_delta INTEGER NOT NULL DEFAULT 0`
+- `final_daily_delta INTEGER NOT NULL DEFAULT 0`
+- `final_monthly_delta INTEGER NOT NULL DEFAULT 0`
+- `month_end_clamp_applied INTEGER NOT NULL DEFAULT 0`
+- `quote_snapshot_json TEXT`
 - `trade_no TEXT`
 - `payment_url TEXT`
 - `order_name TEXT NOT NULL`
@@ -28,6 +35,9 @@
 - `user_id TEXT NOT NULL`
 - `month_start INTEGER NOT NULL`
 - `credits INTEGER NOT NULL`
+- `hourly_delta INTEGER NOT NULL DEFAULT 0`
+- `daily_delta INTEGER NOT NULL DEFAULT 0`
+- `monthly_delta INTEGER NOT NULL DEFAULT 0`
 - `created_at INTEGER NOT NULL`
 - Unique: `(out_trade_no, month_start)`
 - Indexed by `(user_id, month_start)`
@@ -38,8 +48,9 @@
 - Entitlements are append-only after successful payment except when an admin `refund` explicitly
   revokes the order benefits. `refundOnly` keeps entitlements.
 - Repeated notifications update order metadata but must not duplicate entitlement rows.
-- `status` values are `pending`, `paid`, `failed`, `refunding`, `refunded`, and `refundOnly`.
+- `status` values are `pending`, `paid`, `failed`, `expired`, `refunding`, `refunded`, and `refundOnly`.
   `refunding` is an internal in-progress reservation used before the external refund call.
+- `expired` means the order crossed out of its quote month before success landed, so no entitlements are written.
 - Refund audit details are persisted on the order row; TOTP codes are never stored.
 
 ## Admin TOTP meta records

@@ -6,7 +6,7 @@ import type {
   UserDashboardProgressCard,
   UserTokenSummary,
 } from './runtime'
-import type { RechargeConfig, RechargeOrder } from './recharge'
+import type { RechargeConfig, RechargeOrder, RechargeQuote, RechargeQuoteMonth } from './recharge'
 
 type RecordLike = Record<string, unknown>
 
@@ -39,6 +39,49 @@ function readNullableNumber(value: RecordLike, camelKey: string, snakeKey = came
   return typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null
 }
 
+function normalizeRechargeQuoteMonth(value: unknown): RechargeQuoteMonth {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    monthIndex: readNumber(source, 'monthIndex', 'month_index'),
+    monthStart: readNumber(source, 'monthStart', 'month_start'),
+    isCurrentMonth: readBoolean(source, 'isCurrentMonth', 'is_current_month'),
+    hourlyDelta: readNumber(source, 'hourlyDelta', 'hourly_delta'),
+    dailyDelta: readNumber(source, 'dailyDelta', 'daily_delta'),
+    monthlyDelta: readNumber(source, 'monthlyDelta', 'monthly_delta'),
+    fullMonthlyDelta: readNumber(source, 'fullMonthlyDelta', 'full_monthly_delta'),
+    monthMoneyCents: readNumber(source, 'monthMoneyCents', 'month_money_cents'),
+    monthDiscountCents: readNumber(source, 'monthDiscountCents', 'month_discount_cents'),
+    monthEndClampApplied: readBoolean(source, 'monthEndClampApplied', 'month_end_clamp_applied'),
+    discountReason: readNullableString(source, 'discountReason', 'discount_reason'),
+  }
+}
+
+export function normalizeRechargeQuote(value: unknown): RechargeQuote {
+  const source = isRecordLike(value) ? value : {}
+  const schedule = Array.isArray(source.schedule) ? source.schedule.map(normalizeRechargeQuoteMonth) : []
+  return {
+    requestedCredits: readNumber(source, 'requestedCredits', 'requested_credits'),
+    requestedMonths: readNumber(source, 'requestedMonths', 'requested_months'),
+    quoteMonthStart: readNumber(source, 'quoteMonthStart', 'quote_month_start'),
+    remainingDaysInclusive: readNumber(source, 'remainingDaysInclusive', 'remaining_days_inclusive'),
+    unitCredits: readNumber(source, 'unitCredits', 'unit_credits'),
+    unitPriceCents: readNumber(source, 'unitPriceCents', 'unit_price_cents'),
+    fullMonthHourlyDelta: readNumber(source, 'fullMonthHourlyDelta', 'full_month_hourly_delta'),
+    fullMonthDailyDelta: readNumber(source, 'fullMonthDailyDelta', 'full_month_daily_delta'),
+    fullMonthMonthlyDelta: readNumber(source, 'fullMonthMonthlyDelta', 'full_month_monthly_delta'),
+    fullMonthMoneyCents: readNumber(source, 'fullMonthMoneyCents', 'full_month_money_cents'),
+    currentMonthFinalHourlyDelta: readNumber(source, 'currentMonthFinalHourlyDelta', 'current_month_final_hourly_delta'),
+    currentMonthFinalDailyDelta: readNumber(source, 'currentMonthFinalDailyDelta', 'current_month_final_daily_delta'),
+    currentMonthFinalMonthlyDelta: readNumber(source, 'currentMonthFinalMonthlyDelta', 'current_month_final_monthly_delta'),
+    currentMonthFinalMoneyCents: readNumber(source, 'currentMonthFinalMoneyCents', 'current_month_final_money_cents'),
+    fullOrderMoneyCents: readNumber(source, 'fullOrderMoneyCents', 'full_order_money_cents'),
+    finalOrderMoneyCents: readNumber(source, 'finalOrderMoneyCents', 'final_order_money_cents'),
+    monthEndClampApplied: readBoolean(source, 'monthEndClampApplied', 'month_end_clamp_applied'),
+    orderName: readString(source, 'orderName', 'order_name'),
+    schedule,
+  }
+}
+
 function normalizeRechargeSummary(value: unknown): UserDashboard['recharge'] {
   const source = isRecordLike(value) ? value : {}
   return {
@@ -47,6 +90,21 @@ function normalizeRechargeSummary(value: unknown): UserDashboard['recharge'] {
       source,
       'currentEntitlementCredits',
       'current_entitlement_credits',
+    ),
+    currentEntitlementHourlyDelta: readNumber(
+      source,
+      'currentEntitlementHourlyDelta',
+      'current_entitlement_hourly_delta',
+    ),
+    currentEntitlementDailyDelta: readNumber(
+      source,
+      'currentEntitlementDailyDelta',
+      'current_entitlement_daily_delta',
+    ),
+    currentEntitlementMonthlyDelta: readNumber(
+      source,
+      'currentEntitlementMonthlyDelta',
+      'current_entitlement_monthly_delta',
     ),
     effectiveUntilMonthStart: readNullableNumber(
       source,
@@ -80,6 +138,21 @@ export function normalizeRechargeConfig(value: unknown): RechargeConfig {
       'currentEntitlementCredits',
       'current_entitlement_credits',
     ),
+    currentEntitlementHourlyDelta: readNumber(
+      source,
+      'currentEntitlementHourlyDelta',
+      'current_entitlement_hourly_delta',
+    ),
+    currentEntitlementDailyDelta: readNumber(
+      source,
+      'currentEntitlementDailyDelta',
+      'current_entitlement_daily_delta',
+    ),
+    currentEntitlementMonthlyDelta: readNumber(
+      source,
+      'currentEntitlementMonthlyDelta',
+      'current_entitlement_monthly_delta',
+    ),
     effectiveUntilMonthStart: readNullableNumber(
       source,
       'effectiveUntilMonthStart',
@@ -96,6 +169,12 @@ export function normalizeRechargeOrder(value: unknown): RechargeOrder {
     credits: readNumber(source, 'credits', 'credits'),
     months: readNumber(source, 'months', 'months'),
     money: readString(source, 'money', 'money'),
+    quoteMonthStart: readNumber(source, 'quoteMonthStart', 'quote_month_start'),
+    finalMoneyCents: readNumber(source, 'finalMoneyCents', 'final_money_cents'),
+    finalHourlyDelta: readNumber(source, 'finalHourlyDelta', 'final_hourly_delta'),
+    finalDailyDelta: readNumber(source, 'finalDailyDelta', 'final_daily_delta'),
+    finalMonthlyDelta: readNumber(source, 'finalMonthlyDelta', 'final_monthly_delta'),
+    monthEndClampApplied: readBoolean(source, 'monthEndClampApplied', 'month_end_clamp_applied'),
     tradeNo: readNullableString(source, 'tradeNo', 'trade_no'),
     paymentUrl: readNullableString(source, 'paymentUrl', 'payment_url'),
     createdAt: readNumber(source, 'createdAt', 'created_at'),

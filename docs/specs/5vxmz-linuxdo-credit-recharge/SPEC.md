@@ -15,6 +15,7 @@
 - 登录用户可在 `/console` 购买月度积分额度包。
 - 使用 Linux.do Credit 官方 LDC 创建订单：`type=ldcpay`、Ed25519 签名、跳转至平台认证支付页。
 - 支付成功后按服务器本地自然月展开权益，当前自然月从购买时所在月份到月底算第 1 个月。
+- 服务端 quote 以 `quote_month_start` 锁定报价月；若剩余天数下的当前月日均额度累加不足以覆盖完整月额度，则当前月 `monthlyLimit` 线性 clamp，并按裁掉的当前月月额度折价，`hourlyLimit` / `dailyLimit` 保持原档位。
 - 已生效权益叠加到账户有效 `hourlyLimit`、`dailyLimit` 与 `monthlyLimit`，不改变 hourly-any 请求频率额度。
 - 管理端提供充值记录页，可查看、筛选、排序、按用户聚合订单，并在 TOTP 二次确认后执行退单或仅退款。
 
@@ -32,7 +33,7 @@
 - 后端充值配置、订单创建、通知验签、订单查询封装、DB schema 与幂等权益发放。
 - 账户有效额度解析读取当前服务器本地自然月命中的充值权益。
 - 用户控制台充值卡片、订单历史、状态刷新与 Storybook 状态覆盖。
-- Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定。
+- Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定，以及最终成交 / 月底折抵 / `expired` 透出。
 
 ### Out of scope
 
@@ -79,6 +80,7 @@
 - 前端调用创建订单 API，后端生成唯一 `out_trade_no`，持久化 pending 订单，使用官方 LDC 签名调用 Linux.do Credit 创建订单。
 - 后端不跟随 Linux.do Credit 创建订单响应的跳转；若上游返回 3xx `Location`，将该地址作为支付 URL 返回给浏览器，由浏览器跳转到 Linux.do Credit 完成认证支付。
 - Linux.do Credit GET 通知本服务 notify endpoint；服务验签和校验金额后，将订单置为 paid，并按购买月份展开权益。
+- quote 与下单请求必须逐字段一致；`POST /api/user/recharge/orders` 需要回传完整 quote 摘要，服务端按同一算法重算并校验，stale/mismatched quote 一律拒绝。
 - 用户回到 `/console?payment=<out_trade_no>` 后，控制台刷新 dashboard 和订单列表，显示当前生效额度与订单状态。
 - 管理员打开 `/admin/recharges` 后，后端返回订单列表、聚合数据和 `hasRechargeOrders`；前端仅在存在订单时展示导航项。
 - 管理员在充值记录列表或按用户聚合视图点击用户名时，跳转到用户详情页；用户详情页以表格形式展示覆盖所有充值周期前一个月至后一个月的额度月历。
@@ -91,6 +93,7 @@
 - 非登录用户访问充值 API 返回 `401`。
 - 金额、订单号或签名不匹配的通知返回 `400`，不发放权益。
 - 重复成功通知不重复插入权益，仍返回 `success`。
+- `quote_month_start` 所在自然月是订单与回调的唯一报价月份；若成功回调到达时已跨月，则订单转为 `expired` 且不发放权益。
 - 过期月份权益不参与当前 quota 解析。
 - 未绑定 TOTP、TOTP 错误或失败次数锁定时，退款操作返回错误且不会调用 Linux.do Credit。
 - 前端已知 TOTP 未绑定时不应提交退款请求；若后端仍返回未绑定、验证码错误或锁定错误，确认弹窗必须保持打开并显示可理解的失败提示。
@@ -105,6 +108,7 @@
 | 接口（Name）                                          | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                      |
 | ----------------------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ---------------------------------- |
 | `GET /api/user/recharge/config`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 读取充值可用性、价格、当前权益摘要 |
+| `POST /api/user/recharge/quote`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 服务端 quote + 当前月折抵预览      |
 | `GET /api/user/recharge/orders`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 用户订单历史                       |
 | `POST /api/user/recharge/orders`                      | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 创建 Linux.do Credit 支付订单      |
 | `GET /api/user/recharge/orders/:out_trade_no`         | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 查询当前用户订单                   |
@@ -133,6 +137,18 @@
 - Given Linux.do Credit 发送同一成功通知两次
   When 服务处理通知
   Then 订单保持 paid，权益只发放一次，响应体均为 `success`。
+
+- Given 用户在月底下单且剩余天数内的当前月日均额度累加不足以覆盖完整月额度
+  When 服务返回 quote
+  Then 当前月月额度会 clamp，价格按当前月被裁掉的月额度线性折价，`hourlyLimit` / `dailyLimit` 不抬高。
+
+- Given 创建订单请求携带 stale 或不匹配的 quote
+  When 服务重新计算 quote 并逐字段校验
+  Then 请求被拒绝且不会创建订单。
+
+- Given `pending` 订单跨月后才收到成功回调
+  When 服务处理通知
+  Then 订单转为 `expired`，不发放权益，并保留最终值与折抵标记。
 
 - Given 用户本月有 `3000` 充值权益，且基线/标签有效小时/日/月额度为 `100/500/5000`
   When 读取 dashboard 或做 quota precheck
@@ -199,10 +215,10 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `UserConsole` 充值默认、调档、处理中、成功、回调延迟、错误态；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录；`SystemSettingsModule` TOTP 绑定态。
-- Docs pages / state galleries to add/update: 用户控制台充值状态 gallery；管理端充值记录 TOTP 与退款反馈状态。
-- `play` / interaction coverage to add/update: stepper 调整、创建订单成功/失败路径、管理端未绑定 TOTP 提示与退款失败反馈。
-- Visual regression baseline changes (if any): 充值卡片桌面与移动布局。
+- Stories to add/update: `UserConsole` 充值默认、月底折抵、测试价、禁用、隐藏；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录、`expired` 折抵记录。
+- Docs pages / state galleries to add/update: 用户控制台充值状态 gallery；管理端充值记录 TOTP、最终成交与折抵状态。
+- `play` / interaction coverage to add/update: stepper 调整、创建订单成功/失败路径、月底折抵提示、管理端未绑定 TOTP 提示与退款失败反馈。
+- Visual regression baseline changes (if any): 充值卡片桌面与移动布局，管理端记录表格新增最终成交列。
 
 ### Quality checks
 
@@ -216,8 +232,14 @@
 ## Visual Evidence
 
 ![Recharge burst price and quota controls](./assets/recharge-burst-price-story.png)
+![Recharge month-end clamp and discounted quota](./assets/recharge-month-end-clamp.png)
 ![Admin recharge records flat desktop view](./assets/admin-recharge-records-flat.png)
+![Admin recharge records with expired clamp marker](./assets/admin-recharge-expired-clamp.png)
 ![Admin recharge refund TOTP confirmation](./assets/admin-recharge-refund-totp.png)
+![Admin recharge bound TOTP confirmation](./assets/admin-recharge-bound-totp-confirmation.png)
+![Admin recharge unbound TOTP prompt](./assets/admin-recharge-unbound-totp-prompt.png)
+![Admin recharge refund failure feedback](./assets/admin-recharge-refund-failure-feedback.png)
+![Admin recharge user detail quota calendar](./assets/admin-recharge-user-detail-calendar.png)
 ![Admin recharge bound TOTP confirmation](./assets/admin-recharge-bound-totp-confirmation.png)
 ![Admin recharge unbound TOTP prompt](./assets/admin-recharge-unbound-totp-prompt.png)
 ![Admin recharge refund failure feedback](./assets/admin-recharge-refund-failure-feedback.png)
@@ -232,6 +254,7 @@
 - 假设：创建订单使用官方 LDC Ed25519；异步通知因文档未提供平台公钥，按公共通知字段的排序签名和 `Client Secret` 校验。
 - 风险：Linux.do Credit 平台若实际回调签名与文档公共段不一致，通知验签会拒绝，需要后续按平台实际字段调整。
 - 假设：服务器本地时区为运行环境的 `chrono::Local`，当前部署为 `Asia/Shanghai`。
+- 假设：月底 clamp 仅影响 quote_month_start 所在当前月，后续完整自然月仍按原档位展开。
 
 ## 参考（References）
 

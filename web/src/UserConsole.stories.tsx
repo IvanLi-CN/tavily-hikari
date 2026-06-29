@@ -6,6 +6,7 @@ import type {
   Profile,
   RechargeConfig,
   RechargeOrder,
+  RechargeQuote,
   RequestRate,
   RequestRateScope,
   UserDashboard,
@@ -29,6 +30,7 @@ type TokenDetailPreview = 'Overview' | 'Token Revealed'
 type PushStatusPreview = 'Live' | 'Reconnecting' | 'Unsupported'
 type AnnouncementPreview = 'Active' | 'Ticker Bodyless' | 'Closed' | 'History Open' | 'None'
 type RechargePreview = 'normal' | 'test-price' | 'disabled' | 'hidden'
+type RechargeQuotePreview = 'normal' | 'month-end-clamp'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
 type GuideRevealMode = 'none' | 'landing-guide' | 'detail-guide'
@@ -45,12 +47,14 @@ interface UserConsoleStoryArgs {
   autoOpenAccountMenu?: boolean
   announcementPreview?: AnnouncementPreview
   rechargePreview?: RechargePreview
+  rechargeQuotePreview?: RechargeQuotePreview
 }
 
 interface UserConsoleStoryState {
   autoRevealToken: boolean
   isAdmin: boolean
   rechargePreview: RechargePreview
+  rechargeQuotePreview: RechargeQuotePreview
   routePath: string
   tokenListMode: 'single' | 'multiple' | 'empty'
   announcementPreview: AnnouncementPreview
@@ -205,6 +209,9 @@ const dashboardSample: UserDashboard = withUserQuotaCanonical({
   recharge: {
     currentMonthStart: 1_762_041_600,
     currentEntitlementCredits: 3000,
+    currentEntitlementHourlyDelta: 60,
+    currentEntitlementDailyDelta: 300,
+    currentEntitlementMonthlyDelta: 3000,
     effectiveUntilMonthStart: 1_767_225_600,
   },
 })
@@ -268,6 +275,9 @@ const rechargeConfigSample: RechargeConfig = {
   testPriceEnabled: false,
   currentMonthStart: 1_762_041_600,
   currentEntitlementCredits: 3000,
+  currentEntitlementHourlyDelta: 60,
+  currentEntitlementDailyDelta: 300,
+  currentEntitlementMonthlyDelta: 3000,
   effectiveUntilMonthStart: 1_767_225_600,
 }
 
@@ -296,6 +306,12 @@ const rechargeOrdersSample: RechargeOrder[] = [
     credits: 3000,
     months: 2,
     money: '300.00',
+    quoteMonthStart: 1_762_041_600,
+    finalMoneyCents: 30_000,
+    finalHourlyDelta: 60,
+    finalDailyDelta: 300,
+    finalMonthlyDelta: 3000,
+    monthEndClampApplied: false,
     tradeNo: 'linuxdo-story-001',
     paymentUrl: 'https://credit.linux.do/story-paid',
     createdAt: 1_762_214_400,
@@ -310,6 +326,12 @@ const rechargeOrdersSample: RechargeOrder[] = [
     credits: 1000,
     months: 1,
     money: '50.00',
+    quoteMonthStart: 1_762_386_000,
+    finalMoneyCents: 5000,
+    finalHourlyDelta: 20,
+    finalDailyDelta: 100,
+    finalMonthlyDelta: 1000,
+    monthEndClampApplied: false,
     tradeNo: null,
     paymentUrl: 'https://credit.linux.do/story-pending',
     createdAt: 1_762_386_200,
@@ -318,7 +340,99 @@ const rechargeOrdersSample: RechargeOrder[] = [
     lastNotifyAt: null,
     lastError: null,
   },
+  {
+    outTradeNo: 'ldc_story_expired',
+    status: 'expired',
+    credits: 1000,
+    months: 1,
+    money: '30.00',
+    quoteMonthStart: 1_762_041_600,
+    finalMoneyCents: 3000,
+    finalHourlyDelta: 12,
+    finalDailyDelta: 60,
+    finalMonthlyDelta: 600,
+    monthEndClampApplied: true,
+    tradeNo: null,
+    paymentUrl: null,
+    createdAt: 1_762_386_000,
+    updatedAt: 1_762_389_000,
+    paidAt: null,
+    lastNotifyAt: null,
+    lastError: 'expired when month changed',
+  },
 ]
+
+const rechargeQuoteSample: RechargeQuote = {
+  requestedCredits: 1000,
+  requestedMonths: 1,
+  quoteMonthStart: 1_762_041_600,
+  remainingDaysInclusive: 30,
+  unitCredits: 1000,
+  unitPriceCents: 5000,
+  fullMonthHourlyDelta: 20,
+  fullMonthDailyDelta: 100,
+  fullMonthMonthlyDelta: 1000,
+  fullMonthMoneyCents: 5000,
+  currentMonthFinalHourlyDelta: 20,
+  currentMonthFinalDailyDelta: 100,
+  currentMonthFinalMonthlyDelta: 1000,
+  currentMonthFinalMoneyCents: 5000,
+  fullOrderMoneyCents: 5000,
+  finalOrderMoneyCents: 5000,
+  monthEndClampApplied: false,
+  orderName: 'Linux.do Credit recharge',
+  schedule: [
+    {
+      monthIndex: 0,
+      monthStart: 1_762_041_600,
+      isCurrentMonth: true,
+      hourlyDelta: 20,
+      dailyDelta: 100,
+      monthlyDelta: 1000,
+      fullMonthlyDelta: 1000,
+      monthMoneyCents: 5000,
+      monthDiscountCents: 0,
+      monthEndClampApplied: false,
+      discountReason: null,
+    },
+  ],
+}
+
+const rechargeClampQuoteSample: RechargeQuote = {
+  requestedCredits: 1000,
+  requestedMonths: 1,
+  quoteMonthStart: 1_762_041_600,
+  remainingDaysInclusive: 3,
+  unitCredits: 1000,
+  unitPriceCents: 5000,
+  fullMonthHourlyDelta: 20,
+  fullMonthDailyDelta: 100,
+  fullMonthMonthlyDelta: 1000,
+  fullMonthMoneyCents: 5000,
+  currentMonthFinalHourlyDelta: 12,
+  currentMonthFinalDailyDelta: 60,
+  currentMonthFinalMonthlyDelta: 600,
+  currentMonthFinalMoneyCents: 3000,
+  fullOrderMoneyCents: 5000,
+  finalOrderMoneyCents: 3000,
+  monthEndClampApplied: true,
+  orderName: 'Linux.do Credit recharge',
+  schedule: [
+    {
+      monthIndex: 0,
+      monthStart: 1_762_041_600,
+      isCurrentMonth: true,
+      hourlyDelta: 12,
+      dailyDelta: 60,
+      monthlyDelta: 600,
+      fullMonthlyDelta: 1000,
+      monthMoneyCents: 3000,
+      monthDiscountCents: 2000,
+      monthEndClampApplied: true,
+      discountReason: 'remaining_days_inclusive',
+    },
+  ],
+}
 
 const tokenSample: UserTokenSummary = withUserQuotaCanonical({
   tokenId: 'a1b2',
@@ -559,6 +673,7 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
     autoRevealToken: args.consoleView === 'Token Detail' && args.tokenDetailPreview === 'Token Revealed',
     isAdmin: args.isAdmin,
     rechargePreview: args.rechargePreview ?? 'normal',
+    rechargeQuotePreview: args.rechargeQuotePreview ?? 'normal',
     routePath: routePathFromView(args.consoleView, args.landingFocus, args.routePathOverride),
     tokenListMode,
     announcementPreview: args.announcementPreview ?? 'Active',
@@ -687,8 +802,16 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
       }
     }
 
+    if (url.pathname === '/api/user/recharge/quote') {
+      return jsonResponse(state.rechargeQuotePreview === 'month-end-clamp' ? rechargeClampQuoteSample : rechargeQuoteSample)
+    }
+
     if (url.pathname === '/api/user/recharge/orders') {
       if (request.method === 'POST') {
+        const body = await request.clone().json().catch(() => ({}))
+        if (!body.quote) {
+          return jsonResponse({ message: 'Missing quote' }, 400)
+        }
         return jsonResponse({
           order: rechargeOrdersSample[1],
           paymentUrl: 'https://credit.linux.do/story-checkout',
@@ -1155,6 +1278,7 @@ function UserConsoleStory(
     storyState.isAdmin ? 'admin' : 'user',
     storyState.tokenListMode,
     storyState.rechargePreview,
+    storyState.rechargeQuotePreview,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
     guideRevealMode,
     pushStatusPreview,
@@ -1237,6 +1361,10 @@ const meta = {
       table: { disable: true },
       control: false,
     },
+    rechargeQuotePreview: {
+      table: { disable: true },
+      control: false,
+    },
   },
   render: (args) => <UserConsoleStory {...args} />,
 } satisfies Meta<UserConsoleStoryArgs>
@@ -1312,6 +1440,41 @@ export const ConsoleHomeRechargeTestPrice: Story = {
   },
   globals: {
     language: 'zh',
+  },
+}
+
+export const ConsoleHomeRechargeMonthEndClamp: Story = {
+  name: 'Console Home Recharge Month End Clamp',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    rechargeQuotePreview: 'month-end-clamp',
+    rechargePreview: 'normal',
+  },
+  globals: {
+    language: 'zh',
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: 'Month-end recharge quote proof showing the discounted current-month quota, reduced amount, and expired-order marker in history.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    const section = canvasElement.querySelector('.user-console-recharge-section')
+    if (section == null) {
+      throw new Error('Expected month-end clamp proof to render the recharge section.')
+    }
+    const content = section.textContent ?? ''
+    for (const expected of ['本月最终额度', '折后应付', '当前月月额度已折抵', '30.00 LDC', '已过期']) {
+      if (!content.includes(expected)) {
+        throw new Error(`Expected month-end clamp proof to include ${expected}`)
+      }
+    }
   },
 }
 

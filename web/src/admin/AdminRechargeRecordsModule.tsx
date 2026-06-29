@@ -29,7 +29,7 @@ interface AdminRechargeRecordsModuleProps {
 
 export type RefundKind = 'refund' | 'refundOnly'
 
-const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'refunding', 'refunded', 'refundOnly']
+const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'expired', 'refunding', 'refunded', 'refundOnly']
 const SORT_OPTIONS: AdminRechargeSort[] = ['createdAt', 'paidAt', 'refundedAt', 'status']
 
 function formatDate(ts: number | null | undefined): string {
@@ -306,6 +306,7 @@ export default function AdminRechargeRecordsModule({
                   <th>{strings.table.order}</th>
                   <th>{strings.table.status}</th>
                   <th>{strings.table.amount}</th>
+                  <th>{strings.table.finalAmount}</th>
                   <th>{strings.table.createdAt}</th>
                   <th>{strings.table.paidAt}</th>
                   <th>{strings.table.refundedAt}</th>
@@ -324,6 +325,16 @@ export default function AdminRechargeRecordsModule({
                     </td>
                     <td><span className={`status-pill status-${item.status}`}>{statusLabel(item.status, strings)}</span></td>
                     <td>{formatTemplate(strings.amountLdc, { amount: item.money })}</td>
+                    <td>
+                      <div className="admin-recharge-order-cell">
+                        <span>{formatTemplate(strings.finalAmountLdc, { amount: (item.finalMoneyCents / 100).toFixed(2) })}</span>
+                        {item.monthEndClampApplied ? (
+                          <span className="admin-recharge-order-meta">{strings.monthEndClampApplied}</span>
+                        ) : (
+                          <span className="admin-recharge-order-meta">{strings.monthEndClampInactive}</span>
+                        )}
+                      </div>
+                    </td>
                     <td>{formatDate(item.createdAt)}</td>
                     <td>{formatDate(item.paidAt)}</td>
                     <td>{formatDate(item.refundedAt)}</td>

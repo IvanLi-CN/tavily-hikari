@@ -1,4 +1,4 @@
-import type { RechargeConfig, RechargeOrder } from '../api'
+import type { RechargeConfig, RechargeOrder, RechargeQuote } from '../api'
 import type { UserDashboard } from '../api'
 import { Eye, Minus, Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -24,7 +24,6 @@ import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import { useViewportMode } from '../lib/responsive'
 import {
   DEFAULT_RECHARGE_UNIT_CREDITS,
-  TEST_RECHARGE_AMOUNT_LDC,
   TEST_RECHARGE_CREDITS,
   TEST_RECHARGE_MONTHS,
   isTestRechargeSelection,
@@ -42,6 +41,7 @@ interface RechargePanelText {
   enabled: string
   disabled: string
   currentEntitlement: string
+  currentMonthFinal: string
   effectiveUntil: string
   noEntitlement: string
   credits: string
@@ -52,6 +52,9 @@ interface RechargePanelText {
   monthlyDelta: string
   testPrice: string
   amount: string
+  discountedAmount: string
+  discountNotice: string
+  clampNotice: string
   preview: string
   previewTitle: string
   previewDescription: string
@@ -77,6 +80,7 @@ interface RechargePanelProps {
   orders: RechargeOrder[]
   credits: number
   months: number
+  quote: RechargeQuote | null
   busy: boolean
   error: string | null
   onCreditsChange: (value: number) => void
@@ -90,6 +94,7 @@ interface RechargePreviewMonth {
   delta: number
   expectedQuota: number
   afterExpiry: boolean
+  clampApplied: boolean
 }
 
 function formatRechargeMoney(value: number): string {
@@ -101,7 +106,7 @@ function formatRechargeMoney(value: number): string {
 
 function rechargeStatusTone(status: string): StatusTone {
   if (status === 'paid') return 'success'
-  if (status === 'failed') return 'error'
+  if (status === 'failed' || status === 'expired') return 'error'
   if (status === 'pending') return 'warning'
   return 'neutral'
 }
@@ -113,6 +118,7 @@ export default function RechargePanel({
   orders,
   credits,
   months,
+  quote,
   busy,
   error,
   onCreditsChange,
@@ -140,39 +146,28 @@ export default function RechargePanel({
     months,
     stepConfig,
   )
-  const isTestOffer = config?.testPriceEnabled
-    && isTestRechargeSelection(normalizedCredits, normalizedMonths)
-  const amount = config
-    ? isTestOffer
-      ? TEST_RECHARGE_AMOUNT_LDC
-      : (normalizedCredits / config.unitCredits) * normalizedMonths * config.unitPriceLdc
-    : 0
-  const quotaBaseCredits = config?.quotaDeltaBaseCredits && config.quotaDeltaBaseCredits > 0
-    ? config.quotaDeltaBaseCredits
-    : DEFAULT_RECHARGE_UNIT_CREDITS
-  const quotaDelta = config
-    ? {
-        hourly: Math.ceil(normalizedCredits * config.hourlyDeltaPerQuotaUnit / quotaBaseCredits),
-        daily: Math.ceil(normalizedCredits * config.dailyDeltaPerQuotaUnit / quotaBaseCredits),
-        monthly: Math.round(normalizedCredits * config.monthlyDeltaPerQuotaUnit / quotaBaseCredits),
-      }
-    : { hourly: 0, daily: 0, monthly: normalizedCredits }
-  const effectiveUntil = dashboard?.recharge.effectiveUntilMonthStart
-    ?? config?.effectiveUntilMonthStart
-    ?? null
+  const isTestOffer = config?.testPriceEnabled && isTestRechargeSelection(normalizedCredits, normalizedMonths)
   const currentEntitlement = dashboard?.recharge.currentEntitlementCredits
     ?? config?.currentEntitlementCredits
     ?? 0
+  const currentMonthFinal = dashboard?.recharge.currentEntitlementMonthlyDelta
+    ?? config?.currentEntitlementMonthlyDelta
+    ?? currentEntitlement
+  const effectiveUntil = dashboard?.recharge.effectiveUntilMonthStart
+    ?? config?.effectiveUntilMonthStart
+    ?? null
   const currentMonthStart = dashboard?.recharge.currentMonthStart
     ?? config?.currentMonthStart
     ?? currentBrowserMonthStartSeconds()
   const previewMonths = useMemo(() => buildRechargePreviewMonths({
     currentMonthStart,
     currentEntitlement,
-    currentEffectiveUntil: effectiveUntil,
-    credits: normalizedCredits,
-    months: normalizedMonths,
-  }), [currentEntitlement, currentMonthStart, effectiveUntil, normalizedCredits, normalizedMonths])
+    currentMonthFinal,
+    effectiveUntil,
+    quote,
+  }), [currentEntitlement, currentMonthFinal, currentMonthStart, effectiveUntil, quote])
+  const amountCents = quote?.finalOrderMoneyCents ?? 0
+
   const applyCreditsChange = (value: number) => {
     onCreditsChange(value)
     if (config?.testPriceEnabled && value === TEST_RECHARGE_CREDITS) {
@@ -202,12 +197,15 @@ export default function RechargePanel({
               <strong>{formatNumber(currentEntitlement)}</strong>
             </div>
             <div>
+              <span>{text.currentMonthFinal}</span>
+              <strong>{formatNumber(currentMonthFinal)}</strong>
+            </div>
+            <div>
               <span>{text.effectiveUntil}</span>
               <strong>{effectiveUntil ? formatTimestamp(effectiveUntil) : text.noEntitlement}</strong>
             </div>
-            {config?.testPriceEnabled ? (
-              <p className="user-console-recharge-test-price">{text.testPrice}</p>
-            ) : null}
+            {quote?.monthEndClampApplied ? <p className="user-console-recharge-test-price">{text.clampNotice}</p> : null}
+            {config?.testPriceEnabled ? <p className="user-console-recharge-test-price">{text.testPrice}</p> : null}
           </div>
 
           {config?.enabled ? (
@@ -219,29 +217,17 @@ export default function RechargePanel({
                     <button
                       type="button"
                       className="btn btn-outline btn-sm"
-                      onClick={() =>
-                        applyCreditsChange(nextRechargeCredits(normalizedCredits, -1, stepConfig))}
-                      disabled={
-                        normalizedCredits <= (
-                          config?.testPriceEnabled ? TEST_RECHARGE_CREDITS : minCredits
-                        )
-                      }
+                      onClick={() => applyCreditsChange(nextRechargeCredits(normalizedCredits, -1, stepConfig))}
+                      disabled={normalizedCredits <= (config?.testPriceEnabled ? TEST_RECHARGE_CREDITS : minCredits)}
                       aria-label={`Decrease ${text.credits}`}
                     >
                       <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
                     </button>
-                    <input
-                      className="input input-bordered user-console-recharge-readonly"
-                      type="text"
-                      readOnly
-                      value={formatNumber(normalizedCredits)}
-                      aria-label={text.credits}
-                    />
+                    <input className="input input-bordered user-console-recharge-readonly" type="text" readOnly value={formatNumber(normalizedCredits)} aria-label={text.credits} />
                     <button
                       type="button"
                       className="btn btn-outline btn-sm"
-                      onClick={() =>
-                        applyCreditsChange(nextRechargeCredits(normalizedCredits, 1, stepConfig))}
+                      onClick={() => applyCreditsChange(nextRechargeCredits(normalizedCredits, 1, stepConfig))}
                       disabled={normalizedCredits >= maxCredits}
                       aria-label={`Increase ${text.credits}`}
                     >
@@ -255,29 +241,17 @@ export default function RechargePanel({
                     <button
                       type="button"
                       className="btn btn-outline btn-sm"
-                      onClick={() =>
-                        onMonthsChange(
-                          normalizeRechargeMonths(normalizedMonths - 1, normalizedCredits, stepConfig),
-                        )}
+                      onClick={() => onMonthsChange(normalizeRechargeMonths(normalizedMonths - 1, normalizedCredits, stepConfig))}
                       disabled={isTestOffer || normalizedMonths <= minMonths}
                       aria-label={`Decrease ${text.months}`}
                     >
                       <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
                     </button>
-                    <input
-                      className="input input-bordered user-console-recharge-readonly"
-                      type="text"
-                      readOnly
-                      value={formatNumber(normalizedMonths)}
-                      aria-label={text.months}
-                    />
+                    <input className="input input-bordered user-console-recharge-readonly" type="text" readOnly value={formatNumber(normalizedMonths)} aria-label={text.months} />
                     <button
                       type="button"
                       className="btn btn-outline btn-sm"
-                      onClick={() =>
-                        onMonthsChange(
-                          normalizeRechargeMonths(normalizedMonths + 1, normalizedCredits, stepConfig),
-                        )}
+                      onClick={() => onMonthsChange(normalizeRechargeMonths(normalizedMonths + 1, normalizedCredits, stepConfig))}
                       disabled={isTestOffer || normalizedMonths >= maxMonths}
                       aria-label={`Increase ${text.months}`}
                     >
@@ -286,45 +260,47 @@ export default function RechargePanel({
                   </div>
                 </div>
               </div>
+
               <div className="user-console-recharge-delta" aria-label={text.quotaDelta}>
-                {[
-                  [text.hourlyDelta, quotaDelta.hourly],
-                  [text.dailyDelta, quotaDelta.daily],
-                  [text.monthlyDelta, quotaDelta.monthly],
-                ].map(([label, value]) => (
-                  <div
-                    key={label}
-                    className="user-console-recharge-delta-pill"
-                  >
+                {quote
+                  ? [
+                      [text.hourlyDelta, quote.currentMonthFinalHourlyDelta],
+                      [text.dailyDelta, quote.currentMonthFinalDailyDelta],
+                      [text.monthlyDelta, quote.currentMonthFinalMonthlyDelta],
+                    ]
+                  : [
+                      [text.hourlyDelta, 0],
+                      [text.dailyDelta, 0],
+                      [text.monthlyDelta, 0],
+                    ]
+                .map(([label, value]) => (
+                  <div key={label} className="user-console-recharge-delta-pill">
                     <span>{label}</span>
                     <strong>+{formatNumber(Number(value))}</strong>
                   </div>
                 ))}
               </div>
+
               <div className="user-console-recharge-checkout">
                 <div className="user-console-recharge-amount">
-                  <span>{text.amount}</span>
-                  <strong>{formatRechargeMoney(amount)} LDC</strong>
+                  <span>{quote?.monthEndClampApplied ? text.discountedAmount : text.amount}</span>
+                  <strong>{formatRechargeMoney(amountCents / 100)} LDC</strong>
                 </div>
+                {quote?.monthEndClampApplied ? (
+                  <p className="user-console-recharge-test-price">{text.discountNotice}</p>
+                ) : null}
                 <div className="user-console-recharge-actions">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => setPreviewOpen(true)}
-                  >
+                  <Button type="button" variant="outline" disabled={busy} onClick={() => setPreviewOpen(true)}>
                     <Eye size={16} strokeWidth={2.2} aria-hidden="true" />
                     {text.preview}
                   </Button>
-                  <Button type="button" disabled={busy} aria-busy={busy} onClick={onCreateOrder}>
+                  <Button type="button" disabled={busy || !quote} aria-busy={busy} onClick={onCreateOrder}>
                     <Icon icon={busy ? 'mdi:loading' : 'mdi:credit-card-outline'} width={16} height={16} aria-hidden="true" />
                     {busy ? text.creating : text.create}
                   </Button>
                 </div>
               </div>
-              {error ? (
-                <p className="user-console-recharge-error" role="status" aria-live="polite">{error}</p>
-              ) : null}
+              {error ? <p className="user-console-recharge-error" role="status" aria-live="polite">{error}</p> : null}
             </div>
           ) : (
             <p className="empty-state user-console-recharge-disabled">{text.unavailable}</p>
@@ -342,7 +318,7 @@ export default function RechargePanel({
                   <li key={order.outTradeNo}>
                     <div>
                       <strong>{formatNumber(order.credits)} × {order.months}</strong>
-                      <span>{order.money} LDC · {formatTimestamp(order.createdAt)}</span>
+                      <span>{order.money} LDC · {formatTimestamp(order.createdAt)}{order.monthEndClampApplied ? ` · ${text.discountedAmount}` : ''}</span>
                     </div>
                     <StatusBadge tone={rechargeStatusTone(order.status)}>
                       {text.status[order.status] ?? order.status}
@@ -354,6 +330,7 @@ export default function RechargePanel({
           </div>
         </div>
       </div>
+
       {viewportMode === 'small' ? (
         <Drawer open={previewOpen} onOpenChange={setPreviewOpen} shouldScaleBackground={false}>
           <DrawerContent className="user-console-recharge-preview-drawer">
@@ -363,7 +340,7 @@ export default function RechargePanel({
             </DrawerHeader>
             <RechargePreviewBody
               text={text}
-              amount={amount}
+              quote={quote}
               credits={normalizedCredits}
               months={normalizedMonths}
               rows={previewMonths}
@@ -384,7 +361,7 @@ export default function RechargePanel({
             </DialogHeader>
             <RechargePreviewBody
               text={text}
-              amount={amount}
+              quote={quote}
               credits={normalizedCredits}
               months={normalizedMonths}
               rows={previewMonths}
@@ -415,31 +392,28 @@ function addMonthsToMonthStart(monthStart: number, offset: number): number {
 function buildRechargePreviewMonths(input: {
   currentMonthStart: number
   currentEntitlement: number
-  currentEffectiveUntil: number | null
-  credits: number
-  months: number
+  currentMonthFinal: number
+  effectiveUntil: number | null
+  quote: RechargeQuote | null
 }): RechargePreviewMonth[] {
-  const purchaseEnd = addMonthsToMonthStart(input.currentMonthStart, input.months)
-  const currentEffectiveUntil = input.currentEffectiveUntil ?? input.currentMonthStart
-  const previewEnd = Math.max(purchaseEnd, currentEffectiveUntil)
   const rows: RechargePreviewMonth[] = []
-
-  for (
-    let monthStart = input.currentMonthStart;
-    monthStart <= previewEnd;
-    monthStart = addMonthsToMonthStart(monthStart, 1)
-  ) {
-    const currentQuota = monthStart < currentEffectiveUntil ? input.currentEntitlement : 0
-    const delta = monthStart < purchaseEnd ? input.credits : 0
+  const currentEffectEnd = input.effectiveUntil ?? addMonthsToMonthStart(input.currentMonthStart, 1)
+  const quote = input.quote
+  const scheduleEnd = quote ? addMonthsToMonthStart(quote.quoteMonthStart, quote.requestedMonths - 1) : currentEffectEnd
+  const previewEnd = Math.max(currentEffectEnd, scheduleEnd)
+  for (let monthStart = input.currentMonthStart; monthStart <= previewEnd; monthStart = addMonthsToMonthStart(monthStart, 1)) {
+    const scheduleRow = quote?.schedule.find((item) => item.monthStart === monthStart)
+    const currentQuota = monthStart < currentEffectEnd ? input.currentEntitlement : 0
+    const delta = scheduleRow?.monthlyDelta ?? 0
     rows.push({
       monthStart,
-      currentQuota,
+      currentQuota: monthStart === input.currentMonthStart ? input.currentMonthFinal : currentQuota,
       delta,
       expectedQuota: currentQuota + delta,
-      afterExpiry: monthStart === previewEnd,
+      afterExpiry: monthStart > currentEffectEnd,
+      clampApplied: scheduleRow?.monthEndClampApplied ?? false,
     })
   }
-
   return rows
 }
 
@@ -456,13 +430,13 @@ function formatMonthLabel(monthStart: number): string {
 
 function RechargePreviewBody({
   text,
-  amount,
+  quote,
   credits,
   months,
   rows,
 }: {
   text: RechargePanelText
-  amount: number
+  quote: RechargeQuote | null
   credits: number
   months: number
   rows: RechargePreviewMonth[]
@@ -479,11 +453,13 @@ function RechargePreviewBody({
           <strong>{formatNumber(months)}</strong>
         </div>
         <div>
-          <span>{text.amount}</span>
-          <strong>{formatRechargeMoney(amount)} LDC</strong>
+          <span>{quote?.monthEndClampApplied ? text.discountedAmount : text.amount}</span>
+          <strong>{formatRechargeMoney((quote?.finalOrderMoneyCents ?? 0) / 100)} LDC</strong>
         </div>
       </div>
-      <p className="user-console-recharge-preview-note">{text.previewScopeNote}</p>
+      <p className="user-console-recharge-preview-note">
+        {quote?.monthEndClampApplied ? text.discountNotice : text.previewScopeNote}
+      </p>
 
       <div className="user-console-recharge-preview-table" role="table">
         <div className="user-console-recharge-preview-row user-console-recharge-preview-head" role="row">
@@ -503,6 +479,7 @@ function RechargePreviewBody({
             <span role="cell">
               {formatMonthLabel(row.monthStart)}
               {row.afterExpiry ? <em>{text.previewAfterExpiry}</em> : null}
+              {row.clampApplied ? <em>{text.clampNotice}</em> : null}
             </span>
             <strong role="cell" data-label={text.previewCurrentQuota}>
               <span className="user-console-recharge-preview-cell-label">{text.previewCurrentQuota}</span>
@@ -529,4 +506,11 @@ function formatTimestamp(ts: number): string {
   } catch {
     return String(ts)
   }
+}
+
+function formatTemplate(template: string, values: Record<string, string | number>): string {
+  return Object.entries(values).reduce(
+    (current, [key, value]) => current.replaceAll(`{${key}}`, String(value)),
+    template,
+  )
 }

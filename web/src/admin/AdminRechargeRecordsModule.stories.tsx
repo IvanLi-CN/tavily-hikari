@@ -20,6 +20,12 @@ const rechargeData: AdminRechargeListResponse = {
       months: 3,
       moneyCents: 45000,
       money: '450.00',
+      quoteMonthStart: now - 86400 * 21,
+      finalMoneyCents: 45000,
+      finalHourlyDelta: 60,
+      finalDailyDelta: 300,
+      finalMonthlyDelta: 3000,
+      monthEndClampApplied: false,
       tradeNo: 'linuxdo-trade-1001',
       paymentUrl: null,
       orderName: 'Tavily Hikari 3000 credits x 3 month(s)',
@@ -39,6 +45,12 @@ const rechargeData: AdminRechargeListResponse = {
       months: 1,
       moneyCents: 5000,
       money: '50.00',
+      quoteMonthStart: now - 86400 * 9,
+      finalMoneyCents: 5000,
+      finalHourlyDelta: 20,
+      finalDailyDelta: 100,
+      finalMonthlyDelta: 1000,
+      monthEndClampApplied: false,
       tradeNo: 'linuxdo-trade-1002',
       paymentUrl: null,
       orderName: 'Tavily Hikari 1000 credits x 1 month(s)',
@@ -49,6 +61,31 @@ const rechargeData: AdminRechargeListResponse = {
       refundActor: 'builtin-admin',
       lastNotifyAt: now - 86400 * 8 + 90,
       lastError: null,
+    },
+    {
+      outTradeNo: 'ldc_202605_0003',
+      user: { id: 'usr_cora', displayName: 'Cora Wu', username: 'cora', avatarTemplate: null },
+      status: 'expired',
+      credits: 1000,
+      months: 1,
+      moneyCents: 5000,
+      money: '30.00',
+      quoteMonthStart: now - 86400 * 2,
+      finalMoneyCents: 3000,
+      finalHourlyDelta: 12,
+      finalDailyDelta: 60,
+      finalMonthlyDelta: 600,
+      monthEndClampApplied: true,
+      tradeNo: null,
+      paymentUrl: null,
+      orderName: 'Tavily Hikari 1000 credits x 1 month(s)',
+      createdAt: now - 86400 * 2,
+      updatedAt: now - 86400,
+      paidAt: null,
+      refundedAt: null,
+      refundActor: null,
+      lastNotifyAt: null,
+      lastError: 'expired when month changed',
     },
   ],
   groups: [
@@ -73,6 +110,17 @@ const rechargeData: AdminRechargeListResponse = {
       latestOrderCreatedAt: now - 86400 * 8,
       latestPaidAt: now - 86400 * 8 + 90,
       latestRefundedAt: now - 86400 * 7,
+    },
+    {
+      user: { id: 'usr_cora', displayName: 'Cora Wu', username: 'cora', avatarTemplate: null },
+      orderCount: 1,
+      paidOrderCount: 0,
+      refundedOrderCount: 0,
+      totalCredits: 1000,
+      totalMoneyCents: 3000,
+      latestOrderCreatedAt: now - 86400 * 2,
+      latestPaidAt: null,
+      latestRefundedAt: null,
     },
   ],
 }
@@ -203,6 +251,17 @@ export const RefundFailureFeedback: Story = {
     } finally {
       globalThis.fetch = originalFetch
     }
+  },
+}
+
+export const ExpiredClampVisible: Story = {
+  render: () => <AdminRechargeRecordsModule initialData={rechargeData} initialTotpStatus={boundTotpStatus} disableAutoLoad />,
+  parameters: {
+    docs: {
+      description: {
+        story: 'Expired unpaid orders stay visible with the expired status and final-value / clamp marker for month-end quote drift.',
+      },
+    },
   },
 }
 

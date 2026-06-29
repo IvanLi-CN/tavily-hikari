@@ -217,8 +217,8 @@ function buildFallbackQuotaBreakdown(
       monthlyCreditsDelta: detail.quotaBase.monthlyCreditsLimit,
     }),
   ]
-  const rechargeCredits = detail.recharge?.currentMonthEntitlementCredits ?? 0
-  if (rechargeCredits > 0) {
+  const rechargeMonthlyDelta = detail.recharge?.currentMonthEntitlementMonthlyDelta ?? 0
+  if (rechargeMonthlyDelta > 0) {
     rows.push(buildQuotaBreakdownEntry({
       kind: 'recharge',
       label: rechargeLabel,
@@ -226,9 +226,9 @@ function buildFallbackQuotaBreakdown(
       tagName: null,
       source: 'system_linuxdo',
       effectKind: 'quota_delta',
-      businessCalls1hDelta: rechargeCredits,
-      dailyCreditsDelta: rechargeCredits,
-      monthlyCreditsDelta: rechargeCredits,
+      businessCalls1hDelta: detail.recharge?.currentMonthEntitlementHourlyDelta ?? 0,
+      dailyCreditsDelta: detail.recharge?.currentMonthEntitlementDailyDelta ?? 0,
+      monthlyCreditsDelta: rechargeMonthlyDelta,
     }))
   }
   rows.push(buildQuotaBreakdownEntry({
