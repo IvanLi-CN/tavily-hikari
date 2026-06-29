@@ -74,6 +74,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 
 - `GET /api/admin/ha/status` 返回当前节点状态、EdgeOne 源站、同步水位、recovery 状态。
 - `GET /api/admin/ha/status` 继续保留当前本机字段，并新增 `peerNodes[]` 与 `plannedCutoverEligible`。
+- `GET /api/admin/ha/status` 的 `peerNodes[]` 需要同时返回对外入口 `publicOrigin` 与节点私有源站配置目标 `sourceConfigTarget`；节点清单中的“源站”列展示节点源站配置，而不是当前 EdgeOne 路由或 peer 的对外入口。
 - `GET /api/ha/status` 返回可公开给用户控制台的降级摘要，不包含 secret 或 expected origin。
 - `GET /api/admin/ha/status` 还要返回当前/预期源站类型、本地默认源站、本地覆盖源站和当前 EdgeOne target。
 - `PUT /api/admin/ha/source` 保存当前服务节点私有源站配置，可在 `IP/域名` 与 `源站组` 间切换，并可选择保存后立即应用到 EdgeOne。
@@ -117,6 +118,7 @@ Tavily Hikari 的高可用方案采用单活主备热备，而不是一主多从
 - 管理员控制台的完整 HA 服务节点管理面板只出现在系统设置的高可用二级界面，包含节点清单、角色、源站、健康状态、同步水位、promote/finalize 操作和 EdgeOne 当前源站摘要。
 - 管理员控制台的 HA 页面必须稳定分成三块：真实节点清单、`planned cutover` 操作区、7 天时间线。
 - HA 管理页还要提供当前节点源站配置入口，允许在 `IP/域名` 与 `源站组` 之间切换，并在 active/provisional 时支持保存后切换 EdgeOne 到此源站。
+- 节点清单的“源站”列统一显示节点源站配置：当前节点显示本机 `haSourceEffective.target`，peer 节点显示 peer 自己上报的 `sourceConfigTarget`；`publicOrigin` 只作为对外入口信息保留给其他交互，不占用该列。
 - 节点清单必须直接展示 peer eligibility、最后探测时间、同步状态、恢复状态，以及哪个 peer 是当前允许切流的目标。
 - `planned cutover` 必须通过明确确认流展示目标节点、当前路由和预检语义。
 - 时间线默认展示运维摘要，原始 EdgeOne 请求/响应与内部错误细节放进 disclosure。
@@ -192,6 +194,10 @@ PR: include
 PR: include
 
 ![HA source settings dialog submit failure uses a destructive alert with collapsed technical details](./assets/ha-source-dialog-submit-failure-alert.png)
+
+PR: include
+
+![HA node inventory source column follows node source configuration instead of live route](./assets/ha-node-source-config-proof.png)
 
 ## Acceptance
 

@@ -1394,6 +1394,7 @@ export interface HaStatus {
 export interface HaPeerNode {
   nodeId: string
   publicOrigin: string | null
+  sourceConfigTarget: string | null
   role: HaNodeRole | null
   allowsBasicBusiness: boolean
   allowsFullWrites: boolean

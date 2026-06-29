@@ -6,6 +6,7 @@
 - Added HA startup role detection from EdgeOne current origin.
 - Added runtime EdgeOne authority refresh so a running old active enters `recovery` when the origin moves away, and an externally pointed standby only becomes `provisional_master` until administrator finalize.
 - Added HA peer inventory parsing through `HA_PEER_NODES_JSON`, real admin `peerNodes[]` aggregation, internal-only peer status/finalize endpoints, and `planned cutover` orchestration initiated from the current `full_master`.
+- Extended admin HA peer aggregation so each `peerNodes[]` item carries both `publicOrigin` and `sourceConfigTarget`, letting the node inventory render the configured source target instead of mixing live EdgeOne target and peer direct-entry labels in the same “源站” column.
 - Added normalized HA control-plane timeline storage through `ha_control_plane_events`, admin timeline query, and hourly 7-day retention GC.
 - Replaced SQLite snapshot export/import with deprecated `410 Gone` responses so HA cannot transfer full database files.
 - Added admin/internal endpoints for HA status, zstd NDJSON state baseline, zstd NDJSON outbox events, event acknowledgement, promote, finalize, and recovery import.

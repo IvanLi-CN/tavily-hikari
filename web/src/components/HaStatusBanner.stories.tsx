@@ -49,6 +49,7 @@ const baseStatus: HaStatus = {
     {
       nodeId: 'node-a',
       publicOrigin: '203.0.113.9:58087',
+      sourceConfigTarget: '203.0.113.9:58087',
       role: 'full_master',
       allowsBasicBusiness: true,
       allowsFullWrites: true,
@@ -125,6 +126,7 @@ const recoveryStatus: HaStatus = {
 const eligiblePeer: HaPeerNode = {
   nodeId: 'node-b',
   publicOrigin: '203.0.113.10:58087',
+  sourceConfigTarget: '203.0.113.10:58087',
   role: 'standby',
   allowsBasicBusiness: false,
   allowsFullWrites: false,
@@ -405,6 +407,69 @@ export const PlannedCutoverRunning: Story = {
     status: cutoverRunningStatus,
     onPromote: undefined,
     timeline: runningTimeline,
+  },
+}
+
+export const NodeSourceConfigProof: Story = {
+  args: {
+    status: {
+      ...fullMasterStatus,
+      nodeId: 'gz-101',
+      nodePublicOrigin: 'tavily-alt.ivanli.cc:443',
+      edgeoneCurrentTarget: 'edgeone-live-route.example.com:443',
+      edgeoneExpectedTarget: 'edgeone-live-route.example.com:443',
+      edgeoneOrigin: 'edgeone-live-route.example.com:443',
+      edgeoneExpectedOrigin: null,
+      haSourceEffective: {
+        sourceKind: 'direct',
+        directOriginScheme: 'https',
+        directOriginHost: 'gz.ivanli.cc',
+        directOriginPort: 1443,
+        originGroupId: null,
+        target: 'gz.ivanli.cc:1443',
+      },
+      peerNodes: [
+        {
+          nodeId: 'hinet-lam-standby',
+          publicOrigin: 'tavily-tw.ivanli.cc:443',
+          sourceConfigTarget: 'hinet-ep.707979.xyz:53844',
+          role: 'standby',
+          allowsBasicBusiness: false,
+          allowsFullWrites: false,
+          lastSyncAt: 1_700_000_018,
+          syncLagSeconds: 4,
+          recoveryStatus: null,
+          message: 'standby is synchronized and ready',
+          lastSeenAt: 1_700_000_020,
+          stale: false,
+          roleHint: 'standby_candidate',
+          plannedCutoverEligible: true,
+        },
+      ],
+    },
+    onPromote: undefined,
+    onPlannedCutover: () => undefined,
+    timeline: completedTimeline,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Proof state showing the node inventory origin column bound to node source configuration rather than the live EdgeOne route or the peer direct-entry domain.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const text = canvasElement.textContent ?? ''
+    for (const expected of [
+      'gz.ivanli.cc:1443',
+      'hinet-ep.707979.xyz:53844',
+      'edgeone-live-route.example.com:443',
+    ]) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected HA node source config proof story to contain: ${expected}`)
+      }
+    }
   },
 }
 

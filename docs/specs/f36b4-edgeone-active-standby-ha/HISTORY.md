@@ -113,6 +113,19 @@ XP ingress routing; it was the downstream EdgeOne control-plane payload using lo
   covered by regression tests, because a rejected switch leaves the node unable to adopt the new
   effective source target without entering HA role drift.
 
+## Node Inventory Source Column Contract
+
+The HA node inventory had drifted into a mixed-semantics column: the local row rendered
+`edgeoneCurrentTarget`, while peer rows rendered `publicOrigin`. That made the same “源站” label show
+current EdgeOne routing for one row and direct-entry labels for another, which is not an operator
+usable contract.
+
+- The accepted contract is that the node inventory “源站” column shows node source configuration,
+  not current EdgeOne routing.
+- The local row therefore renders the current instance `haSourceEffective.target`.
+- Peer rows now receive and render peer-reported `sourceConfigTarget`; `publicOrigin` remains the
+  peer direct-entry label but no longer backs the “源站” column.
+
 ## HA Control Plane Revision
 
 The earlier HA admin UI mixed real local state with inferred remote placeholders derived from

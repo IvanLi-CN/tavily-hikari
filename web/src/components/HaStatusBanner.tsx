@@ -119,7 +119,7 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
       relation: strings.thisAdminNodeLabel,
       isLocalNode: true,
       role: roleLabel(status.role, strings),
-      origin: status.edgeoneCurrentTarget ?? status.nodePublicOrigin ?? '—',
+      origin: status.haSourceEffective?.target ?? status.haSourceOverride?.target ?? status.haSourceDefaults?.target ?? '—',
       health:
         status.role === 'full_master'
           ? strings.healthServingWrites
@@ -190,7 +190,7 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
       relation,
       isLocalNode: false,
       role: peer.role ? roleLabel(peer.role, strings) : '—',
-      origin: peer.publicOrigin ?? '—',
+      origin: peer.sourceConfigTarget ?? '—',
       health,
       healthTone,
       lastSync: formatCompactTimestamp(peer.lastSyncAt, language),

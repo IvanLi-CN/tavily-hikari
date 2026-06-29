@@ -564,6 +564,96 @@ async fn ha_baseline_returns_413_when_compressed_stream_exceeds_cap() {
 }
 
 #[tokio::test]
+async fn admin_ha_status_surfaces_peer_source_config_target() {
+    let peer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind peer listener");
+    let peer_addr = peer_listener.local_addr().expect("peer addr");
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/api/internal/ha/status",
+            get(|| async {
+                Json(json!({
+                    "mode": "active_standby",
+                    "nodeId": "node-peer",
+                    "nodePublicOrigin": "peer-public-origin:443",
+                    "role": "standby",
+                    "degraded": false,
+                    "allowsBasicBusiness": false,
+                    "allowsFullWrites": false,
+                    "edgeoneDomain": "api.example.com",
+                    "edgeoneOrigin": "edgeone-live-route:443",
+                    "edgeoneExpectedOrigin": null,
+                    "edgeoneCurrentTarget": "edgeone-live-route:443",
+                    "edgeoneExpectedTarget": "peer-source-config:53844",
+                    "edgeoneCurrentSourceKind": "direct",
+                    "edgeoneExpectedSourceKind": "direct",
+                    "edgeoneCurrentOriginGroupId": null,
+                    "edgeoneExpectedOriginGroupId": null,
+                    "haSourceDefaults": null,
+                    "haSourceOverride": null,
+                    "haSourceEffective": {
+                        "sourceKind": "direct",
+                        "directOriginScheme": "https",
+                        "directOriginHost": "peer-source-config",
+                        "directOriginPort": 53844,
+                        "originGroupId": null,
+                        "target": "peer-source-config:53844"
+                    },
+                    "edgeoneApiConfigured": true,
+                    "lastEdgeoneCheckAt": 1_700_000_000,
+                    "lastSyncAt": 1_700_000_001,
+                    "syncLagSeconds": 1,
+                    "recoveryStatus": null,
+                    "message": "peer ready",
+                    "peerNodes": [],
+                    "plannedCutoverEligible": true
+                }))
+            }),
+        );
+        axum::serve(peer_listener, app.into_make_service())
+            .await
+            .expect("serve peer status");
+    });
+
+    let db_path = temp_db_path("ha-peer-source-config-target");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-peer-source-config-target".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-active".to_string(),
+        database_path: Some(db_str.clone()),
+        internal_token: Some("peer-token".to_string()),
+        peer_nodes: vec![tavily_hikari::HaPeerNodeConfig {
+            node_id: "node-peer".to_string(),
+            admin_base_url: format!("http://{peer_addr}"),
+            public_origin: "peer-public-origin:443".to_string(),
+            role_hint: tavily_hikari::HaPeerRoleHint::StandbyCandidate,
+        }],
+        ..tavily_hikari::HaConfig::default()
+    });
+    let addr = spawn_ha_admin_server(proxy, ha, true).await;
+
+    let response = Client::new()
+        .get(format!("http://{addr}/api/admin/ha/status"))
+        .send()
+        .await
+        .expect("ha status response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("ha status body");
+    assert_eq!(body["peerNodes"][0]["publicOrigin"], "peer-public-origin:443");
+    assert_eq!(body["peerNodes"][0]["sourceConfigTarget"], "peer-source-config:53844");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_events_endpoint_skips_legacy_non_control_rows_without_cursor_stall() {
     let db_path = temp_db_path("ha-events-legacy-control-cursor");
     let db_str = db_path.to_string_lossy().to_string();

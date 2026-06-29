@@ -25,6 +25,24 @@ async function renderIntoDom(element: JSX.Element): Promise<string> {
   return text
 }
 
+async function renderNodeOrigins(element: JSX.Element): Promise<string[]> {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  await act(async () => {
+    root.render(createElement(LanguageProvider, { initialLanguage: 'zh' }, createElement(ThemeProvider, null, element)))
+  })
+  const origins = Array.from(
+    container.querySelectorAll('.ha-node-cell--origin code'),
+    (node) => node.textContent ?? '',
+  )
+  await act(async () => {
+    root.unmount()
+  })
+  container.remove()
+  return origins
+}
+
 describe('HaStatusBanner Storybook proofs', () => {
   it('keeps the HA node list story and local promote entry available', () => {
     expect(meta).toMatchObject({
@@ -216,6 +234,77 @@ describe('HaStatusBanner Storybook proofs', () => {
 
     expect(text).toContain(translations.zh.admin.systemSettings.ha.sourceKindDirect)
     expect(text).toContain('203.0.113.9:58087')
+  })
+
+  it('renders node inventory origins from node source configuration instead of live route or peer public origin', async () => {
+    const renderStory = meta.render as ((args: typeof stories.FullMasterAdmin.args) => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const status = {
+      ...(stories.FullMasterAdmin.args?.status ?? {}),
+      nodeId: 'node-config-local',
+      edgeoneCurrentTarget: 'edgeone-live-route',
+      haSourceEffective: {
+        sourceKind: 'direct',
+        directOriginScheme: 'https',
+        directOriginHost: 'local-source-config',
+        directOriginPort: 1443,
+        originGroupId: null,
+        target: 'local-source-config:1443',
+      },
+      peerNodes: [
+        {
+          nodeId: 'node-config-peer',
+          publicOrigin: 'peer-public-origin:443',
+          sourceConfigTarget: 'peer-source-config:53844',
+          role: 'standby',
+          allowsBasicBusiness: false,
+          allowsFullWrites: false,
+          lastSyncAt: 1_700_000_018,
+          syncLagSeconds: 4,
+          recoveryStatus: null,
+          message: 'standby is synchronized and ready',
+          lastSeenAt: 1_700_000_020,
+          stale: false,
+          roleHint: 'standby_candidate',
+          plannedCutoverEligible: true,
+        },
+      ],
+    }
+
+    const origins = await renderNodeOrigins(
+      renderStory?.({
+        ...(meta.args ?? {}),
+        ...(stories.FullMasterAdmin.args ?? {}),
+        status,
+        onOpenNodeDetails: () => undefined,
+      }) ?? <></>,
+    )
+
+    expect(origins).toEqual(['local-source-config:1443', 'peer-source-config:53844'])
+  })
+
+  it('keeps the dedicated node source configuration proof story available', () => {
+    expect(stories.NodeSourceConfigProof).toBeDefined()
+  })
+
+  it('renders the dedicated proof story with distinct route and node-config targets', async () => {
+    const renderStory = meta.render as ((args: typeof stories.NodeSourceConfigProof.args) => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const text = await renderIntoDom(
+      renderStory?.({
+        ...(meta.args ?? {}),
+        ...(stories.NodeSourceConfigProof.args ?? {}),
+        onOpenNodeDetails: () => undefined,
+      }) ?? <></>,
+    )
+
+    expect(text).toContain('gz.ivanli.cc:1443')
+    expect(text).toContain('hinet-ep.707979.xyz:53844')
+    expect(text).toContain('edgeone-live-route.example.com:443')
+    expect(text).not.toContain('tavily-alt.ivanli.cc:443')
+    expect(text).not.toContain('tavily-tw.ivanli.cc:443')
   })
 
   it('keeps the submit-failure source dialog story available', () => {

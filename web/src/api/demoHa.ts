@@ -49,6 +49,7 @@ type DemoHaState = {
     peerNodes: Array<{
       nodeId: string
       publicOrigin: string | null
+      sourceConfigTarget: string | null
       role: string | null
       allowsBasicBusiness: boolean
       allowsFullWrites: boolean
@@ -123,6 +124,7 @@ export function createDemoHaStatus(nowSeconds: (offset?: number) => number): Dem
       {
         nodeId: 'demo-standby',
         publicOrigin: 'ha-standby.internal.example.net:58087',
+        sourceConfigTarget: 'ha-standby.internal.example.net:58087',
         role: 'standby',
         allowsBasicBusiness: true,
         allowsFullWrites: false,
@@ -138,6 +140,7 @@ export function createDemoHaStatus(nowSeconds: (offset?: number) => number): Dem
       {
         nodeId: 'demo-observer-a',
         publicOrigin: 'observer-a.internal.example.net:58087',
+        sourceConfigTarget: 'observer-a.internal.example.net:58087',
         role: 'standby',
         allowsBasicBusiness: true,
         allowsFullWrites: false,
@@ -153,6 +156,7 @@ export function createDemoHaStatus(nowSeconds: (offset?: number) => number): Dem
       {
         nodeId: 'demo-observer-b',
         publicOrigin: 'observer-b.internal.example.net:58087',
+        sourceConfigTarget: null,
         role: null,
         allowsBasicBusiness: false,
         allowsFullWrites: false,
@@ -354,6 +358,7 @@ export function handleDemoHaRoute(
         {
           nodeId: 'demo-standby',
           publicOrigin: '203.0.113.10:58087',
+          sourceConfigTarget: '203.0.113.10:58087',
           role: 'full_master',
           allowsBasicBusiness: true,
           allowsFullWrites: true,

@@ -9,6 +9,7 @@ const detail: HaNodeDetail = {
   node: {
     nodeId: 'node-b',
     publicOrigin: '203.0.113.10:58087',
+    sourceConfigTarget: '203.0.113.10:58087',
     role: 'standby',
     allowsBasicBusiness: true,
     allowsFullWrites: false,

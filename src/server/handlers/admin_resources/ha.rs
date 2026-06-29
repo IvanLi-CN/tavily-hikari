@@ -216,6 +216,10 @@ fn peer_view_from_status(
     tavily_hikari::HaPeerNodeView {
         node_id: config.node_id.clone(),
         public_origin: Some(config.public_origin.clone()),
+        source_config_target: status
+            .ha_source_effective
+            .as_ref()
+            .and_then(|settings| settings.target.clone()),
         role: Some(status.role),
         allows_basic_business: status.allows_basic_business,
         allows_full_writes: status.allows_full_writes,
@@ -237,6 +241,7 @@ fn peer_view_from_error(
     tavily_hikari::HaPeerNodeView {
         node_id: config.node_id.clone(),
         public_origin: Some(config.public_origin.clone()),
+        source_config_target: None,
         role: None,
         allows_basic_business: false,
         allows_full_writes: false,

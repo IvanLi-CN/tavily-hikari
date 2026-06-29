@@ -51,6 +51,7 @@ const dashboardHaAttentionStatus: HaStatus = {
     {
       nodeId: 'node-a',
       publicOrigin: '203.0.113.9:58087',
+      sourceConfigTarget: '203.0.113.9:58087',
       role: 'full_master',
       allowsBasicBusiness: true,
       allowsFullWrites: true,
@@ -111,6 +112,7 @@ const systemSettingsHaStatus: HaStatus = {
     {
       nodeId: 'node-b',
       publicOrigin: '203.0.113.10:58087',
+      sourceConfigTarget: '203.0.113.10:58087',
       role: 'standby',
       allowsBasicBusiness: false,
       allowsFullWrites: false,
@@ -126,6 +128,7 @@ const systemSettingsHaStatus: HaStatus = {
     {
       nodeId: 'node-c',
       publicOrigin: '203.0.113.11:58087',
+      sourceConfigTarget: '203.0.113.11:58087',
       role: 'standby',
       allowsBasicBusiness: false,
       allowsFullWrites: false,

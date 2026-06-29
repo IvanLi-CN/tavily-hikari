@@ -495,6 +495,7 @@ pub struct HaSourceSettingsView {
 pub struct HaPeerNodeView {
     pub node_id: String,
     pub public_origin: Option<String>,
+    pub source_config_target: Option<String>,
     pub role: Option<HaNodeRole>,
     pub allows_basic_business: bool,
     pub allows_full_writes: bool,
