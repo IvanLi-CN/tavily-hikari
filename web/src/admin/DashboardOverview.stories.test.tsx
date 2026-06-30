@@ -33,7 +33,9 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(markup).not.toContain('Global health, risk signals, and actionable activity in one place.')
     expect(markup).toContain('No visible chart series for the current selection.')
     expect(markup).toContain('Traffic Trends')
-    expect(markup).toContain(`Local time axis · Fixed range (${expectedCurrentBuckets} current buckets`)
+    expect(markup).toContain(
+      `Local time axis · Rolling 24 hours (${expectedCurrentBuckets} current buckets`,
+    )
     expect(markup).toContain('missing buckets are left blank')
     expect(markup).toContain('dashboard-summary-card-backdrop')
   })

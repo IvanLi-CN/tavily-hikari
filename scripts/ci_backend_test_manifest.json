@@ -465,6 +465,7 @@
         "server::tests::alerts_and_ha_sync_recovery::ha_",
         "server::tests::alerts_and_ha_node_state::redundant_",
         "server::tests::alerts_and_ha_startup_roles::persist_",
+        "server::tests::alerts_and_ha_startup_roles::startup_",
         "server::tests::alerts_and_ha_startup_roles::standby_",
         "server::tests::alerts_and_ha_event_exports::ha_",
         "server::tests::alerts_and_ha_serving_modes::ha_",
