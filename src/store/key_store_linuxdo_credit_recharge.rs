@@ -1,3 +1,18 @@
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDoCreditRechargeQuoteSnapshot {
+    quote: LinuxDoCreditRechargeQuote,
+}
+
+fn parse_linuxdo_credit_recharge_quote_snapshot(
+    raw: &str,
+) -> Option<LinuxDoCreditRechargeQuote> {
+    serde_json::from_str::<LinuxDoCreditRechargeQuoteSnapshot>(raw)
+        .map(|snapshot| snapshot.quote)
+        .or_else(|_| serde_json::from_str::<LinuxDoCreditRechargeQuote>(raw))
+        .ok()
+}
+
 impl KeyStore {
     pub(crate) async fn ensure_linuxdo_credit_recharge_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
@@ -636,7 +651,7 @@ impl KeyStore {
             let schedule_months = order
                 .quote_snapshot_json
                 .as_deref()
-                .and_then(|raw| serde_json::from_str::<LinuxDoCreditRechargeQuote>(raw).ok())
+                .and_then(parse_linuxdo_credit_recharge_quote_snapshot)
                 .map(|quote| quote.schedule);
             let start_month = if order.quote_month_start > 0 {
                 order.quote_month_start

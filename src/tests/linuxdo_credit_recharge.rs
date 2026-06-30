@@ -192,7 +192,16 @@ async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement
         final_monthly_delta: quote.current_month_final_monthly_delta,
         month_end_clamp_applied: true,
         quote_snapshot_json: Some(
-            serde_json::to_string(&quote).expect("serialize recharge quote snapshot"),
+            serde_json::to_string(&serde_json::json!({
+                "version": 1,
+                "source": "server_quote",
+                "request": {
+                    "credits": 1000,
+                    "months": 2,
+                },
+                "quote": quote,
+            }))
+            .expect("serialize recharge quote snapshot"),
         ),
         trade_no: None,
         payment_url: None,
