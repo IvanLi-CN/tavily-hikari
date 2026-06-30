@@ -262,7 +262,7 @@ export default function RechargePanel({
               </div>
 
               <div className="user-console-recharge-delta" aria-label={text.quotaDelta}>
-                {quote
+                {(quote
                   ? [
                       [text.hourlyDelta, quote.currentMonthFinalHourlyDelta],
                       [text.dailyDelta, quote.currentMonthFinalDailyDelta],
@@ -272,8 +272,7 @@ export default function RechargePanel({
                       [text.hourlyDelta, 0],
                       [text.dailyDelta, 0],
                       [text.monthlyDelta, 0],
-                    ]
-                .map(([label, value]) => (
+                    ]).map(([label, value]) => (
                   <div key={label} className="user-console-recharge-delta-pill">
                     <span>{label}</span>
                     <strong>+{formatNumber(Number(value))}</strong>
