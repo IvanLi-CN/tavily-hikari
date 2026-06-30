@@ -581,6 +581,7 @@ impl KeyStore {
             LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
                 | LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
                 | LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY
+                | LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED
         ) {
             sqlx::query(
                 r#"
