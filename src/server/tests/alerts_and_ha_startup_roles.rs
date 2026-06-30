@@ -69,6 +69,113 @@ async fn standby_server_startup_does_not_spawn_business_scheduled_jobs() {
 }
 
 #[tokio::test]
+async fn startup_restores_persisted_ha_source_settings_before_role_check() {
+    let edgeone_app = Router::new().fallback(post(|| async {
+        Json(serde_json::json!({
+            "Response": {
+                "AccelerationDomains": [
+                    {
+                        "OriginDetail": {
+                            "Origin": "gz.ivanli.cc",
+                            "OriginProtocol": "HTTPS",
+                            "HttpsOriginPort": 1443
+                        }
+                    }
+                ],
+                "RequestId": "edgeone-startup-persisted-source"
+            }
+        }))
+    }));
+    let edgeone_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let edgeone_addr = edgeone_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(edgeone_listener, edgeone_app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let db_path = temp_db_path("ha-startup-persisted-source-settings");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-startup-persisted-source".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let persisted_source_settings = tavily_hikari::HaSourceSettingsView {
+        source_kind: tavily_hikari::HaSourceKind::Direct,
+        direct_origin_scheme: Some(tavily_hikari::OriginScheme::Https),
+        direct_origin_host: Some("gz.ivanli.cc".to_string()),
+        direct_origin_port: Some(1443),
+        origin_group_id: None,
+        target: Some("gz.ivanli.cc:1443".to_string()),
+    };
+    proxy
+        .persist_ha_node_state(
+            "gz-101",
+            tavily_hikari::HaNodeRole::FullMaster,
+            Some("gz.ivanli.cc:1443"),
+            Some(&persisted_source_settings),
+            None,
+        )
+        .await
+        .expect("persist previous active state");
+    proxy
+        .flush_ha_state_writes()
+        .await
+        .expect("flush previous active state");
+
+    let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "gz-101".to_string(),
+        database_path: Some(db_str.clone()),
+        node_public_scheme: Some("https".to_string()),
+        node_public_host: Some("gz.ivanli.cc".to_string()),
+        node_public_port: Some(443),
+        edgeone_zone_id: Some("zone-test".to_string()),
+        edgeone_domain: Some("hikari.example.test".to_string()),
+        edgeone_expected_origin_scheme: Some("https".to_string()),
+        edgeone_expected_origin_host: Some("gz.ivanli.cc".to_string()),
+        edgeone_expected_origin_port: Some(443),
+        edgeone_secret_id: Some("secret-id".to_string()),
+        edgeone_secret_key: Some("secret-key".to_string()),
+        edgeone_api_endpoint: format!("http://{edgeone_addr}"),
+        ..tavily_hikari::HaConfig::default()
+    });
+
+    let status = initialize_ha_startup_state(&proxy, &ha).await;
+    assert_eq!(status.role, tavily_hikari::HaNodeRole::FullMaster);
+    assert_eq!(status.edgeone_origin.as_deref(), Some("gz.ivanli.cc:1443"));
+    assert_eq!(status.edgeone_expected_origin.as_deref(), Some("gz.ivanli.cc:443"));
+    assert_eq!(status.edgeone_expected_target.as_deref(), Some("gz.ivanli.cc:1443"));
+    assert_eq!(
+        status
+            .ha_source_effective
+            .as_ref()
+            .and_then(|settings| settings.target.as_deref()),
+        Some("gz.ivanli.cc:1443")
+    );
+    assert!(status.recovery_status.is_none());
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let row: (String, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT role, ha_direct_origin_port, edgeone_origin FROM ha_node_state WHERE id = 'local'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read persisted startup state");
+    assert_eq!(row.0, "full_master");
+    assert_eq!(row.1, Some(1443));
+    assert_eq!(row.2.as_deref(), Some("gz.ivanli.cc:1443"));
+    pool.close().await;
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_serving_roles() {
     let db_path = temp_db_path("ha-post-ready-pressure-rebuild");
     let db_str = db_path.to_string_lossy().to_string();

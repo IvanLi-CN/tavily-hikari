@@ -24,38 +24,7 @@ pub async fn serve(
         builtin_auth_password_hash,
     );
     let ha = tavily_hikari::HaRuntime::new(ha_config);
-    let previous_ha_role = proxy.get_persisted_ha_node_role().await.unwrap_or_else(|err| {
-        tracing::warn!(component = "ha", event = "persisted_role_lookup_failed", err = %err, "HA persisted role lookup warning");
-        None
-    });
-    let persisted_ha_source_settings = proxy.get_ha_source_settings().await.unwrap_or_else(|err| {
-        tracing::warn!(component = "ha", event = "source_settings_lookup_failed", err = %err, "HA source settings lookup warning");
-        None
-    });
-    let startup_ha_status = reconcile_ha_startup_role(&ha, previous_ha_role).await;
-    if let Some(settings) = persisted_ha_source_settings.as_ref()
-        && let Err(err) = ha
-            .set_local_source_settings(Some(settings.clone()))
-            .await
-    {
-        tracing::warn!(component = "ha", event = "source_settings_restore_failed", err = %err, "HA source settings restore warning");
-    }
-    if let Err(err) = async {
-        proxy
-            .persist_ha_node_state(
-                &startup_ha_status.node_id,
-                startup_ha_status.role,
-                startup_ha_status.edgeone_origin.as_deref(),
-                startup_ha_status.ha_source_effective.as_ref(),
-                startup_ha_status.message.as_deref(),
-            )
-            .await?;
-        proxy.flush_ha_state_writes().await
-    }
-    .await
-    {
-        tracing::warn!(component = "ha", event = "startup_node_state_persist_failed", err = %err, "HA startup node state persist warning");
-    }
+    let startup_ha_status = initialize_ha_startup_state(&proxy, &ha).await;
     if let Err(err) = sync_forward_proxy_runtime_for_role(proxy.clone(), startup_ha_status.role).await {
         tracing::warn!(
             component = "forward_proxy",
@@ -554,6 +523,45 @@ async fn reconcile_ha_startup_role(
             .await;
     }
     status
+}
+
+async fn initialize_ha_startup_state(
+    proxy: &TavilyProxy,
+    ha: &tavily_hikari::HaRuntime,
+) -> tavily_hikari::HaStatusView {
+    let previous_ha_role = proxy.get_persisted_ha_node_role().await.unwrap_or_else(|err| {
+        tracing::warn!(component = "ha", event = "persisted_role_lookup_failed", err = %err, "HA persisted role lookup warning");
+        None
+    });
+    let persisted_ha_source_settings = proxy.get_ha_source_settings().await.unwrap_or_else(|err| {
+        tracing::warn!(component = "ha", event = "source_settings_lookup_failed", err = %err, "HA source settings lookup warning");
+        None
+    });
+    if let Some(settings) = persisted_ha_source_settings
+        && let Err(err) = ha.set_local_source_settings(Some(settings)).await
+    {
+        tracing::warn!(component = "ha", event = "source_settings_restore_failed", err = %err, "HA source settings restore warning");
+    }
+    // Startup authority must compare against the restored node-local source override rather than
+    // the env default source, otherwise a restart can clobber the persisted override.
+    let startup_ha_status = reconcile_ha_startup_role(ha, previous_ha_role).await;
+    if let Err(err) = async {
+        proxy
+            .persist_ha_node_state(
+                &startup_ha_status.node_id,
+                startup_ha_status.role,
+                startup_ha_status.edgeone_origin.as_deref(),
+                startup_ha_status.ha_source_effective.as_ref(),
+                startup_ha_status.message.as_deref(),
+            )
+            .await?;
+        proxy.flush_ha_state_writes().await
+    }
+    .await
+    {
+        tracing::warn!(component = "ha", event = "startup_node_state_persist_failed", err = %err, "HA startup node state persist warning");
+    }
+    startup_ha_status
 }
 
 async fn sync_forward_proxy_runtime_for_role(

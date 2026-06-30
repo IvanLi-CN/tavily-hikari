@@ -93,6 +93,14 @@ The full HA node inventory is an operations setting, not global business-page ch
 
 The admin HA page now treats the current instance source as a private, per-node setting that can be switched between direct `IP/域名` and `源站组`. The stored value overrides the Env/CLI default for this instance only, and active/provisional operators can apply the saved source directly to EdgeOne from the same page. Startup defaults now accept `HA_SOURCE_KIND` and `HA_SOURCE_ORIGIN_GROUP_ID`, while `EDGEONE_EXPECTED_ORIGIN_*` remains a direct-origin compatibility input.
 
+## Startup Source Restore Hardening
+
+Restart validation exposed a startup-ordering defect in the HA control plane. The node already persisted its local HA source override, but startup role reconciliation still compared EdgeOne against the Env default source first and only restored the persisted override afterwards. The same stale pre-restore view was then written back into `ha_node_state`, which could downgrade a saved `:1443` override back to the Env default `:443`.
+
+- The accepted contract is that persisted node-local HA source settings remain authoritative across restarts.
+- Startup must therefore restore the persisted local source override before the first EdgeOne authority comparison and before rewriting the startup HA snapshot.
+- This defect is a startup state-restoration bug inside the application. It is not a frontend rendering issue and not an EdgeOne describe-response parsing issue.
+
 ## Source Settings Contract Hardening
 
 HA source settings originally drifted across layers: the frontend, demo fixtures, and spec already used lowercase `http|https|follow`, but the Rust enum deserializer still expected PascalCase variants, causing direct-origin saves to fail before the handler executed. The accepted contract is now explicitly lowercase on the HA admin JSON wire, with the uppercase `HTTP|HTTPS|FOLLOW` mapping confined to the downstream EdgeOne control-plane payload.

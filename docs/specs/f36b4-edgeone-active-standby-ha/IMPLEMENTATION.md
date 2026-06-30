@@ -11,6 +11,7 @@
 - Replaced SQLite snapshot export/import with deprecated `410 Gone` responses so HA cannot transfer full database files.
 - Added admin/internal endpoints for HA status, zstd NDJSON state baseline, zstd NDJSON outbox events, event acknowledgement, promote, finalize, and recovery import.
 - Added per-node HA source settings persistence and admin API so the current instance can store a private source override, switch between direct origin and source group, and optionally apply the saved source to EdgeOne immediately. The startup config now also accepts `HA_SOURCE_KIND` and `HA_SOURCE_ORIGIN_GROUP_ID` as per-node defaults, while `EDGEONE_EXPECTED_ORIGIN_*` stays direct-origin only.
+- Hardened HA startup restore ordering so persisted node-local source settings are restored before the first EdgeOne startup authority check and before the startup HA snapshot is rewritten. This keeps a saved direct-origin override authoritative across restarts instead of letting the Env default source overwrite it.
 - Locked the HA source settings request/response wire contract to lowercase `directOriginScheme` values (`http|https|follow`) by adding serde lowercase support on the shared Rust enum, while preserving the existing uppercase conversion for outbound EdgeOne payloads.
 - Added standby pull-based sync controlled by `HA_SYNC_SOURCE_URL`, `HA_INTERNAL_TOKEN`, and `HA_SYNC_INTERVAL_SECS`; active nodes no longer push snapshots.
 - Reworked HA baseline export so active nodes stream zstd NDJSON directly from SQLite rows instead
