@@ -633,6 +633,11 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
 
+            let schedule_months = order
+                .quote_snapshot_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<LinuxDoCreditRechargeQuote>(raw).ok())
+                .map(|quote| quote.schedule);
             let start_month = if order.quote_month_start > 0 {
                 order.quote_month_start
             } else {
@@ -640,6 +645,12 @@ impl KeyStore {
             };
             for month_index in 0..order.months {
                 let month_start = shift_local_month_start_utc_ts(start_month, month_index as i32);
+                let month_quote = schedule_months
+                    .as_ref()
+                    .and_then(|months| months.get(month_index as usize));
+                let monthly_delta = month_quote
+                    .map(|month| month.monthly_delta)
+                    .unwrap_or(order.final_monthly_delta);
                 sqlx::query(
                     r#"
                     INSERT OR IGNORE INTO linuxdo_credit_recharge_entitlements (
@@ -651,10 +662,10 @@ impl KeyStore {
                 .bind(out_trade_no)
                 .bind(&order.user_id)
                 .bind(month_start)
-                .bind(order.credits)
+                .bind(monthly_delta)
                 .bind(order.final_hourly_delta)
                 .bind(order.final_daily_delta)
-                .bind(order.final_monthly_delta)
+                .bind(monthly_delta)
                 .bind(paid_at)
                 .execute(&mut *tx)
                 .await?;

@@ -138,6 +138,114 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
 }
 
 #[tokio::test]
+async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement() {
+    let db_path = temp_db_path("linuxdo-recharge-clamp-schedule-entitlement");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_751_269_200);
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-clamp-schedule".to_string(),
+            username: Some("clamp_schedule".to_string()),
+            name: Some("Clamp Schedule".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+
+    let quote_month_start = start_of_local_month_utc_ts(manual_clock.local_now());
+    let quote = linuxdo_credit_recharge_quote(
+        1000,
+        2,
+        LinuxDoCreditRechargePriceConfig::normal(),
+        quote_month_start,
+        manual_clock.now_ts(),
+    )
+    .expect("quote");
+    assert!(quote.month_end_clamp_applied);
+    assert!(quote.current_month_final_monthly_delta < quote.full_month_monthly_delta);
+    assert_eq!(quote.schedule.len(), 2);
+
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_clamp_schedule".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+        credits: 1000,
+        months: 2,
+        money_cents: quote.final_order_money_cents,
+        quote_month_start,
+        final_money_cents: quote.final_order_money_cents,
+        final_hourly_delta: quote.current_month_final_hourly_delta,
+        final_daily_delta: quote.current_month_final_daily_delta,
+        final_monthly_delta: quote.current_month_final_monthly_delta,
+        month_end_clamp_applied: true,
+        quote_snapshot_json: Some(
+            serde_json::to_string(&quote).expect("serialize recharge quote snapshot"),
+        ),
+        trade_no: None,
+        payment_url: None,
+        order_name: "Clamp schedule recharge".to_string(),
+        notify_payload: None,
+        created_at: manual_clock.now_ts(),
+        updated_at: manual_clock.now_ts(),
+        paid_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+    proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-clamp-schedule",
+            "ok=1",
+            manual_clock.now_ts() + 60,
+        )
+        .await
+        .expect("apply recharge payment");
+
+    let audit = proxy
+        .linuxdo_credit_recharge_admin_audit(&user.user_id)
+        .await
+        .expect("load recharge audit");
+    assert_eq!(audit.entitlements.len(), 2);
+    let current = audit
+        .entitlements
+        .iter()
+        .find(|entry| entry.month_start == quote.schedule[0].month_start)
+        .expect("current month entitlement");
+    assert_eq!(current.credits, quote.schedule[0].monthly_delta);
+    assert_eq!(current.monthly_delta, quote.schedule[0].monthly_delta);
+    let next = audit
+        .entitlements
+        .iter()
+        .find(|entry| entry.month_start == quote.schedule[1].month_start)
+        .expect("next month entitlement");
+    assert_eq!(next.credits, quote.schedule[1].monthly_delta);
+    assert_eq!(next.monthly_delta, quote.schedule[1].monthly_delta);
+    assert_eq!(next.monthly_delta, quote.full_month_monthly_delta);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn linuxdo_credit_admin_recharge_user_groups_are_paginated() {
     let db_path = temp_db_path("linuxdo-recharge-admin-group-pagination");
     let db_str = db_path.to_string_lossy().to_string();
