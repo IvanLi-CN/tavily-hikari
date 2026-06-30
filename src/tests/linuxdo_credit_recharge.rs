@@ -240,14 +240,14 @@ async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement
         .iter()
         .find(|entry| entry.month_start == quote.schedule[0].month_start)
         .expect("current month entitlement");
-    assert_eq!(current.credits, quote.schedule[0].monthly_delta);
+    assert_eq!(current.credits, order.credits);
     assert_eq!(current.monthly_delta, quote.schedule[0].monthly_delta);
     let next = audit
         .entitlements
         .iter()
         .find(|entry| entry.month_start == quote.schedule[1].month_start)
         .expect("next month entitlement");
-    assert_eq!(next.credits, quote.schedule[1].monthly_delta);
+    assert_eq!(next.credits, order.credits);
     assert_eq!(next.monthly_delta, quote.schedule[1].monthly_delta);
     assert_eq!(next.monthly_delta, quote.full_month_monthly_delta);
 

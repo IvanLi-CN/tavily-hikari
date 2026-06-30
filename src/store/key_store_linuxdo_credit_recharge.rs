@@ -678,7 +678,7 @@ impl KeyStore {
                 .bind(out_trade_no)
                 .bind(&order.user_id)
                 .bind(month_start)
-                .bind(monthly_delta)
+                .bind(order.credits)
                 .bind(order.final_hourly_delta)
                 .bind(order.final_daily_delta)
                 .bind(monthly_delta)
