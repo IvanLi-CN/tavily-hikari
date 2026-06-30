@@ -31,6 +31,12 @@ struct AdminRechargeOrderView {
     months: i64,
     money_cents: i64,
     money: String,
+    quote_month_start: i64,
+    final_money_cents: i64,
+    final_hourly_delta: i64,
+    final_daily_delta: i64,
+    final_monthly_delta: i64,
+    month_end_clamp_applied: bool,
     trade_no: Option<String>,
     payment_url: Option<String>,
     order_name: String,
@@ -488,6 +494,12 @@ async fn finalize_admin_refund_from_external_success(
         months: updated.months,
         money_cents: updated.money_cents,
         money: tavily_hikari::format_linuxdo_credit_money(updated.money_cents),
+        quote_month_start: updated.quote_month_start,
+        final_money_cents: updated.final_money_cents,
+        final_hourly_delta: updated.final_hourly_delta,
+        final_daily_delta: updated.final_daily_delta,
+        final_monthly_delta: updated.final_monthly_delta,
+        month_end_clamp_applied: updated.month_end_clamp_applied,
         trade_no: updated.trade_no,
         payment_url: updated.payment_url,
         order_name: updated.order_name,
@@ -603,7 +615,7 @@ async fn post_linuxdo_credit_full_refund(
         .as_deref()
         .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Linux.do Credit client secret missing".to_string()))?;
     let endpoint = linuxdo_credit_refund_url(&state.linuxdo_credit.submit_url)?;
-    let money = tavily_hikari::format_linuxdo_credit_money(order.money_cents);
+    let money = tavily_hikari::format_linuxdo_credit_money(order.final_money_cents);
     let params = linuxdo_credit_refund_params(client_id, client_secret, trade_no, &order.out_trade_no, &money);
     let response = reqwest::Client::new()
         .post(endpoint)
@@ -889,6 +901,12 @@ fn admin_recharge_order_view(
         months: item.order.months,
         money_cents: item.order.money_cents,
         money: tavily_hikari::format_linuxdo_credit_money(item.order.money_cents),
+        quote_month_start: item.order.quote_month_start,
+        final_money_cents: item.order.final_money_cents,
+        final_hourly_delta: item.order.final_hourly_delta,
+        final_daily_delta: item.order.final_daily_delta,
+        final_monthly_delta: item.order.final_monthly_delta,
+        month_end_clamp_applied: item.order.month_end_clamp_applied,
         trade_no: item.order.trade_no,
         payment_url: item.order.payment_url,
         order_name: item.order.order_name,

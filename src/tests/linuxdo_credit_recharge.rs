@@ -682,3 +682,81 @@ async fn linuxdo_credit_payment_callback_does_not_resurrect_refunded_order() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn linuxdo_credit_recharge_backfill_uses_historical_order_month() {
+    let db_path = temp_db_path("linuxdo-recharge-backfill-historical-month");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-backfill-legacy".to_string(),
+            username: Some("legacy_backfill".to_string()),
+            name: Some("Legacy Backfill".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+    let created_at = 1_735_718_400;
+    let paid_at = created_at + 3_600;
+    let expected_quote_month_start = start_of_local_month_utc_ts(
+        Utc.timestamp_opt(paid_at, 0)
+            .single()
+            .expect("paid_at timestamp")
+            .with_timezone(&Local),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO linuxdo_credit_recharge_orders (
+            out_trade_no, user_id, status, credits, months, money_cents,
+            trade_no, payment_url, order_name, notify_payload, created_at, updated_at,
+            paid_at, refunded_at, refund_actor, refund_payload, last_notify_at, last_error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("ldc_legacy_backfill")
+    .bind(&user.user_id)
+    .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
+    .bind(1000_i64)
+    .bind(1_i64)
+    .bind(5_000_i64)
+    .bind("trade-legacy-backfill")
+    .bind(Option::<String>::None)
+    .bind("Legacy recharge")
+    .bind(Option::<String>::None)
+    .bind(created_at)
+    .bind(created_at)
+    .bind(paid_at)
+    .bind(Option::<i64>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<i64>::None)
+    .bind(Option::<String>::None)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert legacy recharge order");
+
+    proxy
+        .key_store
+        .ensure_linuxdo_credit_recharge_schema()
+        .await
+        .expect("backfill recharge schema");
+    let order = proxy
+        .get_linuxdo_credit_recharge_order("ldc_legacy_backfill")
+        .await
+        .expect("load backfilled order")
+        .expect("order exists");
+    assert_eq!(order.quote_month_start, expected_quote_month_start);
+    assert_eq!(order.final_money_cents, 5_000);
+    assert!(!order.month_end_clamp_applied);
+
+    let _ = std::fs::remove_file(db_path);
+}

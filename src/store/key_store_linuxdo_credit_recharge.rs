@@ -13,6 +13,16 @@ fn parse_linuxdo_credit_recharge_quote_snapshot(
         .ok()
 }
 
+fn legacy_recharge_quote_month_start(created_at: i64, paid_at: Option<i64>) -> i64 {
+    let anchor_ts = paid_at.unwrap_or(created_at);
+    let local_time = Utc
+        .timestamp_opt(anchor_ts, 0)
+        .single()
+        .unwrap_or_else(Utc::now)
+        .with_timezone(&Local);
+    start_of_local_month_utc_ts(local_time)
+}
+
 impl KeyStore {
     pub(crate) async fn ensure_linuxdo_credit_recharge_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
@@ -129,10 +139,9 @@ impl KeyStore {
     }
 
     async fn backfill_linuxdo_credit_recharge_orders_v1(&self) -> Result<(), ProxyError> {
-        let current_month_start = start_of_local_month_utc_ts(self.backend_time.local_now());
         let rows = sqlx::query(
             r#"
-            SELECT out_trade_no, credits, months, money_cents, status
+            SELECT out_trade_no, credits, months, money_cents, status, created_at, paid_at
             FROM linuxdo_credit_recharge_orders
             WHERE quote_month_start = 0
             ORDER BY created_at ASC, out_trade_no ASC
@@ -145,12 +154,16 @@ impl KeyStore {
             let credits: i64 = row.try_get("credits")?;
             let delta = linuxdo_credit_recharge_quota_delta(credits);
             let money_cents: i64 = row.try_get("money_cents")?;
+            let quote_month_start = legacy_recharge_quote_month_start(
+                row.try_get("created_at")?,
+                row.try_get("paid_at").unwrap_or(None),
+            );
             let snapshot = serde_json::json!({
                 "version": 1,
                 "source": "backfill",
                 "requestedCredits": credits,
                 "requestedMonths": row.try_get::<i64, _>("months")?,
-                "quoteMonthStart": current_month_start,
+                "quoteMonthStart": quote_month_start,
                 "finalMoneyCents": money_cents,
                 "finalHourlyDelta": delta.hourly_delta,
                 "finalDailyDelta": delta.daily_delta,
@@ -172,7 +185,7 @@ impl KeyStore {
                  WHERE out_trade_no = ?
                 "#,
             )
-            .bind(current_month_start)
+            .bind(quote_month_start)
             .bind(money_cents)
             .bind(delta.hourly_delta)
             .bind(delta.daily_delta)
