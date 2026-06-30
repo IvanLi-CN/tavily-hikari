@@ -1287,7 +1287,7 @@ impl From<tavily_hikari::LinuxDoCreditRechargeOrder> for RechargeOrderView {
             status: value.status,
             credits: value.credits,
             months: value.months,
-            money: tavily_hikari::format_linuxdo_credit_money(value.money_cents),
+            money: tavily_hikari::format_linuxdo_credit_money(value.final_money_cents),
             quote_month_start: value.quote_month_start,
             final_money_cents: value.final_money_cents,
             final_hourly_delta: value.final_hourly_delta,
@@ -1863,7 +1863,8 @@ async fn post_user_recharge_order(
     {
         return Err((StatusCode::BAD_REQUEST, "quote request mismatch".to_string()));
     }
-    let money_cents = server_quote.final_order_money_cents;
+    let money_cents = server_quote.full_order_money_cents;
+    let final_money_cents = server_quote.final_order_money_cents;
     let out_trade_no = format!("ldc_{}", nanoid!(24));
     let order_name = server_quote.order_name.clone();
     let mut order = tavily_hikari::LinuxDoCreditRechargeOrder {
@@ -1874,7 +1875,7 @@ async fn post_user_recharge_order(
         months: payload.months,
         money_cents,
         quote_month_start,
-        final_money_cents: server_quote.final_order_money_cents,
+        final_money_cents,
         final_hourly_delta: server_quote.current_month_final_hourly_delta,
         final_daily_delta: server_quote.current_month_final_daily_delta,
         final_monthly_delta: server_quote.current_month_final_monthly_delta,
@@ -1910,7 +1911,7 @@ async fn post_user_recharge_order(
         .client_id
         .as_deref()
         .ok_or_else(linuxdo_credit_config_unavailable)?;
-    let money = tavily_hikari::format_linuxdo_credit_money(money_cents);
+    let money = tavily_hikari::format_linuxdo_credit_money(final_money_cents);
     let mut submit_params = vec![
         ("client_id", client_id.to_string()),
         ("type", "ldcpay".to_string()),
@@ -2056,7 +2057,7 @@ async fn get_linuxdo_credit_notify(
     if !paid {
         return Err((StatusCode::BAD_REQUEST, "trade not successful".to_string()));
     }
-    let expected_money = tavily_hikari::format_linuxdo_credit_money(order.money_cents);
+    let expected_money = tavily_hikari::format_linuxdo_credit_money(order.final_money_cents);
     if query.money.as_deref() != Some(expected_money.as_str()) {
         return Err((StatusCode::BAD_REQUEST, "money mismatch".to_string()));
     }
