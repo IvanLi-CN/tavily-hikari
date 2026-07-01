@@ -487,7 +487,7 @@ async fn dual_active_peer_runtime_baseline_does_not_delete_local_rows() {
 }
 
 #[tokio::test]
-async fn dual_active_peer_runtime_sync_preserves_local_mutable_quota_counters() {
+async fn dual_active_peer_runtime_sync_merges_mutable_quota_counter_deltas() {
     let runtime_baseline_ndjson = [
         serde_json::json!({
             "schemaVersion": 2,
@@ -727,7 +727,7 @@ async fn dual_active_peer_runtime_sync_preserves_local_mutable_quota_counters() 
         &[tavily_hikari::HaSyncChannel::Runtime],
     )
     .await
-    .expect("dual-active peer sync should preserve mutable quota counters");
+    .expect("dual-active peer sync should merge mutable quota counters");
 
     let month_count: i64 =
         sqlx::query_scalar("SELECT month_count FROM auth_token_quota WHERE token_id = ?")
@@ -735,7 +735,25 @@ async fn dual_active_peer_runtime_sync_preserves_local_mutable_quota_counters() 
             .fetch_one(&pool)
             .await
             .expect("read local auth token quota");
-    assert_eq!(month_count, 7);
+    assert_eq!(month_count, 108);
+
+    run_ha_sync_once_for_peer(
+        &state,
+        &client,
+        &format!("http://{source_addr}"),
+        "node-b",
+        "test-token",
+        &[tavily_hikari::HaSyncChannel::Runtime],
+    )
+    .await
+    .expect("dual-active peer sync should not double-apply stable peer counters");
+    let month_count_after_replay: i64 =
+        sqlx::query_scalar("SELECT month_count FROM auth_token_quota WHERE token_id = ?")
+            .bind("tok-runtime-preserve")
+            .fetch_one(&pool)
+            .await
+            .expect("read local auth token quota after replay");
+    assert_eq!(month_count_after_replay, 108);
 
     let imported_sessions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM mcp_sessions WHERE proxy_session_id IN ('sess-peer-runtime-baseline', 'sess-peer-runtime-event')",

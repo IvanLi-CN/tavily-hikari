@@ -2063,6 +2063,305 @@ fn bind_json_value<'q>(
     }
 }
 
+#[derive(Debug)]
+enum HaRuntimeCounterFields {
+    AuthTokenQuota {
+        token_id: String,
+        month_start: i64,
+    },
+    AccountMonthlyQuota {
+        user_id: String,
+        month_start: i64,
+    },
+    TokenUsageBucket {
+        token_id: String,
+        bucket_start: i64,
+        granularity: String,
+    },
+    AccountUsageBucket {
+        user_id: String,
+        bucket_start: i64,
+        granularity: String,
+    },
+}
+
+#[derive(Debug)]
+struct HaRuntimeCounterImport {
+    resource_id: String,
+    counter_scope: String,
+    counter_value: i64,
+    fields: HaRuntimeCounterFields,
+}
+
+fn ha_json_string_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    table: &str,
+    field: &str,
+) -> Result<String, ProxyError> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ProxyError::Other(format!("HA counter payload missing {field} for {table}")))
+}
+
+fn ha_json_i64_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    table: &str,
+    field: &str,
+) -> Result<i64, ProxyError> {
+    let Some(value) = object.get(field) else {
+        return Err(ProxyError::Other(format!(
+            "HA counter payload missing {field} for {table}"
+        )));
+    };
+    let parsed = value.as_i64().or_else(|| {
+        value
+            .as_u64()
+            .and_then(|value| i64::try_from(value).ok())
+    }).or_else(|| value.as_str().and_then(|value| value.trim().parse::<i64>().ok()));
+    parsed.ok_or_else(|| {
+        ProxyError::Other(format!(
+            "HA counter payload has invalid {field} for {table}"
+        ))
+    })
+}
+
+fn ha_runtime_counter_import_for_row(
+    table: &str,
+    row: &serde_json::Value,
+) -> Result<Option<HaRuntimeCounterImport>, ProxyError> {
+    let Some(object) = row.as_object() else {
+        return Ok(None);
+    };
+    let counter = match table {
+        "auth_token_quota" => {
+            let token_id = ha_json_string_field(object, table, "token_id")?;
+            let month_start = ha_json_i64_field(object, table, "month_start")?;
+            let counter_value = ha_json_i64_field(object, table, "month_count")?;
+            HaRuntimeCounterImport {
+                resource_id: token_id.clone(),
+                counter_scope: month_start.to_string(),
+                counter_value,
+                fields: HaRuntimeCounterFields::AuthTokenQuota {
+                    token_id,
+                    month_start,
+                },
+            }
+        }
+        "account_monthly_quota" => {
+            let user_id = ha_json_string_field(object, table, "user_id")?;
+            let month_start = ha_json_i64_field(object, table, "month_start")?;
+            let counter_value = ha_json_i64_field(object, table, "month_count")?;
+            HaRuntimeCounterImport {
+                resource_id: user_id.clone(),
+                counter_scope: month_start.to_string(),
+                counter_value,
+                fields: HaRuntimeCounterFields::AccountMonthlyQuota {
+                    user_id,
+                    month_start,
+                },
+            }
+        }
+        "token_usage_buckets" => {
+            let token_id = ha_json_string_field(object, table, "token_id")?;
+            let bucket_start = ha_json_i64_field(object, table, "bucket_start")?;
+            let granularity = ha_json_string_field(object, table, "granularity")?;
+            let counter_value = ha_json_i64_field(object, table, "count")?;
+            HaRuntimeCounterImport {
+                resource_id: token_id.clone(),
+                counter_scope: format!("{granularity}:{bucket_start}"),
+                counter_value,
+                fields: HaRuntimeCounterFields::TokenUsageBucket {
+                    token_id,
+                    bucket_start,
+                    granularity,
+                },
+            }
+        }
+        "account_usage_buckets" => {
+            let user_id = ha_json_string_field(object, table, "user_id")?;
+            let bucket_start = ha_json_i64_field(object, table, "bucket_start")?;
+            let granularity = ha_json_string_field(object, table, "granularity")?;
+            let counter_value = ha_json_i64_field(object, table, "count")?;
+            HaRuntimeCounterImport {
+                resource_id: user_id.clone(),
+                counter_scope: format!("{granularity}:{bucket_start}"),
+                counter_value,
+                fields: HaRuntimeCounterFields::AccountUsageBucket {
+                    user_id,
+                    bucket_start,
+                    granularity,
+                },
+            }
+        }
+        _ => return Ok(None),
+    };
+    if counter.counter_value < 0 {
+        return Err(ProxyError::Other(format!(
+            "HA counter payload has negative count for {table}"
+        )));
+    }
+    Ok(Some(counter))
+}
+
+async fn merge_peer_runtime_counter_on_conn(
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    peer_node_id: &str,
+    channel: HaSyncChannel,
+    table: &str,
+    op: &str,
+    row: &serde_json::Value,
+) -> Result<bool, ProxyError> {
+    if channel != HaSyncChannel::Runtime {
+        return Ok(false);
+    }
+    let Some(counter) = ha_runtime_counter_import_for_row(table, row)? else {
+        return Ok(false);
+    };
+    if op == "delete" {
+        return Ok(true);
+    }
+    if op != "upsert" {
+        return Ok(false);
+    }
+    let previous = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT counter_value
+        FROM ha_runtime_counter_imports
+        WHERE peer_node_id = ? AND resource = ? AND resource_id = ? AND counter_scope = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(peer_node_id)
+    .bind(table)
+    .bind(&counter.resource_id)
+    .bind(&counter.counter_scope)
+    .fetch_optional(&mut **conn)
+    .await?
+    .unwrap_or(0);
+    let delta = counter.counter_value.saturating_sub(previous).max(0);
+    let shadow_value = previous.max(counter.counter_value);
+    sqlx::query(
+        r#"
+        INSERT INTO ha_runtime_counter_imports (
+            peer_node_id, resource, resource_id, counter_scope, counter_value, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+        ON CONFLICT(peer_node_id, resource, resource_id, counter_scope) DO UPDATE SET
+            counter_value = excluded.counter_value,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(peer_node_id)
+    .bind(table)
+    .bind(&counter.resource_id)
+    .bind(&counter.counter_scope)
+    .bind(shadow_value)
+    .execute(&mut **conn)
+    .await?;
+    if delta <= 0 {
+        return Ok(true);
+    }
+    match counter.fields {
+        HaRuntimeCounterFields::AuthTokenQuota {
+            token_id,
+            month_start,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO auth_token_quota (token_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    month_start = CASE
+                        WHEN excluded.month_start > auth_token_quota.month_start THEN excluded.month_start
+                        ELSE auth_token_quota.month_start
+                    END,
+                    month_count = CASE
+                        WHEN excluded.month_start > auth_token_quota.month_start THEN excluded.month_count
+                        WHEN excluded.month_start < auth_token_quota.month_start THEN auth_token_quota.month_count
+                        ELSE auth_token_quota.month_count + excluded.month_count
+                    END
+                "#,
+            )
+            .bind(token_id)
+            .bind(month_start)
+            .bind(delta)
+            .execute(&mut **conn)
+            .await?;
+        }
+        HaRuntimeCounterFields::AccountMonthlyQuota {
+            user_id,
+            month_start,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    month_start = CASE
+                        WHEN excluded.month_start > account_monthly_quota.month_start THEN excluded.month_start
+                        ELSE account_monthly_quota.month_start
+                    END,
+                    month_count = CASE
+                        WHEN excluded.month_start > account_monthly_quota.month_start THEN excluded.month_count
+                        WHEN excluded.month_start < account_monthly_quota.month_start THEN account_monthly_quota.month_count
+                        ELSE account_monthly_quota.month_count + excluded.month_count
+                    END
+                "#,
+            )
+            .bind(user_id)
+            .bind(month_start)
+            .bind(delta)
+            .execute(&mut **conn)
+            .await?;
+        }
+        HaRuntimeCounterFields::TokenUsageBucket {
+            token_id,
+            bucket_start,
+            granularity,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(token_id, bucket_start, granularity) DO UPDATE SET
+                    count = token_usage_buckets.count + excluded.count
+                "#,
+            )
+            .bind(token_id)
+            .bind(bucket_start)
+            .bind(granularity)
+            .bind(delta)
+            .execute(&mut **conn)
+            .await?;
+        }
+        HaRuntimeCounterFields::AccountUsageBucket {
+            user_id,
+            bucket_start,
+            granularity,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, bucket_start, granularity) DO UPDATE SET
+                    count = account_usage_buckets.count + excluded.count
+                "#,
+            )
+            .bind(user_id)
+            .bind(bucket_start)
+            .bind(granularity)
+            .bind(delta)
+            .execute(&mut **conn)
+            .await?;
+        }
+    }
+    Ok(true)
+}
+
 fn parse_ha_node_role(value: &str) -> Option<HaNodeRole> {
     match value {
         "full_master" => Some(HaNodeRole::FullMaster),
@@ -2075,6 +2374,22 @@ fn parse_ha_node_role(value: &str) -> Option<HaNodeRole> {
 
 impl HaBaselineApplySession {
     pub async fn apply_line(&mut self, line: &str) -> Result<(), ProxyError> {
+        self.apply_line_inner(line, None).await
+    }
+
+    pub async fn apply_line_with_peer_runtime_counter_merge(
+        &mut self,
+        line: &str,
+        peer_node_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.apply_line_inner(line, Some(peer_node_id)).await
+    }
+
+    async fn apply_line_inner(
+        &mut self,
+        line: &str,
+        peer_runtime_counter_merge_node_id: Option<&str>,
+    ) -> Result<(), ProxyError> {
         self.payload_bytes += line.len();
         let value: serde_json::Value = serde_json::from_str(line)
             .map_err(|err| ProxyError::Other(format!("invalid HA baseline NDJSON: {err}")))?;
@@ -2101,7 +2416,23 @@ impl HaBaselineApplySession {
                 self.payload_bytes += serde_json::to_vec(&data)
                     .map(|bytes| bytes.len())
                     .unwrap_or_default();
-                insert_json_row_on_conn(&mut self.conn, self.channel, resource, &data).await?;
+                let merged_counter =
+                    if let Some(peer_node_id) = peer_runtime_counter_merge_node_id {
+                        merge_peer_runtime_counter_on_conn(
+                            &mut self.conn,
+                            peer_node_id,
+                            self.channel,
+                            resource,
+                            "upsert",
+                            &data,
+                        )
+                        .await?
+                    } else {
+                        false
+                    };
+                if !merged_counter {
+                    insert_json_row_on_conn(&mut self.conn, self.channel, resource, &data).await?;
+                }
                 self.row_count += 1;
             }
             Some("baseline_end") => {
@@ -2165,6 +2496,22 @@ impl HaBaselineApplySession {
 
 impl HaEventsApplySession {
     pub async fn apply_line(&mut self, line: &str) -> Result<(), ProxyError> {
+        self.apply_line_inner(line, None).await
+    }
+
+    pub async fn apply_line_with_peer_runtime_counter_merge(
+        &mut self,
+        line: &str,
+        peer_node_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.apply_line_inner(line, Some(peer_node_id)).await
+    }
+
+    async fn apply_line_inner(
+        &mut self,
+        line: &str,
+        peer_runtime_counter_merge_node_id: Option<&str>,
+    ) -> Result<(), ProxyError> {
         self.payload_bytes += line.len();
         let value: serde_json::Value = serde_json::from_str(line)
             .map_err(|err| ProxyError::Other(format!("invalid HA events NDJSON: {err}")))?;
@@ -2204,25 +2551,46 @@ impl HaEventsApplySession {
                     .and_then(serde_json::Value::as_i64)
                     .unwrap_or(self.high_watermark)
                     .max(self.high_watermark);
-                match op {
-                    "delete" => {
-                        delete_json_row_on_conn(
+                let merged_counter =
+                    if let Some(peer_node_id) = peer_runtime_counter_merge_node_id {
+                        merge_peer_runtime_counter_on_conn(
                             &mut self.conn,
+                            peer_node_id,
                             self.channel,
                             resource,
-                            resource_id,
+                            op,
                             &payload,
                         )
                         .await?
-                    }
-                    "upsert" => {
-                        insert_json_row_on_conn(&mut self.conn, self.channel, resource, &payload)
+                    } else {
+                        false
+                    };
+                if !merged_counter {
+                    match op {
+                        "delete" => {
+                            delete_json_row_on_conn(
+                                &mut self.conn,
+                                self.channel,
+                                resource,
+                                resource_id,
+                                &payload,
+                            )
                             .await?
-                    }
-                    other => {
-                        return Err(ProxyError::Other(format!(
-                            "unsupported HA event operation: {other}"
-                        )));
+                        }
+                        "upsert" => {
+                            insert_json_row_on_conn(
+                                &mut self.conn,
+                                self.channel,
+                                resource,
+                                &payload,
+                            )
+                            .await?
+                        }
+                        other => {
+                            return Err(ProxyError::Other(format!(
+                                "unsupported HA event operation: {other}"
+                            )));
+                        }
                     }
                 }
                 self.row_count += 1;

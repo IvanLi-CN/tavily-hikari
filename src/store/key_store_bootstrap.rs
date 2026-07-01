@@ -2785,6 +2785,21 @@ impl KeyStore {
         sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS ha_runtime_counter_imports (
+                peer_node_id TEXT NOT NULL,
+                resource TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                counter_scope TEXT NOT NULL,
+                counter_value INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (peer_node_id, resource, resource_id, counter_scope)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
         for sql in [
             r#"CREATE INDEX IF NOT EXISTS idx_ha_outbox_resource
                ON ha_outbox(resource, resource_id, seq)"#,
