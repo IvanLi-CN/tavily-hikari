@@ -144,7 +144,7 @@ async fn account_entitlements_add_monthly_and_permanent_quota_without_frontend_l
 
     let bulk_deltas = proxy
         .key_store
-        .sum_account_entitlement_deltas_for_users(&[user.user_id.clone()], month_start)
+        .sum_account_entitlement_deltas_for_users(std::slice::from_ref(&user.user_id), month_start)
         .await
         .expect("bulk entitlement deltas");
     let (monthly_delta, permanent_delta) = bulk_deltas
