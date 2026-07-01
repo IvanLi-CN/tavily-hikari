@@ -386,16 +386,17 @@ impl KeyStore {
             });
         }
 
-        let recharge_credits = self
-            .sum_linuxdo_credit_recharge_entitlements_for_month(
-                user_id,
-                start_of_local_month_utc_ts(self.backend_time.local_now()),
-            )
-            .await?;
+        let current_month_start = start_of_local_month_utc_ts(self.backend_time.local_now());
         let effective = build_account_quota_resolution_with_recharge(
             base_limits,
             self.list_user_tag_bindings_for_user(user_id).await?,
-            linuxdo_credit_recharge_quota_delta(recharge_credits),
+            self.sum_account_entitlement_deltas_for_month(user_id, current_month_start)
+                .await?,
+            self.sum_account_entitlement_deltas_for_scope(
+                user_id,
+                ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT,
+            )
+            .await?,
         )
         .effective;
         Ok(Some((known_since.unwrap_or(user_created_at), effective)))

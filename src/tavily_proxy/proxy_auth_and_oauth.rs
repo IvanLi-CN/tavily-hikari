@@ -1200,6 +1200,44 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn account_entitlement_summary(
+        &self,
+        user_id: &str,
+    ) -> Result<AccountEntitlementSummary, ProxyError> {
+        self.key_store
+            .account_entitlement_summary_for_user(
+                user_id,
+                start_of_local_month_utc_ts(self.backend_time.local_now()),
+            )
+            .await
+    }
+
+    pub async fn list_account_entitlements(
+        &self,
+        user_id: &str,
+        scope_kind: Option<&str>,
+        start_month: Option<i64>,
+        end_month_before: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AccountEntitlementRecord>, ProxyError> {
+        self.key_store
+            .list_account_entitlements_for_user(
+                user_id,
+                scope_kind,
+                start_month,
+                end_month_before,
+                limit,
+            )
+            .await
+    }
+
+    pub async fn create_account_entitlement(
+        &self,
+        record: &AccountEntitlementRecord,
+    ) -> Result<AccountEntitlementRecord, ProxyError> {
+        self.key_store.create_account_entitlement(record).await
+    }
+
     pub async fn has_linuxdo_credit_recharge_orders(&self) -> Result<bool, ProxyError> {
         self.key_store.has_linuxdo_credit_recharge_orders().await
     }

@@ -18,6 +18,10 @@ pub const LINUXDO_CREDIT_RECHARGE_TEST_MONTHS: i64 = 1;
 pub const LINUXDO_CREDIT_RECHARGE_TEST_PRICE_CENTS: i64 = 100;
 pub const LINUXDO_CREDIT_RECHARGE_HOURLY_PER_1000_CREDITS: i64 = 20;
 pub const LINUXDO_CREDIT_RECHARGE_DAILY_PER_1000_CREDITS: i64 = 100;
+pub const ACCOUNT_ENTITLEMENT_SCOPE_MONTH: &str = "month";
+pub const ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT: &str = "permanent";
+pub const ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE: &str = "recharge";
+pub const ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN: &str = "admin";
 
 #[derive(Debug, Clone)]
 pub struct LinuxDoCreditRechargeOrder {
@@ -87,10 +91,36 @@ pub struct LinuxDoCreditRechargeEntitlement {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountEntitlementRecord {
+    pub id: i64,
+    pub user_id: String,
+    pub scope_kind: String,
+    pub month_start: i64,
+    pub business_calls_1h_delta: i64,
+    pub daily_credits_delta: i64,
+    pub monthly_credits_delta: i64,
+    pub backend_note: String,
+    pub frontend_note: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub actor_user_id: Option<String>,
+    pub actor_display_name: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LinuxDoCreditRechargeSummary {
     pub current_month_start: i64,
     pub current_month_entitlement_credits: i64,
+    pub effective_until_month_start: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountEntitlementSummary {
+    pub current_month_start: i64,
+    pub current_month_delta: LinuxDoCreditRechargeQuotaDelta,
+    pub current_permanent_delta: LinuxDoCreditRechargeQuotaDelta,
     pub effective_until_month_start: Option<i64>,
 }
 

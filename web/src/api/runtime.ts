@@ -13,6 +13,7 @@ import type {
   UpdateSystemSettingsPayload,
 } from './systemSettingsTypes'
 import type { AuthToken, AuthTokenSecret } from './tokens'
+import type { AdminUserEntitlements } from './accountEntitlements'
 import {
   normalizeUserDashboard,
   normalizeUserDashboardOverview,
@@ -2094,6 +2095,7 @@ export interface AdminUserDetail extends AdminUserSummary {
   effectiveQuota: AdminQuotaLimitSet
   quotaBreakdown: AdminUserQuotaBreakdownEntry[]
   recharge: AdminUserRechargeAudit
+  entitlements: AdminUserEntitlements
   recentIpAddresses24h: string[]
   recentIpAddresses7d: string[]
   recentIpTimeline7d: AdminUserIpTimelineEntry[]

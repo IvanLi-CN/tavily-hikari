@@ -40,7 +40,6 @@ import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../.
 import AdminReturnToConsoleLink from '../../components/AdminReturnToConsoleLink'
 import AdminTablePagination from '../../components/AdminTablePagination'
 import JobKeyLink from '../../components/JobKeyLink'
-import QuotaRangeField from '../../components/QuotaRangeField'
 import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../../components/AdminSidebarUtility'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
 import { StatusBadge, type StatusTone } from '../../components/StatusBadge'
@@ -87,8 +86,7 @@ import AdminJobTriggerMenu from '../AdminJobTriggerMenu'
 import AdminUserRankingsPage, { RankingsMeta } from '../AdminUserRankingsPage'
 import PressureAnalysisScreen from '../PressureAnalysisScreen'
 import DashboardOverview, { type DashboardMetricCard } from '../DashboardOverview'
-import { UserDetailQuotaBreakdown } from '../UserDetailQuotaBreakdown'
-import { UserRechargeQuotaCalendar } from '../UserRechargeQuotaCalendar'
+import { AdminUserDetailQuotaWorkspace } from '../AdminUserDetailQuotaWorkspace'
 import { UserDetailSharedUsagePanel } from '../UserDetailSharedUsagePanel'
 import { UserDetailTokenTable } from '../UserDetailTokenTable'
 import {
@@ -124,21 +122,15 @@ import {
   stickyUsersStoryTotal,
 } from '../keyStickyStoryData'
 import {
-  buildQuotaSliderTrack,
-  clampQuotaSliderStageIndex,
   createQuotaSliderSeed,
-  formatQuotaDraftInput,
-  getQuotaSliderStagePosition,
-  getQuotaSliderStageValue,
   normalizeQuotaDraftInput,
-  parseQuotaDraftValue,
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from '../quotaSlider'
 import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
 import AdminOverlayHost from '../AdminOverlayHost'
 import AnnouncementsModule from '../AnnouncementsModule'
-import { createStoryUserRechargeAudit } from './userRechargeFixtures'
+import { createStoryUserEntitlements, createStoryUserRechargeAudit } from './userRechargeFixtures'
 import { rankingsStoryEmptySnapshot, rankingsStorySnapshot } from '../rankingsStoryData'
 const now = 1_762_380_000
 const pressureStoryNow = now + 33_600
@@ -1622,6 +1614,7 @@ const MOCK_USER_DETAIL: AdminUserDetail = {
     },
   ],
   recharge: createStoryUserRechargeAudit(now),
+  entitlements: createStoryUserEntitlements(now, MOCK_USERS[0].userId),
 }
 
 const MOCK_USER_DETAIL_SINGLE_TOKEN: AdminUserDetail = {
@@ -5997,109 +5990,66 @@ function UserDetailPageCanvas({
           })}
         </div>
       </section>
-      <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h2>{users.quota.title}</h2>
-            <p className="panel-description">{users.quota.description}</p>
-          </div>
-          <StatusBadge tone={detail.quotaBase.inheritsDefaults ? 'info' : 'neutral'}>
-            {detail.quotaBase.inheritsDefaults ? users.quota.inheritsDefaults : users.quota.customized}
-          </StatusBadge>
-        </div>
-        <div className="quota-grid" style={{ marginTop: 12 }}>
-          {([
-            {
-              field: 'businessCalls1hLimit',
-              label: users.quota.hourly,
-              used: detail.businessCalls1h.totalCount,
-              currentLimit: detail.quotaBase.businessCalls1hLimit,
+      <AdminUserDetailQuotaWorkspace
+        detail={detail}
+        usersStrings={users}
+        rechargeStrings={admin.recharges.userDetail}
+        language={language}
+        quotaDraft={quotaDraft}
+        quotaSnapshot={quotaSnapshot}
+        quotaSavedAt={now * 1000}
+        savingQuota={false}
+        hasBlockAllTag={hasBlockAllTag}
+        formatNumber={formatNumber}
+        formatQuotaLimitValue={formatQuotaLimitValue}
+        formatSignedQuotaDelta={formatSignedQuotaDelta}
+        formatSaveTime={(date) => date.toLocaleTimeString(language === 'zh' ? 'zh-CN' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
+        onQuotaDraftChange={(field, value) => {
+          const normalizedValue = normalizeQuotaDraftInput(value)
+          if (normalizedValue == null) return
+          setQuotaDraft((prev) => ({ ...prev, [field]: normalizedValue }))
+        }}
+        onSaveQuota={() => undefined}
+        onCreateEntitlement={async (_userId, payload) => {
+          const createdAt = Math.floor(Date.now() / 1000)
+          const nextItem = {
+            id: createdAt,
+            userId: detail.userId,
+            scopeKind: payload.scopeKind,
+            monthStart: payload.scopeKind === 'month' ? payload.monthStart ?? detail.entitlements.currentMonthStart : 0,
+            businessCalls1hDelta: payload.businessCalls1hDelta,
+            dailyCreditsDelta: payload.dailyCreditsDelta,
+            monthlyCreditsDelta: payload.monthlyCreditsDelta,
+            backendNote: payload.backendNote,
+            frontendNote: payload.frontendNote,
+            sourceKind: 'admin',
+            sourceId: `storybook:${createdAt}`,
+            actorUserId: null,
+            actorDisplayName: 'storybook-admin',
+            createdAt,
+          }
+          setDetail((current) => ({
+            ...current,
+            entitlements: {
+              ...current.entitlements,
+              items: [nextItem, ...current.entitlements.items],
             },
-            {
-              field: 'dailyCreditsLimit',
-              label: users.quota.daily,
-              used: detail.dailyCreditsUsed,
-              currentLimit: detail.quotaBase.dailyCreditsLimit,
-            },
-            {
-              field: 'monthlyCreditsLimit',
-              label: users.quota.monthly,
-              used: detail.monthlyCreditsUsed,
-              currentLimit: detail.quotaBase.monthlyCreditsLimit,
-            },
-          ] as const).map((item) => {
-            const sliderSeed = quotaSnapshot[item.field]
-            const draftValue = quotaDraft[item.field]
-            const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
-            const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
-            return (
-              <QuotaRangeField
-                key={item.field}
-                label={item.label}
-                sliderName={`${item.field}-slider`}
-                sliderMin={0}
-                sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
-                sliderValue={sliderPosition}
-                sliderAriaLabel={item.label}
-                helperText={
-                  <>
-                    {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
-                  </>
-                }
-                sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
-                onSliderChange={(nextValue) => setQuotaDraft((prev) => ({
-                  ...prev,
-                  [item.field]: String(
-                    getQuotaSliderStageValue(
-                      sliderSeed.stages,
-                      clampQuotaSliderStageIndex(sliderSeed.stages, nextValue),
-                    ),
-                  ),
-                }))}
-                inputName={item.field}
-                inputValue={formatQuotaDraftInput(draftValue)}
-                inputAriaLabel={`${item.label} input`}
-                onInputChange={(nextValue) => {
-                  const normalizedValue = normalizeQuotaDraftInput(nextValue)
-                  if (normalizedValue == null) return
-                  setQuotaDraft((prev) => ({
-                    ...prev,
-                    [item.field]: normalizedValue,
-                  }))
-                }}
-              />            )
-          })}
-        </div>
-      </section>
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{users.effectiveQuota.title}</h2>
-            <p className="panel-description">{users.effectiveQuota.description}</p>
-          </div>
-        </div>
-        {hasBlockAllTag && <div className="alert alert-warning">{users.effectiveQuota.blockAllNotice}</div>}
-        <div className="token-info-grid">
-          {([
-            ['hourly', users.quota.hourly, detail.effectiveQuota.businessCalls1hLimit],
-            ['daily', users.quota.daily, detail.effectiveQuota.dailyCreditsLimit],
-            ['monthly', users.quota.monthly, detail.effectiveQuota.monthlyCreditsLimit],
-          ] as const).map(([key, label, value]) => (
-            <div className="token-info-card" key={key}>
-              <span className="token-info-label">{label}</span>
-              <span className="token-info-value">{formatQuotaLimitValue(value)}</span>
-            </div>
-          ))}
-        </div>
-        <UserDetailQuotaBreakdown
-          entries={detail.quotaBreakdown}
-          usersStrings={users}
-          language={language}
-          formatQuotaLimitValue={formatQuotaLimitValue}
-          formatSignedQuotaDelta={formatSignedQuotaDelta}
-        />
-      </section>
-      <UserRechargeQuotaCalendar detail={detail} strings={admin.recharges.userDetail} language={language} formatNumber={formatNumber} />
+          }))
+          return nextItem
+        }}
+        onFetchEntitlements={async (_userId, filters) => {
+          const startMonth = filters.startMonth ?? null
+          const endMonthBefore = filters.endMonthBefore ?? null
+          return detail.entitlements.items.filter((item) => {
+            if (filters.scopeKind && filters.scopeKind !== 'all' && item.scopeKind !== filters.scopeKind) return false
+            if (item.scopeKind === 'permanent') return true
+            if (startMonth != null && item.monthStart < startMonth) return false
+            if (endMonthBefore != null && item.monthStart >= endMonthBefore) return false
+            return true
+          })
+        }}
+        onRefreshDetail={async () => undefined}
+      />
       <section className="surface panel">
         <UserDetailSharedUsagePanel
           usersStrings={users}
@@ -7040,6 +6990,21 @@ export const UserDetail: Story = {
     }
     if (!canvasElement.textContent?.includes('账户共享请求限流、每小时业务请求次数、积分消耗与 IP 活跃趋势。')) {
       throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
+    }
+    if (!canvasElement.textContent?.includes('账号权益账本')) {
+      throw new Error('Expected user detail story to render the account entitlements workspace.')
+    }
+    if (!canvasElement.textContent?.includes('story monthly entitlement') || !canvasElement.textContent?.includes('story permanent entitlement')) {
+      throw new Error('Expected user detail story to render monthly and permanent entitlement rows.')
+    }
+    const addEntitlementButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === '新增权益')
+    if (!addEntitlementButton) {
+      throw new Error('Expected user detail story to render an add entitlement dialog trigger.')
+    }
+    addEntitlementButton.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    if (!document.body.textContent?.includes('后台备注') || !document.body.textContent?.includes('前台备注')) {
+      throw new Error('Expected the entitlement dialog to render both entitlement note fields after opening.')
     }
 
     const bindingToolbar = canvasElement.querySelector<HTMLElement>('.user-tag-binding-toolbar')

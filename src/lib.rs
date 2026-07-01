@@ -2122,13 +2122,15 @@ fn build_account_quota_resolution(
         base,
         tags,
         LinuxDoCreditRechargeQuotaDelta::default(),
+        LinuxDoCreditRechargeQuotaDelta::default(),
     )
 }
 
 fn build_account_quota_resolution_with_recharge(
     base: AccountQuotaLimits,
     tags: Vec<UserTagBindingRecord>,
-    recharge_delta: LinuxDoCreditRechargeQuotaDelta,
+    monthly_entitlement_delta: LinuxDoCreditRechargeQuotaDelta,
+    permanent_entitlement_delta: LinuxDoCreditRechargeQuotaDelta,
 ) -> AccountQuotaResolution {
     let mut effective = base.clone();
     let mut breakdown = vec![AccountQuotaBreakdownRecord {
@@ -2176,27 +2178,61 @@ fn build_account_quota_resolution_with_recharge(
         );
     }
 
-    if recharge_delta.monthly_delta > 0 {
+    if monthly_entitlement_delta.hourly_delta != 0
+        || monthly_entitlement_delta.daily_delta != 0
+        || monthly_entitlement_delta.monthly_delta != 0
+    {
         breakdown.push(AccountQuotaBreakdownRecord {
-            kind: "recharge".to_string(),
-            label: "linuxdo_credit_recharge".to_string(),
+            kind: "entitlement_month".to_string(),
+            label: "account_entitlement_month".to_string(),
             tag_id: None,
             tag_name: None,
-            source: Some("linuxdo_credit".to_string()),
+            source: Some("account_entitlement".to_string()),
             effect_kind: "quota_delta".to_string(),
-            business_calls_1h_delta: recharge_delta.hourly_delta,
-            daily_credits_delta: recharge_delta.daily_delta,
-            monthly_credits_delta: recharge_delta.monthly_delta,
+            business_calls_1h_delta: monthly_entitlement_delta.hourly_delta,
+            daily_credits_delta: monthly_entitlement_delta.daily_delta,
+            monthly_credits_delta: monthly_entitlement_delta.monthly_delta,
         });
         effective.business_calls_1h_limit = apply_quota_delta(
             effective.business_calls_1h_limit,
-            recharge_delta.hourly_delta,
+            monthly_entitlement_delta.hourly_delta,
         );
-        effective.daily_credits_limit =
-            apply_quota_delta(effective.daily_credits_limit, recharge_delta.daily_delta);
+        effective.daily_credits_limit = apply_quota_delta(
+            effective.daily_credits_limit,
+            monthly_entitlement_delta.daily_delta,
+        );
         effective.monthly_credits_limit = apply_quota_delta(
             effective.monthly_credits_limit,
-            recharge_delta.monthly_delta,
+            monthly_entitlement_delta.monthly_delta,
+        );
+    }
+
+    if permanent_entitlement_delta.hourly_delta != 0
+        || permanent_entitlement_delta.daily_delta != 0
+        || permanent_entitlement_delta.monthly_delta != 0
+    {
+        breakdown.push(AccountQuotaBreakdownRecord {
+            kind: "entitlement_permanent".to_string(),
+            label: "account_entitlement_permanent".to_string(),
+            tag_id: None,
+            tag_name: None,
+            source: Some("account_entitlement".to_string()),
+            effect_kind: "quota_delta".to_string(),
+            business_calls_1h_delta: permanent_entitlement_delta.hourly_delta,
+            daily_credits_delta: permanent_entitlement_delta.daily_delta,
+            monthly_credits_delta: permanent_entitlement_delta.monthly_delta,
+        });
+        effective.business_calls_1h_limit = apply_quota_delta(
+            effective.business_calls_1h_limit,
+            permanent_entitlement_delta.hourly_delta,
+        );
+        effective.daily_credits_limit = apply_quota_delta(
+            effective.daily_credits_limit,
+            permanent_entitlement_delta.daily_delta,
+        );
+        effective.monthly_credits_limit = apply_quota_delta(
+            effective.monthly_credits_limit,
+            permanent_entitlement_delta.monthly_delta,
         );
     }
 

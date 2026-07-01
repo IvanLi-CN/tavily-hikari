@@ -1,28 +1,85 @@
 use super::*;
 
+const PUBLIC_METRICS_TEST_NOW: i64 = 1_700_000_000;
+
+async fn public_metrics_proxy(db_str: &str, key: &str) -> TavilyProxy {
+    let (backend_time, _) = BackendTime::manual_from_ts(PUBLIC_METRICS_TEST_NOW);
+    TavilyProxy::with_options_and_time(
+        vec![key.to_string()],
+        DEFAULT_UPSTREAM,
+        db_str,
+        TavilyProxyOptions::from_database_path(db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created")
+}
+
+async fn seed_public_metrics_request_log_floor(proxy: &TavilyProxy, month_start: i64) {
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            NULL,
+            NULL,
+            'GET',
+            '/api/tavily/search',
+            NULL,
+            500,
+            500,
+            'floor',
+            'error',
+            'api:search',
+            'API | search',
+            NULL,
+            NULL,
+            '[]',
+            '[]',
+            'visible',
+            ?
+        )
+        "#,
+    )
+    .bind(month_start)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert public metrics request log floor");
+}
+
 #[tokio::test]
 async fn public_success_breakdown_skips_flush_when_no_pending_request_stats() {
     let db_path = temp_db_path("public-success-breakdown-no-pending-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-no-pending".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-no-pending").await;
 
     proxy
         .key_store
         .set_meta_i64(
             META_KEY_REQUEST_STATS_LAST_FLUSHED_AT_V1,
-            Utc::now().timestamp(),
+            proxy.backend_time().now_ts(),
         )
         .await
         .expect("set request stats flush watermark");
 
-    let now = Utc::now().timestamp();
+    let now = proxy.backend_time().now_ts();
     let window = TimeRangeUtc {
         start: now.saturating_sub(300),
         end: now.saturating_add(60),
@@ -43,13 +100,7 @@ async fn public_success_breakdown_flushes_pending_request_stats_for_current_wind
     let db_path = temp_db_path("public-success-breakdown-pending-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-pending".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-pending").await;
 
     let key_id = proxy
         .list_api_key_metrics()
@@ -59,7 +110,9 @@ async fn public_success_breakdown_flushes_pending_request_stats_for_current_wind
         .next()
         .expect("seeded key")
         .id;
-    let now = Utc::now().timestamp();
+    let now = proxy.backend_time().now_ts();
+    let month_start = start_of_month(proxy.backend_time().now_utc()).timestamp();
+    seed_public_metrics_request_log_floor(&proxy, month_start).await;
     let window = TimeRangeUtc {
         start: now.saturating_sub(300),
         end: now.saturating_add(60),
@@ -97,13 +150,7 @@ async fn public_success_breakdown_flushes_when_newer_pending_rollup_is_inside_wi
     let db_path = temp_db_path("public-success-breakdown-mixed-pending-window");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-mixed-pending".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-mixed-pending").await;
 
     let key_id = proxy
         .list_api_key_metrics()
@@ -113,7 +160,9 @@ async fn public_success_breakdown_flushes_when_newer_pending_rollup_is_inside_wi
         .next()
         .expect("seeded key")
         .id;
-    let now = Utc::now().timestamp();
+    let now = proxy.backend_time().now_ts();
+    let month_start = start_of_month(proxy.backend_time().now_utc()).timestamp();
+    seed_public_metrics_request_log_floor(&proxy, month_start).await;
     let day_start = now.saturating_sub(300);
     let window = TimeRangeUtc {
         start: day_start,
@@ -169,13 +218,7 @@ async fn public_success_breakdown_flushes_when_pending_rollup_is_outside_day_but
     let db_path = temp_db_path("public-success-breakdown-month-only-pending");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-month-only-pending".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-month-only-pending").await;
 
     let key_id = proxy
         .list_api_key_metrics()
@@ -185,8 +228,9 @@ async fn public_success_breakdown_flushes_when_pending_rollup_is_outside_day_but
         .next()
         .expect("seeded key")
         .id;
-    let now = Utc::now();
+    let now = proxy.backend_time().now_utc();
     let month_start = start_of_month(now).timestamp();
+    seed_public_metrics_request_log_floor(&proxy, month_start).await;
     let day_window = server_local_day_window_utc(now.with_timezone(&Local));
     let pending_created_at = day_window.start.saturating_sub(120);
     assert!(pending_created_at >= month_start);
@@ -212,13 +256,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
     let db_path = temp_db_path("public-success-breakdown-concurrent-pending-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-concurrent-pending".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-concurrent-pending").await;
 
     let key_id = proxy
         .list_api_key_metrics()
@@ -228,7 +266,9 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
         .next()
         .expect("seeded key")
         .id;
-    let now = Utc::now().timestamp();
+    let now = proxy.backend_time().now_ts();
+    let month_start = start_of_month(proxy.backend_time().now_utc()).timestamp();
+    seed_public_metrics_request_log_floor(&proxy, month_start).await;
     let first_created_at = now.saturating_sub(60);
     let second_created_at = now.saturating_sub(10);
     let window = TimeRangeUtc {
@@ -317,13 +357,7 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
     let db_path = temp_db_path("public-success-breakdown-inflight-flush-wait");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-public-success-inflight-wait".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
+    let proxy = public_metrics_proxy(&db_str, "tvly-public-success-inflight-wait").await;
 
     let key_id = proxy
         .list_api_key_metrics()
@@ -333,7 +367,9 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
         .next()
         .expect("seeded key")
         .id;
-    let now = Utc::now().timestamp();
+    let now = proxy.backend_time().now_ts();
+    let month_start = start_of_month(proxy.backend_time().now_utc()).timestamp();
+    seed_public_metrics_request_log_floor(&proxy, month_start).await;
     let created_at = now.saturating_sub(10);
     let window = TimeRangeUtc {
         start: now.saturating_sub(300),

@@ -447,6 +447,10 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(multiMarkup).toContain('Add token')
     expect(multiMarkup).toContain('Delete token')
+    expect(multiMarkup).toContain('Account entitlements')
+    expect(multiMarkup).toContain('Add entitlement')
+    expect(multiMarkup).toContain('Manual monthly quota correction for story coverage.')
+    expect(multiMarkup).toContain('Permanent entitlement trim for story coverage.')
     expect(singleMarkup).toContain('Add token')
     expect(singleMarkup).toContain('At least one token must remain.')
   })

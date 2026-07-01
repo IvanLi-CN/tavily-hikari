@@ -1,4 +1,4 @@
-import type { AdminUserRechargeAudit } from '../../api'
+import type { AdminUserEntitlements, AdminUserRechargeAudit } from '../../api'
 
 function monthStartFor(nowSeconds: number): number {
   const now = new Date(nowSeconds * 1000)
@@ -58,6 +58,49 @@ export function createStoryUserRechargeAudit(nowSeconds: number): AdminUserRecha
       { id: 3, outTradeNo: 'ldc_story_paid_001', monthStart: addMonths(monthStart, 2), credits: 3_000, createdAt: paidAt },
       { id: 4, outTradeNo: 'ldc_story_only_002', monthStart, credits: 2_000, createdAt: refundOnlyPaidAt },
       { id: 5, outTradeNo: 'ldc_story_only_002', monthStart: addMonths(monthStart, 1), credits: 2_000, createdAt: refundOnlyPaidAt },
+    ],
+  }
+}
+
+export function createStoryUserEntitlements(nowSeconds: number, userId: string): AdminUserEntitlements {
+  const monthStart = monthStartFor(nowSeconds)
+  return {
+    currentMonthStart: monthStart,
+    currentMonthDelta: { businessCalls1hDelta: 45, dailyCreditsDelta: 280, monthlyCreditsDelta: 2_800 },
+    currentPermanentDelta: { businessCalls1hDelta: -5, dailyCreditsDelta: -20, monthlyCreditsDelta: -200 },
+    items: [
+      {
+        id: 81,
+        userId,
+        scopeKind: 'month',
+        monthStart,
+        businessCalls1hDelta: 45,
+        dailyCreditsDelta: 280,
+        monthlyCreditsDelta: 2_800,
+        backendNote: 'Manual monthly quota correction for story coverage.',
+        frontendNote: '补偿本月额度',
+        sourceKind: 'admin',
+        sourceId: 'story-admin-month',
+        actorUserId: null,
+        actorDisplayName: 'story-admin',
+        createdAt: nowSeconds - 3_600,
+      },
+      {
+        id: 82,
+        userId,
+        scopeKind: 'permanent',
+        monthStart: 0,
+        businessCalls1hDelta: -5,
+        dailyCreditsDelta: -20,
+        monthlyCreditsDelta: -200,
+        backendNote: 'Permanent entitlement trim for story coverage.',
+        frontendNote: '长期额度校准',
+        sourceKind: 'admin',
+        sourceId: 'story-admin-permanent',
+        actorUserId: null,
+        actorDisplayName: 'story-admin',
+        createdAt: nowSeconds - 7_200,
+      },
     ],
   }
 }

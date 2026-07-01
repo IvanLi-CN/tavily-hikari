@@ -763,6 +763,22 @@ async fn get_user_detail(
             eprintln!("get admin user recharge audit error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let entitlement_summary = state
+        .proxy
+        .account_entitlement_summary(&user.user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user entitlement summary error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let entitlement_items = state
+        .proxy
+        .list_account_entitlements(&user.user_id, None, None, None, 60)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user entitlements error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(AdminUserDetailView {
         user_id: user.user_id,
@@ -826,8 +842,159 @@ async fn get_user_detail(
                 .map(build_admin_user_recharge_entitlement_view)
                 .collect(),
         },
+        entitlements: AdminUserEntitlementsView {
+            current_month_start: entitlement_summary.current_month_start,
+            current_month_delta: build_admin_user_entitlement_delta_view(
+                entitlement_summary.current_month_delta,
+            ),
+            current_permanent_delta: build_admin_user_entitlement_delta_view(
+                entitlement_summary.current_permanent_delta,
+            ),
+            items: entitlement_items
+                .into_iter()
+                .map(build_admin_user_entitlement_view)
+                .collect(),
+        },
         tokens: token_items,
     }))
+}
+
+async fn list_user_entitlements(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<AdminUserEntitlementsQuery>,
+) -> Result<Json<ListUserEntitlementsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let Some(_) = state
+        .proxy
+        .get_admin_user_identity(&id)
+        .await
+        .map_err(|err| admin_proxy_error_response("get admin user identity error", err))?
+    else {
+        return Err((StatusCode::NOT_FOUND, "user not found".to_string()));
+    };
+    let scope_kind = q
+        .scope_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all");
+    if let Some(scope_kind) = scope_kind
+        && !matches!(
+            scope_kind,
+            tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_MONTH
+                | tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT
+        )
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid scopeKind".to_string()));
+    }
+    let items = state
+        .proxy
+        .list_account_entitlements(
+            &id,
+            scope_kind,
+            q.start_month,
+            q.end_month_before,
+            q.limit.unwrap_or(60),
+        )
+        .await
+        .map_err(|err| admin_proxy_error_response("list user entitlements error", err))?
+        .into_iter()
+        .map(build_admin_user_entitlement_view)
+        .collect();
+    Ok(Json(ListUserEntitlementsResponse { items }))
+}
+
+async fn create_user_entitlement(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<CreateUserEntitlementRequest>,
+) -> Result<(StatusCode, Json<AdminUserEntitlementView>), (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    require_full_master_write(state.as_ref()).await?;
+    let Some(_) = state
+        .proxy
+        .get_admin_user_identity(&id)
+        .await
+        .map_err(|err| admin_proxy_error_response("get admin user identity error", err))?
+    else {
+        return Err((StatusCode::NOT_FOUND, "user not found".to_string()));
+    };
+    let scope_kind = payload.scope_kind.trim();
+    let month_start = match scope_kind {
+        tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_MONTH => {
+            let Some(month_start) = payload.month_start else {
+                return Err((StatusCode::BAD_REQUEST, "monthStart is required".to_string()));
+            };
+            let Some(month_start) = canonical_account_entitlement_month_start(month_start) else {
+                return Err((StatusCode::BAD_REQUEST, "invalid monthStart".to_string()));
+            };
+            month_start
+        }
+        tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT => 0,
+        _ => return Err((StatusCode::BAD_REQUEST, "invalid scopeKind".to_string())),
+    };
+    let backend_note = payload.backend_note.trim();
+    let frontend_note = payload.frontend_note.trim();
+    if backend_note.is_empty() || frontend_note.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "backendNote and frontendNote are required".to_string(),
+        ));
+    }
+    if payload.business_calls_1h_delta == 0
+        && payload.daily_credits_delta == 0
+        && payload.monthly_credits_delta == 0
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "at least one entitlement delta must be non-zero".to_string(),
+        ));
+    }
+    let actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
+    let created_at = state.proxy.backend_time().now_ts();
+    let created = state
+        .proxy
+        .create_account_entitlement(&tavily_hikari::AccountEntitlementRecord {
+            id: 0,
+            user_id: id,
+            scope_kind: scope_kind.to_string(),
+            month_start,
+            business_calls_1h_delta: payload.business_calls_1h_delta,
+            daily_credits_delta: payload.daily_credits_delta,
+            monthly_credits_delta: payload.monthly_credits_delta,
+            backend_note: backend_note.to_string(),
+            frontend_note: frontend_note.to_string(),
+            source_kind: tavily_hikari::ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: format!("admin:{created_at}:{}", nanoid!(10)),
+            actor_user_id: actor.actor_user_id,
+            actor_display_name: actor.actor_display_name,
+            created_at,
+        })
+        .await
+        .map_err(|err| admin_proxy_error_response("create user entitlement error", err))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(build_admin_user_entitlement_view(created)),
+    ))
+}
+
+fn canonical_account_entitlement_month_start(month_start: i64) -> Option<i64> {
+    let month_time = Utc.timestamp_opt(month_start, 0).single()?;
+    let local_time = month_time.with_timezone(&Local);
+    let first_day = NaiveDate::from_ymd_opt(local_time.year(), local_time.month(), 1)?;
+    let naive = first_day.and_hms_opt(0, 0, 0)?;
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+            Some(dt.with_timezone(&Utc).timestamp())
+        }
+        chrono::LocalResult::None => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]

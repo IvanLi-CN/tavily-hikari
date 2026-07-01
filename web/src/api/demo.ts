@@ -4,6 +4,7 @@ import {
   demoUserAnnouncementHistory,
   handleAnnouncementsRoute,
 } from './demoAnnouncements'
+import { demoUserEntitlements } from './demoAccountEntitlements'
 import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRechargeAction, handleDemoAdminRecharges, type DemoRechargeOrder } from './demoAdminRecharge'
 import { createDemoHaStatus, handleDemoHaRoute } from './demoHa'
 import { rankingsStorySnapshot } from '../admin/rankingsStoryData'
@@ -1920,6 +1921,10 @@ function handleUserRoute(path: string, url: URL, method: string, init?: RequestI
   const match = path.match(/^\/api\/users\/([^/]+)/)
   const id = decodeURIComponent(match?.[1] ?? 'user-demo-admin')
   const user = demoState.users.find((item) => item.userId === id) ?? demoState.users[0]
+  if (path.endsWith('/entitlements')) {
+    if (method === 'GET') return jsonResponse({ items: demoUserEntitlements(user.userId).items })
+    if (method === 'POST') return jsonResponse(demoUserEntitlements(user.userId).items[0], 201)
+  }
   if (method !== 'GET') return noContentResponse()
   if (path.endsWith('/usage-series')) return jsonResponse({ limit: user.quotaHourlyLimit, points: range(24).map((index) => ({ bucketStart: nowSeconds(-(23 - index) * 3600), displayBucketStart: nowSeconds(-(23 - index) * 3600), value: 20 + index, limitValue: user.quotaHourlyLimit })) })
   if (path.endsWith('/broken-keys')) return jsonResponse({ ...buildListPage([{ keyId: DEMO_QUOTA_KEY_ID, currentStatus: 'exhausted', reasonCode: 'upstream_usage_limit_432', reasonSummary: 'Demo quota exhausted', latestBreakAt: nowSeconds(-4200), source: 'request_log', breakerTokenId: DEMO_TOKEN_ID, breakerUserId: user.userId, breakerUserDisplayName: user.displayName, manualActorDisplayName: null, relatedUsers: [] }], url) })
@@ -1930,6 +1935,7 @@ function handleUserRoute(path: string, url: URL, method: string, init?: RequestI
     quotaBase: { hourlyAnyLimit: 100, hourlyLimit: 100, dailyLimit: 1000, monthlyLimit: 10000, inheritsDefaults: true },
     effectiveQuota: { hourlyAnyLimit: user.hourlyAnyLimit, hourlyLimit: user.quotaHourlyLimit, dailyLimit: user.quotaDailyLimit, monthlyLimit: user.quotaMonthlyLimit, inheritsDefaults: false },
     quotaBreakdown: [],
+    entitlements: demoUserEntitlements(user.userId),
     businessCalls1h: user.businessCalls1h,
     recentIpAddresses24h: ['198.51.100.24', '203.0.113.45'],
     recentIpAddresses7d: ['198.51.100.24', '203.0.113.45', '192.0.2.14'],

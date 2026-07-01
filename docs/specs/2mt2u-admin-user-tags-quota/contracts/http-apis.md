@@ -65,8 +65,11 @@
   - `quotaBase: AdminQuotaView`
   - `effectiveQuota: AdminQuotaView`
   - `quotaBreakdown: AdminUserQuotaBreakdownView[]`
+  - `entitlements: AdminUserEntitlementsView`
 - Notes
   - 自动同步的 LinuxDo 系统标签会像其他 tag 一样出现在 `tags` 与 `quotaBreakdown` 中，并把默认 delta 叠加到 `effectiveQuota`。
+  - `effectiveQuota` 继续按“用户基线 + 全部标签 delta + 当前月权益 delta + 长期权益 delta”汇总。
+  - 当前月权益在 `quotaBreakdown` 中以 `entitlement_month` 行展示；长期权益以 `entitlement_permanent` 行展示。
   - `quotaBreakdown` 始终包含一条最终 `effective` 行，反映经过 `max(0, value)` 钳制后的最终有效额度。
   - 用户详情 summary / detail 对外只返回：
     - `requestRate`
@@ -74,6 +77,34 @@
     - `dailyCreditsUsed` / `dailyCreditsLimit`
     - `monthlyCreditsUsed` / `monthlyCreditsLimit`
   - 不再返回旧 `quotaHourly*`、`quotaDaily*`、`quotaMonthly*`、`hourlyAny*` 平铺字段。
+
+## GET `/api/users/:id/entitlements`
+
+- Auth: admin only
+- Query:
+  - `scopeKind`: optional `all|month|permanent`
+  - `startMonth`: optional Unix timestamp for monthly target-month lower bound
+  - `endMonthBefore`: optional Unix timestamp for monthly target-month exclusive upper bound
+- Response: `{ items: AdminUserEntitlementView[] }`
+- Monthly filters match entitlement target month. Permanent entitlements are visible unless the
+  request explicitly selects `month`.
+
+## POST `/api/users/:id/entitlements`
+
+- Auth: admin only with master write access
+- Body:
+  - `scopeKind: "month" | "permanent"`
+  - `monthStart?: number | null`
+  - `businessCalls1hDelta: number`
+  - `dailyCreditsDelta: number`
+  - `monthlyCreditsDelta: number`
+  - `backendNote: string`
+  - `frontendNote: string`
+- Semantics:
+  - Writes one append-only unified entitlement row.
+  - `monthStart` is required for monthly rows; permanent rows are stored with no target month.
+  - Positive and negative deltas are allowed; at least one delta must be non-zero.
+  - Both notes are required and admin-visible. `frontendNote` is not exposed in user-console APIs.
 
 ## PATCH `/api/users/:id/quota`
 

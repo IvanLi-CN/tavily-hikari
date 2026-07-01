@@ -9,6 +9,11 @@ import type {
   Paginated,
   RequestRate,
 } from './runtime'
+import type {
+  AdminUserEntitlement,
+  AdminUserEntitlementDelta,
+  AdminUserEntitlements,
+} from './accountEntitlements'
 
 type RecordLike = Record<string, unknown>
 
@@ -210,6 +215,47 @@ function normalizeAdminUserQuotaBreakdownEntry(value: unknown): AdminUserQuotaBr
   }
 }
 
+function normalizeAdminUserEntitlementDelta(value: unknown): AdminUserEntitlementDelta {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    businessCalls1hDelta: readNumber(source, 'businessCalls1hDelta', 'business_calls_1h_delta'),
+    dailyCreditsDelta: readNumber(source, 'dailyCreditsDelta', 'daily_credits_delta'),
+    monthlyCreditsDelta: readNumber(source, 'monthlyCreditsDelta', 'monthly_credits_delta'),
+  }
+}
+
+export function normalizeAdminUserEntitlement(value: unknown): AdminUserEntitlement {
+  const source = isRecordLike(value) ? value : {}
+  const rawScopeKind = readString(source, 'scopeKind', 'scope_kind')
+  return {
+    id: readNumber(source, 'id'),
+    userId: readString(source, 'userId', 'user_id'),
+    scopeKind: rawScopeKind === 'permanent' ? 'permanent' : 'month',
+    monthStart: readNumber(source, 'monthStart', 'month_start'),
+    businessCalls1hDelta: readNumber(source, 'businessCalls1hDelta', 'business_calls_1h_delta'),
+    dailyCreditsDelta: readNumber(source, 'dailyCreditsDelta', 'daily_credits_delta'),
+    monthlyCreditsDelta: readNumber(source, 'monthlyCreditsDelta', 'monthly_credits_delta'),
+    backendNote: readString(source, 'backendNote', 'backend_note'),
+    frontendNote: readString(source, 'frontendNote', 'frontend_note'),
+    sourceKind: readString(source, 'sourceKind', 'source_kind'),
+    sourceId: readString(source, 'sourceId', 'source_id'),
+    actorUserId: readNullableString(source, 'actorUserId', 'actor_user_id'),
+    actorDisplayName: readNullableString(source, 'actorDisplayName', 'actor_display_name'),
+    createdAt: readNumber(source, 'createdAt', 'created_at'),
+  }
+}
+
+function normalizeAdminUserEntitlements(value: unknown): AdminUserEntitlements {
+  const source = isRecordLike(value) ? value : {}
+  const itemsSource = source.items
+  return {
+    currentMonthStart: readNumber(source, 'currentMonthStart', 'current_month_start'),
+    currentMonthDelta: normalizeAdminUserEntitlementDelta(source.currentMonthDelta ?? source.current_month_delta),
+    currentPermanentDelta: normalizeAdminUserEntitlementDelta(source.currentPermanentDelta ?? source.current_permanent_delta),
+    items: Array.isArray(itemsSource) ? itemsSource.map(normalizeAdminUserEntitlement) : [],
+  }
+}
+
 export function normalizeAdminUserSummary(value: unknown): AdminUserSummary {
   const source = isRecordLike(value) ? value : {}
   const legacyHourlyAnyUsed = readNumber(source, 'hourlyAnyUsed', 'hourly_any_used')
@@ -294,6 +340,7 @@ export function normalizeAdminUserDetail(value: unknown): AdminUserDetail {
     recharge: isRecordLike(source.recharge)
       ? (source.recharge as unknown as AdminUserDetail['recharge'])
       : { currentMonthEntitlementCredits: 0, effectiveUntilMonthStart: null, orders: [], entitlements: [] },
+    entitlements: normalizeAdminUserEntitlements(source.entitlements),
     recentIpAddresses24h: Array.isArray(recentIpAddresses24hSource)
       ? recentIpAddresses24hSource.filter((item: unknown): item is string => typeof item === 'string')
       : [],

@@ -263,6 +263,7 @@ struct AdminUserDetailView {
     effective_quota: AdminQuotaView,
     quota_breakdown: Vec<AdminUserQuotaBreakdownView>,
     recharge: AdminUserRechargeAuditView,
+    entitlements: AdminUserEntitlementsView,
     tokens: Vec<AdminUserTokenSummaryView>,
 }
 
@@ -273,6 +274,42 @@ struct AdminUserRechargeAuditView {
     effective_until_month_start: Option<i64>,
     orders: Vec<AdminUserRechargeOrderView>,
     entitlements: Vec<AdminUserRechargeEntitlementView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserEntitlementsView {
+    current_month_start: i64,
+    current_month_delta: AdminUserEntitlementDeltaView,
+    current_permanent_delta: AdminUserEntitlementDeltaView,
+    items: Vec<AdminUserEntitlementView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserEntitlementDeltaView {
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserEntitlementView {
+    id: i64,
+    user_id: String,
+    scope_kind: String,
+    month_start: i64,
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
+    backend_note: String,
+    frontend_note: String,
+    source_kind: String,
+    source_id: String,
+    actor_user_id: Option<String>,
+    actor_display_name: Option<String>,
+    created_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -337,12 +374,70 @@ fn build_admin_user_recharge_entitlement_view(
     }
 }
 
+fn build_admin_user_entitlement_delta_view(
+    delta: tavily_hikari::LinuxDoCreditRechargeQuotaDelta,
+) -> AdminUserEntitlementDeltaView {
+    AdminUserEntitlementDeltaView {
+        business_calls_1h_delta: delta.hourly_delta,
+        daily_credits_delta: delta.daily_delta,
+        monthly_credits_delta: delta.monthly_delta,
+    }
+}
+
+fn build_admin_user_entitlement_view(
+    entitlement: tavily_hikari::AccountEntitlementRecord,
+) -> AdminUserEntitlementView {
+    AdminUserEntitlementView {
+        id: entitlement.id,
+        user_id: entitlement.user_id,
+        scope_kind: entitlement.scope_kind,
+        month_start: entitlement.month_start,
+        business_calls_1h_delta: entitlement.business_calls_1h_delta,
+        daily_credits_delta: entitlement.daily_credits_delta,
+        monthly_credits_delta: entitlement.monthly_credits_delta,
+        backend_note: entitlement.backend_note,
+        frontend_note: entitlement.frontend_note,
+        source_kind: entitlement.source_kind,
+        source_id: entitlement.source_id,
+        actor_user_id: entitlement.actor_user_id,
+        actor_display_name: entitlement.actor_display_name,
+        created_at: entitlement.created_at,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateUserQuotaRequest {
     business_calls_1h_limit: i64,
     daily_credits_limit: i64,
     monthly_credits_limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUserEntitlementsQuery {
+    scope_kind: Option<String>,
+    start_month: Option<i64>,
+    end_month_before: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUserEntitlementRequest {
+    scope_kind: String,
+    month_start: Option<i64>,
+    business_calls_1h_delta: i64,
+    daily_credits_delta: i64,
+    monthly_credits_delta: i64,
+    backend_note: String,
+    frontend_note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListUserEntitlementsResponse {
+    items: Vec<AdminUserEntitlementView>,
 }
 
 #[derive(Debug, Deserialize)]

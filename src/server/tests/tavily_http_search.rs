@@ -51,6 +51,98 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
+    async fn admin_user_entitlement_create_canonicalizes_month_start() {
+        let db_path = temp_db_path("admin-user-entitlement-canonical-month");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-user-entitlement-canonical-month".to_string(),
+                username: Some("canonical_month".to_string()),
+                name: Some("Canonical Month".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let now_local = Local::now();
+        let month_start = Local
+            .from_local_datetime(
+                &NaiveDate::from_ymd_opt(now_local.year(), now_local.month(), 1)
+                    .expect("valid test month")
+                    .and_hms_opt(0, 0, 0)
+                    .expect("valid test month start"),
+            )
+            .single()
+            .expect("single test month start")
+            .with_timezone(&Utc)
+            .timestamp();
+        let non_canonical_month_ts = month_start.saturating_add(86_400);
+
+        let addr = spawn_admin_users_server(proxy, true).await;
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/users/{}/entitlements", addr, user.user_id))
+            .json(&serde_json::json!({
+                "scopeKind": "month",
+                "monthStart": non_canonical_month_ts,
+                "businessCalls1hDelta": 7,
+                "dailyCreditsDelta": 8,
+                "monthlyCreditsDelta": 9,
+                "backendNote": "canonicalize backend",
+                "frontendNote": "canonicalize frontend",
+            }))
+            .send()
+            .await
+            .expect("create entitlement request");
+        assert_eq!(create_resp.status(), reqwest::StatusCode::CREATED);
+        let created: Value = create_resp.json().await.expect("created entitlement json");
+        assert_eq!(created["monthStart"], month_start);
+
+        let list_all_resp = client
+            .get(format!(
+                "http://{}/api/users/{}/entitlements?scopeKind=all",
+                addr, user.user_id
+            ))
+            .send()
+            .await
+            .expect("list all entitlements");
+        assert_eq!(list_all_resp.status(), reqwest::StatusCode::OK);
+        let list_all: Value = list_all_resp.json().await.expect("list all json");
+        assert!(
+            list_all["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .any(|entry| entry["id"] == created["id"])
+        );
+
+        let detail_resp = client
+            .get(format!("http://{}/api/users/{}", addr, user.user_id))
+            .send()
+            .await
+            .expect("get user detail");
+        assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
+        let detail: Value = detail_resp.json().await.expect("user detail json");
+        let breakdown = detail["quotaBreakdown"]
+            .as_array()
+            .expect("quota breakdown array");
+        assert!(breakdown.iter().any(|entry| {
+            entry["kind"] == "entitlement_month"
+                && entry["businessCalls1hDelta"] == 7
+                && entry["dailyCreditsDelta"] == 8
+                && entry["monthlyCreditsDelta"] == 9
+        }));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_registration_settings_require_admin_and_persist() {
         let db_path = temp_db_path("admin-registration-settings");
         let db_str = db_path.to_string_lossy().to_string();

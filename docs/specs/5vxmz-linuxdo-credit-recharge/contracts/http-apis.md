@@ -60,18 +60,55 @@
   - `200 text/plain` body `success` when accepted or already applied.
   - `400` when signature, order, status, or amount does not match.
 - Behavior:
-  - Moves payable orders to `paid` and creates monthly entitlements from the payment month.
+  - Moves payable orders to `paid` and creates monthly recharge entitlements from the payment
+    month in `account_entitlements`, mirrored to the legacy recharge entitlement table.
   - Replayed callbacks update notify audit fields only and must not move `refunding`,
     `refunded`, or `refundOnly` orders back to `paid`.
 
 ## GET /api/users/:id
 
-- Change: response adds `recharge` object.
+- Change: response adds `recharge` and `entitlements` objects.
 - Shape:
-  - `currentMonthEntitlementCredits`
-  - `effectiveUntilMonthStart`
-  - `orders`: recent `RechargeOrder[]`
-  - `entitlements`: recent entitlement rows
+  - `recharge.currentMonthEntitlementCredits`: current-month Linux.do Credit recharge credits only
+  - `recharge.effectiveUntilMonthStart`: latest recharge-entitled month start, or `null`
+  - `recharge.orders`: recent `RechargeOrder[]`
+  - `recharge.entitlements`: recent recharge-sourced entitlement rows
+  - `entitlements.currentMonthStart`: current server-local month start
+  - `entitlements.currentMonthDelta`: current-month admin/recharge entitlement delta summary
+  - `entitlements.currentPermanentDelta`: permanent entitlement delta summary
+  - `entitlements.items`: recent account entitlement rows, including admin notes and actor metadata
+
+## GET /api/users/:id/entitlements
+
+- Auth: admin request.
+- Query:
+  - `scopeKind`: optional `month|permanent`.
+  - `startMonth`: optional Unix timestamp, matched against monthly entitlement target month.
+  - `endMonthBefore`: optional exclusive Unix timestamp, matched against monthly entitlement target
+    month.
+- Response `200`: `{ "items": AdminUserEntitlement[] }`
+- Semantics:
+  - Monthly rows are filtered by target month, not creation time.
+  - Permanent rows remain visible unless `scopeKind=month`.
+  - Rows are returned in target-month-descending audit order.
+
+## POST /api/users/:id/entitlements
+
+- Auth: admin request with master write access.
+- Request JSON:
+  - `scopeKind`: `month|permanent`
+  - `monthStart`: required for `month`; ignored for `permanent`
+  - `businessCalls1hDelta`: integer
+  - `dailyCreditsDelta`: integer
+  - `monthlyCreditsDelta`: integer
+  - `backendNote`: non-empty string
+  - `frontendNote`: non-empty string
+- Response `201`: created `AdminUserEntitlement`
+- Semantics:
+  - At least one delta must be non-zero.
+  - Positive and negative deltas are allowed.
+  - Rows are append-only; mistakes are corrected by adding a reverse row.
+  - `frontendNote` is admin/API visible only and is not exposed in user console responses.
 
 ## GET /api/admin/recharges
 
@@ -99,7 +136,9 @@
   - Calls Linux.do Credit `POST /epay/api.php` with `act=refund`, `pid`, `key`, `trade_no`, `out_trade_no`, `money`.
   - Before the platform call, atomically moves the order from `paid` to `refunding` so duplicate admin requests cannot issue duplicate external refunds.
   - After platform success, persists an external-success marker before final local settlement; a retry of a matching `refunding` order with that marker completes only local settlement and does not call the platform again.
-  - On platform success, marks order `refunded`, sets `refundedAt/refundActor/refundPayload`, deletes order entitlements, invalidates quota and records a quota snapshot.
+  - On platform success, marks order `refunded`, sets `refundedAt/refundActor/refundPayload`,
+    deletes the order's recharge entitlement rows from the unified entitlement table and legacy
+    backup table, invalidates quota and records a quota snapshot.
   - On platform failure before completion, moves the order back to `paid` and records the refund error in `lastError`.
 - Response `200`: updated `AdminRechargeOrder`.
 

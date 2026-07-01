@@ -12,6 +12,7 @@ fn linuxdo_credit_recharge_adds_hourly_daily_and_monthly_quota() {
         base,
         Vec::new(),
         linuxdo_credit_recharge_quota_delta(2000),
+        LinuxDoCreditRechargeQuotaDelta::default(),
     );
 
     assert_eq!(resolution.effective.business_calls_1h_limit, 60);
@@ -20,11 +21,182 @@ fn linuxdo_credit_recharge_adds_hourly_daily_and_monthly_quota() {
     let recharge = resolution
         .breakdown
         .iter()
-        .find(|entry| entry.kind == "recharge")
-        .expect("recharge row");
+        .find(|entry| entry.kind == "entitlement_month")
+        .expect("monthly entitlement row");
     assert_eq!(recharge.business_calls_1h_delta, 40);
     assert_eq!(recharge.daily_credits_delta, 200);
     assert_eq!(recharge.monthly_credits_delta, 2000);
+}
+
+#[tokio::test]
+async fn account_entitlements_add_monthly_and_permanent_quota_without_frontend_leak() {
+    let db_path = temp_db_path("account-entitlements-quota");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "account-entitlements-quota".to_string(),
+            username: Some("entitlements".to_string()),
+            name: Some("Entitlements".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 10, 20, 30)
+        .await
+        .expect("set base quota");
+    let month_start = start_of_local_month_utc_ts(Local::now());
+    let now = Utc::now().timestamp();
+    proxy
+        .create_account_entitlement(&AccountEntitlementRecord {
+            id: 0,
+            user_id: user.user_id.clone(),
+            scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_MONTH.to_string(),
+            month_start,
+            business_calls_1h_delta: 4,
+            daily_credits_delta: 5,
+            monthly_credits_delta: 6,
+            backend_note: "backend monthly".to_string(),
+            frontend_note: "frontend monthly".to_string(),
+            source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: "admin-test-month".to_string(),
+            actor_user_id: Some("actor-1".to_string()),
+            actor_display_name: Some("Actor One".to_string()),
+            created_at: now,
+        })
+        .await
+        .expect("create monthly entitlement");
+    proxy
+        .create_account_entitlement(&AccountEntitlementRecord {
+            id: 0,
+            user_id: user.user_id.clone(),
+            scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT.to_string(),
+            month_start: 0,
+            business_calls_1h_delta: -1,
+            daily_credits_delta: 7,
+            monthly_credits_delta: 8,
+            backend_note: "backend permanent".to_string(),
+            frontend_note: "frontend permanent".to_string(),
+            source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: "admin-test-permanent".to_string(),
+            actor_user_id: None,
+            actor_display_name: Some("Actor Two".to_string()),
+            created_at: now + 1,
+        })
+        .await
+        .expect("create permanent entitlement");
+
+    let summary = proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("dashboard summary");
+    assert_eq!(summary.business_calls_1h.limit, 113);
+    assert_eq!(summary.daily_credits_limit, 532);
+    assert_eq!(summary.monthly_credits_limit, 5044);
+    assert_eq!(summary.recharge.current_month_entitlement_credits, 0);
+
+    let entitlements = proxy
+        .list_account_entitlements(&user.user_id, None, None, None, 10)
+        .await
+        .expect("list entitlements");
+    assert_eq!(entitlements.len(), 2);
+    assert!(
+        entitlements
+            .iter()
+            .any(|entry| entry.frontend_note == "frontend monthly")
+    );
+    let month_filtered_entitlements = proxy
+        .list_account_entitlements(
+            &user.user_id,
+            None,
+            Some(month_start),
+            Some(shift_local_month_start_utc_ts(month_start, 1)),
+            10,
+        )
+        .await
+        .expect("list entitlements with month range");
+    assert_eq!(month_filtered_entitlements.len(), 2);
+    assert!(month_filtered_entitlements.iter().any(|entry| {
+        entry.scope_kind == ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT && entry.month_start == 0
+    }));
+    let month_only_entitlements = proxy
+        .list_account_entitlements(
+            &user.user_id,
+            Some(ACCOUNT_ENTITLEMENT_SCOPE_MONTH),
+            Some(month_start),
+            Some(shift_local_month_start_utc_ts(month_start, 1)),
+            10,
+        )
+        .await
+        .expect("list monthly entitlements with month range");
+    assert_eq!(month_only_entitlements.len(), 1);
+    assert_eq!(
+        month_only_entitlements[0].scope_kind,
+        ACCOUNT_ENTITLEMENT_SCOPE_MONTH
+    );
+
+    let bulk_deltas = proxy
+        .key_store
+        .sum_account_entitlement_deltas_for_users(&[user.user_id.clone()], month_start)
+        .await
+        .expect("bulk entitlement deltas");
+    let (monthly_delta, permanent_delta) = bulk_deltas
+        .get(&user.user_id)
+        .copied()
+        .expect("user deltas");
+    assert_eq!(monthly_delta.hourly_delta, 4);
+    assert_eq!(monthly_delta.daily_delta, 5);
+    assert_eq!(monthly_delta.monthly_delta, 6);
+    assert_eq!(permanent_delta.hourly_delta, -1);
+    assert_eq!(permanent_delta.daily_delta, 7);
+    assert_eq!(permanent_delta.monthly_delta, 8);
+
+    let permanent_only_user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "account-entitlements-permanent-only".to_string(),
+            username: Some("permanent_only".to_string()),
+            name: Some("Permanent Only".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert permanent-only user");
+    proxy
+        .create_account_entitlement(&AccountEntitlementRecord {
+            id: 0,
+            user_id: permanent_only_user.user_id.clone(),
+            scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT.to_string(),
+            month_start: 0,
+            business_calls_1h_delta: 1,
+            daily_credits_delta: 2,
+            monthly_credits_delta: 3,
+            backend_note: "backend permanent only".to_string(),
+            frontend_note: "frontend permanent only".to_string(),
+            source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: "admin-test-permanent-only".to_string(),
+            actor_user_id: None,
+            actor_display_name: Some("Actor Three".to_string()),
+            created_at: now + 2,
+        })
+        .await
+        .expect("create permanent-only entitlement");
+    let permanent_only_summary = proxy
+        .account_entitlement_summary(&permanent_only_user.user_id)
+        .await
+        .expect("permanent-only entitlement summary");
+    assert_eq!(permanent_only_summary.effective_until_month_start, None);
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]
@@ -114,18 +286,63 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
         )
         .await
         .expect("apply recharge payment");
+    for index in 0..25 {
+        let index_i64 = i64::from(index);
+        proxy
+            .create_account_entitlement(&AccountEntitlementRecord {
+                id: 0,
+                user_id: user.user_id.clone(),
+                scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_MONTH.to_string(),
+                month_start: shift_local_month_start_utc_ts(payment_month, 2 + index),
+                business_calls_1h_delta: 0,
+                daily_credits_delta: 0,
+                monthly_credits_delta: 10 + index_i64,
+                backend_note: format!("admin future month {index}"),
+                frontend_note: format!("admin future frontend {index}"),
+                source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+                source_id: format!("admin-future-{index}"),
+                actor_user_id: Some("admin-actor".to_string()),
+                actor_display_name: Some("Admin Actor".to_string()),
+                created_at: payment_month + 120 + index_i64,
+            })
+            .await
+            .expect("create future admin entitlement");
+    }
     let audit = proxy
         .linuxdo_credit_recharge_admin_audit(&user.user_id)
         .await
         .expect("load recharge audit");
+    assert_eq!(audit.effective_until_month_start, Some(next_month));
     let months: Vec<i64> = audit
         .entitlements
         .iter()
         .map(|entry| entry.month_start)
         .collect();
+    assert_eq!(months.len(), 2);
     assert!(!months.contains(&previous_month));
     assert!(months.contains(&payment_month));
     assert!(months.contains(&next_month));
+    let entitlement_rows = proxy
+        .list_account_entitlements(
+            &user.user_id,
+            Some(ACCOUNT_ENTITLEMENT_SCOPE_MONTH),
+            None,
+            None,
+            40,
+        )
+        .await
+        .expect("list unified entitlements");
+    assert_eq!(entitlement_rows.len(), 27);
+    assert_eq!(
+        entitlement_rows
+            .iter()
+            .filter(|entry| {
+                entry.source_kind == ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE
+                    && entry.source_id == order.out_trade_no
+            })
+            .count(),
+        2
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

@@ -15,6 +15,7 @@ interface QuotaRangeFieldProps {
   inputName: string
   inputValue: string
   inputAriaLabel: string
+  disabled?: boolean
   onInputChange: (value: string) => void
 }
 
@@ -31,6 +32,7 @@ export default function QuotaRangeField({
   inputName,
   inputValue,
   inputAriaLabel,
+  disabled = false,
   onInputChange,
 }: QuotaRangeFieldProps): JSX.Element {
   return (
@@ -49,6 +51,7 @@ export default function QuotaRangeField({
             onChange={(event) => onSliderChange(Number.parseFloat(event.target.value))}
             style={sliderStyle}
             aria-label={sliderAriaLabel}
+            disabled={disabled}
           />
           <span className="panel-description">{helperText}</span>
         </div>
@@ -62,6 +65,7 @@ export default function QuotaRangeField({
           value={inputValue}
           onChange={(event) => onInputChange(event.target.value)}
           aria-label={inputAriaLabel}
+          disabled={disabled}
         />
       </div>
     </label>

@@ -2637,8 +2637,10 @@ impl KeyStore {
         self.ensure_account_quota_limits_for_users(user_ids).await?;
         let base_limits = self.fetch_account_quota_limits_bulk(user_ids).await?;
         let tag_bindings = self.list_user_tag_bindings_for_users(user_ids).await?;
-        let recharge_credits = self
-            .sum_current_linuxdo_credit_recharge_entitlements_for_users(user_ids)
+        let current_month_start =
+            crate::start_of_local_month_utc_ts(self.backend_time.local_now());
+        let entitlement_deltas = self
+            .sum_account_entitlement_deltas_for_users(user_ids, current_month_start)
             .await?;
         let defaults = AccountQuotaLimits::zero_base();
         let mut map = HashMap::new();
@@ -2648,12 +2650,17 @@ impl KeyStore {
                 .cloned()
                 .unwrap_or_else(|| defaults.clone());
             let tags = tag_bindings.get(user_id).cloned().unwrap_or_default();
-            let credits = recharge_credits.get(user_id).copied().unwrap_or(0);
-            let recharge_delta = linuxdo_credit_recharge_quota_delta(credits);
+            let (monthly_entitlement_delta, permanent_entitlement_delta) =
+                entitlement_deltas.get(user_id).copied().unwrap_or_default();
             map.insert(
                 user_id.clone(),
-                build_account_quota_resolution_with_recharge(base, tags, recharge_delta)
-                    .effective,
+                build_account_quota_resolution_with_recharge(
+                    base,
+                    tags,
+                    monthly_entitlement_delta,
+                    permanent_entitlement_delta,
+                )
+                .effective,
             );
         }
         Ok(map)
@@ -2669,11 +2676,20 @@ impl KeyStore {
 
         let base = self.ensure_account_quota_limits(user_id).await?;
         let tags = self.list_user_tag_bindings_for_user(user_id).await?;
-        let recharge_credits = self
-            .sum_current_linuxdo_credit_recharge_entitlements_for_month(user_id)
+        let current_month_start =
+            crate::start_of_local_month_utc_ts(self.backend_time.local_now());
+        let monthly_entitlement_delta = self
+            .sum_account_entitlement_deltas_for_month(user_id, current_month_start)
             .await?;
-        let recharge_delta = linuxdo_credit_recharge_quota_delta(recharge_credits);
-        let resolution = build_account_quota_resolution_with_recharge(base, tags, recharge_delta);
+        let permanent_entitlement_delta = self
+            .sum_account_entitlement_deltas_for_scope(user_id, ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT)
+            .await?;
+        let resolution = build_account_quota_resolution_with_recharge(
+            base,
+            tags,
+            monthly_entitlement_delta,
+            permanent_entitlement_delta,
+        );
         self.cache_account_quota_resolution(user_id, &resolution)
             .await;
         Ok(resolution)

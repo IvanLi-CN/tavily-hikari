@@ -32,12 +32,44 @@
 - Unique: `(out_trade_no, month_start)`
 - Indexed by `(user_id, month_start)`
 
+This table is retained as a recharge-specific backup ledger. New quota reads use
+`account_entitlements`; recharge settlement mirrors rows here so the legacy ledger remains a
+rollback anchor.
+
+## `account_entitlements`
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `user_id TEXT NOT NULL`
+- `scope_kind TEXT NOT NULL`
+- `month_start INTEGER NOT NULL`
+- `business_calls_1h_delta INTEGER NOT NULL`
+- `daily_credits_delta INTEGER NOT NULL`
+- `monthly_credits_delta INTEGER NOT NULL`
+- `backend_note TEXT NOT NULL`
+- `frontend_note TEXT NOT NULL`
+- `source_kind TEXT NOT NULL`
+- `source_id TEXT NOT NULL`
+- `actor_user_id TEXT`
+- `actor_display_name TEXT`
+- `created_at INTEGER NOT NULL`
+- `scope_kind` is `month` or `permanent`.
+- `source_kind` is `recharge` for Linux.do Credit payment benefits and `admin` for manual admin adjustments.
+- Monthly rows use server-local natural month starts. Permanent rows use `month_start=0`.
+- Recharge rows are unique by `(source_id, month_start)` for `source_kind='recharge'`.
+- Indexed by `(user_id, scope_kind, month_start)` and `(user_id, created_at)`.
+
 ## Semantics
 
 - `month_start` is the UTC timestamp for server-local month start.
-- Entitlements are append-only after successful payment except when an admin `refund` explicitly
-  revokes the order benefits. `refundOnly` keeps entitlements.
-- Repeated notifications update order metadata but must not duplicate entitlement rows.
+- `account_entitlements` is the quota entitlement read source. Effective quota is computed as
+  base quota + tag deltas + current-month entitlement deltas + permanent entitlement deltas.
+- Entitlements are append-only except when an admin `refund` explicitly revokes a paid recharge
+  order's benefits. `refundOnly` keeps entitlement rows.
+- Admin-created entitlement rows are never edited or deleted; corrections are represented by
+  reverse rows.
+- Repeated notifications update order metadata but must not duplicate recharge entitlement rows.
+- Existing rows in `linuxdo_credit_recharge_entitlements` are backfilled into `account_entitlements`
+  as `source_kind='recharge'` rows while the legacy table remains in place.
 - `status` values are `pending`, `paid`, `failed`, `refunding`, `refunded`, and `refundOnly`.
   `refunding` is an internal in-progress reservation used before the external refund call.
 - Refund audit details are persisted on the order row; TOTP codes are never stored.

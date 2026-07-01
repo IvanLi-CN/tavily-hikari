@@ -204,9 +204,152 @@
     color: hsl(var(--foreground));
     font-weight: 800;
   }
+  .user-detail-entitlements {
+    display: grid;
+    gap: 0.85rem;
+  }
+  .user-detail-entitlement-heading-row {
+    align-items: flex-start;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+  }
+  .user-detail-entitlement-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .user-detail-entitlement-summary span {
+    background: hsl(var(--muted) / 0.26);
+    border: 1px solid hsl(var(--border) / 0.52);
+    border-radius: 999px;
+    color: hsl(var(--foreground));
+    font-size: 0.78rem;
+    font-weight: 800;
+    padding: 0.38rem 0.68rem;
+  }
+  .user-detail-entitlement-form,
+  .user-detail-entitlement-filters {
+    align-items: end;
+    display: grid;
+    gap: 0.65rem;
+  }
+  .user-detail-entitlement-form {
+    grid-template-columns: repeat(5, minmax(8rem, 1fr));
+  }
+  .user-detail-entitlement-dialog {
+    width: min(64rem, calc(100vw - 1rem));
+  }
+  .user-detail-entitlement-form--dialog {
+    align-items: start;
+    column-gap: 0.85rem;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    row-gap: 1.25rem;
+  }
+  .user-detail-entitlement-form--dialog > label:nth-of-type(1),
+  .user-detail-entitlement-form--dialog > label:nth-of-type(2) {
+    grid-column: span 3;
+    gap: 0.45rem;
+  }
+  .user-detail-entitlement-form--dialog > label:nth-of-type(1) select,
+  .user-detail-entitlement-form--dialog > label:nth-of-type(2) input {
+    box-sizing: border-box;
+    height: 3rem !important;
+    line-height: 1.2;
+    min-height: 3rem !important;
+    padding-block: 0.65rem !important;
+  }
+  .user-detail-entitlement-form--dialog > .user-detail-entitlement-delta-control {
+    grid-column: span 2;
+  }
+  .user-detail-entitlement-delta-control {
+    display: grid;
+    gap: 0.7rem;
+    padding-block: 0.1rem 0.25rem;
+  }
+  .user-detail-entitlement-delta-head {
+    align-items: start;
+    display: grid;
+    gap: 0.6rem;
+    grid-template-columns: minmax(0, 1fr) minmax(5.75rem, 7rem);
+  }
+  .user-detail-entitlement-delta-head label {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.86rem;
+    font-weight: 800;
+    line-height: 1.25;
+  }
+  .user-detail-entitlement-delta-input {
+    font-size: 0.78rem !important;
+    height: 2.2rem !important;
+    min-height: 2.2rem !important;
+    padding: 0.35rem 0.65rem !important;
+    border-radius: 0.9rem;
+    text-align: right;
+  }
+  .user-detail-entitlement-delta-slider {
+    width: 100%;
+  }
+  .user-detail-entitlement-form--dialog .user-detail-entitlement-note {
+    grid-column: 1 / -1;
+  }
+  .user-detail-entitlement-dialog-actions {
+    display: flex;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    padding-top: 0.25rem;
+  }
+  .user-detail-entitlement-filters {
+    grid-template-columns: minmax(9rem, 12rem) repeat(2, minmax(9rem, 12rem)) auto;
+  }
+  .user-detail-entitlement-form label,
+  .user-detail-entitlement-filters label {
+    display: grid;
+    gap: 0.28rem;
+  }
+  .user-detail-entitlement-form label span,
+  .user-detail-entitlement-filters label span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.72rem;
+    font-weight: 800;
+  }
+  .user-detail-entitlement-form select,
+  .user-detail-entitlement-filters select,
+  .user-detail-entitlement-form textarea {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border) / 0.55);
+    border-radius: 0.75rem;
+    color: hsl(var(--foreground));
+    font-weight: 700;
+    min-height: 2.5rem;
+    padding: 0.55rem 0.75rem;
+    width: 100%;
+  }
+  .user-detail-entitlement-note {
+    grid-column: span 2;
+  }
+  .user-detail-entitlement-note textarea {
+    min-height: 5rem;
+    resize: vertical;
+  }
+  .user-detail-entitlement-table {
+    min-width: 62rem;
+  }
   @media (max-width: 900px) {
     .admin-recharge-toolbar-primary,
-    .admin-recharge-filter-row { grid-template-columns: 1fr; }
+    .admin-recharge-filter-row,
+    .user-detail-entitlement-form,
+    .user-detail-entitlement-filters { grid-template-columns: 1fr; }
+    .user-detail-entitlement-heading-row {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .user-detail-entitlement-form--dialog > label { grid-column: auto; }
+    .user-detail-entitlement-form--dialog > .user-detail-entitlement-delta-control { grid-column: auto; }
+    .user-detail-entitlement-note { grid-column: auto; }
+    .user-detail-entitlement-dialog-actions { justify-content: stretch; }
+    .user-detail-entitlement-dialog-actions .button,
+    .user-detail-entitlement-dialog-actions button { width: 100%; }
   }
 
 }

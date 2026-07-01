@@ -87,8 +87,12 @@
 
 - Given 用户绑定多个标签（包含自动同步的 LinuxDo 系统标签）
   When 读取用户列表、用户详情或执行额度判定
-  Then 最终有效额度按“用户基线 + 全部标签 delta”汇总，并对每个维度执行 `max(0, value)`。
+  Then 最终有效额度按“用户基线 + 全部标签 delta + 当前月权益 delta + 长期权益 delta”汇总，并对每个维度执行 `max(0, value)`。
   And admin 详情中的 `quotaBreakdown` 总是追加一条最终 `effective` 行，明确展示钳制后的最终额度。
+
+- Given 管理员在用户详情页新增月度或长期权益
+  When 读取用户详情或执行额度判定
+  Then 当前月权益和长期权益会分别追加到 `effectiveQuota` 和 `quotaBreakdown`，且权益记录保持追加式审计。
 
 - Given 用户绑定 `block_all` 标签
   When 发起 `requestRate` 或业务额度校验

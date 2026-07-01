@@ -260,6 +260,8 @@ import {
   fetchAdminUserBrokenKeys,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
+  createAdminUserEntitlement,
+  fetchAdminUserEntitlements,
   fetchAdminUserUsageSeries,
   fetchAdminAnalysisPressure,
   fetchAdminRegistrationSettings,
@@ -9247,6 +9249,9 @@ function AdminDashboard(): JSX.Element {
               formatSaveTime={(date) => timeOnlyFormatter.format(date)}
               onQuotaDraftChange={updateQuotaDraftField}
               onSaveQuota={() => void saveUserQuota()}
+              onCreateEntitlement={createAdminUserEntitlement}
+              onFetchEntitlements={fetchAdminUserEntitlements}
+              onRefreshDetail={() => refreshUserDetail(detail.userId).then(() => undefined)}
             />
 
             <section className="surface panel" id="user-detail-activity">

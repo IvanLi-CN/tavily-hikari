@@ -354,6 +354,10 @@ pub async fn serve(
         .route("/api/user-tags/:tag_id", delete(delete_user_tag))
         .route("/api/users", get(list_users))
         .route("/api/users/:id", get(get_user_detail))
+        .route(
+            "/api/users/:id/entitlements",
+            get(list_user_entitlements).post(create_user_entitlement),
+        )
         .route("/api/users/:id/usage-series", get(get_user_usage_series))
         .route("/api/users/:id/tokens", post(create_user_token))
         .route("/api/users/:id/tokens/:token_id", delete(delete_user_token))
