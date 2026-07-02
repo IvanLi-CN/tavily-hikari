@@ -372,7 +372,7 @@
         "server::tests::admin_token_filters_and_maintenance::public_",
         "server::tests::api_keys_and_registration::announcement_",
         "server::tests::alerts_and_ha_dashboard_defaults::alerts_",
-        "server::tests::alerts_and_ha::compute_",
+        "server::tests::alerts_and_ha_source_and_recovery::compute_",
         "server::tests::dashboard_overview_snapshot::compute_",
         "server::tests::log_catalog_and_dashboard_sse::compute_"
       ]
@@ -464,6 +464,7 @@
         "server::tests::alerts_and_ha::admin_",
         "server::tests::alerts_and_ha::ha_",
         "server::tests::alerts_and_ha::dual_active_",
+        "server::tests::alerts_and_ha_source_and_recovery::ha_",
         "server::tests::alerts_and_ha_sync_recovery::ha_",
         "server::tests::alerts_and_ha_sync_recovery::dual_active_",
         "server::tests::alerts_and_ha_node_state::redundant_",

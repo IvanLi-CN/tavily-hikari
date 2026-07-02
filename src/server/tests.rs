@@ -39,6 +39,7 @@ mod tests {
     mod alerts_and_ha_node_state;
     mod alerts_and_ha_sync_recovery;
     mod alerts_and_ha_serving_modes;
+    mod alerts_and_ha_source_and_recovery;
     mod alerts_and_ha_startup_roles;
     mod api_keys_and_registration;
     mod branded_assets_contract;
