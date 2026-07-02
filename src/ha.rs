@@ -724,6 +724,10 @@ impl HaRuntime {
         let now = self.backend_time.now_ts();
         let mut state = self.state.write().await;
         state.full_master_node_id = full_master_node_id.clone();
+        if state.role == HaNodeRole::Recovery {
+            state.last_edgeone_check_at = Some(now);
+            return Ok(());
+        }
         match full_master_node_id.as_deref() {
             Some(node_id) if node_id == self.config.node_id => {
                 state.role = HaNodeRole::FullMaster;
@@ -870,12 +874,12 @@ impl HaRuntime {
                 .ok()
                 .flatten()
                 .and_then(|settings| settings.effective_target());
+            if current_role == HaNodeRole::Recovery {
+                drop(state);
+                return Ok((self.status().await, None));
+            }
             match (leader, target_is_self, current_role) {
-                (
-                    Some(_),
-                    true,
-                    HaNodeRole::Standby | HaNodeRole::Recovery | HaNodeRole::ProvisionalMaster,
-                ) => {
+                (Some(_), true, HaNodeRole::Standby | HaNodeRole::ProvisionalMaster) => {
                     state.role = HaNodeRole::FullMaster;
                     state.recovery_status = None;
                     state.message =
@@ -893,10 +897,7 @@ impl HaRuntime {
                 (Some(_), false, HaNodeRole::Standby) => {
                     state.message = None;
                 }
-                (Some(_), false, HaNodeRole::Recovery) => {
-                    state.role = HaNodeRole::Standby;
-                    state.message = Some("dual-active leader key points to a peer".to_string());
-                }
+                (Some(_), _, HaNodeRole::Recovery) => {}
                 (None, _, _) => {
                     state.role = HaNodeRole::Standby;
                     state.recovery_status = None;
@@ -1970,6 +1971,60 @@ mod tests {
         assert_eq!(
             after.message.as_deref(),
             Some("dual-active leader key points to a peer")
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_active_leader_refresh_keeps_recovery_fenced() {
+        let runtime = HaRuntime::new(HaConfig {
+            mode: HaMode::ActiveStandby,
+            node_id: "node-a".to_string(),
+            source_kind: Some(HaSourceKind::OriginGroup),
+            source_origin_group_id: Some("og-core".to_string()),
+            core_dual_active: true,
+            edgeone_zone_id: Some("zone-test".to_string()),
+            edgeone_domain: Some("hikari.example.test".to_string()),
+            edgeone_secret_id: Some("secret-id".to_string()),
+            edgeone_secret_key: Some("secret-key".to_string()),
+            ..HaConfig::default()
+        });
+
+        runtime
+            .apply_dual_active_leader(Some("node-a".to_string()))
+            .await
+            .expect("seed self as leader");
+        runtime
+            .enter_recovery("recovery import required".to_string())
+            .await;
+
+        runtime
+            .apply_dual_active_leader(Some("node-b".to_string()))
+            .await
+            .expect("switch leader to peer");
+        let peer_leader = runtime.status().await;
+        assert_eq!(peer_leader.role, HaNodeRole::Recovery);
+        assert!(!peer_leader.allows_basic_business);
+        assert!(!peer_leader.allows_full_writes);
+        assert_eq!(
+            peer_leader.recovery_status.as_deref(),
+            Some("recovery import required")
+        );
+
+        runtime
+            .apply_dual_active_leader(Some("node-a".to_string()))
+            .await
+            .expect("switch leader back to self");
+        let self_leader = runtime
+            .refresh_authoritative_role()
+            .await
+            .expect("refresh leader role");
+        assert_eq!(self_leader.role, HaNodeRole::Recovery);
+        assert!(!self_leader.allows_basic_business);
+        assert!(!self_leader.allows_full_writes);
+        assert_eq!(self_leader.full_master_node_id.as_deref(), Some("node-a"));
+        assert_eq!(
+            self_leader.recovery_status.as_deref(),
+            Some("recovery import required")
         );
     }
 
