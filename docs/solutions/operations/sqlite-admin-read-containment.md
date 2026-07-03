@@ -83,6 +83,10 @@ reads:
   disabled-token or recent-job reads fail, keep the core overview payload serving and let the
   optional slice surface `error`/empty coverage semantics on the next snapshot rather than timing
   out the whole admin page.
+- Make dashboard shared-snapshot singleflight cancellation-safe and timeout-bounded. If one
+  snapshot build stalls on a SQLite read, the request may fail fast, but it must clear the in-memory
+  `loading` flag and wake waiters so the next request can retry instead of leaving the whole admin
+  dashboard permanently stuck on `cache_wait`.
 - Keep default structured perf logs on the owner-facing read path itself. Dashboard overview/shared
   snapshot and recent-request list/catalog endpoints should emit stable `component=admin_read event=...` records with `elapsed_ms`, route/scope metadata, and runtime memory headroom so low
   memory protection can be triggered and diagnosed without ad-hoc debug builds.
@@ -150,6 +154,11 @@ reads:
   `HTTP 000 TOTAL 19.999741`, while the real `/admin/dashboard` shell still rendered and multiple
   tiles stayed stuck on `正在加载仪表盘数据…`. That combination is the signal that the dashboard
   shared-snapshot path itself has become the bottleneck, not the shell or auth path.
+- On 2026-07-03 the same failure shape was isolated to the shared-snapshot coordination state:
+  direct in-container `/api/dashboard/overview` requests timed out with zero bytes while other admin
+  APIs returned, and logs showed repeated `phase=cache_wait` without a matching
+  `overview_payload_build` completion. The fix is to bound and release failed snapshot builds,
+  then continue query-level optimization separately.
 
 ## Guardrails / Reuse Notes
 

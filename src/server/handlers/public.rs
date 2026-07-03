@@ -826,6 +826,10 @@ const DASHBOARD_TREND_WINDOW_SIZE: usize = 8;
 const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
 const DASHBOARD_DISABLED_TOKENS_LIMIT: usize = 5;
 const DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT: usize = DASHBOARD_DISABLED_TOKENS_LIMIT + 1;
+#[cfg(not(test))]
+const DASHBOARD_OVERVIEW_BUILD_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const DASHBOARD_OVERVIEW_BUILD_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize)]
 struct DashboardTrendView {
@@ -866,6 +870,35 @@ struct DashboardOverviewPayload {
 struct DashboardOverviewSnapshot {
     payload: DashboardOverviewPayload,
     freshness: DashboardOverviewFreshness,
+}
+
+struct DashboardOverviewLoadingGuard {
+    cache_handle: Option<Arc<Mutex<DashboardOverviewCacheState>>>,
+}
+
+impl DashboardOverviewLoadingGuard {
+    fn new(cache_handle: Arc<Mutex<DashboardOverviewCacheState>>) -> Self {
+        Self {
+            cache_handle: Some(cache_handle),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.cache_handle = None;
+    }
+}
+
+impl Drop for DashboardOverviewLoadingGuard {
+    fn drop(&mut self) {
+        let Some(cache_handle) = self.cache_handle.take() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let mut cache = cache_handle.lock().await;
+            cache.loading = false;
+            cache.notify.notify_waiters();
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1152,8 +1185,14 @@ async fn build_dashboard_overview_payload(
     #[cfg(test)]
     {
         let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
-        let mut cache = cache_handle.lock().await;
-        cache.build_count = cache.build_count.saturating_add(1);
+        let build_gate = {
+            let mut cache = cache_handle.lock().await;
+            cache.build_count = cache.build_count.saturating_add(1);
+            cache.build_gate.clone()
+        };
+        if let Some(build_gate) = build_gate {
+            build_gate.notified().await;
+        }
     }
 
     let summary = state.proxy.summary().await?;
@@ -1688,8 +1727,28 @@ async fn load_dashboard_overview_snapshot(
             continue;
         }
 
+        let mut loading_guard = DashboardOverviewLoadingGuard::new(cache_handle.clone());
         let payload_started = Instant::now();
-        let result = build_dashboard_overview_payload(state).await;
+        let result = match tokio::time::timeout(
+            DASHBOARD_OVERVIEW_BUILD_TIMEOUT,
+            build_dashboard_overview_payload(state),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ProxyError::Other(
+                "dashboard overview snapshot build timed out".to_string(),
+            )),
+        };
+        let build_degraded = match result.as_ref() {
+            Ok(_) => "rebuilt",
+            Err(ProxyError::Other(message))
+                if message == "dashboard overview snapshot build timed out" =>
+            {
+                "timeout"
+            }
+            Err(_) => "error",
+        };
         tavily_hikari::emit_perf_log(
             tavily_hikari::DbLogStatus::Info,
             "admin_read",
@@ -1699,7 +1758,7 @@ async fn load_dashboard_overview_snapshot(
                 route: Some("/api/dashboard/overview"),
                 scope: Some("dashboard"),
                 phase: Some("overview_payload_build"),
-                degraded: Some("rebuilt"),
+                degraded: Some(build_degraded),
                 ..Default::default()
             },
         );
@@ -1737,6 +1796,7 @@ async fn load_dashboard_overview_snapshot(
             );
         }
         cache.notify.notify_waiters();
+        loading_guard.disarm();
         return result;
     }
 }
