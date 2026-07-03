@@ -154,6 +154,29 @@
     box-shadow: var(--shadow-clay-card);
   }
 
+  @media (min-width: 768px) {
+    .dark .admin-main-content .surface.panel:has(.table-wrapper) .table-wrapper,
+    .dark .admin-main-content .surface.panel:has(.forward-proxy-table-wrapper) .forward-proxy-table-wrapper {
+      border-color: hsl(var(--border) / 0.58);
+      background: oklch(0.238 0.025 305 / 0.92);
+      box-shadow:
+        0 8px 12px oklch(0.055 0.016 305 / 0.34),
+        inset 1px 1px 0 oklch(0.48 0.035 305 / 0.1),
+        inset -2px -3px 7px oklch(0.07 0.018 305 / 0.28);
+      outline: 1px solid oklch(0.42 0.03 305 / 0.08);
+      outline-offset: -2px;
+    }
+
+    .dark .admin-main-content .surface.panel:has(.table-wrapper) .table-wrapper:hover,
+    .dark .admin-main-content .surface.panel:has(.forward-proxy-table-wrapper) .forward-proxy-table-wrapper:hover {
+      border-color: hsl(var(--border) / 0.72);
+      box-shadow:
+        0 9px 13px oklch(0.055 0.016 305 / 0.38),
+        inset 1px 1px 0 oklch(0.48 0.035 305 / 0.12),
+        inset -2px -3px 7px oklch(0.07 0.018 305 / 0.3);
+    }
+  }
+
   .dark .admin-main-content .dashboard-summary-metrics {
     border-color: hsl(var(--border) / 0.58);
     background: oklch(0.18 0.024 305 / 0.88);
