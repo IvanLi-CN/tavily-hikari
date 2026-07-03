@@ -265,6 +265,8 @@ import {
   createAdminUserEntitlement,
   fetchAdminUserEntitlements,
   fetchAdminUserUsageSeries,
+  type AdminUserUsageSeries,
+  type AdminUserUsageSeriesKey,
   fetchAdminAnalysisPressure,
   fetchAdminRegistrationSettings,
   fetchAdminHaStatus,
@@ -1893,6 +1895,10 @@ function AdminDashboard(): JSX.Element {
   const [registrationSettingsError, setRegistrationSettingsError] = useState<string | null>(null)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
   const [userDetailRevision, setUserDetailRevision] = useState(0)
+  const activeUserDetailRouteId = route.name === 'user' ? route.id : null
+  const [userDetailUsageSeriesCache, setUserDetailUsageSeriesCache] = useState<
+    Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>
+  >({})
   const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
   const [userQuotaDraft, setUserQuotaDraft] = useState<Record<QuotaSliderField, string> | null>(null)
@@ -2119,6 +2125,11 @@ function AdminDashboard(): JSX.Element {
     applyAdminDisplayDensity(adminDisplayDensity)
     persistAdminDisplayDensity(adminDisplayDensity)
   }, [adminDisplayDensity])
+
+  useEffect(() => {
+    setUserDetailUsageSeriesCache({})
+  }, [activeUserDetailRouteId])
+
   const manualCopyText = useMemo(
     () => (
       language === 'zh'
@@ -9322,6 +9333,8 @@ function AdminDashboard(): JSX.Element {
                   ipAddresses7d={detail.recentIpAddresses7d}
                   ipCount24h={detail.recentIpCount24h}
                   ipCount7d={detail.recentIpCount7d}
+                  initialSeriesCache={userDetailUsageSeriesCache}
+                  onSeriesCacheChange={setUserDetailUsageSeriesCache}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
                 />
               </AdminLazyBoundary>

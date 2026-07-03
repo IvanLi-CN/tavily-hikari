@@ -5804,6 +5804,9 @@ function UserDetailPageCanvas({
   const { language } = useLanguage()
   const [detail, setDetail] = useState<AdminUserDetail>(initialDetail)
   const [activeTab, setActiveTab] = useState<UserDetailTabKey>(initialTab)
+  const [usageSeriesCache, setUsageSeriesCache] = useState<
+    Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>
+  >({})
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
   const [quotaDraft, setQuotaDraft] = useState<Record<QuotaSliderField, string>>({
     businessCalls1hLimit: String(detail.quotaBase.businessCalls1hLimit),
@@ -6086,6 +6089,8 @@ function UserDetailPageCanvas({
           ipAddresses7d={detail.recentIpAddresses7d}
           ipCount24h={detail.recentIpCount24h}
           ipCount7d={detail.recentIpCount7d}
+          initialSeriesCache={usageSeriesCache}
+          onSeriesCacheChange={setUsageSeriesCache}
           loadSeries={async (series) => {
             await new Promise((resolve) => window.setTimeout(resolve, 20))
             return MOCK_USER_USAGE_SERIES[series]
@@ -7144,6 +7149,17 @@ export const UserDetail: Story = {
     const expected = ['businessCalls1h', 'rate5m', 'quota24h', 'quotaMonth']
     if (expected.some((value) => !loadedSeries.includes(value))) {
       throw new Error(`Expected shared usage tabs to lazy-load all series after interaction, received ${loadedSeries.join(',')}.`)
+    }
+
+    await clickTopLevelTab('账户信息')
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
+      throw new Error('Expected the shared usage panel to unmount when returning to the account tab.')
+    }
+    await clickTopLevelTab('共享额度趋势')
+    const restoredUsagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    const restoredLoadedSeries = restoredUsagePanel?.dataset.loadedSeries?.split(',').filter(Boolean) ?? []
+    if (expected.some((value) => !restoredLoadedSeries.includes(value))) {
+      throw new Error(`Expected shared usage cache to survive top-level tab switches, received ${restoredLoadedSeries.join(',')}.`)
     }
 
     await clickTopLevelTab('基础额度')
