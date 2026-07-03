@@ -3,6 +3,39 @@ use super::core_support_and_parsing::*;
 use super::linuxdo_oauth_and_admin_keys::*;
 use super::upstream_support_and_manual_jobs::*;
 
+fn dashboard_overview_test_state(proxy: TavilyProxy) -> Arc<AppState> {
+    Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    })
+}
+
+async fn install_dashboard_overview_build_gate(
+    state: &Arc<AppState>,
+) -> Arc<tokio::sync::Notify> {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let mut cache = cache_handle.lock().await;
+    cache.build_gate = Some(gate.clone());
+    gate
+}
+
+async fn clear_dashboard_overview_build_gate(state: &Arc<AppState>) {
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let mut cache = cache_handle.lock().await;
+    cache.build_gate = None;
+}
+
 #[tokio::test]
 async fn compute_signatures_reuses_dashboard_boundary_contract() {
     let db_path = temp_db_path("summary-signatures-dashboard-boundaries");
@@ -64,6 +97,47 @@ async fn compute_signatures_reuses_dashboard_boundary_contract() {
         "SSE freshness should inherit the same pending dashboard rollup signature that the rebuilt snapshot stores",
     );
     assert_eq!(latest_id, snapshot.freshness.latest_request_log_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_overview_snapshot_recovers_after_timed_out_build() {
+    let db_path = temp_db_path("dashboard-overview-timed-out-build");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-timed-out-build".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = dashboard_overview_test_state(proxy);
+    let gate = install_dashboard_overview_build_gate(&state).await;
+
+    let timed_out = tokio::time::timeout(Duration::from_secs(2), load_dashboard_overview_snapshot(&state))
+    .await
+    .expect("dashboard overview should fail on its internal build timeout instead of hanging forever");
+    assert!(
+        timed_out
+            .expect_err("gated dashboard overview build should time out")
+            .to_string()
+            .contains("dashboard overview snapshot build timed out"),
+        "timed-out dashboard overview should surface a clear timeout error",
+    );
+
+    clear_dashboard_overview_build_gate(&state).await;
+    gate.notify_waiters();
+
+    let recovered = tokio::time::timeout(Duration::from_secs(2), load_dashboard_overview_snapshot(&state))
+        .await
+        .expect("dashboard overview should recover instead of waiting forever after a timed-out build")
+        .expect("recovered dashboard overview snapshot");
+
+    assert!(
+        !recovered.payload.month_series.current.is_empty(),
+        "recovered snapshot should be a real dashboard overview payload",
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

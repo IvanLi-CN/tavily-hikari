@@ -58,6 +58,8 @@ struct DashboardOverviewCacheState {
     loading: bool,
     notify: Arc<tokio::sync::Notify>,
     #[cfg(test)]
+    build_gate: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
     build_count: usize,
 }
 
@@ -67,6 +69,8 @@ impl Default for DashboardOverviewCacheState {
             cached: None,
             loading: false,
             notify: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            build_gate: None,
             #[cfg(test)]
             build_count: 0,
         }
