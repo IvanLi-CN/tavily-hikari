@@ -2695,6 +2695,27 @@ impl KeyStore {
         Ok(resolution)
     }
 
+    pub(crate) async fn resolve_account_quota_resolution_for_month(
+        &self,
+        user_id: &str,
+        month_start: i64,
+    ) -> Result<AccountQuotaResolution, ProxyError> {
+        let base = self.ensure_account_quota_limits(user_id).await?;
+        let tags = self.list_user_tag_bindings_for_user(user_id).await?;
+        let monthly_entitlement_delta = self
+            .sum_account_entitlement_deltas_for_month(user_id, month_start)
+            .await?;
+        let permanent_entitlement_delta = self
+            .sum_account_entitlement_deltas_for_scope(user_id, ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT)
+            .await?;
+        Ok(build_account_quota_resolution_with_recharge(
+            base,
+            tags,
+            monthly_entitlement_delta,
+            permanent_entitlement_delta,
+        ))
+    }
+
     pub(crate) async fn fetch_user_log_metrics_bulk(
         &self,
         user_ids: &[String],

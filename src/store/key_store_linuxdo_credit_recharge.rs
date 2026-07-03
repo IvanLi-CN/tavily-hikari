@@ -657,6 +657,7 @@ impl KeyStore {
                 .unwrap_or_else(Utc::now)
                 .with_timezone(&Local),
         );
+        let mut entitlement_month_starts = Vec::new();
         if matches!(
             order.status.as_str(),
             LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
@@ -742,6 +743,7 @@ impl KeyStore {
             };
             for month_index in 0..order.months {
                 let month_start = shift_local_month_start_utc_ts(start_month, month_index as i32);
+                entitlement_month_starts.push(month_start);
                 let month_quote = schedule_months
                     .as_ref()
                     .and_then(|months| months.get(month_index as usize));
@@ -796,6 +798,17 @@ impl KeyStore {
         }
         tx.commit().await?;
         self.invalidate_account_quota_resolution(&order.user_id).await;
+        let current_month_start = start_of_local_month_utc_ts(self.backend_time.local_now());
+        for month_start in entitlement_month_starts {
+            if month_start <= current_month_start {
+                self.record_effective_account_quota_snapshots_for_month_window_at(
+                    &order.user_id,
+                    month_start,
+                    paid_at,
+                )
+                .await?;
+            }
+        }
         self.record_effective_account_quota_snapshot_at(&order.user_id, paid_at)
             .await?;
         self.fetch_linuxdo_credit_recharge_order(out_trade_no)
@@ -1268,6 +1281,17 @@ impl KeyStore {
         let mut created = record.clone();
         created.id = created_id;
         self.invalidate_account_quota_resolution(&record.user_id).await;
+        if record.scope_kind == ACCOUNT_ENTITLEMENT_SCOPE_MONTH && record.month_start > 0 {
+            let current_month_start = start_of_local_month_utc_ts(self.backend_time.local_now());
+            if record.month_start <= current_month_start {
+                self.record_effective_account_quota_snapshots_for_month_window_at(
+                    &record.user_id,
+                    record.month_start,
+                    record.created_at,
+                )
+                .await?;
+            }
+        }
         self.record_effective_account_quota_snapshot_at(&record.user_id, record.created_at)
             .await?;
         Ok(created)

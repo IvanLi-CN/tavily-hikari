@@ -178,6 +178,43 @@ impl KeyStore {
         .map_err(ProxyError::Database)
     }
 
+    async fn fetch_account_quota_limit_snapshot_at_or_before(
+        &self,
+        user_id: &str,
+        changed_at: i64,
+    ) -> Result<Option<AccountQuotaLimitSnapshotRecord>, ProxyError> {
+        sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            r#"
+            SELECT changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit
+            FROM account_quota_limit_snapshots
+            WHERE user_id = ?
+              AND changed_at <= ?
+            ORDER BY changed_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(changed_at)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| {
+            row.map(
+                |(
+                    changed_at,
+                    business_calls_1h_limit,
+                    daily_credits_limit,
+                    monthly_credits_limit,
+                )| AccountQuotaLimitSnapshotRecord {
+                    changed_at,
+                    business_calls_1h_limit,
+                    daily_credits_limit,
+                    monthly_credits_limit,
+                },
+            )
+        })
+        .map_err(ProxyError::Database)
+    }
+
     pub(crate) async fn fetch_account_quota_limit_snapshots_for_window(
         &self,
         user_id: &str,
@@ -256,8 +293,10 @@ impl KeyStore {
         limits: &AccountQuotaLimits,
     ) -> Result<(), ProxyError> {
         let limits = limits.clamped_non_negative();
-        if let Some(latest) = self.fetch_latest_account_quota_limit_snapshot(user_id).await?
-            && latest.same_limits_as(&limits)
+        if let Some(previous) = self
+            .fetch_account_quota_limit_snapshot_at_or_before(user_id, changed_at)
+            .await?
+            && previous.same_limits_as(&limits)
         {
             return Ok(());
         }
@@ -294,6 +333,72 @@ impl KeyStore {
         self.insert_account_quota_limit_snapshot(user_id, changed_at, &resolution.effective)
             .await?;
         self.invalidate_account_quota_resolution(user_id).await;
+        Ok(())
+    }
+
+    pub(crate) async fn record_effective_account_quota_snapshot_for_month_at(
+        &self,
+        user_id: &str,
+        month_start: i64,
+        changed_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.invalidate_account_quota_resolution(user_id).await;
+        let resolution = self
+            .resolve_account_quota_resolution_for_month(user_id, month_start)
+            .await?;
+        self.insert_account_quota_limit_snapshot(user_id, changed_at, &resolution.effective)
+            .await?;
+        self.invalidate_account_quota_resolution(user_id).await;
+        Ok(())
+    }
+
+    pub(crate) async fn record_effective_account_quota_snapshots_for_month_window_at(
+        &self,
+        user_id: &str,
+        month_start: i64,
+        changed_before: i64,
+    ) -> Result<(), ProxyError> {
+        if month_start <= 0 {
+            return Ok(());
+        }
+
+        let month_end = shift_local_month_start_utc_ts(month_start, 1);
+        let window_end = changed_before.min(month_end).max(month_start);
+        self.record_effective_account_quota_snapshot_for_month_at(
+            user_id,
+            month_start,
+            month_start,
+        )
+        .await?;
+
+        let changed_ats = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT DISTINCT changed_at
+            FROM account_quota_limit_snapshots
+            WHERE user_id = ?
+              AND changed_at >= ?
+              AND changed_at < ?
+            ORDER BY changed_at ASC
+            "#,
+        )
+        .bind(user_id)
+        .bind(month_start)
+        .bind(window_end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        for changed_at in changed_ats {
+            if changed_at == month_start {
+                continue;
+            }
+            self.record_effective_account_quota_snapshot_for_month_at(
+                user_id,
+                month_start,
+                changed_at,
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
