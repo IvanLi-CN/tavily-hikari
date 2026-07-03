@@ -13,6 +13,7 @@ export type AlertsCenterView = 'events' | 'groups'
 export type AdminSystemSettingsView = 'general' | 'ha'
 export type AdminAnalysisView = 'rankings' | 'usage' | 'pressure'
 export type RankingTabKey = 'last24h' | 'last7d' | 'last30d' | 'primarySuccess' | 'businessCredits' | 'uniqueIp'
+export type UserDetailTabKey = 'account' | 'quota' | 'activity'
 
 export interface AdminTokensListContext {
   query?: string | null
@@ -65,6 +66,7 @@ const ADMIN_BASE = '/admin'
 const DEFAULT_KEYS_PER_PAGE = 20
 const DEFAULT_TOKENS_PER_PAGE = 20
 const DEFAULT_RANKINGS_TAB: RankingTabKey = 'last24h'
+const DEFAULT_USER_DETAIL_TAB: UserDetailTabKey = 'account'
 const TOKEN_PER_PAGE_OPTIONS = [20, 50, 100, 200] as const
 const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'dailyCreditsUsed',
@@ -81,6 +83,12 @@ const RANKING_TABS = new Set<RankingTabKey>([
   'businessCredits',
   'uniqueIp',
 ])
+const USER_DETAIL_TABS = new Set<UserDetailTabKey>([
+  'account',
+  'quota',
+  'activity',
+])
+const LEGACY_USER_DETAIL_TAB_ALIASES = new Set(['identity', 'tags', 'tokens'])
 
 function normalizeTokenPerPage(value?: number | null): number {
   if (!Number.isFinite(value)) return DEFAULT_TOKENS_PER_PAGE
@@ -275,6 +283,23 @@ export function getRankingsTabFromSearch(search: string): RankingTabKey {
 export function rankingsPath(tab?: RankingTabKey | null): string {
   const normalizedTab = tab && RANKING_TABS.has(tab) ? tab : DEFAULT_RANKINGS_TAB
   return `${ADMIN_BASE}/rankings?tab=${encodeURIComponent(normalizedTab)}`
+}
+
+export function getUserDetailTabFromSearch(search: string): UserDetailTabKey {
+  const rawValue = new URLSearchParams(search).get('tab')?.trim()
+  if (rawValue && LEGACY_USER_DETAIL_TAB_ALIASES.has(rawValue)) {
+    return 'account'
+  }
+  return rawValue && USER_DETAIL_TABS.has(rawValue as UserDetailTabKey)
+    ? rawValue as UserDetailTabKey
+    : DEFAULT_USER_DETAIL_TAB
+}
+
+function appendUserDetailTab(path: string, tab?: UserDetailTabKey | null): string {
+  const normalizedTab = tab && USER_DETAIL_TABS.has(tab) ? tab : DEFAULT_USER_DETAIL_TAB
+  if (normalizedTab === DEFAULT_USER_DETAIL_TAB) return path
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}tab=${encodeURIComponent(normalizedTab)}`
 }
 
 export function systemSettingsHaPath(): string {
@@ -549,8 +574,9 @@ export function userDetailPath(
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
   collection?: AdminUsersCollectionView | null,
+  tab?: UserDetailTabKey | null,
 ): string {
-  return appendUsersContext(
+  return appendUserDetailTab(appendUsersContext(
     `${ADMIN_BASE}/users/${encodeURIComponent(id)}`,
     query,
     tagId,
@@ -558,7 +584,7 @@ export function userDetailPath(
     sort,
     order,
     collection,
-  )
+  ), tab)
 }
 
 export function userTagsPath(

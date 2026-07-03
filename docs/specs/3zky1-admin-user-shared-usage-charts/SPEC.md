@@ -166,8 +166,11 @@
 
 ## UI 规格
 
-- 用户详情页新增“共享额度趋势”区块，放在用户级额度/拆解之后、token 列表之前。
-- tabs 文案简写：`5m / 每小时 / 24h / 月`，默认激活 `每小时`。
+- 用户详情页顶层内容使用互斥 tabs：`账户信息 / 基础额度 / 共享额度趋势`。
+- `账户信息` tab 内连续展示 `身份信息 / 用户标签 / 令牌列表` 三个账户管理面板。
+- 顶层 tab 状态写入 `tab` 查询参数；缺失或非法值默认回到 `account`，旧值 `identity / tags / tokens`
+  兼容映射到 `account`，小屏下仍保持按钮式 tabs。
+- `共享额度趋势` 顶层 tab 内保留二级 tabs，文案简写：`5m / 每小时 / 24h / 月`，默认激活 `每小时`。
 - `每小时` tab 继续绑定 `businessCalls1h`，不恢复独立 `quota1h` tab。
 - 首屏只请求 `businessCalls1h`；其他 tab 首次点开才请求，二次切回复用缓存。
 - 图表使用现有 `SegmentedTabs` + `chart.js`：
@@ -184,8 +187,11 @@
 
 ## 验收标准
 
-- 用户详情首屏默认展示 `每小时` 图，且只请求一次 `businessCalls1h`。
-- 切换到 `5m / 24h / 月` 时才触发对应接口请求，二次切回不重复请求。
+- 用户详情首屏默认展示 `账户信息` tab，并在同一 tab 内展示 `身份信息 / 用户标签 / 令牌列表`。
+- `/admin/users/:id?tab=quota|activity` 分别打开基础额度、共享额度趋势；`tab=identity|tags|tokens`
+  兼容打开账户信息，非法 `tab` 规范化为默认账户信息。
+- 打开 `共享额度趋势` tab 后默认展示 `每小时` 图，且只请求一次 `businessCalls1h`。
+- 在 `共享额度趋势` 内切换到 `5m / 24h / 月` 时才触发对应接口请求，二次切回不重复请求。
 - 四张图都带明显的上限虚线；虚线必须按 bucket 对应的历史 `limitValue` 绘制，不能整图平铺当前 limit。
 - token 列表不再出现任何账户共享额度字段或易误导文案。
 - 用户详情 token 列表包含添加入口；多 token 时可删除指定 token，单 token 时删除按钮禁用且后端拒绝删除最后一个 token。
@@ -202,6 +208,39 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+### 用户详情顶层 Tabs：账户信息
+
+- asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-top-tabs-account.png`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--user-detail-account-tab`
+- target_program: `mock-only`
+- capture_scope: `element`
+- requested_viewport: `1600x1400`
+- viewport_strategy: `devtools-emulate`
+- submission_gate: `approved`
+- evidence_note:
+  顶层已收敛为 `账户信息 / 基础额度 / 共享额度趋势` 三个互斥按钮式 tabs；默认 `账户信息`
+  tab 内连续展示 `身份信息 / 用户标签 / 令牌列表` 三个账户管理面板，DOM 断言未发现 `基础额度`
+  或 `共享额度趋势` 顶层 panel 标题。
+
+![用户详情顶层 Tabs：账户信息](./assets/user-detail-top-tabs-account.png)
+
+### 用户详情顶层 Tabs：移动端账户信息
+
+- asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/user-detail-top-tabs-mobile-account.png`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--user-detail-compact`
+- target_program: `mock-only`
+- capture_scope: `element`
+- requested_viewport: `390x1100`
+- viewport_strategy: `devtools-emulate`
+- submission_gate: `approved`
+- evidence_note:
+  移动端仍使用 `segmented-tabs-mobile-buttons` 按钮式 tabs；当前 `账户信息` tab 内连续展示
+  `身份信息 / 用户标签 / 令牌列表`，身份信息中的短字段使用双栏展示，未折叠成 Select。
+
+![用户详情顶层 Tabs：移动端账户信息](./assets/user-detail-top-tabs-mobile-account.png)
 
 ### 共享额度趋势布局修复
 

@@ -755,6 +755,7 @@ export const ZH: TranslationShape = {
           subtitle: '账户 {id}',
           back: '返回用户列表',
           userId: '用户 ID',
+          accountTitle: '账户信息',
           identityTitle: '身份信息',
           identityDescription: '查看该账户的稳定标识、登录状态与基础归属。',
           sharedUsageTitle: '共享额度趋势',
