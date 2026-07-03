@@ -434,3 +434,18 @@
   `Shared Usage Trends` 的 `每小时` 图表证据已按面板级范围刷新，用于确认 5 分钟 `success/failure` 柱段保持同桶堆叠，`pressure` 继续作为独立实线显示，而历史小时额度 `limit` 以虚线按快照回放：各稳定区间保持分段平线，仅在额度快照变更点跳阶；图例明确区分 `成功 / 失败 / 压力 / 上限`，与 `series=businessCalls1h` 的返回形状一致。该证据通过 Storybook mock surface 的 `playwright` element screenshot 生成，并固定在中文 locale 下验证 `每小时` tab 文案。
 
 ![用户详情业务 1h 图表](./assets/user-detail-business-calls-1h-chart.png)
+
+### 共享额度趋势权益上限回放
+
+- asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/shared-usage-24h-entitlement-limit-proof.png`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--user-detail`
+- target_program: `mock-only`
+- capture_scope: `element`
+- requested_viewport: `none`
+- viewport_strategy: `storybook-viewport`
+- submission_gate: `pending-owner-approval`
+- evidence_note:
+  共享额度趋势 `24h` 面板仍按 `Used / Limit` 双序列渲染，作为本次后端额度快照修复后的受控视觉回归面；本轮后端回归测试已覆盖月度权益追加后，当前月历史日 bucket 的 `limitValue` 回放到最终有效额度。空白裁剪脚本返回 `ambiguous_border`，因此按原图保留。
+
+![共享额度趋势权益上限回放](./assets/shared-usage-24h-entitlement-limit-proof.png)

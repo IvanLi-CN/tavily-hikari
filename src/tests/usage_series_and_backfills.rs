@@ -1146,6 +1146,86 @@ async fn admin_user_usage_series_business_calls_1h_applies_snapshot_limit_per_fi
 }
 
 #[tokio::test]
+async fn admin_user_usage_series_backdates_current_month_entitlement_limits_to_month_start() {
+    let db_path = temp_db_path("admin-user-usage-series-current-month-entitlement-limit");
+    let db_str = db_path.to_string_lossy().to_string();
+    let july_third_noon_china = Utc
+        .with_ymd_and_hms(2026, 7, 3, 4, 0, 0)
+        .single()
+        .expect("valid fixed time")
+        .timestamp();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(july_third_noon_china);
+
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "current-month-entitlement-limit".to_string(),
+            username: Some("current_month_entitlement_limit".to_string()),
+            name: Some("Current Month Entitlement Limit".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+
+    let month_start = start_of_local_month_utc_ts(proxy.backend_time().local_now());
+    let current_day_start = local_day_bucket_start_utc_ts(manual_clock.now_ts());
+    let previous_day_start = shift_local_day_start_utc_ts(current_day_start, -1);
+
+    manual_clock.set_now_ts(month_start + SECS_PER_HOUR);
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 200, 400, 2_000)
+        .await
+        .expect("seed base effective quota");
+
+    manual_clock.set_now_ts(july_third_noon_china);
+    proxy
+        .create_account_entitlement(&AccountEntitlementRecord {
+            id: 0,
+            user_id: user.user_id.clone(),
+            scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_MONTH.to_string(),
+            month_start,
+            business_calls_1h_delta: 40,
+            daily_credits_delta: 200,
+            monthly_credits_delta: 2_000,
+            backend_note: "current month compensation".to_string(),
+            frontend_note: "current month compensation".to_string(),
+            source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: "admin-current-month-compensation".to_string(),
+            actor_user_id: None,
+            actor_display_name: Some("Admin".to_string()),
+            created_at: manual_clock.now_ts(),
+        })
+        .await
+        .expect("create current month entitlement");
+
+    let series = proxy
+        .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::DailyCredits)
+        .await
+        .expect("load daily credits series");
+    assert_eq!(series.limit, 600);
+    let previous_day = series
+        .points
+        .iter()
+        .find(|point| point.bucket_start == previous_day_start)
+        .expect("previous local day bucket present");
+    assert_eq!(previous_day.limit_value, Some(600));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn account_limit_snapshot_backfill_treats_unchanged_default_quota_as_long_term_history() {
     let db_path = temp_db_path("account-limit-snapshot-backfill-default-quota-long-term");
     let db_str = db_path.to_string_lossy().to_string();
