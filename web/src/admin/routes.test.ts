@@ -9,6 +9,7 @@ import {
   buildAdminKeysPath,
   buildAdminUsersOverviewPath,
   buildAdminUsersPath,
+  getUserDetailTabFromSearch,
   getRankingsTabFromSearch,
   getAlertsViewFromSearch,
   isAdminUsersOverviewSortField,
@@ -53,6 +54,21 @@ describe('admin user tag routes', () => {
     expect(getRankingsTabFromSearch('')).toBe('last24h')
     expect(getRankingsTabFromSearch('?tab=businessCredits')).toBe('businessCredits')
     expect(getRankingsTabFromSearch('?tab=invalid')).toBe('last24h')
+  })
+
+  it('builds and parses stable user detail tab paths', () => {
+    expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
+    expect(userDetailPath('usr_alice', null, null, null, null, null, null, 'account')).toBe('/admin/users/usr_alice')
+    expect(userDetailPath('usr_alice', null, null, null, null, null, null, 'quota')).toBe('/admin/users/usr_alice?tab=quota')
+    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc', 'usage', 'activity')).toBe(
+      '/admin/users/usr_alice?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc&view=usage&tab=activity',
+    )
+    expect(getUserDetailTabFromSearch('')).toBe('account')
+    expect(getUserDetailTabFromSearch('?tab=activity')).toBe('activity')
+    expect(getUserDetailTabFromSearch('?tab=identity')).toBe('account')
+    expect(getUserDetailTabFromSearch('?tab=tags')).toBe('account')
+    expect(getUserDetailTabFromSearch('?tab=tokens')).toBe('account')
+    expect(getUserDetailTabFromSearch('?tab=invalid')).toBe('account')
   })
 
   it('parses the system settings module route', () => {
@@ -160,7 +176,6 @@ describe('admin user tag routes', () => {
     expect(userTagEditPath('linuxdo l2', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
       '/admin/users/tags/linuxdo%20l2?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
-    expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
   })
 
   it('drops usage-only sort state when building an overview return path', () => {

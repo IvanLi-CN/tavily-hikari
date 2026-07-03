@@ -137,12 +137,14 @@ import {
   type AdminPathRoute,
   type AdminTokensListContext,
   type AlertsCenterView,
+  type UserDetailTabKey,
   analysisPath,
   type RankingTabKey,
   alertsPath,
   buildAdminKeysPath,
   buildAdminTokensPath,
   buildAdminUsersOverviewPath,
+  getUserDetailTabFromSearch,
   getRankingsTabFromSearch,
   getAlertsViewFromSearch,
   isAdminUsersOverviewSortField,
@@ -263,6 +265,8 @@ import {
   createAdminUserEntitlement,
   fetchAdminUserEntitlements,
   fetchAdminUserUsageSeries,
+  type AdminUserUsageSeries,
+  type AdminUserUsageSeriesKey,
   fetchAdminAnalysisPressure,
   fetchAdminRegistrationSettings,
   fetchAdminHaStatus,
@@ -1891,6 +1895,11 @@ function AdminDashboard(): JSX.Element {
   const [registrationSettingsError, setRegistrationSettingsError] = useState<string | null>(null)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
   const [userDetailRevision, setUserDetailRevision] = useState(0)
+  const activeUserDetailRouteId = route.name === 'user' ? route.id : null
+  const [userDetailUsageSeriesCache, setUserDetailUsageSeriesCache] = useState<{
+    userId: string | null
+    series: Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>
+  }>({ userId: null, series: {} })
   const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
   const [userQuotaDraft, setUserQuotaDraft] = useState<Record<QuotaSliderField, string> | null>(null)
@@ -2117,6 +2126,11 @@ function AdminDashboard(): JSX.Element {
     applyAdminDisplayDensity(adminDisplayDensity)
     persistAdminDisplayDensity(adminDisplayDensity)
   }, [adminDisplayDensity])
+
+  useEffect(() => {
+    setUserDetailUsageSeriesCache({ userId: activeUserDetailRouteId, series: {} })
+  }, [activeUserDetailRouteId])
+
   const manualCopyText = useMemo(
     () => (
       language === 'zh'
@@ -2881,6 +2895,30 @@ function AdminDashboard(): JSX.Element {
     }
     lastRankingsPathRef.current = normalizedLocation
   }, [locationSearch, route])
+
+  useEffect(() => {
+    if (route.name !== 'user') {
+      return
+    }
+
+    const nextTab = getUserDetailTabFromSearch(locationSearch)
+    const normalizedLocation = userDetailPath(
+      route.id,
+      getAdminUsersQueryFromLocation(),
+      getAdminUsersTagFilterFromLocation(),
+      getAdminUsersPageFromLocation(),
+      getAdminUsersSortFromLocation(),
+      getAdminUsersSortDirectionFromLocation(),
+      getAdminUsersCollectionFromLocation(),
+      nextTab,
+    )
+    const currentLocation = `${window.location.pathname}${window.location.search}`
+    if (currentLocation !== normalizedLocation) {
+      window.history.replaceState(null, '', normalizedLocation)
+      setLocationSearch(new URL(normalizedLocation, window.location.origin).search)
+    }
+  }, [locationSearch, route])
+
 
   const loadUnboundTokenUsage = useCallback(
     async ({
@@ -8980,6 +9018,26 @@ function AdminDashboard(): JSX.Element {
     const manualTagCount = boundTags.length - systemTagCount
     const hasBlockAllTag = boundTags.some((tag) => tag.effectKind === 'block_all')
     const globalIpLimit = systemSettings?.globalIpLimit ?? 5
+    const activeUserDetailTab = getUserDetailTabFromSearch(locationSearch)
+    const userDetailTabOptions: Array<{ value: UserDetailTabKey; label: string }> = [
+      { value: 'account', label: usersStrings.detail.accountTitle },
+      { value: 'quota', label: usersStrings.quota.title },
+      { value: 'activity', label: usersStrings.detail.sharedUsageTitle },
+    ]
+    const navigateUserDetailTab = (tab: UserDetailTabKey) => {
+      navigateToPath(
+        userDetailPath(
+          route.id,
+          getAdminUsersQueryFromLocation(),
+          getAdminUsersTagFilterFromLocation(),
+          getAdminUsersPageFromLocation(),
+          getAdminUsersSortFromLocation(),
+          getAdminUsersSortDirectionFromLocation(),
+          getAdminUsersCollectionFromLocation(),
+          tab,
+        ),
+      )
+    }
 
     return renderAdminPageWithGlobalOverlays(
       <AdminShell
@@ -9050,15 +9108,19 @@ function AdminDashboard(): JSX.Element {
           </section>
         ) : (
           <>
-            <nav className="user-detail-section-nav" aria-label={usersStrings.detail.title}>
-              <a href="#user-detail-identity">{usersStrings.detail.identityTitle}</a>
-              <a href="#user-detail-tags">{usersStrings.userTags.title}</a>
-              <a href="#user-detail-quota">{usersStrings.quota.title}</a>
-              <a href="#user-detail-activity">{usersStrings.detail.sharedUsageTitle}</a>
-              <a href="#user-detail-tokens">{usersStrings.detail.tokensTitle}</a>
-            </nav>
+            <SegmentedTabs<UserDetailTabKey>
+              value={activeUserDetailTab}
+              onChange={navigateUserDetailTab}
+              options={userDetailTabOptions}
+              ariaLabel={usersStrings.detail.title}
+              className="user-detail-section-tabs"
+              smallViewportBehavior="buttons"
+              collapseMode="never"
+            />
 
-            <section className="surface panel user-detail-panel-compact" id="user-detail-identity">
+            {activeUserDetailTab === 'account' && (
+            <>
+            <section className="surface panel user-detail-panel-compact" id="user-detail-identity" role="tabpanel">
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.detail.identityTitle}</h2>
@@ -9066,7 +9128,7 @@ function AdminDashboard(): JSX.Element {
                 </div>
               </div>
               <dl className="user-detail-definition-grid">
-                <div>
+                <div className="user-detail-definition-grid__item--wide">
                   <dt>{usersStrings.detail.userId}</dt>
                   <dd>
                     <code>{detail.userId}</code>
@@ -9088,7 +9150,7 @@ function AdminDashboard(): JSX.Element {
                     </StatusBadge>
                   </dd>
                 </div>
-                <div>
+                <div className="user-detail-definition-grid__item--wide">
                   <dt>{usersStrings.table.lastLogin}</dt>
                   <dd>{formatTimestamp(detail.lastLoginAt)}</dd>
                 </div>
@@ -9232,7 +9294,10 @@ function AdminDashboard(): JSX.Element {
                 </div>
               )}
             </section>
+            </>
+            )}
 
+            {activeUserDetailTab === 'quota' && (
             <AdminUserDetailQuotaWorkspace
               detail={detail}
               usersStrings={usersStrings}
@@ -9253,7 +9318,9 @@ function AdminDashboard(): JSX.Element {
               onFetchEntitlements={fetchAdminUserEntitlements}
               onRefreshDetail={() => refreshUserDetail(detail.userId).then(() => undefined)}
             />
+            )}
 
+            {activeUserDetailTab === 'activity' && (
             <section className="surface panel" id="user-detail-activity">
               <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={280}>
                 <LazyUserDetailSharedUsagePanel
@@ -9267,11 +9334,15 @@ function AdminDashboard(): JSX.Element {
                   ipAddresses7d={detail.recentIpAddresses7d}
                   ipCount24h={detail.recentIpCount24h}
                   ipCount7d={detail.recentIpCount7d}
+                  initialSeriesCache={userDetailUsageSeriesCache.userId === detail.userId ? userDetailUsageSeriesCache.series : {}}
+                  onSeriesCacheChange={(series) => setUserDetailUsageSeriesCache({ userId: detail.userId, series })}
                   loadSeries={(series, signal) => fetchAdminUserUsageSeries(detail.userId, series, signal)}
                 />
               </AdminLazyBoundary>
             </section>
+            )}
 
+            {activeUserDetailTab === 'account' && (
             <section className="surface panel" id="user-detail-tokens">
               <div className="panel-header">
                 <div>
@@ -9303,6 +9374,7 @@ function AdminDashboard(): JSX.Element {
                 </AdminLazyBoundary>
               </div>
             </section>
+            )}
             <Dialog
               open={pendingUserTokenDeleteTarget != null}
               onOpenChange={(open) => {

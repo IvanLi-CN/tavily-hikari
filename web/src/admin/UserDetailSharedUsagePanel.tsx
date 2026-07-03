@@ -80,6 +80,8 @@ interface UserDetailSharedUsagePanelProps {
   ipCount7d?: number
   title?: string
   description?: string
+  initialSeriesCache?: Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>
+  onSeriesCacheChange?: (cache: Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>) => void
 }
 
 function isUsageSeriesKey(value: AdminUserUsagePanelTab): value is AdminUserUsageSeriesKey {
@@ -303,10 +305,14 @@ export function UserDetailSharedUsagePanel({
   ipCount7d = ipAddresses7d.length,
   title,
   description,
+  initialSeriesCache,
+  onSeriesCacheChange,
 }: UserDetailSharedUsagePanelProps): JSX.Element {
   const { resolvedTheme } = useTheme()
   const [activeSeries, setActiveSeries] = useState<AdminUserUsagePanelTab>(initialSeries)
-  const [seriesCache, setSeriesCache] = useState<Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>>({})
+  const [seriesCache, setSeriesCache] = useState<Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>>(
+    () => initialSeriesCache ?? {},
+  )
   const [statusBySeries, setStatusBySeries] = useState<Partial<Record<AdminUserUsageSeriesKey, LoadStatus>>>({})
   const [hoverTooltip, setHoverTooltip] = useState<SharedUsageTooltipState | null>(null)
   const [pinnedTooltip, setPinnedTooltip] = useState<SharedUsageTooltipState | null>(null)
@@ -360,7 +366,11 @@ export function UserDetailSharedUsagePanel({
         if (inflightControllersRef.current[activeSeries] === controller) {
           delete inflightControllersRef.current[activeSeries]
         }
-        setSeriesCache((current) => ({ ...current, [activeSeries]: payload }))
+        setSeriesCache((current) => {
+          const next = { ...current, [activeSeries]: payload }
+          onSeriesCacheChange?.(next)
+          return next
+        })
         setStatusBySeries((current) => ({ ...current, [activeSeries]: 'success' }))
       })
       .catch((error) => {

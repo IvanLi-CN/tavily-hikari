@@ -33,7 +33,12 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.TokenDetailRecentRequests).toMatchObject({})
     expect(adminPageStories.UserDetailSharedUsageTooltip).toMatchObject({})
     expect(adminPageStories.UserDetailCompact).toMatchObject({})
+    expect(adminPageStories.UserDetailAccountTab).toMatchObject({})
+    expect(adminPageStories.UserDetailIdentityTab).toMatchObject({})
     expect(adminPageStories.UserDetailSingleTokenGuard).toMatchObject({})
+    expect(adminPageStories.UserDetailTagsTab).toMatchObject({})
+    expect(adminPageStories.UserDetailQuotaTab).toMatchObject({})
+    expect(adminPageStories.UserDetailTokensTab).toMatchObject({})
     expect(adminPageStories.UserDetailBusinessCalls1h).toMatchObject({})
     expect(adminPageStories.Alerts).toMatchObject({})
     expect(adminPageStories.AlertsMobile).toMatchObject({})
@@ -388,7 +393,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.promoteToMaster)
   })
 
-  it('renders the user detail story with compact card fallbacks for tokens and quota breakdown', () => {
+  it('renders the user detail story with compact card fallbacks for tokens', () => {
     const renderStory = adminPageStories.UserDetailCompact.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
@@ -401,11 +406,8 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('admin-user-token-card')
-    expect(markup).toContain('admin-user-breakdown-card')
     expect(markup).toContain('admin-user-mobile-metric-grid')
-    expect(markup).toContain('admin-user-mobile-chip')
     expect(markup).toContain('累计请求')
-    expect(markup).toContain('最终有效额度')
   })
 
   it('renders the user detail stories with business 1h summary and tab affordances', () => {
@@ -428,9 +430,11 @@ describe('AdminPages Storybook proofs', () => {
   })
 
   it('renders the user detail stories with add and delete token controls', () => {
-    const renderStory = adminPageStories.UserDetail.render as (() => JSX.Element) | undefined
+    const renderStory = adminPageStories.UserDetailTokensTab.render as (() => JSX.Element) | undefined
+    const renderQuotaStory = adminPageStories.UserDetailQuotaTab.render as (() => JSX.Element) | undefined
     const renderSingleStory = adminPageStories.UserDetailSingleTokenGuard.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
+    expect(renderQuotaStory).toBeDefined()
     expect(renderSingleStory).toBeDefined()
 
     const renderMarkup = (renderFn: () => JSX.Element) =>
@@ -443,14 +447,15 @@ describe('AdminPages Storybook proofs', () => {
       )
 
     const multiMarkup = renderMarkup(renderStory!)
+    const quotaMarkup = renderMarkup(renderQuotaStory!)
     const singleMarkup = renderMarkup(renderSingleStory!)
 
     expect(multiMarkup).toContain('Add token')
     expect(multiMarkup).toContain('Delete token')
-    expect(multiMarkup).toContain('Account entitlements')
-    expect(multiMarkup).toContain('Add entitlement')
-    expect(multiMarkup).toContain('Manual monthly quota correction for story coverage.')
-    expect(multiMarkup).toContain('Permanent entitlement trim for story coverage.')
+    expect(quotaMarkup).toContain('Account entitlements')
+    expect(quotaMarkup).toContain('Add entitlement')
+    expect(quotaMarkup).toContain('Manual monthly quota correction for story coverage.')
+    expect(quotaMarkup).toContain('Permanent entitlement trim for story coverage.')
     expect(singleMarkup).toContain('Add token')
     expect(singleMarkup).toContain('At least one token must remain.')
   })

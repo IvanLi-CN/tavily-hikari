@@ -45,6 +45,7 @@ import LanguageSwitcher from '../../components/LanguageSwitcher'
 import { StatusBadge, type StatusTone } from '../../components/StatusBadge'
 import ThemeToggle from '../../components/ThemeToggle'
 import { Button } from '../../components/ui/button'
+import SegmentedTabs from '../../components/ui/SegmentedTabs'
 import {
   Drawer,
   DrawerContent,
@@ -89,6 +90,7 @@ import DashboardOverview, { type DashboardMetricCard } from '../DashboardOvervie
 import { AdminUserDetailQuotaWorkspace } from '../AdminUserDetailQuotaWorkspace'
 import { UserDetailSharedUsagePanel } from '../UserDetailSharedUsagePanel'
 import { UserDetailTokenTable } from '../UserDetailTokenTable'
+import type { UserDetailTabKey } from '../routes'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -5792,13 +5794,19 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
 function UserDetailPageCanvas({
   initialUsageSeries = 'businessCalls1h',
   initialDetail = MOCK_USER_DETAIL,
+  initialTab = 'account',
 }: {
   initialUsageSeries?: AdminUserUsageSeriesKey | 'ip'
   initialDetail?: AdminUserDetail
+  initialTab?: UserDetailTabKey
 } = {}): JSX.Element {
   const admin = useAdminTranslations(), users = admin.users
   const { language } = useLanguage()
   const [detail, setDetail] = useState<AdminUserDetail>(initialDetail)
+  const [activeTab, setActiveTab] = useState<UserDetailTabKey>(initialTab)
+  const [usageSeriesCache, setUsageSeriesCache] = useState<
+    Partial<Record<AdminUserUsageSeriesKey, AdminUserUsageSeries>>
+  >({})
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
   const [quotaDraft, setQuotaDraft] = useState<Record<QuotaSliderField, string>>({
     businessCalls1hLimit: String(detail.quotaBase.businessCalls1hLimit),
@@ -5835,6 +5843,11 @@ function UserDetailPageCanvas({
       return { ...current, tokenCount: tokens.length, tokens }
     })
   }
+  const tabOptions: Array<{ value: UserDetailTabKey; label: string }> = [
+    { value: 'account', label: users.detail.accountTitle },
+    { value: 'quota', label: users.quota.title },
+    { value: 'activity', label: users.detail.sharedUsageTitle },
+  ]
   return (
     <AdminPageFrame
       activeModule="users"
@@ -5847,68 +5860,77 @@ function UserDetailPageCanvas({
         />
       }
     >
-      <section className="surface panel">
+      <SegmentedTabs<UserDetailTabKey>
+        value={activeTab}
+        onChange={setActiveTab}
+        options={tabOptions}
+        ariaLabel={users.detail.title}
+        className="user-detail-section-tabs"
+        smallViewportBehavior="buttons"
+        collapseMode="never"
+      />
+      {activeTab === 'account' && (
+      <>
+      <section className="surface panel user-detail-panel-compact" id="user-detail-identity" role="tabpanel">
         <div className="panel-header">
           <div>
-            <h2>{users.detail.title}</h2>
-            <p className="panel-description">{users.detail.subtitle.replace('{id}', detail.userId)}</p>
+            <h2>{users.detail.identityTitle}</h2>
+            <p className="panel-description">{users.detail.identityDescription}</p>
           </div>
         </div>
-        <div className="token-info-grid">
-          <div className="token-info-card">
-            <span className="token-info-label">{users.detail.userId}</span>
-            <span className="token-info-value">
+        <dl className="user-detail-definition-grid">
+          <div className="user-detail-definition-grid__item--wide">
+            <dt>{users.detail.userId}</dt>
+            <dd>
               <code>{detail.userId}</code>
-            </span>
+            </dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.table.displayName}</span>
-            <span className="token-info-value">{detail.displayName ?? '—'}</span>
+          <div>
+            <dt>{users.table.displayName}</dt>
+            <dd>{detail.displayName ?? '—'}</dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.table.username}</span>
-            <span className="token-info-value">{detail.username ?? '—'}</span>
+          <div>
+            <dt>{users.table.username}</dt>
+            <dd>{detail.username ?? '—'}</dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.table.status}</span>
-            <span className="token-info-value">
+          <div>
+            <dt>{users.table.status}</dt>
+            <dd>
               <StatusBadge tone={detail.active ? 'success' : 'neutral'}>
                 {detail.active ? users.status.active : users.status.inactive}
               </StatusBadge>
-            </span>
+            </dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.table.lastLogin}</span>
-            <span className="token-info-value">{formatTimestamp(detail.lastLoginAt)}</span>
+          <div className="user-detail-definition-grid__item--wide">
+            <dt>{users.table.lastLogin}</dt>
+            <dd>{formatTimestamp(detail.lastLoginAt)}</dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.table.tokenCount}</span>
-            <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
+          <div>
+            <dt>{users.table.tokenCount}</dt>
+            <dd>{formatNumber(detail.tokenCount)}</dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.usage.table.businessOneHour}</span>
-            <span className="token-info-value">
+          <div>
+            <dt>{users.usage.table.businessOneHour}</dt>
+            <dd>
               {formatNumber(detail.businessCalls1h.totalCount)}
               <span className="admin-table-value-secondary" style={{ display: 'block' }}>
                 {language === 'zh'
                   ? `成 ${formatNumber(detail.businessCalls1h.successCount)} / 败 ${formatNumber(detail.businessCalls1h.failureCount)}`
                   : `S ${formatNumber(detail.businessCalls1h.successCount)} / F ${formatNumber(detail.businessCalls1h.failureCount)}`}
               </span>
-            </span>
+            </dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.usage.table.ipCount24h}</span>
-            <span
-              className={`token-info-value${ipCountPrimaryClassName(detail.recentIpCount24h, 5) ? ' admin-table-value-primary-danger' : ''}`}
-            >
+          <div>
+            <dt>{users.usage.table.ipCount24h}</dt>
+            <dd className={ipCountPrimaryClassName(detail.recentIpCount24h, 5) ? 'admin-table-value-primary-danger' : undefined}>
               {formatNumber(detail.recentIpCount24h)}
-            </span>
+            </dd>
           </div>
-          <div className="token-info-card">
-            <span className="token-info-label">{users.usage.table.ipCount7d}</span>
-            <span className="token-info-value">{formatNumber(detail.recentIpCount7d)}</span>
+          <div>
+            <dt>{users.usage.table.ipCount7d}</dt>
+            <dd>{formatNumber(detail.recentIpCount7d)}</dd>
           </div>
-        </div>
+        </dl>
       </section>
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
@@ -5990,6 +6012,9 @@ function UserDetailPageCanvas({
           })}
         </div>
       </section>
+      </>
+      )}
+      {activeTab === 'quota' && (
       <AdminUserDetailQuotaWorkspace
         detail={detail}
         usersStrings={users}
@@ -6050,6 +6075,8 @@ function UserDetailPageCanvas({
         }}
         onRefreshDetail={async () => undefined}
       />
+      )}
+      {activeTab === 'activity' && (
       <section className="surface panel">
         <UserDetailSharedUsagePanel
           usersStrings={users}
@@ -6062,12 +6089,16 @@ function UserDetailPageCanvas({
           ipAddresses7d={detail.recentIpAddresses7d}
           ipCount24h={detail.recentIpCount24h}
           ipCount7d={detail.recentIpCount7d}
+          initialSeriesCache={usageSeriesCache}
+          onSeriesCacheChange={setUsageSeriesCache}
           loadSeries={async (series) => {
             await new Promise((resolve) => window.setTimeout(resolve, 20))
             return MOCK_USER_USAGE_SERIES[series]
           }}
         />
       </section>
+      )}
+      {activeTab === 'account' && (
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -6090,6 +6121,7 @@ function UserDetailPageCanvas({
           />
         </div>
       </section>
+      )}
     </AdminPageFrame>
   )
 }
@@ -6884,7 +6916,7 @@ export const UserTagEdit: Story = {
 }
 
 export const UserDetailSharedUsageTooltip: Story = {
-  render: () => <UserDetailPageCanvas />,
+  render: () => <UserDetailPageCanvas initialTab="activity" />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },
@@ -6967,46 +6999,33 @@ export const UserDetail: Story = {
   render: () => <UserDetailPageCanvas />,
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
-    const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
-    if (!usagePanel) {
-      throw new Error('Expected user detail story to render the shared usage panel.')
-    }
-    const usagePanelStyle = getComputedStyle(usagePanel)
-    if (
-      usagePanelStyle.borderTopWidth !== '0px' ||
-      usagePanelStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' ||
-      usagePanelStyle.boxShadow !== 'none'
-    ) {
-      throw new Error('Expected the shared usage panel content to avoid a nested card surface.')
-    }
-    if (usagePanel.dataset.loadedSeries !== 'businessCalls1h') {
-      throw new Error(`Expected the default story to lazy-load only businessCalls1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
-    }
-    if (canvasElement.textContent?.includes('封禁数限额')) {
-      throw new Error('Expected user detail story to hide the per-user blocked-key limit card.')
-    }
-    if (canvasElement.textContent?.includes('更早的历史超出可追溯范围')) {
-      throw new Error('Expected the shared usage partial-history hint to stay out of the always-visible panel copy.')
-    }
-    if (!canvasElement.textContent?.includes('账户共享请求限流、每小时业务请求次数、积分消耗与 IP 活跃趋势。')) {
-      throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
-    }
-    if (!canvasElement.textContent?.includes('账号权益账本')) {
-      throw new Error('Expected user detail story to render the account entitlements workspace.')
-    }
-    if (!canvasElement.textContent?.includes('story monthly entitlement') || !canvasElement.textContent?.includes('story permanent entitlement')) {
-      throw new Error('Expected user detail story to render monthly and permanent entitlement rows.')
-    }
-    const addEntitlementButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === '新增权益')
-    if (!addEntitlementButton) {
-      throw new Error('Expected user detail story to render an add entitlement dialog trigger.')
-    }
-    addEntitlementButton.click()
-    await new Promise((resolve) => window.setTimeout(resolve, 80))
-    if (!document.body.textContent?.includes('后台备注') || !document.body.textContent?.includes('前台备注')) {
-      throw new Error('Expected the entitlement dialog to render both entitlement note fields after opening.')
+
+    const clickTopLevelTab = async (label: string) => {
+      const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-detail-section-tabs .segmented-tab'))
+        .find((item) => item.textContent?.trim() === label)
+      if (!button) {
+        throw new Error(`Expected user detail tab ${label} to exist.`)
+      }
+      button.click()
+      await new Promise((resolve) => window.setTimeout(resolve, 120))
     }
 
+    const topLevelTabs = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-detail-section-tabs .segmented-tab'))
+    const expectedTopLevelTabs = ['账户信息', '基础额度', '共享额度趋势']
+    const topLevelTabLabels = topLevelTabs.map((item) => item.textContent?.trim())
+    if (topLevelTabLabels.join('|') !== expectedTopLevelTabs.join('|')) {
+      throw new Error(`Expected user detail top-level tabs ${expectedTopLevelTabs.join(' / ')}, received ${topLevelTabLabels.join(' / ')}.`)
+    }
+    const activeTopLevelTab = topLevelTabs.find((item) => item.getAttribute('aria-checked') === 'true')
+    if (activeTopLevelTab?.textContent?.trim() !== '账户信息') {
+      throw new Error('Expected the default user detail story to open the account tab.')
+    }
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
+      throw new Error('Expected inactive user detail panels to stay out of the default account tab DOM.')
+    }
+    if (!canvasElement.textContent?.includes('查看该账户的稳定标识、登录状态与基础归属。')) {
+      throw new Error('Expected the account tab to render the identity panel by default.')
+    }
     const bindingToolbar = canvasElement.querySelector<HTMLElement>('.user-tag-binding-toolbar')
     if (!bindingToolbar || getComputedStyle(bindingToolbar).display !== 'grid') {
       throw new Error('Expected the user tag binding area to use a two-column grid on desktop.')
@@ -7039,13 +7058,6 @@ export const UserDetail: Story = {
     ).map((item) => item.textContent?.trim())
     if (!tagOptions.includes('Suspended')) {
       throw new Error('Expected opening the user tag Select to reveal bindable tag options.')
-    }
-
-    const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
-      .map((item) => item.textContent?.trim())
-    const expectedTabLabels = ['5m', '每小时', '24h', '月', 'IP']
-    if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
-      throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
     }
 
     const headerText = canvasElement.querySelector('.admin-user-tokens-table thead')?.textContent ?? ''
@@ -7088,13 +7100,46 @@ export const UserDetail: Story = {
       if (!wrapper) {
         throw new Error(`Expected the ${label} wrapper to exist in the desktop story.`)
       }
-      if (wrapper.scrollWidth > wrapper.clientWidth + 1) {
+    if (wrapper.scrollWidth > wrapper.clientWidth + 1) {
         throw new Error(`Expected the desktop ${label} wrapper to avoid horizontal overflow.`)
       }
     }
 
+    await clickTopLevelTab('共享额度趋势')
+    const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    if (!usagePanel) {
+      throw new Error('Expected user detail story to render the shared usage panel.')
+    }
+    const usagePanelStyle = getComputedStyle(usagePanel)
+    if (
+      usagePanelStyle.borderTopWidth !== '0px' ||
+      usagePanelStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' ||
+      usagePanelStyle.boxShadow !== 'none'
+    ) {
+      throw new Error('Expected the shared usage panel content to avoid a nested card surface.')
+    }
+    if (usagePanel.dataset.loadedSeries !== 'businessCalls1h') {
+      throw new Error(`Expected the default story to lazy-load only businessCalls1h, received ${usagePanel.dataset.loadedSeries ?? '<empty>'}.`)
+    }
+    if (canvasElement.textContent?.includes('封禁数限额')) {
+      throw new Error('Expected user detail story to hide the per-user blocked-key limit card.')
+    }
+    if (canvasElement.textContent?.includes('更早的历史超出可追溯范围')) {
+      throw new Error('Expected the shared usage partial-history hint to stay out of the always-visible panel copy.')
+    }
+    if (!canvasElement.textContent?.includes('账户共享请求限流、每小时业务请求次数、积分消耗与 IP 活跃趋势。')) {
+      throw new Error('Expected the shared usage description to summarize the business metrics without interaction instructions.')
+    }
+
+    const tabLabels = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
+      .map((item) => item.textContent?.trim())
+    const expectedTabLabels = ['5m', '每小时', '24h', '月', 'IP']
+    if (tabLabels.join('|') !== expectedTabLabels.join('|')) {
+      throw new Error(`Expected shared usage tabs to be ordered ${expectedTabLabels.join(' / ')}, received ${tabLabels.join(' / ')}.`)
+    }
+
     ;['5m', '24h', '月'].forEach((label) => {
-      const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.segmented-tab'))
+      const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.admin-user-shared-usage-tabs .segmented-tab'))
         .find((item) => item.textContent?.trim() === label)
       button?.click()
     })
@@ -7105,11 +7150,48 @@ export const UserDetail: Story = {
     if (expected.some((value) => !loadedSeries.includes(value))) {
       throw new Error(`Expected shared usage tabs to lazy-load all series after interaction, received ${loadedSeries.join(',')}.`)
     }
+
+    await clickTopLevelTab('账户信息')
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
+      throw new Error('Expected the shared usage panel to unmount when returning to the account tab.')
+    }
+    await clickTopLevelTab('共享额度趋势')
+    const restoredUsagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
+    const restoredLoadedSeries = restoredUsagePanel?.dataset.loadedSeries?.split(',').filter(Boolean) ?? []
+    if (expected.some((value) => !restoredLoadedSeries.includes(value))) {
+      throw new Error(`Expected shared usage cache to survive top-level tab switches, received ${restoredLoadedSeries.join(',')}.`)
+    }
+
+    await clickTopLevelTab('基础额度')
+    if (!canvasElement.textContent?.includes('账号权益账本')) {
+      throw new Error('Expected user detail story to render the account entitlements workspace.')
+    }
+    if (!canvasElement.textContent?.includes('story monthly entitlement') || !canvasElement.textContent?.includes('story permanent entitlement')) {
+      throw new Error('Expected user detail story to render monthly and permanent entitlement rows.')
+    }
+    const addEntitlementButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === '新增权益')
+    if (!addEntitlementButton) {
+      throw new Error('Expected user detail story to render an add entitlement dialog trigger.')
+    }
+    addEntitlementButton.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    if (!document.body.textContent?.includes('后台备注') || !document.body.textContent?.includes('前台备注')) {
+      throw new Error('Expected the entitlement dialog to render both entitlement note fields after opening.')
+    }
   },
 }
 
+export const UserDetailAccountTab: Story = {
+  render: () => <UserDetailPageCanvas initialTab="account" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UserDetailIdentityTab: Story = UserDetailAccountTab
+
 export const UserDetailSingleTokenGuard: Story = {
-  render: () => <UserDetailPageCanvas initialDetail={MOCK_USER_DETAIL_SINGLE_TOKEN} />,
+  render: () => <UserDetailPageCanvas initialDetail={MOCK_USER_DETAIL_SINGLE_TOKEN} initialTab="account" />,
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
 
@@ -7134,8 +7216,47 @@ export const UserDetailSingleTokenGuard: Story = {
   },
 }
 
+export const UserDetailTagsTab: Story = {
+  render: () => <UserDetailPageCanvas initialTab="account" />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    if (!canvasElement.querySelector('.user-tag-binding-toolbar')) {
+      throw new Error('Expected the user detail tags story to open the tags tab.')
+    }
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
+      throw new Error('Expected the account tab story to keep inactive panels out of the DOM.')
+    }
+  },
+}
+
+export const UserDetailQuotaTab: Story = {
+  render: () => <UserDetailPageCanvas initialTab="quota" />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    if (!canvasElement.textContent?.includes('账号权益账本')) {
+      throw new Error('Expected the user detail quota story to open the quota tab.')
+    }
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel') || canvasElement.querySelector('.admin-user-tokens-table')) {
+      throw new Error('Expected the quota tab story to keep inactive panels out of the DOM.')
+    }
+  },
+}
+
+export const UserDetailTokensTab: Story = {
+  render: () => <UserDetailPageCanvas initialTab="account" />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    if (!canvasElement.querySelector('.admin-user-tokens-table')) {
+      throw new Error('Expected the user detail tokens story to open the tokens tab.')
+    }
+    if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
+      throw new Error('Expected the account tab story to keep inactive panels out of the DOM.')
+    }
+  },
+}
+
 export const UserDetailCompact: Story = {
-  render: () => <UserDetailPageCanvas />,
+  render: () => <UserDetailPageCanvas initialTab="account" />,
   parameters: {
     viewport: { defaultViewport: '0390-device-iphone-14' },
   },
@@ -7180,11 +7301,11 @@ export const UserDetailCompact: Story = {
 }
 
 export const UserDetailMonthlyGap: Story = {
-  render: () => <UserDetailPageCanvas initialUsageSeries="monthlyCredits" />,
+  render: () => <UserDetailPageCanvas initialUsageSeries="monthlyCredits" initialTab="activity" />,
 }
 
 export const UserDetailBusinessCalls1h: Story = {
-  render: () => <UserDetailPageCanvas initialUsageSeries="businessCalls1h" />,
+  render: () => <UserDetailPageCanvas initialUsageSeries="businessCalls1h" initialTab="activity" />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },
@@ -7208,7 +7329,7 @@ export const UserDetailBusinessCalls1h: Story = {
 }
 
 export const UserDetailIpUsage: Story = {
-  render: () => <UserDetailPageCanvas initialUsageSeries="ip" />,
+  render: () => <UserDetailPageCanvas initialUsageSeries="ip" initialTab="activity" />,
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
 

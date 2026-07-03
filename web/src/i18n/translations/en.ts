@@ -756,6 +756,7 @@ export const EN: TranslationShape = {
           subtitle: 'Account {id}',
           back: 'Back to users',
           userId: 'User ID',
+          accountTitle: 'Account',
           identityTitle: 'Identity',
           identityDescription: 'Stable account identifiers and login status.',
           sharedUsageTitle: 'Shared Usage Trends',

@@ -951,6 +951,7 @@ export interface AdminTranslationsShape {
       subtitle: string
       back: string
       userId: string
+      accountTitle: string
       identityTitle: string
       identityDescription: string
       sharedUsageTitle: string
