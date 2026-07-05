@@ -113,7 +113,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
 | `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
 | `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | 是否启用旧版 ForwardAuth 管理员校验（默认 `false`）。                                                                        |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | 是否启用旧版 ForwardAuth 管理员校验（默认 `false`；完整旧版 header 配置会为兼容自动启用）。                                  |
 | `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
@@ -220,6 +220,7 @@ export FORWARD_AUTH_ADMIN_VALUE=xxx@example.com
 export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 ```
 
+- 已同时配置 `FORWARD_AUTH_HEADER` 和 `FORWARD_AUTH_ADMIN_VALUE` 的既有部署会为兼容继续自动启用 ForwardAuth；新部署使用该模式时应显式设置 `ADMIN_AUTH_FORWARD_ENABLED=true`。
 - `FORWARD_AUTH_HEADER` 指定哪一个请求头携带用户邮箱或 ID。
 - 当该头的值等于 `FORWARD_AUTH_ADMIN_VALUE` 时，会授予管理员权限，从而允许访问 `/api/keys` 相关接口。
 - 若启用 ForwardAuth，必须确保边缘代理在认证前清理所有客户端传入的身份头；不要把仅依赖身份头的 Hikari 直接暴露到公网。

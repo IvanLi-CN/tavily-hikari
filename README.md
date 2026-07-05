@@ -121,7 +121,7 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | Header value that grants admin privileges; leave empty to disable.                                                   |
 | `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                      |
 | `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | Override nickname when ForwardAuth headers are missing.                                                              |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | Boolean switch to enable legacy ForwardAuth checks (default `false`).                                                |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | Boolean switch to enable legacy ForwardAuth checks (default `false`; full legacy header config auto-enables it).     |
 | `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | Boolean switch to enable built-in admin login (cookie session) (default `false`).                                    |
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | Built-in admin password hash (PHC string, recommended).                                                              |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | Built-in admin password (deprecated; prefer password hash).                                                          |
@@ -225,6 +225,7 @@ export FORWARD_AUTH_ADMIN_VALUE=admin@example.com
 export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 ```
 
+- Existing deployments that already set both `FORWARD_AUTH_HEADER` and `FORWARD_AUTH_ADMIN_VALUE` continue to enable ForwardAuth automatically for compatibility; new deployments should set `ADMIN_AUTH_FORWARD_ENABLED=true` explicitly when using this mode.
 - Requests must include the header defined by `FORWARD_AUTH_HEADER`. If its value equals `FORWARD_AUTH_ADMIN_VALUE`, the caller is treated as an admin and can hit `/api/keys/*` privileged endpoints.
 - Do not expose Hikari directly to the public internet with ForwardAuth enabled unless the edge proxy strips any client-supplied identity headers before authentication.
 - `FORWARD_AUTH_NICKNAME_HEADER` (optional) is surfaced in the UI to show who is operating the console. When absent, the backend falls back to `ADMIN_MODE_NAME` (if provided) or hides the nickname.

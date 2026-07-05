@@ -477,6 +477,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .forward_auth_admin_value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
+    let forward_auth_enabled = effective_forward_auth_enabled(
+        cli.admin_auth_forward_enabled,
+        forward_auth_header.is_some(),
+        forward_auth_admin_value.is_some(),
+    );
+    if forward_auth_enabled && !cli.admin_auth_forward_enabled {
+        warn!(
+            component = "startup",
+            event = "forward_auth_compat_auto_enabled",
+            "ForwardAuth auto-enabled because FORWARD_AUTH_HEADER and FORWARD_AUTH_ADMIN_VALUE are configured; set ADMIN_AUTH_FORWARD_ENABLED=true to make this explicit"
+        );
+    }
 
     let forward_auth = server::ForwardAuthConfig::new(
         forward_auth_header,
@@ -530,7 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let admin_auth = server::AdminAuthOptions {
-        forward_auth_enabled: cli.admin_auth_forward_enabled,
+        forward_auth_enabled,
         builtin_auth_enabled: cli.admin_auth_builtin_enabled,
         builtin_auth_password: builtin_password,
         builtin_auth_password_hash: builtin_password_hash,
@@ -736,6 +748,27 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn effective_forward_auth_enabled(
+    explicit_enabled: bool,
+    header_configured: bool,
+    admin_value_configured: bool,
+) -> bool {
+    explicit_enabled || (header_configured && admin_value_configured)
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::effective_forward_auth_enabled;
+
+    #[test]
+    fn forward_auth_stays_compatible_when_legacy_headers_are_configured() {
+        assert!(effective_forward_auth_enabled(false, true, true));
+        assert!(effective_forward_auth_enabled(true, false, false));
+        assert!(!effective_forward_auth_enabled(false, true, false));
+        assert!(!effective_forward_auth_enabled(false, false, true));
+    }
 }
 
 fn infer_admin_passkey_rp_id(cli: &Cli) -> Option<String> {
