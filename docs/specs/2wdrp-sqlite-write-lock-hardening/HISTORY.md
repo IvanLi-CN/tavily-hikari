@@ -186,3 +186,12 @@
 - Added a no-op-aware request-log effect-bucket migration guard so steady-state restarts skip the
   legacy full-table repair once the migration has completed or a cheap indexed precheck proves no
   remaining rows need rewriting, and the rewrite plus completion marker now commit atomically.
+
+## 2026-07-05
+
+- Production inspection showed the node healthy while HA authority refreshes were retriggering
+  post-ready `server_pressure_buckets` rebuild and `user_business_calls_1h` backfill work roughly
+  every five seconds, creating repeated SQLite slow statements on large retained databases.
+- Tightened post-ready scheduling to a writable-tenure edge: first startup or promotion into a
+  writable role can run the non-core derived work once, repeated writable refreshes are suppressed,
+  and demotion out of writable resets the gate for a later promotion.

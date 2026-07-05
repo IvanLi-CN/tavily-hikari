@@ -591,6 +591,8 @@ impl TavilyProxy {
             low_quota_depletion_threshold: options.low_quota_depletion_threshold,
             forward_proxy_runtime_started: Arc::new(AtomicBool::new(false)),
             forward_proxy_runtime_transition_lock: Arc::new(Mutex::new(())),
+            post_ready_serving_tasks_started: Arc::new(AtomicBool::new(false)),
+            post_ready_serving_tasks_suppressed_logged: Arc::new(AtomicBool::new(false)),
             user_business_calls_backfill_started: Arc::new(AtomicBool::new(false)),
             server_pressure_rebuild_started: Arc::new(AtomicBool::new(false)),
             server_pressure_rebuild_generation: Arc::new(AtomicU64::new(0)),
@@ -933,6 +935,33 @@ impl TavilyProxy {
             created_at,
             result_status: result_status.to_string(),
         });
+    }
+
+    pub fn reset_post_ready_serving_tasks_for_writable_tenure(&self) {
+        self.post_ready_serving_tasks_started
+            .store(false, Ordering::SeqCst);
+        self.post_ready_serving_tasks_suppressed_logged
+            .store(false, Ordering::SeqCst);
+    }
+
+    pub fn claim_post_ready_serving_tasks_for_writable_tenure(
+        &self,
+    ) -> PostReadyServingTasksClaim {
+        if self
+            .post_ready_serving_tasks_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.post_ready_serving_tasks_suppressed_logged
+                .store(false, Ordering::SeqCst);
+            return PostReadyServingTasksClaim::Start;
+        }
+
+        let should_log = self
+            .post_ready_serving_tasks_suppressed_logged
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        PostReadyServingTasksClaim::Suppressed { should_log }
     }
 
     pub fn spawn_server_pressure_buckets_rebuild_once(&self) -> bool {

@@ -696,12 +696,20 @@ pub struct TavilyProxy {
     pub(crate) low_quota_depletion_threshold: i64,
     pub(crate) forward_proxy_runtime_started: Arc<AtomicBool>,
     pub(crate) forward_proxy_runtime_transition_lock: Arc<Mutex<()>>,
+    post_ready_serving_tasks_started: Arc<AtomicBool>,
+    post_ready_serving_tasks_suppressed_logged: Arc<AtomicBool>,
     user_business_calls_backfill_started: Arc<AtomicBool>,
     server_pressure_rebuild_started: Arc<AtomicBool>,
     server_pressure_rebuild_generation: Arc<AtomicU64>,
     server_pressure_rebuild_buffered_events: Arc<Mutex<Vec<ServerPressureBufferedEvent>>>,
     health_readiness_grace_until: tokio::time::Instant,
     pub(crate) backend_time: BackendTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostReadyServingTasksClaim {
+    Start,
+    Suppressed { should_log: bool },
 }
 
 #[derive(Clone, Debug)]

@@ -69,6 +69,11 @@
 - The same post-ready rebuild hook now runs on later HA promotions that restore a
   `provisional_master` / `full_master` serving role, including the shared admin/internal finalize
   path that persists HA status snapshots.
+- The post-ready hook is now gated per writable tenure. Startup or a later transition from
+  non-writable to writable may start one `server_pressure_buckets` rebuild and one
+  `user_business_calls_1h` backfill, but the repeating HA authority refresh while the node remains
+  writable only emits one suppressed decision log instead of rerunning the derived work every
+  refresh interval.
 - HA demotion now cancels any in-flight `server_pressure_buckets` rebuild generation before the
   node finishes leaving business-serving mode, so standby/recovery do not keep detached rebuild
   writes alive.

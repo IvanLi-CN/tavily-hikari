@@ -426,3 +426,167 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn post_ready_serving_tasks_run_once_per_writable_tenure() {
+    let db_path = temp_db_path("ha-post-ready-writable-tenure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-post-ready-writable-tenure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "ha-post-ready-writable-tenure".to_string(),
+            username: Some("ha_post_ready_writable_tenure".to_string()),
+            name: Some("HA Post Ready Writable Tenure".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert post-ready writable tenure user");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = proxy.backend_time().now_ts();
+    sqlx::query(
+        r#"
+        INSERT INTO observability.request_logs (
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            counts_business_quota,
+            request_user_id,
+            upstream_operation,
+            visibility,
+            created_at
+        ) VALUES ('POST', '/api/tavily/search', 200, 200, ?, 'api:search', 'API | search', 1, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("success")
+    .bind(&user.user_id)
+    .bind("search")
+    .bind(tavily_hikari::REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(now - 60)
+    .execute(&pool)
+    .await
+    .expect("insert pressure request log for post-ready tenure");
+
+    let state = Arc::new(AppState {
+        proxy: proxy.clone(),
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+            mode: tavily_hikari::HaMode::ActiveStandby,
+            node_id: "node-post-ready-writable-tenure".to_string(),
+            database_path: Some(db_str.clone()),
+            ..tavily_hikari::HaConfig::default()
+        }),
+        dev_open_admin: true,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    let writable_status = tavily_hikari::HaStatusView {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-post-ready-writable-tenure".to_string(),
+        node_public_origin: None,
+        role: tavily_hikari::HaNodeRole::FullMaster,
+        dual_active_enabled: false,
+        full_master_node_id: None,
+        degraded: false,
+        allows_basic_business: true,
+        allows_full_writes: true,
+        edgeone_domain: None,
+        edgeone_origin: None,
+        edgeone_expected_origin: None,
+        edgeone_current_target: None,
+        edgeone_expected_target: None,
+        edgeone_current_source_kind: None,
+        edgeone_expected_source_kind: None,
+        edgeone_current_origin_group_id: None,
+        edgeone_expected_origin_group_id: None,
+        ha_source_defaults: None,
+        ha_source_override: None,
+        ha_source_effective: None,
+        edgeone_api_configured: false,
+        last_edgeone_check_at: None,
+        last_sync_at: None,
+        sync_lag_seconds: None,
+        recovery_status: None,
+        message: Some("promoted into business-serving role".to_string()),
+        peer_nodes: Vec::new(),
+        planned_cutover_eligible: false,
+    };
+
+    assert!(
+        spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
+        "first writable tenure should start post-ready tasks"
+    );
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let bucket_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count rebuilt server pressure buckets");
+            let summary = proxy
+                .user_dashboard_summary(&user.user_id, None)
+                .await
+                .expect("load user dashboard summary after post-ready backfill");
+            if bucket_count >= 1 && summary.business_calls_1h.total_count == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("first post-ready tasks should complete");
+
+    assert!(
+        !spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
+        "same writable tenure must not restart completed post-ready tasks"
+    );
+    assert!(
+        !spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
+        "same writable tenure must keep suppressing repeated HA refreshes"
+    );
+
+    let standby_status = tavily_hikari::HaStatusView {
+        role: tavily_hikari::HaNodeRole::Standby,
+        allows_full_writes: false,
+        message: Some("demoted out of business-serving role".to_string()),
+        ..writable_status.clone()
+    };
+    assert!(
+        !spawn_post_ready_serving_tasks_for_status(state.clone(), &standby_status),
+        "non-writable status should only reset the tenure gate"
+    );
+    assert!(
+        spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
+        "returning to writable should re-arm one post-ready run"
+    );
+    assert!(
+        !spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
+        "re-armed writable tenure should suppress subsequent refreshes"
+    );
+
+    pool.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}

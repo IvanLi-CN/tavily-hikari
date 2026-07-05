@@ -469,6 +469,7 @@
         "server::tests::alerts_and_ha_sync_recovery::dual_active_",
         "server::tests::alerts_and_ha_node_state::redundant_",
         "server::tests::alerts_and_ha_node_state::dual_active_",
+        "server::tests::alerts_and_ha_startup_roles::post_ready_",
         "server::tests::alerts_and_ha_startup_roles::persist_",
         "server::tests::alerts_and_ha_startup_roles::startup_",
         "server::tests::alerts_and_ha_startup_roles::standby_",

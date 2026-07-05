@@ -171,6 +171,10 @@ month-tail public metrics scan.
   authority stayed unchanged could still enqueue the same `ha_node_state` row every five seconds;
   deduplicating identical coalesced snapshots removed both the slow-statement noise and an
   otherwise needless writer competitor.
+- Apply the same edge-trigger rule to post-ready derived work. If a writable HA status refresh
+  repeats every few seconds, it must not rerun best-effort rebuild/backfill tasks that scan
+  retained request logs; run them once for the writable tenure, suppress repeated refreshes with a
+  low-frequency decision log, and re-arm only after the node leaves writable and later returns.
 - Keep `HA_MODE=single` truly silent for HA replication writes. Leaving replication triggers enabled
   on a single live node creates unbounded local-only backlog with no standby consumer.
 - Treat large retained HA event cleanup like request-log cleanup: bounded online GC for freshness,

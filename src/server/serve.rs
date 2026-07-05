@@ -1376,6 +1376,9 @@ fn spawn_post_ready_serving_tasks_for_status(
     status: &tavily_hikari::HaStatusView,
 ) -> bool {
     if !status.allows_full_writes {
+        state
+            .proxy
+            .reset_post_ready_serving_tasks_for_writable_tenure();
         return false;
     }
     if background_tasks_disabled_via_env() {
@@ -1386,8 +1389,39 @@ fn spawn_post_ready_serving_tasks_for_status(
         );
         return false;
     }
+    match state
+        .proxy
+        .claim_post_ready_serving_tasks_for_writable_tenure()
+    {
+        tavily_hikari::PostReadyServingTasksClaim::Start => {}
+        tavily_hikari::PostReadyServingTasksClaim::Suppressed { should_log } => {
+            if should_log {
+                tracing::info!(
+                    component = "startup",
+                    event = "post_ready_tasks_suppressed",
+                    role = status.role.as_str(),
+                    node_id = %status.node_id,
+                    pressure_spawned = false,
+                    business_calls_spawned = false,
+                    reason = "already_started_for_writable_tenure",
+                    "post-ready non-core tasks already started for current writable tenure"
+                );
+            }
+            return false;
+        }
+    }
     let pressure = state.proxy.spawn_server_pressure_buckets_rebuild_once();
     let business_calls = state.proxy.spawn_user_business_calls_1h_backfill_once();
+    tracing::info!(
+        component = "startup",
+        event = "post_ready_tasks_started",
+        role = status.role.as_str(),
+        node_id = %status.node_id,
+        pressure_spawned = pressure,
+        business_calls_spawned = business_calls,
+        reason = "writable_tenure_entered",
+        "post-ready non-core tasks started for writable tenure"
+    );
     pressure || business_calls
 }
 
@@ -1560,6 +1594,11 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                             );
                         }
                         status = state.ha.status().await;
+                    }
+                    if !status.allows_full_writes {
+                        state
+                            .proxy
+                            .reset_post_ready_serving_tasks_for_writable_tenure();
                     }
                     if let Err(err) =
                         sync_forward_proxy_runtime_for_status(state.proxy.clone(), &status).await

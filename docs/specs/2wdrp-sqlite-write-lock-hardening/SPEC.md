@@ -4,7 +4,7 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-06-22
+- Last: 2026-07-05
 
 ## Background
 
@@ -109,6 +109,11 @@ source when a usable persisted runtime already exists.
   `/health`.
 - If a later HA transition promotes the process back into a business-serving role, the same
   best-effort `server_pressure_buckets` rebuild must be scheduled for that serving tenure too.
+- Post-ready derived work must be scheduled on writable-tenure edges, not on every persisted HA
+  authority refresh. Initial startup or the first observed transition into `provisional_master` /
+  `full_master` may run one `server_pressure_buckets` rebuild and one `user_business_calls_1h`
+  backfill; repeated writable observations in the same tenure must suppress new task launches, and
+  any observed non-writable role must re-arm the gate for a later writable promotion.
 - If HA demotes the process out of a business-serving role while that rebuild is still pending, the
   rebuild must cancel or roll back instead of committing new pressure buckets from a standby or
   recovery process.
@@ -250,6 +255,9 @@ source when a usable persisted runtime already exists.
 - Manual or internal HA promotions that return the node to `provisional_master` / `full_master`
   still trigger the same post-ready `server_pressure_buckets` rebuild path as initial serving
   startup.
+- Repeated HA authority refreshes for the same writable tenure do not repeatedly run post-ready
+  `server_pressure_buckets` rebuilds or `user_business_calls_1h` backfills; after observing
+  `standby` / `recovery`, the next writable promotion is allowed to run them once again.
 - If the node is demoted to `standby` / `recovery` before that rebuild finishes, the detached task
   exits without committing new `server_pressure_buckets` rows from the non-serving role.
 - Under mock/local upstream startup, the image `HEALTHCHECK` becomes healthy on the first

@@ -383,6 +383,11 @@ async fn persist_ha_status_snapshot(
     state: &Arc<AppState>,
     status: &tavily_hikari::HaStatusView,
 ) -> Result<(), (StatusCode, String)> {
+    if !status.allows_full_writes {
+        state
+            .proxy
+            .reset_post_ready_serving_tasks_for_writable_tenure();
+    }
     sync_forward_proxy_runtime_for_status(state.proxy.clone(), status)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
