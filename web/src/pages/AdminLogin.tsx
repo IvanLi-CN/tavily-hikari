@@ -40,6 +40,10 @@ function AdminLogin(): JSX.Element {
     if (typeof window === 'undefined') return ''
     return new URLSearchParams(window.location.search).get('adminPasskeyResetToken')?.trim() ?? ''
   }, [])
+  const resetRegistered = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('adminPasskeyRegistered') === '1'
+  }, [])
   const resetMode = resetToken.length > 0
 
   useEffect(() => {
@@ -84,13 +88,19 @@ function AdminLogin(): JSX.Element {
   const canUsePasskey = showPasskeyLogin && state === 'ready' && !offline.isOffline && (!totpRequired || totpCode.length === 6)
   const canRegisterResetPasskey = resetMode && state === 'ready' && !offline.isOffline
 
-  const finishWithErrorHandling = async (submitAction: SubmitAction, action: () => Promise<unknown>) => {
+  const finishWithErrorHandling = async (
+    submitAction: SubmitAction,
+    action: () => Promise<unknown>,
+    onSuccess: () => void = () => {
+      window.location.href = '/admin'
+    },
+  ) => {
     setError(null)
     setState('submitting')
     setSubmittingAction(submitAction)
     try {
       await action()
-      window.location.href = '/admin'
+      onSuccess()
     } catch (err) {
       const status = typeof err === 'object' && err && 'status' in err ? (err as { status?: unknown }).status : undefined
       if (status === 404) {
@@ -138,7 +148,9 @@ function AdminLogin(): JSX.Element {
       isDemoMode()
         ? Promise.resolve({ ok: true })
         : registerAdminPasskeyWithResetToken(resetToken, 'Admin passkey')
-    ))
+    ), () => {
+      window.location.href = '/login?adminPasskeyRegistered=1'
+    })
   }
 
   return (
@@ -187,6 +199,12 @@ function AdminLogin(): JSX.Element {
             {resetMode ? (
               <div className="rounded-lg border border-primary/25 bg-primary/10 p-3 text-sm text-primary">
                 {ui.hints.resetEnrollment}
+              </div>
+            ) : null}
+
+            {resetRegistered && !resetMode ? (
+              <div className="rounded-lg border border-primary/25 bg-primary/10 p-3 text-sm text-primary">
+                {ui.hints.resetRegistered}
               </div>
             ) : null}
 

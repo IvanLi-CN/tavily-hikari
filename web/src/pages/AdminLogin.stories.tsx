@@ -114,6 +114,24 @@ export const ResetEnrollment: Story = {
   },
 }
 
+export const ResetEnrollmentComplete: Story = {
+  args: {
+    path: '/login?adminPasskeyRegistered=1',
+    profile: {
+      ...baseProfile,
+      isAdmin: false,
+      builtinAuthEnabled: false,
+      passkeyAuthEnabled: true,
+      adminLoginTotpRequired: false,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.findByText(/Passkey registered|Passkey 已注册/i)).resolves.toBeInTheDocument()
+    await expect(canvas.findByRole('button', { name: /passkey/i })).resolves.toBeInTheDocument()
+  },
+}
+
 export const PasswordOnly: Story = {
   args: {
     profile: {

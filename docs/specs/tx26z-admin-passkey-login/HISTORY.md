@@ -8,6 +8,7 @@
 - 采用 WebAuthn challenge 服务端持久化、credential counter 更新和 DB-backed passkey session，避免重启后管理员 session 全部丢失。
 - reset URL 仅由本地 CLI 生成，注册成功后先消费 reset token，再撤销旧 passkey 与旧 passkey session，降低 token 重放和并发注册的风险。
 - 管理员密码设置、passkey reset token、credential 与 session 都属于管理员控制面状态；它们需要 HA 同步，写入路径也必须拒绝 standby 本地写，避免 failover 后凭据状态丢失或分叉。
+- 单独切换管理员登录 TOTP 要求不能把未持久化的环境变量口令改写成 disabled 状态；持久化设置恢复时只在明确存在 password hash 或 disabled marker 时覆盖口令来源。
 
 ## Key Reasons / Replacements
 

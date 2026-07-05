@@ -94,6 +94,7 @@ export const EN: TranslationShape = {
           disabled: 'Built-in admin login is disabled on this server.',
           profileUnavailable: 'Unable to confirm admin login methods; configured password login can still be attempted.',
           resetEnrollment: 'Register a new administrator passkey using this one-time reset link.',
+          resetRegistered: 'Passkey registered. Sign in with the new passkey to continue.',
         },
         errors: {
           invalid: 'Invalid password.',

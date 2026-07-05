@@ -668,9 +668,11 @@ impl BuiltinAdminAuth {
             return;
         };
         if let Ok(mut credentials) = self.credentials.write() {
-            credentials.password = None;
-            credentials.password_hash = settings.password_hash;
-            credentials.disabled = settings.disabled_at.is_some();
+            if settings.password_hash.is_some() || settings.disabled_at.is_some() {
+                credentials.password = None;
+                credentials.password_hash = settings.password_hash;
+                credentials.disabled = settings.disabled_at.is_some();
+            }
             credentials.updated_at = Some(settings.updated_at);
             credentials.login_totp_required = settings.login_totp_required;
         }
@@ -798,6 +800,27 @@ impl BuiltinAdminAuth {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+}
+
+#[cfg(test)]
+mod builtin_admin_auth_tests {
+    use super::BuiltinAdminAuth;
+
+    #[test]
+    fn admin_passkey_totp_only_persisted_settings_keep_env_password() {
+        let admin = BuiltinAdminAuth::new(true, Some("env-password".to_string()), None);
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: None,
+            disabled_at: None,
+            updated_at: 123,
+            login_totp_required: true,
+        }));
+
+        assert!(admin.is_enabled());
+        assert!(admin.login_totp_required());
+        assert!(admin.login("env-password").is_some());
     }
 }
 

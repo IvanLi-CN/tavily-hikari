@@ -75,7 +75,7 @@
 - 后端验证成功后写入持久化 admin session，并设置 `hikari_admin_passkey_session` HttpOnly cookie。
 - 运维人员在服务器上运行 CLI reset-url 子命令，生成带 token 的 URL。
 - 管理员打开 reset URL 后，前端请求 registration challenge，浏览器创建 passkey，后端验证并保存 credential，消费 reset token。
-- reset 注册成功后，默认撤销旧 passkey 与旧 admin session，保留新 session 或要求重新登录。
+- reset 注册成功后，默认撤销旧 passkey 与旧 admin session，并要求管理员使用新 passkey 重新登录。
 
 ### Edge cases / errors
 
@@ -156,6 +156,7 @@
 - Passkey 登录状态：[admin-login-passkey.png](./assets/admin-login-passkey.png)
 - Reset 注册状态：[admin-login-reset.png](./assets/admin-login-reset.png)
 - Reset URL 注册模式：[admin-login-reset-enrollment.png](./assets/admin-login-reset-enrollment.png)
+- Reset 注册完成后重新登录提示：[admin-login-reset-registered.png](./assets/admin-login-reset-registered.png)
 - 管理员安全设置页：[admin-security-page.png](./assets/admin-security-page.png)
 - 管理员安全操作确认弹窗：[admin-security-confirmation-inline.png](./assets/admin-security-confirmation-inline.png)
 - 管理端 TOTP 6 格验证码输入：[admin-totp-six-digit-input.png](./assets/admin-totp-six-digit-input.png)

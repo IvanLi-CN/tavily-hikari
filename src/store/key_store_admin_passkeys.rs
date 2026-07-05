@@ -96,12 +96,11 @@ impl KeyStore {
             r#"INSERT INTO admin_password_settings (
                    id, password_hash, disabled_at, updated_at, login_totp_required
                )
-               VALUES (1, NULL, ?, ?, ?)
+               VALUES (1, NULL, NULL, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    login_totp_required = excluded.login_totp_required,
                    updated_at = excluded.updated_at"#,
         )
-        .bind(now)
         .bind(now)
         .bind(if required { 1_i64 } else { 0_i64 })
         .execute(&self.pool)
@@ -711,6 +710,24 @@ mod admin_passkey_store_tests {
                 .expect("expired token lookup")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn admin_passkey_totp_flag_does_not_disable_unpersisted_password() {
+        let (_temp, db_path) = temp_db_path("totp-settings.db");
+        let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_000_000);
+        let store = KeyStore::new_with_time(&db_path, backend_time)
+            .await
+            .expect("create store");
+
+        let settings = store
+            .set_admin_login_totp_required(true)
+            .await
+            .expect("set totp flag");
+
+        assert_eq!(settings.password_hash, None);
+        assert_eq!(settings.disabled_at, None);
+        assert!(settings.login_totp_required);
     }
 
     #[tokio::test]

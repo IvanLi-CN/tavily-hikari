@@ -88,6 +88,7 @@ export interface PublicTranslations {
       disabled: string
       profileUnavailable: string
       resetEnrollment: string
+      resetRegistered: string
     }
     errors: {
       invalid: string
