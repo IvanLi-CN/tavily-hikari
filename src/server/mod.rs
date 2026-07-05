@@ -16,8 +16,8 @@ use async_stream::stream;
 use axum::http::header::{
     CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE, TRANSFER_ENCODING,
 };
-use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{AppendHeaders, IntoResponse};
 use axum::{
     Router,
     body::{self, Body, Bytes},

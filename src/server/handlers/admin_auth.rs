@@ -1696,6 +1696,7 @@ async fn post_admin_passkey_authentication_start(
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
+    require_admin_credential_write(state.as_ref()).await?;
     let credentials = state
         .proxy
         .list_active_admin_passkey_credentials()
@@ -2273,7 +2274,7 @@ async fn post_admin_logout(
     let passkey_cookie = passkey_session_clear_cookie(secure)?;
     Ok((
         StatusCode::NO_CONTENT,
-        [(SET_COOKIE, builtin_cookie), (SET_COOKIE, passkey_cookie)],
+        AppendHeaders([(SET_COOKIE, builtin_cookie), (SET_COOKIE, passkey_cookie)]),
     )
         .into_response())
 }
