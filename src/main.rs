@@ -758,9 +758,29 @@ fn effective_forward_auth_enabled(
     explicit_enabled || (header_configured && admin_value_configured)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdminPasskeyRpHostSource {
+    EdgeOneDomain,
+    NodePublicHost,
+}
+
+fn preferred_admin_passkey_rp_host(
+    edgeone_domain: Option<String>,
+    node_public_host: Option<String>,
+) -> Option<(String, AdminPasskeyRpHostSource)> {
+    trim_optional(edgeone_domain)
+        .map(|host| (host, AdminPasskeyRpHostSource::EdgeOneDomain))
+        .or_else(|| {
+            trim_optional(node_public_host)
+                .map(|host| (host, AdminPasskeyRpHostSource::NodePublicHost))
+        })
+}
+
 #[cfg(test)]
 mod main_tests {
-    use super::effective_forward_auth_enabled;
+    use super::{
+        AdminPasskeyRpHostSource, effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
+    };
 
     #[test]
     fn forward_auth_stays_compatible_when_legacy_headers_are_configured() {
@@ -769,19 +789,47 @@ mod main_tests {
         assert!(!effective_forward_auth_enabled(false, true, false));
         assert!(!effective_forward_auth_enabled(false, false, true));
     }
+
+    #[test]
+    fn passkey_rp_host_prefers_browser_facing_edgeone_domain() {
+        assert_eq!(
+            preferred_admin_passkey_rp_host(
+                Some(" hikari.example.com ".to_string()),
+                Some("origin.internal".to_string()),
+            ),
+            Some((
+                "hikari.example.com".to_string(),
+                AdminPasskeyRpHostSource::EdgeOneDomain,
+            )),
+        );
+        assert_eq!(
+            preferred_admin_passkey_rp_host(None, Some(" origin.internal ".to_string())),
+            Some((
+                "origin.internal".to_string(),
+                AdminPasskeyRpHostSource::NodePublicHost,
+            )),
+        );
+    }
 }
 
 fn infer_admin_passkey_rp_id(cli: &Cli) -> Option<String> {
-    trim_optional(cli.node_public_host.clone())
-        .or_else(|| trim_optional(cli.edgeone_domain.clone()))
+    preferred_admin_passkey_rp_host(cli.edgeone_domain.clone(), cli.node_public_host.clone())
+        .map(|(host, _)| host)
 }
 
 fn infer_admin_passkey_rp_origin(cli: &Cli) -> Option<String> {
-    let host = infer_admin_passkey_rp_id(cli)?;
-    let scheme = trim_optional(cli.node_public_scheme.clone())
-        .filter(|value| value != "follow")
-        .unwrap_or_else(|| "https".to_string());
-    let port = cli.node_public_port;
+    let (host, source) =
+        preferred_admin_passkey_rp_host(cli.edgeone_domain.clone(), cli.node_public_host.clone())?;
+    let scheme = if source == AdminPasskeyRpHostSource::EdgeOneDomain {
+        "https".to_string()
+    } else {
+        trim_optional(cli.node_public_scheme.clone())
+            .filter(|value| value != "follow")
+            .unwrap_or_else(|| "https".to_string())
+    };
+    let port = (source == AdminPasskeyRpHostSource::NodePublicHost)
+        .then_some(cli.node_public_port)
+        .flatten();
     let default_port = match scheme.as_str() {
         "http" => Some(80),
         "https" => Some(443),

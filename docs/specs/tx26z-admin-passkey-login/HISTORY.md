@@ -14,6 +14,7 @@
 - HA 控制面应用管理员密码设置后必须刷新运行中的内存认证态；否则 standby failover 可能继续接受旧启动口令或错过新设置。
 - 管理员登录 TOTP 要求与 TOTP secret 必须作为同一控制面事实同步；secret ciphertext、nonce 与 enabled timestamp 纳入 HA meta allowlist，防止节点只收到 requirement 而无法校验。
 - ForwardAuth 不再作为新部署默认管理员边界，但既有完整 header/admin-value 配置需要继续自动启用；示例与文档显式写出 `ADMIN_AUTH_FORWARD_ENABLED=true`，兼顾兼容与新配置可读性。
+- Passkey RP 默认推导优先使用浏览器访问的 `EDGEONE_DOMAIN`，没有 EdgeOne 公网域名时才退到 `NODE_PUBLIC_HOST`；非标准公网 origin 仍应显式配置 `ADMIN_PASSKEY_RP_ORIGIN`。
 
 ## Key Reasons / Replacements
 
