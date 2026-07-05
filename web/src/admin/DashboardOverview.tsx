@@ -154,6 +154,7 @@ export interface DashboardOverviewStrings {
   recentAlertsEmpty: string
   recentAlertsOpen: string
   recentAlertsOpenGroup: string
+  recentAlertsOpenUser: string
   recentAlertsTypeLabels: Record<'upstream_rate_limited_429' | 'upstream_usage_limit_432' | 'upstream_key_blocked' | 'user_request_rate_limited' | 'user_quota_exhausted', string>
 }
 
@@ -180,6 +181,7 @@ interface DashboardOverviewProps {
   onOpenModule: (module: AdminModuleId) => void
   onOpenRecentAlerts: () => void
   onOpenRecentAlertGroup?: (group: DashboardRecentAlertGroup) => void
+  onOpenUser?: (id: string) => void
   onOpenToken: (id: string) => void
   onOpenKey: (id: string) => void
   initialChartMode?: DashboardHourlyChartMode
@@ -505,25 +507,25 @@ function compactWindowCountLabel(
   }
 }
 
-function normalizeRecentAlertText(value: string | null | undefined): string {
-  return (value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
-    .replace(/\s+/g, ' ')
+function getRecentAlertRateWindowLabel(group: DashboardRecentAlertGroup): string | null {
+  if (typeof group.semanticWindowMinutes === 'number' && group.semanticWindowMinutes > 0) {
+    return `${group.semanticWindowMinutes}m window`
+  }
+  const windowText = [
+    group.latestEvent.summary,
+    group.latestEvent.errorMessage,
+  ].filter(Boolean).join(' ')
+  const match = windowText.match(/\b(?:rolling\s+)?(\d+)m\b/i) ?? windowText.match(/\bwindow=(\d+)m\b/i)
+  return match ? `${match[1]}m window` : null
 }
 
-function getRecentAlertHeadline(typeLabel: string, latestTitle: string | null | undefined): string | null {
-  const title = latestTitle?.trim()
-  if (!title) return null
-
-  const normalizedTitle = normalizeRecentAlertText(title)
-  const normalizedType = normalizeRecentAlertText(typeLabel)
-  if (!normalizedTitle) return null
-  if (!normalizedType) return title
-  if (normalizedTitle === normalizedType) return null
-  if (normalizedTitle.includes(normalizedType) || normalizedType.includes(normalizedTitle)) return null
-  return title
+function getRecentAlertReasonBadgeLabel(group: DashboardRecentAlertGroup, typeLabel: string): string {
+  const parts = [typeLabel]
+  if (group.type === 'user_request_rate_limited') {
+    const windowLabel = getRecentAlertRateWindowLabel(group)
+    if (windowLabel) parts.push(windowLabel)
+  }
+  return parts.join(' · ')
 }
 
 function formatAlertDateTimeIso(timestamp: number): string {
@@ -551,6 +553,7 @@ export default function DashboardOverview({
   onOpenModule,
   onOpenRecentAlerts,
   onOpenRecentAlertGroup,
+  onOpenUser,
   onOpenToken,
   onOpenKey,
   initialChartMode,
@@ -1166,13 +1169,15 @@ export default function DashboardOverview({
               <div className="dashboard-alerts-summary__table-body" role="rowgroup">
                 {recentAlerts.topGroups.map((group, index) => {
                   const typeLabel = strings.recentAlertsTypeLabels[group.type]
-                  const headline = getRecentAlertHeadline(typeLabel, group.latestEvent.title)
+                  const reasonBadgeLabel = getRecentAlertReasonBadgeLabel(group, typeLabel)
                   const rowBaseId = `${recentAlertsTableId}-row-${index}`
                   const subjectId = `${rowBaseId}-subject`
                   const summaryId = `${rowBaseId}-summary`
                   const windowId = `${rowBaseId}-window`
                   const actionHintId = `${rowBaseId}-action-hint`
                   const openGroupAriaLabel = `${strings.recentAlertsOpenGroup}: ${group.subjectLabel}`
+                  const userSubjectId = group.subjectKind === 'user' ? group.user?.userId : null
+                  const subjectLabel = group.subjectLabel.trim() || '—'
 
                   return (
                     <article key={group.id} className="dashboard-alerts-summary__row" role="row">
@@ -1184,13 +1189,25 @@ export default function DashboardOverview({
                       >
                         <span className="dashboard-alerts-summary__field-label" aria-hidden="true">{strings.recentAlertsColumns.alert}</span>
                         <div className="dashboard-alerts-summary__identity-head">
-                          <strong id={subjectId}>{group.subjectLabel}</strong>
+                          {userSubjectId && onOpenUser ? (
+                            <button
+                              type="button"
+                              id={subjectId}
+                              className="dashboard-alerts-summary__subject-button"
+                              onClick={() => onOpenUser(userSubjectId)}
+                              aria-label={`${strings.recentAlertsOpenUser}: ${subjectLabel}`}
+                            >
+                              {subjectLabel}
+                            </button>
+                          ) : (
+                            <strong id={subjectId}>{subjectLabel}</strong>
+                          )}
                           <div className="dashboard-alerts-summary__identity-flags">
                             <StatusBadge
                               tone={alertSummaryTone(group.type)}
                               className="dashboard-alerts-summary__type-badge"
                             >
-                              {typeLabel}
+                              {reasonBadgeLabel}
                             </StatusBadge>
                             <StatusBadge
                               tone={alertSummaryTone(group.type)}
@@ -1215,7 +1232,6 @@ export default function DashboardOverview({
                           </div>
                         ) : null}
                         <div className="dashboard-alerts-summary__identity-copy" id={summaryId}>
-                          {headline ? <span className="dashboard-alerts-summary__headline">{headline}</span> : null}
                           <span>{group.latestEvent.summary}</span>
                         </div>
                       </div>

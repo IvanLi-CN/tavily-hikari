@@ -325,6 +325,7 @@ export const ZH: TranslationShape = {
         recentAlertsEmpty: '最近 24 小时暂无告警活动。',
         recentAlertsOpen: '查看告警',
         recentAlertsOpenGroup: '查看分组',
+        recentAlertsOpenUser: '查看用户',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: '上游 429',
           upstream_usage_limit_432: '上游用量 432',

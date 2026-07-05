@@ -115,7 +115,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
         id: 'alert_evt_010',
         type: 'user_request_rate_limited',
         title: '用户请求限流',
-        summary: 'Alice Wang hit the local rolling request-rate window for MCP resources/list.',
+        summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP resources/list.',
         occurredAt: 1_776_220_680,
         requestKind: { key: 'mcp_resources_list', label: 'MCP resources/list', detail: 'resources/list' },
         errorMessage: 'user request rate limit exceeded on rolling 5m window (limit 25, used 25)',
@@ -146,7 +146,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
             id: 'alert_evt_011',
             type: 'user_request_rate_limited',
             title: '用户请求限流',
-            summary: 'Alice Wang hit the local rolling request-rate window for MCP tools/list.',
+            summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP tools/list.',
             occurredAt: 1_776_220_260,
             requestKind: { key: 'mcp_tools_list', label: 'MCP tools/list', detail: 'tools/list' },
             request: { id: 502, method: 'POST', path: '/mcp', query: null },
@@ -167,7 +167,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
               id: 'alert_evt_011',
               type: 'user_request_rate_limited',
               title: '用户请求限流',
-              summary: 'Alice Wang hit the local rolling request-rate window for MCP tools/list.',
+              summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP tools/list.',
               occurredAt: 1_776_220_260,
               requestKind: { key: 'mcp_tools_list', label: 'MCP tools/list', detail: 'tools/list' },
               request: { id: 502, method: 'POST', path: '/mcp', query: null },
@@ -178,7 +178,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
               id: 'alert_evt_012',
               type: 'user_request_rate_limited',
               title: '用户请求限流',
-              summary: 'Alice Wang hit the local rolling request-rate window for MCP initialize.',
+              summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP initialize.',
               occurredAt: 1_776_220_200,
               requestKind: { key: 'mcp_initialize', label: 'MCP initialize', detail: 'initialize' },
               request: { id: 503, method: 'POST', path: '/mcp', query: null },
@@ -204,7 +204,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
             id: 'alert_evt_010',
             type: 'user_request_rate_limited',
             title: '用户请求限流',
-            summary: 'Alice Wang hit the local rolling request-rate window for MCP resources/list.',
+            summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP resources/list.',
             occurredAt: 1_776_220_680,
             requestKind: { key: 'mcp_resources_list', label: 'MCP resources/list', detail: 'resources/list' },
             request: { id: 504, method: 'POST', path: '/mcp', query: null },
@@ -225,7 +225,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
               id: 'alert_evt_010',
               type: 'user_request_rate_limited',
               title: '用户请求限流',
-              summary: 'Alice Wang hit the local rolling request-rate window for MCP resources/list.',
+              summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP resources/list.',
               occurredAt: 1_776_220_680,
               requestKind: { key: 'mcp_resources_list', label: 'MCP resources/list', detail: 'resources/list' },
               request: { id: 504, method: 'POST', path: '/mcp', query: null },
@@ -236,7 +236,7 @@ const semanticGroups: AlertsPage<AlertGroup> = {
               id: 'alert_evt_013',
               type: 'user_request_rate_limited',
               title: '用户请求限流',
-              summary: 'Alice Wang hit the local rolling request-rate window for MCP notifications/initialized.',
+              summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP notifications/initialized.',
               occurredAt: 1_776_220_620,
               requestKind: { key: 'mcp_notifications_initialized', label: 'MCP notifications/initialized', detail: 'notifications/initialized' },
               request: { id: 505, method: 'POST', path: '/mcp', query: null },
@@ -291,7 +291,7 @@ const childRequestListStub = {
       request_kind_detail: 'tools/list',
       result_status: 'quota_exhausted',
       created_at: 1_776_220_260,
-      error_message: 'Alice Wang hit the local rolling request-rate window for MCP tools/list.',
+      error_message: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP tools/list.',
       failure_kind: null,
       key_effect_code: 'none',
       key_effect_summary: null,
@@ -339,7 +339,7 @@ const childRequestListStub = {
       request_kind_detail: 'initialize',
       result_status: 'quota_exhausted',
       created_at: 1_776_220_200,
-      error_message: 'Alice Wang hit the local rolling request-rate window for MCP initialize.',
+      error_message: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP initialize.',
       failure_kind: null,
       key_effect_code: 'none',
       key_effect_summary: null,
@@ -737,7 +737,7 @@ describe('AlertsCenter loading behavior', () => {
     })
     await flushEffects()
     expect(container.textContent).toContain('MCP tools/list')
-    expect(container.textContent).toContain('Alice Wang hit the local rolling request-rate window for MCP tools/list.')
+    expect(container.textContent).toContain('Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP tools/list.')
 
     await act(async () => {
       root.unmount()

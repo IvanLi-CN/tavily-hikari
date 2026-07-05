@@ -1027,7 +1027,7 @@ function demoRecentAlerts() {
     id: 'evt-demo-rate-4',
     type: 'user_request_rate_limited',
     title: '月月 hit the local request-rate limit',
-    summary: '月月在 MCP resources/list 阶段命中了本地滚动 5 分钟限流窗口。',
+    summary: 'Token tok_rate_01 在 MCP | resources/list 阶段命中了本地滚动 5 分钟 request-rate 窗口。',
     occurredAt: nowSeconds(-5400),
     subjectKind: 'user',
     subjectId: 'user-yueyue',

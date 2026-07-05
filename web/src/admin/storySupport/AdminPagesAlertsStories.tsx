@@ -38,7 +38,7 @@ const STORY_RATE_EVENT_OLD: AlertEvent = {
   id: 'alert_evt_rate_old',
   type: 'user_request_rate_limited',
   title: '用户请求限流',
-  summary: 'Alice Wang hit the local rolling request-rate window for MCP initialize.',
+  summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP initialize.',
   occurredAt: 1_762_379_280,
   subjectKind: 'user',
   subjectId: 'usr_alice',
@@ -67,7 +67,7 @@ const STORY_RATE_EVENT_OLD: AlertEvent = {
 const STORY_RATE_EVENT_NEW: AlertEvent = {
   ...STORY_RATE_EVENT_OLD,
   id: 'alert_evt_rate_new',
-  summary: 'Alice Wang hit the local rolling request-rate window for MCP resources/list.',
+  summary: 'Token tok_ops_01 was rate limited by the local rolling 5m request-rate window for MCP resources/list.',
   occurredAt: 1_762_379_340,
   request: { id: 802, method: 'POST', path: '/mcp', query: null },
   requestKind: { key: 'mcp_resources_list', label: 'MCP resources/list', detail: 'resources/list' },

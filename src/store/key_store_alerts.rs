@@ -661,6 +661,7 @@ fn build_alert_title_and_summary(
     token: Option<&AlertEntityRef>,
     key: Option<&AlertEntityRef>,
     request_kind: Option<&TokenRequestKind>,
+    error_message: Option<&str>,
     reason_summary: Option<&str>,
 ) -> (String, String) {
     let token_label = token.map(|value| value.label.as_str()).unwrap_or("unknown");
@@ -668,6 +669,8 @@ fn build_alert_title_and_summary(
     let request_kind_label = request_kind
         .map(|value| value.label.as_str())
         .unwrap_or("Unknown request");
+    let request_rate_window_minutes = parse_request_rate_window_metadata(error_message)
+        .unwrap_or_else(request_rate_limit_window_minutes);
     let reason_suffix = reason_summary
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -694,7 +697,7 @@ fn build_alert_title_and_summary(
         ALERT_TYPE_USER_REQUEST_RATE_LIMITED => (
             format!("{subject_label} hit the local request-rate limit"),
             format!(
-                "Token {token_label} was rate limited by the local rolling window for {request_kind_label}."
+                "Token {token_label} was rate limited by the local rolling {request_rate_window_minutes}m request-rate window for {request_kind_label}."
             ),
         ),
         ALERT_TYPE_USER_QUOTA_EXHAUSTED => (
@@ -1911,6 +1914,7 @@ impl KeyStore {
             token.as_ref(),
             key.as_ref(),
             request_kind.as_ref(),
+            error_message.as_deref(),
             reason_summary.as_deref(),
         );
 
@@ -2439,6 +2443,35 @@ mod alert_grouping_tests {
         };
         event.semantic_window = event_semantic_window(&event);
         event
+    }
+
+    #[test]
+    fn request_rate_alert_summary_names_rolling_window_and_request_kind() {
+        let token = AlertEntityRef {
+            id: "tok_test".to_string(),
+            label: "tok_test".to_string(),
+        };
+        let request_kind = TokenRequestKind::new(
+            "mcp_resources_list",
+            "MCP resources/list",
+            Some("resources/list".to_string()),
+        );
+
+        let (title, summary) = build_alert_title_and_summary(
+            ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+            "Alice Wang",
+            Some(&token),
+            None,
+            Some(&request_kind),
+            Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
+            None,
+        );
+
+        assert_eq!(title, "Alice Wang hit the local request-rate limit");
+        assert_eq!(
+            summary,
+            "Token tok_test was rate limited by the local rolling 5m request-rate window for MCP resources/list."
+        );
     }
 
     #[test]

@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'bun:test'
+import '../../test/happydom'
+
+import { afterEach, describe, expect, it } from 'bun:test'
+import { act } from 'react'
 import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import meta, * as dashboardStories from './DashboardOverview.stories'
+
+afterEach(() => {
+  document.body.innerHTML = ''
+})
 
 describe('DashboardOverview Storybook coverage', () => {
   it('keeps all six chart modes and the empty-selection story available', () => {
@@ -51,15 +59,50 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(markup).toContain('Review')
     expect(markup).toContain('Alice Wang')
     expect(markup).toContain('Tavily Search')
-    expect(markup).toContain('Tavily usage limit 432')
+    expect(markup).toContain('User request rate limited · 5m window')
+    expect(markup).toContain('Upstream key blocked')
+    expect(markup).not.toContain('User request rate limited · Tavily Search')
+    expect(markup).not.toContain('Upstream key blocked · Upstream account deactivated')
+    expect(markup).not.toContain('Local request-rate limit')
+    expect(markup).toContain('rolling 5m request-rate window')
     expect(markup).toContain('Queue below')
     expect(markup).toContain('Review group')
     expect(markup).toContain('aria-label="Review group: Alice Wang"')
+    expect(markup).toContain('dashboard-alerts-summary__subject-button')
+    expect(markup).toContain('aria-label="Open user: Alice Wang"')
     expect(markup).toContain('dashboard-alerts-summary__count-badge')
     expect(markup).toContain('status-pill-warning')
-    expect(markup).toContain('>4<')
+    expect(markup).toContain('>5<')
     expect(markup).toContain('dashboard-alerts-summary__field-label')
     expect(markup).not.toContain('deep-link into the grouped Alerts view')
+  })
+
+  it('opens the user detail target from a grouped alert subject', async () => {
+    const openedUsers: string[] = []
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const args = {
+      ...dashboardStories.Default.args,
+      onOpenUser: (userId: string) => openedUsers.push(userId),
+    }
+
+    await act(async () => {
+      root.render(createElement(meta.component, args as never))
+    })
+
+    const subjectButton = container.querySelector<HTMLButtonElement>('.dashboard-alerts-summary__subject-button')
+    expect(subjectButton?.textContent).toBe('Alice Wang')
+
+    await act(async () => {
+      subjectButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(openedUsers).toEqual(['usr_001'])
+
+    await act(async () => {
+      root.unmount()
+    })
   })
 
   it('exposes a fixed-range gap story for visual evidence', () => {

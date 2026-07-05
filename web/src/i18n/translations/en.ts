@@ -326,6 +326,7 @@ export const EN: TranslationShape = {
         recentAlertsEmpty: 'No alert activity in the last 24 hours.',
         recentAlertsOpen: 'Review alerts',
         recentAlertsOpenGroup: 'Review group',
+        recentAlertsOpenUser: 'Open user',
         recentAlertsTypeLabels: {
           upstream_rate_limited_429: 'Upstream 429',
           upstream_usage_limit_432: 'Upstream usage limit 432',

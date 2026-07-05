@@ -218,6 +218,10 @@
   - 顶部三张聚合计数卡：最近 `1 小时 / 24 小时 / 7 天`
   - 下方固定 `24h` 聚合告警列表，最多 `10` 条
   - 每条列表至少展示告警类型、主体、命中数、连续区间 `firstSeen -> lastSeen`、请求类型（若有）与最新摘要
+  - 当主体是用户且存在 `userId` 时，主体名称必须可点击并进入现有 `/admin/users/:id` 用户详情。
+  - 告警类型 badge 只承载分类和必要窗口：本地 request-rate 告警可展示 `5m` 窗口；request kind 与上游 Key 封禁原因摘要不得进入类型 badge。
+  - Dashboard 聚合摘要不展示 latest title；行内说明只保留 request kind（若有）与最新 summary。
+  - `user_request_rate_limited` 最新摘要必须说明具体本地限流窗口，例如 rolling `5m` request-rate window，不能只写泛化的 local rolling window。
   - 进入 `/admin/alerts` 的 CTA
 
 ## 验收标准
@@ -235,6 +239,10 @@
 - `/api/dashboard/overview.recentAlerts.groupedCountWindows` 固定返回 `1h / 24h / 168h` 三项，且仪表盘顶部只展示这三张聚合计数卡。
 - 仪表盘“近期告警”下方只展示聚合记录，不再展示旧的“事件数 / 分组数 / 类型分布”卡组。
 - 每条仪表盘聚合记录必须展示连续区间 `firstSeen -> lastSeen`，不得缺失告警时间。
+- 仪表盘用户主体点击后进入对应用户详情页；非用户主体保持原详情入口，不新增无效跳转。
+- 仪表盘告警类型 badge 不得承载非必要信息；`user_request_rate_limited` 可显示 `5m` 窗口，但不得把 request kind 拼进 badge；上游 Key 封禁不得把原因摘要拼进 badge。
+- 仪表盘聚合记录不得展示 `latestEvent.title` 作为独立说明行，避免与类型 badge 和 summary 重复。
+- `user_request_rate_limited` 的事件、分组与 dashboard 摘要必须包含 token、request kind 与 rolling `5m` request-rate window。
 - 后端验证至少包含：
   - `cargo test`
   - `cargo clippy -- -D warnings`
@@ -266,8 +274,11 @@
   - 下方 `24h` 聚合列表改为 `告警 / 告警区间 / 查看` 三列骨架；请求类型与命中数并回主体行内元信息，每条记录都展示连续区间 `firstSeen -> lastSeen`、主体与最新摘要。
   - 审计收口后，命中数 badge 已复用共享 badge 尺寸契约，行尾 `Review group` CTA 降为更安静的次级操作，避免与连续区间信息抢视觉层级。
   - 分组查看按钮具备主体化可访问名称，且窄屏表头仍保留在无障碍语义树中，不再因为 `display: none` 丢失表格关系。
+  - 用户主体 `Alice Wang` 以轻量可聚焦按钮呈现，可跳转用户详情；本地 request-rate 告警摘要明确写出 `rolling 5m request-rate window` 与请求类型，告警类型 badge 仅保留分类与 `5m window`，不重复展示 request kind 或上游封禁原因，也不再单独展示 `latestEvent.title`。
 
     ![仪表盘近期告警聚合摘要 Storybook 证据](assets/dashboard-alerts-24h-grouped-summary.png)
+
+    ![仪表盘近期告警用户名跳转与限流窗口说明证据](assets/dashboard-alerts-user-link-window-summary.png)
 
 - Storybook page fallback 证据：
   - `Admin/Pages / Alerts` 的 header tabs 与页面内 tabs 顺序已统一为 `聚合告警 -> 事件记录`。

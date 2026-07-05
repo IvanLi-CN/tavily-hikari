@@ -312,6 +312,7 @@ export interface AdminTranslationsShape {
     recentAlertsEmpty: string
     recentAlertsOpen: string
     recentAlertsOpenGroup: string
+    recentAlertsOpenUser: string
     recentAlertsTypeLabels: {
       upstream_rate_limited_429: string
       upstream_usage_limit_432: string
