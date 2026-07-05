@@ -73,6 +73,14 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn clear_admin_totp_secret_record_and_login_requirement(
+        &self,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store
+            .clear_admin_totp_secret_record_and_login_requirement()
+            .await
+    }
+
     pub async fn list_active_admin_passkey_credentials(
         &self,
     ) -> Result<Vec<AdminPasskeyCredentialRecord>, ProxyError> {

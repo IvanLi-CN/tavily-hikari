@@ -329,11 +329,14 @@ async fn post_admin_totp_disable(
 ) -> Result<Json<AdminTotpStatusResponse>, (StatusCode, String)> {
     ensure_totp_management_allowed(state.as_ref(), &headers).await?;
     verify_admin_totp_for_sensitive_action(state.as_ref(), &payload.totp_code).await?;
-    state
+    let password_settings = state
         .proxy
-        .clear_admin_totp_secret_record()
+        .clear_admin_totp_secret_record_and_login_requirement()
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    state
+        .builtin_admin
+        .set_login_totp_required(false, Some(password_settings.updated_at));
     admin_totp_status_response(state.as_ref()).await.map(Json)
 }
 

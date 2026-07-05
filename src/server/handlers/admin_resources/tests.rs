@@ -259,6 +259,65 @@ mod admin_resources_tests {
         let _ = std::fs::remove_file(db_path);
     }
 
+    #[tokio::test]
+    async fn admin_totp_disable_clears_login_totp_requirement() {
+        let (state, db_path) = totp_test_state_with_builtin_admin(
+            "admin-totp-disable-login-requirement",
+            BuiltinAdminAuth::new(true, Some("pw-123".to_string()), None),
+        )
+        .await;
+        let secret = generate_totp_secret();
+        let bind_code = build_totp(&secret)
+            .expect("build bind totp")
+            .generate_current()
+            .expect("bind code");
+        let _ = post_admin_totp_confirm(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpConfirmPayload {
+                secret: secret.clone(),
+                code: bind_code,
+            }),
+        )
+        .await
+        .expect("bind TOTP succeeds");
+        let settings = state
+            .proxy
+            .set_admin_login_totp_required(true)
+            .await
+            .expect("persist login TOTP requirement");
+        state
+            .builtin_admin
+            .set_login_totp_required(settings.login_totp_required, Some(settings.updated_at));
+
+        let disable_code = build_totp(&secret)
+            .expect("build disable totp")
+            .generate_current()
+            .expect("disable code");
+        let status = post_admin_totp_disable(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpCodePayload {
+                totp_code: disable_code,
+            }),
+        )
+        .await
+        .expect("disable TOTP succeeds")
+        .0;
+        assert!(!status.enabled);
+
+        let persisted = state
+            .proxy
+            .get_admin_password_settings()
+            .await
+            .expect("password settings load")
+            .expect("password settings row exists");
+        assert!(!persisted.login_totp_required);
+        assert!(!state.builtin_admin.login_totp_required());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     #[test]
     fn build_forward_proxy_validation_view_preserves_readable_display_name() {
         let view = build_forward_proxy_validation_view(tavily_hikari::ForwardProxyValidationResponse {

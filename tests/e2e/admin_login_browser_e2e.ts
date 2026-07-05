@@ -137,7 +137,7 @@ async function assertPasswordLogin(browser: Browser, baseUrl: string) {
   await page.locator("#admin-password-input").fill("demo-admin-password");
   await assertEnabled(page.getByRole("button", { name: /sign in|登录/i }).last(), "password submit after credentials");
   await Promise.all([
-    page.waitForURL("**/admin/", { timeout: 10_000 }),
+    page.waitForURL((url) => url.pathname === "/admin" || url.pathname === "/admin/", { timeout: 10_000 }),
     page.getByRole("button", { name: /sign in|登录/i }).last().click(),
   ]);
   log("password login reached admin");
@@ -152,7 +152,7 @@ async function assertPasskeyLogin(browser: Browser, baseUrl: string) {
   await page.locator("#admin-totp-code-input").fill("654321");
   await assertEnabled(page.getByRole("button", { name: /passkey/i }), "passkey button after TOTP");
   await Promise.all([
-    page.waitForURL("**/admin/", { timeout: 10_000 }),
+    page.waitForURL((url) => url.pathname === "/admin" || url.pathname === "/admin/", { timeout: 10_000 }),
     page.getByRole("button", { name: /passkey/i }).click(),
   ]);
   log("passkey login reached admin");
