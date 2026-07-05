@@ -1595,6 +1595,11 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                         }
                         status = state.ha.status().await;
                     }
+                    if !status.allows_full_writes {
+                        state
+                            .proxy
+                            .reset_post_ready_serving_tasks_for_writable_tenure();
+                    }
                     if let Err(err) =
                         sync_forward_proxy_runtime_for_status(state.proxy.clone(), &status).await
                     {
