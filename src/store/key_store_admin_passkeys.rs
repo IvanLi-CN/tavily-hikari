@@ -217,6 +217,86 @@ impl KeyStore {
         Ok(updated.rows_affected() > 0)
     }
 
+    pub async fn complete_admin_passkey_reset_registration(
+        &self,
+        token_hash: &str,
+        credential_id: &str,
+        passkey_json: &str,
+        label: Option<&str>,
+        revoke_credential_ids: &[String],
+    ) -> Result<bool, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "DELETE FROM admin_passkey_reset_tokens WHERE expires_at < ? OR consumed_at IS NOT NULL",
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        let consumed = sqlx::query(
+            r#"UPDATE admin_passkey_reset_tokens
+               SET consumed_at = ?
+               WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?"#,
+        )
+        .bind(now)
+        .bind(token_hash)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if consumed.rows_affected() == 0 {
+            tx.rollback().await.ok();
+            return Ok(false);
+        }
+
+        sqlx::query(
+            r#"INSERT INTO admin_passkey_credentials
+               (credential_id, passkey_json, label, created_at, updated_at, last_used_at, revoked_at)
+               VALUES (?, ?, ?, ?, ?, NULL, NULL)
+               ON CONFLICT(credential_id) DO UPDATE SET
+                   passkey_json = excluded.passkey_json,
+                   label = excluded.label,
+                   updated_at = excluded.updated_at,
+                   revoked_at = NULL"#,
+        )
+        .bind(credential_id)
+        .bind(passkey_json)
+        .bind(label.map(str::trim).filter(|value| !value.is_empty()))
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        for old_credential_id in revoke_credential_ids {
+            if old_credential_id == credential_id {
+                continue;
+            }
+            sqlx::query(
+                r#"UPDATE admin_passkey_credentials
+                   SET revoked_at = ?, updated_at = ?
+                   WHERE credential_id = ? AND revoked_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(old_credential_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE admin_passkey_sessions
+                   SET revoked_at = ?
+                   WHERE credential_id = ? AND revoked_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(old_credential_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn list_active_admin_passkey_credentials(
         &self,
     ) -> Result<Vec<AdminPasskeyCredentialRecord>, ProxyError> {
@@ -708,6 +788,80 @@ mod admin_passkey_store_tests {
                 .get_active_admin_passkey_reset_token(expiring_token)
                 .await
                 .expect("expired token lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_registration_consumes_token_and_rotates_credentials_atomically() {
+        let (_temp, db_path) = temp_db_path("reset-registration.db");
+        let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_000_000);
+        let store = KeyStore::new_with_time(&db_path, backend_time)
+            .await
+            .expect("create store");
+        store
+            .upsert_admin_passkey_credential("old-credential", r#"{"credential":"old"}"#, None)
+            .await
+            .expect("insert old credential");
+        let old_session = store
+            .create_admin_passkey_session(Some("old-credential"), 120)
+            .await
+            .expect("create old session");
+        let reset = store
+            .create_admin_passkey_reset_token(120)
+            .await
+            .expect("create reset token");
+        let token = reset.token.as_deref().expect("raw token returned");
+        let active = store
+            .get_active_admin_passkey_reset_token(token)
+            .await
+            .expect("active reset token")
+            .expect("reset token exists");
+
+        assert!(
+            store
+                .complete_admin_passkey_reset_registration(
+                    &active.token_hash,
+                    "new-credential",
+                    r#"{"credential":"new"}"#,
+                    Some("New passkey"),
+                    &["old-credential".to_string()],
+                )
+                .await
+                .expect("complete reset registration")
+        );
+
+        assert!(
+            store
+                .get_active_admin_passkey_reset_token(token)
+                .await
+                .expect("consumed reset token")
+                .is_none()
+        );
+        assert!(
+            !store
+                .complete_admin_passkey_reset_registration(
+                    &active.token_hash,
+                    "another-credential",
+                    r#"{"credential":"another"}"#,
+                    None,
+                    &[],
+                )
+                .await
+                .expect("second reset registration attempt")
+        );
+        let credentials = store
+            .list_active_admin_passkey_credentials()
+            .await
+            .expect("list credentials");
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].credential_id, "new-credential");
+        assert_eq!(credentials[0].label.as_deref(), Some("New passkey"));
+        assert!(
+            store
+                .get_active_admin_passkey_session(&old_session.token)
+                .await
+                .expect("old session lookup")
                 .is_none()
         );
     }

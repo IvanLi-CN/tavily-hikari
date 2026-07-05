@@ -2021,17 +2021,28 @@ async fn finish_admin_passkey_registration(
         Vec::new()
     };
     if let Some(token_hash) = reset_token_hash.as_deref() {
-        let consumed = state
+        let old_credential_ids = previous_credentials
+            .iter()
+            .map(|record| record.credential_id.clone())
+            .collect::<Vec<_>>();
+        let completed = state
             .proxy
-            .consume_admin_passkey_reset_token_hash(token_hash)
+            .complete_admin_passkey_reset_registration(
+                token_hash,
+                &credential_id,
+                &passkey_json,
+                payload.label.as_deref(),
+                &old_credential_ids,
+            )
             .await
             .map_err(|err| {
-                eprintln!("consume admin passkey reset token error: {err}");
+                eprintln!("complete admin passkey reset registration error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        if !consumed {
+        if !completed {
             return Err(StatusCode::UNAUTHORIZED);
         }
+        return Ok(Json(AdminPasskeyRegistrationFinishResponse { ok: true }));
     }
     state
         .proxy
@@ -2045,10 +2056,7 @@ async fn finish_admin_passkey_registration(
             eprintln!("store admin passkey credential error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    for record in previous_credentials
-        .iter()
-        .filter(|record| record.credential_id != credential_id)
-    {
+    for record in previous_credentials {
         state
             .proxy
             .revoke_admin_passkey_credential(&record.credential_id)

@@ -47,6 +47,25 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn complete_admin_passkey_reset_registration(
+        &self,
+        token_hash: &str,
+        credential_id: &str,
+        passkey_json: &str,
+        label: Option<&str>,
+        revoke_credential_ids: &[String],
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .complete_admin_passkey_reset_registration(
+                token_hash,
+                credential_id,
+                passkey_json,
+                label,
+                revoke_credential_ids,
+            )
+            .await
+    }
+
     pub async fn get_admin_password_settings(
         &self,
     ) -> Result<Option<AdminPasswordSettingsRecord>, ProxyError> {

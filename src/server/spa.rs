@@ -177,10 +177,19 @@ async fn serve_admin_shell(
 
 async fn serve_login(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
     if !state.builtin_admin.is_enabled() && !state.admin_passkey.is_configured() {
         return Err(StatusCode::NOT_FOUND);
+    }
+    let has_reset_token = query
+        .get("adminPasskeyResetToken")
+        .map(String::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if has_reset_token {
+        return load_spa_response(state.as_ref(), "login.html").await;
     }
     if is_admin_request(state.as_ref(), &headers).await {
         return Ok(Redirect::temporary("/admin").into_response());
