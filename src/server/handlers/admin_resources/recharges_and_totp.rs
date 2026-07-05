@@ -688,14 +688,6 @@ async fn ensure_totp_management_allowed(
             "DEV_OPEN_ADMIN cannot manage recharge TOTP".to_string(),
         ));
     }
-    let settings = state
-        .proxy
-        .get_system_settings()
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    if !settings.recharge_feature_enabled {
-        return Err((StatusCode::CONFLICT, "recharge feature is disabled".to_string()));
-    }
     if !state.linuxdo_oauth.has_refresh_token_crypt_key() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -725,9 +717,7 @@ async fn admin_totp_status_response(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(AdminTotpStatusResponse {
         enabled: secret_record.is_some(),
-        available: settings.recharge_feature_enabled
-            && state.linuxdo_oauth.has_refresh_token_crypt_key()
-            && !state.dev_open_admin,
+        available: state.linuxdo_oauth.has_refresh_token_crypt_key() && !state.dev_open_admin,
         recharge_feature_enabled: settings.recharge_feature_enabled,
         missing_crypto_key: !state.linuxdo_oauth.has_refresh_token_crypt_key(),
         locked_until: (locked_until > state.proxy.backend_time().now_ts()).then_some(locked_until),

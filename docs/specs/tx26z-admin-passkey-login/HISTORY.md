@@ -9,6 +9,7 @@
 - reset URL 仅由本地 CLI 生成，注册成功后先消费 reset token，再撤销旧 passkey 与旧 passkey session，降低 token 重放和并发注册的风险。
 - 管理员密码设置、passkey reset token、credential 与 session 都属于管理员控制面状态；它们需要 HA 同步，写入路径也必须拒绝 standby 本地写，避免 failover 后凭据状态丢失或分叉。
 - 单独切换管理员登录 TOTP 要求不能把未持久化的环境变量口令改写成 disabled 状态；持久化设置恢复时只在明确存在 password hash 或 disabled marker 时覆盖口令来源。
+- 管理员登录 TOTP 是认证因子，不是充值功能的附属开关；绑定、禁用和状态展示只依赖管理员权限、加密密钥与 dev-open 限制，不能要求启用充值功能。
 
 ## Key Reasons / Replacements
 

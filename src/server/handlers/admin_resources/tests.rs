@@ -77,12 +77,6 @@ mod admin_resources_tests {
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), tavily_hikari::DEFAULT_UPSTREAM, &db_str)
             .await
             .expect("proxy created");
-        let mut settings = proxy.get_system_settings().await.expect("settings");
-        settings.recharge_feature_enabled = true;
-        proxy
-            .set_system_settings(&settings)
-            .await
-            .expect("enable recharge feature");
         let forward_auth = ForwardAuthConfig::new(
             Some(HeaderName::from_static("x-forward-user")),
             Some("admin".to_string()),
@@ -148,6 +142,26 @@ mod admin_resources_tests {
         assert!(params.contains(&("trade_no", "trade-123".to_string())));
         assert!(params.contains(&("out_trade_no", "out-trade-123".to_string())));
         assert!(params.contains(&("money", "50.00".to_string())));
+    }
+
+    #[tokio::test]
+    async fn admin_totp_setup_is_available_without_recharge_feature() {
+        let (state, db_path) = totp_test_state("admin-totp-login-only").await;
+
+        let status = get_admin_totp_status(State(state.clone()), admin_headers())
+            .await
+            .expect("status loads")
+            .0;
+        assert!(!status.recharge_feature_enabled);
+        assert!(status.available);
+
+        let setup = post_admin_totp_setup(State(state), admin_headers())
+            .await
+            .expect("setup works without recharge")
+            .0;
+        assert!(!setup.secret.is_empty());
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
