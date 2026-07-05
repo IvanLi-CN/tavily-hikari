@@ -1879,4 +1879,53 @@ mod serve_tests {
         assert!(state.builtin_admin.is_enabled());
         assert!(state.builtin_admin.login("env-password").is_some());
     }
+
+    #[tokio::test]
+    async fn passkey_authentication_start_is_available_on_standby() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let db_path = temp_dir.path().join("standby-passkey-auth.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            Vec::<String>::new(),
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions {
+                enabled: true,
+                rp_id: Some("hikari.example.com".to_string()),
+                rp_origin: Some("https://hikari.example.com".to_string()),
+                challenge_ttl_secs: 300,
+                session_max_age_secs: 60 * 60,
+            },
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+                mode: tavily_hikari::HaMode::ActiveStandby,
+                node_id: "node-passkey-standby".to_string(),
+                database_path: Some(db_str),
+                sync_source_url: Some("http://127.0.0.1:59999".to_string()),
+                internal_token: Some("ha-test-token".to_string()),
+                sync_interval_secs: 5,
+                ..tavily_hikari::HaConfig::default()
+            }),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+
+        assert!(!state.ha.allows_full_writes().await);
+
+        let result = post_admin_passkey_authentication_start(State(state)).await;
+
+        assert_eq!(result.expect_err("no passkey credentials yet"), StatusCode::CONFLICT);
+    }
 }

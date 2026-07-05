@@ -1696,7 +1696,6 @@ async fn post_admin_passkey_authentication_start(
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
-    require_admin_credential_write(state.as_ref()).await?;
     let credentials = state
         .proxy
         .list_active_admin_passkey_credentials()
@@ -1753,7 +1752,6 @@ async fn post_admin_passkey_authentication_finish(
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
-    require_admin_credential_write(state.as_ref()).await?;
     let challenge = state
         .proxy
         .consume_admin_passkey_challenge(
