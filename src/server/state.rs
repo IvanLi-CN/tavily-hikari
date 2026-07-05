@@ -708,6 +708,7 @@ impl BuiltinAdminAuth {
             credentials.disabled = false;
             credentials.updated_at = updated_at;
         }
+        self.clear_sessions();
     }
 
     fn disable_password(&self, updated_at: Option<i64>) {
@@ -825,7 +826,9 @@ impl BuiltinAdminAuth {
 
 #[cfg(test)]
 mod builtin_admin_auth_tests {
-    use super::BuiltinAdminAuth;
+    use axum::http::{HeaderMap, HeaderValue, header::COOKIE};
+
+    use super::{BUILTIN_ADMIN_COOKIE_NAME, BuiltinAdminAuth};
 
     #[test]
     fn admin_passkey_totp_only_persisted_settings_keep_env_password() {
@@ -867,6 +870,25 @@ mod builtin_admin_auth_tests {
 
         assert!(!admin.is_enabled());
         assert!(admin.login("stored-password").is_none());
+    }
+
+    #[test]
+    fn rotating_password_revokes_existing_builtin_sessions() {
+        let admin = BuiltinAdminAuth::new(true, Some("old-password".to_string()), None);
+        let token = admin.login("old-password").expect("old password should log in");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        admin.set_password_hash("stored-password-hash".to_string(), Some(789));
+
+        assert!(!admin.is_admin(&headers));
     }
 }
 
