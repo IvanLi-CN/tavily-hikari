@@ -3,7 +3,7 @@ async fn post_validate_api_keys(
     headers: HeaderMap,
     Json(payload): Json<ValidateKeysRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -184,7 +184,7 @@ async fn create_api_key(
     headers: HeaderMap,
     Json(payload): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResponse>), StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -246,7 +246,7 @@ async fn create_api_keys_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchCreateKeysRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -419,7 +419,7 @@ async fn post_api_key_bulk_actions(
     headers: HeaderMap,
     Json(payload): Json<BulkApiKeyActionRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -693,7 +693,7 @@ async fn delete_api_key(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -717,7 +717,7 @@ async fn update_api_key_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateKeyStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -746,7 +746,7 @@ async fn get_api_key_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<ApiKeySecretView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -777,7 +777,7 @@ async fn list_logs(
     RawQuery(raw_query): RawQuery,
     Query(params): Query<LogsQuery>,
 ) -> Result<Json<PaginatedLogsView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -893,7 +893,7 @@ async fn list_logs_cursor(
     RawQuery(raw_query): RawQuery,
     Query(params): Query<CursorLogsQuery>,
 ) -> Result<Json<RequestLogsCursorPageView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -962,7 +962,7 @@ async fn get_logs_catalog(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<CursorLogsQuery>,
 ) -> Result<Json<RequestLogsCatalogView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());

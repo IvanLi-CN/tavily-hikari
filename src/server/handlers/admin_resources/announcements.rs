@@ -10,7 +10,7 @@ async fn get_announcements(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AnnouncementsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let items = state
@@ -29,7 +29,7 @@ async fn create_announcement(
     headers: HeaderMap,
     Json(payload): Json<AnnouncementMutationRequest>,
 ) -> Result<Json<AnnouncementView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
@@ -46,7 +46,7 @@ async fn update_announcement(
     Path(id): Path<String>,
     Json(payload): Json<AnnouncementMutationRequest>,
 ) -> Result<Json<AnnouncementView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let Some(item) = state
@@ -65,7 +65,7 @@ async fn publish_announcement(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<AnnouncementView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let Some(item) = state
@@ -84,7 +84,7 @@ async fn archive_announcement(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<AnnouncementView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let Some(item) = state

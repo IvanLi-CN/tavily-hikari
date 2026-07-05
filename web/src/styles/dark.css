@@ -895,7 +895,8 @@
   }
 
   .auth-card {
-    max-width: 38rem;
+    width: min(100%, 46rem);
+    max-width: 46rem;
     margin-inline: auto;
   }
 

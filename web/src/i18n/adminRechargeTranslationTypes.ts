@@ -8,7 +8,6 @@ export type SystemSettingsTotpTranslationKey =
   | 'totpCurrentCodePlaceholder'
   | 'totpConfirmCodePlaceholder'
   | 'totpBindAction'
-  | 'totpResetAction'
   | 'totpConfirmAction'
   | 'totpDisableAction'
 

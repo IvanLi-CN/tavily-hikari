@@ -17,12 +17,33 @@ pub async fn serve(
         builtin_auth_enabled,
         builtin_auth_password,
         builtin_auth_password_hash,
+        passkey_auth_enabled,
+        passkey_rp_id,
+        passkey_rp_origin,
+        passkey_challenge_ttl_secs,
+        passkey_session_max_age_secs,
     } = admin_auth;
     let builtin_admin = BuiltinAdminAuth::new(
         builtin_auth_enabled,
         builtin_auth_password,
         builtin_auth_password_hash,
     );
+    match proxy.get_admin_password_settings().await {
+        Ok(settings) => builtin_admin.apply_persisted_settings(settings),
+        Err(err) => tracing::warn!(
+            component = "startup",
+            event = "admin_password_settings_load_failed",
+            err = %err,
+            "admin password settings load failed; using startup configuration"
+        ),
+    }
+    let admin_passkey = AdminPasskeyOptions {
+        enabled: passkey_auth_enabled,
+        rp_id: passkey_rp_id,
+        rp_origin: passkey_rp_origin,
+        challenge_ttl_secs: passkey_challenge_ttl_secs.max(60),
+        session_max_age_secs: passkey_session_max_age_secs.max(60),
+    };
     let ha = tavily_hikari::HaRuntime::new(ha_config);
     let startup_ha_status = initialize_ha_startup_state(&proxy, &ha).await;
     if let Err(err) = sync_forward_proxy_runtime_for_status(proxy.clone(), &startup_ha_status).await {
@@ -40,6 +61,7 @@ pub async fn serve(
         forward_auth,
         forward_auth_enabled,
         builtin_admin,
+        admin_passkey,
         linuxdo_oauth,
         linuxdo_credit,
         ha,
@@ -71,6 +93,8 @@ pub async fn serve(
         event = "admin_auth_modes",
         forward_enabled = state.forward_auth_enabled,
         builtin_enabled = state.builtin_admin.is_enabled(),
+        passkey_enabled = state.admin_passkey.enabled,
+        passkey_configured = state.admin_passkey.is_configured(),
         dev_open_admin = state.dev_open_admin,
         "configured admin auth modes"
     );
@@ -211,6 +235,34 @@ pub async fn serve(
         )
         .route("/api/admin/login", post(post_admin_login))
         .route("/api/admin/logout", post(post_admin_logout))
+        .route(
+            "/api/admin/password",
+            get(get_admin_password)
+                .put(put_admin_password)
+                .patch(patch_admin_password)
+                .delete(delete_admin_password),
+        )
+        .route(
+            "/api/admin/passkey/authentication/start",
+            post(post_admin_passkey_authentication_start),
+        )
+        .route(
+            "/api/admin/passkey/authentication/finish",
+            post(post_admin_passkey_authentication_finish),
+        )
+        .route("/api/admin/passkeys", get(get_admin_passkeys))
+        .route(
+            "/api/admin/passkeys/:credential_id",
+            patch(patch_admin_passkey).delete(delete_admin_passkey),
+        )
+        .route(
+            "/api/admin/passkeys/registration/start",
+            post(post_admin_passkey_registration_start),
+        )
+        .route(
+            "/api/admin/passkeys/registration/finish",
+            post(post_admin_passkey_registration_finish),
+        )
         .route("/api/admin/ha/status", get(get_admin_ha_status))
         .route("/api/admin/ha/source", put(put_admin_ha_source_settings))
         .route(

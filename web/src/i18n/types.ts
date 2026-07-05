@@ -54,6 +54,30 @@ export interface PublicTranslations {
       label: string
       placeholder: string
     }
+    totp: {
+      label: string
+      placeholder: string
+      hint: string
+    }
+    passkey: {
+      signIn: string
+      signingIn: string
+      register: string
+      registering: string
+      orPassword: string
+    }
+    methods: {
+      summaryLabel: string
+      password: string
+      passkey: string
+      totp: string
+      enabled: string
+      disabled: string
+      checking: string
+      unavailable: string
+      required: string
+      optional: string
+    }
     submit: {
       label: string
       loading: string
@@ -62,9 +86,11 @@ export interface PublicTranslations {
     hints: {
       checking: string
       disabled: string
+      profileUnavailable: string
     }
     errors: {
       invalid: string
+      totpInvalid: string
       disabled: string
       generic: string
     }
@@ -618,7 +644,71 @@ export interface AdminTranslationsShape {
     title: string
     description: string
     helpLabel: string
-    subnav: { general: string; highAvailability: string }
+    subnav: { general: string; admin: string; highAvailability: string }
+    admin: {
+      title: string
+      description: string
+      postureSectionTitle: string
+      posturePassword: string
+      posturePasskeys: string
+      posturePasskeyCount: string
+      postureTotp: string
+      postureEnabled: string
+      postureDisabled: string
+      postureReady: string
+      postureWeak: string
+      passwordSectionTitle: string
+      passwordStatusTitle: string
+      passwordDescription: string
+      passwordEnabled: string
+      passwordDisabled: string
+      passwordLoading: string
+      passwordNewLabel: string
+      passwordNewPlaceholder: string
+      passwordConfirmLabel: string
+      passwordConfirmPlaceholder: string
+      passwordSetAction: string
+      passwordDeleteAction: string
+      passwordMismatch: string
+      passwordTooShort: string
+      passwordUpdated: string
+      passwordDeleted: string
+      loginTotpRequiredTitle: string
+      loginTotpRequiredDescription: string
+      loginTotpRequiredUnavailable: string
+      loginTotpRequiredEnabled: string
+      loginTotpRequiredDisabled: string
+      passwordDeleteConfirm: string
+      passwordDeleteDialogTitle: string
+      passwordDeleteDialogDescription: string
+      passkeySectionTitle: string
+      passkeyStatusTitle: string
+      passkeyDescription: string
+      passkeyLoading: string
+      passkeyEnabled: string
+      passkeyNoCredentials: string
+      passkeyUnavailable: string
+      passkeyCredentialCount: string
+      passkeyDefaultLabel: string
+      passkeyCreatedAt: string
+      passkeyLastUsedAt: string
+      passkeyEmpty: string
+      passkeyNewLabel: string
+      passkeyNewPlaceholder: string
+      passkeyAddAction: string
+      passkeyAdding: string
+      passkeySaveLabel: string
+      passkeyDelete: string
+      passkeyDeleteNamed: string
+      passkeyDeleteConfirm: string
+      passkeyDeleteDialogTitle: string
+      passkeyDeleteDialogDescription: string
+      passkeyUpdated: string
+      passkeyDeleted: string
+      totpDisableDialogTitle: string
+      totpDisableDialogDescription: string
+      securityCancel: string
+    }
     ha: {
       title: string
       description: string

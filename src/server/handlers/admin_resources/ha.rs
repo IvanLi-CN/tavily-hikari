@@ -146,8 +146,8 @@ fn parse_ha_channel(raw: Option<&str>) -> Result<tavily_hikari::HaSyncChannel, (
     })
 }
 
-fn is_ha_admin_or_internal(state: &AppState, headers: &HeaderMap) -> bool {
-    if is_admin_request(state, headers) {
+async fn is_ha_admin_or_internal(state: &AppState, headers: &HeaderMap) -> bool {
+    if is_admin_request(state, headers).await {
         return true;
     }
     let token = headers
@@ -472,7 +472,7 @@ async fn get_admin_ha_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     Ok(Json(build_admin_ha_status(&state).await))
@@ -483,7 +483,7 @@ async fn put_admin_ha_source_settings(
     headers: HeaderMap,
     Json(payload): Json<HaSourceSettingsRequest>,
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
 
@@ -568,7 +568,7 @@ async fn get_admin_ha_snapshot(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     gone_ha_snapshot_response()
@@ -579,7 +579,7 @@ async fn put_admin_ha_snapshot(
     headers: HeaderMap,
     _body: Bytes,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     gone_ha_snapshot_response()
@@ -604,7 +604,7 @@ async fn get_admin_ha_baseline(
     headers: HeaderMap,
     Query(query): Query<HaEventsQuery>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let channel = parse_ha_channel(query.channel.as_deref())?;
@@ -834,7 +834,7 @@ async fn get_admin_ha_events(
     headers: HeaderMap,
     Query(query): Query<HaEventsQuery>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let channel = parse_ha_channel(query.channel.as_deref())?;
@@ -865,7 +865,7 @@ async fn post_admin_ha_events_ack(
     headers: HeaderMap,
     Json(payload): Json<HaEventsAckRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let channel = parse_ha_channel(Some(payload.channel.as_str()))?;
@@ -964,7 +964,7 @@ async fn post_admin_ha_promote(
     headers: HeaderMap,
     Json(payload): Json<HaPromoteRequest>,
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     if state.ha.dual_active_enabled() {
@@ -1124,7 +1124,7 @@ async fn post_admin_ha_finalize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     if state.ha.dual_active_enabled() {
@@ -1270,7 +1270,7 @@ async fn post_admin_ha_recovery_import(
     headers: HeaderMap,
     Json(payload): Json<HaRecoveryImportRequest>,
 ) -> Result<Json<tavily_hikari::HaRecoveryImportResult>, (StatusCode, String)> {
-    if !is_ha_admin_or_internal(state.as_ref(), &headers) {
+    if !is_ha_admin_or_internal(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let batch = payload.batch_id.unwrap_or_else(|| "manual".to_string());
@@ -1379,7 +1379,7 @@ async fn get_admin_ha_timeline(
     headers: HeaderMap,
     Query(query): Query<HaTimelineQuery>,
 ) -> Result<Json<tavily_hikari::HaTimelinePage>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let category = parse_timeline_category(query.category.as_deref())?;
@@ -1410,7 +1410,7 @@ async fn get_admin_ha_node_detail(
     Path(node_id): Path<String>,
     Query(query): Query<HaNodeDetailQuery>,
 ) -> Result<Json<tavily_hikari::HaNodeDetailView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let status = build_admin_ha_status(&state).await;
@@ -1448,7 +1448,7 @@ async fn post_admin_ha_planned_cutover(
     headers: HeaderMap,
     Json(payload): Json<HaPlannedCutoverRequest>,
 ) -> Result<Json<PlannedCutoverResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     if state.ha.dual_active_enabled() {

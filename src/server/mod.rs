@@ -9,7 +9,7 @@ use std::{
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordVerifier},
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use async_stream::stream;
@@ -32,6 +32,7 @@ use futures_util::stream as futures_stream;
 use futures_util::{Stream, StreamExt};
 use nanoid::nanoid;
 use rand::Rng;
+use rand::rngs::OsRng;
 use reqwest::Client;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,12 @@ use sha2::{Digest, Sha256};
 use std::path::Component;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use url::form_urlencoded;
+use uuid::Uuid;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
+    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Url, Webauthn,
+    WebauthnBuilder,
+};
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummarySig {
     freshness: DashboardOverviewFreshness,

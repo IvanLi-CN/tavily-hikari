@@ -95,7 +95,7 @@ async fn list_keys(
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Result<Json<PaginatedApiKeysView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let query = ListKeysQuery::from_query(uri.query());

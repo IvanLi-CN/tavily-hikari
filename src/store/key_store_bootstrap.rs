@@ -572,7 +572,13 @@ impl KeyStore {
         let Some(upper_bound) = self.billing_ledger_startup_repair_upper_bound().await? else {
             self.set_meta_i64(META_KEY_BILLING_LEDGER_STARTUP_HIGH_WATERMARK_V1, 0)
                 .await?;
-            eprintln!("billing ledger startup precheck skipped: upper_bound=0, reason=no_billable_logs");
+            tracing::debug!(
+                component = "db",
+                event = "billing_ledger_startup_precheck_skipped",
+                upper_bound = 0,
+                reason = "no_billable_logs",
+                "billing ledger startup precheck skipped"
+            );
             return Ok(());
         };
 
@@ -1472,6 +1478,98 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_password_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_hash TEXT,
+                disabled_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                login_totp_required INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        if !self
+            .table_column_exists("admin_password_settings", "login_totp_required")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE admin_password_settings ADD COLUMN login_totp_required INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_passkey_credentials (
+                credential_id TEXT PRIMARY KEY,
+                passkey_json TEXT NOT NULL,
+                label TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_used_at INTEGER,
+                revoked_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_admin_passkey_credentials_active
+               ON admin_passkey_credentials(revoked_at, created_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_passkey_challenges (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                reset_token TEXT,
+                state_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                consumed_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_admin_passkey_challenges_expiry
+               ON admin_passkey_challenges(kind, expires_at, consumed_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS admin_passkey_sessions (
+                token TEXT PRIMARY KEY,
+                credential_id TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                FOREIGN KEY (credential_id) REFERENCES admin_passkey_credentials(credential_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_admin_passkey_sessions_active
+               ON admin_passkey_sessions(expires_at, revoked_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         self.ensure_dev_open_admin_token().await?;
 

@@ -153,7 +153,7 @@ async fn list_jobs(
     headers: HeaderMap,
     Query(q): Query<JobsQuery>,
 ) -> Result<Json<PaginatedJobsView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -205,7 +205,7 @@ async fn post_trigger_job(
     headers: HeaderMap,
     Json(payload): Json<TriggerJobRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -290,7 +290,7 @@ async fn get_api_key_detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<ApiKeyView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let items = state
@@ -310,7 +310,7 @@ async fn post_sync_key_usage(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     match run_manual_key_quota_sync(state.clone(), &id).await {
@@ -435,7 +435,7 @@ async fn delete_api_key_quarantine(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -485,6 +485,8 @@ struct ProfileView {
     is_admin: bool,
     forward_auth_enabled: bool,
     builtin_auth_enabled: bool,
+    passkey_auth_enabled: bool,
+    admin_login_totp_required: bool,
     allow_registration: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_logged_in: Option<bool>,
@@ -1241,7 +1243,7 @@ async fn get_forward_auth_debug(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ForwardAuthDebugView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let cfg = &state.forward_auth;
@@ -1257,7 +1259,7 @@ async fn debug_headers(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let mut map = serde_json::Map::new();
@@ -1282,6 +1284,12 @@ async fn get_profile(
 
     let forward_auth_enabled = state.forward_auth_enabled && config.is_enabled();
     let builtin_auth_enabled = state.builtin_admin.is_enabled();
+    let admin_login_totp_required = state.builtin_admin.login_totp_required();
+    let passkey_auth_enabled = state.admin_passkey.is_configured()
+        && state.proxy.admin_passkey_enabled().await.map_err(|err| {
+            eprintln!("get admin passkey enabled error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     if state.dev_open_admin {
         return Ok(Json(ProfileView {
@@ -1289,6 +1297,8 @@ async fn get_profile(
             is_admin: true,
             forward_auth_enabled,
             builtin_auth_enabled,
+            passkey_auth_enabled,
+            admin_login_totp_required,
             allow_registration,
             user_logged_in: None,
             user_provider: None,
@@ -1311,7 +1321,7 @@ async fn get_profile(
         None
     };
 
-    let is_admin = is_admin_request(state.as_ref(), &headers);
+    let is_admin = is_admin_request(state.as_ref(), &headers).await;
 
     let display_name = forward_nickname
         .or_else(|| config.admin_override_name().map(str::to_string))
@@ -1346,6 +1356,8 @@ async fn get_profile(
         is_admin,
         forward_auth_enabled,
         builtin_auth_enabled,
+        passkey_auth_enabled,
+        admin_login_totp_required,
         allow_registration,
         user_logged_in,
         user_provider,
@@ -1358,7 +1370,7 @@ async fn get_admin_registration_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AdminRegistrationSettingsView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
@@ -1373,7 +1385,7 @@ async fn patch_admin_registration_settings(
     headers: HeaderMap,
     payload: Result<Json<UpdateAdminRegistrationSettingsRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<AdminRegistrationSettingsView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1398,6 +1410,7 @@ async fn patch_admin_registration_settings(
 #[serde(rename_all = "camelCase")]
 struct AdminLoginRequest {
     password: String,
+    totp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1425,6 +1438,522 @@ fn session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
         secure = secure
     );
     HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn passkey_session_set_cookie(
+    token: &str,
+    max_age_secs: i64,
+    secure: bool,
+) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
+        name = ADMIN_PASSKEY_COOKIE_NAME,
+        max_age = max_age_secs.max(60),
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn passkey_session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        name = ADMIN_PASSKEY_COOKIE_NAME,
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyAuthenticationStartResponse {
+    challenge_id: String,
+    public_key: RequestChallengeResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyAuthenticationFinishRequest {
+    challenge_id: String,
+    credential: PublicKeyCredential,
+    totp_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyAuthenticationFinishResponse {
+    ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyRegistrationStartResponse {
+    challenge_id: String,
+    public_key: CreationChallengeResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyRegistrationFinishRequest {
+    challenge_id: String,
+    credential: RegisterPublicKeyCredential,
+    label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyRegistrationFinishResponse {
+    ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyCredentialView {
+    credential_id: String,
+    label: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+    last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeysView {
+    configured: bool,
+    enabled: bool,
+    credential_count: usize,
+    credentials: Vec<AdminPasskeyCredentialView>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasskeyLabelUpdateRequest {
+    label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasswordStatusView {
+    enabled: bool,
+    updated_at: Option<i64>,
+    login_totp_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasswordSetRequest {
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminPasswordSettingsPatchRequest {
+    login_totp_required: bool,
+}
+
+fn admin_passkey_unavailable() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+fn admin_password_status_view(state: &AppState) -> AdminPasswordStatusView {
+    let status = state.builtin_admin.status();
+    AdminPasswordStatusView {
+        enabled: status.enabled,
+        updated_at: status.updated_at,
+        login_totp_required: status.login_totp_required,
+    }
+}
+
+async fn get_admin_passkeys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminPasskeysView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let configured = state.admin_passkey.is_configured();
+    let credentials = if configured {
+        state
+            .proxy
+            .list_active_admin_passkey_credentials()
+            .await
+            .map_err(|err| {
+                eprintln!("list admin passkeys error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        Vec::new()
+    };
+    let credential_views = credentials
+        .into_iter()
+        .map(|record| AdminPasskeyCredentialView {
+            credential_id: record.credential_id,
+            label: record.label,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            last_used_at: record.last_used_at,
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(AdminPasskeysView {
+        configured,
+        enabled: configured && !credential_views.is_empty(),
+        credential_count: credential_views.len(),
+        credentials: credential_views,
+    }))
+}
+
+async fn patch_admin_passkey(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(credential_id): Path<String>,
+    Json(payload): Json<AdminPasskeyLabelUpdateRequest>,
+) -> Result<Json<AdminPasskeysView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let credential_id = credential_id.trim();
+    if credential_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let updated = state
+        .proxy
+        .update_admin_passkey_credential_label(credential_id, payload.label.as_deref())
+        .await
+        .map_err(|err| {
+            eprintln!("update admin passkey label error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !updated {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    get_admin_passkeys(State(state), headers).await
+}
+
+async fn delete_admin_passkey(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(credential_id): Path<String>,
+) -> Result<Json<AdminPasskeysView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let credential_id = credential_id.trim();
+    if credential_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let revoked = state
+        .proxy
+        .revoke_admin_passkey_credential(credential_id)
+        .await
+        .map_err(|err| {
+            eprintln!("revoke admin passkey credential error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !revoked {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    state
+        .proxy
+        .revoke_admin_passkey_sessions_for_credential(credential_id)
+        .await
+        .map_err(|err| {
+            eprintln!("revoke admin passkey sessions for credential error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    get_admin_passkeys(State(state), headers).await
+}
+
+fn deserialize_passkey(record: &tavily_hikari::AdminPasskeyCredentialRecord) -> Result<Passkey, StatusCode> {
+    serde_json::from_str(&record.passkey_json).map_err(|err| {
+        eprintln!("stored admin passkey credential decode error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
+}
+
+fn credential_id_for_passkey(passkey: &Passkey) -> String {
+    let bytes: &[u8] = passkey.cred_id().as_ref();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+async fn post_admin_passkey_authentication_start(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AdminPasskeyAuthenticationStartResponse>, StatusCode> {
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let credentials = state
+        .proxy
+        .list_active_admin_passkey_credentials()
+        .await
+        .map_err(|err| {
+            eprintln!("list admin passkey credentials error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if credentials.is_empty() {
+        return Err(StatusCode::CONFLICT);
+    }
+    let passkeys = credentials
+        .iter()
+        .map(deserialize_passkey)
+        .collect::<Result<Vec<_>, _>>()?;
+    let webauthn = state.admin_passkey.webauthn().map_err(|err| {
+        eprintln!("build admin passkey webauthn error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let (public_key, passkey_state) = webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|err| {
+            eprintln!("start admin passkey auth error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let state_json = serde_json::to_string(&passkey_state).map_err(|err| {
+        eprintln!("serialize admin passkey auth state error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let challenge = state
+        .proxy
+        .insert_admin_passkey_challenge(
+            tavily_hikari::AdminPasskeyChallengeKind::Authentication,
+            None,
+            &state_json,
+            state.admin_passkey.challenge_ttl_secs,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("insert admin passkey auth challenge error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(AdminPasskeyAuthenticationStartResponse {
+        challenge_id: challenge.id,
+        public_key,
+    }))
+}
+
+async fn post_admin_passkey_authentication_finish(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminPasskeyAuthenticationFinishRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let challenge = state
+        .proxy
+        .consume_admin_passkey_challenge(
+            payload.challenge_id.trim(),
+            tavily_hikari::AdminPasskeyChallengeKind::Authentication,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("consume admin passkey auth challenge error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let passkey_state: PasskeyAuthentication =
+        serde_json::from_str(&challenge.state_json).map_err(|err| {
+            eprintln!("decode admin passkey auth state error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let webauthn = state.admin_passkey.webauthn().map_err(|err| {
+        eprintln!("build admin passkey webauthn error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let auth_result = webauthn
+        .finish_passkey_authentication(&payload.credential, &passkey_state)
+        .map_err(|err| {
+            eprintln!("finish admin passkey auth error: {err}");
+            StatusCode::UNAUTHORIZED
+        })?;
+    let credential_id_bytes: &[u8] = auth_result.cred_id().as_ref();
+    let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id_bytes);
+    let mut passkey = state
+        .proxy
+        .list_active_admin_passkey_credentials()
+        .await
+        .map_err(|err| {
+            eprintln!("list admin passkey credentials after auth error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .iter()
+        .find(|record| record.credential_id == credential_id)
+        .map(deserialize_passkey)
+        .transpose()?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    passkey.update_credential(&auth_result);
+    let passkey_json = serde_json::to_string(&passkey).map_err(|err| {
+        eprintln!("serialize admin passkey after auth error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let updated = state
+        .proxy
+        .update_admin_passkey_credential_after_auth(&credential_id, &passkey_json)
+        .await
+        .map_err(|err| {
+            eprintln!("update admin passkey after auth error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !updated {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if state.builtin_admin.login_totp_required() {
+        let code = payload.totp_code.as_deref().unwrap_or_default();
+        verify_admin_totp_for_sensitive_action(state.as_ref(), code)
+            .await
+            .map_err(|(status, _)| status)?;
+    }
+    let session = state
+        .proxy
+        .create_admin_passkey_session(
+            Some(&credential_id),
+            state.admin_passkey.session_max_age_secs,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("create admin passkey session error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let cookie = passkey_session_set_cookie(
+        &session.token,
+        state.admin_passkey.session_max_age_secs,
+        wants_secure_cookie(&headers),
+    )?;
+    Ok((
+        StatusCode::OK,
+        [(SET_COOKIE, cookie)],
+        Json(AdminPasskeyAuthenticationFinishResponse { ok: true }),
+    )
+        .into_response())
+}
+
+async fn post_admin_passkey_registration_start(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminPasskeyRegistrationStartResponse>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let existing = state
+        .proxy
+        .list_active_admin_passkey_credentials()
+        .await
+        .map_err(|err| {
+            eprintln!("list admin passkeys for registration error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let exclude_credentials = existing
+        .iter()
+        .map(deserialize_passkey)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|passkey| passkey.cred_id().clone())
+        .collect::<Vec<_>>();
+    let webauthn = state.admin_passkey.webauthn().map_err(|err| {
+        eprintln!("build admin passkey webauthn error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let (public_key, passkey_state) = webauthn
+        .start_passkey_registration(
+            Uuid::nil(),
+            "admin",
+            "Tavily Hikari Admin",
+            Some(exclude_credentials),
+        )
+        .map_err(|err| {
+            eprintln!("start admin passkey registration error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let state_json = serde_json::to_string(&passkey_state).map_err(|err| {
+        eprintln!("serialize admin passkey registration state error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let challenge = state
+        .proxy
+        .insert_admin_passkey_challenge(
+            tavily_hikari::AdminPasskeyChallengeKind::Registration,
+            None,
+            &state_json,
+            state.admin_passkey.challenge_ttl_secs,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("insert admin passkey registration challenge error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(AdminPasskeyRegistrationStartResponse {
+        challenge_id: challenge.id,
+        public_key,
+    }))
+}
+
+async fn post_admin_passkey_registration_finish(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminPasskeyRegistrationFinishRequest>,
+) -> Result<Json<AdminPasskeyRegistrationFinishResponse>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !state.admin_passkey.is_configured() {
+        return Err(admin_passkey_unavailable());
+    }
+    let challenge = state
+        .proxy
+        .consume_admin_passkey_challenge(
+            payload.challenge_id.trim(),
+            tavily_hikari::AdminPasskeyChallengeKind::Registration,
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("consume admin passkey registration challenge error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if challenge.reset_token.is_some() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let passkey_state: PasskeyRegistration =
+        serde_json::from_str(&challenge.state_json).map_err(|err| {
+            eprintln!("decode admin passkey registration state error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let webauthn = state.admin_passkey.webauthn().map_err(|err| {
+        eprintln!("build admin passkey webauthn error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let passkey = webauthn
+        .finish_passkey_registration(&payload.credential, &passkey_state)
+        .map_err(|err| {
+            eprintln!("finish admin passkey registration error: {err}");
+            StatusCode::UNAUTHORIZED
+        })?;
+    let credential_id = credential_id_for_passkey(&passkey);
+    let passkey_json = serde_json::to_string(&passkey).map_err(|err| {
+        eprintln!("serialize admin passkey credential error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    state
+        .proxy
+        .upsert_admin_passkey_credential(
+            &credential_id,
+            &passkey_json,
+            payload.label.as_deref(),
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("store admin passkey credential error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(AdminPasskeyRegistrationFinishResponse { ok: true }))
 }
 
 fn user_session_set_cookie(
@@ -1492,6 +2021,92 @@ fn hash_oauth_binding(nonce: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
+async fn get_admin_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminPasswordStatusView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(Json(admin_password_status_view(state.as_ref())))
+}
+
+async fn put_admin_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminPasswordSetRequest>,
+) -> Result<Json<AdminPasswordStatusView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let password = payload.password.trim();
+    if password.len() < 8 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|err| {
+            eprintln!("hash admin password error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .to_string();
+    let settings = state
+        .proxy
+        .set_admin_password_hash(&password_hash)
+        .await
+        .map_err(|err| {
+            eprintln!("set admin password hash error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    state
+        .builtin_admin
+        .set_password_hash(password_hash, Some(settings.updated_at));
+    Ok(Json(admin_password_status_view(state.as_ref())))
+}
+
+async fn patch_admin_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminPasswordSettingsPatchRequest>,
+) -> Result<Json<AdminPasswordStatusView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if payload.login_totp_required && !admin_totp_is_ready_for_login(state.as_ref()).await? {
+        return Err(StatusCode::CONFLICT);
+    }
+    let settings = state
+        .proxy
+        .set_admin_login_totp_required(payload.login_totp_required)
+        .await
+        .map_err(|err| {
+            eprintln!("set admin login totp requirement error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    state
+        .builtin_admin
+        .set_login_totp_required(settings.login_totp_required, Some(settings.updated_at));
+    Ok(Json(admin_password_status_view(state.as_ref())))
+}
+
+async fn delete_admin_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminPasswordStatusView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let settings = state.proxy.disable_admin_password().await.map_err(|err| {
+        eprintln!("disable admin password error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    state
+        .builtin_admin
+        .disable_password(Some(settings.updated_at));
+    Ok(Json(admin_password_status_view(state.as_ref())))
+}
+
 async fn post_admin_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1504,6 +2119,12 @@ async fn post_admin_login(
     let Some(token) = state.builtin_admin.login(password) else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+    if state.builtin_admin.login_totp_required() {
+        let code = payload.totp_code.as_deref().unwrap_or_default();
+        verify_admin_totp_for_sensitive_action(state.as_ref(), code)
+            .await
+            .map_err(|(status, _)| status)?;
+    }
     state.builtin_admin.remember_session(token.clone());
     let cookie = session_set_cookie(&token, wants_secure_cookie(&headers))?;
     Ok((
@@ -1518,10 +2139,26 @@ async fn post_admin_logout(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
-    if !state.builtin_admin.is_enabled() {
+    if !state.builtin_admin.is_enabled() && !state.admin_passkey.is_configured() {
         return Err(StatusCode::NOT_FOUND);
     }
     state.builtin_admin.forget_session(&headers);
-    let cookie = session_clear_cookie(wants_secure_cookie(&headers))?;
-    Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
+    if let Some(token) = cookie_value(&headers, ADMIN_PASSKEY_COOKIE_NAME) {
+        state
+            .proxy
+            .revoke_admin_passkey_session(&token)
+            .await
+            .map_err(|err| {
+                eprintln!("revoke admin passkey session error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+    let secure = wants_secure_cookie(&headers);
+    let builtin_cookie = session_clear_cookie(secure)?;
+    let passkey_cookie = passkey_session_clear_cookie(secure)?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(SET_COOKIE, builtin_cookie), (SET_COOKIE, passkey_cookie)],
+    )
+        .into_response())
 }

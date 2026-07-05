@@ -96,8 +96,8 @@ struct Cli {
     #[arg(long, env = "ADMIN_MODE_NAME")]
     admin_mode_name: Option<String>,
 
-    /// Enable/disable ForwardAuth admin authentication (default true).
-    #[arg(long, env = "ADMIN_AUTH_FORWARD_ENABLED", default_value_t = true)]
+    /// Enable/disable ForwardAuth admin authentication (default false).
+    #[arg(long, env = "ADMIN_AUTH_FORWARD_ENABLED", default_value_t = false)]
     admin_auth_forward_enabled: bool,
 
     /// Enable/disable built-in admin login (cookie session) (default false).
@@ -111,6 +111,30 @@ struct Cli {
     /// Built-in admin password hash (PHC string, recommended).
     #[arg(long, env = "ADMIN_AUTH_BUILTIN_PASSWORD_HASH", hide_env_values = true)]
     admin_auth_builtin_password_hash: Option<String>,
+
+    /// Enable/disable passkey admin login.
+    #[arg(long, env = "ADMIN_AUTH_PASSKEY_ENABLED", default_value_t = false)]
+    admin_auth_passkey_enabled: bool,
+
+    /// WebAuthn relying-party ID for admin passkeys, normally the public host.
+    #[arg(long, env = "ADMIN_PASSKEY_RP_ID")]
+    admin_passkey_rp_id: Option<String>,
+
+    /// WebAuthn origin for admin passkeys, for example https://tavily-tw.ivanli.cc.
+    #[arg(long, env = "ADMIN_PASSKEY_RP_ORIGIN")]
+    admin_passkey_rp_origin: Option<String>,
+
+    /// One-time passkey challenge TTL.
+    #[arg(long, env = "ADMIN_PASSKEY_CHALLENGE_TTL_SECS", default_value_t = 300)]
+    admin_passkey_challenge_ttl_secs: i64,
+
+    /// Admin passkey session cookie max age.
+    #[arg(
+        long,
+        env = "ADMIN_PASSKEY_SESSION_MAX_AGE_SECS",
+        default_value_t = 60 * 60 * 24 * 14
+    )]
+    admin_passkey_session_max_age_secs: i64,
 
     /// 开发模式：放开管理接口权限（仅本地验证使用）
     #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
@@ -368,6 +392,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "resolved runtime database path"
     );
 
+    let admin_passkey_rp_id =
+        trim_optional(cli.admin_passkey_rp_id.clone()).or_else(|| infer_admin_passkey_rp_id(&cli));
+    let admin_passkey_rp_origin = trim_optional(cli.admin_passkey_rp_origin.clone())
+        .or_else(|| infer_admin_passkey_rp_origin(&cli));
+
     let proxy_options = TavilyProxyOptions {
         xray_binary: cli.xray_binary,
         xray_runtime_dir: cli.xray_runtime_dir.unwrap_or_else(|| {
@@ -410,7 +439,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
     );
-
     let builtin_password = cli
         .admin_auth_builtin_password
         .map(|value| value.trim().to_owned())
@@ -459,6 +487,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         builtin_auth_enabled: cli.admin_auth_builtin_enabled,
         builtin_auth_password: builtin_password,
         builtin_auth_password_hash: builtin_password_hash,
+        passkey_auth_enabled: cli.admin_auth_passkey_enabled,
+        passkey_rp_id: admin_passkey_rp_id,
+        passkey_rp_origin: admin_passkey_rp_origin,
+        passkey_challenge_ttl_secs: cli.admin_passkey_challenge_ttl_secs,
+        passkey_session_max_age_secs: cli.admin_passkey_session_max_age_secs,
     };
 
     let linuxdo_oauth_client_id = cli
@@ -619,6 +652,29 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn infer_admin_passkey_rp_id(cli: &Cli) -> Option<String> {
+    trim_optional(cli.node_public_host.clone())
+        .or_else(|| trim_optional(cli.edgeone_domain.clone()))
+}
+
+fn infer_admin_passkey_rp_origin(cli: &Cli) -> Option<String> {
+    let host = infer_admin_passkey_rp_id(cli)?;
+    let scheme = trim_optional(cli.node_public_scheme.clone())
+        .filter(|value| value != "follow")
+        .unwrap_or_else(|| "https".to_string());
+    let port = cli.node_public_port;
+    let default_port = match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    };
+    let port_suffix = port
+        .filter(|port| Some(*port) != default_port)
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{scheme}://{host}{port_suffix}"))
 }
 
 fn reject_legacy_ha_origin_env_vars() -> Result<(), Box<dyn std::error::Error>> {

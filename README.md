@@ -51,15 +51,13 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 
 ```bash
 # Start backend (high port recommended during dev)
-cargo run -- --bind 127.0.0.1 --port 58087
+DEV_OPEN_ADMIN=true cargo run -- --bind 127.0.0.1 --port 58087
 
 # Optional: start SPA dev server
 cd web && bun install --frozen-lockfile && bun run --bun dev -- --host 127.0.0.1 --port 55173
 
-# Register Tavily keys via admin API (ForwardAuth headers depend on your setup)
+# Register Tavily keys via admin API in local dev mode
 curl -X POST http://127.0.0.1:58087/api/keys \
-  -H "X-Forwarded-User: admin@example.com" \
-  -H "X-Forwarded-Admin: true" \
   -H "Content-Type: application/json" \
   -d '{"api_key":"key_a"}'
 ```
@@ -99,10 +97,8 @@ GitHub Releases attach Linux `tar.gz` builds for `linux/amd64` and `linux/arm64`
 ```bash
 docker compose up -d
 
-# Seed initial keys (requires ForwardAuth headers)
+# Seed initial keys after enabling an admin auth mode.
 curl -X POST http://127.0.0.1:8787/api/keys \
-  -H "X-Forwarded-User: admin@example.com" \
-  -H "X-Forwarded-Admin: true" \
   -H "Content-Type: application/json" \
   -d '{"api_key":"key_a"}'
 ```
@@ -125,7 +121,7 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | Header value that grants admin privileges; leave empty to disable.                                                   |
 | `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                      |
 | `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | Override nickname when ForwardAuth headers are missing.                                                              |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | Boolean switch to enable ForwardAuth checks (default `true`).                                                        |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | Boolean switch to enable legacy ForwardAuth checks (default `false`).                                                |
 | `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | Boolean switch to enable built-in admin login (cookie session) (default `false`).                                    |
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | Built-in admin password hash (PHC string, recommended).                                                              |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | Built-in admin password (deprecated; prefer password hash).                                                          |
@@ -200,9 +196,27 @@ For the full HTTP proxy design and acceptance criteria, see [`docs/tavily-http-a
 - `RUST_LOG` still controls filtering. Typical operator flows are `docker logs ... | jq -c` in JSON mode and `RUNTIME_LOG_FORMAT=text RUST_LOG=info cargo run ... | rg "component=db|event=operation_"` in fallback text mode.
 - High-anonymity behavior (header allowlist, origin rewrite, etc.) is detailed in [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
 
-## ForwardAuth Integration
+## Admin Authentication
 
-Tavily Hikari relies on a zero-trust/ForwardAuth proxy to decide who can operate admin APIs. Configure the following environment variables (or CLI flags) to match your identity provider:
+For production deployments, prefer passkey admin login. It keeps the administrator trust boundary inside Hikari instead of trusting a user identity header forwarded by a reverse proxy:
+
+```bash
+export ADMIN_AUTH_PASSKEY_ENABLED=true
+export ADMIN_PASSKEY_RP_ID=tavily.example.com
+export ADMIN_PASSKEY_RP_ORIGIN=https://tavily.example.com
+```
+
+After deployment, create a one-time enrollment URL on the server:
+
+```bash
+tavily-hikari admin passkey reset-url --base-url https://tavily.example.com
+```
+
+Open the printed URL once to register the first admin passkey.
+
+### Legacy ForwardAuth Integration
+
+ForwardAuth support is retained for explicitly managed trusted networks, but it is disabled by default and should not be used as the only public admin trust boundary. If you enable it, configure the following environment variables (or CLI flags) to match your identity provider:
 
 ```bash
 export ADMIN_AUTH_FORWARD_ENABLED=true
@@ -212,24 +226,25 @@ export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 ```
 
 - Requests must include the header defined by `FORWARD_AUTH_HEADER`. If its value equals `FORWARD_AUTH_ADMIN_VALUE`, the caller is treated as an admin and can hit `/api/keys/*` privileged endpoints.
+- Do not expose Hikari directly to the public internet with ForwardAuth enabled unless the edge proxy strips any client-supplied identity headers before authentication.
 - `FORWARD_AUTH_NICKNAME_HEADER` (optional) is surfaced in the UI to show who is operating the console. When absent, the backend falls back to `ADMIN_MODE_NAME` (if provided) or hides the nickname.
 - For purely local experiments you can set `DEV_OPEN_ADMIN=true`, but never enable it in production.
 
 ## Built-in Admin Login
 
-If you cannot (or do not want to) run a ForwardAuth gateway, Tavily Hikari can expose a built-in admin login page backed by an HttpOnly cookie session.
+Tavily Hikari can also expose a built-in admin login page backed by an HttpOnly cookie session.
 
 ```bash
 export ADMIN_AUTH_BUILTIN_ENABLED=true
 echo -n 'change-me' | cargo run --quiet --bin admin_password_hash
 export ADMIN_AUTH_BUILTIN_PASSWORD_HASH='<phc-string>'
-# Optional: disable ForwardAuth entirely if you are not using it.
-export ADMIN_AUTH_FORWARD_ENABLED=false
+# Optional: enable ForwardAuth only when the upstream proxy boundary is trusted.
+# export ADMIN_AUTH_FORWARD_ENABLED=true
 ```
 
 - When built-in login is enabled and the browser is not signed in, the public homepage shows an **Admin Login** button.
 - Successful login sets an HttpOnly cookie (`hikari_admin_session`) and unlocks admin-only APIs + `/admin`.
-- For production, prefer ForwardAuth. Built-in login is intended for small/self-hosted deployments.
+- For production, prefer passkey login. Built-in password login is intended as a break-glass path for small/self-hosted deployments.
   - Avoid storing plaintext passwords in env vars. Prefer `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` (PHC string) and use a strong password.
   - Sessions are stored in-memory and expire server-side (aligned with cookie `Max-Age`, default 14 days). Restarting the process logs users out.
   - The in-memory session store is bounded (evicts oldest sessions when the cap is exceeded) to avoid unbounded growth.
@@ -398,7 +413,7 @@ Releases are label-driven:
 ## Deployment Notes
 
 1. Only expose `/mcp`, `/api/*`, and static assets; everything else returns 404.
-2. Protect admin APIs/UI via ForwardAuth or another zero-trust proxy so regular users never see real keys.
+2. Protect admin APIs/UI with passkey login or another trusted admin boundary so regular users never see real keys.
 3. Follow the header sanitization guidance in [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md) when operating in high-anonymity environments.
 4. Persist `tavily_proxy.db` via volumes or external storage and export `request_logs` for compliance if needed.
 

@@ -18,6 +18,7 @@ async fn standby_server_startup_does_not_spawn_business_scheduled_jobs() {
         forward_auth: ForwardAuthConfig::new(None, None, None, None),
         forward_auth_enabled: false,
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
         ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
@@ -340,6 +341,7 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
         forward_auth: ForwardAuthConfig::new(None, None, None, None),
         forward_auth_enabled: false,
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
         ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {

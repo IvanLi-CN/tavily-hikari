@@ -311,6 +311,7 @@ function PublicHome(): JSX.Element {
 
   const isAdmin = profile?.isAdmin ?? false
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
+  const passkeyAuthEnabled = profile?.passkeyAuthEnabled ?? false
   const isLoggedOut = profile?.userLoggedIn === false
   const showAuthStatusLoading = profileLoading
   const showAuthStatusUnavailable = !profileLoading && profileUnavailable
@@ -546,7 +547,7 @@ function PublicHome(): JSX.Element {
         showLinuxDoLogin={showLinuxDoLogin}
         showRegistrationPausedNotice={showRegistrationPausedNotice}
         showTokenAccessButton={hideTokenPanels && !showAuthStatusLoading && !showAuthStatusUnavailable}
-        showAdminAction={isAdmin || builtinAuthEnabled}
+        showAdminAction={isAdmin || builtinAuthEnabled || passkeyAuthEnabled}
         adminActionLabel={isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}
         topControls={(
           <>

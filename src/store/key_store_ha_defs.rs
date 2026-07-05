@@ -76,6 +76,8 @@ const HA_CHANNEL_EXPORT_RETENTION_SECS: i64 = 92 * 24 * 60 * 60;
 const HA_CONTROL_PLANE_EVENT_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 
 const HA_CONTROL_BASELINE_TABLES: &[&str] = &[
+    "admin_passkey_credentials",
+    "admin_passkey_sessions",
     "announcements",
     "account_entitlements",
     "api_key_low_quota_depletions",
@@ -97,6 +99,8 @@ const HA_CONTROL_BASELINE_TABLES: &[&str] = &[
 ];
 
 const HA_CONTROL_EVENT_TABLES: &[&str] = &[
+    "admin_passkey_credentials",
+    "admin_passkey_sessions",
     "announcements",
     "account_entitlements",
     "api_key_low_quota_depletions",

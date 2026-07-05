@@ -2,7 +2,7 @@ async fn list_user_tags(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ListUserTagsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let items = state
@@ -21,7 +21,7 @@ async fn create_user_tag(
     headers: HeaderMap,
     Json(payload): Json<UserTagMutationRequest>,
 ) -> Result<Json<AdminUserTagView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let name = payload.name.trim();
@@ -55,7 +55,7 @@ async fn update_user_tag(
     Path(tag_id): Path<String>,
     Json(payload): Json<UserTagMutationRequest>,
 ) -> Result<Json<AdminUserTagView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let name = payload.name.trim();
@@ -92,7 +92,7 @@ async fn delete_user_tag(
     headers: HeaderMap,
     Path(tag_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let deleted = state
@@ -112,7 +112,7 @@ async fn bind_user_tag(
     Path(id): Path<String>,
     Json(payload): Json<BindUserTagRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let tag_id = payload.tag_id.trim();
@@ -135,7 +135,7 @@ async fn unbind_user_tag(
     headers: HeaderMap,
     Path((id, tag_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let unbound = state
@@ -157,7 +157,7 @@ async fn list_users(
     headers: HeaderMap,
     Query(q): Query<ListUsersQuery>,
 ) -> Result<Json<ListUsersResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -495,7 +495,7 @@ async fn list_unbound_token_usage(
     headers: HeaderMap,
     Query(q): Query<ListUnboundTokenUsageQuery>,
 ) -> Result<Json<ListUnboundTokenUsageResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -622,7 +622,7 @@ async fn get_user_detail(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<AdminUserDetailView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let Some(user) = state
@@ -868,7 +868,7 @@ async fn list_user_entitlements(
     Path(id): Path<String>,
     Query(q): Query<AdminUserEntitlementsQuery>,
 ) -> Result<Json<ListUserEntitlementsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let Some(_) = state
@@ -916,7 +916,7 @@ async fn create_user_entitlement(
     Path(id): Path<String>,
     Json(payload): Json<CreateUserEntitlementRequest>,
 ) -> Result<(StatusCode, Json<AdminUserEntitlementView>), (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     require_full_master_write(state.as_ref()).await?;
@@ -1012,7 +1012,7 @@ async fn get_user_usage_series(
     Path(id): Path<String>,
     Query(q): Query<AdminUserUsageSeriesQuery>,
 ) -> Result<Json<AdminUserUsageSeriesView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let Some(series_key) = q.series.as_deref() else {
@@ -1081,7 +1081,7 @@ async fn get_analysis_pressure_snapshot(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AnalysisPressureSnapshot>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
 
@@ -1099,7 +1099,7 @@ async fn create_user_token(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<AuthTokenSecretView>), (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     require_full_master_write(state.as_ref()).await?;
@@ -1126,7 +1126,7 @@ async fn delete_user_token(
     headers: HeaderMap,
     Path((id, token_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     require_full_master_write(state.as_ref()).await?;
@@ -1154,7 +1154,7 @@ async fn update_user_quota(
     Path(id): Path<String>,
     Json(payload): Json<UpdateUserQuotaRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     require_full_master_write(state.as_ref()).await?;
@@ -1189,7 +1189,7 @@ async fn update_user_broken_key_limit(
     Path(id): Path<String>,
     Json(payload): Json<UpdateUserBrokenKeyLimitRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     if payload.monthly_broken_limit < 0 {
@@ -1215,7 +1215,7 @@ async fn get_user_monthly_broken_keys(
     Path(id): Path<String>,
     Query(q): Query<BrokenKeysPageQuery>,
 ) -> Result<Json<PaginatedMonthlyBrokenKeysView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let exists = state
@@ -1350,7 +1350,7 @@ async fn list_tokens(
     headers: HeaderMap,
     Query(q): Query<ListTokensQuery>,
 ) -> Result<Json<ListTokensResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -1398,7 +1398,7 @@ async fn list_token_groups(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<TokenGroupView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -1439,7 +1439,7 @@ async fn create_token(
     headers: HeaderMap,
     Json(payload): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<AuthTokenSecretView>), StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1468,7 +1468,7 @@ async fn delete_token(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1496,7 +1496,7 @@ async fn update_token_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1518,7 +1518,7 @@ async fn update_tokens_status_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchTokenStatusRequest>,
 ) -> Result<Json<BatchTokenMutationResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1547,7 +1547,7 @@ async fn delete_tokens_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchTokenIdsRequest>,
 ) -> Result<Json<BatchTokenMutationResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1582,7 +1582,7 @@ async fn update_token_note(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenNote>,
 ) -> Result<StatusCode, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1604,7 +1604,7 @@ async fn get_token_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenSecretView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     match state.proxy.get_access_token_secret(&id).await {
@@ -1625,7 +1625,7 @@ async fn rotate_token_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenSecretView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
@@ -1664,7 +1664,7 @@ async fn create_tokens_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchCreateTokenRequest>,
 ) -> Result<Json<BatchCreateTokenResponse>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {

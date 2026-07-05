@@ -1919,6 +1919,8 @@ export interface Profile {
   isAdmin: boolean
   forwardAuthEnabled: boolean
   builtinAuthEnabled: boolean
+  passkeyAuthEnabled?: boolean
+  adminLoginTotpRequired?: boolean
   allowRegistration: boolean
   userLoggedIn?: boolean
   userProvider?: 'linuxdo' | null
@@ -1928,6 +1930,226 @@ export interface Profile {
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {
   return requestJson('/api/profile', { signal })
+}
+
+interface AdminPasskeyChallenge<T> {
+  challengeId: string
+  publicKey: {
+    publicKey: T
+    mediation?: CredentialMediationRequirement
+  }
+}
+
+interface AdminPasskeyResult {
+  ok: boolean
+}
+
+export interface AdminPasskeyCredential {
+  credentialId: string
+  label: string | null
+  createdAt: number
+  updatedAt: number
+  lastUsedAt: number | null
+}
+
+export interface AdminPasskeys {
+  configured: boolean
+  enabled: boolean
+  credentialCount: number
+  credentials: AdminPasskeyCredential[]
+}
+
+export interface AdminPasswordStatus {
+  enabled: boolean
+  updatedAt: number | null
+  loginTotpRequired: boolean
+}
+
+type PasskeyCreationOptions = Omit<
+  PublicKeyCredentialCreationOptions,
+  'challenge' | 'user' | 'excludeCredentials'
+> & {
+  challenge: string
+  user: Omit<PublicKeyCredentialUserEntity, 'id'> & { id: string }
+  excludeCredentials?: Array<Omit<PublicKeyCredentialDescriptor, 'id'> & { id: string }>
+}
+
+type PasskeyRequestOptions = Omit<
+  PublicKeyCredentialRequestOptions,
+  'challenge' | 'allowCredentials'
+> & {
+  challenge: string
+  allowCredentials?: Array<Omit<PublicKeyCredentialDescriptor, 'id'> & { id: string }>
+}
+
+function base64UrlToArrayBuffer(value: string): ArrayBuffer {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+  const binary = atob(padded)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes.buffer
+}
+
+function arrayBufferToBase64Url(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte)
+  })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function decodePasskeyCreationOptions(options: PasskeyCreationOptions): PublicKeyCredentialCreationOptions {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    user: {
+      ...options.user,
+      id: base64UrlToArrayBuffer(options.user.id),
+    },
+    excludeCredentials: options.excludeCredentials?.map((credential) => ({
+      ...credential,
+      id: base64UrlToArrayBuffer(credential.id),
+    })),
+  }
+}
+
+function decodePasskeyRequestOptions(options: PasskeyRequestOptions): PublicKeyCredentialRequestOptions {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    allowCredentials: options.allowCredentials?.map((credential) => ({
+      ...credential,
+      id: base64UrlToArrayBuffer(credential.id),
+    })),
+  }
+}
+
+function registrationCredentialToJson(credential: PublicKeyCredential): unknown {
+  const response = credential.response as AuthenticatorAttestationResponse
+  const transports = typeof response.getTransports === 'function' ? response.getTransports() : undefined
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    response: {
+      attestationObject: arrayBufferToBase64Url(response.attestationObject),
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      transports,
+    },
+    type: credential.type,
+    clientExtensionResults: credential.getClientExtensionResults(),
+  }
+}
+
+function authenticationCredentialToJson(credential: PublicKeyCredential): unknown {
+  const response = credential.response as AuthenticatorAssertionResponse
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    response: {
+      authenticatorData: arrayBufferToBase64Url(response.authenticatorData),
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      signature: arrayBufferToBase64Url(response.signature),
+      userHandle: response.userHandle ? arrayBufferToBase64Url(response.userHandle) : null,
+    },
+    type: credential.type,
+    clientExtensionResults: credential.getClientExtensionResults(),
+  }
+}
+
+export async function loginWithAdminPasskey(totpCode?: string): Promise<AdminPasskeyResult> {
+  const start = await requestJson<AdminPasskeyChallenge<PasskeyRequestOptions>>(
+    '/api/admin/passkey/authentication/start',
+    { method: 'POST' },
+  )
+  const credential = await navigator.credentials.get({
+    publicKey: decodePasskeyRequestOptions(start.publicKey.publicKey),
+    mediation: start.publicKey.mediation,
+  })
+  if (!(credential instanceof PublicKeyCredential)) {
+    throw new Error('Passkey authentication was cancelled.')
+  }
+  return requestJson('/api/admin/passkey/authentication/finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challengeId: start.challengeId,
+      credential: authenticationCredentialToJson(credential),
+      ...(totpCode ? { totpCode } : {}),
+    }),
+  })
+}
+
+export async function registerAdminPasskey(
+  label?: string,
+): Promise<AdminPasskeyResult> {
+  const start = await requestJson<AdminPasskeyChallenge<PasskeyCreationOptions>>(
+    '/api/admin/passkeys/registration/start',
+    { method: 'POST' },
+  )
+  const credential = await navigator.credentials.create({
+    publicKey: decodePasskeyCreationOptions(start.publicKey.publicKey),
+  })
+  if (!(credential instanceof PublicKeyCredential)) {
+    throw new Error('Passkey registration was cancelled.')
+  }
+  return requestJson('/api/admin/passkeys/registration/finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challengeId: start.challengeId,
+      credential: registrationCredentialToJson(credential),
+      label,
+    }),
+  })
+}
+
+export function fetchAdminPasskeys(signal?: AbortSignal): Promise<AdminPasskeys> {
+  return requestJson('/api/admin/passkeys', { signal })
+}
+
+export function updateAdminPasskeyLabel(
+  credentialId: string,
+  label: string,
+): Promise<AdminPasskeys> {
+  return requestJson(`/api/admin/passkeys/${encodeURIComponent(credentialId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  })
+}
+
+export function deleteAdminPasskey(credentialId: string): Promise<AdminPasskeys> {
+  return requestJson(`/api/admin/passkeys/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function fetchAdminPasswordStatus(signal?: AbortSignal): Promise<AdminPasswordStatus> {
+  return requestJson('/api/admin/password', { signal })
+}
+
+export function setAdminPassword(password: string): Promise<AdminPasswordStatus> {
+  return requestJson('/api/admin/password', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+}
+
+export function deleteAdminPassword(): Promise<AdminPasswordStatus> {
+  return requestJson('/api/admin/password', { method: 'DELETE' })
+}
+
+export function setAdminLoginTotpRequired(loginTotpRequired: boolean): Promise<AdminPasswordStatus> {
+  return requestJson('/api/admin/password', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ loginTotpRequired }),
+  })
 }
 
 export interface AdminRegistrationSettings {
