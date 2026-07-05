@@ -20,6 +20,33 @@ impl TavilyProxy {
         self.key_store.admin_passkey_enabled().await
     }
 
+    pub async fn create_admin_passkey_reset_token(
+        &self,
+        ttl_secs: i64,
+    ) -> Result<AdminPasskeyResetTokenRecord, ProxyError> {
+        self.key_store
+            .create_admin_passkey_reset_token(ttl_secs)
+            .await
+    }
+
+    pub async fn get_active_admin_passkey_reset_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<AdminPasskeyResetTokenRecord>, ProxyError> {
+        self.key_store
+            .get_active_admin_passkey_reset_token(token)
+            .await
+    }
+
+    pub async fn consume_admin_passkey_reset_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .consume_admin_passkey_reset_token_hash(token_hash)
+            .await
+    }
+
     pub async fn get_admin_password_settings(
         &self,
     ) -> Result<Option<AdminPasswordSettingsRecord>, ProxyError> {

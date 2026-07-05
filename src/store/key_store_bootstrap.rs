@@ -1528,6 +1528,26 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS admin_passkey_reset_tokens (
+                token_hash TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                consumed_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_admin_passkey_reset_tokens_active
+               ON admin_passkey_reset_tokens(expires_at, consumed_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS admin_passkey_challenges (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,

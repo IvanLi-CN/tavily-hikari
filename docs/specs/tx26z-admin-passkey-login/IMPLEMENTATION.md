@@ -4,14 +4,14 @@
 
 ## Current Status
 
-- Implementation: implemented in the active worktree and deployed to hinet-lam as the temporary `passkey-local` build
+- Implementation: implemented in the active worktree; hinet-lam is still pinned to the temporary `passkey-local` build until a formal release includes this topic
 - Lifecycle: active
 - Catalog note: Passkey admin login and CLI reset URL.
 
 ## Coverage / rollout summary
 
 - 后端新增 WebAuthn passkey authentication / reset registration API，并将 `hikari_admin_passkey_session` 接入管理员鉴权链。
-- SQLite 新增管理员 passkey credential、reset token、challenge 与 passkey session 表；credential、reset token 与 session 纳入 HA 控制面同步基线，challenge 保持短期本地状态。
+- SQLite 新增管理员 passkey credential、reset token、challenge 与 passkey session 表；admin password settings、credential、reset token 与 session 纳入 HA 控制面同步基线，challenge 保持短期本地状态。
 - CLI 新增 `tavily-hikari admin passkey reset-url --base-url <url>`，直接写入目标 SQLite DB 并输出一次性 reset/enroll URL。
 - `/login` 前端新增 passkey 登录按钮与 reset URL 注册流程；`/api/profile` 新增 `passkeyAuthEnabled` capability。
 - 内置密码登录保持显式启用的 break-glass 路径；本实现没有恢复 Remote-Email/ForwardAuth 作为生产主登录方案。

@@ -5,6 +5,7 @@ import { KeyRound } from 'lucide-react'
 import {
   fetchProfile,
   loginWithAdminPasskey,
+  registerAdminPasskeyWithResetToken,
   requestJson,
 } from '../api'
 import { isDemoMode } from '../api/demo'
@@ -19,7 +20,7 @@ import { useTranslate } from '../i18n'
 import { useOfflineState } from '../pwa/useOfflineState'
 
 type LoginState = 'checking' | 'ready' | 'submitting'
-type SubmitAction = 'password' | 'passkey'
+type SubmitAction = 'password' | 'passkey' | 'reset'
 
 function AdminLogin(): JSX.Element {
   const strings = useTranslate()
@@ -35,6 +36,11 @@ function AdminLogin(): JSX.Element {
   const [totpRequired, setTotpRequired] = useState(false)
   const [totpCode, setTotpCode] = useState('')
   const [profileUnavailable, setProfileUnavailable] = useState(false)
+  const resetToken = useMemo(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('adminPasskeyResetToken')?.trim() ?? ''
+  }, [])
+  const resetMode = resetToken.length > 0
 
   useEffect(() => {
     let alive = true
@@ -66,16 +72,17 @@ function AdminLogin(): JSX.Element {
     }
   }, [])
 
-  const showPasswordForm = builtinEnabled !== false
-  const showPasskeyLogin = passkeyEnabled
+  const showPasswordForm = !resetMode && builtinEnabled !== false
+  const showPasskeyLogin = !resetMode && passkeyEnabled
   const showTotpInput = totpRequired && (showPasswordForm || showPasskeyLogin)
-  const noLoginMethods = builtinEnabled === false && !passkeyEnabled
+  const noLoginMethods = !resetMode && builtinEnabled === false && !passkeyEnabled
 
   const canSubmit = useMemo(
     () => showPasswordForm && state === 'ready' && password.trim().length > 0 && (!totpRequired || totpCode.length === 6),
     [password, showPasswordForm, state, totpCode.length, totpRequired],
   )
   const canUsePasskey = showPasskeyLogin && state === 'ready' && !offline.isOffline && (!totpRequired || totpCode.length === 6)
+  const canRegisterResetPasskey = resetMode && state === 'ready' && !offline.isOffline
 
   const finishWithErrorHandling = async (submitAction: SubmitAction, action: () => Promise<unknown>) => {
     setError(null)
@@ -125,6 +132,15 @@ function AdminLogin(): JSX.Element {
     ))
   }
 
+  const submitResetRegistration = async () => {
+    if (!canRegisterResetPasskey) return
+    await finishWithErrorHandling('reset', () => (
+      isDemoMode()
+        ? Promise.resolve({ ok: true })
+        : registerAdminPasskeyWithResetToken(resetToken, 'Admin passkey')
+    ))
+  }
+
   return (
     <div className="auth-shell min-h-screen bg-background text-foreground">
       <div className="auth-page-frame mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10 lg:px-10 lg:py-14">
@@ -168,7 +184,30 @@ function AdminLogin(): JSX.Element {
               </div>
             ) : null}
 
+            {resetMode ? (
+              <div className="rounded-lg border border-primary/25 bg-primary/10 p-3 text-sm text-primary">
+                {ui.hints.resetEnrollment}
+              </div>
+            ) : null}
+
             <form onSubmit={submit} className="auth-password-form grid gap-5">
+              {resetMode ? (
+                <>
+                  <Button
+                    type="button"
+                    className="auth-passkey-button w-full gap-2"
+                    disabled={!canRegisterResetPasskey}
+                    onClick={submitResetRegistration}
+                  >
+                    <KeyRound className="h-4 w-4" aria-hidden="true" />
+                    {submittingAction === 'reset' ? ui.passkey.registering : ui.passkey.register}
+                  </Button>
+                  <a href="/" className="auth-back-link text-sm text-primary underline-offset-4 hover:underline">
+                    {ui.backHome}
+                  </a>
+                </>
+              ) : null}
+
               {showTotpInput ? (
                 <label className="auth-password-label grid w-full gap-2 text-base font-medium" htmlFor="admin-totp-code-input">
                   <span>{ui.totp.label}</span>
@@ -229,11 +268,11 @@ function AdminLogin(): JSX.Element {
                     </Button>
                   </div>
                 </>
-              ) : (
+              ) : !resetMode ? (
                 <a href="/" className="auth-back-link text-sm text-primary underline-offset-4 hover:underline">
                   {ui.backHome}
                 </a>
-              )}
+              ) : null}
             </form>
 
             {error ? (

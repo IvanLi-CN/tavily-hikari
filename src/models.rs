@@ -1665,6 +1665,15 @@ pub struct AdminPasswordSettingsRecord {
     pub login_totp_required: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct AdminPasskeyResetTokenRecord {
+    pub token: Option<String>,
+    pub token_hash: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub consumed_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminPasskeyChallengeKind {
     Registration,

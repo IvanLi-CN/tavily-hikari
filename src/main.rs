@@ -32,7 +32,7 @@ use std::{
 };
 
 use argon2::password_hash::PasswordHash;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use tavily_hikari::{
     DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, RuntimeLogFormat,
@@ -43,6 +43,9 @@ use tracing::{info, warn};
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Tavily reverse proxy with key rotation")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+
     /// Tavily API keys（逗号分隔或重复传参）
     #[arg(
         long,
@@ -370,6 +373,45 @@ struct Cli {
     log_format: RuntimeLogFormat,
 }
 
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    Admin(AdminCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminCommand {
+    #[command(subcommand)]
+    command: AdminSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminSubcommand {
+    Passkey(AdminPasskeyCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminPasskeyCommand {
+    #[command(subcommand)]
+    command: AdminPasskeySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminPasskeySubcommand {
+    /// Create a one-time URL for admin passkey enrollment.
+    ResetUrl(AdminPasskeyResetUrlCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminPasskeyResetUrlCommand {
+    /// Public base URL for the Hikari instance, for example https://tavily.example.com.
+    #[arg(long)]
+    base_url: String,
+
+    /// One-time reset URL TTL in seconds.
+    #[arg(long, default_value_t = 3600)]
+    ttl_secs: i64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -391,6 +433,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_format = %cli.log_format,
         "resolved runtime database path"
     );
+
+    if let Some(command) = &cli.command {
+        handle_cli_command(command, &cli).await?;
+        return Ok(());
+    }
 
     let admin_passkey_rp_id =
         trim_optional(cli.admin_passkey_rp_id.clone()).or_else(|| infer_admin_passkey_rp_id(&cli));
@@ -645,6 +692,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    Ok(())
+}
+
+async fn handle_cli_command(
+    command: &CliCommand,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        CliCommand::Admin(admin) => match &admin.command {
+            AdminSubcommand::Passkey(passkey) => match &passkey.command {
+                AdminPasskeySubcommand::ResetUrl(command) => {
+                    print_admin_passkey_reset_url(cli, command).await
+                }
+            },
+        },
+    }
+}
+
+async fn print_admin_passkey_reset_url(
+    cli: &Cli,
+    command: &AdminPasskeyResetUrlCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let proxy =
+        TavilyProxy::with_endpoint(Vec::<String>::new(), &cli.upstream, &cli.db_path).await?;
+    let token = proxy
+        .create_admin_passkey_reset_token(command.ttl_secs)
+        .await?;
+    let raw_token = token
+        .token
+        .as_deref()
+        .ok_or("admin passkey reset token was not returned")?;
+    let base_url = command.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("--base-url must not be empty".into());
+    }
+    let encoded = urlencoding::encode(raw_token);
+    std::println!("{base_url}/login?adminPasskeyResetToken={encoded}");
     Ok(())
 }
 

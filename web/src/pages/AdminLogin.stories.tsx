@@ -96,6 +96,24 @@ export const PasskeyLogin: Story = {
   },
 }
 
+export const ResetEnrollment: Story = {
+  args: {
+    path: '/login?adminPasskeyResetToken=story-reset-token',
+    profile: {
+      ...baseProfile,
+      isAdmin: false,
+      builtinAuthEnabled: false,
+      passkeyAuthEnabled: false,
+      adminLoginTotpRequired: false,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.findByText(/one-time reset link|一次性重置链接/i)).resolves.toBeInTheDocument()
+    await expect(canvas.findByRole('button', { name: /register passkey|注册 Passkey/i })).resolves.toBeInTheDocument()
+  },
+}
+
 export const PasswordOnly: Story = {
   args: {
     profile: {

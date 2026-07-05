@@ -250,6 +250,14 @@ pub async fn serve(
             "/api/admin/passkey/authentication/finish",
             post(post_admin_passkey_authentication_finish),
         )
+        .route(
+            "/api/admin/passkey/reset/:token/registration/start",
+            post(post_admin_passkey_reset_registration_start),
+        )
+        .route(
+            "/api/admin/passkey/reset/:token/registration/finish",
+            post(post_admin_passkey_reset_registration_finish),
+        )
         .route("/api/admin/passkeys", get(get_admin_passkeys))
         .route(
             "/api/admin/passkeys/:credential_id",

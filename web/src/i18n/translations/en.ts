@@ -93,6 +93,7 @@ export const EN: TranslationShape = {
           checking: 'Checking session…',
           disabled: 'Built-in admin login is disabled on this server.',
           profileUnavailable: 'Unable to confirm admin login methods; configured password login can still be attempted.',
+          resetEnrollment: 'Register a new administrator passkey using this one-time reset link.',
         },
         errors: {
           invalid: 'Invalid password.',

@@ -1556,6 +1556,12 @@ fn admin_passkey_unavailable() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
+async fn require_admin_credential_write(state: &AppState) -> Result<(), StatusCode> {
+    require_full_master_write(state)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
 fn admin_password_status_view(state: &AppState) -> AdminPasswordStatusView {
     let status = state.builtin_admin.status();
     AdminPasswordStatusView {
@@ -1612,6 +1618,7 @@ async fn patch_admin_passkey(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
@@ -1641,6 +1648,7 @@ async fn delete_admin_passkey(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
@@ -1744,6 +1752,7 @@ async fn post_admin_passkey_authentication_finish(
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
+    require_admin_credential_write(state.as_ref()).await?;
     let challenge = state
         .proxy
         .consume_admin_passkey_challenge(
@@ -1839,6 +1848,42 @@ async fn post_admin_passkey_registration_start(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
+    start_admin_passkey_registration(state, None).await
+}
+
+async fn post_admin_passkey_reset_registration_start(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<AdminPasskeyRegistrationStartResponse>, StatusCode> {
+    require_admin_credential_write(state.as_ref()).await?;
+    let reset = active_admin_passkey_reset_token(state.as_ref(), &token).await?;
+    start_admin_passkey_registration(state, Some(reset.token_hash)).await
+}
+
+async fn active_admin_passkey_reset_token(
+    state: &AppState,
+    token: &str,
+) -> Result<tavily_hikari::AdminPasskeyResetTokenRecord, StatusCode> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    state
+        .proxy
+        .get_active_admin_passkey_reset_token(token)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin passkey reset token error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)
+}
+
+async fn start_admin_passkey_registration(
+    state: Arc<AppState>,
+    reset_token_hash: Option<String>,
+) -> Result<Json<AdminPasskeyRegistrationStartResponse>, StatusCode> {
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
@@ -1880,7 +1925,7 @@ async fn post_admin_passkey_registration_start(
         .proxy
         .insert_admin_passkey_challenge(
             tavily_hikari::AdminPasskeyChallengeKind::Registration,
-            None,
+            reset_token_hash.as_deref(),
             &state_json,
             state.admin_passkey.challenge_ttl_secs,
         )
@@ -1903,6 +1948,25 @@ async fn post_admin_passkey_registration_finish(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
+    finish_admin_passkey_registration(state, payload, None).await
+}
+
+async fn post_admin_passkey_reset_registration_finish(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(payload): Json<AdminPasskeyRegistrationFinishRequest>,
+) -> Result<Json<AdminPasskeyRegistrationFinishResponse>, StatusCode> {
+    require_admin_credential_write(state.as_ref()).await?;
+    let reset = active_admin_passkey_reset_token(state.as_ref(), &token).await?;
+    finish_admin_passkey_registration(state, payload, Some(reset.token_hash)).await
+}
+
+async fn finish_admin_passkey_registration(
+    state: Arc<AppState>,
+    payload: AdminPasskeyRegistrationFinishRequest,
+    reset_token_hash: Option<String>,
+) -> Result<Json<AdminPasskeyRegistrationFinishResponse>, StatusCode> {
     if !state.admin_passkey.is_configured() {
         return Err(admin_passkey_unavailable());
     }
@@ -1918,8 +1982,10 @@ async fn post_admin_passkey_registration_finish(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    if challenge.reset_token.is_some() {
-        return Err(StatusCode::UNAUTHORIZED);
+    match (challenge.reset_token.as_deref(), reset_token_hash.as_deref()) {
+        (None, None) => {}
+        (Some(challenge_hash), Some(reset_hash)) if challenge_hash == reset_hash => {}
+        _ => return Err(StatusCode::UNAUTHORIZED),
     }
     let passkey_state: PasskeyRegistration =
         serde_json::from_str(&challenge.state_json).map_err(|err| {
@@ -1941,6 +2007,31 @@ async fn post_admin_passkey_registration_finish(
         eprintln!("serialize admin passkey credential error: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    let previous_credentials = if reset_token_hash.is_some() {
+        state
+            .proxy
+            .list_active_admin_passkey_credentials()
+            .await
+            .map_err(|err| {
+                eprintln!("list old admin passkeys for reset error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        Vec::new()
+    };
+    if let Some(token_hash) = reset_token_hash.as_deref() {
+        let consumed = state
+            .proxy
+            .consume_admin_passkey_reset_token_hash(token_hash)
+            .await
+            .map_err(|err| {
+                eprintln!("consume admin passkey reset token error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if !consumed {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
     state
         .proxy
         .upsert_admin_passkey_credential(
@@ -1953,6 +2044,27 @@ async fn post_admin_passkey_registration_finish(
             eprintln!("store admin passkey credential error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    for record in previous_credentials
+        .iter()
+        .filter(|record| record.credential_id != credential_id)
+    {
+        state
+            .proxy
+            .revoke_admin_passkey_credential(&record.credential_id)
+            .await
+            .map_err(|err| {
+                eprintln!("revoke old admin passkey after reset error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        state
+            .proxy
+            .revoke_admin_passkey_sessions_for_credential(&record.credential_id)
+            .await
+            .map_err(|err| {
+                eprintln!("revoke old admin passkey sessions after reset error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
     Ok(Json(AdminPasskeyRegistrationFinishResponse { ok: true }))
 }
 
@@ -2039,6 +2151,7 @@ async fn put_admin_password(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
     let password = payload.password.trim();
     if password.len() < 8 {
         return Err(StatusCode::BAD_REQUEST);
@@ -2073,6 +2186,7 @@ async fn patch_admin_password(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
     if payload.login_totp_required && !admin_totp_is_ready_for_login(state.as_ref()).await? {
         return Err(StatusCode::CONFLICT);
     }
@@ -2097,6 +2211,7 @@ async fn delete_admin_password(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
+    require_admin_credential_write(state.as_ref()).await?;
     let settings = state.proxy.disable_admin_password().await.map_err(|err| {
         eprintln!("disable admin password error: {err}");
         StatusCode::INTERNAL_SERVER_ERROR

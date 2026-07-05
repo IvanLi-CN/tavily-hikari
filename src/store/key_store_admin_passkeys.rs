@@ -1,3 +1,10 @@
+use sha2::{Digest as _, Sha256};
+
+fn admin_passkey_reset_token_hash(token: &str) -> String {
+    let digest = Sha256::digest(token.trim().as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 impl KeyStore {
     pub async fn get_admin_password_settings(
         &self,
@@ -111,6 +118,104 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await?;
         Ok(count > 0)
+    }
+
+    pub async fn create_admin_passkey_reset_token(
+        &self,
+        ttl_secs: i64,
+    ) -> Result<AdminPasskeyResetTokenRecord, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let now = self.backend_time.now_ts();
+        let expires_at = now + ttl_secs.max(60);
+
+        sqlx::query(
+            "DELETE FROM admin_passkey_reset_tokens WHERE expires_at < ? OR consumed_at IS NOT NULL",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        loop {
+            let token = random_string(ALPHABET, 48);
+            let token_hash = admin_passkey_reset_token_hash(&token);
+            let res = sqlx::query(
+                r#"INSERT INTO admin_passkey_reset_tokens
+                   (token_hash, created_at, expires_at, consumed_at)
+                   VALUES (?, ?, ?, NULL)"#,
+            )
+            .bind(&token_hash)
+            .bind(now)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await;
+
+            match res {
+                Ok(_) => {
+                    return Ok(AdminPasskeyResetTokenRecord {
+                        token: Some(token),
+                        token_hash,
+                        created_at: now,
+                        expires_at,
+                        consumed_at: None,
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                Err(err) => return Err(ProxyError::Database(err)),
+            }
+        }
+    }
+
+    pub async fn get_active_admin_passkey_reset_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<AdminPasskeyResetTokenRecord>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let token_hash = admin_passkey_reset_token_hash(token);
+        let row = sqlx::query_as::<_, (String, i64, i64, Option<i64>)>(
+            r#"SELECT token_hash, created_at, expires_at, consumed_at
+               FROM admin_passkey_reset_tokens
+               WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?
+               LIMIT 1"#,
+        )
+        .bind(&token_hash)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(token_hash, created_at, expires_at, consumed_at)| {
+            AdminPasskeyResetTokenRecord {
+                token: None,
+                token_hash,
+                created_at,
+                expires_at,
+                consumed_at,
+            }
+        }))
+    }
+
+    pub async fn consume_admin_passkey_reset_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<bool, ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            "DELETE FROM admin_passkey_reset_tokens WHERE expires_at < ? OR consumed_at IS NOT NULL",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let updated = sqlx::query(
+            r#"UPDATE admin_passkey_reset_tokens
+               SET consumed_at = ?
+               WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?"#,
+        )
+        .bind(now)
+        .bind(token_hash)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
     }
 
     pub async fn list_active_admin_passkey_credentials(
@@ -548,6 +653,62 @@ mod admin_passkey_store_tests {
                 )
                 .await
                 .expect("consume expired challenge")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_token_is_hash_backed_one_time_and_expires() {
+        let (_temp, db_path) = temp_db_path("reset-token.db");
+        let (backend_time, manual_time) = BackendTime::manual_from_ts(1_700_000_000);
+        let store = KeyStore::new_with_time(&db_path, backend_time)
+            .await
+            .expect("create store");
+
+        let reset = store
+            .create_admin_passkey_reset_token(120)
+            .await
+            .expect("create reset token");
+        let token = reset.token.as_deref().expect("raw token returned once");
+        assert_ne!(token, reset.token_hash);
+        assert!(
+            store
+                .get_active_admin_passkey_reset_token("wrong-token")
+                .await
+                .expect("wrong token lookup")
+                .is_none()
+        );
+        let active = store
+            .get_active_admin_passkey_reset_token(token)
+            .await
+            .expect("active token lookup")
+            .expect("active token exists");
+        assert_eq!(active.token, None);
+        assert_eq!(active.token_hash, reset.token_hash);
+        assert!(
+            store
+                .consume_admin_passkey_reset_token_hash(&active.token_hash)
+                .await
+                .expect("consume reset token")
+        );
+        assert!(
+            !store
+                .consume_admin_passkey_reset_token_hash(&active.token_hash)
+                .await
+                .expect("second consume reset token")
+        );
+
+        let expiring = store
+            .create_admin_passkey_reset_token(60)
+            .await
+            .expect("create expiring reset token");
+        let expiring_token = expiring.token.as_deref().expect("expiring raw token");
+        manual_time.advance_wall(Duration::from_secs(61));
+        assert!(
+            store
+                .get_active_admin_passkey_reset_token(expiring_token)
+                .await
+                .expect("expired token lookup")
                 .is_none()
         );
     }

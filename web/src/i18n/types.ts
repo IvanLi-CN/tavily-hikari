@@ -87,6 +87,7 @@ export interface PublicTranslations {
       checking: string
       disabled: string
       profileUnavailable: string
+      resetEnrollment: string
     }
     errors: {
       invalid: string

@@ -2107,6 +2107,32 @@ export async function registerAdminPasskey(
   })
 }
 
+export async function registerAdminPasskeyWithResetToken(
+  token: string,
+  label?: string,
+): Promise<AdminPasskeyResult> {
+  const encodedToken = encodeURIComponent(token)
+  const start = await requestJson<AdminPasskeyChallenge<PasskeyCreationOptions>>(
+    `/api/admin/passkey/reset/${encodedToken}/registration/start`,
+    { method: 'POST' },
+  )
+  const credential = await navigator.credentials.create({
+    publicKey: decodePasskeyCreationOptions(start.publicKey.publicKey),
+  })
+  if (!(credential instanceof PublicKeyCredential)) {
+    throw new Error('Passkey registration was cancelled.')
+  }
+  return requestJson(`/api/admin/passkey/reset/${encodedToken}/registration/finish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challengeId: start.challengeId,
+      credential: registrationCredentialToJson(credential),
+      label,
+    }),
+  })
+}
+
 export function fetchAdminPasskeys(signal?: AbortSignal): Promise<AdminPasskeys> {
   return requestJson('/api/admin/passkeys', { signal })
 }

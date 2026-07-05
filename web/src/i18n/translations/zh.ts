@@ -92,6 +92,7 @@ export const ZH: TranslationShape = {
           checking: '正在检查登录状态…',
           disabled: '当前服务未启用内置管理员登录。',
           profileUnavailable: '暂时无法确认管理员登录方式；仍可尝试已配置的口令登录。',
+          resetEnrollment: '使用这个一次性重置链接注册新的管理员 Passkey。',
         },
         errors: {
           invalid: '口令不正确。',
