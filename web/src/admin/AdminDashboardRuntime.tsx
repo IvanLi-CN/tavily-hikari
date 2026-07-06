@@ -147,6 +147,7 @@ import {
   modulePath,
   parseAdminPath,
   rankingsPath,
+  systemSettingsAdminPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
   buildAdminUsersPath,
@@ -347,6 +348,7 @@ const LazyKeyStickyPanels = lazy(() => import('./KeyStickyPanels'))
 const LazyAlertsCenter = lazy(() => import('./AlertsCenter'))
 const LazyAnnouncementsModule = lazy(() => import('./AnnouncementsModule'))
 const LazySystemSettingsModule = lazy(() => import('./SystemSettingsModule'))
+const LazyAdminSecuritySettingsModule = lazy(() => import('./AdminSecuritySettingsModule'))
 const LazyAdminRechargeRecordsModule = lazy(() => import('./AdminRechargeRecordsModule'))
 const LazyUserDetailSharedUsagePanel = lazy(async () =>
   import('./UserDetailSharedUsagePanel').then((module) => ({
@@ -4574,6 +4576,10 @@ function AdminDashboard(): JSX.Element {
         navigateToPath(systemSettingsHaPath())
         return
       }
+      if (target === 'system-settings-admin') {
+        navigateToPath(systemSettingsAdminPath())
+        return
+      }
       navigateToPath(modulePath(target))
     },
     [buildUsersOverviewPath, navigateToPath, rankingsTab, route],
@@ -7570,15 +7576,20 @@ function AdminDashboard(): JSX.Element {
       icon: <Icon icon="mdi:cog-outline" width={18} height={18} />,
       children: [
         { target: 'system-settings', label: systemSettingsStrings.subnav.general },
+        { target: 'system-settings-admin', label: systemSettingsStrings.subnav.admin },
         { target: 'system-settings-ha', label: systemSettingsStrings.subnav.highAvailability },
+        { target: 'proxy-settings', label: adminStrings.nav.proxySettings },
       ],
     },
-    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
   const activeNavItem: AdminNavTarget =
     route.name === 'module'
-      ? route.module === 'system-settings' && (route.systemSettingsView ?? 'general') === 'ha'
-        ? 'system-settings-ha'
+      ? route.module === 'system-settings'
+        ? (route.systemSettingsView ?? 'general') === 'ha'
+          ? 'system-settings-ha'
+          : (route.systemSettingsView ?? 'general') === 'admin'
+            ? 'system-settings-admin'
+            : 'system-settings'
         : route.module === 'analysis'
           ? route.analysisView === 'usage'
             ? 'analysis-usage'
@@ -8800,6 +8811,7 @@ function AdminDashboard(): JSX.Element {
       ? 'ha'
       : 'general'
   const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
+  const showSystemSettingsAdmin = showSystemSettings && systemSettingsView === 'admin'
 
   useEffect(() => {
     if (!showSystemSettingsHa) return
@@ -9761,17 +9773,24 @@ function AdminDashboard(): JSX.Element {
           description: adminStrings.modules.announcements.description,
         }
       case 'system-settings':
-        return systemSettingsView === 'ha'
-          ? {
-              title: systemSettingsStrings.ha.title,
-              description: route.name === 'ha-node'
-                ? undefined
-                : systemSettingsStrings.ha.description,
-            }
-          : {
-              title: systemSettingsStrings.title,
-              description: systemSettingsStrings.description,
-            }
+        if (systemSettingsView === 'ha') {
+          return {
+            title: systemSettingsStrings.ha.title,
+            description: route.name === 'ha-node'
+              ? undefined
+              : systemSettingsStrings.ha.description,
+          }
+        }
+        if (systemSettingsView === 'admin') {
+          return {
+            title: systemSettingsStrings.admin.title,
+            description: systemSettingsStrings.admin.description,
+          }
+        }
+        return {
+          title: systemSettingsStrings.title,
+          description: systemSettingsStrings.description,
+        }
       case 'proxy-settings':
         return {
           title: proxySettingsStrings.title,
@@ -12118,6 +12137,15 @@ function AdminDashboard(): JSX.Element {
             }}
             onDisplayDensityChange={setAdminDisplayDensity}
             onApply={saveSystemSettings}
+          />
+        </AdminLazyBoundary>
+      )}
+
+      {showSystemSettingsAdmin && (
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={260}>
+          <LazyAdminSecuritySettingsModule
+            strings={systemSettingsStrings}
+            profile={profile}
           />
         </AdminLazyBoundary>
       )}

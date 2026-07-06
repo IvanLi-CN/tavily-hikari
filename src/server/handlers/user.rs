@@ -1532,7 +1532,7 @@ async fn user_recharge_gate_for_request(
         .await
         .map_err(|err| map_recharge_error("load recharge gate settings", err))?;
     let visible = settings.recharge_feature_enabled
-        && (settings.recharge_user_enabled || is_admin_request(state, headers));
+        && (settings.recharge_user_enabled || is_admin_request(state, headers).await);
     Ok((visible, visible && state.linuxdo_credit.is_enabled_and_configured()))
 }
 

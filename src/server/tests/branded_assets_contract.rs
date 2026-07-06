@@ -16,6 +16,7 @@ async fn branded_assets_are_served_from_assets_contract_and_favicon_remains_avai
         forward_auth: ForwardAuthConfig::new(None, None, None, None),
         forward_auth_enabled: false,
         builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
         linuxdo_oauth: linuxdo_oauth_options_for_test(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
         ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),

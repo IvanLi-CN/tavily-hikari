@@ -5,6 +5,7 @@ struct AppState {
     forward_auth: ForwardAuthConfig,
     forward_auth_enabled: bool,
     builtin_admin: BuiltinAdminAuth,
+    admin_passkey: AdminPasskeyOptions,
     linuxdo_oauth: LinuxDoOAuthOptions,
     linuxdo_credit: LinuxDoCreditOptions,
     ha: tavily_hikari::HaRuntime,
@@ -264,6 +265,69 @@ pub struct AdminAuthOptions {
     pub builtin_auth_enabled: bool,
     pub builtin_auth_password: Option<String>,
     pub builtin_auth_password_hash: Option<String>,
+    pub passkey_auth_enabled: bool,
+    pub passkey_rp_id: Option<String>,
+    pub passkey_rp_origin: Option<String>,
+    pub passkey_challenge_ttl_secs: i64,
+    pub passkey_session_max_age_secs: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdminPasskeyOptions {
+    pub enabled: bool,
+    pub rp_id: Option<String>,
+    pub rp_origin: Option<String>,
+    pub challenge_ttl_secs: i64,
+    pub session_max_age_secs: i64,
+}
+
+impl AdminPasskeyOptions {
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            rp_id: None,
+            rp_origin: None,
+            challenge_ttl_secs: 300,
+            session_max_age_secs: 60 * 60 * 24 * 14,
+        }
+    }
+
+    fn is_configured(&self) -> bool {
+        self.enabled
+            && self
+                .rp_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .rp_origin
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+    }
+
+    fn webauthn(&self) -> Result<Webauthn, ProxyError> {
+        let rp_id = self
+            .rp_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ProxyError::Other("admin passkey RP ID is not configured".to_string()))?;
+        let rp_origin = self
+            .rp_origin
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ProxyError::Other("admin passkey RP origin is not configured".to_string())
+            })?;
+        let origin = Url::parse(rp_origin)
+            .map_err(|err| ProxyError::Other(format!("invalid admin passkey RP origin: {err}")))?;
+        WebauthnBuilder::new(rp_id, &origin)
+            .and_then(|builder| builder.build())
+            .map_err(|err| ProxyError::Other(format!("admin passkey webauthn setup failed: {err}")))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -476,6 +540,7 @@ impl ForwardAuthConfig {
 const BUILTIN_ADMIN_COOKIE_NAME: &str = "hikari_admin_session";
 const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
 const BUILTIN_ADMIN_SESSION_MAX_COUNT: usize = 1024;
+const ADMIN_PASSKEY_COOKIE_NAME: &str = "hikari_admin_passkey_session";
 const USER_SESSION_COOKIE_NAME: &str = "hikari_user_session";
 const OAUTH_LOGIN_BINDING_COOKIE_NAME: &str = "hikari_oauth_login_binding";
 const DEV_OPEN_ADMIN_REQUEST_TOKEN: &str = "th-dev-override";
@@ -488,10 +553,42 @@ struct BuiltinAdminSession {
 }
 
 #[derive(Clone, Debug)]
-struct BuiltinAdminAuth {
-    enabled: bool,
+struct BuiltinAdminCredentialState {
     password: Option<String>,
     password_hash: Option<String>,
+    disabled: bool,
+    updated_at: Option<i64>,
+    login_totp_required: bool,
+}
+
+impl BuiltinAdminCredentialState {
+    fn has_login_credential(&self) -> bool {
+        !self.disabled
+            && (self
+                .password_hash
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+                || self
+                    .password
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty()))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BuiltinAdminPasswordStatus {
+    enabled: bool,
+    updated_at: Option<i64>,
+    login_totp_required: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BuiltinAdminAuth {
+    startup_credentials: BuiltinAdminCredentialState,
+    persisted_password_allowed: bool,
+    credentials: Arc<std::sync::RwLock<BuiltinAdminCredentialState>>,
     sessions: Arc<std::sync::RwLock<HashMap<String, BuiltinAdminSession>>>,
     backend_time: tavily_hikari::BackendTime,
 }
@@ -512,21 +609,142 @@ impl BuiltinAdminAuth {
         password_hash: Option<String>,
         backend_time: tavily_hikari::BackendTime,
     ) -> Self {
+        let credentials = if enabled {
+            BuiltinAdminCredentialState {
+                password,
+                password_hash,
+                disabled: false,
+                updated_at: None,
+                login_totp_required: false,
+            }
+        } else {
+            BuiltinAdminCredentialState {
+                password: None,
+                password_hash: None,
+                disabled: true,
+                updated_at: None,
+                login_totp_required: false,
+            }
+        };
         Self {
-            enabled,
-            password,
-            password_hash,
+            startup_credentials: credentials.clone(),
+            persisted_password_allowed: enabled,
+            credentials: Arc::new(std::sync::RwLock::new(credentials)),
             sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
             backend_time,
         }
     }
 
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.credentials
+            .read()
+            .map(|credentials| credentials.has_login_credential())
+            .unwrap_or(false)
+    }
+
+    fn persisted_password_allowed(&self) -> bool {
+        self.persisted_password_allowed
+    }
+
+    fn status(&self) -> BuiltinAdminPasswordStatus {
+        self.credentials
+            .read()
+            .map(|credentials| BuiltinAdminPasswordStatus {
+                enabled: credentials.has_login_credential(),
+                updated_at: credentials.updated_at,
+                login_totp_required: credentials.login_totp_required,
+            })
+            .unwrap_or(BuiltinAdminPasswordStatus {
+                enabled: false,
+                updated_at: None,
+                login_totp_required: false,
+            })
+    }
+
+    fn login_totp_required(&self) -> bool {
+        self.credentials
+            .read()
+            .map(|credentials| credentials.login_totp_required)
+            .unwrap_or(false)
+    }
+
+    fn apply_persisted_settings(
+        &self,
+        settings: Option<tavily_hikari::AdminPasswordSettingsRecord>,
+    ) {
+        let Some(settings) = settings else {
+            if let Ok(mut credentials) = self.credentials.write() {
+                *credentials = self.startup_credentials.clone();
+            }
+            self.clear_sessions();
+            return;
+        };
+        let mut should_clear_sessions = !self.persisted_password_allowed;
+        if let Ok(mut credentials) = self.credentials.write() {
+            if !self.persisted_password_allowed {
+                credentials.password = None;
+                credentials.password_hash = None;
+                credentials.disabled = true;
+            } else if settings.password_hash.is_some() || settings.disabled_at.is_some() {
+                should_clear_sessions = credentials.password.is_some()
+                    || credentials.password_hash != settings.password_hash
+                    || credentials.disabled != settings.disabled_at.is_some();
+                credentials.password = None;
+                credentials.password_hash = settings.password_hash;
+                credentials.disabled = settings.disabled_at.is_some();
+            }
+            should_clear_sessions |= !credentials.login_totp_required && settings.login_totp_required;
+            credentials.updated_at = Some(settings.updated_at);
+            credentials.login_totp_required = settings.login_totp_required;
+        }
+        if should_clear_sessions {
+            self.clear_sessions();
+        }
+    }
+
+    fn set_password_hash(&self, password_hash: String, updated_at: Option<i64>) {
+        if let Ok(mut credentials) = self.credentials.write() {
+            if !self.persisted_password_allowed {
+                credentials.password = None;
+                credentials.password_hash = None;
+                credentials.disabled = true;
+                credentials.updated_at = updated_at;
+                self.clear_sessions();
+                return;
+            }
+            credentials.password = None;
+            credentials.password_hash = Some(password_hash);
+            credentials.disabled = false;
+            credentials.updated_at = updated_at;
+        }
+        self.clear_sessions();
+    }
+
+    fn disable_password(&self, updated_at: Option<i64>) {
+        if let Ok(mut credentials) = self.credentials.write() {
+            credentials.password = None;
+            credentials.password_hash = None;
+            credentials.disabled = true;
+            credentials.updated_at = updated_at;
+        }
+        self.clear_sessions();
+    }
+
+    fn set_login_totp_required(&self, required: bool, updated_at: Option<i64>) {
+        if let Ok(mut credentials) = self.credentials.write() {
+            credentials.login_totp_required = required;
+            credentials.updated_at = updated_at;
+        }
+    }
+
+    fn clear_sessions(&self) {
+        if let Ok(mut sessions) = self.sessions.write() {
+            sessions.clear();
+        }
     }
 
     fn is_admin(&self, headers: &HeaderMap) -> bool {
-        if !self.enabled {
+        if !self.is_enabled() {
             return false;
         }
         let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
@@ -543,10 +761,11 @@ impl BuiltinAdminAuth {
     }
 
     fn login(&self, password: &str) -> Option<String> {
-        if !self.enabled {
+        let credentials = self.credentials.read().ok()?.clone();
+        if !credentials.has_login_credential() {
             return None;
         }
-        if let Some(hash) = self.password_hash.as_deref() {
+        if let Some(hash) = credentials.password_hash.as_deref() {
             let parsed = PasswordHash::new(hash).ok()?;
             if Argon2::default()
                 .verify_password(password.as_bytes(), &parsed)
@@ -555,7 +774,7 @@ impl BuiltinAdminAuth {
                 return None;
             }
         } else {
-            let expected = self.password.as_deref()?;
+            let expected = credentials.password.as_deref()?;
             if password != expected {
                 return None;
             }
@@ -564,7 +783,7 @@ impl BuiltinAdminAuth {
     }
 
     fn remember_session(&self, token: String) {
-        if !self.enabled {
+        if !self.is_enabled() {
             return;
         }
         let now = self.backend_time.instant_now();
@@ -596,9 +815,6 @@ impl BuiltinAdminAuth {
     }
 
     fn forget_session(&self, headers: &HeaderMap) {
-        if !self.enabled {
-            return;
-        }
         let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
             return;
         };
@@ -614,6 +830,124 @@ impl BuiltinAdminAuth {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+}
+
+#[cfg(test)]
+mod builtin_admin_auth_tests {
+    use axum::http::{HeaderMap, HeaderValue, header::COOKIE};
+
+    use super::{BUILTIN_ADMIN_COOKIE_NAME, BuiltinAdminAuth};
+
+    #[test]
+    fn admin_passkey_totp_only_persisted_settings_keep_env_password() {
+        let admin = BuiltinAdminAuth::new(true, Some("env-password".to_string()), None);
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: None,
+            disabled_at: None,
+            updated_at: 123,
+            login_totp_required: true,
+        }));
+
+        assert!(admin.is_enabled());
+        assert!(admin.login_totp_required());
+        assert!(admin.login("env-password").is_some());
+    }
+
+    #[test]
+    fn persisted_password_settings_do_not_override_startup_disable() {
+        let admin = BuiltinAdminAuth::new(false, None, None);
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: Some("stored-password-hash".to_string()),
+            disabled_at: None,
+            updated_at: 456,
+            login_totp_required: true,
+        }));
+
+        assert!(!admin.is_enabled());
+        assert!(admin.login_totp_required());
+        assert!(admin.login("stored-password").is_none());
+    }
+
+    #[test]
+    fn setting_password_does_not_override_startup_disable() {
+        let admin = BuiltinAdminAuth::new(false, None, None);
+
+        admin.set_password_hash("stored-password-hash".to_string(), Some(789));
+
+        assert!(!admin.is_enabled());
+        assert!(admin.login("stored-password").is_none());
+    }
+
+    #[test]
+    fn rotating_password_revokes_existing_builtin_sessions() {
+        let admin = BuiltinAdminAuth::new(true, Some("old-password".to_string()), None);
+        let token = admin.login("old-password").expect("old password should log in");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        admin.set_password_hash("stored-password-hash".to_string(), Some(789));
+
+        assert!(!admin.is_admin(&headers));
+    }
+
+    #[test]
+    fn applying_rotated_persisted_password_revokes_existing_builtin_sessions() {
+        let admin = BuiltinAdminAuth::new(true, Some("old-password".to_string()), None);
+        let token = admin.login("old-password").expect("old password should log in");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: Some("stored-password-hash".to_string()),
+            disabled_at: None,
+            updated_at: 987,
+            login_totp_required: false,
+        }));
+
+        assert!(!admin.is_admin(&headers));
+    }
+
+    #[test]
+    fn applying_persisted_login_totp_requirement_revokes_existing_builtin_sessions() {
+        let admin = BuiltinAdminAuth::new(true, Some("old-password".to_string()), None);
+        let token = admin.login("old-password").expect("old password should log in");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: None,
+            disabled_at: None,
+            updated_at: 988,
+            login_totp_required: true,
+        }));
+
+        assert!(admin.login_totp_required());
+        assert!(!admin.is_admin(&headers));
+        assert!(admin.login("old-password").is_some());
     }
 }
 
@@ -663,7 +997,7 @@ fn wants_secure_cookie(headers: &HeaderMap) -> bool {
     false
 }
 
-fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
+async fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
     if state.dev_open_admin {
         return true;
     }
@@ -673,7 +1007,7 @@ fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
     if state.builtin_admin.is_admin(headers) {
         return true;
     }
-    false
+    resolve_admin_passkey_session(state, headers).await.is_some()
 }
 
 async fn require_full_master_write(state: &AppState) -> Result<(), (StatusCode, String)> {
@@ -692,6 +1026,20 @@ async fn resolve_user_session(
     }
     let cookie = cookie_value(headers, USER_SESSION_COOKIE_NAME)?;
     match state.proxy.get_user_session(&cookie).await {
+        Ok(Some(session)) => Some(session),
+        _ => None,
+    }
+}
+
+async fn resolve_admin_passkey_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<tavily_hikari::AdminPasskeySessionRecord> {
+    if !state.admin_passkey.is_configured() {
+        return None;
+    }
+    let token = cookie_value(headers, ADMIN_PASSKEY_COOKIE_NAME)?;
+    match state.proxy.get_active_admin_passkey_session(&token).await {
         Ok(Some(session)) => Some(session),
         _ => None,
     }
@@ -723,7 +1071,7 @@ async fn admin_maintenance_actor(
         return actor;
     }
 
-    if state.forward_auth_enabled {
+    if state.forward_auth_enabled && state.forward_auth.is_request_admin(headers) {
         actor.actor_display_name = state
             .forward_auth
             .nickname_value(headers)
@@ -734,6 +1082,20 @@ async fn admin_maintenance_actor(
 
     if state.builtin_admin.is_admin(headers) {
         actor.actor_display_name = Some("builtin-admin".to_string());
+        return actor;
+    }
+
+    if let Some(session) = resolve_admin_passkey_session(state, headers).await {
+        actor.actor_display_name = Some(
+            session
+                .credential_id
+                .as_deref()
+                .map(|credential_id| {
+                    let prefix = credential_id.chars().take(16).collect::<String>();
+                    format!("admin-passkey:{prefix}")
+                })
+                .unwrap_or_else(|| "admin-passkey".to_string()),
+        );
     }
 
     actor
@@ -884,6 +1246,7 @@ struct IsAdminDebug {
     is_admin: bool,
     forward_auth_admin: bool,
     builtin_admin: bool,
+    admin_passkey: bool,
     user_value: Option<String>,
 }
 
@@ -891,7 +1254,7 @@ async fn debug_is_admin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<IsAdminDebug>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let cfg = &state.forward_auth;
@@ -902,11 +1265,15 @@ async fn debug_is_admin(
     };
     let forward_auth_admin = state.forward_auth_enabled && cfg.is_request_admin(&headers);
     let builtin_admin = state.builtin_admin.is_admin(&headers);
-    let is_admin = state.dev_open_admin || forward_auth_admin || builtin_admin;
+    let admin_passkey = resolve_admin_passkey_session(state.as_ref(), &headers)
+        .await
+        .is_some();
+    let is_admin = state.dev_open_admin || forward_auth_admin || builtin_admin || admin_passkey;
     Ok(Json(IsAdminDebug {
         is_admin,
         forward_auth_admin,
         builtin_admin,
+        admin_passkey,
         user_value,
     }))
 }

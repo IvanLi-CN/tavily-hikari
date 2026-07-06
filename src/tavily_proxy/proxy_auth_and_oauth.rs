@@ -16,6 +16,207 @@ impl TavilyProxy {
         self.key_store.validate_access_token(token).await
     }
 
+    pub async fn admin_passkey_enabled(&self) -> Result<bool, ProxyError> {
+        self.key_store.admin_passkey_enabled().await
+    }
+
+    pub async fn create_admin_passkey_reset_token(
+        &self,
+        ttl_secs: i64,
+    ) -> Result<AdminPasskeyResetTokenRecord, ProxyError> {
+        self.key_store
+            .create_admin_passkey_reset_token(ttl_secs)
+            .await
+    }
+
+    pub async fn get_active_admin_passkey_reset_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<AdminPasskeyResetTokenRecord>, ProxyError> {
+        self.key_store
+            .get_active_admin_passkey_reset_token(token)
+            .await
+    }
+
+    pub async fn consume_admin_passkey_reset_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .consume_admin_passkey_reset_token_hash(token_hash)
+            .await
+    }
+
+    pub async fn complete_admin_passkey_reset_registration(
+        &self,
+        token_hash: &str,
+        credential_id: &str,
+        passkey_json: &str,
+        label: Option<&str>,
+        revoke_credential_ids: &[String],
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .complete_admin_passkey_reset_registration(
+                token_hash,
+                credential_id,
+                passkey_json,
+                label,
+                revoke_credential_ids,
+            )
+            .await
+    }
+
+    pub async fn get_admin_password_settings(
+        &self,
+    ) -> Result<Option<AdminPasswordSettingsRecord>, ProxyError> {
+        self.key_store.get_admin_password_settings().await
+    }
+
+    pub async fn set_admin_password_hash(
+        &self,
+        password_hash: &str,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store.set_admin_password_hash(password_hash).await
+    }
+
+    pub async fn disable_admin_password_preserving_login(
+        &self,
+        external_admin_login_available: bool,
+        runtime_passkey_login_available: bool,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store
+            .disable_admin_password_preserving_login(
+                external_admin_login_available,
+                runtime_passkey_login_available,
+            )
+            .await
+    }
+
+    pub async fn set_admin_login_totp_required(
+        &self,
+        required: bool,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store
+            .set_admin_login_totp_required(required)
+            .await
+    }
+
+    pub async fn clear_admin_totp_secret_record_and_login_requirement(
+        &self,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store
+            .clear_admin_totp_secret_record_and_login_requirement()
+            .await
+    }
+
+    pub async fn list_active_admin_passkey_credentials(
+        &self,
+    ) -> Result<Vec<AdminPasskeyCredentialRecord>, ProxyError> {
+        self.key_store.list_active_admin_passkey_credentials().await
+    }
+
+    pub async fn upsert_admin_passkey_credential(
+        &self,
+        credential_id: &str,
+        passkey_json: &str,
+        label: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .upsert_admin_passkey_credential(credential_id, passkey_json, label)
+            .await
+    }
+
+    pub async fn update_admin_passkey_credential_after_auth(
+        &self,
+        credential_id: &str,
+        passkey_json: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .update_admin_passkey_credential_after_auth(credential_id, passkey_json)
+            .await
+    }
+
+    pub async fn update_admin_passkey_credential_label(
+        &self,
+        credential_id: &str,
+        label: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .update_admin_passkey_credential_label(credential_id, label)
+            .await
+    }
+
+    pub async fn revoke_admin_passkey_credential_preserving_login(
+        &self,
+        credential_id: &str,
+        external_admin_login_available: bool,
+        runtime_password_available: bool,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .revoke_admin_passkey_credential_preserving_login(
+                credential_id,
+                external_admin_login_available,
+                runtime_password_available,
+            )
+            .await
+    }
+
+    pub async fn insert_admin_passkey_challenge(
+        &self,
+        kind: AdminPasskeyChallengeKind,
+        reset_token: Option<&str>,
+        state_json: &str,
+        ttl_secs: i64,
+    ) -> Result<AdminPasskeyChallengeRecord, ProxyError> {
+        self.key_store
+            .insert_admin_passkey_challenge(kind, reset_token, state_json, ttl_secs)
+            .await
+    }
+
+    pub async fn consume_admin_passkey_challenge(
+        &self,
+        id: &str,
+        kind: AdminPasskeyChallengeKind,
+    ) -> Result<Option<AdminPasskeyChallengeRecord>, ProxyError> {
+        self.key_store
+            .consume_admin_passkey_challenge(id, kind)
+            .await
+    }
+
+    pub async fn create_admin_passkey_session(
+        &self,
+        credential_id: Option<&str>,
+        ttl_secs: i64,
+    ) -> Result<AdminPasskeySessionRecord, ProxyError> {
+        self.key_store
+            .create_admin_passkey_session(credential_id, ttl_secs)
+            .await
+    }
+
+    pub async fn get_active_admin_passkey_session(
+        &self,
+        token: &str,
+    ) -> Result<Option<AdminPasskeySessionRecord>, ProxyError> {
+        self.key_store.get_active_admin_passkey_session(token).await
+    }
+
+    pub async fn revoke_admin_passkey_session(&self, token: &str) -> Result<(), ProxyError> {
+        self.key_store.revoke_admin_passkey_session(token).await
+    }
+
+    pub async fn revoke_admin_passkey_sessions_for_credential(
+        &self,
+        credential_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .revoke_admin_passkey_sessions_for_credential(credential_id)
+            .await
+    }
+
+    pub async fn revoke_all_admin_passkey_sessions(&self) -> Result<(), ProxyError> {
+        self.key_store.revoke_all_admin_passkey_sessions().await
+    }
+
     /// Admin: create a new access token with optional note.
     pub async fn create_access_token(
         &self,

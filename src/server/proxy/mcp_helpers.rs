@@ -3,7 +3,7 @@ async fn get_token_detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let tokens = state
@@ -46,7 +46,7 @@ async fn sse_token(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let state = state.clone();

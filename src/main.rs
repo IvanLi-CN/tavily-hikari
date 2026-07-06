@@ -32,17 +32,20 @@ use std::{
 };
 
 use argon2::password_hash::PasswordHash;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use tavily_hikari::{
     DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, RuntimeLogFormat,
-    TavilyProxy, TavilyProxyOptions,
+    TavilyProxy, TavilyProxyOptions, create_admin_passkey_reset_token_for_database,
 };
 use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Tavily reverse proxy with key rotation")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+
     /// Tavily API keys（逗号分隔或重复传参）
     #[arg(
         long,
@@ -96,9 +99,14 @@ struct Cli {
     #[arg(long, env = "ADMIN_MODE_NAME")]
     admin_mode_name: Option<String>,
 
-    /// Enable/disable ForwardAuth admin authentication (default true).
-    #[arg(long, env = "ADMIN_AUTH_FORWARD_ENABLED", default_value_t = true)]
-    admin_auth_forward_enabled: bool,
+    /// Enable/disable ForwardAuth admin authentication (default false).
+    #[arg(
+        long,
+        env = "ADMIN_AUTH_FORWARD_ENABLED",
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    admin_auth_forward_enabled: Option<bool>,
 
     /// Enable/disable built-in admin login (cookie session) (default false).
     #[arg(long, env = "ADMIN_AUTH_BUILTIN_ENABLED", default_value_t = false)]
@@ -111,6 +119,30 @@ struct Cli {
     /// Built-in admin password hash (PHC string, recommended).
     #[arg(long, env = "ADMIN_AUTH_BUILTIN_PASSWORD_HASH", hide_env_values = true)]
     admin_auth_builtin_password_hash: Option<String>,
+
+    /// Enable/disable passkey admin login.
+    #[arg(long, env = "ADMIN_AUTH_PASSKEY_ENABLED", default_value_t = false)]
+    admin_auth_passkey_enabled: bool,
+
+    /// WebAuthn relying-party ID for admin passkeys, normally the public host.
+    #[arg(long, env = "ADMIN_PASSKEY_RP_ID")]
+    admin_passkey_rp_id: Option<String>,
+
+    /// WebAuthn origin for admin passkeys, for example https://tavily-tw.ivanli.cc.
+    #[arg(long, env = "ADMIN_PASSKEY_RP_ORIGIN")]
+    admin_passkey_rp_origin: Option<String>,
+
+    /// One-time passkey challenge TTL.
+    #[arg(long, env = "ADMIN_PASSKEY_CHALLENGE_TTL_SECS", default_value_t = 300)]
+    admin_passkey_challenge_ttl_secs: i64,
+
+    /// Admin passkey session cookie max age.
+    #[arg(
+        long,
+        env = "ADMIN_PASSKEY_SESSION_MAX_AGE_SECS",
+        default_value_t = 60 * 60 * 24 * 14
+    )]
+    admin_passkey_session_max_age_secs: i64,
 
     /// 开发模式：放开管理接口权限（仅本地验证使用）
     #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
@@ -346,6 +378,45 @@ struct Cli {
     log_format: RuntimeLogFormat,
 }
 
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    Admin(AdminCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminCommand {
+    #[command(subcommand)]
+    command: AdminSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminSubcommand {
+    Passkey(AdminPasskeyCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminPasskeyCommand {
+    #[command(subcommand)]
+    command: AdminPasskeySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminPasskeySubcommand {
+    /// Create a one-time URL for admin passkey enrollment.
+    ResetUrl(AdminPasskeyResetUrlCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AdminPasskeyResetUrlCommand {
+    /// Public base URL for the Hikari instance, for example https://tavily.example.com.
+    #[arg(long)]
+    base_url: String,
+
+    /// One-time reset URL TTL in seconds.
+    #[arg(long, default_value_t = 3600)]
+    ttl_secs: i64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -367,6 +438,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_format = %cli.log_format,
         "resolved runtime database path"
     );
+
+    if let Some(command) = &cli.command {
+        handle_cli_command(command, &cli).await?;
+        return Ok(());
+    }
+
+    let admin_passkey_rp_id =
+        trim_optional(cli.admin_passkey_rp_id.clone()).or_else(|| infer_admin_passkey_rp_id(&cli));
+    let admin_passkey_rp_origin = trim_optional(cli.admin_passkey_rp_origin.clone())
+        .or_else(|| infer_admin_passkey_rp_origin(&cli));
 
     let proxy_options = TavilyProxyOptions {
         xray_binary: cli.xray_binary,
@@ -401,6 +482,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .forward_auth_admin_value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
+    let forward_auth_enabled = effective_forward_auth_enabled(
+        cli.admin_auth_forward_enabled,
+        forward_auth_header.is_some(),
+        forward_auth_admin_value.is_some(),
+    );
+    if forward_auth_enabled && cli.admin_auth_forward_enabled.is_none() {
+        warn!(
+            component = "startup",
+            event = "forward_auth_compat_auto_enabled",
+            "ForwardAuth auto-enabled because FORWARD_AUTH_HEADER and FORWARD_AUTH_ADMIN_VALUE are configured; set ADMIN_AUTH_FORWARD_ENABLED=true to make this explicit"
+        );
+    }
 
     let forward_auth = server::ForwardAuthConfig::new(
         forward_auth_header,
@@ -410,7 +503,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
     );
-
     let builtin_password = cli
         .admin_auth_builtin_password
         .map(|value| value.trim().to_owned())
@@ -426,10 +518,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "ADMIN_AUTH_BUILTIN_PASSWORD_HASH must be a valid PHC string")?;
     }
 
-    if cli.admin_auth_builtin_enabled
+    let persisted_admin_password_available = if cli.admin_auth_builtin_enabled
         && builtin_password.is_none()
         && builtin_password_hash.is_none()
     {
+        proxy
+            .get_admin_password_settings()
+            .await?
+            .is_some_and(admin_password_settings_has_enabled_hash)
+    } else {
+        false
+    };
+
+    if builtin_admin_requires_startup_secret(
+        cli.admin_auth_builtin_enabled,
+        builtin_password.is_some(),
+        builtin_password_hash.is_some(),
+        persisted_admin_password_available,
+    ) {
         return Err(
             "ADMIN_AUTH_BUILTIN_PASSWORD (or ADMIN_AUTH_BUILTIN_PASSWORD_HASH) must be set when ADMIN_AUTH_BUILTIN_ENABLED=true"
                 .into(),
@@ -455,10 +561,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let admin_auth = server::AdminAuthOptions {
-        forward_auth_enabled: cli.admin_auth_forward_enabled,
+        forward_auth_enabled,
         builtin_auth_enabled: cli.admin_auth_builtin_enabled,
         builtin_auth_password: builtin_password,
         builtin_auth_password_hash: builtin_password_hash,
+        passkey_auth_enabled: cli.admin_auth_passkey_enabled,
+        passkey_rp_id: admin_passkey_rp_id,
+        passkey_rp_origin: admin_passkey_rp_origin,
+        passkey_challenge_ttl_secs: cli.admin_passkey_challenge_ttl_secs,
+        passkey_session_max_age_secs: cli.admin_passkey_session_max_age_secs,
     };
 
     let linuxdo_oauth_client_id = cli
@@ -615,10 +726,205 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn handle_cli_command(
+    command: &CliCommand,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        CliCommand::Admin(admin) => match &admin.command {
+            AdminSubcommand::Passkey(passkey) => match &passkey.command {
+                AdminPasskeySubcommand::ResetUrl(command) => {
+                    print_admin_passkey_reset_url(cli, command).await
+                }
+            },
+        },
+    }
+}
+
+async fn print_admin_passkey_reset_url(
+    cli: &Cli,
+    command: &AdminPasskeyResetUrlCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token =
+        create_admin_passkey_reset_token_for_database(&cli.db_path, command.ttl_secs).await?;
+    let raw_token = token
+        .token
+        .as_deref()
+        .ok_or("admin passkey reset token was not returned")?;
+    let base_url = command.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("--base-url must not be empty".into());
+    }
+    let encoded = urlencoding::encode(raw_token);
+    std::println!("{base_url}/login?adminPasskeyResetToken={encoded}");
+    Ok(())
+}
+
 fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn effective_forward_auth_enabled(
+    explicit_enabled: Option<bool>,
+    header_configured: bool,
+    admin_value_configured: bool,
+) -> bool {
+    explicit_enabled.unwrap_or(header_configured && admin_value_configured)
+}
+
+fn builtin_admin_requires_startup_secret(
+    builtin_enabled: bool,
+    password_present: bool,
+    password_hash_present: bool,
+    persisted_password_available: bool,
+) -> bool {
+    builtin_enabled && !password_present && !password_hash_present && !persisted_password_available
+}
+
+fn admin_password_settings_has_enabled_hash(
+    settings: tavily_hikari::AdminPasswordSettingsRecord,
+) -> bool {
+    settings.disabled_at.is_none()
+        && settings
+            .password_hash
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|hash| !hash.is_empty())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdminPasskeyRpHostSource {
+    EdgeOneDomain,
+    NodePublicHost,
+}
+
+fn preferred_admin_passkey_rp_host(
+    edgeone_domain: Option<String>,
+    node_public_host: Option<String>,
+) -> Option<(String, AdminPasskeyRpHostSource)> {
+    trim_optional(edgeone_domain)
+        .map(|host| (host, AdminPasskeyRpHostSource::EdgeOneDomain))
+        .or_else(|| {
+            trim_optional(node_public_host)
+                .map(|host| (host, AdminPasskeyRpHostSource::NodePublicHost))
+        })
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::{
+        AdminPasskeyRpHostSource, builtin_admin_requires_startup_secret,
+        effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
+    };
+
+    #[test]
+    fn forward_auth_stays_compatible_when_legacy_headers_are_configured() {
+        assert!(effective_forward_auth_enabled(None, true, true));
+        assert!(effective_forward_auth_enabled(Some(true), false, false));
+        assert!(!effective_forward_auth_enabled(None, true, false));
+        assert!(!effective_forward_auth_enabled(None, false, true));
+        assert!(!effective_forward_auth_enabled(Some(false), true, true));
+    }
+
+    #[test]
+    fn builtin_admin_startup_secret_can_come_from_persisted_settings() {
+        assert!(builtin_admin_requires_startup_secret(
+            true, false, false, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, true, false, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, false, true, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, false, false, true
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn builtin_admin_startup_secret_requires_enabled_persisted_password_hash() {
+        assert!(super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: Some(" stored-hash ".to_string()),
+                disabled_at: None,
+                updated_at: 123,
+                login_totp_required: false,
+            }
+        ));
+        assert!(!super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: None,
+                disabled_at: None,
+                updated_at: 123,
+                login_totp_required: true,
+            }
+        ));
+        assert!(!super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: Some("stored-hash".to_string()),
+                disabled_at: Some(456),
+                updated_at: 123,
+                login_totp_required: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn passkey_rp_host_prefers_browser_facing_edgeone_domain() {
+        assert_eq!(
+            preferred_admin_passkey_rp_host(
+                Some(" hikari.example.com ".to_string()),
+                Some("origin.internal".to_string()),
+            ),
+            Some((
+                "hikari.example.com".to_string(),
+                AdminPasskeyRpHostSource::EdgeOneDomain,
+            )),
+        );
+        assert_eq!(
+            preferred_admin_passkey_rp_host(None, Some(" origin.internal ".to_string())),
+            Some((
+                "origin.internal".to_string(),
+                AdminPasskeyRpHostSource::NodePublicHost,
+            )),
+        );
+    }
+}
+
+fn infer_admin_passkey_rp_id(cli: &Cli) -> Option<String> {
+    preferred_admin_passkey_rp_host(cli.edgeone_domain.clone(), cli.node_public_host.clone())
+        .map(|(host, _)| host)
+}
+
+fn infer_admin_passkey_rp_origin(cli: &Cli) -> Option<String> {
+    let (host, source) =
+        preferred_admin_passkey_rp_host(cli.edgeone_domain.clone(), cli.node_public_host.clone())?;
+    let scheme = if source == AdminPasskeyRpHostSource::EdgeOneDomain {
+        "https".to_string()
+    } else {
+        trim_optional(cli.node_public_scheme.clone())
+            .filter(|value| value != "follow")
+            .unwrap_or_else(|| "https".to_string())
+    };
+    let port = (source == AdminPasskeyRpHostSource::NodePublicHost)
+        .then_some(cli.node_public_port)
+        .flatten();
+    let default_port = match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    };
+    let port_suffix = port
+        .filter(|port| Some(*port) != default_port)
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{scheme}://{host}{port_suffix}"))
 }
 
 fn reject_legacy_ha_origin_env_vars() -> Result<(), Box<dyn std::error::Error>> {

@@ -1308,6 +1308,89 @@
     padding-bottom: 0;
   }
 
+  .system-settings-password-controls {
+    display: grid;
+    gap: 0.68rem 0.8rem;
+    align-items: end;
+    min-width: 0;
+  }
+
+  .system-settings-password-controls label {
+    min-width: 0;
+  }
+
+  .system-settings-password-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .system-settings-password-actions .btn {
+    white-space: nowrap;
+  }
+
+  .admin-passkey-list {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .admin-passkey-card {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.875rem;
+  }
+
+  .admin-passkey-edit-row {
+    display: grid;
+    gap: 0.75rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .admin-passkey-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.15rem;
+    margin: 0;
+    padding-inline: 0.125rem;
+  }
+
+  .admin-passkey-add-row {
+    display: grid;
+    gap: 0.75rem;
+    align-items: center;
+    margin-top: 1rem;
+    padding-top: 0.25rem;
+  }
+
+  @media (min-width: 768px) {
+    .admin-passkey-edit-row {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+    }
+
+    .admin-passkey-add-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+  }
+
+  .admin-passkey-note-input {
+    height: 2.25rem !important;
+    min-height: 2.25rem !important;
+    border-radius: 1rem;
+    padding: 0.45rem 0.85rem !important;
+    font-size: 0.875rem;
+  }
+
+  .admin-passkey-note-button {
+    height: 2.25rem !important;
+    min-height: 2.25rem !important;
+    border-radius: 1rem;
+    padding: 0.45rem 0.85rem !important;
+    font-size: 0.875rem;
+  }
+
   .system-settings-setting-title {
     color: hsl(var(--foreground));
     font-size: 0.76rem;
@@ -1332,23 +1415,69 @@
   }
 
   .system-settings-totp-row {
-    align-items: start;
+    align-items: center;
   }
 
   .system-settings-totp-row .system-settings-toggle-copy p {
-    white-space: normal;
+    white-space: nowrap;
   }
 
-  .system-settings-totp-actions,
+  .system-settings-totp-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .system-settings-totp-actions .input {
+    width: 12rem;
+  }
+
+  .system-settings-totp-actions .btn {
+    white-space: nowrap;
+  }
+
+  .totp-code-input {
+    display: grid;
+    grid-template-columns: repeat(6, 2.25rem);
+    gap: 0.35rem;
+    width: max-content;
+    max-width: 100%;
+  }
+
+  .totp-code-input-cell {
+    width: 2.25rem;
+    height: 2.5rem;
+    border: 1px solid hsl(var(--input) / 0.35);
+    border-radius: 0.75rem;
+    background: hsl(var(--muted) / 0.6);
+    box-shadow: var(--shadow-clay-pressed);
+    color: hsl(var(--foreground));
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+    transition: all 180ms ease;
+  }
+
+  .totp-code-input-cell:focus-visible {
+    background: hsl(var(--card) / 0.9);
+    outline: none;
+    box-shadow: var(--shadow-clay-pressed), 0 0 0 4px hsl(var(--ring) / 0.2);
+  }
+
+  .totp-code-input-cell:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
   .system-settings-totp-setup {
     display: grid;
     gap: 0.5rem;
-    justify-items: end;
-  }
-
-  .system-settings-totp-setup {
-    max-width: 20rem;
     justify-items: stretch;
+    max-width: 20rem;
   }
 
   .system-settings-totp-qr {
@@ -1399,6 +1528,16 @@
     margin: 0;
     padding: 0.7rem 1rem;
     border-top: 1px solid hsl(var(--border) / 0.38);
+  }
+
+  @media (min-width: 1181px) {
+    .system-settings-password-controls {
+      grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+    }
+
+    .system-settings-password-actions {
+      flex-wrap: nowrap;
+    }
   }
 
   @media (max-width: 1180px) {

@@ -12,6 +12,7 @@ export type AdminNavTarget =
   | 'analysis-usage'
   | 'analysis-rankings'
   | 'analysis-pressure'
+  | 'system-settings-admin'
   | 'system-settings-ha'
 
 export interface AdminNavSubItem {

@@ -46,16 +46,14 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 ### 本地运行
 
 ```bash
-# 1. 启动代理（示例绑定高位端口）
-cargo run -- --bind 127.0.0.1 --port 58087
+# 1. 启动代理（示例绑定高位端口，本地开发显式放开管理员接口）
+DEV_OPEN_ADMIN=true cargo run -- --bind 127.0.0.1 --port 58087
 
 # 2. （可选）启动前端 Dev Server
 cd web && bun install --frozen-lockfile && bun run --bun dev -- --host 127.0.0.1 --port 55173
 
-# 3. 通过管理员接口注册 Tavily key（ForwardAuth 头视部署而定）
+# 3. 通过管理员接口注册 Tavily key（仅本地开发模式）
 curl -X POST http://127.0.0.1:58087/api/keys \
-  -H "X-Forwarded-User: admin@example.com" \
-  -H "X-Forwarded-Admin: true" \
   -H "Content-Type: application/json" \
   -d '{"api_key":"key_a"}'
 ```
@@ -115,7 +113,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
 | `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
 | `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | 是否启用 ForwardAuth 管理员校验（默认 `true`）。                                                                             |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | 是否启用旧版 ForwardAuth 管理员校验（默认 `false`；完整旧版 header 配置会为兼容自动启用）。                                  |
 | `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
@@ -160,7 +158,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `DELETE` | `/api/keys/:id`        | 管理员接口，软删除指定短 ID。                                      | 管理员       |
 | `GET`    | `/api/keys/:id/secret` | 管理员接口，返回真实 Tavily Key。                                  | 管理员       |
 
-管理员身份由外层 ForwardAuth 注入的请求头判断；控制台仅在管理员会话下显示“复制原始 Key”按钮。
+管理员身份由 Passkey、内置管理员会话、显式启用的旧版 ForwardAuth 或本地 `DEV_OPEN_ADMIN` 判断；控制台仅在管理员会话下显示“复制原始 Key”按钮。
 
 ### Cherry Studio 接入示例
 
@@ -193,9 +191,27 @@ Tavily Hikari 通过 `/api/tavily/search` 为 Tavily HTTP API 提供代理与密
 - **过滤方式不变**：继续使用 `RUST_LOG` 控制日志级别；JSON 模式建议配合 `jq`，text 回退模式建议配合 `rg`/`grep`。
 - **匿名策略**：详见 [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md)，包括允许/丢弃的头部列表、主机名改写策略等。
 
-## ForwardAuth 配置
+## 管理员认证
 
-代理本身通过 ForwardAuth 提供的请求头判断操作者身份，可通过环境变量/CLI 配置：
+生产部署优先使用 Passkey 管理员登录。这样管理员信任边界保留在 Hikari 内部，不依赖反代转发的用户身份请求头：
+
+```bash
+export ADMIN_AUTH_PASSKEY_ENABLED=true
+export ADMIN_PASSKEY_RP_ID=tavily.example.com
+export ADMIN_PASSKEY_RP_ORIGIN=https://tavily.example.com
+```
+
+部署后，在服务器上创建一次性注册 URL：
+
+```bash
+tavily-hikari admin passkey reset-url --base-url https://tavily.example.com
+```
+
+打开输出的 URL 一次，注册第一个管理员 Passkey。
+
+### 旧版 ForwardAuth 配置
+
+ForwardAuth 支持保留给明确受控的可信网络，但默认关闭，不应作为公网后台唯一信任边界。如需启用，可通过环境变量/CLI 配置：
 
 ```bash
 export ADMIN_AUTH_FORWARD_ENABLED=true
@@ -204,26 +220,28 @@ export FORWARD_AUTH_ADMIN_VALUE=xxx@example.com
 export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 ```
 
+- 已同时配置 `FORWARD_AUTH_HEADER` 和 `FORWARD_AUTH_ADMIN_VALUE` 的既有部署会为兼容继续自动启用 ForwardAuth；新部署使用该模式时应显式设置 `ADMIN_AUTH_FORWARD_ENABLED=true`。
 - `FORWARD_AUTH_HEADER` 指定哪一个请求头携带用户邮箱或 ID。
 - 当该头的值等于 `FORWARD_AUTH_ADMIN_VALUE` 时，会授予管理员权限，从而允许访问 `/api/keys` 相关接口。
+- 若启用 ForwardAuth，必须确保边缘代理在认证前清理所有客户端传入的身份头；不要把仅依赖身份头的 Hikari 直接暴露到公网。
 - `FORWARD_AUTH_NICKNAME_HEADER`（可选）会透传到前端，用于显示操作员昵称；缺省时可在 `ADMIN_MODE_NAME` 中设置固定昵称。
 - 本地快速验证可以临时设置 `DEV_OPEN_ADMIN=true`，生产环境务必保持默认的安全策略。
 
 ## 内置管理员登录
 
-如果你不想（或暂时无法）部署 ForwardAuth 网关，Hikari 也可以开启内置管理员登录页，并通过 HttpOnly cookie 会话保护管理接口：
+Hikari 也可以开启内置管理员登录页，并通过 HttpOnly cookie 会话保护管理接口：
 
 ```bash
 export ADMIN_AUTH_BUILTIN_ENABLED=true
 echo -n 'change-me' | cargo run --quiet --bin admin_password_hash
 export ADMIN_AUTH_BUILTIN_PASSWORD_HASH='<phc-string>'
-# 不使用 ForwardAuth 时可关闭它：
-export ADMIN_AUTH_FORWARD_ENABLED=false
+# 仅当上游代理边界可信时才显式开启 ForwardAuth：
+# export ADMIN_AUTH_FORWARD_ENABLED=true
 ```
 
 - 开启内置登录且浏览器未登录时，首页会出现“管理员登录”按钮。
 - 登录成功会设置 HttpOnly cookie（`hikari_admin_session`），并解锁 `/admin` 与所有管理员接口。
-- 生产环境仍推荐使用 ForwardAuth；内置登录更适合自托管/小规模部署。
+- 生产环境优先使用 Passkey；内置密码登录更适合作为自托管/小规模部署的 break-glass 路径。
   - 不要在环境变量里存放明文口令；优先使用 `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`（PHC 字符串）并设置强口令。
 
 部署示例（Caddy 作为网关）：见 `examples/forwardauth-caddy/`。
@@ -375,7 +393,7 @@ codex mcp list | grep tavily_hikari
 ## 生产部署提示
 
 1. 仅开放 `/mcp`、`/api/*`、静态资源；其余路径默认 404，若前面挂有 Nginx/Cloudflare，确保不要把 `/mcp` 之外的入口暴露到上游。
-2. 结合 ForwardAuth 或其他零信任代理限制管理接口；普通用户不应看见真实 Key。
+2. 结合 Passkey 或其他可信管理员边界限制管理接口；普通用户不应看见真实 Key。
 3. 若需更强匿名性，请按照 [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md) 的头部清洗策略部署，并确认 `Origin/Referer` 已被改写。
 4. 建议把 SQLite 放在持久卷或外部存储中，并定期导出 `request_logs` 以满足审计合规。
 

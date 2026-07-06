@@ -103,6 +103,7 @@ export const UserDetailBusinessCalls1h = { ...RuntimeStories.UserDetailBusinessC
 export const UserDetailIpUsage = { ...RuntimeStories.UserDetailIpUsage }
 export const Announcements = { ...RuntimeStories.Announcements }
 export const SystemSettings = { ...RuntimeStories.SystemSettings }
+export const SystemSettingsAdmin = { ...RuntimeStories.SystemSettingsAdmin }
 export const SystemSettingsHa = { ...HaStories.SystemSettingsHa }
 export const DashboardHaAttention = { ...HaStories.DashboardHaAttention }
 export const SystemSettingsHaMobile = { ...HaStories.SystemSettingsHaMobile }

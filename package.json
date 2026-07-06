@@ -5,6 +5,7 @@
   "packageManager": "bun@1.3.10",
   "scripts": {
     "test:tavily-http": "bun ./tests/e2e/tavily_http_smoke.ts",
+    "test:e2e:admin-login": "bun ./tests/e2e/admin_login_browser_e2e.ts",
     "test:e2e:system-settings-browser": "bun ./tests/e2e/system_settings_browser_e2e.ts",
     "test:e2e:pwa-offline": "bun ./tests/e2e/pwa_offline_browser_e2e.ts",
     "validate:no-node-runtime": "bash ./scripts/validate-no-node-runtime.sh"

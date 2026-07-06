@@ -33,17 +33,17 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 3775,
+      max: 3977,
       reason:
-        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
     'src/api/demo.ts',
     {
-      max: 2294,
+      max: 2327,
       reason:
-        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, and recharge availability evidence on the shared demo shell.',
+        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, and admin passkey/password security states on the shared demo shell.',
     },
   ],
   [
@@ -81,25 +81,33 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/translations/en.ts',
     {
-      max: 1595,
+      max: 1620,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, and the auth-token retention settings copy are still stored in the shared English runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared English runtime catalog.',
     },
   ],
   [
     'src/i18n/translations/zh.ts',
     {
-      max: 1595,
+      max: 1619,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, and the auth-token retention settings copy are still stored in the shared Chinese runtime catalog.',
+        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared Chinese runtime catalog.',
     },
   ],
   [
     'src/i18n/types.ts',
     {
-      max: 1775,
+      max: 1863,
       reason:
-        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, and auth-token retention settings copy remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, auth-token retention settings copy, and admin passkey/password security copy remain in the shared catalog contract.',
+    },
+  ],
+  [
+    'src/styles/clay.css',
+    {
+      max: 2222,
+      reason:
+        'The clay theme stylesheet now includes the admin passkey reset/login polish and six-digit TOTP input states while the themed auth/admin surfaces remain consolidated.',
     },
   ],
   [

@@ -2,12 +2,13 @@ async fn fetch_summary(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<SummaryView>, StatusCode> {
+    let is_admin = is_admin_request(state.as_ref(), &headers).await;
     state
         .proxy
         .summary()
         .await
         .map(|mut summary| {
-            if !is_admin_request(state.as_ref(), &headers) {
+            if !is_admin {
                 summary.active_keys += summary.temporary_isolated_keys;
                 summary.quarantined_keys = 0;
                 summary.temporary_isolated_keys = 0;
@@ -263,7 +264,7 @@ async fn fetch_summary_windows(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<SummaryWindowsView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -282,7 +283,7 @@ async fn get_user_rankings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<UserRankingsSnapshotView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -301,7 +302,7 @@ async fn sse_user_rankings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let state = state.clone();
@@ -990,7 +991,7 @@ async fn get_dashboard_overview(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<DashboardOverviewPayload>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     load_dashboard_overview_snapshot(&state)
@@ -1017,7 +1018,7 @@ async fn sse_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let state = state.clone();
