@@ -1850,7 +1850,7 @@ mod serve_tests {
 
         assert!(state.builtin_admin.login("env-password").is_some());
         proxy
-            .disable_admin_password_preserving_login(true)
+            .disable_admin_password_preserving_login(true, false)
             .await
             .expect("disable password in store");
         refresh_admin_password_state_after_ha_apply(

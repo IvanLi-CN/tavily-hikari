@@ -518,10 +518,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "ADMIN_AUTH_BUILTIN_PASSWORD_HASH must be a valid PHC string")?;
     }
 
-    if cli.admin_auth_builtin_enabled
+    let persisted_admin_password_settings_present = if cli.admin_auth_builtin_enabled
         && builtin_password.is_none()
         && builtin_password_hash.is_none()
     {
+        proxy.get_admin_password_settings().await?.is_some()
+    } else {
+        false
+    };
+
+    if builtin_admin_requires_startup_secret(
+        cli.admin_auth_builtin_enabled,
+        builtin_password.is_some(),
+        builtin_password_hash.is_some(),
+        persisted_admin_password_settings_present,
+    ) {
         return Err(
             "ADMIN_AUTH_BUILTIN_PASSWORD (or ADMIN_AUTH_BUILTIN_PASSWORD_HASH) must be set when ADMIN_AUTH_BUILTIN_ENABLED=true"
                 .into(),
@@ -760,6 +771,15 @@ fn effective_forward_auth_enabled(
     explicit_enabled.unwrap_or(header_configured && admin_value_configured)
 }
 
+fn builtin_admin_requires_startup_secret(
+    builtin_enabled: bool,
+    password_present: bool,
+    password_hash_present: bool,
+    persisted_settings_present: bool,
+) -> bool {
+    builtin_enabled && !password_present && !password_hash_present && !persisted_settings_present
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AdminPasskeyRpHostSource {
     EdgeOneDomain,
@@ -781,7 +801,8 @@ fn preferred_admin_passkey_rp_host(
 #[cfg(test)]
 mod main_tests {
     use super::{
-        AdminPasskeyRpHostSource, effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
+        AdminPasskeyRpHostSource, builtin_admin_requires_startup_secret,
+        effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
     };
 
     #[test]
@@ -791,6 +812,25 @@ mod main_tests {
         assert!(!effective_forward_auth_enabled(None, true, false));
         assert!(!effective_forward_auth_enabled(None, false, true));
         assert!(!effective_forward_auth_enabled(Some(false), true, true));
+    }
+
+    #[test]
+    fn builtin_admin_startup_secret_can_come_from_persisted_settings() {
+        assert!(builtin_admin_requires_startup_secret(
+            true, false, false, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, true, false, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, false, true, false
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            true, false, false, true
+        ));
+        assert!(!builtin_admin_requires_startup_secret(
+            false, false, false, false
+        ));
     }
 
     #[test]

@@ -2256,7 +2256,10 @@ async fn delete_admin_password(
     require_admin_credential_write(state.as_ref()).await?;
     let settings = state
         .proxy
-        .disable_admin_password_preserving_login(external_admin_login_available(state.as_ref()))
+        .disable_admin_password_preserving_login(
+            external_admin_login_available(state.as_ref()),
+            state.admin_passkey.is_configured(),
+        )
         .await
         .map_err(|err| map_admin_login_method_error("disable admin password error", err))?;
     state

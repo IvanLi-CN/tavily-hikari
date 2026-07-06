@@ -61,6 +61,7 @@ impl KeyStore {
     pub async fn disable_admin_password_preserving_login(
         &self,
         external_admin_login_available: bool,
+        runtime_passkey_login_available: bool,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut conn = self.pool.acquire().await?;
@@ -68,6 +69,9 @@ impl KeyStore {
 
         let result: Result<AdminPasswordSettingsRecord, ProxyError> = async {
             if !external_admin_login_available {
+                if !runtime_passkey_login_available {
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
                 let active_passkey_count: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM admin_passkey_credentials WHERE revoked_at IS NULL",
                 )
@@ -1140,13 +1144,32 @@ mod admin_passkey_store_tests {
             .expect("insert credential");
 
         store
-            .disable_admin_password_preserving_login(false)
+            .disable_admin_password_preserving_login(false, true)
             .await
             .expect("passkey keeps admin login available");
         let err = store
             .revoke_admin_passkey_credential_preserving_login("credential-1", false, true)
             .await
             .expect_err("cannot revoke final passkey after password disable");
+        assert!(matches!(err, ProxyError::LastAdminLoginMethod));
+    }
+
+    #[tokio::test]
+    async fn password_removal_ignores_passkey_rows_when_passkey_runtime_is_disabled() {
+        let (_temp, db_path) = temp_db_path("disabled-runtime-passkey.db");
+        let store = KeyStore::new_with_time(&db_path, BackendTime::system())
+            .await
+            .expect("create store");
+        store
+            .upsert_admin_passkey_credential("credential-1", r#"{"credential":1}"#, None)
+            .await
+            .expect("insert stale passkey credential");
+
+        let err = store
+            .disable_admin_password_preserving_login(false, false)
+            .await
+            .expect_err("disabled runtime passkey cannot preserve login");
+
         assert!(matches!(err, ProxyError::LastAdminLoginMethod));
     }
 

@@ -82,9 +82,13 @@ impl TavilyProxy {
     pub async fn disable_admin_password_preserving_login(
         &self,
         external_admin_login_available: bool,
+        runtime_passkey_login_available: bool,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
         self.key_store
-            .disable_admin_password_preserving_login(external_admin_login_available)
+            .disable_admin_password_preserving_login(
+                external_admin_login_available,
+                runtime_passkey_login_available,
+            )
             .await
     }
 

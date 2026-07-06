@@ -18,6 +18,7 @@
 - 显式关闭的管理员认证开关优先级必须高于兼容恢复：`ADMIN_AUTH_FORWARD_ENABLED=false` 不应被 legacy header 配置覆盖，`ADMIN_AUTH_BUILTIN_ENABLED=false` 不应被已持久化的旧密码 hash 重新启用。
 - Passkey challenge 虽然是短 TTL ceremony 状态，但仍必须随 HA 控制面同步；否则 start 命中节点 A、finish 命中节点 B 或中途 failover 时会误判 challenge 不存在。
 - reset-token recovery 和开启登录 TOTP 都属于安全边界提升动作，必须撤销既有管理员 session；否则旧 cookie 会在有效期内绕过新 passkey/TOTP 状态。
+- 内置密码的持久化 hash 必须能独立支撑重启恢复，删除密码的 fallback 判断必须以运行时可用的登录方式为准，不能只看数据库里是否残留 passkey 行。
 
 ## Key Reasons / Replacements
 
