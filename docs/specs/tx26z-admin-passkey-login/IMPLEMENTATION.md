@@ -21,6 +21,7 @@
 - 当启动配置禁用内置密码登录时，管理员密码更新接口返回冲突错误，不写入一个当前进程无法使用的假成功 password hash。
 - `/login` 在 `/api/profile` 临时不可用时仍保留 passkey 与密码尝试入口，避免 passkey-only 部署因 profile bootstrap 失败而隐藏可用登录方式。
 - `/api/profile` 对注册开关和 passkey credential 这类可降级字段采用失败即保守关闭，不影响 `adminLoginTotpRequired` 返回，避免 TOTP-required 登录页被非关键元数据故障锁死。
+- HA 控制面同步 `admin_password_settings` 后会刷新运行中的内置管理员认证态；当同步结果开启登录 TOTP 时，既有 builtin admin session 会被撤销，避免 standby failover 后沿用旧认证策略。
 - hinet-lam standby 当前运行
   `/opt/tavily-hikari-standby/releases/20260703113452-passkey-local`；本地 `/health`
   返回 `ok`，`/api/version` 返回 backend `passkey-local` / frontend `0.1.0`，Passkey

@@ -1848,7 +1848,33 @@ mod serve_tests {
             dashboard_overview_cache: new_dashboard_overview_cache(),
         };
 
+        let session_token = state
+            .builtin_admin
+            .login("env-password")
+            .expect("env password login should succeed");
+        state.builtin_admin.remember_session(session_token.clone());
+        let mut session_headers = HeaderMap::new();
+        session_headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={session_token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(state.builtin_admin.is_admin(&session_headers));
+
+        proxy
+            .set_admin_login_totp_required(true)
+            .await
+            .expect("enable login TOTP requirement in store");
+        refresh_admin_password_state_after_ha_apply(
+            &state,
+            tavily_hikari::HaSyncChannel::Control,
+        )
+        .await
+        .expect("refresh login TOTP state");
+        assert!(state.builtin_admin.login_totp_required());
+        assert!(!state.builtin_admin.is_admin(&session_headers));
         assert!(state.builtin_admin.login("env-password").is_some());
+
         proxy
             .disable_admin_password_preserving_login(true, false)
             .await

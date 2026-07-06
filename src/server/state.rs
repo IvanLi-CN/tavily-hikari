@@ -693,6 +693,7 @@ impl BuiltinAdminAuth {
                 credentials.password_hash = settings.password_hash;
                 credentials.disabled = settings.disabled_at.is_some();
             }
+            should_clear_sessions |= !credentials.login_totp_required && settings.login_totp_required;
             credentials.updated_at = Some(settings.updated_at);
             credentials.login_totp_required = settings.login_totp_required;
         }
@@ -921,6 +922,32 @@ mod builtin_admin_auth_tests {
         }));
 
         assert!(!admin.is_admin(&headers));
+    }
+
+    #[test]
+    fn applying_persisted_login_totp_requirement_revokes_existing_builtin_sessions() {
+        let admin = BuiltinAdminAuth::new(true, Some("old-password".to_string()), None);
+        let token = admin.login("old-password").expect("old password should log in");
+        admin.remember_session(token.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{BUILTIN_ADMIN_COOKIE_NAME}={token}"))
+                .expect("cookie header should be valid"),
+        );
+        assert!(admin.is_admin(&headers));
+
+        admin.apply_persisted_settings(Some(tavily_hikari::AdminPasswordSettingsRecord {
+            password_hash: None,
+            disabled_at: None,
+            updated_at: 988,
+            login_totp_required: true,
+        }));
+
+        assert!(admin.login_totp_required());
+        assert!(!admin.is_admin(&headers));
+        assert!(admin.login("old-password").is_some());
     }
 }
 
