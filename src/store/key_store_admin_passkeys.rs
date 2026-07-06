@@ -793,6 +793,27 @@ mod admin_passkey_store_tests {
     }
 
     #[tokio::test]
+    async fn cli_reset_token_helper_uses_store_without_proxy_startup() {
+        let (_temp, db_path) = temp_db_path("cli-reset-token.db");
+        let reset = crate::create_admin_passkey_reset_token_for_database(&db_path, 120)
+            .await
+            .expect("create reset token");
+        let token = reset.token.as_deref().expect("raw token returned once");
+
+        let store = KeyStore::new_with_time(&db_path, BackendTime::system())
+            .await
+            .expect("reopen store");
+        let active = store
+            .get_active_admin_passkey_reset_token(token)
+            .await
+            .expect("active token lookup")
+            .expect("active token exists");
+
+        assert_eq!(active.token, None);
+        assert_eq!(active.token_hash, reset.token_hash);
+    }
+
+    #[tokio::test]
     async fn reset_registration_consumes_token_and_rotates_credentials_atomically() {
         let (_temp, db_path) = temp_db_path("reset-registration.db");
         let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_000_000);

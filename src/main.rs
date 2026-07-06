@@ -36,7 +36,7 @@ use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use tavily_hikari::{
     DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT, RuntimeLogFormat,
-    TavilyProxy, TavilyProxyOptions,
+    TavilyProxy, TavilyProxyOptions, create_admin_passkey_reset_token_for_database,
 };
 use tracing::{info, warn};
 
@@ -731,11 +731,8 @@ async fn print_admin_passkey_reset_url(
     cli: &Cli,
     command: &AdminPasskeyResetUrlCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let proxy =
-        TavilyProxy::with_endpoint(Vec::<String>::new(), &cli.upstream, &cli.db_path).await?;
-    let token = proxy
-        .create_admin_passkey_reset_token(command.ttl_secs)
-        .await?;
+    let token =
+        create_admin_passkey_reset_token_for_database(&cli.db_path, command.ttl_secs).await?;
     let raw_token = token
         .token
         .as_deref()
