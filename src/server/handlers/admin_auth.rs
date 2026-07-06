@@ -1562,6 +1562,66 @@ async fn require_admin_credential_write(state: &AppState) -> Result<(), StatusCo
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
+fn forward_auth_can_admin_login(state: &AppState) -> bool {
+    state.forward_auth_enabled
+        && state.forward_auth.user_header().is_some()
+        && state.forward_auth.admin_value().is_some()
+}
+
+async fn passkey_active_credential_count(state: &AppState) -> Result<usize, StatusCode> {
+    if !state.admin_passkey.is_configured() {
+        return Ok(0);
+    }
+    state
+        .proxy
+        .list_active_admin_passkey_credentials()
+        .await
+        .map(|credentials| credentials.len())
+        .map_err(|err| {
+            eprintln!("list active admin passkeys for safety check error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn ensure_password_delete_keeps_admin_login(state: &AppState) -> Result<(), StatusCode> {
+    if state.dev_open_admin || forward_auth_can_admin_login(state) {
+        return Ok(());
+    }
+    if passkey_active_credential_count(state).await? > 0 {
+        return Ok(());
+    }
+    Err(StatusCode::CONFLICT)
+}
+
+async fn ensure_passkey_delete_keeps_admin_login(
+    state: &AppState,
+    credential_id: &str,
+) -> Result<(), StatusCode> {
+    if state.dev_open_admin || forward_auth_can_admin_login(state) || state.builtin_admin.is_enabled() {
+        return Ok(());
+    }
+    if !state.admin_passkey.is_configured() {
+        return Ok(());
+    }
+    let credentials = state
+        .proxy
+        .list_active_admin_passkey_credentials()
+        .await
+        .map_err(|err| {
+            eprintln!("list active admin passkeys for delete safety check error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if credentials
+        .iter()
+        .filter(|credential| credential.credential_id != credential_id)
+        .count()
+        > 0
+    {
+        return Ok(());
+    }
+    Err(StatusCode::CONFLICT)
+}
+
 fn admin_password_status_view(state: &AppState) -> AdminPasswordStatusView {
     let status = state.builtin_admin.status();
     AdminPasswordStatusView {
@@ -1656,6 +1716,7 @@ async fn delete_admin_passkey(
     if credential_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    ensure_passkey_delete_keeps_admin_login(state.as_ref(), credential_id).await?;
     let revoked = state
         .proxy
         .revoke_admin_passkey_credential(credential_id)
@@ -2219,6 +2280,7 @@ async fn delete_admin_password(
         return Err(StatusCode::FORBIDDEN);
     }
     require_admin_credential_write(state.as_ref()).await?;
+    ensure_password_delete_keeps_admin_login(state.as_ref()).await?;
     let settings = state.proxy.disable_admin_password().await.map_err(|err| {
         eprintln!("disable admin password error: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -2283,4 +2345,149 @@ async fn post_admin_logout(
         AppendHeaders([(SET_COOKIE, builtin_cookie), (SET_COOKIE, passkey_cookie)]),
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod admin_auth_last_login_method_tests {
+    use super::*;
+
+    fn configured_passkey_options() -> AdminPasskeyOptions {
+        AdminPasskeyOptions {
+            enabled: true,
+            rp_id: Some("example.com".to_string()),
+            rp_origin: Some("https://example.com".to_string()),
+            challenge_ttl_secs: 300,
+            session_max_age_secs: 60 * 60 * 24 * 14,
+        }
+    }
+
+    async fn test_state(
+        prefix: &str,
+        builtin_admin: BuiltinAdminAuth,
+        admin_passkey: AdminPasskeyOptions,
+        forward_auth_enabled: bool,
+    ) -> (Arc<AppState>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let db_path = temp_dir.path().join(format!("{prefix}.db"));
+        let db_path = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), tavily_hikari::DEFAULT_UPSTREAM, &db_path)
+            .await
+            .expect("proxy created");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(
+                Some(HeaderName::from_static("x-forward-user")),
+                Some("admin".to_string()),
+                None,
+                None,
+            ),
+            forward_auth_enabled,
+            builtin_admin,
+            admin_passkey,
+            linuxdo_oauth: LinuxDoOAuthOptions {
+                enabled: false,
+                client_id: None,
+                client_secret: None,
+                authorize_url: "https://connect.linux.do/oauth2/authorize".to_string(),
+                token_url: "https://connect.linux.do/oauth2/token".to_string(),
+                userinfo_url: "https://connect.linux.do/api/user".to_string(),
+                scope: "user".to_string(),
+                redirect_url: None,
+                refresh_token_crypt_key: None,
+                user_sync_enabled: false,
+                user_sync_at: (6, 20),
+                session_max_age_secs: 3600,
+                login_state_ttl_secs: 600,
+            },
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+        (state, temp_dir)
+    }
+
+    fn headers_from_set_cookie(response: &Response<Body>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            response
+                .headers()
+                .get(SET_COOKIE)
+                .expect("set-cookie header")
+                .clone(),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn password_delete_rejects_removing_last_admin_login_method() {
+        let (state, _temp_dir) = test_state(
+            "last-password-delete",
+            BuiltinAdminAuth::new(true, Some("pw-123456".to_string()), None),
+            AdminPasskeyOptions::disabled(),
+            false,
+        )
+        .await;
+        let login = post_admin_login(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(AdminLoginRequest {
+                password: "pw-123456".to_string(),
+                totp_code: None,
+            }),
+        )
+        .await
+        .expect("password login succeeds");
+
+        let result = delete_admin_password(State(state.clone()), headers_from_set_cookie(&login)).await;
+
+        assert!(matches!(result, Err(StatusCode::CONFLICT)));
+        assert!(state.builtin_admin.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn passkey_delete_rejects_removing_last_admin_login_method() {
+        let (state, _temp_dir) = test_state(
+            "last-passkey-delete",
+            BuiltinAdminAuth::new(false, None, None),
+            configured_passkey_options(),
+            false,
+        )
+        .await;
+        state
+            .proxy
+            .upsert_admin_passkey_credential("credential-1", r#"{"credential":1}"#, None)
+            .await
+            .expect("insert passkey credential");
+        let session = state
+            .proxy
+            .create_admin_passkey_session(Some("credential-1"), 120)
+            .await
+            .expect("create passkey session");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{ADMIN_PASSKEY_COOKIE_NAME}={}", session.token))
+                .expect("cookie header"),
+        );
+
+        let result = delete_admin_passkey(
+            State(state.clone()),
+            headers,
+            Path("credential-1".to_string()),
+        )
+        .await;
+
+        assert!(matches!(result, Err(StatusCode::CONFLICT)));
+        let credentials = state
+            .proxy
+            .list_active_admin_passkey_credentials()
+            .await
+            .expect("list credentials");
+        assert_eq!(credentials.len(), 1);
+    }
 }
