@@ -518,11 +518,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "ADMIN_AUTH_BUILTIN_PASSWORD_HASH must be a valid PHC string")?;
     }
 
-    let persisted_admin_password_settings_present = if cli.admin_auth_builtin_enabled
+    let persisted_admin_password_available = if cli.admin_auth_builtin_enabled
         && builtin_password.is_none()
         && builtin_password_hash.is_none()
     {
-        proxy.get_admin_password_settings().await?.is_some()
+        proxy
+            .get_admin_password_settings()
+            .await?
+            .is_some_and(admin_password_settings_has_enabled_hash)
     } else {
         false
     };
@@ -531,7 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.admin_auth_builtin_enabled,
         builtin_password.is_some(),
         builtin_password_hash.is_some(),
-        persisted_admin_password_settings_present,
+        persisted_admin_password_available,
     ) {
         return Err(
             "ADMIN_AUTH_BUILTIN_PASSWORD (or ADMIN_AUTH_BUILTIN_PASSWORD_HASH) must be set when ADMIN_AUTH_BUILTIN_ENABLED=true"
@@ -775,9 +778,20 @@ fn builtin_admin_requires_startup_secret(
     builtin_enabled: bool,
     password_present: bool,
     password_hash_present: bool,
-    persisted_settings_present: bool,
+    persisted_password_available: bool,
 ) -> bool {
-    builtin_enabled && !password_present && !password_hash_present && !persisted_settings_present
+    builtin_enabled && !password_present && !password_hash_present && !persisted_password_available
+}
+
+fn admin_password_settings_has_enabled_hash(
+    settings: tavily_hikari::AdminPasswordSettingsRecord,
+) -> bool {
+    settings.disabled_at.is_none()
+        && settings
+            .password_hash
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|hash| !hash.is_empty())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -830,6 +844,34 @@ mod main_tests {
         ));
         assert!(!builtin_admin_requires_startup_secret(
             false, false, false, false
+        ));
+    }
+
+    #[test]
+    fn builtin_admin_startup_secret_requires_enabled_persisted_password_hash() {
+        assert!(super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: Some(" stored-hash ".to_string()),
+                disabled_at: None,
+                updated_at: 123,
+                login_totp_required: false,
+            }
+        ));
+        assert!(!super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: None,
+                disabled_at: None,
+                updated_at: 123,
+                login_totp_required: true,
+            }
+        ));
+        assert!(!super::admin_password_settings_has_enabled_hash(
+            tavily_hikari::AdminPasswordSettingsRecord {
+                password_hash: Some("stored-hash".to_string()),
+                disabled_at: Some(456),
+                updated_at: 123,
+                login_totp_required: false,
+            }
         ));
     }
 

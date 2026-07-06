@@ -16,8 +16,9 @@
 - CLI 新增 `tavily-hikari admin passkey reset-url --base-url <url>`，直接写入目标 SQLite DB 并输出一次性 reset/enroll URL。
 - `/login` 前端新增 passkey 登录按钮与 reset URL 注册流程；reset 注册完成后返回登录页并提示使用新 passkey 登录；`/api/profile` 新增 `passkeyAuthEnabled` capability。
 - 内置密码登录保持显式启用的 break-glass 路径；本实现没有恢复 Remote-Email/ForwardAuth 作为生产主登录方案。
-- 内置密码可从环境变量或持久化 `admin_password_settings` 恢复；删除内置密码或撤销 passkey 时，只有运行时确实可用的 passkey、内置密码或外部管理员登录才允许计为 fallback。
+- 内置密码可从环境变量或持久化 `admin_password_settings` 恢复；只有持久化 password hash 存在且未禁用时，启动才允许不提供环境变量/显式 hash；删除内置密码或撤销 passkey 时，只有运行时确实可用的 passkey、内置密码或外部管理员登录才允许计为 fallback。
 - 当启动配置禁用内置密码登录时，管理员密码更新接口返回冲突错误，不写入一个当前进程无法使用的假成功 password hash。
+- `/login` 在 `/api/profile` 临时不可用时仍保留 passkey 与密码尝试入口，避免 passkey-only 部署因 profile bootstrap 失败而隐藏可用登录方式。
 - hinet-lam standby 当前运行
   `/opt/tavily-hikari-standby/releases/20260703113452-passkey-local`；本地 `/health`
   返回 `ok`，`/api/version` 返回 backend `passkey-local` / frontend `0.1.0`，Passkey

@@ -185,6 +185,7 @@ export const ProfileUnavailable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.findByText(/unable to confirm|无法确认/i)).resolves.toBeInTheDocument()
+    await expect(canvas.findByRole('button', { name: /passkey/i })).resolves.toBeInTheDocument()
   },
 }
 

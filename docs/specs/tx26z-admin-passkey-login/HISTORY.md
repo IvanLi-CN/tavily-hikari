@@ -19,6 +19,7 @@
 - Passkey challenge 虽然是短 TTL ceremony 状态，但仍必须随 HA 控制面同步；否则 start 命中节点 A、finish 命中节点 B 或中途 failover 时会误判 challenge 不存在。
 - reset-token recovery 和开启登录 TOTP 都属于安全边界提升动作，必须撤销既有管理员 session；否则旧 cookie 会在有效期内绕过新 passkey/TOTP 状态。
 - 内置密码的持久化 hash 必须能独立支撑重启恢复，但显式启动禁用时旧 hash 不得重新启用；删除密码或撤销 passkey 的 fallback 判断必须以运行时可用的登录方式为准，不能只看数据库里是否残留 passkey 行或 password hash。
+- `/login` 的登录方式入口不能完全依赖 `/api/profile` 成功返回；profile 临时失败时仍要保留可尝试的 passkey/password 入口，避免 passkey-only 部署被前端 bootstrap 锁死。
 
 ## Key Reasons / Replacements
 

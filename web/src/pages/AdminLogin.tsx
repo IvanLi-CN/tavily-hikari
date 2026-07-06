@@ -77,7 +77,7 @@ function AdminLogin(): JSX.Element {
   }, [resetMode])
 
   const showPasswordForm = !resetMode && builtinEnabled !== false
-  const showPasskeyLogin = !resetMode && passkeyEnabled
+  const showPasskeyLogin = !resetMode && (passkeyEnabled || profileUnavailable)
   const showTotpInput = totpRequired && (showPasswordForm || showPasskeyLogin)
   const noLoginMethods = !resetMode && builtinEnabled === false && !passkeyEnabled
 
