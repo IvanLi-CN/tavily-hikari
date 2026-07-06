@@ -65,9 +65,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api.test.ts',
     {
-      max: 1700,
+      max: 1720,
       reason:
-        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, and the expanded admin rankings endpoint until the largest runtime suites are split out.',
+        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, the expanded admin rankings endpoint, and admin user base quota ledger contracts until the largest runtime suites are split out.',
     },
   ],
   [
