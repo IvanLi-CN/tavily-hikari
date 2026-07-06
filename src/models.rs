@@ -2161,6 +2161,8 @@ pub enum ProxyError {
         status: reqwest::StatusCode,
         body: String,
     },
+    #[error("cannot remove the final admin login method")]
+    LastAdminLoginMethod,
     #[error("other error: {0}")]
     Other(String),
 }

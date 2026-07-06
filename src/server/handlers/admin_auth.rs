@@ -1568,58 +1568,18 @@ fn forward_auth_can_admin_login(state: &AppState) -> bool {
         && state.forward_auth.admin_value().is_some()
 }
 
-async fn passkey_active_credential_count(state: &AppState) -> Result<usize, StatusCode> {
-    if !state.admin_passkey.is_configured() {
-        return Ok(0);
-    }
-    state
-        .proxy
-        .list_active_admin_passkey_credentials()
-        .await
-        .map(|credentials| credentials.len())
-        .map_err(|err| {
-            eprintln!("list active admin passkeys for safety check error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+fn external_admin_login_available(state: &AppState) -> bool {
+    state.dev_open_admin || forward_auth_can_admin_login(state)
 }
 
-async fn ensure_password_delete_keeps_admin_login(state: &AppState) -> Result<(), StatusCode> {
-    if state.dev_open_admin || forward_auth_can_admin_login(state) {
-        return Ok(());
-    }
-    if passkey_active_credential_count(state).await? > 0 {
-        return Ok(());
-    }
-    Err(StatusCode::CONFLICT)
-}
-
-async fn ensure_passkey_delete_keeps_admin_login(
-    state: &AppState,
-    credential_id: &str,
-) -> Result<(), StatusCode> {
-    if state.dev_open_admin || forward_auth_can_admin_login(state) || state.builtin_admin.is_enabled() {
-        return Ok(());
-    }
-    if !state.admin_passkey.is_configured() {
-        return Ok(());
-    }
-    let credentials = state
-        .proxy
-        .list_active_admin_passkey_credentials()
-        .await
-        .map_err(|err| {
-            eprintln!("list active admin passkeys for delete safety check error: {err}");
+fn map_admin_login_method_error(context: &str, err: tavily_hikari::ProxyError) -> StatusCode {
+    match err {
+        tavily_hikari::ProxyError::LastAdminLoginMethod => StatusCode::CONFLICT,
+        err => {
+            eprintln!("{context}: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    if credentials
-        .iter()
-        .filter(|credential| credential.credential_id != credential_id)
-        .count()
-        > 0
-    {
-        return Ok(());
+        }
     }
-    Err(StatusCode::CONFLICT)
 }
 
 fn admin_password_status_view(state: &AppState) -> AdminPasswordStatusView {
@@ -1716,15 +1676,15 @@ async fn delete_admin_passkey(
     if credential_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    ensure_passkey_delete_keeps_admin_login(state.as_ref(), credential_id).await?;
     let revoked = state
         .proxy
-        .revoke_admin_passkey_credential(credential_id)
+        .revoke_admin_passkey_credential_preserving_login(
+            credential_id,
+            external_admin_login_available(state.as_ref()),
+            state.builtin_admin.is_enabled(),
+        )
         .await
-        .map_err(|err| {
-            eprintln!("revoke admin passkey credential error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(|err| map_admin_login_method_error("revoke admin passkey credential error", err))?;
     if !revoked {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -2118,7 +2078,7 @@ async fn finish_admin_passkey_registration(
     for record in previous_credentials {
         state
             .proxy
-            .revoke_admin_passkey_credential(&record.credential_id)
+            .revoke_admin_passkey_credential_preserving_login(&record.credential_id, true, true)
             .await
             .map_err(|err| {
                 eprintln!("revoke old admin passkey after reset error: {err}");
@@ -2280,11 +2240,11 @@ async fn delete_admin_password(
         return Err(StatusCode::FORBIDDEN);
     }
     require_admin_credential_write(state.as_ref()).await?;
-    ensure_password_delete_keeps_admin_login(state.as_ref()).await?;
-    let settings = state.proxy.disable_admin_password().await.map_err(|err| {
-        eprintln!("disable admin password error: {err}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let settings = state
+        .proxy
+        .disable_admin_password_preserving_login(external_admin_login_available(state.as_ref()))
+        .await
+        .map_err(|err| map_admin_login_method_error("disable admin password error", err))?;
     state
         .builtin_admin
         .disable_password(Some(settings.updated_at));

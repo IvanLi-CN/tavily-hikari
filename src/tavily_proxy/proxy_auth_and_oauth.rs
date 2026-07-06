@@ -79,8 +79,13 @@ impl TavilyProxy {
         self.key_store.set_admin_password_hash(password_hash).await
     }
 
-    pub async fn disable_admin_password(&self) -> Result<AdminPasswordSettingsRecord, ProxyError> {
-        self.key_store.disable_admin_password().await
+    pub async fn disable_admin_password_preserving_login(
+        &self,
+        external_admin_login_available: bool,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        self.key_store
+            .disable_admin_password_preserving_login(external_admin_login_available)
+            .await
     }
 
     pub async fn set_admin_login_totp_required(
@@ -137,12 +142,18 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn revoke_admin_passkey_credential(
+    pub async fn revoke_admin_passkey_credential_preserving_login(
         &self,
         credential_id: &str,
+        external_admin_login_available: bool,
+        runtime_password_available: bool,
     ) -> Result<bool, ProxyError> {
         self.key_store
-            .revoke_admin_passkey_credential(credential_id)
+            .revoke_admin_passkey_credential_preserving_login(
+                credential_id,
+                external_admin_login_available,
+                runtime_password_available,
+            )
             .await
     }
 

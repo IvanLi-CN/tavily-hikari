@@ -58,33 +58,67 @@ impl KeyStore {
         })
     }
 
-    pub async fn disable_admin_password(
+    pub async fn disable_admin_password_preserving_login(
         &self,
+        external_admin_login_available: bool,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
         let now = self.backend_time.now_ts();
-        sqlx::query(
-            r#"INSERT INTO admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
-               VALUES (1, NULL, ?, ?, 0)
-               ON CONFLICT(id) DO UPDATE SET
-                   password_hash = NULL,
-                   disabled_at = excluded.disabled_at,
-                   updated_at = excluded.updated_at"#,
-        )
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        let login_totp_required = self
-            .get_admin_password_settings()
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+
+        let result: Result<AdminPasswordSettingsRecord, ProxyError> = async {
+            if !external_admin_login_available {
+                let active_passkey_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM admin_passkey_credentials WHERE revoked_at IS NULL",
+                )
+                .fetch_one(&mut *conn)
+                .await?;
+                if active_passkey_count == 0 {
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+            }
+
+            sqlx::query(
+                r#"INSERT INTO admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
+                   VALUES (1, NULL, ?, ?, 0)
+                   ON CONFLICT(id) DO UPDATE SET
+                       password_hash = NULL,
+                       disabled_at = excluded.disabled_at,
+                       updated_at = excluded.updated_at"#,
+            )
+            .bind(now)
+            .bind(now)
+            .execute(&mut *conn)
+            .await?;
+            let login_totp_required = sqlx::query_scalar::<_, i64>(
+                r#"SELECT login_totp_required
+                   FROM admin_password_settings
+                   WHERE id = 1
+                   LIMIT 1"#,
+            )
+            .fetch_optional(&mut *conn)
             .await?
-            .map(|settings| settings.login_totp_required)
-            .unwrap_or(false);
-        Ok(AdminPasswordSettingsRecord {
-            password_hash: None,
-            disabled_at: Some(now),
-            updated_at: now,
-            login_totp_required,
-        })
+            .unwrap_or(0)
+                != 0;
+            Ok(AdminPasswordSettingsRecord {
+                password_hash: None,
+                disabled_at: Some(now),
+                updated_at: now,
+                login_totp_required,
+            })
+        }
+        .await;
+
+        match result {
+            Ok(settings) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(settings)
+            }
+            Err(err) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(err)
+            }
+        }
     }
 
     pub async fn set_admin_login_totp_required(
@@ -410,22 +444,85 @@ impl KeyStore {
         Ok(updated.rows_affected() > 0)
     }
 
-    pub async fn revoke_admin_passkey_credential(
+    pub async fn revoke_admin_passkey_credential_preserving_login(
         &self,
         credential_id: &str,
+        external_admin_login_available: bool,
+        runtime_password_available: bool,
     ) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
-        let updated = sqlx::query(
-            r#"UPDATE admin_passkey_credentials
-               SET revoked_at = ?, updated_at = ?
-               WHERE credential_id = ? AND revoked_at IS NULL"#,
-        )
-        .bind(now)
-        .bind(now)
-        .bind(credential_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(updated.rows_affected() > 0)
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+
+        let result: Result<bool, ProxyError> = async {
+            let target_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM admin_passkey_credentials WHERE credential_id = ? AND revoked_at IS NULL",
+            )
+            .bind(credential_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            if target_active == 0 {
+                return Ok(false);
+            }
+
+            if !external_admin_login_available {
+                let other_active_passkey_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM admin_passkey_credentials WHERE credential_id != ? AND revoked_at IS NULL",
+                )
+                .bind(credential_id)
+                .fetch_one(&mut *conn)
+                .await?;
+                let password_row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+                    r#"SELECT password_hash, disabled_at
+                       FROM admin_password_settings
+                       WHERE id = 1
+                       LIMIT 1"#,
+                )
+                .fetch_optional(&mut *conn)
+                .await?;
+                let password_disabled = password_row
+                    .as_ref()
+                    .and_then(|(_, disabled_at)| *disabled_at)
+                    .is_some();
+                let persisted_password_available = password_row
+                    .as_ref()
+                    .and_then(|(password_hash, _)| password_hash.as_deref())
+                    .is_some_and(|password_hash| !password_hash.trim().is_empty())
+                    && !password_disabled;
+                let runtime_password_available = runtime_password_available && !password_disabled;
+
+                if other_active_passkey_count == 0
+                    && !persisted_password_available
+                    && !runtime_password_available
+                {
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+            }
+
+            let updated = sqlx::query(
+                r#"UPDATE admin_passkey_credentials
+                   SET revoked_at = ?, updated_at = ?
+                   WHERE credential_id = ? AND revoked_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(credential_id)
+            .execute(&mut *conn)
+            .await?;
+            Ok(updated.rows_affected() > 0)
+        }
+        .await;
+
+        match result {
+            Ok(revoked) => {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(revoked)
+            }
+            Err(err) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(err)
+            }
+        }
     }
 
     pub async fn insert_admin_passkey_challenge(
@@ -935,7 +1032,7 @@ mod admin_passkey_store_tests {
         );
         assert!(
             store
-                .revoke_admin_passkey_credential("credential-1")
+                .revoke_admin_passkey_credential_preserving_login("credential-1", true, true)
                 .await
                 .expect("revoke credential")
         );
@@ -976,5 +1073,55 @@ mod admin_passkey_store_tests {
                 .expect("expired session")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn preserving_login_rejects_password_then_final_passkey_removal() {
+        let (_temp, db_path) = temp_db_path("preserve-password-passkey.db");
+        let store = KeyStore::new_with_time(&db_path, BackendTime::system())
+            .await
+            .expect("create store");
+        store
+            .upsert_admin_passkey_credential("credential-1", r#"{"credential":1}"#, None)
+            .await
+            .expect("insert credential");
+
+        store
+            .disable_admin_password_preserving_login(false)
+            .await
+            .expect("passkey keeps admin login available");
+        let err = store
+            .revoke_admin_passkey_credential_preserving_login("credential-1", false, true)
+            .await
+            .expect_err("cannot revoke final passkey after password disable");
+        assert!(matches!(err, ProxyError::LastAdminLoginMethod));
+    }
+
+    #[tokio::test]
+    async fn preserving_login_rejects_second_passkey_removal_without_password() {
+        let (_temp, db_path) = temp_db_path("preserve-two-passkeys.db");
+        let store = KeyStore::new_with_time(&db_path, BackendTime::system())
+            .await
+            .expect("create store");
+        store
+            .upsert_admin_passkey_credential("credential-1", r#"{"credential":1}"#, None)
+            .await
+            .expect("insert first credential");
+        store
+            .upsert_admin_passkey_credential("credential-2", r#"{"credential":2}"#, None)
+            .await
+            .expect("insert second credential");
+
+        assert!(
+            store
+                .revoke_admin_passkey_credential_preserving_login("credential-1", false, false)
+                .await
+                .expect("first passkey revoke keeps second")
+        );
+        let err = store
+            .revoke_admin_passkey_credential_preserving_login("credential-2", false, false)
+            .await
+            .expect_err("cannot revoke final passkey");
+        assert!(matches!(err, ProxyError::LastAdminLoginMethod));
     }
 }

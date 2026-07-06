@@ -606,6 +606,7 @@ async fn tavily_http_research_result(
                 | ProxyError::PinnedMcpSessionUnavailable => StatusCode::BAD_GATEWAY,
                 ProxyError::Database(_)
                 | ProxyError::InvalidEndpoint { .. }
+                | ProxyError::LastAdminLoginMethod
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1197,6 +1198,7 @@ async fn proxy_tavily_http_endpoint(
                     | ProxyError::UsageHttp { .. } => StatusCode::BAD_GATEWAY,
                     ProxyError::Database(_)
                     | ProxyError::InvalidEndpoint { .. }
+                    | ProxyError::LastAdminLoginMethod
                     | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 };
 
@@ -1442,6 +1444,7 @@ async fn proxy_tavily_http_endpoint(
                 | ProxyError::PinnedMcpSessionUnavailable => StatusCode::BAD_GATEWAY,
                 ProxyError::Database(_)
                 | ProxyError::InvalidEndpoint { .. }
+                | ProxyError::LastAdminLoginMethod
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
