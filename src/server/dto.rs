@@ -1336,7 +1336,7 @@ async fn get_key_metrics(
     Path(id): Path<String>,
     Query(q): Query<KeyMetricsQuery>,
 ) -> Result<Json<SummaryView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let since = if let Some(since) = q.since {
@@ -1400,7 +1400,7 @@ async fn get_key_logs(
     Path(id): Path<String>,
     Query(q): Query<KeyLogsQuery>,
 ) -> Result<Json<Vec<RequestLogView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
@@ -1417,7 +1417,7 @@ async fn get_key_log_details(
     headers: HeaderMap,
     Path((id, log_id)): Path<(String, i64)>,
 ) -> Result<Json<RequestLogBodiesView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -1449,7 +1449,7 @@ async fn get_key_logs_page(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<KeyLogsPageQuery>,
 ) -> Result<Json<KeyLogsPageView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -1547,7 +1547,7 @@ async fn get_key_logs_list(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<CursorLogsQuery>,
 ) -> Result<Json<RequestLogsCursorPageView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page_size = q.limit.unwrap_or(20).clamp(1, 200);
@@ -1604,7 +1604,7 @@ async fn get_key_logs_catalog(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<CursorLogsQuery>,
 ) -> Result<Json<RequestLogsCatalogView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
@@ -1660,7 +1660,7 @@ async fn get_key_sticky_users(
     Path(id): Path<String>,
     Query(q): Query<StickyUsersQuery>,
 ) -> Result<Json<PaginatedStickyUsersView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -1683,7 +1683,7 @@ async fn get_key_sticky_nodes(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<StickyNodesView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -1716,7 +1716,7 @@ async fn get_token_metrics(
     headers: HeaderMap,
     Query(q): Query<TokenMetricsQuery>,
 ) -> Result<Json<TokenSummaryView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let now = state.proxy.backend_time().now_utc();
@@ -1756,7 +1756,7 @@ async fn get_token_logs(
     headers: HeaderMap,
     Query(q): Query<TokenLogsQuery>,
 ) -> Result<Json<Vec<TokenLogView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
@@ -1865,7 +1865,7 @@ async fn get_token_logs_page(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<TokenLogsPageQuery>,
 ) -> Result<Json<TokenLogsPageView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -1994,7 +1994,7 @@ async fn get_token_logs_list(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<TokenCursorLogsQuery>,
 ) -> Result<Json<RequestLogsCursorPageView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let page_size = q.limit.unwrap_or(20).clamp(1, 200);
@@ -2066,7 +2066,7 @@ async fn get_token_logs_catalog(
     RawQuery(raw_query): RawQuery,
     Query(q): Query<TokenCursorLogsQuery>,
 ) -> Result<Json<RequestLogsCatalogView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let now = state.proxy.backend_time().now_utc();
@@ -2130,7 +2130,7 @@ async fn get_log_details(
     headers: HeaderMap,
     Path(log_id): Path<i64>,
 ) -> Result<Json<RequestLogBodiesView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2149,7 +2149,7 @@ async fn get_token_log_details(
     Path((id, log_id)): Path<(String, i64)>,
     headers: HeaderMap,
 ) -> Result<Json<RequestLogBodiesView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2169,7 +2169,7 @@ async fn get_token_hourly_breakdown(
     headers: HeaderMap,
     Query(q): Query<TokenHourlyQuery>,
 ) -> Result<Json<Vec<TokenHourlyBucketView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let hours = q.hours.unwrap_or(25);
@@ -2213,7 +2213,7 @@ async fn get_token_usage_series(
     headers: HeaderMap,
     Query(q): Query<UsageSeriesQuery>,
 ) -> Result<Json<Vec<TokenUsageBucketView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let now = state.proxy.backend_time().now_ts();
@@ -2269,7 +2269,7 @@ async fn get_token_leaderboard(
     headers: HeaderMap,
     Query(q): Query<TokenLeaderboardQuery>,
 ) -> Result<Json<Vec<TokenLeaderboardItemView>>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2463,7 +2463,7 @@ async fn get_token_monthly_broken_keys(
     headers: HeaderMap,
     Query(q): Query<BrokenKeysPageQuery>,
 ) -> Result<Json<PaginatedMonthlyBrokenKeysView>, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     let exists = state

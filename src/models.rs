@@ -1646,6 +1646,77 @@ pub(crate) fn random_string(alphabet: &[u8], len: usize) -> String {
     s
 }
 
+#[derive(Debug, Clone)]
+pub struct AdminPasskeyCredentialRecord {
+    pub credential_id: String,
+    pub passkey_json: String,
+    pub label: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminPasswordSettingsRecord {
+    pub password_hash: Option<String>,
+    pub disabled_at: Option<i64>,
+    pub updated_at: i64,
+    pub login_totp_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminPasskeyResetTokenRecord {
+    pub token: Option<String>,
+    pub token_hash: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub consumed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminPasskeyChallengeKind {
+    Registration,
+    Authentication,
+}
+
+impl AdminPasskeyChallengeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Registration => "registration",
+            Self::Authentication => "authentication",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "registration" => Some(Self::Registration),
+            "authentication" => Some(Self::Authentication),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminPasskeyChallengeRecord {
+    pub id: String,
+    pub kind: AdminPasskeyChallengeKind,
+    pub reset_token: Option<String>,
+    pub state_json: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub consumed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminPasskeySessionRecord {
+    pub token: String,
+    pub credential_id: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
 /// Token list record for management UI
 #[derive(Debug, Clone)]
 pub struct AuthToken {
@@ -2090,6 +2161,8 @@ pub enum ProxyError {
         status: reqwest::StatusCode,
         body: String,
     },
+    #[error("cannot remove the final admin login method")]
+    LastAdminLoginMethod,
     #[error("other error: {0}")]
     Other(String),
 }

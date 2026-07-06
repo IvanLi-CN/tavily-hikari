@@ -144,7 +144,7 @@ async fn get_admin_recharges(
     headers: HeaderMap,
     Query(query): Query<AdminRechargeListQuery>,
 ) -> Result<Json<AdminRechargeListResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::UNAUTHORIZED, "admin required".to_string()));
     }
     let has_recharge_orders = state
@@ -239,7 +239,7 @@ async fn get_admin_totp_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AdminTotpStatusResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::UNAUTHORIZED, "admin required".to_string()));
     }
     admin_totp_status_response(state.as_ref()).await.map(Json)
@@ -329,11 +329,14 @@ async fn post_admin_totp_disable(
 ) -> Result<Json<AdminTotpStatusResponse>, (StatusCode, String)> {
     ensure_totp_management_allowed(state.as_ref(), &headers).await?;
     verify_admin_totp_for_sensitive_action(state.as_ref(), &payload.totp_code).await?;
-    state
+    let password_settings = state
         .proxy
-        .clear_admin_totp_secret_record()
+        .clear_admin_totp_secret_record_and_login_requirement()
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    state
+        .builtin_admin
+        .set_login_totp_required(false, Some(password_settings.updated_at));
     admin_totp_status_response(state.as_ref()).await.map(Json)
 }
 
@@ -344,7 +347,7 @@ async fn refund_admin_recharge_order(
     totp_code: String,
     revoke_entitlements: bool,
 ) -> Result<Json<AdminRechargeOrderView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::UNAUTHORIZED, "admin required".to_string()));
     }
     if state.dev_open_admin {
@@ -679,7 +682,7 @@ async fn ensure_totp_management_allowed(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, String)> {
-    if !is_admin_request(state, headers) {
+    if !is_admin_request(state, headers).await {
         return Err((StatusCode::UNAUTHORIZED, "admin required".to_string()));
     }
     if state.dev_open_admin {
@@ -687,14 +690,6 @@ async fn ensure_totp_management_allowed(
             StatusCode::FORBIDDEN,
             "DEV_OPEN_ADMIN cannot manage recharge TOTP".to_string(),
         ));
-    }
-    let settings = state
-        .proxy
-        .get_system_settings()
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    if !settings.recharge_feature_enabled {
-        return Err((StatusCode::CONFLICT, "recharge feature is disabled".to_string()));
     }
     if !state.linuxdo_oauth.has_refresh_token_crypt_key() {
         return Err((
@@ -725,9 +720,7 @@ async fn admin_totp_status_response(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(AdminTotpStatusResponse {
         enabled: secret_record.is_some(),
-        available: settings.recharge_feature_enabled
-            && state.linuxdo_oauth.has_refresh_token_crypt_key()
-            && !state.dev_open_admin,
+        available: state.linuxdo_oauth.has_refresh_token_crypt_key() && !state.dev_open_admin,
         recharge_feature_enabled: settings.recharge_feature_enabled,
         missing_crypto_key: !state.linuxdo_oauth.has_refresh_token_crypt_key(),
         locked_until: (locked_until > state.proxy.backend_time().now_ts()).then_some(locked_until),
@@ -784,6 +777,21 @@ async fn verify_admin_totp_for_sensitive_action(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Err((StatusCode::FORBIDDEN, "invalid TOTP code".to_string()))
+}
+
+async fn admin_totp_is_ready_for_login(state: &AppState) -> Result<bool, StatusCode> {
+    if state.dev_open_admin || !state.linuxdo_oauth.has_refresh_token_crypt_key() {
+        return Ok(false);
+    }
+    state
+        .proxy
+        .get_admin_totp_secret_record()
+        .await
+        .map(|record| record.is_some())
+        .map_err(|err| {
+            eprintln!("check admin login TOTP readiness error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 fn generate_totp_secret() -> String {

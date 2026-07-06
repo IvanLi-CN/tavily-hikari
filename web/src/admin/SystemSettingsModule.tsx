@@ -1,15 +1,8 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 
 import {
-  confirmAdminTotp,
-  createAdminTotpSetup,
-  disableAdminTotp,
   type AdminUserListStats,
-  fetchAdminTotpStatus,
-  resetAdminTotp,
   fetchObservedClientIpRequests,
-  type AdminTotpSetup,
-  type AdminTotpStatus,
   type ObservedClientIpRequest,
   type RequestLogRetentionProfile,
   type RequestLogRetentionSettings,
@@ -293,12 +286,6 @@ export default function SystemSettingsModule({
   )
   const [observedClientIpRequests, setObservedClientIpRequests] = useState<ObservedClientIpRequest[]>([])
   const [observedClientIpRequestsError, setObservedClientIpRequestsError] = useState<string | null>(null)
-  const [totpStatus, setTotpStatus] = useState<AdminTotpStatus | null>(null)
-  const [totpSetup, setTotpSetup] = useState<AdminTotpSetup | null>(null)
-  const [totpCode, setTotpCode] = useState('')
-  const [totpCurrentCode, setTotpCurrentCode] = useState('')
-  const [totpBusy, setTotpBusy] = useState(false)
-  const [totpError, setTotpError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraftRequestRateLimit(settings ? String(settings.requestRateLimit) : '100')
@@ -350,72 +337,6 @@ export default function SystemSettingsModule({
       })
     return () => controller.abort()
   }, [clientIpDialogOpen])
-
-  useEffect(() => {
-    if (!settings?.rechargeFeatureEnabled) {
-      setTotpStatus(null)
-      setTotpSetup(null)
-      setTotpError(null)
-      return
-    }
-    const controller = new AbortController()
-    fetchAdminTotpStatus(controller.signal)
-      .then(setTotpStatus)
-      .catch((err: unknown) => {
-        if (!controller.signal.aborted) setTotpError(err instanceof Error ? err.message : String(err))
-      })
-    return () => controller.abort()
-  }, [settings?.rechargeFeatureEnabled])
-
-  const beginTotpSetup = async () => {
-    setTotpBusy(true)
-    setTotpError(null)
-    try {
-      const setup = await createAdminTotpSetup()
-      setTotpSetup(setup)
-      setTotpCode('')
-      setTotpCurrentCode('')
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTotpBusy(false)
-    }
-  }
-
-  const confirmTotpSetup = async () => {
-    if (!totpSetup) return
-    setTotpBusy(true)
-    setTotpError(null)
-    try {
-      const status = totpStatus?.enabled
-        ? await resetAdminTotp(totpCurrentCode, totpSetup.secret, totpCode)
-        : await confirmAdminTotp(totpSetup.secret, totpCode)
-      setTotpStatus(status)
-      setTotpSetup(null)
-      setTotpCode('')
-      setTotpCurrentCode('')
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTotpBusy(false)
-    }
-  }
-
-  const disableTotpBinding = async () => {
-    setTotpBusy(true)
-    setTotpError(null)
-    try {
-      const status = await disableAdminTotp(totpCurrentCode || totpCode)
-      setTotpStatus(status)
-      setTotpSetup(null)
-      setTotpCode('')
-      setTotpCurrentCode('')
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTotpBusy(false)
-    }
-  }
 
   const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
@@ -981,98 +902,6 @@ export default function SystemSettingsModule({
                   }}
                 />
               </div>
-
-              {draftRechargeFeatureEnabled && (
-                <div className="system-settings-action-row system-settings-totp-row" aria-labelledby="system-settings-totp-title">
-                  <div className="system-settings-toggle-copy">
-                    <span className="system-settings-setting-title" id="system-settings-totp-title">
-                      {strings.form.totpTitle}
-                    </span>
-                    <p>
-                      {totpStatus?.enabled
-                        ? strings.form.totpBoundHint
-                        : strings.form.totpUnboundHint}
-                    </p>
-                    {totpStatus?.missingCryptoKey && <p className="form-error">{strings.form.totpMissingCryptoKey}</p>}
-                    {totpError && <p className="form-error">{totpError}</p>}
-                    {totpSetup && (
-                      <div className="system-settings-totp-setup">
-                        <img
-                          src={`data:image/png;base64,${totpSetup.qrPngBase64}`}
-                          alt={strings.form.totpQrAlt}
-                          className="system-settings-totp-qr"
-                        />
-                        <Input value={totpSetup.secret} readOnly aria-label={strings.form.totpSetupSecretLabel} />
-                        {totpStatus?.enabled && (
-                          <Input
-                            id="admin-totp-current-code"
-                            name="admin_totp_current_code"
-                            value={totpCurrentCode}
-                            onChange={(event) => setTotpCurrentCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                            placeholder={strings.form.totpCurrentCodePlaceholder}
-                            autoComplete="one-time-code"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                          />
-                        )}
-                        <Input
-                          id="admin-totp-bind-code"
-                          name="admin_totp_bind_code"
-                          value={totpCode}
-                          onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                          placeholder={strings.form.totpConfirmCodePlaceholder}
-                          autoComplete="one-time-code"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <div className="system-settings-totp-actions">
-                    {!totpSetup && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={totpBusy || !totpStatus?.available}
-                        onClick={() => void beginTotpSetup()}
-                      >
-                        {totpStatus?.enabled ? strings.form.totpResetAction : strings.form.totpBindAction}
-                      </Button>
-                    )}
-                    {totpSetup && (
-                      <Button
-                        type="button"
-                        disabled={totpBusy || totpCode.length !== 6 || (totpStatus?.enabled && totpCurrentCode.length !== 6)}
-                        onClick={() => void confirmTotpSetup()}
-                      >
-                        {strings.form.totpConfirmAction}
-                      </Button>
-                    )}
-                    {totpStatus?.enabled && !totpSetup && (
-                      <>
-                        <Input
-                          id="admin-totp-disable-code"
-                          name="admin_totp_disable_code"
-                          value={totpCurrentCode}
-                          onChange={(event) => setTotpCurrentCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                          placeholder={strings.form.totpCurrentCodePlaceholder}
-                          autoComplete="one-time-code"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={totpBusy || totpCurrentCode.length !== 6}
-                          onClick={() => void disableTotpBinding()}
-                        >
-                          {strings.form.totpDisableAction}
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
 
               <div className="system-settings-action-row" aria-labelledby="system-settings-density-title">
                 <div className="system-settings-toggle-copy">

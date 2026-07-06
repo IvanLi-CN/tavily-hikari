@@ -347,12 +347,34 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(markup).toContain('系统设置')
     expect(markup).toContain('常规设置')
+    expect(markup).toContain('管理员')
     expect(markup).toContain('高可用')
     expect(markup).toContain('admin-nav-item-active')
     expect(markup).toContain('admin-nav-item-icon')
     expect(markup).toContain('<svg')
     expect(markup).toContain('活跃用户 12 / 总用户 30')
     expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.panelTitle)
+  })
+
+  it('renders the system settings admin child nav item as active', () => {
+    const renderStory = adminPageStories.SystemSettingsAdmin.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('管理员')
+    expect(markup).toContain('admin-nav-subitem-active')
+    expect(markup).toContain('安全状态')
+    expect(markup).toContain('当前至少保留两种管理员登录方式。')
+    expect(markup).toContain('管理员密码')
+    expect(markup).toContain('Passkey 管理')
+    expect(markup).toContain('管理端 TOTP')
   })
 
   it('renders the system settings HA page with node inventory and active child nav', () => {

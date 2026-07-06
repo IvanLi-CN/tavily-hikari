@@ -61,17 +61,22 @@ mod admin_resources_tests {
     }
 
     async fn totp_test_state(prefix: &str) -> (Arc<AppState>, PathBuf) {
+        totp_test_state_with_builtin_admin(
+            prefix,
+            BuiltinAdminAuth::new(false, None, None),
+        )
+        .await
+    }
+
+    async fn totp_test_state_with_builtin_admin(
+        prefix: &str,
+        builtin_admin: BuiltinAdminAuth,
+    ) -> (Arc<AppState>, PathBuf) {
         let db_path = admin_test_db_path(prefix);
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), tavily_hikari::DEFAULT_UPSTREAM, &db_str)
             .await
             .expect("proxy created");
-        let mut settings = proxy.get_system_settings().await.expect("settings");
-        settings.recharge_feature_enabled = true;
-        proxy
-            .set_system_settings(&settings)
-            .await
-            .expect("enable recharge feature");
         let forward_auth = ForwardAuthConfig::new(
             Some(HeaderName::from_static("x-forward-user")),
             Some("admin".to_string()),
@@ -83,7 +88,8 @@ mod admin_resources_tests {
             static_dir: None,
             forward_auth,
             forward_auth_enabled: true,
-            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            builtin_admin,
+            admin_passkey: AdminPasskeyOptions::disabled(),
             linuxdo_oauth: LinuxDoOAuthOptions {
                 enabled: true,
                 client_id: Some("linuxdo-test-client-id".to_string()),
@@ -139,6 +145,26 @@ mod admin_resources_tests {
     }
 
     #[tokio::test]
+    async fn admin_totp_setup_is_available_without_recharge_feature() {
+        let (state, db_path) = totp_test_state("admin-totp-login-only").await;
+
+        let status = get_admin_totp_status(State(state.clone()), admin_headers())
+            .await
+            .expect("status loads")
+            .0;
+        assert!(!status.recharge_feature_enabled);
+        assert!(status.available);
+
+        let setup = post_admin_totp_setup(State(state), admin_headers())
+            .await
+            .expect("setup works without recharge")
+            .0;
+        assert!(!setup.secret.is_empty());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_totp_confirm_rejects_existing_binding() {
         let (state, db_path) = totp_test_state("admin-totp-confirm-existing").await;
         let first_secret = generate_totp_secret();
@@ -173,6 +199,121 @@ mod admin_resources_tests {
         .await
         .expect_err("confirm cannot overwrite existing binding");
         assert_eq!(err.0, StatusCode::CONFLICT);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn builtin_admin_login_requires_totp_when_enabled() {
+        let (state, db_path) = totp_test_state_with_builtin_admin(
+            "builtin-admin-login-totp",
+            BuiltinAdminAuth::new(true, Some("pw-123".to_string()), None),
+        )
+        .await;
+        let secret = generate_totp_secret();
+        let bind_code = build_totp(&secret)
+            .expect("build bind totp")
+            .generate_current()
+            .expect("bind code");
+        let _ = post_admin_totp_confirm(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpConfirmPayload {
+                secret: secret.clone(),
+                code: bind_code,
+            }),
+        )
+        .await
+        .expect("bind TOTP succeeds");
+        state.builtin_admin.set_login_totp_required(true, Some(1));
+
+        let missing_totp = post_admin_login(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(AdminLoginRequest {
+                password: "pw-123".to_string(),
+                totp_code: None,
+            }),
+        )
+        .await
+        .expect_err("missing TOTP is rejected");
+        assert_eq!(missing_totp, StatusCode::FORBIDDEN);
+
+        let login_code = build_totp(&secret)
+            .expect("build login totp")
+            .generate_current()
+            .expect("login code");
+        let response = post_admin_login(
+            State(state),
+            HeaderMap::new(),
+            Json(AdminLoginRequest {
+                password: "pw-123".to_string(),
+                totp_code: Some(login_code),
+            }),
+        )
+        .await
+        .expect("login succeeds with TOTP");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key(SET_COOKIE));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_totp_disable_clears_login_totp_requirement() {
+        let (state, db_path) = totp_test_state_with_builtin_admin(
+            "admin-totp-disable-login-requirement",
+            BuiltinAdminAuth::new(true, Some("pw-123".to_string()), None),
+        )
+        .await;
+        let secret = generate_totp_secret();
+        let bind_code = build_totp(&secret)
+            .expect("build bind totp")
+            .generate_current()
+            .expect("bind code");
+        let _ = post_admin_totp_confirm(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpConfirmPayload {
+                secret: secret.clone(),
+                code: bind_code,
+            }),
+        )
+        .await
+        .expect("bind TOTP succeeds");
+        let settings = state
+            .proxy
+            .set_admin_login_totp_required(true)
+            .await
+            .expect("persist login TOTP requirement");
+        state
+            .builtin_admin
+            .set_login_totp_required(settings.login_totp_required, Some(settings.updated_at));
+
+        let disable_code = build_totp(&secret)
+            .expect("build disable totp")
+            .generate_current()
+            .expect("disable code");
+        let status = post_admin_totp_disable(
+            State(state.clone()),
+            admin_headers(),
+            Json(AdminTotpCodePayload {
+                totp_code: disable_code,
+            }),
+        )
+        .await
+        .expect("disable TOTP succeeds")
+        .0;
+        assert!(!status.enabled);
+
+        let persisted = state
+            .proxy
+            .get_admin_password_settings()
+            .await
+            .expect("password settings load")
+            .expect("password settings row exists");
+        assert!(!persisted.login_totp_required);
+        assert!(!state.builtin_admin.login_totp_required());
 
         let _ = std::fs::remove_file(db_path);
     }

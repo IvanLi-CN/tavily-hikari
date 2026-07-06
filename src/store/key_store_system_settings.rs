@@ -445,14 +445,96 @@ impl KeyStore {
     }
 
     pub(crate) async fn clear_admin_totp_secret_record(&self) -> Result<(), ProxyError> {
-        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1, "")
-            .await?;
-        self.set_meta_string(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1, "")
-            .await?;
-        self.set_meta_i64(META_KEY_ADMIN_TOTP_ENABLED_AT_V1, 0)
-            .await?;
-        self.clear_admin_totp_failures().await?;
-        Ok(())
+        self.clear_admin_totp_secret_record_and_login_requirement()
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn clear_admin_totp_secret_record_and_login_requirement(
+        &self,
+    ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1)
+        .bind("")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1)
+        .bind("")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_ADMIN_TOTP_ENABLED_AT_V1)
+        .bind("0")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_ADMIN_TOTP_FAILURE_COUNT_V1)
+        .bind("0")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_ADMIN_TOTP_LOCKED_UNTIL_V1)
+        .bind("0")
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
+               VALUES (1, NULL, NULL, ?, 0)
+               ON CONFLICT(id) DO UPDATE SET
+                   login_totp_required = 0,
+                   updated_at = excluded.updated_at"#,
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        let settings = sqlx::query_as::<_, (Option<String>, Option<i64>, i64, i64)>(
+            r#"SELECT password_hash, disabled_at, updated_at, login_totp_required
+               FROM admin_password_settings
+               WHERE id = 1
+               LIMIT 1"#,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(AdminPasswordSettingsRecord {
+            password_hash: settings.0,
+            disabled_at: settings.1,
+            updated_at: settings.2,
+            login_totp_required: settings.3 != 0,
+        })
     }
 
     pub(crate) async fn get_admin_totp_failure_state(&self) -> Result<(i64, i64), ProxyError> {

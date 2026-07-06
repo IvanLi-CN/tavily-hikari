@@ -2298,6 +2298,7 @@ use super::upstream_support_and_manual_jobs::*;
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
             ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),

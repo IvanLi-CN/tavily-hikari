@@ -108,6 +108,7 @@ import { ApiKeyBulkSyncProgressBubble } from '../ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from '../ForwardProxySettingsModule'
 import ModulePlaceholder from '../ModulePlaceholder'
 import SystemSettingsModule from '../SystemSettingsModule'
+import AdminSecuritySettingsModule from '../AdminSecuritySettingsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
@@ -3129,10 +3130,11 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
       icon: <Icon icon="mdi:cog-outline" width={18} height={18} />,
       children: [
         { target: 'system-settings', label: strings.systemSettings.subnav.general },
+        { target: 'system-settings-admin', label: strings.systemSettings.subnav.admin },
         { target: 'system-settings-ha', label: strings.systemSettings.subnav.highAvailability },
+        { target: 'proxy-settings', label: strings.nav.proxySettings },
       ],
     },
-    { target: 'proxy-settings', label: strings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 }
 
@@ -3220,6 +3222,11 @@ export function AdminPageFrame({
         return {
           title: admin.systemSettings.title,
           description: admin.systemSettings.description,
+        }
+      case 'system-settings-admin':
+        return {
+          title: admin.systemSettings.admin.title,
+          description: admin.systemSettings.admin.description,
         }
       case 'system-settings-ha':
         return {
@@ -6237,11 +6244,77 @@ function ProxySettingsPageCanvas(): JSX.Element {
   )
 }
 
-function SystemSettingsPageCanvas(): JSX.Element {
+function installStoryAdminSecurityFetchMock(): () => void {
+  const originalFetch = window.fetch.bind(window)
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, window.location.origin)
+    const method = init?.method?.toUpperCase() ?? 'GET'
+    if (url.pathname === '/api/admin/totp') {
+      return new Response(JSON.stringify({
+        enabled: true,
+        available: true,
+        rechargeFeatureEnabled: true,
+        missingCryptoKey: false,
+        lockedUntil: null,
+        issuer: 'Tavily Hikari',
+        accountName: 'admin-recharge',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.pathname === '/api/admin/passkeys') {
+      return new Response(JSON.stringify({
+        configured: true,
+        enabled: true,
+        credentialCount: 1,
+        credentials: [{
+          credentialId: 'story-passkey-credential-01',
+          label: 'Admin security key',
+          createdAt: now - 86400 * 12,
+          updatedAt: now - 86400 * 2,
+          lastUsedAt: now - 3600 * 4,
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.pathname === '/api/admin/password') {
+      const body = method === 'PATCH' && typeof init?.body === 'string'
+        ? JSON.parse(init.body) as { loginTotpRequired?: boolean }
+        : null
+      const enabled = method !== 'DELETE'
+      return new Response(JSON.stringify({
+        enabled,
+        updatedAt: now - (enabled ? 3600 : 0),
+        loginTotpRequired: method === 'PATCH' ? Boolean(body?.loginTotpRequired) : true,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (/^\/api\/admin\/passkeys\/[^/]+$/.test(url.pathname) && (method === 'PATCH' || method === 'DELETE')) {
+      return new Response(JSON.stringify({
+        configured: true,
+        enabled: method !== 'DELETE',
+        credentialCount: method === 'DELETE' ? 0 : 1,
+        credentials: method === 'DELETE' ? [] : [{
+          credentialId: 'story-passkey-credential-01',
+          label: 'Updated security key',
+          createdAt: now - 86400 * 12,
+          updatedAt: now,
+          lastUsedAt: now - 3600 * 4,
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return originalFetch(input, init)
+  }
+  return () => {
+    window.fetch = originalFetch
+  }
+}
+
+function SystemSettingsPageCanvas({
+  activeModule = 'system-settings',
+}: {
+  activeModule?: AdminNavTarget
+} = {}): JSX.Element {
   const admin = useAdminTranslations()
 
   return (
-    <AdminPageFrame activeModule="system-settings">
+    <AdminPageFrame activeModule={activeModule}>
       <SystemSettingsModule
         strings={admin.systemSettings}
         settings={{
@@ -6280,6 +6353,52 @@ function SystemSettingsPageCanvas(): JSX.Element {
           onToggle: () => {},
         }}
         onApply={() => {}}
+      />
+    </AdminPageFrame>
+  )
+}
+
+function SystemSettingsAdminPageCanvas(): JSX.Element {
+  const admin = useAdminTranslations()
+
+  useEffect(() => installStoryAdminSecurityFetchMock(), [])
+
+  return (
+    <AdminPageFrame activeModule="system-settings-admin">
+      <AdminSecuritySettingsModule
+        strings={admin.systemSettings}
+        profile={{
+          displayName: 'admin',
+          isAdmin: true,
+          forwardAuthEnabled: false,
+          builtinAuthEnabled: true,
+          passkeyAuthEnabled: true,
+          adminLoginTotpRequired: true,
+          allowRegistration: true,
+        }}
+        initialTotpStatus={{
+          enabled: true,
+          available: true,
+          rechargeFeatureEnabled: true,
+          missingCryptoKey: false,
+          lockedUntil: null,
+          issuer: 'Tavily Hikari',
+          accountName: 'admin-recharge',
+        }}
+        initialPasskeys={{
+          configured: true,
+          enabled: true,
+          credentialCount: 1,
+          credentials: [{
+            credentialId: 'story-passkey-credential-01',
+            label: 'Admin security key',
+            createdAt: now - 86400 * 12,
+            updatedAt: now - 86400 * 2,
+            lastUsedAt: now - 3600 * 4,
+          }],
+        }}
+        initialPasswordStatus={{ enabled: true, updatedAt: now - 3600, loginTotpRequired: true }}
+        disableAutoLoad
       />
     </AdminPageFrame>
   )
@@ -7414,9 +7533,91 @@ export const SystemSettings: Story = {
   },
 }
 
+export const SystemSettingsAdmin: Story = {
+  render: () => <SystemSettingsAdminPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    const activeText = activeSubitem?.textContent ?? ''
+    if (!activeText.includes('管理员') && !activeText.includes('Admin')) {
+      throw new Error('Expected the admin settings sidebar child item to be active.')
+    }
+    const pageText = canvasElement.ownerDocument.body.textContent ?? ''
+    if (!pageText.includes('管理员密码') && !pageText.includes('Admin password')) {
+      throw new Error('Expected admin settings to render administrator password management.')
+    }
+    if (!pageText.includes('Passkey 管理') && !pageText.includes('Passkey management')) {
+      throw new Error('Expected admin settings to render passkey management.')
+    }
+    if (!pageText.includes('新增 Passkey') && !pageText.includes('Add passkey')) {
+      throw new Error('Expected admin settings to render passkey add action.')
+    }
+    if (!pageText.includes('保存备注') && !pageText.includes('Save note')) {
+      throw new Error('Expected admin settings to render passkey note editing.')
+    }
+    const forbiddenZh = ['生成', '重置', '链接'].join('')
+    const forbiddenEn = ['Create', ' reset', ' link'].join('')
+    if (pageText.includes(forbiddenZh) || pageText.includes(forbiddenEn)) {
+      throw new Error('Admin settings must not render forbidden passkey enrollment links.')
+    }
+    if (!pageText.includes('管理端 TOTP') && !pageText.includes('Admin TOTP')) {
+      throw new Error('Expected admin settings to render TOTP management.')
+    }
+    if (!pageText.includes('安全状态') && !pageText.includes('Security status')) {
+      throw new Error('Expected admin settings to render security posture summary.')
+    }
+    const deletePasswordButton = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('删除密码') || button.textContent?.includes('Delete password'))
+    if (!deletePasswordButton) {
+      throw new Error('Expected admin settings to render password deletion action.')
+    }
+    deletePasswordButton.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const dialogText = canvasElement.ownerDocument.body.textContent ?? ''
+    if (!dialogText.includes('确认删除管理员密码') && !dialogText.includes('Confirm administrator password deletion')) {
+      throw new Error('Expected destructive security actions to open a consequence confirmation dialog.')
+    }
+    const dialog = canvasElement.ownerDocument.querySelector<HTMLElement>('[role="dialog"]')
+    const dialogContent = dialog?.textContent ?? ''
+    if (
+      dialog?.querySelector('[role="alert"], .alert, [class*="bg-amber"], [class*="border-amber"]')
+      || dialogContent.includes('将要影响')
+      || dialogContent.includes('Affected item')
+    ) {
+      throw new Error('Expected destructive confirmation dialog to avoid nested alert content.')
+    }
+    const deleteButtons = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLButtonElement>('button'))
+      .filter((button) => button.textContent?.includes('删除密码') || button.textContent?.includes('Delete password'))
+    const confirmDeleteButton = deleteButtons.at(-1)
+    if (!confirmDeleteButton || confirmDeleteButton.disabled) {
+      throw new Error('Expected destructive confirmation to be available after the dialog opens.')
+    }
+  },
+}
+
 export const ProxySettings: Story = {
   render: () => <ProxySettingsPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const parentNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-parent-active')
+    if (!parentNavItem?.textContent?.includes('系统设置') && !parentNavItem?.textContent?.includes('System settings')) {
+      throw new Error('Expected proxy settings to live under the system settings navigation group.')
+    }
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    const activeText = activeSubitem?.textContent ?? ''
+    if (!activeText.includes('代理设置') && !activeText.includes('Proxy settings')) {
+      throw new Error('Expected proxy settings sidebar child item to be active.')
+    }
+    const topLevelNavText = Array.from(canvasElement.ownerDocument.querySelectorAll<HTMLElement>('.admin-nav-item'))
+      .map((item) => item.textContent?.trim() ?? '')
+    if (topLevelNavText.some((text) => text === '代理设置' || text === 'Proxy settings')) {
+      throw new Error('Expected proxy settings to be removed from top-level navigation.')
+    }
   },
 }

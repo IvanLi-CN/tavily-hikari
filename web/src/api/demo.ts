@@ -206,6 +206,8 @@ function createDemoState() {
       isAdmin: true,
       forwardAuthEnabled: false,
       builtinAuthEnabled: true,
+      passkeyAuthEnabled: true,
+      adminLoginTotpRequired: true,
       allowRegistration: false,
       userLoggedIn: true,
       userProvider: 'linuxdo',
@@ -1755,7 +1757,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   })
   if (path === '/api/public/logs') return jsonResponse(publicTokenLogs())
   if (path === '/api/public/events') return textResponse('demo event stream is provided by the browser demo runtime\n')
-  if (path === '/api/admin/login' && method === 'POST') return noContentResponse()
+  if (path === '/api/admin/login' && method === 'POST') return jsonResponse({ ok: true })
   if (path === '/api/admin/registration') {
     if (method === 'PATCH') {
       const body = await readJsonBody(init)
@@ -1778,10 +1780,47 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   const adminRechargeAction = handleDemoAdminRechargeAction(demoState.rechargeOrders, path, method, jsonResponse, nowSeconds)
   if (adminRechargeAction) return adminRechargeAction
   if (path === '/api/admin/totp') {
-    return jsonResponse({ enabled: false, available: true, rechargeFeatureEnabled: true, missingCryptoKey: false, lockedUntil: null, issuer: 'Tavily Hikari', accountName: 'admin-recharge' })
+    return jsonResponse({ enabled: true, available: true, rechargeFeatureEnabled: true, missingCryptoKey: false, lockedUntil: null, issuer: 'Tavily Hikari', accountName: 'admin-recharge' })
   }
   if (path === '/api/admin/totp/setup' && method === 'POST') {
     return jsonResponse({ secret: 'JBSWY3DPEHPK3PXP', otpAuthUrl: 'otpauth://totp/Tavily%20Hikari:admin-recharge?secret=JBSWY3DPEHPK3PXP&issuer=Tavily%20Hikari', qrPngBase64: '' })
+  }
+  if (path === '/api/admin/passkeys') {
+    return jsonResponse({
+      configured: true,
+      enabled: true,
+      credentialCount: 1,
+      credentials: [{
+        credentialId: 'demo-passkey-credential',
+        label: 'Admin passkey',
+        createdAt: nowSeconds(-86400 * 9),
+        updatedAt: nowSeconds(-86400 * 2),
+        lastUsedAt: nowSeconds(-3600 * 5),
+      }],
+    })
+  }
+  if (path === '/api/admin/password') {
+    const body = await readJsonBody(init)
+    const loginTotpRequired = method === 'PATCH' && typeof body.loginTotpRequired === 'boolean'
+      ? body.loginTotpRequired
+      : true
+    if (method === 'DELETE') return jsonResponse({ enabled: false, updatedAt: nowSeconds(0), loginTotpRequired })
+    if (method === 'PUT') return jsonResponse({ enabled: true, updatedAt: nowSeconds(0), loginTotpRequired })
+    return jsonResponse({ enabled: true, updatedAt: nowSeconds(-86400), loginTotpRequired })
+  }
+  if (/^\/api\/admin\/passkeys\/[^/]+$/.test(path) && (method === 'PATCH' || method === 'DELETE')) {
+    return jsonResponse({
+      configured: true,
+      enabled: method !== 'DELETE',
+      credentialCount: method === 'DELETE' ? 0 : 1,
+      credentials: method === 'DELETE' ? [] : [{
+        credentialId: 'demo-passkey-credential',
+        label: 'Updated passkey',
+        createdAt: nowSeconds(-86400 * 9),
+        updatedAt: nowSeconds(0),
+        lastUsedAt: nowSeconds(-3600 * 5),
+      }],
+    })
   }
   const rechargeOrderRoute = path.match(/^\/api\/user\/recharge\/orders\/([^/]+)$/)
   if (rechargeOrderRoute) {

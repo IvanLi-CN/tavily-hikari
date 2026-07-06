@@ -2,7 +2,7 @@ async fn get_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<SettingsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let forward_proxy = state.proxy.get_forward_proxy_settings().await.map_err(|err| {
@@ -28,7 +28,7 @@ async fn get_forward_proxy_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<tavily_hikari::ForwardProxySettingsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
@@ -47,7 +47,7 @@ async fn put_system_settings(
     headers: HeaderMap,
     Json(payload): Json<SystemSettingsUpdatePayload>,
 ) -> Result<Json<tavily_hikari::SystemSettings>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     require_full_master_write(state.as_ref()).await?;
@@ -142,7 +142,7 @@ async fn get_observed_client_ip_requests(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ObservedClientIpRequestsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let items = state
@@ -161,7 +161,7 @@ async fn put_forward_proxy_settings(
     headers: HeaderMap,
     Json(payload): Json<ForwardProxySettingsUpdatePayload>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let settings = tavily_hikari::ForwardProxySettings {
@@ -272,7 +272,7 @@ async fn post_forward_proxy_candidate_validation(
     headers: HeaderMap,
     Json(payload): Json<ForwardProxyValidationPayload>,
 ) -> Result<axum::response::Response, StatusCode> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if request_accepts_event_stream(&headers) {
@@ -401,7 +401,7 @@ async fn post_forward_proxy_revalidate(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
 
@@ -500,7 +500,7 @@ async fn get_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<tavily_hikari::ForwardProxyLiveStatsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
@@ -518,7 +518,7 @@ async fn get_forward_proxy_error_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<tavily_hikari::ForwardProxyErrorStatsResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
@@ -537,7 +537,7 @@ async fn post_forward_proxy_node_state(
     headers: HeaderMap,
     Json(payload): Json<ForwardProxyNodeStateUpdatePayload>,
 ) -> Result<Json<tavily_hikari::ForwardProxyNodeStateUpdateResponse>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     if payload.proxy_keys.is_empty() {
@@ -568,7 +568,7 @@ async fn get_forward_proxy_dashboard_summary(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ForwardProxyDashboardSummaryView>, (StatusCode, String)> {
-    if !is_admin_request(state.as_ref(), &headers) {
+    if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
