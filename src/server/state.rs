@@ -1007,16 +1007,7 @@ async fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
     if state.builtin_admin.is_admin(headers) {
         return true;
     }
-    if state.admin_passkey.is_configured() {
-        let Some(token) = cookie_value(headers, ADMIN_PASSKEY_COOKIE_NAME) else {
-            return false;
-        };
-        return matches!(
-            state.proxy.get_active_admin_passkey_session(&token).await,
-            Ok(Some(_))
-        );
-    }
-    false
+    resolve_admin_passkey_session(state, headers).await.is_some()
 }
 
 async fn require_full_master_write(state: &AppState) -> Result<(), (StatusCode, String)> {
@@ -1035,6 +1026,20 @@ async fn resolve_user_session(
     }
     let cookie = cookie_value(headers, USER_SESSION_COOKIE_NAME)?;
     match state.proxy.get_user_session(&cookie).await {
+        Ok(Some(session)) => Some(session),
+        _ => None,
+    }
+}
+
+async fn resolve_admin_passkey_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<tavily_hikari::AdminPasskeySessionRecord> {
+    if !state.admin_passkey.is_configured() {
+        return None;
+    }
+    let token = cookie_value(headers, ADMIN_PASSKEY_COOKIE_NAME)?;
+    match state.proxy.get_active_admin_passkey_session(&token).await {
         Ok(Some(session)) => Some(session),
         _ => None,
     }
@@ -1066,7 +1071,7 @@ async fn admin_maintenance_actor(
         return actor;
     }
 
-    if state.forward_auth_enabled {
+    if state.forward_auth_enabled && state.forward_auth.is_request_admin(headers) {
         actor.actor_display_name = state
             .forward_auth
             .nickname_value(headers)
@@ -1077,6 +1082,20 @@ async fn admin_maintenance_actor(
 
     if state.builtin_admin.is_admin(headers) {
         actor.actor_display_name = Some("builtin-admin".to_string());
+        return actor;
+    }
+
+    if let Some(session) = resolve_admin_passkey_session(state, headers).await {
+        actor.actor_display_name = Some(
+            session
+                .credential_id
+                .as_deref()
+                .map(|credential_id| {
+                    let prefix = credential_id.chars().take(16).collect::<String>();
+                    format!("admin-passkey:{prefix}")
+                })
+                .unwrap_or_else(|| "admin-passkey".to_string()),
+        );
     }
 
     actor
@@ -1246,18 +1265,9 @@ async fn debug_is_admin(
     };
     let forward_auth_admin = state.forward_auth_enabled && cfg.is_request_admin(&headers);
     let builtin_admin = state.builtin_admin.is_admin(&headers);
-    let admin_passkey = if state.admin_passkey.is_configured() {
-        if let Some(token) = cookie_value(&headers, ADMIN_PASSKEY_COOKIE_NAME) {
-            matches!(
-                state.proxy.get_active_admin_passkey_session(&token).await,
-                Ok(Some(_))
-            )
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    let admin_passkey = resolve_admin_passkey_session(state.as_ref(), &headers)
+        .await
+        .is_some();
     let is_admin = state.dev_open_admin || forward_auth_admin || builtin_admin || admin_passkey;
     Ok(Json(IsAdminDebug {
         is_admin,

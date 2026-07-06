@@ -1907,6 +1907,67 @@ mod serve_tests {
     }
 
     #[tokio::test]
+    async fn passkey_admin_session_sets_maintenance_actor() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let db_path = temp_dir.path().join("passkey-maintenance-actor.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-passkey-maintenance-actor".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        proxy
+            .upsert_admin_passkey_credential(
+                "credential-actor-1234567890",
+                r#"{"credential":1}"#,
+                None,
+            )
+            .await
+            .expect("insert passkey credential");
+        let session = proxy
+            .create_admin_passkey_session(Some("credential-actor-1234567890"), 120)
+            .await
+            .expect("create passkey session");
+        let state = AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions {
+                enabled: true,
+                rp_id: Some("example.com".to_string()),
+                rp_origin: Some("https://example.com".to_string()),
+                challenge_ttl_secs: 300,
+                session_max_age_secs: 120,
+            },
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{ADMIN_PASSKEY_COOKIE_NAME}={}", session.token))
+                .expect("cookie header should be valid"),
+        );
+
+        assert!(is_admin_request(&state, &headers).await);
+        let actor = admin_maintenance_actor(&state, &headers, None).await;
+
+        assert_eq!(
+            actor.actor_display_name.as_deref(),
+            Some("admin-passkey:credential-actor")
+        );
+    }
+
+    #[tokio::test]
     async fn passkey_authentication_start_is_available_on_standby() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let db_path = temp_dir.path().join("standby-passkey-auth.db");
