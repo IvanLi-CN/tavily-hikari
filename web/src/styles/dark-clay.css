@@ -261,14 +261,9 @@
   }
 
   .dark .hikari-button-link {
-    color: hsl(var(--primary));
-    box-shadow: none;
-  }
-
-  .dark .hikari-button-link:disabled {
     border-color: transparent;
     background: transparent;
-    color: hsl(var(--muted-foreground) / 0.66);
+    color: hsl(var(--primary));
     box-shadow: none;
   }
 
@@ -374,6 +369,13 @@
     opacity: 1;
     box-shadow: inset 3px 4px 8px oklch(0.055 0.016 305 / 0.32);
     transform: none;
+  }
+
+  .dark .hikari-button-link:disabled {
+    border-color: transparent;
+    background: transparent;
+    color: hsl(var(--muted-foreground) / 0.66);
+    box-shadow: none;
   }
 
   .dark .input,
