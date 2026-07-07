@@ -130,6 +130,7 @@
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/dashboard-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/token-usage-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/users-usage-desktop-1440.png`
+  - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/user-detail-header-tabs-entitlements-desktop-2048.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/key-detail-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/dashboard-stacked-1100.png`
 
@@ -144,6 +145,10 @@
 - 1440px 用户用量：补回和其他后台页一致的 compact intro，侧栏 utility 同时承接返回用户管理动作。
 
 ![1440px 用户用量桌面态](./assets/users-usage-desktop-1440.png)
+
+- 2048px 用户详情：返回用户控制台与返回用户列表动作收纳到侧栏 utility；内容区页头只保留用户详情 intro，顶层 tabs 放在页头右端，第三项显示为“权益”。
+
+![2048px 用户详情桌面态](./assets/user-detail-header-tabs-entitlements-desktop-2048.png)
 
 - 1440px Key detail：detail 动作收纳到侧栏 utility，内容区只保留标题与说明。
 
@@ -174,6 +179,7 @@
 - 2026-03-30: 修正通用模块页 desktop intro 的标题来源，改为按当前模块读取 `logs/jobs/users/tokens/keys/proxySettings/...` 文案，避免请求日志等页面误显示为全局“总览”。
 - 2026-03-30: 根据 merge-proof review follow-up，为非 `AdminShell` 上下文的 detail 页补上 desktop utility fallback，并新增请求日志 token drawer 的 Storybook 回归断言，确保桌面态 `Back` / `Regenerate secret` 等 CTA 不会丢失。
 - 2026-03-30: 创建 PR #200，并在合并前完成 spec/Storybook/browser 门禁收口。
+- 2026-07-07: 补充用户详情桌面证据，确认返回动作在侧栏 utility、顶层 tabs 在页头右端，且共享额度信息已改名为“权益”。
 
 ## 参考（References）
 
