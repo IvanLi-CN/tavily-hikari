@@ -1193,6 +1193,8 @@ body.not-found-page-body,
   --dashboard-chart-grid: 215 16% 78% / 0.18;
   --dashboard-chart-zero-line: 215 16% 70% / 0.3;
   --dashboard-chart-tick: 221 22% 38%;
+  --dashboard-chart-partial-hour-background: 215 16% 70% / 0.14;
+  --dashboard-chart-partial-hour-divider: 221 18% 46% / 0.58;
 }
 
 .dark {
@@ -1209,6 +1211,8 @@ body.not-found-page-body,
   --dashboard-chart-grid: 216 18% 46% / 0.18;
   --dashboard-chart-zero-line: 216 18% 58% / 0.34;
   --dashboard-chart-tick: 210 24% 84%;
+  --dashboard-chart-partial-hour-background: 216 18% 58% / 0.16;
+  --dashboard-chart-partial-hour-divider: 210 18% 74% / 0.56;
 }
 
 .dashboard-trend-header {

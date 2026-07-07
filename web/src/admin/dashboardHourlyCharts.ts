@@ -318,9 +318,17 @@ export function buildRollingHourlyWindow(window: DashboardHourlyRequestWindow): 
   const latestBucketStart = visibleBuckets.at(-1)?.bucketStart ?? 0
   const latestHourStart = floorToLocalHourStart(latestBucketStart)
   const rangeEnd = latestHourStart + bucketSeconds
-  const rangeStart = rangeEnd - 24 * bucketSeconds
+  const rangeStart = latestHourStart - 24 * bucketSeconds
 
   return buildAggregatedHourlySlots(window, rangeStart, rangeEnd, bucketSeconds)
+}
+
+export function getCurrentPartialHourHighlightIndex(
+  chartMode: DashboardHourlyChartMode,
+  slots: ReadonlyArray<DashboardHourlyRangeSlot>,
+): number | null {
+  if (slots.length === 0) return null
+  return chartMode === 'results' || chartMode === 'types' ? slots.length - 1 : null
 }
 
 export function buildDashboardAreaStackLayers<T extends string>(

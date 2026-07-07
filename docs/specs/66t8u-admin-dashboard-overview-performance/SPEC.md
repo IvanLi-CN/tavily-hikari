@@ -4,7 +4,7 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-04-06
-- Last: 2026-06-26
+- Last: 2026-07-07
 
 ## 背景
 
@@ -96,7 +96,8 @@
   - module data：dashboard overview
 - dashboard route 不再通过通用 `loadData()` 拉 `summary`、token page 或 token groups。
 - `loadDashboardOverview()` 必须收敛为单请求模型，只调用 `fetchDashboardOverview()`。
-- 流量趋势图默认小时序列必须使用滚动 24 小时窗口，并以当前可见小时桶为右边界；前 4 个数据点不得再固定为自然日今日起点。
+- 流量趋势图默认绝对柱状图必须使用滚动 25 个小时槽：24 个完整小时加当前未满小时，并以当前可见小时桶为右边界；前 4 个数据点不得再固定为自然日今日起点。
+- 绝对“调用结果”和“调用类型”图必须用灰色 plot-area 背景标识最后一个当前未满小时槽，并在前一小时与当前小时之间绘制竖向虚线分界；该视觉标识不得改变 payload、数值聚合、series 顺序或 tooltip 数据。
 - SSE 正常可用时，dashboard 活态增量更新只依赖 `snapshot`；不得再保留独立的 30 秒 dashboard signals polling。
 - SSE `compute_signatures()` 不得再调用会触发 flush-on-read 的 `summary_windows` / month-series
   热路径；它只能消费 cheap freshness contract 与最近一次 shared snapshot freshness。
@@ -203,7 +204,7 @@
 
 ## Visual Evidence
 
-- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构。
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构；默认流量趋势绝对柱状图展示滚动 25 个小时槽，最后当前未满小时槽使用灰底与竖向虚线标识。
   PR: include
   ![管理仪表盘总览轻量快照验收图](./assets/dashboard-overview-performance-proof.png)
 
@@ -227,3 +228,4 @@
   Rust 行数预算门禁。
 - 2026-06-26: 将 shared snapshot freshness 进一步收敛为 cheap quota charge token + recent-alerts token，新增独立 `DashboardQuotaChargeCache` / `DashboardRecentAlertsCache`，让 cache-hit 不再触发 quota sample baseline/window CTE 与 alerts grouped CTE；同时将 alerts events/groups/dashboard recent alerts 改为 `auth_token_logs` 优先、`request_logs` 按需回退，并补齐 quota/alerts/serialize phase-level perf 事件。
 - 2026-06-29: 修正流量趋势图默认小时窗为滚动 24 小时，确保图表前段不再固定落在自然日今日起点。
+- 2026-07-07: 修正默认流量趋势绝对柱状图窗口为 24 个完整小时加当前未满小时，共 25 个小时槽，并用灰底与竖向虚线标识当前未满小时。
