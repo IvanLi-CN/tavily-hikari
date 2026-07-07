@@ -43,6 +43,16 @@ const allMcpToolSweepItems: ProbeBubbleModel['items'] = [
   { id: 'mcp-tool-call:tavily_research', label: 'Call tavily_research tool', status: 'success' },
 ]
 
+const allApiProbeItems: ProbeBubbleModel['items'] = [
+  { id: 'api-search', label: 'Web search capability', status: 'success' },
+  { id: 'api-extract', label: 'Page extract capability', status: 'success' },
+  { id: 'api-crawl', label: 'Site crawl capability', status: 'success' },
+  { id: 'api-map', label: 'Site map capability', status: 'success' },
+  { id: 'api-research', label: 'Research task creation', status: 'success' },
+  { id: 'api-research-result', label: 'Research result query', status: 'success' },
+  { id: 'api-usage', label: 'Usage boundary check', status: 'success' },
+]
+
 const galleryGridStyle = {
   display: 'grid',
   columnGap: 18,
@@ -64,9 +74,9 @@ const scenarios: ConnectivityScenario[] = [
     title: 'API Running',
     description: 'API probe is in-flight and keeps the action group locked until all steps settle.',
     mcpProbe: idleProbe,
-    apiProbe: { state: 'running', completed: 2, total: 6 },
+    apiProbe: { state: 'running', completed: 2, total: 7 },
     mcpButtonLabel: 'Test MCP',
-    apiButtonLabel: 'Testing API (2/6)',
+    apiButtonLabel: 'Testing API (2/7)',
     anyProbeRunning: true,
     probeBubble: {
       visible: true,
@@ -82,13 +92,26 @@ const scenarios: ConnectivityScenario[] = [
     title: 'MCP Full Sweep',
     description: 'The MCP probe discovers every advertised tool and executes a full tools/call sweep before settling.',
     mcpProbe: { state: 'success', completed: 9, total: 9 },
-    apiProbe: { state: 'success', completed: 6, total: 6 },
+    apiProbe: { state: 'success', completed: 7, total: 7 },
     mcpButtonLabel: 'MCP Ready',
     apiButtonLabel: 'API Ready',
     probeBubble: {
       visible: true,
       anchor: 'mcp',
       items: allMcpToolSweepItems,
+    },
+  },
+  {
+    title: 'API Full Sweep',
+    description: 'The API probe checks every free-account endpoint plus the local usage boundary.',
+    mcpProbe: idleProbe,
+    apiProbe: { state: 'success', completed: 7, total: 7 },
+    mcpButtonLabel: 'Test MCP',
+    apiButtonLabel: 'API Ready',
+    probeBubble: {
+      visible: true,
+      anchor: 'api',
+      items: allApiProbeItems,
     },
   },
   {

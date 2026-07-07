@@ -2139,6 +2139,15 @@ function buildDemoRechargeQuote(): RechargeQuote {
 }
 
 function handleTavilyProbe(path: string): JsonValue {
+  if (path.endsWith('/usage')) {
+    return {
+      tokenId: DEMO_TOKEN_ID,
+      dailySuccess: 12,
+      dailyError: 0,
+      monthlySuccess: 240,
+      monthlyQuotaExhausted: 0,
+    }
+  }
   if (path.includes('/research/')) return { request_id: 'demo-research-001', status: 'completed', answer: 'Demo research result is ready.' }
   if (path.endsWith('/research')) return { request_id: 'demo-research-001', status: 'queued' }
   if (path.endsWith('/extract')) return { results: [{ url: 'https://example.test/demo', raw_content: 'Demo extracted content.' }] }

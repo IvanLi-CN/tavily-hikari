@@ -299,6 +299,7 @@ export const EN = {
         apiMap: 'Site map capability',
         apiResearch: 'Research task creation',
         apiResearchResult: 'Research result query',
+        apiUsage: 'Usage boundary check',
       },
       skippedProbeFixture: 'No local probe fixture for {tool}; skipped.',
       errors: {
@@ -306,6 +307,7 @@ export const EN = {
         missingRequestId: 'Research request_id is missing',
         researchFailed: 'Research task failed',
         researchUnexpectedStatus: 'Research returned unsupported status: {status}',
+        usageLeakedUpstreamField: 'Usage response leaked upstream account field: {field}',
       },
       researchPendingAccepted: 'pending (accepted)',
       researchStatus: 'status={status}',
@@ -663,6 +665,7 @@ export const ZH = {
         apiMap: '站点映射能力',
         apiResearch: '研究任务创建',
         apiResearchResult: '研究结果查询',
+        apiUsage: '用量边界检查',
       },
       skippedProbeFixture: '当前本地没有 {tool} 的检测夹具，已跳过。',
       errors: {
@@ -670,6 +673,7 @@ export const ZH = {
         missingRequestId: 'research 响应缺少 request_id',
         researchFailed: 'research 任务失败',
         researchUnexpectedStatus: 'research 返回了不支持的状态：{status}',
+        usageLeakedUpstreamField: '用量响应泄露了上游账号字段：{field}',
       },
       researchPendingAccepted: 'pending（已受理）',
       researchStatus: '状态={status}',
