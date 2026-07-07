@@ -36,10 +36,27 @@ function buildNavItems(admin: AdminTranslations): AdminNavItem[] {
     { target: 'keys', label: admin.nav.keys, icon: navIcon('mdi:key-outline') },
     { target: 'requests', label: admin.nav.requests, icon: navIcon('mdi:file-document-outline') },
     { target: 'jobs', label: admin.nav.jobs, icon: navIcon('mdi:calendar-clock-outline') },
-    { target: 'users', label: admin.nav.users, icon: navIcon('mdi:account-group-outline') },
+    {
+      target: 'users',
+      label: admin.nav.users,
+      icon: navIcon('mdi:account-group-outline'),
+      children: [
+        { target: 'users-list', label: admin.users.table.user },
+        { target: 'user-tags', label: admin.users.table.tags },
+      ],
+    },
     { target: 'alerts', label: admin.nav.alerts, icon: navIcon('mdi:bell-ring-outline') },
-    { target: 'system-settings', label: admin.nav.systemSettings, icon: navIcon('mdi:cog-outline') },
-    { target: 'proxy-settings', label: admin.nav.proxySettings, icon: navIcon('mdi:tune-variant') },
+    {
+      target: 'system-settings',
+      label: admin.nav.systemSettings,
+      icon: navIcon('mdi:cog-outline'),
+      children: [
+        { target: 'system-settings', label: admin.systemSettings.subnav.general },
+        { target: 'system-settings-admin', label: admin.systemSettings.subnav.admin },
+        { target: 'system-settings-ha', label: admin.systemSettings.subnav.highAvailability },
+        { target: 'proxy-settings', label: admin.nav.proxySettings },
+      ],
+    },
   ]
 }
 

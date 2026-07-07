@@ -317,6 +317,41 @@ describe('AdminDashboard route switches', () => {
           root.unmount()
         })
       }
-    })
+    }, 15_000)
   }
+
+  it('replaces related legacy admin paths with canonical paths without breaking rendering', async () => {
+    const { container, root } = await mountAdminDashboard('/admin/settings?mode=general#prefs')
+
+    try {
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        '/admin/system-settings?mode=general#prefs',
+      )
+      assertRouteRendered(container, {
+        text: 'System Settings',
+      })
+
+      await navigateTo('/admin/rankings?tab=uniqueIp#rankings')
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        '/admin/analysis/rankings?tab=uniqueIp#rankings',
+      )
+      assertRouteRendered(container, {
+        selector: '.admin-rankings-tab.is-active',
+        text: 'IP',
+      })
+
+      await navigateTo('/admin/users/usage?q=L2#usage')
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        '/admin/analysis/usage?q=L2#usage',
+      )
+      assertRouteRendered(container, {
+        selector: 'input[name="user-usage-search"]',
+        text: 'User Usage',
+      })
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+    }
+  }, 15_000)
 })

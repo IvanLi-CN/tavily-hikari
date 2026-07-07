@@ -263,8 +263,10 @@ describe('AdminPages Storybook proofs', () => {
   it('renders user tables with one sortable 7-day IP count column', () => {
     const renderUsersStory = adminPageStories.Users.render as (() => JSX.Element) | undefined
     const renderUsageStory = adminPageStories.UsersUsage.render as (() => JSX.Element) | undefined
+    const renderUserTagsStory = adminPageStories.UserTags.render as (() => JSX.Element) | undefined
     expect(renderUsersStory).toBeDefined()
     expect(renderUsageStory).toBeDefined()
+    expect(renderUserTagsStory).toBeDefined()
 
     const renderMarkup = (renderStory: () => JSX.Element) =>
       renderToStaticMarkup(
@@ -277,12 +279,21 @@ describe('AdminPages Storybook proofs', () => {
 
     const usersMarkup = renderMarkup(renderUsersStory!)
     const usageMarkup = renderMarkup(renderUsageStory!)
+    const userTagsMarkup = renderMarkup(renderUserTagsStory!)
 
     expect(usersMarkup).toContain('IP 数')
     expect(usersMarkup).toContain('data-sort-field="recentIpCount7d"')
     expect(usersMarkup).not.toContain('7天IP')
+    expect(usersMarkup).toContain('admin-nav-item-parent-active')
+    expect(usersMarkup).toContain('admin-nav-subitem-active')
+    expect(usersMarkup).toContain('标签')
+    expect(usersMarkup).not.toContain('标签账户统计')
+    expect(usersMarkup).not.toContain('管理标签目录')
     expect(usageMarkup).toContain('IP 数')
     expect(usageMarkup).toContain('data-sort-field="recentIpCount7d"')
+    expect(userTagsMarkup).toContain('标签目录')
+    expect(userTagsMarkup).toContain('admin-nav-item-parent-active')
+    expect(userTagsMarkup).toContain('admin-nav-subitem-active')
   })
 
   it('renders active-only user stories with the default filter hint and search fallback hint', () => {
@@ -349,7 +360,8 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('常规设置')
     expect(markup).toContain('管理员')
     expect(markup).toContain('高可用')
-    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-nav-item-parent-active')
+    expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain('admin-nav-item-icon')
     expect(markup).toContain('<svg')
     expect(markup).toContain('活跃用户 12 / 总用户 30')

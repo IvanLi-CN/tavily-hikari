@@ -1,6 +1,6 @@
 import BrandLockup from '../components/BrandLockup'
 import { Icon } from '../lib/icons'
-import { createContext, type PropsWithChildren, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, type PropsWithChildren, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 
@@ -12,6 +12,8 @@ export type AdminNavTarget =
   | 'analysis-usage'
   | 'analysis-rankings'
   | 'analysis-pressure'
+  | 'users-list'
+  | 'user-tags'
   | 'system-settings-admin'
   | 'system-settings-ha'
 
@@ -41,6 +43,12 @@ function readStackedSidebarMode(): boolean {
   return window.matchMedia(`(max-width: ${ADMIN_SIDEBAR_STACK_MAX}px)`).matches
 }
 
+function collectActiveParentTargets(navItems: AdminNavItem[], activeItem: AdminNavTarget): AdminNavTarget[] {
+  return navItems
+    .filter((item) => item.children?.some((child) => child.target === activeItem))
+    .map((item) => item.target)
+}
+
 export default function AdminShell({
   activeItem,
   navItems,
@@ -54,6 +62,10 @@ export default function AdminShell({
   const [isStackedSidebar, setIsStackedSidebar] = useState<boolean>(() => readStackedSidebarMode())
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [sidebarUtilityHost, setSidebarUtilityHost] = useState<HTMLDivElement | null>(null)
+  const activeParentTargets = useMemo(() => collectActiveParentTargets(navItems, activeItem), [activeItem, navItems])
+  const [expandedGroups, setExpandedGroups] = useState<Set<AdminNavTarget>>(
+    () => new Set(activeParentTargets),
+  )
 
   useEffect(() => {
     const media = window.matchMedia(`(max-width: ${ADMIN_SIDEBAR_STACK_MAX}px)`)
@@ -80,6 +92,20 @@ export default function AdminShell({
   }, [activeItem, isStackedSidebar])
 
   useEffect(() => {
+    if (activeParentTargets.length === 0) return
+    setExpandedGroups((current) => {
+      const next = new Set(current)
+      let changed = false
+      for (const target of activeParentTargets) {
+        if (next.has(target)) continue
+        next.add(target)
+        changed = true
+      }
+      return changed ? next : current
+    })
+  }, [activeParentTargets])
+
+  useEffect(() => {
     if (!isStackedSidebar || !isMenuOpen) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -92,6 +118,18 @@ export default function AdminShell({
     if (isStackedSidebar) setIsMenuOpen(false)
     onSelectItem(target)
   }, [isStackedSidebar, onSelectItem])
+
+  const handleToggleGroup = useCallback((target: AdminNavTarget) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(target)) {
+        next.delete(target)
+      } else {
+        next.add(target)
+      }
+      return next
+    })
+  }, [])
 
   return (
     <AdminSidebarUtilityContext.Provider value={sidebarUtilityHost}>
@@ -135,21 +173,42 @@ export default function AdminShell({
           <div className={`admin-sidebar-menu${!isStackedSidebar || isMenuOpen ? ' is-open' : ''}`}>
             <nav id="admin-sidebar-nav" className="admin-sidebar-nav">
               {navItems.map((item) => {
+                const children = item.children ?? []
+                const hasChildren = children.length > 0
                 const active = item.target === activeItem
-                const childActive = item.children?.some((child) => child.target === activeItem) ?? false
+                const childActive = children.some((child) => child.target === activeItem)
+                const expanded = hasChildren && expandedGroups.has(item.target)
+                const subitemsId = `admin-nav-subitems-${item.target}`
                 return (
-                  <div key={item.target} className="admin-nav-group">
+                  <div
+                    key={item.target}
+                    className={`admin-nav-group${expanded ? ' admin-nav-group-expanded' : ' admin-nav-group-collapsed'}`}
+                  >
                     <AdminNavButton
                       icon={item.icon}
-                      active={active}
-                      className={childActive ? 'admin-nav-item-parent-active' : undefined}
-                      onClick={() => handleSelectItem(item.target)}
+                      active={active && !hasChildren}
+                      className={[
+                        hasChildren ? 'admin-nav-item-has-children' : '',
+                        childActive ? 'admin-nav-item-parent-active' : '',
+                      ].filter(Boolean).join(' ') || undefined}
+                      aria-expanded={hasChildren ? expanded : undefined}
+                      aria-controls={hasChildren ? subitemsId : undefined}
+                      onClick={() => hasChildren ? handleToggleGroup(item.target) : handleSelectItem(item.target)}
                     >
-                      <span>{item.label}</span>
+                      <span className="admin-nav-item-label">{item.label}</span>
+                      {hasChildren && (
+                        <Icon
+                          icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                          width={16}
+                          height={16}
+                          className="admin-nav-item-chevron"
+                          aria-hidden="true"
+                        />
+                      )}
                     </AdminNavButton>
-                    {item.children && item.children.length > 0 && (
-                      <div className="admin-nav-subitems" aria-label={item.label}>
-                        {item.children.map((child) => (
+                    {hasChildren && expanded && (
+                      <div id={subitemsId} className="admin-nav-subitems" aria-label={item.label}>
+                        {children.map((child) => (
                           <button
                             key={child.target}
                             type="button"

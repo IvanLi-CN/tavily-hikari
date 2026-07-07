@@ -47,6 +47,9 @@
 
 - 新增：
   - `/admin/dashboard`
+  - `/admin/analysis/rankings`
+  - `/admin/analysis/usage`
+  - `/admin/analysis/pressure`
   - `/admin/tokens`
   - `/admin/tokens/:id`
   - `/admin/tokens/leaderboard`
@@ -55,9 +58,16 @@
   - `/admin/requests`
   - `/admin/jobs`
   - `/admin/users`
+  - `/admin/users/tags`
   - `/admin/alerts`
   - `/admin/proxy-settings`
+  - `/admin/system-settings`
+  - `/admin/system-settings/admin`
+  - `/admin/system-settings/ha`
+  - `/admin/system-settings/ha/nodes/:id`
 - 保留：`/admin`（默认进入 dashboard）。
+- 兼容别名：`/admin/rankings`、`/admin/users/usage`、`/admin/settings` 当前通过 SPA
+  `history.replaceState` 重定向到 canonical path，并保留 query/hash；这些 alias 在未来次版本移除。
 - 移除：`#/keys/:id`、`#/tokens/:id`、`#/token-usage`。
 
 ## 验收标准（Acceptance Criteria）
@@ -68,6 +78,8 @@
 - Dashboard 首页至少覆盖全局指标、趋势、风险、近期动作四层信息。
 - Tokens/API Keys/Requests/Jobs 核心交互行为与重构前保持一致。
 - API Keys 详情页的 quarantine 原始详情默认折叠；展开后长文本仅在详情块内部换行/滚动，不得把页面整体撑宽。
+- 打开 `/admin/dashboard` 时，分析、用户管理、系统设置二级菜单默认折叠；打开任一子路由时，对应父级自动展开且仅子项承担导航。
+- 打开 `/admin/settings`、`/admin/rankings`、`/admin/users/usage` 时，当前 URL 使用 replace 标准化到 canonical path，并保留 query/hash。
 
 ## 非功能性验收 / 质量门槛
 
@@ -98,8 +110,13 @@ Admin / API Keys 页面当前成果图：
 
 ![Real admin API key detail page with quarantine raw detail expanded and no page overflow](./assets/quarantine-detail-expanded.png)
 
+Admin / Dashboard 页面：带子项的侧栏父级默认折叠：
+
+![Admin dashboard with collapsed sidebar groups](./assets/admin-sidebar-collapsed-groups.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-13: 将 quarantine 原始详情证据替换为真实 `/admin/keys/:id` 页面截图，确认默认折叠且展开后长文本也不会撑宽整页。
 - 2026-03-13: 补充 API Keys 详情页 quarantine 原始详情的收口约束：默认折叠，展开后也不得因长文本导致页面横向溢出。
 - 2026-03-13: 补充 `Admin / API Keys` 页面成果截图到 spec 资产，固定当前双行表头、分组/状态筛选与布局收口效果。
+- 2026-07-08: 标准化分析、用户管理与系统设置路径；二级菜单默认折叠，当前子路由自动展开；保留 `/admin/rankings`、`/admin/users/usage`、`/admin/settings` 前端 replace 兼容入口到未来次版本。

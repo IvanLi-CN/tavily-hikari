@@ -133,6 +133,7 @@ import {
   type AlertsCenterView,
   type UserDetailTabKey,
   analysisPath,
+  canonicalAdminLocation,
   type RankingTabKey,
   alertsPath,
   buildAdminKeysPath,
@@ -1707,8 +1708,23 @@ type AdminTokenFilterDraft = {
   quotaState: AdminTokenQuotaStateFilter
 }
 
+function readCurrentAdminRoute(): AdminPathRoute {
+  const canonicalLocation = canonicalAdminLocation(
+    window.location.pathname,
+    window.location.search,
+    window.location.hash,
+  )
+  if (canonicalLocation) {
+    const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    if (currentLocation !== canonicalLocation) {
+      window.history.replaceState(null, '', canonicalLocation)
+    }
+  }
+  return parseAdminPath(window.location.pathname)
+}
+
 function AdminDashboard(): JSX.Element {
-  const [route, setRoute] = useState<AdminPathRoute>(() => parseAdminPath(window.location.pathname))
+  const [route, setRoute] = useState<AdminPathRoute>(() => readCurrentAdminRoute())
   const offline = useOfflineState()
   const [locationSearch, setLocationSearch] = useState(() => window.location.search)
   const { language } = useLanguage()
@@ -4037,8 +4053,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const userTagRouteActive =
-      (route.name === 'module' && route.module === 'users')
-      || route.name === 'user'
+      route.name === 'user'
       || route.name === 'user-tags'
       || route.name === 'user-tag-editor'
     if (!userTagRouteActive) return
@@ -4478,7 +4493,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const onPopState = () => {
-      setRoute(parseAdminPath(window.location.pathname))
+      setRoute(readCurrentAdminRoute())
       setLocationSearch(window.location.search)
     }
     window.addEventListener('popstate', onPopState)
@@ -4487,13 +4502,15 @@ function AdminDashboard(): JSX.Element {
 
   const navigateToPath = useCallback((path: string) => {
     const nextUrl = new URL(path, window.location.origin)
-    const nextRoute = parseAdminPath(nextUrl.pathname)
-    const nextLocation = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`
+    const canonicalLocation = canonicalAdminLocation(nextUrl.pathname, nextUrl.search, nextUrl.hash)
+    const effectiveUrl = new URL(canonicalLocation ?? path, window.location.origin)
+    const nextRoute = parseAdminPath(effectiveUrl.pathname)
+    const nextLocation = `${effectiveUrl.pathname}${effectiveUrl.search}${effectiveUrl.hash}`
     const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
     if (currentLocation !== nextLocation) {
       window.history.pushState(null, '', nextLocation)
     }
-    setLocationSearch(nextUrl.search)
+    setLocationSearch(effectiveUrl.search)
     setRoute((previous) => (isSameAdminRoute(previous, nextRoute) ? previous : nextRoute))
   }, [])
   const buildUsersOverviewPath = useCallback(() => {
@@ -4508,6 +4525,17 @@ function AdminDashboard(): JSX.Element {
       useUsersState ? usersSortOrder : getAdminUsersSortDirectionFromLocation(),
     )
   }, [route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
+
+  const buildUserTagsManagementPath = useCallback(() => {
+    const useUsersState = route.name === 'module' && route.module === 'users'
+    const query = useUsersState ? usersQuery : getAdminUsersQueryFromLocation()
+    const tagId = useUsersState ? usersTagFilterId : getAdminUsersTagFilterFromLocation()
+    const page = useUsersState ? usersPage : getAdminUsersPageFromLocation()
+    const sort = useUsersState ? usersSort : getAdminUsersSortFromLocation()
+    const order = useUsersState ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
+    const collection = isAnalysisUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+    return userTagsPath(query, tagId, page, sort, order, collection)
+  }, [isAnalysisUsageRoute, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateModule = useCallback(
     (target: AdminNavTarget) => {
@@ -4555,6 +4583,14 @@ function AdminDashboard(): JSX.Element {
         navigateToPath(analysisPath('pressure'))
         return
       }
+      if (target === 'users-list') {
+        navigateToPath(buildUsersOverviewPath())
+        return
+      }
+      if (target === 'user-tags') {
+        navigateToPath(buildUserTagsManagementPath())
+        return
+      }
       if (
         target === 'users'
         && (
@@ -4582,7 +4618,7 @@ function AdminDashboard(): JSX.Element {
       }
       navigateToPath(modulePath(target))
     },
-    [buildUsersOverviewPath, navigateToPath, rankingsTab, route],
+    [buildUserTagsManagementPath, buildUsersOverviewPath, navigateToPath, rankingsTab, route],
   )
 
   const navigateKey = useCallback(
@@ -4898,16 +4934,8 @@ function AdminDashboard(): JSX.Element {
   ])
 
   const navigateUserTags = useCallback(() => {
-    const query = route.name === 'module' && route.module === 'users' ? usersQuery : getAdminUsersQueryFromLocation()
-    const tagId = route.name === 'module' && route.module === 'users'
-      ? usersTagFilterId
-      : getAdminUsersTagFilterFromLocation()
-    const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
-    const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
-    const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
-    const collection = isAnalysisUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
-    navigateToPath(userTagsPath(query, tagId, page, sort, order, collection))
-  }, [isAnalysisUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
+    navigateToPath(buildUserTagsManagementPath())
+  }, [buildUserTagsManagementPath, navigateToPath])
 
   const navigateUserTagCreate = useCallback(() => {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
@@ -7566,7 +7594,15 @@ function AdminDashboard(): JSX.Element {
     { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
     { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
-    { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    {
+      target: 'users',
+      label: adminStrings.nav.users,
+      icon: <Icon icon="mdi:account-group-outline" width={18} height={18} />,
+      children: [
+        { target: 'users-list', label: adminStrings.users.table.user },
+        { target: 'user-tags', label: adminStrings.users.table.tags },
+      ],
+    },
     { target: 'announcements', label: adminStrings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
     ...(rechargeRecordsMeta?.hasRechargeOrders ? [{ target: 'recharges' as const, label: adminStrings.nav.recharges, icon: <Icon icon="mdi:credit-card-clock-outline" width={18} height={18} /> }] : []),
     { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
@@ -7596,15 +7632,18 @@ function AdminDashboard(): JSX.Element {
             : route.analysisView === 'pressure'
               ? 'analysis-pressure'
               : 'analysis-rankings'
-          : route.module
+          : route.module === 'users'
+            ? 'users-list'
+            : route.module
         : route.name === 'ha-node'
           ? 'system-settings-ha'
         : route.name === 'key'
           ? 'keys'
           : route.name === 'user'
-              || route.name === 'user-tags'
+            ? 'users-list'
+          : route.name === 'user-tags'
               || route.name === 'user-tag-editor'
-            ? 'users'
+            ? 'user-tags'
             : route.name === 'announcement-editor'
               ? 'announcements'
             : route.name === 'not-found'
@@ -7682,65 +7721,6 @@ function AdminDashboard(): JSX.Element {
   const visibleTagCards: Array<AdminUserTag | null> = activeUserTagEditorId === NEW_USER_TAG_CARD_ID
     ? [null, ...sortedTagCatalog]
     : sortedTagCatalog
-
-  const renderUserTagSummaryPanel = (): JSX.Element => (
-    <section className="surface panel">
-      <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <h2>{usersStrings.catalog.summaryTitle}</h2>
-          <p className="panel-description">{usersStrings.catalog.summaryDescription}</p>
-        </div>
-        <button type="button" className="btn btn-outline" onClick={navigateUserTags}>
-          {usersStrings.userTags.manageCatalog}
-        </button>
-      </div>
-
-      {tagCatalogError && (
-        <div className="alert alert-error" role="alert" style={{ marginBottom: 12 }}>
-          {tagCatalogError}
-        </div>
-      )}
-
-      {tagCatalogLoading ? (
-        <div className="empty-state alert">{usersStrings.catalog.loading}</div>
-      ) : sortedTagCatalog.length === 0 ? (
-        <div className="empty-state alert">{usersStrings.catalog.summaryEmpty}</div>
-      ) : (
-        <div className="user-tag-summary-grid">
-          {sortedTagCatalog.map((tag) => {
-            const isSystem = tag.systemKey != null
-            const isBlockAll = tag.effectKind === 'block_all'
-            const cardClasses = ['user-tag-summary-card', isBlockAll ? 'user-tag-summary-card-block' : '']
-              .filter(Boolean)
-              .join(' ')
-
-            return (
-              <article className={cardClasses} key={tag.id}>
-                <div className="user-tag-summary-card-head">
-                  <UserTagBadge
-                    tag={{
-                      displayName: tag.displayName,
-                      icon: tag.icon,
-                      systemKey: tag.systemKey,
-                      effectKind: tag.effectKind,
-                    }}
-                    usersStrings={usersStrings}
-                  />
-                  <StatusBadge tone={isSystem ? 'info' : isBlockAll ? 'error' : 'neutral'}>
-                    {isSystem ? usersStrings.catalog.scopeSystem : usersStrings.catalog.scopeCustom}
-                  </StatusBadge>
-                </div>
-                <div className="user-tag-summary-count">
-                  <strong>{formatNumber(tag.userCount)}</strong>
-                  <span className="panel-description">{usersStrings.catalog.summaryAccounts}</span>
-                </div>
-              </article>
-            )
-          })}
-        </div>
-      )}
-    </section>
-  )
 
   const renderUserTagEffectToggle = (): JSX.Element => (
     <div className="user-tag-effect-toggle" role="group" aria-label={usersStrings.catalog.fields.effect}>
@@ -12091,8 +12071,6 @@ function AdminDashboard(): JSX.Element {
               />
             )}
           </section>
-
-          {renderUserTagSummaryPanel()}
         </>
       )}
       {showAlerts && (
