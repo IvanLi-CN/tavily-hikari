@@ -988,6 +988,19 @@ body.not-found-page-body,
   gap: 8px;
 }
 
+.admin-sidebar-utility-toolbar {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.admin-sidebar-utility-toolbar > .theme-toggle-trigger,
+.admin-sidebar-utility-toolbar > .language-switcher-trigger {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  justify-content: center;
+}
+
 .admin-sidebar-utility-actions {
   display: grid;
 }

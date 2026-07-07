@@ -133,6 +133,12 @@
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/user-detail-header-tabs-entitlements-desktop-2048.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/key-detail-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/dashboard-stacked-1100.png`
+  - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/sidebar-utility-controls-row-1440.png`
+
+- 1440px 侧栏 utility 控件：主题和语言选择按钮保持同一行，等宽承载，未回落为纵向堆叠。
+  - PR: include
+
+![1440px 侧栏 utility 控件同行](./assets/sidebar-utility-controls-row-1440.png)
 
 - 1440px 仪表盘：桌面态工具区已下沉到左侧导航下方，内容区顶部只保留 compact intro。
 
