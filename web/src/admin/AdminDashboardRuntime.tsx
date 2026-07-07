@@ -8972,6 +8972,53 @@ function AdminDashboard(): JSX.Element {
         ),
       )
     }
+    const renderUserDetailTabs = () => (
+      <SegmentedTabs<UserDetailTabKey>
+        value={activeUserDetailTab}
+        onChange={navigateUserDetailTab}
+        options={userDetailTabOptions}
+        ariaLabel={usersStrings.detail.title}
+        className="user-detail-section-tabs"
+        smallViewportBehavior="buttons"
+        collapseMode="never"
+      />
+    )
+    const userDetailTitle = usersStrings.detail.title
+    const userDetailDescription = usersStrings.detail.subtitle.replace('{id}', route.id)
+    const navigateBackToUsers = () => {
+      if (lastRankingsPathRef.current) {
+        navigateToPath(lastRankingsPathRef.current)
+        return
+      }
+      navigateToPath(
+        buildUsersCollectionPath(
+          getAdminUsersQueryFromLocation(),
+          getAdminUsersTagFilterFromLocation(),
+          getAdminUsersPageFromLocation(),
+          getAdminUsersSortFromLocation(),
+          getAdminUsersSortDirectionFromLocation(),
+        ),
+      )
+    }
+    const userDetailSidebarUtility = (
+      <AdminShellSidebarUtility>
+        <AdminSidebarUtilityStack>
+          <AdminSidebarUtilityCard>
+            <div className="admin-sidebar-utility-actions">
+              <AdminReturnToConsoleLink
+                label={headerStrings.returnToConsole}
+                href={userConsoleHref}
+                className="admin-sidebar-utility-action"
+              />
+              <Button type="button" variant="ghost" size="sm" className="admin-sidebar-utility-action" onClick={navigateBackToUsers}>
+                <Icon icon="mdi:arrow-left" width={18} height={18} aria-hidden="true" />
+                {usersStrings.detail.back}
+              </Button>
+            </div>
+          </AdminSidebarUtilityCard>
+        </AdminSidebarUtilityStack>
+      </AdminShellSidebarUtility>
+    )
 
     return renderAdminPageWithGlobalOverlays(
       <AdminShell
@@ -8980,43 +9027,18 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
+        {userDetailSidebarUtility}
         {adminHaCompactAlert}
-        <section className="surface panel">
+        <div className="admin-desktop-only">
+          <AdminCompactIntro title={userDetailTitle} description={userDetailDescription} actions={renderUserDetailTabs()} />
+        </div>
+        <section className="surface panel admin-stacked-only">
           <div className="panel-header">
             <div>
-              <h2>{usersStrings.detail.title}</h2>
-              <p className="panel-description">
-                {usersStrings.detail.subtitle.replace('{id}', route.id)}
-              </p>
+              <h2>{userDetailTitle}</h2>
+              <p className="panel-description">{userDetailDescription}</p>
             </div>
-            <div className="admin-inline-actions">
-              <AdminReturnToConsoleLink
-                label={headerStrings.returnToConsole}
-                href={userConsoleHref}
-                className="admin-return-link--detail"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (lastRankingsPathRef.current) {
-                    navigateToPath(lastRankingsPathRef.current)
-                    return
-                  }
-                  navigateToPath(
-                    buildUsersCollectionPath(
-                      getAdminUsersQueryFromLocation(),
-                      getAdminUsersTagFilterFromLocation(),
-                      getAdminUsersPageFromLocation(),
-                      getAdminUsersSortFromLocation(),
-                      getAdminUsersSortDirectionFromLocation(),
-                    ),
-                  )
-                }}
-              >
-                {usersStrings.detail.back}
-              </Button>
-            </div>
+            {renderUserDetailTabs()}
           </div>
         </section>
 
@@ -9042,16 +9064,6 @@ function AdminDashboard(): JSX.Element {
           </section>
         ) : (
           <>
-            <SegmentedTabs<UserDetailTabKey>
-              value={activeUserDetailTab}
-              onChange={navigateUserDetailTab}
-              options={userDetailTabOptions}
-              ariaLabel={usersStrings.detail.title}
-              className="user-detail-section-tabs"
-              smallViewportBehavior="buttons"
-              collapseMode="never"
-            />
-
             {activeUserDetailTab === 'account' && (
             <>
             <section className="surface panel user-detail-panel-compact" id="user-detail-identity" role="tabpanel">
