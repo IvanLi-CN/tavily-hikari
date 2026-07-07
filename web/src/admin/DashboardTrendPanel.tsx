@@ -329,7 +329,11 @@ export default function DashboardTrendPanel({
     [comparisonRangeEnd, comparisonRangeStart, hourlyRequestWindow],
   )
   const currentPartialHourHighlightIndex = getCurrentPartialHourHighlightIndex(chartMode, rangeSlots)
-  const barChartKey = getDashboardHourlyBarChartKey(chartMode, rangeSlots)
+  const barChartKey = getDashboardHourlyBarChartKey(
+    chartMode,
+    rangeSlots,
+    `${palette.partialHourBackground}:${palette.partialHourDivider}`,
+  )
   const currentPartialHourPlugins = useMemo<Plugin<'bar'>[]>(
     () => currentPartialHourHighlightIndex == null
       ? []

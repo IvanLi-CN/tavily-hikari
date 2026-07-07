@@ -334,11 +334,13 @@ export function getCurrentPartialHourHighlightIndex(
 export function getDashboardHourlyBarChartKey(
   chartMode: DashboardHourlyChartMode,
   slots: ReadonlyArray<DashboardHourlyRangeSlot>,
+  markerStyleToken = '',
 ): string {
   const highlightIndex = getCurrentPartialHourHighlightIndex(chartMode, slots)
+  const styleSuffix = markerStyleToken.length > 0 ? `:${markerStyleToken}` : ''
   return highlightIndex == null
-    ? `${chartMode}:no-current-partial-hour:${slots.length}`
-    : `${chartMode}:current-partial-hour-${highlightIndex}:${slots.length}`
+    ? `${chartMode}:no-current-partial-hour:${slots.length}${styleSuffix}`
+    : `${chartMode}:current-partial-hour-${highlightIndex}:${slots.length}${styleSuffix}`
 }
 
 export function buildDashboardAreaStackLayers<T extends string>(

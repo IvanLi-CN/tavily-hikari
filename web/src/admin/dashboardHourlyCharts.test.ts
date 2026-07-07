@@ -273,6 +273,20 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(getDashboardHourlyBarChartKey('results', [])).toBe('results:no-current-partial-hour:0')
   })
 
+  it('includes the marker style token in the bar chart instance key', () => {
+    const slots = [
+      { bucketStart: 100, bucket: null },
+      { bucketStart: 200, bucket: null },
+    ]
+
+    expect(getDashboardHourlyBarChartKey('results', slots, 'light-marker')).toBe(
+      'results:current-partial-hour-1:2:light-marker',
+    )
+    expect(getDashboardHourlyBarChartKey('results', slots, 'dark-marker')).toBe(
+      'results:current-partial-hour-1:2:dark-marker',
+    )
+  })
+
   it('builds non-overlapping stacked area fill targets for all visible result series', () => {
     const layers = buildDashboardAreaStackLayers(DASHBOARD_RESULT_SERIES_ORDER)
 
