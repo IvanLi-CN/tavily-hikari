@@ -838,6 +838,11 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
       - name: Create/Update GitHub Release
         uses: ncipollo/release-action@v1
         with:
@@ -848,6 +853,79 @@ jobs:
           omitBodyDuringUpdate: true
           prerelease: ${{ needs.prepare.outputs.release_channel == 'rc' }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate CLI release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f scripts/install-tvly-hikari.sh || ! -f scripts/tvly-hikari ]]; then
+            echo "CLI release assets are not present in this ref; skipping CLI validation."
+            exit 0
+          fi
+
+          bash -n scripts/install-tvly-hikari.sh scripts/tvly-hikari
+
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "${smoke_root}"' EXIT
+          mkdir -p "${smoke_root}/bin"
+
+          cat > "${smoke_root}/bin/tvly" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" == "--version" ]]; then
+            echo "tavily-cli 0.1.4"
+            exit 0
+          fi
+          python3 - "$@" <<'PY' > "${TVLY_HIKARI_SMOKE_CAPTURE}"
+          import json
+          import os
+          import sys
+
+          json.dump({
+              "api_base_url": os.environ.get("TAVILY_API_BASE_URL"),
+              "api_key": os.environ.get("TAVILY_API_KEY"),
+              "args": sys.argv[1:],
+          }, sys.stdout)
+          PY
+          EOF
+          chmod 0755 "${smoke_root}/bin/tvly"
+
+          export PATH="${smoke_root}/bin:${PATH}"
+          export HOME="${smoke_root}/home"
+          export TVLY_HIKARI_SMOKE_CAPTURE="${smoke_root}/capture.json"
+
+          bash scripts/tvly-hikari configure \
+            --base-url http://127.0.0.1:58087 \
+            --token th-test-secretsecret \
+            --config-dir "${smoke_root}/config"
+
+          mode="$(python3 - "${smoke_root}/config/config.json" <<'PY'
+          import os
+          import stat
+          import sys
+
+          print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))
+          PY
+          )"
+          [[ "${mode}" == "0o600" ]] || {
+            echo "expected config mode 0600, got ${mode}" >&2
+            exit 1
+          }
+
+          TAVILY_HIKARI_CONFIG_FILE="${smoke_root}/config/config.json" \
+            bash scripts/tvly-hikari search "release smoke" --json
+
+          python3 - "${TVLY_HIKARI_SMOKE_CAPTURE}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          assert payload["api_base_url"] == "http://127.0.0.1:58087/api/tavily", payload
+          assert payload["api_key"] == "th-test-secretsecret", payload
+          assert payload["args"] == ["search", "release smoke", "--json"], payload
+          PY
 
       - name: Download binary release artifacts
         uses: actions/download-artifact@v8
@@ -874,6 +952,27 @@ jobs:
           fi
 
           gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload CLI assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f scripts/install-tvly-hikari.sh || ! -f scripts/tvly-hikari ]]; then
+            echo "CLI release assets are not present in this ref; skipping CLI asset upload."
+            exit 0
+          fi
+
+          install -m 0755 scripts/install-tvly-hikari.sh "${RUNNER_TEMP}/install-tvly-hikari.sh"
+          install -m 0755 scripts/tvly-hikari "${RUNNER_TEMP}/tvly-hikari"
+          gh release upload "${RELEASE_TAG}" \
+            "${RUNNER_TEMP}/install-tvly-hikari.sh" \
+            "${RUNNER_TEMP}/tvly-hikari" \
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"
 
       - name: Upsert PR release comment
         uses: actions/github-script@v9

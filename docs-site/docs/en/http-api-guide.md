@@ -111,6 +111,32 @@ For local development, the API URL is usually:
 
 `http://127.0.0.1:58087/api/tavily`
 
+## CLI + Agent Skills setup
+
+If you want the official Tavily CLI workflow but routed through Hikari, install `tvly-hikari`:
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "https://<your-host>" \
+  --token "th-<id>-<secret>"
+```
+
+The wrapper passes commands to the official `tvly` executable while setting:
+
+```bash
+TAVILY_API_BASE_URL=https://<your-host>/api/tavily
+TAVILY_API_KEY=th-<id>-<secret>
+```
+
+Optional Agent Skills:
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+`TAVILY_API_KEY` is intentionally the Hikari token in this downstream context. Hikari swaps in the
+real upstream Tavily key internally after quota and audit checks.
+
 ## Common responses and errors
 
 - `401 Unauthorized`

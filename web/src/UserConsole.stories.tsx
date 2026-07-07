@@ -21,6 +21,12 @@ import {
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu'
 import { Icon, getGuideClientIconName } from './lib/icons'
+import {
+  GuideCodeSample,
+  MobileGuideDropdown,
+  buildGuideContent,
+  resolveGuideSamples,
+} from './user-console/guide'
 import { userConsoleRouteToPath } from './lib/userConsoleRoutes'
 
 type ConsoleView = 'Console Home' | 'Token Detail'
@@ -33,7 +39,7 @@ type RechargePreview = 'normal' | 'test-price' | 'disabled' | 'hidden'
 type RechargeQuotePreview = 'normal' | 'month-end-clamp'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
-type GuideRevealMode = 'none' | 'landing-guide' | 'detail-guide'
+type GuideRevealMode = 'none' | 'landing-guide' | 'landing-cli-skills' | 'detail-guide'
 
 interface UserConsoleStoryArgs {
   consoleView: ConsoleView
@@ -67,6 +73,7 @@ type MockEventSourceShape = EventSource & {
 const TOKEN_DETAIL_PATH = '/console/tokens/a1b2'
 const guideProofLabels = [
   { id: 'codex', label: 'Codex CLI' },
+  { id: 'hikariCli', label: 'CLI + Skills' },
   { id: 'claude', label: 'Claude Code' },
   { id: 'vscode', label: 'VS Code' },
 ] as const
@@ -758,6 +765,68 @@ function UserConsoleMobileGuideMenuProof(): JSX.Element {
   )
 }
 
+function UserConsoleCliSkillsGuideFragment({ compact = false }: { compact?: boolean }): JSX.Element {
+  const [activeGuide, setActiveGuide] = useState<'hikariCli'>('hikariCli')
+  const guide = buildGuideContent('en', 'https://hikari.example.com', 'th-a1b2-1234567890abcdef').hikariCli
+  const guideTabs = [
+    { id: 'codex' as const, label: 'Codex CLI' },
+    { id: 'hikariCli' as const, label: 'CLI + Skills' },
+    { id: 'claude' as const, label: 'Claude Code CLI' },
+    { id: 'vscode' as const, label: 'VS Code / Copilot' },
+  ]
+
+  return (
+    <main className="user-console-cli-skills-guide-proof">
+      <section className="surface panel public-home-guide">
+        <h2>Connect Tavily Hikari to common clients</h2>
+        {compact ? (
+          <div className="guide-select" aria-label="Client selector (mobile)">
+            <MobileGuideDropdown active={activeGuide} onChange={() => setActiveGuide('hikariCli')} labels={guideTabs} />
+          </div>
+        ) : (
+          <div className="guide-tabs">
+            {guideTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`guide-tab${tab.id === activeGuide ? ' active' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="guide-panel">
+          <div className="guide-panel-header">
+            <h3>{guide.title}</h3>
+            <button type="button" className="guide-token-toggle btn btn-outline btn-sm" aria-pressed="true" aria-label="Hide token" title="Hide token">
+              <Icon icon="mdi:eye-off-outline" width={16} height={16} aria-hidden="true" />
+              <span>Hide token</span>
+            </button>
+          </div>
+          <ol>
+            {guide.steps.map((step, index) => (
+              <li key={index}>{step}</li>
+            ))}
+          </ol>
+          {resolveGuideSamples(guide).map((sample) => (
+            <div className="guide-sample" key={sample.title}>
+              <p className="guide-sample-title">{sample.title}</p>
+              <GuideCodeSample
+                copyLabel="Copy"
+                copyState="idle"
+                onCopy={() => undefined}
+                sample={sample}
+                sampleKey={sample.title}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+    </main>
+  )
+}
+
 export const __testables = {
   resolveStoryState,
 }
@@ -1234,6 +1303,11 @@ function UserConsoleStory(
     const timer = window.setTimeout(() => {
       if (guideRevealMode === 'detail-guide') {
         document.querySelector<HTMLButtonElement>('.user-console-guide-disclosure-trigger')?.click()
+      }
+      if (guideRevealMode === 'landing-cli-skills') {
+        const cliTab = Array.from(document.querySelectorAll<HTMLButtonElement>('.guide-tab'))
+          .find((button) => button.textContent?.trim() === 'CLI + Skills')
+        cliTab?.click()
       }
       const button = document.querySelector<HTMLButtonElement>('.guide-token-toggle')
       button?.click()
@@ -1849,6 +1923,50 @@ export const ConsoleHomeGuideTokenRevealed: Story = {
   name: 'Console Home Guide Token Revealed',
   args: consoleHomeTokenFocusArgs,
   render: (args) => <UserConsoleStory {...args} guideRevealMode="landing-guide" />,
+}
+
+export const ConsoleHomeCliSkillsGuide: Story = {
+  name: 'Console Home CLI + Skills Guide',
+  args: consoleHomeTokenFocusArgs,
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="landing-cli-skills" />,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 520))
+    const proofText = canvasElement.textContent ?? ''
+    if (!proofText.includes('CLI + Agent Skills')) {
+      throw new Error('Expected the CLI + Skills guide panel to be active.')
+    }
+    if (!proofText.includes('install-tvly-hikari.sh')) {
+      throw new Error('Expected the CLI installer command to render.')
+    }
+    if (!proofText.includes(`--base-url "${window.location.origin}"`)) {
+      throw new Error('Expected the installer command to include the current Storybook origin.')
+    }
+    if (!proofText.includes('--token "th-a1b2-1234567890abcdef"')) {
+      throw new Error('Expected the revealed guide token to flow into the installer command.')
+    }
+    if (!proofText.includes('npx skills add https://github.com/IvanLi-CN/tavily-hikari')) {
+      throw new Error('Expected the optional Agent Skills install command to render.')
+    }
+  },
+}
+
+export const CliSkillsGuideFragment: Story = {
+  name: 'CLI + Skills Guide Fragment',
+  args: consoleHomeTokenFocusArgs,
+  render: () => <UserConsoleCliSkillsGuideFragment />,
+  parameters: {
+    layout: 'fullscreen',
+  },
+}
+
+export const CliSkillsGuideFragmentMobile: Story = {
+  name: 'CLI + Skills Guide Fragment Mobile',
+  args: consoleHomeTokenFocusArgs,
+  render: () => <UserConsoleCliSkillsGuideFragment compact />,
+  parameters: {
+    layout: 'fullscreen',
+    ...mobileViewport,
+  },
 }
 
 export const TokenDetailOverview: Story = {

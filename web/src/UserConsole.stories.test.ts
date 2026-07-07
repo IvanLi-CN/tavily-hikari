@@ -98,6 +98,16 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Console Home Guide Token Revealed',
       args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
     })
+    expect(userConsoleStories.ConsoleHomeCliSkillsGuide).toMatchObject({
+      name: 'Console Home CLI + Skills Guide',
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
+    })
+    expect(userConsoleStories.CliSkillsGuideFragment).toMatchObject({
+      name: 'CLI + Skills Guide Fragment',
+    })
+    expect(userConsoleStories.CliSkillsGuideFragmentMobile).toMatchObject({
+      name: 'CLI + Skills Guide Fragment Mobile',
+    })
     expect(userConsoleStories.TokenDetailOverview).toMatchObject({
       name: 'Token Detail Overview',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },

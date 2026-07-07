@@ -30,6 +30,25 @@ Hikari instead of exposing raw Tavily keys directly.
 
 If the client setup only asks for a `Base URL + API key`, it usually belongs on `/api/tavily/*`.
 
+### How do I use Tavily CLI or Agent Skills through Hikari
+
+Install the Release wrapper:
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "https://<your-host>" \
+  --token "th-<id>-<secret>"
+```
+
+Then run `tvly-hikari search "query" --json`. Agent Skills are optional and installed separately:
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+The wrapper stores a Hikari token locally and routes official `tvly` commands to
+`https://<your-host>/api/tavily`.
+
 ### Do I have to use ForwardAuth
 
 No, but you do need at least one admin access strategy.

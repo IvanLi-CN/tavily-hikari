@@ -85,6 +85,31 @@ curl -X POST http://127.0.0.1:58087/api/tavily/search \
 - 管理员注入上游 Tavily key
 - Hikari 到 Tavily HTTP facade 的完整请求链路
 
+## 安装 CLI wrapper
+
+拿到 Hikari 用户 token 后，可以安装 GitHub Release 分发的 wrapper：
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "http://127.0.0.1:58087" \
+  --token "th-<id>-<secret>"
+```
+
+之后通过 Hikari 运行官方 Tavily CLI 命令：
+
+```bash
+tvly-hikari search "rust async runtime" --json
+```
+
+可选安装 Agent Skills：
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+CLI 会以 `0600` 权限保存 Hikari token，并把流量发到 `<base-url>/api/tavily`。不要把 Tavily
+官方 API key 当成下游 token 使用。
+
 ## 单容器 POC
 
 ```bash

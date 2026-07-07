@@ -477,6 +477,34 @@
   min-width: 0;
 }
 
+.user-console-cli-skills-guide-proof {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+  width: min(100%, 1180px);
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body:has(.user-console-cli-skills-guide-proof),
+body:has(.user-console-cli-skills-guide-proof) #storybook-root {
+  margin: 0;
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+.user-console-cli-skills-guide-proof .public-home-guide,
+.user-console-cli-skills-guide-proof .guide-panel,
+.user-console-cli-skills-guide-proof .guide-sample,
+.user-console-cli-skills-guide-proof .guide-code-shell {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .guide-tabs {
   display: flex;
   gap: 12px;
@@ -580,12 +608,19 @@
   .guide-tabs { display: none !important; }
   .guide-select { display: block; }
   .guide-panel-header {
-    flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
   }
   .guide-token-toggle {
-    width: 100%;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
     justify-content: center;
+    border-radius: 14px;
+  }
+  .guide-token-toggle > span {
+    display: none;
   }
   .guide-panel {
     padding: 1rem;
@@ -1029,10 +1064,36 @@
 
 .guide-code-shell pre {
   margin: 0;
-  padding: 1rem 1.1rem 1.05rem;
+  padding: 2.65rem 1.1rem 1.05rem;
   overflow-x: auto;
   max-width: 100%;
+  min-width: 0;
   -webkit-overflow-scrolling: touch;
+}
+
+.guide-copy-button {
+  position: absolute;
+  top: 7px;
+  right: 76px;
+  z-index: 1;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 8px;
+  gap: 5px;
+  border-radius: 8px;
+  background: hsl(var(--card) / 0.92);
+  color: hsl(var(--muted-foreground));
+  box-shadow: 0 4px 12px hsl(var(--foreground) / 0.08);
+}
+
+.guide-copy-button.copied {
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary) / 0.92);
+}
+
+.guide-copy-button.error {
+  color: hsl(var(--foreground));
+  background: hsl(var(--accent) / 0.22);
 }
 
 .guide-code-shell pre::before {
@@ -1047,16 +1108,36 @@
   border-radius: 0;
   font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 0.965rem;
+  min-width: max-content;
+  white-space: pre;
 }
 
 @media (max-width: 767px) {
   .guide-code-shell pre {
-    padding: 0.95rem 0.95rem 1rem;
+    padding: 2.6rem 0.95rem 1rem;
+    overflow-x: auto;
   }
 
   .guide-code-shell pre code {
     font-size: 0.88rem;
     line-height: 1.55;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .guide-copy-button {
+    right: 70px;
+  }
+
+  .user-console-cli-skills-guide-proof {
+    margin: 0 !important;
+    padding: 20px 14px 28px;
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+
+  .user-console-cli-skills-guide-proof .public-home-guide {
+    width: 100%;
   }
 }
 

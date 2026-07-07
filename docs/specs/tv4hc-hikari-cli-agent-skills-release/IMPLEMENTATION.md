@@ -1,0 +1,33 @@
+# Implementation
+
+## Current Implementation
+
+- `scripts/tvly-hikari` is a Bash wrapper around the official `tvly` executable.
+- The wrapper validates Hikari token shape against the backend contract: `th-<4 chars>-<12 or 24 chars>`.
+- `scripts/install-tvly-hikari.sh` installs the wrapper from GitHub Release assets or a local test
+  source, configures Hikari origin/token, and optionally installs Agent Skills.
+- The installer writes a `tvly-hikari` launcher plus a hidden real wrapper so custom `--config-dir`
+  remains the default for later invocations while `TAVILY_HIKARI_CONFIG_DIR` and
+  `TAVILY_HIKARI_CONFIG_FILE` can still override it.
+- `.github/workflows/release.yml` validates the scripts and uploads both CLI assets during stable
+  and rc releases.
+- `skills/` contains the Hikari-specific Agent Skills package.
+- User-facing guide data now includes `hikariCli`, surfaced as `CLI + Skills` in desktop tabs and
+  mobile dropdowns.
+- Guide code blocks include copy controls using the existing clipboard helper.
+- Storybook includes `Console Home CLI + Skills Guide` for the new state.
+
+## Verification Notes
+
+- CLI tests use a fake `tvly` executable to capture injected environment variables.
+- Installer tests use a local wrapper source and fake `npx` so no external skills install is
+  performed.
+- Installer tests assert that a custom `--config-dir` remains readable from the installed launcher.
+- UI guide tests assert generated installer and skills commands.
+- Visual evidence is captured from Storybook with Chrome DevTools Protocol viewport emulation. The
+  mobile proof uses a 390 px viewport and verifies `scrollWidth=390` before writing the PNG.
+
+## References
+
+- Spec: `docs/specs/tv4hc-hikari-cli-agent-skills-release/SPEC.md`
+- Skills package: `skills/README.md`

@@ -148,7 +148,7 @@ export const ZH: TranslationShape = {
           hide: '隐藏密钥',
         },
         tabs: {
-          codex: 'Codex CLI',
+          codex: 'Codex CLI', hikariCli: 'CLI + Skills',
           claude: 'Claude Code CLI',
           vscode: 'VS Code / Copilot',
           claudeDesktop: 'Claude Desktop',

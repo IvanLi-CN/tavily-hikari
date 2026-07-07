@@ -149,7 +149,7 @@ export const EN: TranslationShape = {
           hide: 'Hide token',
         },
         tabs: {
-          codex: 'Codex CLI',
+          codex: 'Codex CLI', hikariCli: 'CLI + Skills',
           claude: 'Claude Code CLI',
           vscode: 'VS Code / Copilot',
           claudeDesktop: 'Claude Desktop',

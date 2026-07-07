@@ -1,5 +1,8 @@
+import { useCallback, useState } from 'react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
+import { Button } from '../components/ui/button'
 import { Icon, getGuideClientIconName } from '../lib/icons'
+import { copyText } from '../lib/clipboard'
 import type { Language } from '../i18n'
 import {
   type GuideContent,
@@ -12,6 +15,85 @@ import {
   TAVILY_SEARCH_DOC_URL,
   VSCODE_DOC_URL,
 } from './runtime'
+
+export type GuideCopyState = 'idle' | 'copied' | 'error'
+
+export function useGuideSampleCopy(): {
+  guideCopyState: Record<string, GuideCopyState>
+  copyGuideSample: (sampleKey: string, snippet: string) => Promise<void>
+} {
+  const [guideCopyState, setGuideCopyState] = useState<Record<string, GuideCopyState>>({})
+
+  const copyGuideSample = useCallback(async (sampleKey: string, snippet: string) => {
+    const result = await copyText(guideSnippetToPlainText(snippet))
+    const nextState: GuideCopyState = result.ok ? 'copied' : 'error'
+    setGuideCopyState((previous) => ({
+      ...previous,
+      [sampleKey]: nextState,
+    }))
+    window.setTimeout(() => {
+      setGuideCopyState((previous) => {
+        if (previous[sampleKey] !== nextState) return previous
+        const next = { ...previous }
+        delete next[sampleKey]
+        return next
+      })
+    }, 1600)
+  }, [])
+
+  return { guideCopyState, copyGuideSample }
+}
+
+export function GuideCodeSample({
+  copyLabel,
+  copyState,
+  onCopy,
+  sample,
+  sampleKey,
+}: {
+  copyLabel: string
+  copyState: GuideCopyState
+  onCopy: (sampleKey: string, snippet: string) => void
+  sample: GuideSample
+  sampleKey: string
+}): JSX.Element {
+  return (
+    <div className="mockup-code relative guide-code-shell">
+      <span className="guide-lang-badge badge badge-outline badge-sm">
+        {(sample.language ?? 'code').toUpperCase()}
+      </span>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className={`guide-copy-button${copyState === 'copied' ? ' copied' : copyState === 'error' ? ' error' : ''}`}
+        aria-label={copyLabel}
+        title={copyLabel}
+        onClick={() => onCopy(sampleKey, sample.snippet)}
+      >
+        <Icon
+          icon={copyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'}
+          width={14}
+          height={14}
+          aria-hidden="true"
+        />
+        <span>{copyLabel}</span>
+      </Button>
+      <pre>
+        <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+      </pre>
+    </div>
+  )
+}
+
+export function resolveGuideCopyLabel(
+  copyState: GuideCopyState,
+  labels: { copied: string, copy: string, copyFailed: string },
+): string {
+  if (copyState === 'copied') return labels.copied
+  if (copyState === 'error') return labels.copyFailed
+  return labels.copy
+}
 export function MobileGuideDropdown({
   active,
   onChange,
@@ -64,6 +146,8 @@ export function MobileGuideDropdown({
 export function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {
   const isEnglish = language === 'en'
   const codexSnippet = buildCodexSnippet(baseUrl)
+  const hikariCliInstallSnippet = buildHikariCliInstallSnippet(baseUrl, prettyToken)
+  const hikariSkillsSnippet = buildHikariSkillsSnippet()
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
   const genericMcpSnippet = buildGenericMcpSnippet(baseUrl, prettyToken)
@@ -88,6 +172,36 @@ export function buildGuideContent(language: Language, baseUrl: string, prettyTok
       reference: {
         label: 'OpenAI Codex docs',
         url: CODEX_DOC_URL,
+      },
+    },
+    hikariCli: {
+      title: 'CLI + Agent Skills',
+      steps: isEnglish
+        ? [
+            <>Install <code>tvly-hikari</code> with this Hikari origin and token; the config is stored locally with <code>0600</code> permissions.</>,
+            <>Run Tavily commands through <code>tvly-hikari search/extract/crawl/map/research ... --json</code>; the wrapper injects <code>{baseUrl}/api/tavily</code> and the Hikari token.</>,
+            <>Install the Agent Skills separately when you want agents to discover the Hikari-specific workflows.</>,
+          ]
+        : [
+            <>使用当前 Hikari origin 和 token 安装 <code>tvly-hikari</code>；本地配置会以 <code>0600</code> 权限保存。</>,
+            <>通过 <code>tvly-hikari search/extract/crawl/map/research ... --json</code> 调用 Tavily；wrapper 会注入 <code>{baseUrl}/api/tavily</code> 与 Hikari token。</>,
+            <>需要让 Agent 自动发现 Hikari 工作流时，再单独安装 Agent Skills。</>,
+          ],
+      samples: [
+        {
+          title: isEnglish ? 'Install tvly-hikari' : '安装 tvly-hikari',
+          language: 'bash',
+          snippet: hikariCliInstallSnippet,
+        },
+        {
+          title: isEnglish ? 'Optional: install Agent Skills' : '可选：安装 Agent Skills',
+          language: 'bash',
+          snippet: hikariSkillsSnippet,
+        },
+      ],
+      reference: {
+        label: 'Tavily Hikari GitHub Releases',
+        url: 'https://github.com/IvanLi-CN/tavily-hikari/releases/latest',
       },
     },
     claude: {
@@ -257,6 +371,32 @@ export function buildGuideContent(language: Language, baseUrl: string, prettyTok
   }
 }
 
+export function buildHikariCliInstallSnippet(baseUrl: string, prettyToken: string): string {
+  return `curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \\
+  --base-url "${baseUrl}" \\
+  --token "${prettyToken}"`
+}
+
+export function buildHikariSkillsSnippet(): string {
+  return 'npx skills add https://github.com/IvanLi-CN/tavily-hikari'
+}
+
+export function guideSnippetToPlainText(snippet: string): string {
+  if (typeof document !== 'undefined') {
+    const template = document.createElement('template')
+    template.innerHTML = snippet
+    return template.content.textContent ?? ''
+  }
+
+  return snippet
+    .replace(/<[^>]*>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
 export function buildCodexSnippet(baseUrl: string): string {
   return [
     '<span class="hl-comment"># ~/.codex/config.toml</span>',
@@ -350,4 +490,3 @@ export function resolveGuideSamples(content: GuideContent): GuideSample[] {
   }
   return []
 }
-

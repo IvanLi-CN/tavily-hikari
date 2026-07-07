@@ -89,6 +89,31 @@ Once that works, you have verified:
 - an upstream Tavily key is registered
 - Hikari can proxy a real Tavily HTTP request end to end
 
+## Install the CLI wrapper
+
+After you have a Hikari user token, install the GitHub Release wrapper:
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "http://127.0.0.1:58087" \
+  --token "th-<id>-<secret>"
+```
+
+Then use official Tavily CLI commands through Hikari:
+
+```bash
+tvly-hikari search "rust async runtime" --json
+```
+
+Optional Agent Skills install:
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+The CLI stores the Hikari token with `0600` permissions and sends traffic to
+`<base-url>/api/tavily`. Do not use an official Tavily API key as the downstream token.
+
 ## Single-container POC
 
 ```bash

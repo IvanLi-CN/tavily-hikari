@@ -25,12 +25,14 @@ interface PublicHomeStoryArgs {
 
 const guideProofLabels = [
   { id: 'codex', label: 'Codex CLI' },
+  { id: 'hikariCli', label: 'CLI + Skills' },
   { id: 'claude', label: 'Claude Code' },
   { id: 'vscode', label: 'VS Code' },
 ] as const
 
 const publicGuideTabs = [
   { id: 'codex', label: 'Codex CLI' },
+  { id: 'hikariCli', label: 'CLI + Skills' },
   { id: 'claude', label: 'Claude Code CLI' },
   { id: 'vscode', label: 'VS Code / Copilot' },
   { id: 'claudeDesktop', label: 'Claude Desktop' },

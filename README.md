@@ -184,6 +184,37 @@ Cherry Studio setup:
 
 > Do not put your Tavily API key directly into Cherry Studio. Always route traffic through Hikari by using its access token.
 
+### CLI + Agent Skills integration
+
+Install the GitHub Release-distributed wrapper with your Hikari origin and Hikari access token:
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "https://<your Hikari host>" \
+  --token "th-<id>-<secret>"
+```
+
+Then run official Tavily CLI commands through Hikari:
+
+```bash
+tvly-hikari search "latest AI agent news" --json
+tvly-hikari extract https://example.com --json
+tvly-hikari crawl https://example.com/docs --json
+tvly-hikari map https://example.com/docs --json
+tvly-hikari research "compare MCP and CLI agent search" --json
+```
+
+Optional Agent Skills install:
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+`tvly-hikari` stores the Hikari token in `~/.config/tavily-hikari-cli/config.json` with `0600`
+permissions and injects `TAVILY_API_BASE_URL=https://<your Hikari host>/api/tavily` plus
+`TAVILY_API_KEY=th-<id>-<secret>` for the official `tvly` command. The token is not a raw Tavily
+API key.
+
 For the full HTTP proxy design and acceptance criteria, see [`docs/tavily-http-api-proxy.md`](docs/tavily-http-api-proxy.md).
 
 ## Key Lifecycle & Observability

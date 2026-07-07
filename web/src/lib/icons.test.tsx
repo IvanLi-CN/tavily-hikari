@@ -77,6 +77,7 @@ const REQUIRED_RUNTIME_ICON_NAMES = [
 describe('local icon registry', () => {
   it('maps guide clients to bundled icons with a stable local fallback', () => {
     expect(getGuideClientIconName('codex')).toBe('simple-icons:openai')
+    expect(getGuideClientIconName('hikariCli')).toBe('mdi:github')
     expect(getGuideClientIconName('claude')).toBe('simple-icons:anthropic')
     expect(getGuideClientIconName('vscode')).toBe('simple-icons:visualstudiocode')
     expect(getGuideClientIconName('claudeDesktop')).toBe('simple-icons:anthropic')

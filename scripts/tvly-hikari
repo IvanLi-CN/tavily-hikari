@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="tvly-hikari"
+MIN_TVLY_VERSION="0.1.3"
+DEFAULT_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/tavily-hikari-cli"
+CONFIG_DIR="${TAVILY_HIKARI_CONFIG_DIR:-${DEFAULT_CONFIG_DIR}}"
+CONFIG_FILE="${TAVILY_HIKARI_CONFIG_FILE:-${CONFIG_DIR}/config.json}"
+
+usage() {
+  cat <<'EOF'
+tvly-hikari - Tavily Hikari wrapper for the official tvly CLI
+
+Usage:
+  tvly-hikari configure --base-url <Hikari origin> --token <th-...> [--config-dir <dir>]
+  tvly-hikari config show
+  tvly-hikari doctor
+  tvly-hikari <tvly command> [args...]
+
+Examples:
+  tvly-hikari configure --base-url http://127.0.0.1:58087 --token th-test-secretsecret
+  tvly-hikari search "latest AI agent news" --json
+  tvly-hikari extract https://example.com --json
+
+Environment overrides:
+  TAVILY_HIKARI_BASE_URL   Hikari origin, for example https://hikari.example.com
+  TAVILY_HIKARI_TOKEN      Hikari access token, not an official Tavily API key
+  TAVILY_HIKARI_CONFIG_DIR Override config directory
+  TAVILY_HIKARI_CONFIG_FILE Override config file
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "${APP_NAME}" "$*" >&2
+  exit 1
+}
+
+require_python() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to read and write ${CONFIG_FILE}"
+}
+
+normalize_origin() {
+  local value="$1"
+  value="${value%/}"
+  [[ -n "${value}" ]] || die "--base-url must not be empty"
+  printf '%s\n' "${value}"
+}
+
+resolve_api_base_url() {
+  local origin
+  origin="$(normalize_origin "$1")"
+  if [[ "${origin}" == */api/tavily ]]; then
+    printf '%s\n' "${origin}"
+  else
+    printf '%s/api/tavily\n' "${origin}"
+  fi
+}
+
+mask_token() {
+  local token="$1"
+  if [[ "${#token}" -le 12 ]]; then
+    printf '%s\n' 'th-****'
+    return
+  fi
+  printf '%s...%s\n' "${token:0:7}" "${token: -4}"
+}
+
+validate_hikari_token() {
+  local token="$1"
+  [[ "${token}" =~ ^th-[A-Za-z0-9]{4}-([A-Za-z0-9]{12}|[A-Za-z0-9]{24})$ ]] \
+    || die "--token must be an unmasked Hikari token shaped like th-xxxx-xxxxxxxxxxxx or th-xxxx-xxxxxxxxxxxxxxxxxxxxxxxx"
+}
+
+tvly_version() {
+  local tvly_bin="$1"
+  "${tvly_bin}" --version 2>/dev/null \
+    | python3 -c 'import re, sys; data=sys.stdin.read(); match=re.search(r"\d+\.\d+\.\d+", data); print(match.group(0) if match else "")'
+}
+
+ensure_tvly_compatible() {
+  local tvly_bin="$1"
+  require_python
+  local version
+  version="$(tvly_version "${tvly_bin}")"
+  [[ -n "${version}" ]] || die "official tvly CLI version could not be detected; install tavily-cli >= ${MIN_TVLY_VERSION}"
+  python3 - "${version}" "${MIN_TVLY_VERSION}" <<'PY' || die "official tvly CLI ${version} is too old; install tavily-cli >= ${MIN_TVLY_VERSION} so TAVILY_API_BASE_URL is honored"
+import sys
+
+def parse(value):
+    return tuple(int(part) for part in value.split("."))
+
+installed, minimum = sys.argv[1:3]
+raise SystemExit(0 if parse(installed) >= parse(minimum) else 1)
+PY
+}
+
+configure() {
+  local base_url=""
+  local token=""
+  local config_dir="${CONFIG_DIR}"
+  local target_file="${CONFIG_FILE}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base-url)
+        [[ $# -ge 2 ]] || die "--base-url requires a value"
+        base_url="$2"
+        shift 2
+        ;;
+      --token)
+        [[ $# -ge 2 ]] || die "--token requires a value"
+        token="$2"
+        shift 2
+        ;;
+      --config-dir)
+        [[ $# -ge 2 ]] || die "--config-dir requires a value"
+        config_dir="$2"
+        target_file="${config_dir}/config.json"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown configure option: $1"
+        ;;
+    esac
+  done
+
+  [[ -n "${base_url}" ]] || die "configure requires --base-url"
+  [[ -n "${token}" ]] || die "configure requires --token"
+  validate_hikari_token "${token}"
+
+  require_python
+  base_url="$(normalize_origin "${base_url}")"
+  local target_dir
+  target_dir="$(dirname "${target_file}")"
+
+  install -d -m 0700 "${target_dir}"
+  local tmp_file
+  tmp_file="$(mktemp "${target_dir}/config.json.XXXXXX")"
+  python3 - "$base_url" "$token" >"${tmp_file}" <<'PY'
+import json
+import sys
+
+base_url, token = sys.argv[1], sys.argv[2]
+json.dump({"baseUrl": base_url, "token": token}, sys.stdout, indent=2)
+sys.stdout.write("\n")
+PY
+  chmod 0600 "${tmp_file}"
+  mv "${tmp_file}" "${target_file}"
+  chmod 0600 "${target_file}"
+
+  printf 'Configured %s\n' "${target_file}"
+}
+
+read_config() {
+  if [[ -n "${TAVILY_HIKARI_BASE_URL:-}" && -n "${TAVILY_HIKARI_TOKEN:-}" ]]; then
+    printf '%s\n%s\n' "${TAVILY_HIKARI_BASE_URL}" "${TAVILY_HIKARI_TOKEN}"
+    return
+  fi
+
+  [[ -f "${CONFIG_FILE}" ]] || die "missing config at ${CONFIG_FILE}; run: tvly-hikari configure --base-url <origin> --token <th-...>"
+  require_python
+  python3 - "${CONFIG_FILE}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+base_url = data.get("baseUrl") or data.get("base_url")
+token = data.get("token")
+if not isinstance(base_url, str) or not base_url.strip():
+    raise SystemExit(f"{path}: baseUrl is required")
+if not isinstance(token, str) or not token.strip():
+    raise SystemExit(f"{path}: token is required")
+print(base_url.strip())
+print(token.strip())
+PY
+}
+
+show_config() {
+  local base_url token
+  {
+    IFS= read -r base_url
+    IFS= read -r token
+  } < <(read_config)
+  validate_hikari_token "${token}"
+  printf 'baseUrl: %s\n' "${base_url}"
+  printf 'apiBaseUrl: %s\n' "$(resolve_api_base_url "${base_url}")"
+  printf 'token: %s\n' "$(mask_token "${token}")"
+  printf 'config: %s\n' "${CONFIG_FILE}"
+}
+
+doctor() {
+  show_config
+  if command -v tvly >/dev/null 2>&1; then
+    local tvly_bin
+    tvly_bin="$(command -v tvly)"
+    ensure_tvly_compatible "${tvly_bin}"
+    printf 'tvly: %s\n' "${tvly_bin}"
+    printf 'tvlyVersion: %s\n' "$(tvly_version "${tvly_bin}")"
+  else
+    die "official tvly CLI not found; install it with: uv tool install --upgrade tavily-cli"
+  fi
+}
+
+run_tvly() {
+  local tvly_bin
+  tvly_bin="$(command -v tvly || true)"
+  [[ -n "${tvly_bin}" ]] || die "official tvly CLI not found; install it with: uv tool install --upgrade tavily-cli"
+  ensure_tvly_compatible "${tvly_bin}"
+
+  local base_url token
+  {
+    IFS= read -r base_url
+    IFS= read -r token
+  } < <(read_config)
+  validate_hikari_token "${token}"
+
+  export TAVILY_API_BASE_URL
+  export TAVILY_API_KEY
+  TAVILY_API_BASE_URL="$(resolve_api_base_url "${base_url}")"
+  TAVILY_API_KEY="${token}"
+
+  exec "${tvly_bin}" "$@"
+}
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    usage
+    exit 0
+  fi
+
+  case "$1" in
+    -h|--help)
+      usage
+      ;;
+    configure)
+      shift
+      configure "$@"
+      ;;
+    config)
+      shift
+      case "${1:-}" in
+        show)
+          show_config
+          ;;
+        *)
+          die "unknown config command: ${1:-}; supported: show"
+          ;;
+      esac
+      ;;
+    doctor)
+      doctor
+      ;;
+    *)
+      run_tvly "$@"
+      ;;
+  esac
+}
+
+main "$@"

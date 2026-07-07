@@ -109,6 +109,32 @@ curl -H "Authorization: Bearer th-<id>-<secret>" \
 
 `http://127.0.0.1:58087/api/tavily`
 
+## CLI + Agent Skills 接入
+
+如果你想继续使用官方 Tavily CLI 工作流，但让流量通过 Hikari，可以安装 `tvly-hikari`：
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "https://<your-host>" \
+  --token "th-<id>-<secret>"
+```
+
+wrapper 会透传命令给官方 `tvly`，同时设置：
+
+```bash
+TAVILY_API_BASE_URL=https://<your-host>/api/tavily
+TAVILY_API_KEY=th-<id>-<secret>
+```
+
+可选安装 Agent Skills：
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+这里的 `TAVILY_API_KEY` 在下游语义里故意使用 Hikari token。Hikari 会在额度与审计检查后，在
+内部替换成真实上游 Tavily key。
+
 ## 常见错误与返回
 
 - `401 Unauthorized`

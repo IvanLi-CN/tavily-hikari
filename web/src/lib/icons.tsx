@@ -4,6 +4,7 @@ import { BUNDLED_ICONS } from './icon-data'
 
 type GuideClientIconId =
   | 'codex'
+  | 'hikariCli'
   | 'claude'
   | 'vscode'
   | 'claudeDesktop'
@@ -14,6 +15,7 @@ type GuideClientIconId =
 
 const GUIDE_CLIENT_ICON_NAMES: Record<GuideClientIconId, string> = {
   codex: 'simple-icons:openai',
+  hikariCli: 'mdi:github',
   claude: 'simple-icons:anthropic',
   vscode: 'simple-icons:visualstudiocode',
   claudeDesktop: 'simple-icons:anthropic',

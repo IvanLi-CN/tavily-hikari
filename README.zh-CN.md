@@ -178,6 +178,37 @@ Tavily Hikari 通过 `/api/tavily/search` 为 Tavily HTTP API 提供代理与密
 
 > 安全提醒：不要在 Cherry Studio 中直接填写 Tavily 官方 API key，推荐始终通过 Hikari 颁发的访问令牌间接访问 Tavily。
 
+### CLI + Agent Skills 接入
+
+使用 GitHub Release 资产安装 wrapper，并显式传入你的 Hikari origin 与 Hikari 访问令牌：
+
+```bash
+curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \
+  --base-url "https://<你的 Hikari 域名>" \
+  --token "th-<id>-<secret>"
+```
+
+之后通过 Hikari 运行官方 Tavily CLI 命令：
+
+```bash
+tvly-hikari search "latest AI agent news" --json
+tvly-hikari extract https://example.com --json
+tvly-hikari crawl https://example.com/docs --json
+tvly-hikari map https://example.com/docs --json
+tvly-hikari research "compare MCP and CLI agent search" --json
+```
+
+可选安装 Agent Skills：
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari
+```
+
+`tvly-hikari` 会把 Hikari token 以 `0600` 权限写入
+`~/.config/tavily-hikari-cli/config.json`，并为官方 `tvly` 注入
+`TAVILY_API_BASE_URL=https://<你的 Hikari 域名>/api/tavily` 与
+`TAVILY_API_KEY=th-<id>-<secret>`。这里的 token 不是 Tavily 官方 API key。
+
 更完整的 HTTP 代理设计、字段说明与验收标准见 [`docs/tavily-http-api-proxy.md`](docs/tavily-http-api-proxy.md)。
 
 ## 密钥生命周期 & 审计

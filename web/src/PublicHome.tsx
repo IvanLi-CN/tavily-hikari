@@ -46,7 +46,7 @@ import { useOfflineState } from './pwa/useOfflineState'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
-type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
+type GuideKey = 'codex' | 'hikariCli' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
 
 interface GuideReference {
   label: string
@@ -86,6 +86,7 @@ const TOKEN_MONTHLY_LIMIT = 5000
 
 const GUIDE_KEY_ORDER: GuideKey[] = [
   'codex',
+  'hikariCli',
   'claude',
   'vscode',
   'claudeDesktop',
@@ -94,7 +95,7 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'cherryStudio',
   'other',
 ]
-const PRIMARY_GUIDE_KEYS = new Set<GuideKey>(['codex', 'claude', 'vscode'])
+const PRIMARY_GUIDE_KEYS = new Set<GuideKey>(['codex', 'hikariCli', 'claude', 'vscode'])
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -128,6 +129,7 @@ function PublicHome(): JSX.Element {
   const [profileUnavailable, setProfileUnavailable] = useState(false)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const [revealedGuideToken, setRevealedGuideToken] = useState<string | null>(null)
+  const [guideCopyState, setGuideCopyState] = useState<Record<string, 'idle' | 'copied' | 'error'>>({})
   const updateBanner = useUpdateAvailable()
   const offline = useOfflineState()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
@@ -320,6 +322,9 @@ function PublicHome(): JSX.Element {
   const hasTokenInfo = token.trim().length > 0
   const canRevealGuideToken = isFullToken(token)
   const guideTokenVisible = shouldRevealPublicGuideToken(token, revealedGuideToken)
+  const guideTokenToggleLabel = guideTokenVisible
+    ? publicStrings.guide.tokenVisibility.hide
+    : publicStrings.guide.tokenVisibility.show
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
   const tokenMetricsPending = hasValidTokenForLogs && tokenMetrics === null
   const hideTokenPanels = !hasTokenInfo && (showAuthStatusLoading || isLoggedOut)
@@ -341,6 +346,22 @@ function PublicHome(): JSX.Element {
   )
   const primaryGuideTabs = guideTabs.filter((tab) => PRIMARY_GUIDE_KEYS.has(tab.id))
   const secondaryGuideTabs = guideTabs.filter((tab) => !PRIMARY_GUIDE_KEYS.has(tab.id))
+
+  const copyGuideSample = useCallback(async (sampleKey: string, snippet: string) => {
+    const result = await copyText(guideSnippetToPlainText(snippet))
+    setGuideCopyState((previous) => ({
+      ...previous,
+      [sampleKey]: result.ok ? 'copied' : 'error',
+    }))
+    window.setTimeout(() => {
+      setGuideCopyState((previous) => {
+        if (previous[sampleKey] !== (result.ok ? 'copied' : 'error')) return previous
+        const next = { ...previous }
+        delete next[sampleKey]
+        return next
+      })
+    }, 1600)
+  }, [])
 
   const versionTagUrl = updateBanner.currentVersion
     ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
@@ -832,6 +853,8 @@ function PublicHome(): JSX.Element {
               className="guide-token-toggle"
               disabled={!canRevealGuideToken}
               aria-pressed={guideTokenVisible}
+              aria-label={guideTokenToggleLabel}
+              title={guideTokenToggleLabel}
               onClick={() => setRevealedGuideToken(guideTokenVisible ? null : token)}
             >
               <Icon
@@ -840,11 +863,7 @@ function PublicHome(): JSX.Element {
                 height={16}
                 aria-hidden="true"
               />
-              <span>
-                {guideTokenVisible
-                  ? publicStrings.guide.tokenVisibility.hide
-                  : publicStrings.guide.tokenVisibility.show}
-              </span>
+              <span>{guideTokenToggleLabel}</span>
             </Button>
           </div>
           <ol>
@@ -852,27 +871,53 @@ function PublicHome(): JSX.Element {
               <li key={index}>{step}</li>
             ))}
           </ol>
-          {resolveGuideSamples(guideDescription).map((sample) => (
-            <div className="guide-sample" key={`${guideDescription.title}-${sample.title}`}>
-              <p className="guide-sample-title">{sample.title}</p>
-              <div className="mockup-code relative guide-code-shell">
-                <span className="guide-lang-badge badge badge-outline badge-sm">
-                  {(sample.language ?? 'code').toUpperCase()}
-                </span>
-                <pre>
-                  <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
-                </pre>
+          {resolveGuideSamples(guideDescription).map((sample) => {
+            const sampleKey = `${activeGuide}:${guideDescription.title}:${sample.title}`
+            const currentCopyState = guideCopyState[sampleKey] ?? 'idle'
+            const copyLabel = currentCopyState === 'copied'
+              ? publicStrings.copyToken.copied
+              : currentCopyState === 'error'
+                ? publicStrings.copyToken.error
+                : publicStrings.copyToken.copy
+            return (
+              <div className="guide-sample" key={`${guideDescription.title}-${sample.title}`}>
+                <p className="guide-sample-title">{sample.title}</p>
+                <div className="mockup-code relative guide-code-shell">
+                  <span className="guide-lang-badge badge badge-outline badge-sm">
+                    {(sample.language ?? 'code').toUpperCase()}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={`guide-copy-button${currentCopyState === 'copied' ? ' copied' : currentCopyState === 'error' ? ' error' : ''}`}
+                    aria-label={copyLabel}
+                    title={copyLabel}
+                    onClick={() => void copyGuideSample(sampleKey, sample.snippet)}
+                  >
+                    <Icon
+                      icon={currentCopyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'}
+                      width={14}
+                      height={14}
+                      aria-hidden="true"
+                    />
+                    <span>{copyLabel}</span>
+                  </Button>
+                  <pre>
+                    <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+                  </pre>
+                </div>
+                {sample.reference ? (
+                  <p className="guide-reference">
+                    {publicStrings.guide.dataSourceLabel}
+                    <a href={sample.reference.url} target="_blank" rel="noreferrer">
+                      {sample.reference.label}
+                    </a>
+                  </p>
+                ) : null}
               </div>
-              {sample.reference ? (
-                <p className="guide-reference">
-                  {publicStrings.guide.dataSourceLabel}
-                  <a href={sample.reference.url} target="_blank" rel="noreferrer">
-                    {sample.reference.label}
-                  </a>
-                </p>
-              ) : null}
-            </div>
-          ))}
+            )
+          })}
         </div>
         {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={exampleToken} />}
       </section>
@@ -1029,6 +1074,8 @@ function MobileGuideDropdown({
 function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {
   const isEnglish = language === 'en'
   const codexSnippet = buildCodexSnippet(baseUrl)
+  const hikariCliInstallSnippet = buildHikariCliInstallSnippet(baseUrl, prettyToken)
+  const hikariSkillsSnippet = buildHikariSkillsSnippet()
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
   const genericMcpSnippet = buildGenericMcpSnippet(baseUrl, prettyToken)
@@ -1053,6 +1100,36 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
       reference: {
         label: 'OpenAI Codex docs',
         url: CODEX_DOC_URL,
+      },
+    },
+    hikariCli: {
+      title: 'CLI + Agent Skills',
+      steps: isEnglish
+        ? [
+            <>Install <code>tvly-hikari</code> with this Hikari origin and token; the config is stored locally with <code>0600</code> permissions.</>,
+            <>Run Tavily commands through <code>tvly-hikari search/extract/crawl/map/research ... --json</code>; the wrapper injects <code>{baseUrl}/api/tavily</code> and the Hikari token.</>,
+            <>Install Agent Skills separately when you want agents to discover the Hikari-specific workflows.</>,
+          ]
+        : [
+            <>使用当前 Hikari origin 和 token 安装 <code>tvly-hikari</code>；本地配置会以 <code>0600</code> 权限保存。</>,
+            <>通过 <code>tvly-hikari search/extract/crawl/map/research ... --json</code> 调用 Tavily；wrapper 会注入 <code>{baseUrl}/api/tavily</code> 与 Hikari token。</>,
+            <>需要让 Agent 自动发现 Hikari 工作流时，再单独安装 Agent Skills。</>,
+          ],
+      samples: [
+        {
+          title: isEnglish ? 'Install tvly-hikari' : '安装 tvly-hikari',
+          language: 'bash',
+          snippet: hikariCliInstallSnippet,
+        },
+        {
+          title: isEnglish ? 'Optional: install Agent Skills' : '可选：安装 Agent Skills',
+          language: 'bash',
+          snippet: hikariSkillsSnippet,
+        },
+      ],
+      reference: {
+        label: 'Tavily Hikari GitHub Releases',
+        url: 'https://github.com/IvanLi-CN/tavily-hikari/releases/latest',
       },
     },
     claude: {
@@ -1220,6 +1297,22 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
       ],
     },
   }
+}
+
+function buildHikariCliInstallSnippet(baseUrl: string, prettyToken: string): string {
+  return `curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly-hikari.sh" | bash -s -- \\
+  --base-url "${baseUrl}" \\
+  --token "${prettyToken}"`
+}
+
+function buildHikariSkillsSnippet(): string {
+  return 'npx skills add https://github.com/IvanLi-CN/tavily-hikari'
+}
+
+function guideSnippetToPlainText(snippet: string): string {
+  const template = document.createElement('template')
+  template.innerHTML = snippet
+  return template.content.textContent ?? ''
 }
 
 function buildCodexSnippet(baseUrl: string): string {
