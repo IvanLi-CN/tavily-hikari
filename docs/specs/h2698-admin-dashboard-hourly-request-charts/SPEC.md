@@ -154,6 +154,7 @@
   story_id_or_title: `admin-components-dashboardoverview--default`
   state: `results`
   evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，展示滚动 25 个小时槽；最后一槽为当前未满小时，使用灰色 plot-area 背景与竖向虚线分界。
+  PR: include
   image:
   ![管理员仪表盘小时图表：调用结果当前未满小时标识](./assets/dashboard-hourly-results-current-partial-hour.png)
 
