@@ -174,7 +174,7 @@ None
   - target_program: `mock-only`
   - capture_scope: `browser-viewport`
   - sensitive_exclusion: `N/A`
-  - submission_gate: `pending-owner-approval`
+  - submission_gate: `approved`
   - evidence_note: 证明 landing 暗色桌面态的 overview、充值面板与 Token 表格已降低嵌套卡片边界。
   - image:
     ![Console Home Dark decarded](./assets/console-landing-dark-decard.png)
@@ -184,7 +184,7 @@ None
   - target_program: `mock-only`
   - capture_scope: `browser-viewport`
   - sensitive_exclusion: `N/A`
-  - submission_gate: `pending-owner-approval`
+  - submission_gate: `approved`
   - evidence_note: 证明 landing 浅色桌面态保留可扫读数据分组，同时不再叠加厚 summary/order/table 卡片。
   - image:
     ![Console Home Light decarded](./assets/console-landing-light-decard.png)
@@ -194,7 +194,7 @@ None
   - target_program: `mock-only`
   - capture_scope: `browser-viewport`
   - sensitive_exclusion: `N/A`
-  - submission_gate: `pending-owner-approval`
+  - submission_gate: `approved`
   - evidence_note: 证明移动端仍只保留 token item 作为重复卡片层，并且 token 数据与充值 delta 不再横向溢出。
   - image:
     ![Console Home Mobile token focus decarded](./assets/console-landing-tokens-mobile-decard.png)
