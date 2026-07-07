@@ -3130,7 +3130,7 @@ interface AdminPageFrameProps {
   overlays?: ReactNode
   beforeIntro?: ReactNode
   showDefaultShellChrome?: boolean
-  actions?: ReactNode
+  actions?: ReactNode; sidebarUtilityActions?: ReactNode
 }
 
 export function AdminPageFrame({
@@ -3139,9 +3139,7 @@ export function AdminPageFrame({
   overlays,
   beforeIntro,
   showDefaultShellChrome = true,
-  actions,
-  introActions,
-  introOverride,
+  actions, introActions, introOverride, sidebarUtilityActions,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useAdminTranslations()
   const isStackedAdminLayout = useAdminStackedLayout()
@@ -3261,15 +3259,13 @@ export function AdminPageFrame({
                 </AdminSidebarUtilityCard>
                 <AdminSidebarUtilityCard>
                   <div className="admin-sidebar-utility-actions">
-                    <AdminReturnToConsoleLink
-                      label={admin.header.returnToConsole}
-                      href="/console"
-                      className="admin-sidebar-utility-action"
-                    />
-                    <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
-                      <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
-                      <span>{admin.header.refreshNow}</span>
-                    </Button>
+                    {sidebarUtilityActions ?? <>
+                      <AdminReturnToConsoleLink label={admin.header.returnToConsole} href="/console" className="admin-sidebar-utility-action" />
+                      <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
+                        <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
+                        <span>{admin.header.refreshNow}</span>
+                      </Button>
+                    </>}
                   </div>
                 </AdminSidebarUtilityCard>
               </AdminSidebarUtilityStack>
@@ -3278,13 +3274,13 @@ export function AdminPageFrame({
             {beforeIntro}
 
             {isStackedAdminLayout ? (
-              introOverride && headerActions ? (
+              introOverride ? (
                 <section className="surface app-header admin-usage-stacked-intro">
                   <div className="admin-usage-stacked-intro-main">
                     <h1>{intro.title}</h1>
                     {intro.description ? <p className="admin-compact-intro-description">{intro.description}</p> : null}
                   </div>
-                  <div className="admin-usage-stacked-intro-actions">{headerActions}</div>
+                  {headerActions ? <div className="admin-usage-stacked-intro-actions">{headerActions}</div> : null}
                 </section>
               ) : (
                 <AdminPanelHeader
@@ -5834,9 +5830,24 @@ function UserDetailPageCanvas({
     { value: 'quota', label: users.quota.title },
     { value: 'activity', label: users.detail.sharedUsageTitle },
   ]
+  const renderUserDetailTabs = () => (
+    <SegmentedTabs<UserDetailTabKey> value={activeTab} onChange={setActiveTab} options={tabOptions} ariaLabel={users.detail.title} className="user-detail-section-tabs" smallViewportBehavior="buttons" collapseMode="never" />
+  )
   return (
     <AdminPageFrame
       activeModule="users"
+      introActions={renderUserDetailTabs()}
+      introOverride={{
+        title: users.detail.title,
+        description: users.detail.subtitle.replace('{id}', detail.userId),
+      }}
+      sidebarUtilityActions={<>
+        <AdminReturnToConsoleLink label={admin.header.returnToConsole} href="/console" className="admin-sidebar-utility-action" />
+        <Button type="button" variant="ghost" size="sm" className="admin-sidebar-utility-action">
+          <Icon icon="mdi:arrow-left" width={18} height={18} aria-hidden="true" />
+          {users.detail.back}
+        </Button>
+      </>}
       overlays={
         <StoryMonthlyBrokenDrawer
           open={monthlyBrokenDrawerOpen}
@@ -5846,15 +5857,6 @@ function UserDetailPageCanvas({
         />
       }
     >
-      <SegmentedTabs<UserDetailTabKey>
-        value={activeTab}
-        onChange={setActiveTab}
-        options={tabOptions}
-        ariaLabel={users.detail.title}
-        className="user-detail-section-tabs"
-        smallViewportBehavior="buttons"
-        collapseMode="never"
-      />
       {activeTab === 'account' && (
       <>
       <section className="surface panel user-detail-panel-compact" id="user-detail-identity" role="tabpanel">
@@ -7119,7 +7121,7 @@ export const UserDetail: Story = {
     }
 
     const topLevelTabs = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-detail-section-tabs .segmented-tab'))
-    const expectedTopLevelTabs = ['账户信息', '基础额度', '共享额度趋势']
+    const expectedTopLevelTabs = ['账户信息', '基础额度', '权益']
     const topLevelTabLabels = topLevelTabs.map((item) => item.textContent?.trim())
     if (topLevelTabLabels.join('|') !== expectedTopLevelTabs.join('|')) {
       throw new Error(`Expected user detail top-level tabs ${expectedTopLevelTabs.join(' / ')}, received ${topLevelTabLabels.join(' / ')}.`)
@@ -7127,6 +7129,30 @@ export const UserDetail: Story = {
     const activeTopLevelTab = topLevelTabs.find((item) => item.getAttribute('aria-checked') === 'true')
     if (activeTopLevelTab?.textContent?.trim() !== '账户信息') {
       throw new Error('Expected the default user detail story to open the account tab.')
+    }
+    const compactIntro = canvasElement.querySelector<HTMLElement>('.admin-shell-content > .admin-compact-intro')
+    if (!compactIntro?.textContent?.includes('用户详情') || !compactIntro.textContent.includes(MOCK_USER_DETAIL.userId)) {
+      throw new Error('Expected user detail story to render the route title inside the shared compact intro.')
+    }
+    const compactIntroActions = compactIntro.querySelector<HTMLElement>('.admin-compact-intro-actions')
+    if (!compactIntroActions?.querySelector('.user-detail-section-tabs')) {
+      throw new Error('Expected user detail top-level tabs to live inside the compact intro actions.')
+    }
+    if (compactIntroActions.textContent?.includes('返回用户控制台') || compactIntroActions.textContent?.includes('返回用户列表')) {
+      throw new Error('Expected return actions to stay out of the right-side intro action slot.')
+    }
+    const sidebarUtility = canvasElement.querySelector<HTMLElement>('.admin-sidebar-utility')
+    if (!sidebarUtility?.textContent?.includes('返回用户控制台') || !sidebarUtility.textContent.includes('返回用户列表')) {
+      throw new Error('Expected user detail story to keep both return actions below the sidebar navigation.')
+    }
+    if (compactIntro.scrollWidth > compactIntro.clientWidth + 1) {
+      throw new Error('Expected the user detail compact intro to avoid horizontal overflow.')
+    }
+    const hasDuplicatedDetailHeader = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('.admin-shell-content > .surface.panel > .panel-header h2'),
+    ).some((item) => item.textContent?.trim() === '用户详情')
+    if (hasDuplicatedDetailHeader) {
+      throw new Error('Expected user detail story to remove the standalone title panel header.')
     }
     if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
       throw new Error('Expected inactive user detail panels to stay out of the default account tab DOM.')
@@ -7213,7 +7239,7 @@ export const UserDetail: Story = {
       }
     }
 
-    await clickTopLevelTab('共享额度趋势')
+    await clickTopLevelTab('权益')
     const usagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
     if (!usagePanel) {
       throw new Error('Expected user detail story to render the shared usage panel.')
@@ -7263,7 +7289,7 @@ export const UserDetail: Story = {
     if (canvasElement.querySelector('.admin-user-shared-usage-panel')) {
       throw new Error('Expected the shared usage panel to unmount when returning to the account tab.')
     }
-    await clickTopLevelTab('共享额度趋势')
+    await clickTopLevelTab('权益')
     const restoredUsagePanel = canvasElement.querySelector<HTMLElement>('.admin-user-shared-usage-panel')
     const restoredLoadedSeries = restoredUsagePanel?.dataset.loadedSeries?.split(',').filter(Boolean) ?? []
     if (expected.some((value) => !restoredLoadedSeries.includes(value))) {
