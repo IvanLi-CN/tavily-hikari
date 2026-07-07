@@ -608,7 +608,7 @@ fn mcp_response_requires_reconnect(status: StatusCode, body: &[u8]) -> bool {
 
 const REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT: &str = "2025-03-26";
 const REBALANCE_MCP_SERVER_NAME: &str = "tavily-mcp";
-const REBALANCE_MCP_SERVER_VERSION: &str = "3.2.4";
+const REBALANCE_MCP_SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy)]
 enum RebalanceMcpRequiredFieldType {
@@ -684,8 +684,20 @@ fn schema_integer(description: &str, default: i64) -> Value {
     json!({ "type": "integer", "description": description, "default": default })
 }
 
+fn schema_number(description: &str, default: f64) -> Value {
+    json!({ "type": "number", "description": description, "default": default })
+}
+
 fn schema_boolean(description: &str, default: bool) -> Value {
     json!({ "type": "boolean", "description": description, "default": default })
+}
+
+fn schema_string_array(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "description": description
+    })
 }
 
 fn rebalance_mcp_required_field_schema(kind: RebalanceMcpRequiredFieldType) -> Value {
@@ -708,6 +720,7 @@ fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
         "search" => json!({
             "query": schema_string("Search query"),
             "max_results": schema_integer("The maximum number of search results to return", 5),
+            "chunks_per_source": schema_integer("Maximum number of relevant chunks returned per source", 3),
             "search_depth": {
                 "type": "string",
                 "description": "The depth of the search. 'basic' for generic results, 'advanced' for more thorough search, 'fast' for optimized low latency with high relevance, 'ultra-fast' for prioritizing latency above all else",
@@ -717,31 +730,46 @@ fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
             "topic": {
                 "type": "string",
                 "description": "The category of the search.",
-                "const": "general",
+                "enum": ["general", "news", "finance"],
                 "default": "general"
             },
-            "include_domains": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A list of domains to specifically include in the search results"
-            },
-            "exclude_domains": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A list of domains to specifically exclude from the search results"
-            },
+            "include_domains": schema_string_array("A list of domains to specifically include in the search results"),
+            "exclude_domains": schema_string_array("A list of domains to specifically exclude from the search results"),
             "time_range": schema_string("Time range filter for search results"),
             "start_date": schema_string("Start date for filtering search results"),
             "end_date": schema_string("End date for filtering search results"),
             "country": schema_string("Country filter for search results"),
+            "include_answer": {
+                "oneOf": [
+                    { "type": "boolean" },
+                    {
+                        "type": "string",
+                        "enum": ["basic", "advanced"]
+                    }
+                ],
+                "description": "Include an LLM-generated answer to the provided query",
+                "default": false
+            },
             "include_images": schema_boolean("Include a list of query-related images in the response", false),
             "include_image_descriptions": schema_boolean("Include descriptions for returned images", false),
-            "include_raw_content": schema_boolean("Include cleaned and parsed HTML content for each search result", false),
-            "include_favicon": schema_boolean("Include favicon URLs for each result", true),
+            "include_raw_content": {
+                "oneOf": [
+                    { "type": "boolean" },
+                    {
+                        "type": "string",
+                        "enum": ["markdown", "text"]
+                    }
+                ],
+                "description": "Include cleaned and parsed HTML content for each search result",
+                "default": false
+            },
+            "include_favicon": schema_boolean("Include favicon URLs for each result", false),
+            "auto_parameters": schema_boolean("Let Tavily automatically configure search parameters based on query intent", false),
             "exact_match": schema_boolean("Only return results that exactly match the query", false)
         }),
         "extract" => json!({
             "urls": rebalance_mcp_required_field_schema(tool.required_field_type),
+            "chunks_per_source": schema_integer("Maximum number of relevant chunks returned per source", 3),
             "extract_depth": {
                 "type": "string",
                 "description": "The depth of the extraction process",
@@ -756,25 +784,22 @@ fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
             },
             "query": schema_string("Optional query to guide extraction"),
             "include_images": schema_boolean("Include images extracted from the page", false),
-            "include_favicon": schema_boolean("Include favicon URLs in the response", true)
+            "include_favicon": schema_boolean("Include favicon URLs in the response", false),
+            "timeout": schema_number("Maximum time in seconds to wait for extraction", 10.0)
         }),
         "crawl" => json!({
             "url": schema_string("The root URL to crawl"),
+            "chunks_per_source": schema_integer("Maximum number of relevant chunks returned per source", 3),
             "max_depth": schema_integer("Maximum crawl depth", 1),
             "max_breadth": schema_integer("Maximum number of links to follow per level", 20),
             "limit": schema_integer("Maximum number of pages to crawl", 50),
             "instructions": schema_string("Instructions to guide the crawl"),
-            "select_paths": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "URL path patterns to include"
-            },
-            "select_domains": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Domains to include"
-            },
-            "allow_external": schema_boolean("Allow crawling external domains", false),
+            "select_paths": schema_string_array("URL path patterns to include"),
+            "select_domains": schema_string_array("Domains to include"),
+            "exclude_paths": schema_string_array("URL path patterns to exclude"),
+            "exclude_domains": schema_string_array("Domains to exclude"),
+            "allow_external": schema_boolean("Allow crawling external domains", true),
+            "include_images": schema_boolean("Include images in the crawl results", false),
             "extract_depth": {
                 "type": "string",
                 "description": "The depth of the extraction process",
@@ -787,7 +812,8 @@ fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
                 "enum": ["markdown", "text"],
                 "default": "markdown"
             },
-            "include_favicon": schema_boolean("Include favicon URLs in the response", true)
+            "include_favicon": schema_boolean("Include favicon URLs in the response", false),
+            "timeout": schema_number("Maximum time in seconds to wait for the crawl operation", 150.0)
         }),
         "map" => json!({
             "url": schema_string("The root URL to map"),
@@ -795,21 +821,56 @@ fn rebalance_mcp_tool_input_schema(tool: &RebalanceMcpToolDefinition) -> Value {
             "max_breadth": schema_integer("Maximum number of links to follow per level", 20),
             "limit": schema_integer("Maximum number of URLs to return", 50),
             "instructions": schema_string("Instructions to guide site mapping"),
-            "select_paths": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "URL path patterns to include"
-            },
-            "select_domains": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Domains to include"
-            },
-            "allow_external": schema_boolean("Allow mapping external domains", false)
+            "select_paths": schema_string_array("URL path patterns to include"),
+            "select_domains": schema_string_array("Domains to include"),
+            "exclude_paths": schema_string_array("URL path patterns to exclude"),
+            "exclude_domains": schema_string_array("Domains to exclude"),
+            "allow_external": schema_boolean("Allow mapping external domains", true),
+            "timeout": schema_number("Maximum time in seconds to wait for the map operation", 150.0)
         }),
         "research" => json!({
             "input": schema_string("Research task or question"),
-            "model": schema_string("Research model to use")
+            "model": {
+                "type": "string",
+                "description": "Research model to use",
+                "enum": ["mini", "auto", "pro"],
+                "default": "auto"
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "JSON Schema object that defines the structure of the research output"
+            },
+            "citation_format": {
+                "type": "string",
+                "description": "The format for citations in the research report",
+                "enum": ["numbered", "mla", "apa", "chicago"],
+                "default": "numbered"
+            },
+            "include_domains": schema_string_array("Soft preference for source domains"),
+            "exclude_domains": schema_string_array("Hard blocklist for source domains"),
+            "output_length": {
+                "type": "string",
+                "description": "Typed control over response size",
+                "enum": ["short", "standard", "long"],
+                "default": "standard"
+            },
+            "files": {
+                "type": "array",
+                "description": "Files to attach to the research request",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": schema_string("The filename, including extension"),
+                        "data": schema_string("The base64-encoded file contents"),
+                        "type": {
+                            "type": "string",
+                            "enum": ["base64"],
+                            "default": "base64"
+                        }
+                    },
+                    "required": ["name", "data"]
+                }
+            }
         }),
         _ => json!({
             tool.required_field: rebalance_mcp_required_field_schema(tool.required_field_type)
@@ -864,6 +925,12 @@ fn validate_rebalance_mcp_tool_arguments(
             tool.advertised_name, tool.required_field
         ));
     }
+    if let Some(message) = tavily_mcp_free_account_validation_message(tool, arguments) {
+        return Err(format!(
+            "Invalid arguments for {}: {message}",
+            tool.advertised_name
+        ));
+    }
     if tool.upstream_tool == "research"
         && let Some(message) = tavily_research_model_validation_message(arguments)
     {
@@ -873,6 +940,27 @@ fn validate_rebalance_mcp_tool_arguments(
         ));
     }
     Ok(arguments.clone())
+}
+
+fn tavily_mcp_free_account_validation_message(
+    tool: &RebalanceMcpToolDefinition,
+    arguments: &Value,
+) -> Option<&'static str> {
+    if tool.upstream_tool == "search"
+        && let Value::Object(map) = arguments
+        && map.contains_key("safe_search")
+    {
+        return Some("safe_search is an Enterprise-only Tavily parameter and is not supported");
+    }
+    if tool.upstream_tool == "research"
+        && arguments
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Some("stream=true is not supported by this proxy; use non-streaming research");
+    }
+    None
 }
 
 fn rebalance_mcp_tool_usage_metered(tool: &RebalanceMcpToolDefinition) -> bool {

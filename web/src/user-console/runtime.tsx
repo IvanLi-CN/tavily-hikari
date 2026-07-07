@@ -56,6 +56,7 @@ import {
   probeApiTavilyResearch,
   probeApiTavilyResearchResult,
   probeApiTavilySearch,
+  probeApiTavilyUsage,
   probeMcpInitialize,
   probeMcpInitialized,
   probeMcpPing,
@@ -128,8 +129,18 @@ export const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 const BASE_MCP_PROBE_STEP_COUNT = 4
-const BASE_API_PROBE_STEP_COUNT = 6
+const BASE_API_PROBE_STEP_COUNT = 7
 const USER_TOKEN_LOG_LIMIT = 50
+const TAVILY_USAGE_UPSTREAM_ONLY_FIELDS = [
+  'key',
+  'account',
+  'plan_limit',
+  'paygo_limit',
+  'current_plan',
+  'planLimit',
+  'paygoLimit',
+  'currentPlan',
+] as const
 
 export type GuideLanguage = 'toml' | 'json' | 'bash'
 export type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
@@ -241,11 +252,13 @@ interface ApiProbeText {
     apiMap: string
     apiResearch: string
     apiResearchResult: string
+    apiUsage: string
   }
   errors: {
     missingRequestId: string
     researchFailed: string
     researchUnexpectedStatus: string
+    usageLeakedUpstreamField: string
   }
   researchPendingAccepted: string
   researchStatus: string
@@ -523,6 +536,33 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function envelopeError(payload: unknown): string | null {
   return getProbeEnvelopeError(payload)
+}
+
+function findTavilyUsageUpstreamOnlyField(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const field = findTavilyUsageUpstreamOnlyField(item)
+      if (field) return field
+    }
+    return null
+  }
+  const map = asRecord(value)
+  if (!map) return null
+  for (const [field, nested] of Object.entries(map)) {
+    if (TAVILY_USAGE_UPSTREAM_ONLY_FIELDS.includes(field as typeof TAVILY_USAGE_UPSTREAM_ONLY_FIELDS[number])) {
+      return field
+    }
+    const nestedField = findTavilyUsageUpstreamOnlyField(nested)
+    if (nestedField) return nestedField
+  }
+  return null
+}
+
+function assertTavilyUsageProbeBoundary(payload: unknown, probeText: ApiProbeText): void {
+  const field = findTavilyUsageUpstreamOnlyField(payload)
+  if (field) {
+    throw new Error(formatTemplate(probeText.errors.usageLeakedUpstreamField, { field }))
+  }
 }
 
 function compactUtcTimestamp(timestamp: number): string {
@@ -1095,6 +1135,17 @@ function buildApiProbeStepDefinitions(
             }),
           )
         }
+        return null
+      },
+    },
+    {
+      id: 'api-usage',
+      label: probeText.steps.apiUsage,
+      run: async (token: string, context: { requestId: string | null, signal?: AbortSignal }): Promise<string | null> => {
+        const payload = await probeApiTavilyUsage(token, context.signal)
+        const error = envelopeError(payload)
+        if (error) throw new Error(error)
+        assertTavilyUsageProbeBoundary(payload, probeText)
         return null
       },
     },

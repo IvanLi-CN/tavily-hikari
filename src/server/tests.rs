@@ -51,6 +51,7 @@ mod tests {
     mod mcp_rebalance_and_follow_up;
     mod research_result_and_mcp_subpath;
     mod system_settings_and_forward_proxy;
+    mod tavily_http_free_account_boundary;
     mod tavily_http_search;
     mod token_log_details;
     mod upstream_support_and_manual_jobs;

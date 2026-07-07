@@ -2968,6 +2968,10 @@ export function probeApiTavilyResearchResult(
   })
 }
 
+export function probeApiTavilyUsage(token: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  return requestJsonWithToken('/api/tavily/usage', token, { method: 'GET', signal })
+}
+
 export interface CreateKeyResponse {
   id: string
 }

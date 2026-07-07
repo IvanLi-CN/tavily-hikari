@@ -1793,6 +1793,19 @@ use super::upstream_support_and_manual_jobs::*;
         );
         let body: serde_json::Value =
             serde_json::from_str(&text).expect("parse json body from /api/tavily/usage");
+        for upstream_only_field in [
+            "key", "account", "plan_limit", "paygo_limit", "current_plan", "planLimit",
+            "paygoLimit", "currentPlan",
+        ] {
+            assert!(
+                body.get(upstream_only_field).is_none(),
+                "/api/tavily/usage must not expose upstream Tavily account field {upstream_only_field}"
+            );
+            assert!(
+                !text.contains(upstream_only_field),
+                "/api/tavily/usage response must not contain upstream Tavily field {upstream_only_field}"
+            );
+        }
 
         assert_eq!(
             body.get("tokenId").and_then(|v| v.as_str()),

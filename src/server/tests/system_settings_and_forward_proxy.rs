@@ -2219,6 +2219,22 @@ use super::upstream_support_and_manual_jobs::*;
                 "tavily_search",
             ),
             (
+                "unsupported-search-safe-search",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "unsupported-search-safe-search",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_search",
+                        "arguments": {
+                            "query": "free account boundary",
+                            "safe_search": false
+                        }
+                    }
+                }),
+                "tavily_search",
+            ),
+            (
                 "missing-urls",
                 json!({
                     "jsonrpc": "2.0",
@@ -2271,6 +2287,22 @@ use super::upstream_support_and_manual_jobs::*;
                 "tavily_map",
             ),
             (
+                "unsupported-research-stream",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "unsupported-research-stream",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_research",
+                        "arguments": {
+                            "input": "free account boundary",
+                            "stream": true
+                        }
+                    }
+                }),
+                "tavily_research",
+            ),
+            (
                 "missing-research-input",
                 json!({
                     "jsonrpc": "2.0",
@@ -2284,6 +2316,7 @@ use super::upstream_support_and_manual_jobs::*;
                 "tavily_research",
             ),
         ];
+        let invalid_case_count = invalid_cases.len();
 
         for (case_id, payload, tool_name) in invalid_cases {
             let response = client
@@ -2343,7 +2376,7 @@ use super::upstream_support_and_manual_jobs::*;
         .expect("fetch rebalance invalid argument request logs");
         assert_eq!(
             rows.len(),
-            1 + 9,
+            1 + invalid_case_count,
             "initialize plus each invalid tool call should be logged locally"
         );
         for row in rows.iter().skip(1) {

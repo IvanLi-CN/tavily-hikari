@@ -65,4 +65,16 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
       detail: "This request exceeds your plan's set usage limit.",
     })
   })
+
+  it('documents the API usage boundary check in the full API probe state', () => {
+    const apiScenario = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'API Full Sweep')
+
+    expect(apiScenario?.apiProbe).toEqual({ state: 'success', completed: 7, total: 7 })
+    expect(apiScenario?.probeBubble).toMatchObject({ anchor: 'api' })
+    expect(apiScenario?.probeBubble?.items).toContainEqual({
+      id: 'api-usage',
+      label: 'Usage boundary check',
+      status: 'success',
+    })
+  })
 })

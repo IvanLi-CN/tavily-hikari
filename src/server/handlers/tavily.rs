@@ -223,6 +223,41 @@ fn tavily_research_model_validation_message(options: &Value) -> Option<&'static 
     }
 }
 
+fn tavily_http_free_account_validation_message(
+    upstream_path: &str,
+    options: &Value,
+) -> Option<&'static str> {
+    if upstream_path == "/search"
+        && let Value::Object(map) = options
+        && map.contains_key("safe_search")
+    {
+        return Some("safe_search is an Enterprise-only Tavily parameter and is not supported");
+    }
+
+    if upstream_path == "/research"
+        && options
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Some("stream=true is not supported by this proxy; use non-streaming research");
+    }
+
+    None
+}
+
+fn invalid_tavily_http_request_response(message: &str) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": "invalid_request",
+        "message": message,
+    });
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 fn tavily_research_estimated_credits(options: &Value) -> Option<i64> {
     if tavily_research_model_validation_message(options).is_some() {
         return None;
@@ -715,16 +750,15 @@ async fn proxy_tavily_http_endpoint(
         && let Some(val) = map.get("max_results").and_then(|v| v.as_i64())
         && val < 0
     {
-        let payload = json!({
-            "error": "invalid_request",
-            "message": "max_results must be non-negative",
-        });
-        let resp = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(CONTENT_TYPE, "application/json; charset=utf-8")
-            .body(Body::from(payload.to_string()))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        return Ok(resp);
+        return invalid_tavily_http_request_response(
+            "max_results must be non-negative",
+        );
+    }
+
+    if let Some(message) =
+        tavily_http_free_account_validation_message(config.upstream_path, &options)
+    {
+        return invalid_tavily_http_request_response(message);
     }
 
     let token_id_for_logs = auth_token_id.clone();
@@ -863,16 +897,7 @@ async fn proxy_tavily_http_endpoint(
                 )
                 .await;
         }
-        let payload = json!({
-            "error": "invalid_request",
-            "message": message,
-        });
-        let resp = Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(CONTENT_TYPE, "application/json; charset=utf-8")
-            .body(Body::from(payload.to_string()))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        return Ok(resp);
+        return invalid_tavily_http_request_response(message);
     }
 
     if let Some(ref tid) = auth_token_id {

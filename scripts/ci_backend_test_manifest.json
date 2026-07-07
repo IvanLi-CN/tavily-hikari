@@ -395,6 +395,7 @@
         "server::linuxdo_credit_key_tests::",
         "server::tests::linuxdo_oauth_and_admin_keys::tavily_",
         "server::tests::research_result_and_mcp_subpath::tavily_",
+        "server::tests::tavily_http_free_account_boundary::tavily_",
         "server::tests::tavily_http_search::tavily_",
         "server::tests::system_settings_and_forward_proxy::extract_"
       ]

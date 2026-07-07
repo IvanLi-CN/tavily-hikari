@@ -1215,9 +1215,9 @@ use super::upstream_support_and_manual_jobs::*;
             initialize_body["result"]["serverInfo"],
             json!({
                 "name": "tavily-mcp",
-                "version": "3.2.4"
+                "version": env!("CARGO_PKG_VERSION")
             }),
-            "rebalance initialize should match the official Remote MCP serverInfo snapshot"
+            "rebalance initialize should use Hikari's own server version"
         );
         assert_eq!(
             initialize_body["result"]["capabilities"]["prompts"]["listChanged"].as_bool(),
@@ -1283,10 +1283,13 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(
             prop_keys("tavily_search"),
             vec![
+                "auto_parameters",
+                "chunks_per_source",
                 "country",
                 "end_date",
                 "exact_match",
                 "exclude_domains",
+                "include_answer",
                 "include_domains",
                 "include_favicon",
                 "include_image_descriptions",
@@ -1304,11 +1307,13 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(
             prop_keys("tavily_extract"),
             vec![
+                "chunks_per_source",
                 "extract_depth",
                 "format",
                 "include_favicon",
                 "include_images",
                 "query",
+                "timeout",
                 "urls",
             ],
             "rebalance extract schema should match the official field set"
@@ -1317,15 +1322,20 @@ use super::upstream_support_and_manual_jobs::*;
             prop_keys("tavily_crawl"),
             vec![
                 "allow_external",
+                "chunks_per_source",
+                "exclude_domains",
+                "exclude_paths",
                 "extract_depth",
                 "format",
                 "include_favicon",
+                "include_images",
                 "instructions",
                 "limit",
                 "max_breadth",
                 "max_depth",
                 "select_domains",
                 "select_paths",
+                "timeout",
                 "url",
             ],
             "rebalance crawl schema should match the official field set"
@@ -1334,20 +1344,73 @@ use super::upstream_support_and_manual_jobs::*;
             prop_keys("tavily_map"),
             vec![
                 "allow_external",
+                "exclude_domains",
+                "exclude_paths",
                 "instructions",
                 "limit",
                 "max_breadth",
                 "max_depth",
                 "select_domains",
                 "select_paths",
+                "timeout",
                 "url",
             ],
             "rebalance map schema should match the official field set"
         );
         assert_eq!(
             prop_keys("tavily_research"),
-            vec!["input", "model"],
+            vec![
+                "citation_format",
+                "exclude_domains",
+                "files",
+                "include_domains",
+                "input",
+                "model",
+                "output_length",
+                "output_schema",
+            ],
             "rebalance research schema should match the official field set"
+        );
+        let search_props = &tool_by_name["tavily_search"]["inputSchema"]["properties"];
+        assert_eq!(
+            search_props["topic"]["enum"],
+            json!(["general", "news", "finance"]),
+            "search topic should expose free-account REST topics"
+        );
+        assert_eq!(
+            search_props["include_favicon"]["default"].as_bool(),
+            Some(false),
+            "search include_favicon should match the official default"
+        );
+        assert!(
+            search_props.get("safe_search").is_none(),
+            "Enterprise-only safe_search must not be advertised to free-account downstream clients"
+        );
+        assert!(
+            search_props.get("include_usage").is_none(),
+            "include_usage is controlled by Hikari billing and must not be advertised"
+        );
+
+        for name in ["tavily_crawl", "tavily_map"] {
+            assert_eq!(
+                tool_by_name[name]["inputSchema"]["properties"]["allow_external"]["default"]
+                    .as_bool(),
+                Some(true),
+                "{name} allow_external should match the official default"
+            );
+        }
+        assert_eq!(
+            tool_by_name["tavily_extract"]["inputSchema"]["properties"]["include_favicon"]
+                ["default"]
+                .as_bool(),
+            Some(false),
+            "extract include_favicon should match the official default"
+        );
+        assert!(
+            tool_by_name["tavily_research"]["inputSchema"]["properties"]
+                .get("stream")
+                .is_none(),
+            "streaming research is not supported by this proxy and must not be advertised"
         );
         for (name, required) in [
             ("tavily_search", "query"),

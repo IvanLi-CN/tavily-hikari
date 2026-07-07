@@ -41,9 +41,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/demo.ts',
     {
-      max: 2327,
+      max: 2328,
       reason:
-        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, and admin passkey/password security states on the shared demo shell.',
+        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, admin passkey/password security states, and the Tavily usage-boundary probe on the shared demo shell.',
     },
   ],
   [
@@ -113,8 +113,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3169,
-      reason: 'User console runtime still carries the route-level shell while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
+      max: 3220,
+      reason: 'User console runtime still carries the route-level shell plus the Tavily API usage-boundary probe with recursive field-name leak detection while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
     },
   ],
   [

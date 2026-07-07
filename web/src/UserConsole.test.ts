@@ -52,11 +52,13 @@ const apiProbeText: Parameters<typeof buildApiProbeStepDefinitions>[0] = {
     apiMap: 'Map API',
     apiResearch: 'Research API',
     apiResearchResult: 'Research Result API',
+    apiUsage: 'Usage API',
   },
   errors: {
     missingRequestId: 'Missing research request id',
     researchFailed: 'Research failed',
     researchUnexpectedStatus: 'Unexpected research status: {status}',
+    usageLeakedUpstreamField: 'Usage leaked {field}',
   },
   researchPendingAccepted: 'Research still processing',
   researchStatus: 'Research status: {status}',
@@ -265,7 +267,7 @@ describe('UserConsole landing guide helpers', () => {
       apiProbe: {
         state: 'idle',
         completed: 0,
-        total: 6,
+        total: 7,
       },
     })
   })
@@ -283,7 +285,7 @@ describe('UserConsole landing guide helpers', () => {
       apiProbe: {
         state: 'idle',
         completed: 0,
-        total: 6,
+        total: 7,
       },
     })
     expect(abortActiveProbeRun).toHaveBeenCalledTimes(1)
@@ -1080,7 +1082,7 @@ describe('UserConsole probe step definitions', () => {
       }
     }
 
-    expect(calls).toHaveLength(6)
+    expect(calls).toHaveLength(7)
     expect(calls.map((call) => [call.url, call.init?.method ?? 'GET'])).toEqual([
       ['/api/tavily/search', 'POST'],
       ['/api/tavily/extract', 'POST'],
@@ -1088,6 +1090,7 @@ describe('UserConsole probe step definitions', () => {
       ['/api/tavily/map', 'POST'],
       ['/api/tavily/research', 'POST'],
       ['/api/tavily/research/req-health-check', 'GET'],
+      ['/api/tavily/usage', 'GET'],
     ])
 
     for (const call of calls) {
@@ -1122,7 +1125,44 @@ describe('UserConsole probe step definitions', () => {
       model: 'mini',
       citation_format: 'numbered',
     })
+    expect(calls[6]?.init?.body).toBeUndefined()
     expect(researchResultDetail).toBe('Research status: completed')
+  })
+
+  it('fails the API usage probe when upstream account fields leak into the response', async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify({
+        tokenId: 'zjvc',
+        dailySuccess: 1,
+        nested: { current_plan: 'free' },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const usageStep = buildApiProbeStepDefinitions(apiProbeText).find((step) => step.id === 'api-usage')
+
+    await expect(usageStep?.run('th-zjvc-secret', { requestId: null })).rejects.toThrow(
+      'Usage leaked current_plan',
+    )
+  })
+
+  it('allows API usage values that contain upstream field-name substrings', async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify({
+        tokenId: 'keyed-account-label',
+        dailySuccess: 1,
+        monthlySuccess: 2,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const usageStep = buildApiProbeStepDefinitions(apiProbeText).find((step) => step.id === 'api-usage')
+
+    await expect(usageStep?.run('th-keyed-secret', { requestId: null })).resolves.toBeNull()
   })
 
   it('threads abort signals through API probe requests', async () => {
