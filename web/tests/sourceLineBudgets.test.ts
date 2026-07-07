@@ -113,8 +113,8 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3206,
-      reason: 'User console runtime still carries the route-level shell plus the Tavily API usage-boundary probe while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
+      max: 3220,
+      reason: 'User console runtime still carries the route-level shell plus the Tavily API usage-boundary probe with recursive field-name leak detection while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
     },
   ],
   [

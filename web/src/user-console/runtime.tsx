@@ -538,16 +538,30 @@ function envelopeError(payload: unknown): string | null {
   return getProbeEnvelopeError(payload)
 }
 
+function findTavilyUsageUpstreamOnlyField(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const field = findTavilyUsageUpstreamOnlyField(item)
+      if (field) return field
+    }
+    return null
+  }
+  const map = asRecord(value)
+  if (!map) return null
+  for (const [field, nested] of Object.entries(map)) {
+    if (TAVILY_USAGE_UPSTREAM_ONLY_FIELDS.includes(field as typeof TAVILY_USAGE_UPSTREAM_ONLY_FIELDS[number])) {
+      return field
+    }
+    const nestedField = findTavilyUsageUpstreamOnlyField(nested)
+    if (nestedField) return nestedField
+  }
+  return null
+}
+
 function assertTavilyUsageProbeBoundary(payload: unknown, probeText: ApiProbeText): void {
-  const responseText = JSON.stringify(payload)
-  const map = asRecord(payload)
-  for (const field of TAVILY_USAGE_UPSTREAM_ONLY_FIELDS) {
-    if (map && field in map) {
-      throw new Error(formatTemplate(probeText.errors.usageLeakedUpstreamField, { field }))
-    }
-    if (responseText.includes(field)) {
-      throw new Error(formatTemplate(probeText.errors.usageLeakedUpstreamField, { field }))
-    }
+  const field = findTavilyUsageUpstreamOnlyField(payload)
+  if (field) {
+    throw new Error(formatTemplate(probeText.errors.usageLeakedUpstreamField, { field }))
   }
 }
 

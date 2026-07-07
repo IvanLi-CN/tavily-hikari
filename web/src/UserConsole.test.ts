@@ -1134,7 +1134,7 @@ describe('UserConsole probe step definitions', () => {
       return new Response(JSON.stringify({
         tokenId: 'zjvc',
         dailySuccess: 1,
-        current_plan: 'free',
+        nested: { current_plan: 'free' },
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1146,6 +1146,23 @@ describe('UserConsole probe step definitions', () => {
     await expect(usageStep?.run('th-zjvc-secret', { requestId: null })).rejects.toThrow(
       'Usage leaked current_plan',
     )
+  })
+
+  it('allows API usage values that contain upstream field-name substrings', async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify({
+        tokenId: 'keyed-account-label',
+        dailySuccess: 1,
+        monthlySuccess: 2,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const usageStep = buildApiProbeStepDefinitions(apiProbeText).find((step) => step.id === 'api-usage')
+
+    await expect(usageStep?.run('th-keyed-secret', { requestId: null })).resolves.toBeNull()
   })
 
   it('threads abort signals through API probe requests', async () => {
