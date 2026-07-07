@@ -143,8 +143,12 @@
   vertical-align: middle;
 }
 
+.user-console-tokens-section .user-console-tokens-table th {
+  background: hsl(var(--muted) / 0.18);
+}
+
 .user-console-tokens-section .user-console-tokens-table tbody tr:not(:last-child) td {
-  border-bottom: 1px solid hsl(var(--border) / 0.4);
+  border-bottom: 1px solid hsl(var(--border) / 0.32);
 }
 
 .user-console-token-id-cell {
@@ -199,12 +203,12 @@
 .user-console-token-stats-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .user-console-token-stat {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
 }
 

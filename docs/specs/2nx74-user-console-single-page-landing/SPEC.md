@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-12
-- Last: 2026-03-15
+- Last: 2026-07-07
 
 ## 背景 / 问题陈述
 
@@ -163,26 +163,41 @@ None
 
 - Directory: `docs/specs/2nx74-user-console-single-page-landing/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+- PR visual evidence source: maintain `## Visual Evidence` in this spec when PR screenshots are needed.
 - If an asset must be used in impl (runtime/test/official docs), list it in `资产晋升（Asset promotion）` and promote it to a stable project path during implementation.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
-- Chrome DevTools 实测 `/console`、`#/dashboard`、`#/tokens` 与 `#/tokens/tmK4`：
-  - `/console` 与 `#/dashboard` 同页同时展示 `账户用量概览` 和 `Token 列表`，首屏不再插入额外说明/导航条。
-  - `#/tokens` 仍进入同一落地页，并自动滚动到 Token 列表区块。
-  - `#/tokens/tmK4` 保持独立 detail 页，点击 `返回 Token 列表` 后回到 `#/tokens` 并重新聚焦 Token 区块。
-  - 从 `#/dashboard` 手动滚到 Token 区块进入 detail 后，浏览器 Back 会回到原始 `#/dashboard` 入口并保留滚动位置。
 - source_type=storybook_canvas
-  - story_id_or_title: `User Console/UserConsole / Console Home Root`
-  - state: `default`
+  - story_id_or_title: `User Console/UserConsole / Console Home Dark`
+  - state: `desktop-dark, announcements-closed`
   - target_program: `mock-only`
   - capture_scope: `browser-viewport`
   - sensitive_exclusion: `N/A`
   - submission_gate: `pending-owner-approval`
-  - evidence_note: 证明 merged landing 已直接进入账户概览与 Token 列表内容，不再保留额外区块导航条
+  - evidence_note: 证明 landing 暗色桌面态的 overview、充值面板与 Token 表格已降低嵌套卡片边界。
   - image:
-    ![Console Home Root](./assets/console-home-root-storybook.png)
+    ![Console Home Dark decarded](./assets/console-landing-dark-decard.png)
+- source_type=storybook_canvas
+  - story_id_or_title: `User Console/UserConsole / Console Home`
+  - state: `desktop-light, announcements-closed`
+  - target_program: `mock-only`
+  - capture_scope: `browser-viewport`
+  - sensitive_exclusion: `N/A`
+  - submission_gate: `pending-owner-approval`
+  - evidence_note: 证明 landing 浅色桌面态保留可扫读数据分组，同时不再叠加厚 summary/order/table 卡片。
+  - image:
+    ![Console Home Light decarded](./assets/console-landing-light-decard.png)
+- source_type=storybook_canvas
+  - story_id_or_title: `User Console/UserConsole / Console Home Tokens Focus Mobile`
+  - state: `mobile-token-focus, announcements-closed`
+  - target_program: `mock-only`
+  - capture_scope: `browser-viewport`
+  - sensitive_exclusion: `N/A`
+  - submission_gate: `pending-owner-approval`
+  - evidence_note: 证明移动端仍只保留 token item 作为重复卡片层，并且 token 数据与充值 delta 不再横向溢出。
+  - image:
+    ![Console Home Mobile token focus decarded](./assets/console-landing-tokens-mobile-decard.png)
 
 ## 资产晋升（Asset promotion）
 
@@ -214,6 +229,7 @@ None
 - 2026-03-12: 完成 `/console` merged landing 改造、legacy hash route helper、Storybook story/test 收口，以及 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook` 本地验证。
 - 2026-03-12: 完成快车道验证、浏览器复核与 review-loop 收敛，spec 收口为完成态。
 - 2026-03-15: 补齐 `/console` merged landing 缺失的共享 footer，并让 landing / token detail 统一显示控制台标题、GitHub 与版本信息。
+- 2026-07-07: 完成 `/console` landing 去重卡片化优化，overview 指标、充值订单与 Token 表格降为轻边界层级，并补齐桌面暗/亮与移动 token focus 视觉证据。
 
 ## 参考（References）
 

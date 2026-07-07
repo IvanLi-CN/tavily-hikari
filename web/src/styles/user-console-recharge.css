@@ -17,7 +17,7 @@
 .user-console-recharge-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
-  gap: 18px;
+  gap: 16px;
   align-items: stretch;
   min-height: 0;
 }
@@ -39,7 +39,7 @@
   flex-wrap: wrap;
   gap: 8px 18px;
   padding-bottom: 10px;
-  border-bottom: 1px solid hsl(var(--border) / 0.72);
+  border-bottom: 1px solid hsl(var(--border) / 0.42);
 }
 
 .user-console-recharge-summary span,
@@ -133,9 +133,9 @@
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
-  border-radius: 10px;
-  border: 1px solid hsl(var(--border) / 0.72);
-  background: hsl(var(--muted) / 0.28);
+  border-radius: 8px;
+  border: 1px solid hsl(var(--border) / 0.42);
+  background: hsl(var(--muted) / 0.14);
   padding: 8px 10px;
 }
 
@@ -208,11 +208,10 @@
   height: 100%;
   display: grid;
   align-content: start;
-  border-radius: 16px;
-  border: 1px solid hsl(var(--border) / 0.62);
-  background:
-    linear-gradient(180deg, hsl(var(--muted) / 0.18) 0%, hsl(var(--card) / 0.86) 100%);
-  padding: 10px;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .user-console-recharge-orders-panel > .empty-state {
@@ -237,7 +236,7 @@
 .user-console-recharge-orders ul {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 0;
   margin: 0;
   height: 100%;
   min-height: 0;
@@ -250,10 +249,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border-radius: 10px;
-  border: 1px solid hsl(var(--border) / 0.72);
-  background: hsl(var(--card) / 0.84);
-  padding: 9px 10px;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid hsl(var(--border) / 0.36);
+  background: transparent;
+  padding: 10px 0;
+}
+
+.user-console-recharge-orders li:first-child {
+  border-top: 0;
+  padding-top: 2px;
 }
 
 .user-console-recharge-orders li > div {
@@ -432,10 +437,16 @@
     display: grid;
     gap: 4px;
     align-items: start;
-    border-radius: 14px;
-    border: 1px solid hsl(var(--border) / 0.72);
-    background: hsl(var(--muted) / 0.18);
-    padding: 10px 12px;
+    border-radius: 0;
+    border: 0;
+    border-top: 1px solid hsl(var(--border) / 0.34);
+    background: transparent;
+    padding: 9px 0 0;
+  }
+
+  .user-console-landing-rail .user-console-recharge-summary > div:nth-child(-n + 2) {
+    border-top: 0;
+    padding-top: 0;
   }
 
   .user-console-landing-rail .user-console-recharge-test-price {
@@ -489,6 +500,8 @@
     align-items: start;
     justify-content: flex-start;
     gap: 3px;
+    border-color: hsl(var(--border) / 0.36);
+    background: hsl(var(--muted) / 0.12);
     padding: 8px 10px;
   }
 
@@ -510,10 +523,10 @@
     justify-content: space-between;
     min-height: 0;
     gap: 12px;
-    border-radius: 14px;
-    border: 1px solid hsl(var(--border) / 0.68);
-    background: hsl(var(--muted) / 0.16);
-    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid hsl(var(--border) / 0.4);
+    background: hsl(var(--muted) / 0.12);
+    padding: 9px 10px;
     white-space: nowrap;
   }
 
@@ -581,6 +594,19 @@
 
   .user-console-recharge-delta {
     grid-template-columns: 1fr;
+  }
+
+  .user-console-recharge-delta-pill {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .user-console-recharge-delta-pill span,
+  .user-console-recharge-delta-pill strong {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   .user-console-recharge-checkout .btn,

@@ -46,14 +46,15 @@
 }
 
 .user-console-inline-stat {
-  min-width: 118px;
+  min-width: 0;
   display: grid;
-  gap: 4px;
-  border-radius: 18px;
-  border: 1px solid hsl(var(--border) / 0.76);
-  background:
-    linear-gradient(180deg, hsl(var(--muted) / 0.28) 0%, hsl(var(--card) / 0.9) 100%);
-  padding: 10px 12px;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.52);
+  background: hsl(var(--muted) / 0.2);
+  padding: 7px 10px;
 }
 
 .user-console-inline-stat-label {
@@ -65,25 +66,39 @@
 
 .user-console-inline-stat-value {
   color: hsl(var(--foreground));
-  font-size: 1.15rem;
+  font-size: 0.96rem;
   line-height: 1;
 }
 
 .user-console-tokens-section .user-console-section-header {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .user-console-tokens-section .user-console-section-meta {
   justify-content: flex-start;
 }
 
+.user-console-tokens-section > .table-wrapper {
+  border-color: hsl(var(--border) / 0.36);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.22);
+  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.2);
+}
+
+.user-console-tokens-section > .table-wrapper:hover {
+  border-color: hsl(var(--border) / 0.48);
+  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.24);
+}
+
 .user-console-tokens-section .user-console-inline-stat {
   min-width: 0;
   display: inline-flex;
   align-items: baseline;
-  gap: 8px;
-  border-radius: 16px;
-  padding: 8px 12px;
+  gap: 6px;
+  border-radius: 999px;
+  border-color: hsl(var(--border) / 0.46);
+  background: hsl(var(--muted) / 0.16);
+  padding: 7px 10px;
 }
 
 .user-console-tokens-section .user-console-inline-stat-label {
@@ -95,6 +110,31 @@
 .user-console-tokens-section .user-console-inline-stat-value {
   font-size: 1rem;
   line-height: 1;
+}
+
+.user-console-tokens-section .user-console-mobile-card {
+  overflow: hidden;
+}
+
+.user-console-tokens-section .user-console-mobile-card-header,
+.user-console-tokens-section .user-console-mobile-kv {
+  min-width: 0;
+}
+
+.user-console-tokens-section .user-console-mobile-card-header code,
+.user-console-tokens-section .user-console-mobile-kv > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.user-console-tokens-section .user-console-mobile-kv strong {
+  white-space: normal;
+}
+
+.user-console-tokens-section .user-console-mobile-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .oauth-callback-stage {
@@ -485,32 +525,31 @@
 .user-console-progress-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 18px;
+  gap: 12px;
 }
 
 .user-console-summary-card,
 .user-console-progress-card {
   position: relative;
   overflow: hidden;
-  border: 1px solid hsl(var(--border) / 0.78);
-  border-radius: 26px;
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 16px;
   background:
-    linear-gradient(180deg, hsl(var(--card) / 0.98) 0%, hsl(var(--card) / 0.92) 100%);
-  box-shadow:
-    inset 0 1px 0 hsl(var(--background) / 0.65),
-    0 18px 34px hsl(24 22% 27% / 0.08);
+    linear-gradient(180deg, hsl(var(--card) / 0.58) 0%, hsl(var(--card) / 0.38) 100%),
+    hsl(var(--muted) / 0.1);
+  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.32);
 }
 
 .user-console-summary-card {
   grid-column: span 4;
-  min-height: 152px;
-  padding: 20px 20px 18px;
+  min-height: 128px;
+  padding: 18px;
 }
 
 .user-console-progress-card {
   grid-column: span 6;
-  min-height: 228px;
-  padding: 18px 18px 16px;
+  min-height: 202px;
+  padding: 16px;
 }
 
 .user-console-summary-card::before,
@@ -520,8 +559,8 @@
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(120% 120% at 100% 0%, hsl(var(--primary) / 0.12), transparent 56%),
-    linear-gradient(180deg, hsl(var(--background) / 0.05), transparent 46%);
+    linear-gradient(180deg, hsl(var(--user-console-accent) / 0.08), transparent 34%),
+    linear-gradient(90deg, hsl(var(--background) / 0.04), transparent 52%);
 }
 
 .user-console-summary-card-success {
@@ -576,13 +615,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 28px;
-  padding: 0 11px;
+  min-height: 24px;
+  padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid hsl(var(--user-console-accent) / 0.18);
-  background: hsl(var(--user-console-accent) / 0.11);
+  border: 1px solid hsl(var(--user-console-accent) / 0.16);
+  background: hsl(var(--user-console-accent) / 0.09);
   color: hsl(var(--user-console-accent));
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   white-space: nowrap;
@@ -592,7 +631,7 @@
 .user-console-progress-card-value {
   position: relative;
   z-index: 1;
-  margin-top: 18px;
+  margin-top: 16px;
   color: hsl(var(--foreground));
 }
 
@@ -612,7 +651,7 @@
 .user-console-summary-card-foot {
   position: relative;
   z-index: 1;
-  margin-top: 14px;
+  margin-top: 12px;
   color: hsl(var(--muted-foreground));
   font-size: 0.78rem;
   font-weight: 650;
@@ -670,7 +709,7 @@
 .user-console-progress-chart-empty {
   position: absolute;
   inset: auto 0 0 0;
-  height: 52%;
+  height: 46%;
 }
 
 .user-console-progress-chart-empty {
@@ -786,11 +825,13 @@
 
   .user-console-summary-grid,
   .user-console-progress-grid {
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
 
   .user-console-summary-card,
   .user-console-progress-card {
+    grid-column: auto;
     border-radius: 18px;
   }
 
@@ -818,6 +859,15 @@
     font-size: 0.84rem;
   }
 
+  .user-console-summary-card-marker,
+  .user-console-progress-card-marker {
+    max-width: 44%;
+    min-height: 22px;
+    padding-inline: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .user-console-progress-card-value strong {
     font-size: clamp(1.5rem, 8vw, 2rem);
   }
@@ -838,5 +888,20 @@
   .user-console-progress-chart,
   .user-console-progress-chart-empty {
     height: 46%;
+  }
+
+  .user-console-tokens-section .user-console-mobile-card-header,
+  .user-console-tokens-section .user-console-mobile-kv {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .user-console-tokens-section .user-console-mobile-kv strong {
+    text-align: left;
+  }
+
+  .user-console-tokens-section .user-console-mobile-actions {
+    justify-content: flex-start;
   }
 }

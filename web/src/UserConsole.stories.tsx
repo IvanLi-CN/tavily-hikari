@@ -1478,6 +1478,27 @@ export const ConsoleHome: Story = {
         throw new Error(`Expected recharge section to include ${expected}`)
       }
     }
+
+    const summaryCard = canvasElement.querySelector<HTMLElement>('.user-console-summary-card')
+    const progressCard = canvasElement.querySelector<HTMLElement>('.user-console-progress-card')
+    const ordersPanel = canvasElement.querySelector<HTMLElement>('.user-console-recharge-orders-panel')
+    const tokenTableShell = canvasElement.querySelector<HTMLElement>('.user-console-tokens-section > .table-wrapper')
+
+    if (!summaryCard || !progressCard || !ordersPanel || !tokenTableShell) {
+      throw new Error('Expected ConsoleHome to render the de-nested landing surfaces.')
+    }
+
+    const summaryRadius = Number.parseFloat(window.getComputedStyle(summaryCard).borderTopLeftRadius)
+    const progressRadius = Number.parseFloat(window.getComputedStyle(progressCard).borderTopLeftRadius)
+    const tokenShellRadius = Number.parseFloat(window.getComputedStyle(tokenTableShell).borderTopLeftRadius)
+
+    if (summaryRadius > 18 || progressRadius > 18 || tokenShellRadius > 16) {
+      throw new Error('Expected landing tiles and token table shell to use compact radii after de-nesting.')
+    }
+
+    if (Number.parseFloat(window.getComputedStyle(ordersPanel).borderTopWidth) > 0) {
+      throw new Error('Expected recent recharge orders to render as list rows, not as a nested panel.')
+    }
   },
 }
 
