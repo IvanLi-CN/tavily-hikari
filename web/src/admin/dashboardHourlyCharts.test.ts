@@ -22,6 +22,7 @@ import {
   formatDashboardRealtimeWindowLabel,
   getHourlyBucketsInRange,
   buildRollingHourlyWindow,
+  getDashboardHourlyBarChartKey,
   getCurrentPartialHourHighlightIndex,
   getVisibleHourlyBuckets,
   getVisibleHourlyWindow,
@@ -256,6 +257,20 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(getCurrentPartialHourHighlightIndex('resultsArea', slots)).toBeNull()
     expect(getCurrentPartialHourHighlightIndex('typesArea', slots)).toBeNull()
     expect(getCurrentPartialHourHighlightIndex('results', [])).toBeNull()
+  })
+
+  it('changes the bar chart instance key when current partial-hour marking changes', () => {
+    const slots = [
+      { bucketStart: 100, bucket: null },
+      { bucketStart: 200, bucket: null },
+      { bucketStart: 300, bucket: null },
+    ]
+
+    expect(getDashboardHourlyBarChartKey('results', slots)).toBe('results:current-partial-hour-2:3')
+    expect(getDashboardHourlyBarChartKey('types', slots)).toBe('types:current-partial-hour-2:3')
+    expect(getDashboardHourlyBarChartKey('resultsDelta', slots)).toBe('resultsDelta:no-current-partial-hour:3')
+    expect(getDashboardHourlyBarChartKey('typesArea', slots)).toBe('typesArea:no-current-partial-hour:3')
+    expect(getDashboardHourlyBarChartKey('results', [])).toBe('results:no-current-partial-hour:0')
   })
 
   it('builds non-overlapping stacked area fill targets for all visible result series', () => {

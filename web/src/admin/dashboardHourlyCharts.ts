@@ -331,6 +331,16 @@ export function getCurrentPartialHourHighlightIndex(
   return chartMode === 'results' || chartMode === 'types' ? slots.length - 1 : null
 }
 
+export function getDashboardHourlyBarChartKey(
+  chartMode: DashboardHourlyChartMode,
+  slots: ReadonlyArray<DashboardHourlyRangeSlot>,
+): string {
+  const highlightIndex = getCurrentPartialHourHighlightIndex(chartMode, slots)
+  return highlightIndex == null
+    ? `${chartMode}:no-current-partial-hour:${slots.length}`
+    : `${chartMode}:current-partial-hour-${highlightIndex}:${slots.length}`
+}
+
 export function buildDashboardAreaStackLayers<T extends string>(
   visibleSeries: ReadonlyArray<T>,
 ): DashboardAreaStackLayer<T>[] {

@@ -24,6 +24,7 @@ import {
   buildDashboardAreaStackLayers,
   formatDashboardRealtimeWindowLabel,
   buildRollingHourlyWindow,
+  getDashboardHourlyBarChartKey,
   getCurrentPartialHourHighlightIndex,
   getVisibleHourlyWindow,
   DASHBOARD_RESULT_SERIES_ORDER,
@@ -328,6 +329,7 @@ export default function DashboardTrendPanel({
     [comparisonRangeEnd, comparisonRangeStart, hourlyRequestWindow],
   )
   const currentPartialHourHighlightIndex = getCurrentPartialHourHighlightIndex(chartMode, rangeSlots)
+  const barChartKey = getDashboardHourlyBarChartKey(chartMode, rangeSlots)
   const currentPartialHourPlugins = useMemo<Plugin<'bar'>[]>(
     () => currentPartialHourHighlightIndex == null
       ? []
@@ -673,7 +675,12 @@ export default function DashboardTrendPanel({
             {isAreaMode ? (
               <Line options={lineChartOptions} data={lineChartData} />
             ) : (
-              <Bar options={barChartOptions} data={barChartData} plugins={currentPartialHourPlugins} />
+              <Bar
+                key={barChartKey}
+                options={barChartOptions}
+                data={barChartData}
+                plugins={currentPartialHourPlugins}
+              />
             )}
           </div>
         )}
