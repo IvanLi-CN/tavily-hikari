@@ -105,9 +105,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/styles/clay.css',
     {
-      max: 2222,
+      max: 2385,
       reason:
-        'The clay theme stylesheet now includes the admin passkey reset/login polish and six-digit TOTP input states while the themed auth/admin surfaces remain consolidated.',
+        'The clay theme stylesheet now includes the public hero load-balancer motion layer, admin passkey reset/login polish, and six-digit TOTP input states while the themed public/auth/admin surfaces remain consolidated.',
     },
   ],
   [
