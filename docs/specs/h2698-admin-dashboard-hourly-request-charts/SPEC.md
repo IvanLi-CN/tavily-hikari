@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-04-07
-- Last: 2026-06-28
+- Last: 2026-07-07
 
 ## 背景
 
@@ -15,7 +15,7 @@
 ## Goals
 
 - 在管理员仪表盘现有 `Traffic Trends` 区域内，用单一 stacked bar 图表面板替换旧 sparkline。
-- 后端统一返回有限的**服务器本地时区对齐**5 分钟桶，并保证**最新一桶就是当前本地 5 分钟进行中**；前端将两张面积图固定展示最近 6 小时实时窗口，绝对柱状图与昨日对比图继续按本地自然范围聚合成小时槽位展示。
+- 后端统一返回有限的**服务器本地时区对齐**5 分钟桶，并保证**最新一桶就是当前本地 5 分钟进行中**；前端将两张面积图固定展示最近 6 小时实时窗口，绝对柱状图固定展示滚动 25 个小时槽，昨日对比图继续按本地自然范围聚合成小时槽位展示。
 - 图表固定支持 6 种视图：
   - 调用结果
   - 调用类型
@@ -94,7 +94,8 @@
 - 绝对图与面积图窗口：
   - 两张面积图直接使用 `hourlyRequestWindow.visibleBuckets=73` 对应的最新滚动窗口，不再用 `summaryWindows.today_*` 二次裁剪。
   - 面积图窗口固定表示“72 个完整 5 分钟桶 + 1 个当前 5 分钟槽位”，即最近 6 小时实时运行情况。
-  - 主绝对图继续展示今日自然日固定范围，数据由 `hourlyRequestWindow` 的 5 分钟桶按小时聚合而成。
+  - 主绝对图固定展示滚动 25 个小时槽：`latestHourStart - 24h` 到 `latestHourStart`，即 24 个完整小时加 1 个当前未满小时槽。
+  - 当前未满小时只聚合已经返回的 5 分钟桶，不额外补齐未来分钟；最后一槽的 plot-area 使用灰色背景，并在前一小时与当前小时之间绘制竖向虚线分界。
 
 ## 展示约束
 
@@ -113,7 +114,7 @@
 - 前端需要记忆上次选中的图表模式与 series 组合，并在下次重新打开管理台时恢复。
 - 桶统计口径按**服务器本地时区**对齐，但 UI 文案必须明确区分：
   - 两张面积图：最近 6 小时、5 分钟粒度
-  - 绝对图：固定今日自然范围
+  - 绝对图：最近 24 个完整小时 + 当前未满小时，小时粒度
   - delta 图：自然日 today/yesterday 对比
   - 横轴日期/时间标签按浏览器本地时间显示。
 - 图表渲染必须把“时间槽位”和“已有 bucket 数据”分开：时间槽位可用于展示完整范围，bucket 缺失时数据值为 `null` 或等价空值，不渲染柱/点/线段。
@@ -126,7 +127,7 @@
 - `hourlyRequestWindow.bucketSeconds = 300`、`retainedBuckets = 589`、`visibleBuckets = 73`，且最新一桶必须等于 `currentFiveMinuteStart`。
 - 5 分钟桶最后一组必须是当前服务器本地 5 分钟进行中；横轴标签则按浏览器本地时间展示同一批 bucket。
 - 当固定范围内缺少 bucket 时，对应柱/点/线段保持空缺，不得补 0、不插值、不自行生成 bucket。
-- 主绝对图展示今日固定自然范围，5 分钟桶按小时聚合，不退化为面积图的 6 小时窗口。
+- 主绝对图展示滚动 25 个小时槽，5 分钟桶按小时聚合，不退化为面积图的 6 小时窗口，最后一槽必须以灰色背景和竖向虚线标识当前未满小时。
 - 两张面积图共享同一滚动 73 组横轴，并支持与同维度柱状图共享 series 显隐状态。
 - 结果图与类型图的默认堆叠顺序、默认可见系列、面积图行为和 delta 行为与本 spec 一致。
 - 管理台重新打开后，会恢复上一次选中的图表模式与 series 显示状态。
@@ -152,9 +153,10 @@
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--default`
   state: `results`
-  evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，按今日固定自然范围展示由 5 分钟桶聚合出的小时槽位，横轴标签按本地时间显示。
+  evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，展示滚动 25 个小时槽；最后一槽为当前未满小时，使用灰色 plot-area 背景与竖向虚线分界。
+  PR: include
   image:
-  ![管理员仪表盘小时图表：调用结果](./assets/dashboard-hourly-results.png)
+  ![管理员仪表盘小时图表：调用结果当前未满小时标识](./assets/dashboard-hourly-results-current-partial-hour.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--types-mode`

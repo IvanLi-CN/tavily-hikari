@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import meta, * as dashboardStories from './DashboardOverview.stories'
+import { buildRollingHourlyWindow } from './dashboardHourlyCharts'
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -32,17 +33,14 @@ describe('DashboardOverview Storybook coverage', () => {
     const args = dashboardStories.HiddenSeriesEmpty.args
     expect(args).toBeDefined()
     const markup = renderToStaticMarkup(createElement(meta.component, args as never))
-    const chartBucketSeconds = 3600
-    const expectedCurrentBuckets = Math.ceil(
-      ((args?.summaryWindows.today_period_end ?? args?.summaryWindows.today_end ?? 0) - (args?.summaryWindows.today_start ?? 0)) / chartBucketSeconds,
-    )
+    const expectedCurrentBuckets = buildRollingHourlyWindow(args?.hourlyRequestWindow).slots.length
     expect(markup).not.toContain('dashboard-hero-panel')
     expect(markup).not.toContain('Operations Dashboard')
     expect(markup).not.toContain('Global health, risk signals, and actionable activity in one place.')
     expect(markup).toContain('No visible chart series for the current selection.')
     expect(markup).toContain('Traffic Trends')
     expect(markup).toContain(
-      `Local time axis · Rolling 24 hours (${expectedCurrentBuckets} current buckets`,
+      `Local time axis · 24 full hours + current hour (${expectedCurrentBuckets} current slots`,
     )
     expect(markup).toContain('missing buckets are left blank')
     expect(markup).toContain('dashboard-summary-card-backdrop')
@@ -84,6 +82,7 @@ describe('DashboardOverview Storybook coverage', () => {
     const root = createRoot(container)
     const args = {
       ...dashboardStories.Default.args,
+      initialVisibleResultSeries: [],
       onOpenUser: (userId: string) => openedUsers.push(userId),
     }
 

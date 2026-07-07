@@ -15,6 +15,7 @@ import {
   Tooltip,
   type ChartData,
   type ChartOptions,
+  type Plugin,
   type TooltipItem,
 } from 'chart.js'
 import {
@@ -23,6 +24,8 @@ import {
   buildDashboardAreaStackLayers,
   formatDashboardRealtimeWindowLabel,
   buildRollingHourlyWindow,
+  getDashboardHourlyBarChartKey,
+  getCurrentPartialHourHighlightIndex,
   getVisibleHourlyWindow,
   DASHBOARD_RESULT_SERIES_ORDER,
   DASHBOARD_TYPE_SERIES_ORDER,
@@ -59,6 +62,8 @@ interface DashboardChartPalette {
   grid: string
   tick: string
   zeroLine: string
+  partialHourBackground: string
+  partialHourDivider: string
 }
 
 function readChartColorVar(name: string, fallback: string): string {
@@ -82,6 +87,8 @@ function readDashboardChartPalette(): DashboardChartPalette {
     grid: readChartColorVar('--dashboard-chart-grid', 'rgba(148, 163, 184, 0.18)'),
     tick: readChartColorVar('--dashboard-chart-tick', '#cbd5e1'),
     zeroLine: readChartColorVar('--dashboard-chart-zero-line', 'rgba(148, 163, 184, 0.32)'),
+    partialHourBackground: readChartColorVar('--dashboard-chart-partial-hour-background', 'rgba(148, 163, 184, 0.13)'),
+    partialHourDivider: readChartColorVar('--dashboard-chart-partial-hour-divider', 'rgba(100, 116, 139, 0.52)'),
   }
 }
 
@@ -153,6 +160,68 @@ function isAreaChartMode(mode: DashboardHourlyChartMode): mode is 'resultsArea' 
 
 function isDeltaChartMode(mode: DashboardHourlyChartMode): mode is 'resultsDelta' | 'typesDelta' {
   return mode === 'resultsDelta' || mode === 'typesDelta'
+}
+
+function getCategorySlotBounds(chart: ChartJS<'bar'>, index: number): { left: number; right: number } | null {
+  const xScale = chart.scales.x
+  const labels = chart.data.labels ?? []
+  if (!xScale || index < 0 || index >= labels.length) return null
+
+  const center = xScale.getPixelForValue(index)
+  if (!Number.isFinite(center)) return null
+
+  const previousCenter = index > 0 ? xScale.getPixelForValue(index - 1) : null
+  const nextCenter = index < labels.length - 1 ? xScale.getPixelForValue(index + 1) : null
+  const left = previousCenter == null || !Number.isFinite(previousCenter)
+    ? chart.chartArea.left
+    : (previousCenter + center) / 2
+  const right = nextCenter == null || !Number.isFinite(nextCenter)
+    ? chart.chartArea.right
+    : (center + nextCenter) / 2
+
+  return { left, right }
+}
+
+function createCurrentPartialHourHighlightPlugin({
+  index,
+  backgroundColor,
+  dividerColor,
+}: {
+  index: number
+  backgroundColor: string
+  dividerColor: string
+}): Plugin<'bar'> {
+  return {
+    id: 'dashboard-current-partial-hour-highlight',
+    beforeDatasetsDraw(chart) {
+      const bounds = getCategorySlotBounds(chart, index)
+      if (!bounds) return
+      const { ctx, chartArea } = chart
+      ctx.save()
+      ctx.fillStyle = backgroundColor
+      ctx.fillRect(
+        bounds.left,
+        chartArea.top,
+        Math.max(0, bounds.right - bounds.left),
+        Math.max(0, chartArea.bottom - chartArea.top),
+      )
+      ctx.restore()
+    },
+    afterDatasetsDraw(chart) {
+      const bounds = getCategorySlotBounds(chart, index)
+      if (!bounds) return
+      const { ctx, chartArea } = chart
+      ctx.save()
+      ctx.strokeStyle = dividerColor
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      ctx.beginPath()
+      ctx.moveTo(bounds.left, chartArea.top)
+      ctx.lineTo(bounds.left, chartArea.bottom)
+      ctx.stroke()
+      ctx.restore()
+    },
+  }
 }
 
 export default function DashboardTrendPanel({
@@ -258,6 +327,24 @@ export default function DashboardTrendPanel({
   const comparisonRangeSlots = useMemo(
     () => buildAggregatedHourlySlots(hourlyRequestWindow, comparisonRangeStart, comparisonRangeEnd).slots,
     [comparisonRangeEnd, comparisonRangeStart, hourlyRequestWindow],
+  )
+  const currentPartialHourHighlightIndex = getCurrentPartialHourHighlightIndex(chartMode, rangeSlots)
+  const barChartKey = getDashboardHourlyBarChartKey(
+    chartMode,
+    rangeSlots,
+    `${palette.partialHourBackground}:${palette.partialHourDivider}`,
+  )
+  const currentPartialHourPlugins = useMemo<Plugin<'bar'>[]>(
+    () => currentPartialHourHighlightIndex == null
+      ? []
+      : [
+          createCurrentPartialHourHighlightPlugin({
+            index: currentPartialHourHighlightIndex,
+            backgroundColor: palette.partialHourBackground,
+            dividerColor: palette.partialHourDivider,
+          }),
+        ],
+    [currentPartialHourHighlightIndex, palette.partialHourBackground, palette.partialHourDivider],
   )
   const labels = useMemo(
     () => {
@@ -592,7 +679,12 @@ export default function DashboardTrendPanel({
             {isAreaMode ? (
               <Line options={lineChartOptions} data={lineChartData} />
             ) : (
-              <Bar options={barChartOptions} data={barChartData} />
+              <Bar
+                key={barChartKey}
+                options={barChartOptions}
+                data={barChartData}
+                plugins={currentPartialHourPlugins}
+              />
             )}
           </div>
         )}

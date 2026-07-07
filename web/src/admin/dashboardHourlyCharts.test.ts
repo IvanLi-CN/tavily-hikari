@@ -22,6 +22,8 @@ import {
   formatDashboardRealtimeWindowLabel,
   getHourlyBucketsInRange,
   buildRollingHourlyWindow,
+  getDashboardHourlyBarChartKey,
+  getCurrentPartialHourHighlightIndex,
   getVisibleHourlyBuckets,
   getVisibleHourlyWindow,
   readDashboardHourlyChartPreferences,
@@ -51,7 +53,7 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(getVisibleHourlyBuckets(window).at(-1)?.bucketStart).toBe(currentHourStart)
   })
 
-  it('builds a rolling 24-hour hourly window ending at the current bucket', () => {
+  it('builds a rolling 24-hour hourly window plus the current partial hour', () => {
     const currentHourStart = Date.UTC(2026, 3, 7, 12, 0, 0) / 1000
     const window = buildDashboardHourlyRequestWindowFixture({
       currentHourStart,
@@ -62,8 +64,8 @@ describe('dashboardHourlyCharts helpers', () => {
 
     const rolling = buildRollingHourlyWindow(window)
 
-    expect(rolling.slots).toHaveLength(24)
-    expect(rolling.slots[0]?.bucketStart).toBe(currentHourStart - 23 * 3600)
+    expect(rolling.slots).toHaveLength(25)
+    expect(rolling.slots[0]?.bucketStart).toBe(currentHourStart - 24 * 3600)
     expect(rolling.slots.at(-1)?.bucketStart).toBe(currentHourStart)
   })
 
@@ -239,6 +241,50 @@ describe('dashboardHourlyCharts helpers', () => {
   it('supports the expanded chart mode set including area charts', () => {
     expect(createDashboardHourlyChartPreferences({ chartMode: 'resultsArea' }).chartMode).toBe('resultsArea')
     expect(createDashboardHourlyChartPreferences({ chartMode: 'typesArea' }).chartMode).toBe('typesArea')
+  })
+
+  it('highlights only the current partial hour in absolute bar modes', () => {
+    const slots = [
+      { bucketStart: 100, bucket: null },
+      { bucketStart: 200, bucket: null },
+      { bucketStart: 300, bucket: null },
+    ]
+
+    expect(getCurrentPartialHourHighlightIndex('results', slots)).toBe(2)
+    expect(getCurrentPartialHourHighlightIndex('types', slots)).toBe(2)
+    expect(getCurrentPartialHourHighlightIndex('resultsDelta', slots)).toBeNull()
+    expect(getCurrentPartialHourHighlightIndex('typesDelta', slots)).toBeNull()
+    expect(getCurrentPartialHourHighlightIndex('resultsArea', slots)).toBeNull()
+    expect(getCurrentPartialHourHighlightIndex('typesArea', slots)).toBeNull()
+    expect(getCurrentPartialHourHighlightIndex('results', [])).toBeNull()
+  })
+
+  it('changes the bar chart instance key when current partial-hour marking changes', () => {
+    const slots = [
+      { bucketStart: 100, bucket: null },
+      { bucketStart: 200, bucket: null },
+      { bucketStart: 300, bucket: null },
+    ]
+
+    expect(getDashboardHourlyBarChartKey('results', slots)).toBe('results:current-partial-hour-2:3')
+    expect(getDashboardHourlyBarChartKey('types', slots)).toBe('types:current-partial-hour-2:3')
+    expect(getDashboardHourlyBarChartKey('resultsDelta', slots)).toBe('resultsDelta:no-current-partial-hour:3')
+    expect(getDashboardHourlyBarChartKey('typesArea', slots)).toBe('typesArea:no-current-partial-hour:3')
+    expect(getDashboardHourlyBarChartKey('results', [])).toBe('results:no-current-partial-hour:0')
+  })
+
+  it('includes the marker style token in the bar chart instance key', () => {
+    const slots = [
+      { bucketStart: 100, bucket: null },
+      { bucketStart: 200, bucket: null },
+    ]
+
+    expect(getDashboardHourlyBarChartKey('results', slots, 'light-marker')).toBe(
+      'results:current-partial-hour-1:2:light-marker',
+    )
+    expect(getDashboardHourlyBarChartKey('results', slots, 'dark-marker')).toBe(
+      'results:current-partial-hour-1:2:dark-marker',
+    )
   })
 
   it('builds non-overlapping stacked area fill targets for all visible result series', () => {
