@@ -96,7 +96,7 @@ describe('PublicHomeHeroCard Storybook proofs', () => {
     expect(markup).toContain('/assets/relay-mesh-lockup-light.png')
     expect(markup).toContain('/assets/relay-mesh-lockup-dark.png')
     expect(markup).toContain('/assets/public-hero-load-balancer.png')
-    expect(markup).toContain('/assets/public-hero-load-balancer-dark.png')
+    expect(markup).not.toContain('/assets/public-hero-load-balancer-dark.png')
     expect(markup).toContain('public-home-load-balancer-motion')
     expect(markup).toContain('public-home-load-balancer-debug')
     expect(markup).toContain('hero-flow-in-1')

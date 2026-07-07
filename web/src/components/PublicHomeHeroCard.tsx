@@ -4,6 +4,7 @@ import { Icon } from '../lib/icons'
 
 import type { PublicMetrics } from '../api'
 import type { Translations } from '../i18n'
+import { useTheme } from '../theme'
 import RollingNumber from './RollingNumber'
 import { Button } from './ui/button'
 
@@ -85,6 +86,7 @@ function PublicHomeHeroCard({
   onTokenAccessClick,
   onAdminActionClick,
 }: PublicHomeHeroCardProps): JSX.Element {
+  const { resolvedTheme } = useTheme()
   const showAuthStatus = showAuthStatusLoading || showAuthStatusUnavailable
   const shouldShowActions = showAuthStatus || showLinuxDoLogin || showTokenAccessButton || showAdminAction
   const authStatusText = showAuthStatusUnavailable
@@ -100,6 +102,9 @@ function PublicHomeHeroCard({
       <span>{publicStrings.linuxDoLogin.button}</span>
     </>
   )
+  const loadBalancerImageSrc = resolvedTheme === 'dark'
+    ? '/assets/public-hero-load-balancer-dark.png'
+    : '/assets/public-hero-load-balancer.png'
 
   return (
     <section className="surface public-home-hero">
@@ -157,19 +162,9 @@ function PublicHomeHeroCard({
       <div className="public-home-traffic-board" aria-label={publicStrings.metrics.pool.title}>
         <div className="public-home-traffic-stage public-home-load-balancer-stage" aria-hidden="true">
           <img
-            src="/assets/public-hero-load-balancer.png"
+            src={loadBalancerImageSrc}
             alt=""
-            className="public-home-load-balancer-image public-home-load-balancer-image-light"
-            width={1672}
-            height={941}
-            decoding="async"
-            loading="eager"
-            draggable={false}
-          />
-          <img
-            src="/assets/public-hero-load-balancer-dark.png"
-            alt=""
-            className="public-home-load-balancer-image public-home-load-balancer-image-dark"
+            className={`public-home-load-balancer-image public-home-load-balancer-image-${resolvedTheme}`}
             width={1672}
             height={941}
             decoding="async"

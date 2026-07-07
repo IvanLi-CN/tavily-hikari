@@ -1800,18 +1800,6 @@
     user-select: none;
   }
 
-  .public-home-load-balancer-image-dark {
-    display: none;
-  }
-
-  .dark .public-home-load-balancer-image-light {
-    display: none;
-  }
-
-  .dark .public-home-load-balancer-image-dark {
-    display: block;
-  }
-
   .public-home-load-balancer-motion {
     position: absolute;
     inset: 0;
