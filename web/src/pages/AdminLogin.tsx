@@ -13,6 +13,7 @@ import BrandLockup from '../components/BrandLockup'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 import OfflineStatusBanner from '../components/OfflineStatusBanner'
 import ThemeToggle from '../components/ThemeToggle'
+import { ConnectedUpdateAvailableBanner } from '../components/UpdateAvailableBanner'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
@@ -171,6 +172,8 @@ function AdminLogin(): JSX.Element {
             <LanguageSwitcher />
           </div>
         </div>
+
+        <ConnectedUpdateAvailableBanner strings={strings.public.updateBanner} />
 
         {offline.isOffline ? (
           <OfflineStatusBanner

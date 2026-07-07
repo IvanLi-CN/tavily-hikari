@@ -58,3 +58,23 @@ test('built manifests expose full icon coverage and maskable entries', () => {
     expect(maskableSizes).toContain('512x512')
   }
 })
+
+test('built service workers wait for explicit update activation after precache', () => {
+  const serviceWorkerPaths = [
+    path.resolve(import.meta.dir, '../../dist/sw-public.js'),
+    path.resolve(import.meta.dir, '../../dist/sw-admin.js'),
+  ]
+
+  if (!serviceWorkerPaths.every((serviceWorkerPath) => fs.existsSync(serviceWorkerPath))) {
+    expect(true).toBe(true)
+    return
+  }
+
+  for (const serviceWorkerPath of serviceWorkerPaths) {
+    const source = fs.readFileSync(serviceWorkerPath, 'utf8')
+    expect(source).toContain("ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE'")
+    expect(source).toContain('event.data.type === ACTIVATE_UPDATE_MESSAGE')
+    expect(source).toContain('event.waitUntil(self.skipWaiting())')
+    expect(source).not.toContain('await self.skipWaiting();')
+  }
+})

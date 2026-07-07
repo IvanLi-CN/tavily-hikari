@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-06-24
-- Last: 2026-06-27
+- Last: 2026-07-08
 
 ## 背景 / 问题陈述
 
@@ -91,6 +91,17 @@
 - public service worker 不能把 `/admin/**` 作为 navigation fallback，也不能把 admin HTML 或 admin 入口图纳入 precache/runtime cache。
 - admin identity 只在管理员真实进入 `/admin/**` 后才注册并形成持久缓存。
 
+## 更新提示合同
+
+- `sw-public.js` 与 `sw-admin.js` 安装时必须先完成 precache，再进入 waiting；不得在 install 阶段主动 `skipWaiting()`。
+- 页面检测到 `/api/version.frontend` 变化时，只触发当前 identity 的 `registration.update()`；用户可见的更新提示必须以 service worker 已发现新 worker、并至少进入 installing/ready 更新生命周期为准。
+- 用户点击更新时：
+  - 若新 worker 尚在安装或缓存资源，更新按钮保持 loading，等待 worker 进入 waiting 后再发送激活消息。
+  - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`。
+  - 页面只在用户主动更新后的 `controllerchange` 中 reload，避免静默打断当前任务。
+- 更新提示必须覆盖 `/`、`/console`、`/login`、`/registration-paused` 与 `/admin/**`，但继续保持 public/admin 双 service worker 边界。
+- 提示形态为 inline banner，不使用 modal，不强制用户立即刷新。
+
 ## 离线行为合同
 
 ### Public / Console
@@ -160,6 +171,18 @@
   When 触发 `/api/*`、SSE、MCP、登录提交、保存动作
   Then 一律保持 network failure 语义，不返回伪成功。
 
+- Given 后端报告新的 `frontend` 版本
+  When 当前 identity 的 service worker 尚未完成新资源安装
+  Then 页面只触发更新检查，不提示“可更新”。
+
+- Given 新 service worker 正在安装并缓存资源
+  When 用户点击更新按钮
+  Then 更新按钮进入 loading，直到 worker ready 后激活并刷新当前页。
+
+- Given 新 service worker 已经 waiting
+  When 用户点击更新按钮
+  Then 页面发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 并在 `controllerchange` 后 reload。
+
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
@@ -192,6 +215,9 @@
 - `95768005+` Relay Mesh docs-site 品牌入口：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `95768005+` Relay Mesh PWA/icon 导出预览：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png` PR: include
 - `2026-06-27` 品牌静态资源 `/assets` 路由校准后的 admin 壳验证：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-admin-shell-assets-route-fixed.png` PR: include
+- `2026-07-08` PWA 更新提示 ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
+- `2026-07-08` PWA 更新提示 installing/loading 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
+- `2026-07-08` PWA 更新提示 dark ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -217,3 +243,4 @@
 - 2026-06-25: 将 split public/admin PWA 图标、touch icon 与站点 favicon 切换到经批准的 Relay Mesh lockup/icon 导出链，并同步接入 public/console/admin/docs-site 品牌位而不改变 PWA identity 合同。
 - 2026-06-25: 补齐 Relay Mesh light/dark/mono 变体、主题感知 favicon 与全尺寸 PWA icon 覆盖，并更新品牌资产导出预览证据。
 - 2026-06-27: 品牌静态资源合同统一收口到 `/assets/*`；根路径 Relay Mesh 与 LinuxDo 品牌资源退出长期公开路由，仅保留 `/favicon.svg` 作为站点入口。
+- 2026-07-08: 补齐 public/admin PWA 更新提示合同，要求新 service worker 完成资源缓存后等待用户确认激活，并以 inline banner 覆盖全部 Web 入口。

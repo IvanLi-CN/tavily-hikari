@@ -7,9 +7,9 @@ export const EN: TranslationShape = {
     public: {
       updateBanner: {
         title: 'New update available',
-        description: (current, latest) => `Current ${current} → Latest ${latest}`,
-        refresh: 'Reload now',
-        dismiss: 'Remind me later',
+        preparing: 'Caching the latest app shell and assets. You can keep working while it finishes.',
+        activating: 'Applying the update…',
+        description: (current, latest) => `Current ${current} → Ready ${latest}`, refresh: 'Reload now', refreshing: 'Preparing update…', dismiss: 'Remind me later',
       },
       heroTitle: 'Tavily Hikari Proxy',
       heroTagline: 'Transparent request visibility for your Tavily integration.',

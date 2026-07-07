@@ -6,3 +6,4 @@
 - 2026-06-24: 根据视觉反馈将统一离线提示 icon 从 `mdi:earth-off` 调整为 `mdi:web-off`，并补充 banner 级视觉证据。
 - 2026-06-25: 基于最新 `origin/main` 同步后，将 Relay Mesh 品牌接入既有双身份 PWA 产线，更新 favicon、touch icon、public/admin PWA 图标、docs-site 品牌入口与主要 Web 品牌位。
 - 2026-06-27: 将 Relay Mesh、LinuxDo 与 favicon 位图依赖统一迁到 `/assets/*`，删除根路径品牌资源公开合同并补齐静态服务回归覆盖。
+- 2026-07-08: 更新生命周期改为 precache 完成后 waiting，页面用共享 inline banner 提示用户确认激活，避免后端版本变化时误报资源已 ready。

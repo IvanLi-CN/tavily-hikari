@@ -7,9 +7,9 @@ export const ZH: TranslationShape = {
     public: {
       updateBanner: {
         title: '有新版本上线',
-        description: (current, latest) => `当前 ${current} → 可用 ${latest}`,
-        refresh: '刷新以更新',
-        dismiss: '暂不提醒',
+        preparing: '正在缓存新版应用壳和静态资源，可以先继续操作。',
+        activating: '正在应用更新…',
+        description: (current, latest) => `当前 ${current} → 已准备 ${latest}`, refresh: '刷新以更新', refreshing: '正在准备更新…', dismiss: '暂不提醒',
       },
       heroTitle: 'Tavily Hikari Proxy',
       heroTagline: 'Transparent request visibility for your Tavily integration.',

@@ -2,8 +2,8 @@
 
 ## 当前实现状态
 
-- 状态：已完成（含 Relay Mesh 品牌接入；待 Safari / iOS 手工补验）
-- 分支：`th/relay-mesh-branding`
+- 状态：已完成（含 Relay Mesh 品牌接入与 PWA 更新提示；待 Safari / iOS 手工补验）
+- 分支：`th/web-pwa-update-prompt`
 
 ## 实现决策
 
@@ -15,6 +15,9 @@
 - 继续沿用服务端对 `/admin` 与 `/console` 的既有鉴权入口；PWA 不改变认证契约。
 - 页面离线失败语义优先复用现有 unavailable/error surface，不引入离线成功假象。
 - 为避免 public root service worker 抢占已安装 admin app 的离线入口，admin 入口在运行时归一到 `/admin/`，并让 admin manifest/scope 与 SW 都锁定 `/admin/`。
+- public/admin service worker 安装阶段只负责 precache，不主动 `skipWaiting()`；用户确认更新后，页面向 waiting worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 激活消息。
+- `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；提示状态以 service worker 的 installing/ready 生命周期为准。
+- 更新提示由共享 runtime/hook 与 `UpdateAvailableBanner` 承载，覆盖 public、console、login、registration-paused 与 admin app shell。
 
 ## 待完成项
 
@@ -29,6 +32,11 @@
 - `cd web && bun run test:e2e:pwa-offline`
 - `cargo test`
 - `cd docs-site && bun run build`
+- 2026-07-08:
+  - `cd web && bun test`
+  - `cd web && bun run build`
+  - `cd web && bun run build-storybook`
+  - `cd web && bun run test:e2e:pwa-offline`
 
 ## 已实现内容
 
@@ -80,6 +88,9 @@
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-registration-paused.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
 
 ## 后续微调
 
@@ -88,6 +99,7 @@
 - 2026-06-25: 修正 `web/package.json` 中 `test:e2e:pwa-offline` 的仓库相对路径，恢复按命令名直接执行的离线 PWA E2E 验证链。
 - 2026-06-25: 品牌导出链追加 light/dark/mono 变体、主题感知 favicon 与 `64..1024 + maskable` 全尺寸 PWA icon 覆盖。
 - 2026-06-27: 品牌公开路径从根路径裸文件收敛到 `/assets/*`，并补齐 `/assets/* + /favicon.svg` 的服务合同测试。
+- 2026-07-08: 将更新检测从 PublicHome 局部版本比较升级为共享 PWA update runtime；新 worker precache 完成后进入 waiting，用户确认时才激活并 reload。
 
 ## 已知未完成验证
 

@@ -10,10 +10,9 @@ export interface LanguageContextValue {
 
 export interface PublicTranslations {
   updateBanner: {
-    title: string
+    title: string; preparing: string; activating: string
     description: (current: string, latest: string) => string
-    refresh: string
-    dismiss: string
+    refresh: string; refreshing: string; dismiss: string
   }
   heroTitle: string
   heroTagline: string

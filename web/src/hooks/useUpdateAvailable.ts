@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchVersion } from '../api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchVersion, type VersionInfo } from '../api'
+import {
+  activateWaitingPwaUpdate,
+  checkForPwaUpdate,
+  getPwaUpdateSnapshot,
+  subscribePwaUpdateState,
+  type PwaUpdateStatus,
+} from '../pwa/runtime'
 import { subscribeToSseOpen } from '../sse'
 
 const DISMISS_KEY = 'update-dismissed-version'
@@ -7,31 +14,34 @@ const DISMISS_KEY = 'update-dismissed-version'
 export interface UpdateAvailableState {
   currentVersion: string | null
   availableVersion: string | null
+  status: PwaUpdateStatus
   visible: boolean
+  loading: boolean
   dismiss: () => void
-  reload: () => void
+  applyUpdate: () => void
 }
 
 export default function useUpdateAvailable(): UpdateAvailableState {
   const [currentVersion, setCurrentVersion] = useState<string | null>(null)
   const [availableVersion, setAvailableVersion] = useState<string | null>(null)
   const [visible, setVisible] = useState(false)
+  const [updateSnapshot, setUpdateSnapshot] = useState(() => getPwaUpdateSnapshot())
   const initialVersionRef = useRef<string | null>(null)
+  const dismissedVersionRef = useRef<string | null>(null)
 
-  const dismissed = useMemo(() => {
+  const loadVersion = useCallback(async (): Promise<VersionInfo | null> => {
     try {
-      return localStorage.getItem(DISMISS_KEY)
+      return await fetchVersion()
     } catch {
       return null
     }
   }, [])
 
-  const loadVersion = useCallback(async () => {
+  useEffect(() => {
     try {
-      const v = await fetchVersion()
-      return v.backend
+      dismissedVersionRef.current = localStorage.getItem(DISMISS_KEY)
     } catch {
-      return null
+      dismissedVersionRef.current = null
     }
   }, [])
 
@@ -41,37 +51,62 @@ export default function useUpdateAvailable(): UpdateAvailableState {
     ;(async () => {
       const v = await loadVersion()
       if (cancelled) return
-      setCurrentVersion(v)
-      initialVersionRef.current = v
+      const frontend = v?.frontend ?? null
+      setCurrentVersion(frontend)
+      initialVersionRef.current = frontend
     })()
     return () => {
       cancelled = true
     }
   }, [loadVersion])
 
-  // When SSE connects (or reconnects), re-check version
+  useEffect(() => subscribePwaUpdateState(setUpdateSnapshot), [])
+
+  const checkVersion = useCallback(async () => {
+    const next = await loadVersion()
+    const nextFrontend = next?.frontend ?? null
+    if (!nextFrontend) return
+
+    const initial = initialVersionRef.current
+    if (!initial) {
+      initialVersionRef.current = nextFrontend
+      setCurrentVersion(nextFrontend)
+      return
+    }
+
+    if (nextFrontend !== initial) {
+      setAvailableVersion(nextFrontend)
+      void checkForPwaUpdate()
+    }
+  }, [loadVersion])
+
+  // When SSE connects (or reconnects), re-check version and ask the SW to look for new assets.
   useEffect(() => {
-    const unsubscribe = subscribeToSseOpen(async () => {
-      const next = await loadVersion()
-      if (!next) return
-      const initial = initialVersionRef.current
-      if (!initial) {
-        initialVersionRef.current = next
-        setCurrentVersion(next)
-        return
-      }
-      if (next !== initial && next !== dismissed) {
-        setAvailableVersion(next)
-        setVisible(true)
-      }
+    const unsubscribe = subscribeToSseOpen(() => {
+      void checkVersion()
     })
     return unsubscribe
-  }, [dismissed, loadVersion])
+  }, [checkVersion])
+
+  useEffect(() => {
+    if (!updateSnapshot.hasUpdate) {
+      setVisible(false)
+      return
+    }
+
+    const dismissed = dismissedVersionRef.current
+    const candidateVersion = availableVersion ?? 'service-worker-update'
+    if (dismissed === candidateVersion) return
+
+    setVisible(true)
+  }, [availableVersion, updateSnapshot.hasUpdate])
 
   const dismiss = useCallback(() => {
-    if (availableVersion) {
+    const candidateVersion = availableVersion ?? 'service-worker-update'
+    if (candidateVersion) {
       try {
-        localStorage.setItem(DISMISS_KEY, availableVersion)
+        localStorage.setItem(DISMISS_KEY, candidateVersion)
+        dismissedVersionRef.current = candidateVersion
       } catch {
         /* noop */
       }
@@ -79,8 +114,9 @@ export default function useUpdateAvailable(): UpdateAvailableState {
     setVisible(false)
   }, [availableVersion])
 
-  const reload = useCallback(() => {
-    window.location.reload()
+  const applyUpdate = useCallback(() => {
+    setVisible(true)
+    activateWaitingPwaUpdate()
   }, [])
 
   // Provide a manual trigger for validation/testing
@@ -91,5 +127,17 @@ export default function useUpdateAvailable(): UpdateAvailableState {
     }
   }, [currentVersion])
 
-  return { currentVersion, availableVersion, visible, dismiss, reload }
+  const loading = updateSnapshot.status === 'checking'
+    || updateSnapshot.status === 'installing'
+    || updateSnapshot.status === 'activating'
+
+  return {
+    currentVersion,
+    availableVersion,
+    status: updateSnapshot.status,
+    visible,
+    loading,
+    dismiss,
+    applyUpdate,
+  }
 }

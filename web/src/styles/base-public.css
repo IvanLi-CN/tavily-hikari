@@ -831,7 +831,7 @@ body:has(.user-console-cli-skills-guide-proof) #storybook-root {
 .update-banner {
   padding: 18px 20px;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 16px;
   border: 1px solid hsl(var(--accent) / 0.26);
@@ -840,10 +840,24 @@ body:has(.user-console-cli-skills-guide-proof) #storybook-root {
     hsl(var(--card) / 0.84);
 }
 
+.update-banner-status {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: hsl(var(--accent));
+  background: hsl(var(--accent) / 0.12);
+}
+
 .update-banner-text {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 18rem;
+  min-width: min(18rem, 100%);
 }
 
 .update-banner-text strong {
@@ -999,6 +1013,37 @@ body:has(.user-console-cli-skills-guide-proof) #storybook-root {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.update-banner-spinner,
+.update-banner-button-spinner {
+  animation: update-banner-spin 0.9s linear infinite;
+}
+
+@keyframes update-banner-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-banner-spinner,
+  .update-banner-button-spinner {
+    animation: none;
+  }
+}
+
+@media (max-width: 680px) {
+  .update-banner {
+    align-items: flex-start;
+  }
+
+  .update-banner-actions {
+    flex: 1 0 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
 }
 
 .public-home-footer {

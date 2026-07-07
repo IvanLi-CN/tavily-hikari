@@ -157,13 +157,19 @@ def make_service_worker(cache_name: str, files: list[str], offline_fallbacks: di
     return f"""const CACHE_NAME = {json.dumps(cache_name)};
 const PRECACHE_URLS = {json.dumps(precache_urls, indent=2)};
 const OFFLINE_FALLBACKS = {json.dumps(offline_fallbacks, indent=2)};
+const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE';
 
 self.addEventListener('install', (event) => {{
   event.waitUntil((async () => {{
     const cache = await caches.open(CACHE_NAME);
     await cache.addAll(PRECACHE_URLS);
-    await self.skipWaiting();
   }})());
+}});
+
+self.addEventListener('message', (event) => {{
+  if (event.data && event.data.type === ACTIVATE_UPDATE_MESSAGE) {{
+    event.waitUntil(self.skipWaiting());
+  }}
 }});
 
 self.addEventListener('activate', (event) => {{

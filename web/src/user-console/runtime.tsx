@@ -12,6 +12,7 @@ import TokenSecretField, { type TokenSecretCopyState } from '../components/Token
 import ManualCopyBubble from '../components/ManualCopyBubble'
 import UserConsoleHeader from '../components/UserConsoleHeader'
 import HaStatusBanner from '../components/HaStatusBanner'
+import { ConnectedUpdateAvailableBanner } from '../components/UpdateAvailableBanner'
 import DashboardQuotaGrid from './DashboardQuotaGrid'
 import UserDashboardOverview from './UserDashboardOverview'
 import TokenListActions from './TokenListActions'
@@ -2733,6 +2734,7 @@ export default function UserConsole(): JSX.Element {
         onLogout={handleLogout}
       />
 
+      <ConnectedUpdateAvailableBanner strings={publicStrings.updateBanner} />
       {consoleUnavailable && <AccessStatePanel state="unavailable" text={text} onHome={goHome} />}
       {consoleLoggedOut && <AccessStatePanel state="logged_out" text={text} onHome={goHome} />}
       {consoleNeedsLogin && <AccessStatePanel state="login_required" text={text} onHome={goHome} />}

@@ -21,6 +21,7 @@ import {
 import LanguageSwitcher from './components/LanguageSwitcher'
 import OfflineStatusBanner from './components/OfflineStatusBanner'
 import ThemeToggle from './components/ThemeToggle'
+import UpdateAvailableBanner from './components/UpdateAvailableBanner'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
@@ -538,27 +539,17 @@ function PublicHome(): JSX.Element {
         isCompactLayout ? ' is-compact-layout' : ''
       }`}
     >
-      {updateBanner.visible && (
-        <section className="surface update-banner" role="status" aria-live="polite">
-          <div className="update-banner-text">
-            <strong>{publicStrings.updateBanner.title}</strong>
-            <span>
-              {publicStrings.updateBanner.description(
-                updateBanner.currentVersion ?? 'unknown',
-                updateBanner.availableVersion ?? 'latest',
-              )}
-            </span>
-          </div>
-          <div className="update-banner-actions">
-            <Button type="button" onClick={updateBanner.reload}>
-              {publicStrings.updateBanner.refresh}
-            </Button>
-            <Button type="button" variant="ghost" onClick={updateBanner.dismiss}>
-              {publicStrings.updateBanner.dismiss}
-            </Button>
-          </div>
-        </section>
-      )}
+      {updateBanner.visible ? (
+        <UpdateAvailableBanner
+          strings={publicStrings.updateBanner}
+          currentVersion={updateBanner.currentVersion}
+          availableVersion={updateBanner.availableVersion}
+          status={updateBanner.status}
+          loading={updateBanner.loading}
+          onUpdate={updateBanner.applyUpdate}
+          onDismiss={updateBanner.dismiss}
+        />
+      ) : null}
       <PublicHomeHeroCard
         publicStrings={publicStrings}
         metrics={metrics}

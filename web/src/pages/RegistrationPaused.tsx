@@ -1,13 +1,15 @@
 import BrandLockup from '../components/BrandLockup'
 import ThemeToggle from '../components/ThemeToggle'
 import LanguageSwitcher from '../components/LanguageSwitcher'
+import { ConnectedUpdateAvailableBanner } from '../components/UpdateAvailableBanner'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { useTranslate } from '../i18n'
 import { useTheme } from '../theme'
 
 function RegistrationPaused(): JSX.Element {
-  const strings = useTranslate().public.registrationPaused
+  const translations = useTranslate()
+  const strings = translations.public.registrationPaused
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === 'dark'
 
@@ -48,6 +50,8 @@ function RegistrationPaused(): JSX.Element {
             <LanguageSwitcher />
           </div>
         </div>
+
+        <ConnectedUpdateAvailableBanner strings={translations.public.updateBanner} />
 
         <Card
           className={`border-amber-300/60 ${

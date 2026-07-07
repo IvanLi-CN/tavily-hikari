@@ -1,19 +1,37 @@
 import { isDemoMode } from '../api/demo'
 
 export type PwaIdentity = 'public' | 'admin'
+export type PwaUpdateStatus = 'idle' | 'checking' | 'installing' | 'ready' | 'activating'
 
 const LANGUAGE_STORAGE_KEY = 'tavily-hikari-language'
 const THEME_STORAGE_KEY = 'tavily-hikari-theme-mode'
+const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE'
 
 export interface OfflineStateSnapshot {
   isOffline: boolean
 }
 
+export interface PwaUpdateSnapshot {
+  status: PwaUpdateStatus
+  hasUpdate: boolean
+  activationRequested: boolean
+}
+
 let currentOfflineState: OfflineStateSnapshot = {
   isOffline: typeof navigator !== 'undefined' ? navigator.onLine === false : false,
 }
+let currentUpdateState: PwaUpdateSnapshot = {
+  status: 'idle',
+  hasUpdate: false,
+  activationRequested: false,
+}
+let currentRegistration: ServiceWorkerRegistration | null = null
+let waitingWorker: ServiceWorker | null = null
+let activationRequested = false
+let controllerReloadHandled = false
 
 const offlineListeners = new Set<(snapshot: OfflineStateSnapshot) => void>()
+const updateListeners = new Set<(snapshot: PwaUpdateSnapshot) => void>()
 
 function canUseDom(): boolean {
   return typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -32,9 +50,26 @@ function publishOfflineState(): void {
   }
 }
 
+function publishUpdateState(next: Partial<PwaUpdateSnapshot>): void {
+  currentUpdateState = {
+    ...currentUpdateState,
+    ...next,
+  }
+  for (const listener of updateListeners) {
+    listener(currentUpdateState)
+  }
+}
+
 if (canUseDom()) {
   window.addEventListener('online', publishOfflineState)
   window.addEventListener('offline', publishOfflineState)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!activationRequested || controllerReloadHandled) return
+      controllerReloadHandled = true
+      window.location.reload()
+    })
+  }
 }
 
 function shouldRegisterServiceWorker(): boolean {
@@ -70,7 +105,95 @@ export async function registerPwaServiceWorker(identity: PwaIdentity): Promise<v
     return
   }
 
-  await navigator.serviceWorker.register(swPath(identity), { scope: swScope(identity) })
+  const registration = await navigator.serviceWorker.register(swPath(identity), { scope: swScope(identity) })
+  currentRegistration = registration
+  observePwaRegistration(registration)
+}
+
+function observePwaRegistration(registration: ServiceWorkerRegistration): void {
+  const maybeWaiting = registration.waiting
+  if (maybeWaiting && navigator.serviceWorker.controller) {
+    waitingWorker = maybeWaiting
+    publishUpdateState({ status: 'ready', hasUpdate: true })
+  }
+
+  const installing = registration.installing
+  if (installing) {
+    observeInstallingWorker(installing)
+  }
+
+  registration.addEventListener('updatefound', () => {
+    const nextWorker = registration.installing
+    if (!nextWorker) return
+    observeInstallingWorker(nextWorker)
+  })
+}
+
+function observeInstallingWorker(worker: ServiceWorker): void {
+  const isControlledPage = Boolean(navigator.serviceWorker.controller)
+  if (isControlledPage) {
+    publishUpdateState({ status: 'installing', hasUpdate: true })
+  }
+
+  worker.addEventListener('statechange', () => {
+    if (worker.state === 'installing') {
+      if (isControlledPage) publishUpdateState({ status: 'installing', hasUpdate: true })
+      return
+    }
+
+    if (worker.state === 'installed') {
+      if (!isControlledPage) {
+        publishUpdateState({ status: 'idle', hasUpdate: false, activationRequested: false })
+        return
+      }
+      waitingWorker = worker
+      publishUpdateState({ status: 'ready', hasUpdate: true })
+      if (activationRequested) {
+        activateWaitingPwaUpdate()
+      }
+      return
+    }
+
+    if (worker.state === 'activated' && !activationRequested) {
+      publishUpdateState({ status: 'idle', hasUpdate: false, activationRequested: false })
+    }
+  })
+}
+
+export async function checkForPwaUpdate(): Promise<void> {
+  if (!currentRegistration) return
+  if (currentUpdateState.status === 'installing' || currentUpdateState.status === 'ready' || currentUpdateState.status === 'activating') {
+    return
+  }
+
+  publishUpdateState({ status: 'checking' })
+  try {
+    await currentRegistration.update()
+  } catch {
+    // Network failures while checking for an app shell update should not break the page.
+  } finally {
+    if (currentUpdateState.status === 'checking') {
+      publishUpdateState({ status: 'idle' })
+    }
+  }
+}
+
+export function activateWaitingPwaUpdate(): void {
+  activationRequested = true
+  publishUpdateState({ activationRequested: true })
+
+  const worker = waitingWorker ?? currentRegistration?.waiting ?? null
+  if (!worker) {
+    if (currentUpdateState.status !== 'installing') {
+      publishUpdateState({ status: 'checking' })
+      void checkForPwaUpdate()
+    }
+    return
+  }
+
+  waitingWorker = worker
+  publishUpdateState({ status: 'activating', hasUpdate: true, activationRequested: true })
+  worker.postMessage({ type: ACTIVATE_UPDATE_MESSAGE })
 }
 
 export function subscribeOfflineState(listener: (snapshot: OfflineStateSnapshot) => void): () => void {
@@ -83,6 +206,18 @@ export function subscribeOfflineState(listener: (snapshot: OfflineStateSnapshot)
 
 export function getOfflineStateSnapshot(): OfflineStateSnapshot {
   return currentOfflineState
+}
+
+export function subscribePwaUpdateState(listener: (snapshot: PwaUpdateSnapshot) => void): () => void {
+  updateListeners.add(listener)
+  listener(currentUpdateState)
+  return () => {
+    updateListeners.delete(listener)
+  }
+}
+
+export function getPwaUpdateSnapshot(): PwaUpdateSnapshot {
+  return currentUpdateState
 }
 
 export function bootstrapOfflineShellDocument(): void {

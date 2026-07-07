@@ -27,6 +27,7 @@ import LanguageSwitcher from '../components/LanguageSwitcher'
 import NotFoundFallbackPreview from '../components/NotFoundFallbackPreview'
 import HaStatusBanner from '../components/HaStatusBanner'
 import OfflineStatusBanner from '../components/OfflineStatusBanner'
+import { ConnectedUpdateAvailableBanner } from '../components/UpdateAvailableBanner'
 import HaSourceSettingsDialog from './HaSourceSettingsDialog'
 import HaNodeDetailPanel from './HaNodeDetailPanel'
 import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components/AdminSidebarUtility'
@@ -10239,6 +10240,7 @@ function AdminDashboard(): JSX.Element {
         >
           {moduleDesktopUtility}
           {adminHaCompactAlert}
+          <ConnectedUpdateAvailableBanner strings={translations.public.updateBanner} />
 
       {!showNotFound && isStackedAdminLayout && route.name !== 'ha-node' && (
         showRankings ? (
