@@ -64,7 +64,8 @@ impl TavilyProxy {
         dropped_headers: &[String],
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<i64, ProxyError> {
-        self.key_store
+        let request_log_id = self
+            .key_store
             .log_attempt(AttemptLog {
                 key_id: None,
                 auth_token_id,
@@ -94,7 +95,49 @@ impl TavilyProxy {
                 dropped_headers,
                 client_ip,
             })
+            .await?;
+
+        if let Err(err) = self
+            .record_local_request_log_pressure_event(request_log_id)
             .await
+        {
+            tracing::warn!(
+                component = "analysis_pressure",
+                event = "server_pressure_local_request_log_upsert_failed",
+                request_log_id,
+                error = %err,
+                "failed to update server pressure buckets for local request log"
+            );
+        }
+
+        Ok(request_log_id)
+    }
+
+    async fn record_local_request_log_pressure_event(
+        &self,
+        request_log_id: i64,
+    ) -> Result<(), ProxyError> {
+        if let Some(event) = self
+            .key_store
+            .fetch_server_pressure_event_for_request_log(request_log_id)
+            .await?
+        {
+            let outcome = if event.result_status == OUTCOME_SUCCESS {
+                UserBusinessCallOutcome::Success
+            } else {
+                UserBusinessCallOutcome::Failure
+            };
+            self.user_business_calls_1h_window
+                .record_event(&event.user_id, event.request_log_id, event.created_at, outcome)
+                .await;
+            self.record_server_pressure_event(
+                event.request_log_id,
+                event.created_at,
+                &event.result_status,
+            )
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn create_or_replace_mcp_session_binding(

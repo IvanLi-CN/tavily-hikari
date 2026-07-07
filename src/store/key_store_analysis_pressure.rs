@@ -27,6 +27,43 @@ impl KeyStore {
         Ok(true)
     }
 
+    pub(crate) async fn fetch_server_pressure_event_for_request_log(
+        &self,
+        request_log_id: i64,
+    ) -> Result<Option<UserBusinessCallEventWrite>, ProxyError> {
+        sqlx::query_as::<_, (i64, String, i64, String)>(
+            r#"
+            SELECT id, request_user_id, created_at, result_status
+            FROM observability.request_logs
+            WHERE id = ?
+              AND visibility = ?
+              AND request_user_id IS NOT NULL
+              AND counts_business_quota = 1
+              AND upstream_operation IS NOT NULL
+              AND result_status != ?
+            LIMIT 1
+            "#,
+        )
+        .bind(request_log_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| {
+            row.map(
+                |(request_log_id, user_id, created_at, result_status)| {
+                    UserBusinessCallEventWrite {
+                        user_id,
+                        request_log_id: Some(request_log_id),
+                        created_at,
+                        result_status,
+                    }
+                },
+            )
+        })
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn ensure_server_pressure_bucket_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"

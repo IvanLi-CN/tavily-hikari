@@ -1,5 +1,5 @@
 use super::*;
-use axum::http::Method;
+use axum::http::{Method, StatusCode};
 
 #[allow(clippy::too_many_arguments)]
 async fn seed_pressure_attempt(
@@ -259,6 +259,164 @@ async fn analysis_pressure_snapshot_uses_rolling_1h_and_excludes_non_upstream_ev
             .saturating_sub(previous_last.bucket_start),
         SECS_PER_DAY
     );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_snapshot_live_local_mcp_logs_update_server_buckets() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_200_000);
+    let db_path = temp_db_path("analysis-pressure-local-mcp-live");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "analysis-pressure-local-mcp".to_string(),
+            username: Some("local-mcp".to_string()),
+            name: Some("Local MCP".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("analysis-pressure-local-mcp"))
+        .await
+        .expect("bind token");
+    let now = manual_clock.now_ts();
+    manual_clock.set_now_ts(now);
+    let headers: [String; 0] = [];
+
+    let request_log_id = proxy
+        .record_local_request_log_without_key_with_diagnostics(
+            Some(&token.id),
+            &Method::POST,
+            "/mcp",
+            None,
+            StatusCode::OK,
+            None,
+            br#"{"jsonrpc":"2.0","method":"ping","id":1}"#,
+            br#"{"jsonrpc":"2.0","result":{},"id":1}"#,
+            OUTCOME_SUCCESS,
+            None,
+            Some(MCP_GATEWAY_MODE_REBALANCE),
+            Some(MCP_EXPERIMENT_VARIANT_REBALANCE),
+            Some("analysis-pressure-local-mcp-session"),
+            None,
+            Some("mcp"),
+            None,
+            &headers,
+            &headers,
+            None,
+        )
+        .await
+        .expect("record local mcp request log");
+
+    let canonical_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM observability.request_logs
+        WHERE id = ?
+          AND visibility = ?
+          AND request_user_id IS NOT NULL
+          AND counts_business_quota = 1
+          AND upstream_operation IS NOT NULL
+          AND result_status != ?
+        "#,
+    )
+    .bind(request_log_id)
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(OUTCOME_QUOTA_EXHAUSTED)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count canonical pressure request logs");
+    assert_eq!(canonical_rows, 1);
+
+    let five_minute_pressure: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM observability.server_pressure_buckets
+        WHERE bucket_kind = 'five_minute'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("sum live five-minute pressure");
+    assert_eq!(five_minute_pressure, 1);
+
+    let hour_pressure: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM observability.server_pressure_buckets
+        WHERE bucket_kind = 'hour'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("sum live hour pressure");
+    assert_eq!(hour_pressure, 1);
+
+    let snapshot = proxy
+        .analysis_pressure_snapshot()
+        .await
+        .expect("analysis pressure snapshot after live local mcp log");
+    assert_eq!(
+        snapshot
+            .server_24h
+            .current
+            .last()
+            .expect("latest current pressure point")
+            .pressure,
+        1
+    );
+    assert_eq!(snapshot.current_user_distribution.rows.len(), 1);
+    assert_eq!(
+        snapshot.current_user_distribution.rows[0].user_id,
+        user.user_id
+    );
+    assert_eq!(snapshot.current_user_distribution.rows[0].pressure, 1);
+
+    proxy
+        .key_store
+        .rebuild_server_pressure_buckets_with_cancel(|| true)
+        .await
+        .expect("rebuild server pressure buckets");
+
+    let five_minute_pressure_after_rebuild: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM observability.server_pressure_buckets
+        WHERE bucket_kind = 'five_minute'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("sum rebuilt five-minute pressure");
+    assert_eq!(five_minute_pressure_after_rebuild, 1);
+
+    let hour_pressure_after_rebuild: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM observability.server_pressure_buckets
+        WHERE bucket_kind = 'hour'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("sum rebuilt hour pressure");
+    assert_eq!(hour_pressure_after_rebuild, 1);
 
     let _ = std::fs::remove_file(db_path);
 }
