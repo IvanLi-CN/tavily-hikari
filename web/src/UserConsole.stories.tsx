@@ -166,6 +166,83 @@ async function expectTokenListProof(
   }
 }
 
+function parseRgbColor(value: string): { r: number; g: number; b: number; a: number } | null {
+  const match = value.match(/rgba?\(([^)]+)\)/)
+  if (!match) return null
+  const [r, g, b, a = '1'] = match[1].split(',').map((part) => part.trim())
+  return {
+    r: Number.parseFloat(r),
+    g: Number.parseFloat(g),
+    b: Number.parseFloat(b),
+    a: Number.parseFloat(a),
+  }
+}
+
+function relativeLuminance({ r, g, b }: { r: number; g: number; b: number }): number {
+  const channel = (value: number): number => {
+    const normalized = value / 255
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const fg = parseRgbColor(foreground)
+  const bg = parseRgbColor(background)
+  if (!fg || !bg) return 0
+  const fgLum = relativeLuminance(fg)
+  const bgLum = relativeLuminance(bg)
+  const lighter = Math.max(fgLum, bgLum)
+  const darker = Math.min(fgLum, bgLum)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function compositeOver(foreground: string, background: string): string {
+  const fg = parseRgbColor(foreground)
+  const bg = parseRgbColor(background)
+  if (!fg || !bg || fg.a >= 1) return foreground
+  const alpha = fg.a
+  const r = Math.round(fg.r * alpha + bg.r * (1 - alpha))
+  const g = Math.round(fg.g * alpha + bg.g * (1 - alpha))
+  const b = Math.round(fg.b * alpha + bg.b * (1 - alpha))
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+function nearestVisibleBackground(element: HTMLElement): string {
+  let current: HTMLElement | null = element.parentElement
+  while (current) {
+    const color = window.getComputedStyle(current).backgroundColor
+    const parsed = parseRgbColor(color)
+    if (parsed && parsed.a > 0) return color
+    current = current.parentElement
+  }
+  return window.getComputedStyle(document.documentElement).backgroundColor
+}
+
+function expectDarkTokenResetContrast(canvasElement: HTMLElement): void {
+  const resetButton = Array.from(
+    canvasElement.querySelectorAll<HTMLButtonElement>('.user-console-token-actions-desktop .btn-warning'),
+  ).find((button) => button.textContent?.trim() === '重置')
+
+  if (!resetButton) {
+    throw new Error('Expected ConsoleHomeDark to render a desktop token reset action.')
+  }
+
+  const style = window.getComputedStyle(resetButton)
+  const surface = compositeOver(style.backgroundColor, nearestVisibleBackground(resetButton))
+  const textContrast = contrastRatio(style.color, surface)
+  const borderContrast = contrastRatio(style.borderColor, surface)
+
+  if (textContrast < 4.5) {
+    throw new Error(`Expected dark reset action text contrast >= 4.5:1, got ${textContrast.toFixed(2)}.`)
+  }
+  if (borderContrast < 3) {
+    throw new Error(`Expected dark reset action boundary contrast >= 3:1, got ${borderContrast.toFixed(2)}.`)
+  }
+}
+
 const mobileViewport = { viewport: { defaultViewport: '0390-device-iphone-14' } } as const
 
 const consoleHomeOverviewArgs: UserConsoleStoryArgs = {
@@ -1522,7 +1599,10 @@ export const ConsoleHomeDark: Story = {
       },
     },
   },
-  play: ConsoleHome.play,
+  play: async (context) => {
+    await ConsoleHome.play?.(context)
+    expectDarkTokenResetContrast(context.canvasElement)
+  },
 }
 
 export const ConsoleHomeRechargeTestPrice: Story = {

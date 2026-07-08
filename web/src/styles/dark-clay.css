@@ -282,8 +282,8 @@
   .dark .btn-warning,
   .dark button.btn-warning,
   .dark .hikari-button-warning {
-    border-color: hsl(var(--warning) / 0.48);
-    background: hsl(var(--warning) / 0.16);
+    border-color: hsl(var(--warning) / 0.68);
+    background: hsl(var(--warning) / 0.24);
     color: hsl(var(--warning-readable));
     box-shadow: var(--shadow-clay-button);
   }
@@ -345,7 +345,8 @@
   .dark .btn-warning:hover,
   .dark button.btn-warning:hover,
   .dark .hikari-button-warning:hover {
-    background: hsl(var(--warning) / 0.22);
+    border-color: hsl(var(--warning) / 0.78);
+    background: hsl(var(--warning) / 0.3);
   }
 
   .dark .btn-success:hover,
