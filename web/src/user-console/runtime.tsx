@@ -295,6 +295,10 @@ function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
   return 'dashboard'
 }
 
+export function shouldRequireBillingSummary(route: ConsoleRoute): boolean {
+  return route.name === 'billing'
+}
+
 function resolveUserConsoleIdentityName(profile: Profile | null): string | null {
   const primary = profile?.userDisplayName?.trim()
   if (primary) return primary
@@ -1488,9 +1492,13 @@ export default function UserConsole(): JSX.Element {
         return
       }
 
+      const billingSummaryPromise = shouldRequireBillingSummary(route)
+        ? fetchUserBillingSummary(signal)
+        : fetchUserBillingSummary(signal).catch(() => null)
+
       const [nextOverview, nextBillingSummary, nextTokens, nextRechargeConfig, nextRechargeOrders, nextHaStatus] = await Promise.all([
         fetchUserDashboardOverview(todayWindow, signal),
-        fetchUserBillingSummary(signal),
+        billingSummaryPromise,
         fetchUserTokens(todayWindow, signal),
         fetchUserRechargeConfig(signal).catch(() => null),
         fetchUserRechargeOrders(signal).catch(() => []),
@@ -1528,7 +1536,7 @@ export default function UserConsole(): JSX.Element {
         setLoading(false)
       }
     }
-  }, [abortActiveConsoleLoads, clearConsoleData, clearSensitiveConsoleState, redirectAfterLogoutIfNeeded, text.errors.load, todayWindow])
+  }, [abortActiveConsoleLoads, clearConsoleData, clearSensitiveConsoleState, redirectAfterLogoutIfNeeded, route.name, text.errors.load, todayWindow])
 
   useEffect(() => {
     if (route.name === 'oauthCallback') {
