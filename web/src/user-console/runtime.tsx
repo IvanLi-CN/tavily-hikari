@@ -17,7 +17,7 @@ import DashboardQuotaGrid from './DashboardQuotaGrid'
 import UserDashboardOverview from './UserDashboardOverview'
 import TokenListActions from './TokenListActions'
 import TokenListSummary from './TokenListSummary'
-import RechargePanel from './RechargePanel'
+import BillingPage from './BillingPage'
 import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rechargeControls'
 import TokenResetDialogs from './TokenResetDialogs'
 import TokenLogsHeader, {
@@ -39,6 +39,7 @@ import {
   fetchProfile,
   fetchPublicHaStatus,
   fetchVersion,
+  fetchUserBillingSummary,
   fetchUserDashboardOverview,
   fetchUserRechargeConfig,
   fetchUserRechargeOrders,
@@ -70,6 +71,7 @@ import {
   type RechargeConfig,
   type RechargeOrder,
   type RechargeQuote,
+  type UserBillingSummary,
   type UserTokenEventSnapshot,
   type UserDashboard,
   type UserDashboardOverview as UserDashboardOverviewData,
@@ -81,7 +83,7 @@ import RollingNumber from '../components/RollingNumber'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import UserConsoleFooter from '../components/UserConsoleFooter'
 import { Button } from '../components/ui/button'
-import { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
+import SegmentedTabs, { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -283,10 +285,11 @@ function statusTone(status: string): StatusTone {
   return 'neutral'
 }
 
-type UserConsoleViewKey = 'dashboard' | 'tokens' | 'tokenDetail' | 'oauthCallback'
+type UserConsoleViewKey = 'dashboard' | 'billing' | 'tokens' | 'tokenDetail' | 'oauthCallback'
 
 function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
   if (route.name === 'oauthCallback') return 'oauthCallback'
+  if (route.name === 'billing') return 'billing'
   if (route.name === 'token' || route.name === 'tokenLogs') return 'tokenDetail'
   if (route.section === 'tokens') return 'tokens'
   return 'dashboard'
@@ -325,6 +328,7 @@ function isConsoleEntryPath(pathname: string): boolean {
   const normalizedPath = normalizeUserConsolePathname(pathname)
   return normalizedPath === '/console'
     || normalizedPath === '/console/dashboard'
+    || normalizedPath === '/console/billing'
     || normalizedPath === '/console/tokens'
     || /^\/console\/oauth\/[^/]+\/callback$/.test(normalizedPath)
     || normalizedPath.startsWith('/console/tokens/')
@@ -1201,6 +1205,7 @@ export default function UserConsole(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null)
   const [dashboardOverview, setDashboardOverview] = useState<UserDashboardOverviewData | null>(null)
+  const [billingSummary, setBillingSummary] = useState<UserBillingSummary | null>(null)
   const [haStatus, setHaStatus] = useState<HaStatus | null>(null)
   const [tokens, setTokens] = useState<UserTokenSummary[]>([])
   const [rechargeConfig, setRechargeConfig] = useState<RechargeConfig | null>(null)
@@ -1296,6 +1301,7 @@ export default function UserConsole(): JSX.Element {
   const clearConsoleData = useCallback(() => {
     setDashboard(null)
     setDashboardOverview(null)
+    setBillingSummary(null)
     setTokens([])
     setRechargeConfig(null)
     setRechargeOrders([])
@@ -1482,8 +1488,9 @@ export default function UserConsole(): JSX.Element {
         return
       }
 
-      const [nextOverview, nextTokens, nextRechargeConfig, nextRechargeOrders, nextHaStatus] = await Promise.all([
+      const [nextOverview, nextBillingSummary, nextTokens, nextRechargeConfig, nextRechargeOrders, nextHaStatus] = await Promise.all([
         fetchUserDashboardOverview(todayWindow, signal),
+        fetchUserBillingSummary(signal),
         fetchUserTokens(todayWindow, signal),
         fetchUserRechargeConfig(signal).catch(() => null),
         fetchUserRechargeOrders(signal).catch(() => []),
@@ -1492,6 +1499,7 @@ export default function UserConsole(): JSX.Element {
       if (signal.aborted || baseLoadRunIdRef.current !== runId) return
       setDashboard(nextOverview.summary)
       setDashboardOverview(nextOverview)
+      setBillingSummary(nextBillingSummary)
       setHaStatus(nextHaStatus)
       setTokens(nextTokens)
       setRechargeConfig(nextRechargeConfig)
@@ -2119,6 +2127,8 @@ export default function UserConsole(): JSX.Element {
   const currentViewTitle = text.header.views[currentView]
   const baseCurrentViewDescription = currentView === 'dashboard'
     ? text.dashboard.description
+    : currentView === 'billing'
+      ? text.billing.description
     : currentView === 'tokens'
       ? text.tokens.description
       : text.detail.subtitle
@@ -2178,10 +2188,22 @@ export default function UserConsole(): JSX.Element {
   const showTokenListLoading = loading && tokens.length === 0, showEmptyTokens = !loading && tokens.length === 0
   const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
   const rechargeMinMonths = rechargeConfig?.minMonths ?? 1, rechargeMaxMonths = rechargeConfig?.maxMonths ?? 12
-  const showRechargePanel = rechargeConfig?.visible ?? false
   const currentViewDescription = isOAuthCallbackRoute
     ? oauthCallbackModel.description
     : baseCurrentViewDescription
+  const consoleSectionTabs = useMemo<ReadonlyArray<SegmentedTabsOption<'dashboard' | 'billing' | 'tokens'>>>(
+    () => [
+      { value: 'dashboard', label: text.header.views.dashboard },
+      { value: 'billing', label: text.header.views.billing },
+      { value: 'tokens', label: text.header.views.tokens },
+    ],
+    [text.header.views.billing, text.header.views.dashboard, text.header.views.tokens],
+  )
+  const activeConsoleSection: 'dashboard' | 'billing' | 'tokens' = currentView === 'billing'
+    ? 'billing'
+    : currentView === 'tokens' || currentView === 'tokenDetail'
+      ? 'tokens'
+      : 'dashboard'
   const [enabledTokenCount, tokenDailySuccessTotal] = useMemo(
     () => [tokens.filter((token) => token.enabled).length, tokens.reduce((count, token) => count + token.dailySuccess, 0)],
     [tokens],
@@ -2551,6 +2573,15 @@ export default function UserConsole(): JSX.Element {
   const goHome = () => {
     window.location.href = '/'
   }
+  const goDashboard = (behavior: ScrollBehavior = 'auto') => {
+    shouldScrollLandingSectionRef.current = true
+    landingScrollBehaviorRef.current = behavior
+    navigateToRoute({ name: 'landing', section: 'dashboard' })
+  }
+  const goBilling = () => {
+    shouldScrollLandingSectionRef.current = false
+    navigateToRoute({ name: 'billing' })
+  }
   const goTokens = (behavior: ScrollBehavior = 'auto') => {
     shouldScrollLandingSectionRef.current = true
     landingScrollBehaviorRef.current = behavior
@@ -2778,8 +2809,31 @@ export default function UserConsole(): JSX.Element {
         onCloseAnnouncement={closeAnnouncement}
       />
 
+      {!consoleEmptyState && !isOAuthCallbackRoute ? (
+        <div className="user-console-billing-nav-section">
+          <SegmentedTabs<'dashboard' | 'billing' | 'tokens'>
+            value={activeConsoleSection}
+            onChange={(value) => {
+              if (value === 'dashboard') {
+                goDashboard()
+                return
+              }
+              if (value === 'billing') {
+                goBilling()
+                return
+              }
+              goTokens()
+            }}
+            options={consoleSectionTabs}
+            ariaLabel={text.billing.navAria}
+            className="user-console-billing-nav-tabs"
+            smallViewportBehavior="buttons"
+          />
+        </div>
+      ) : null}
+
       {!consoleEmptyState && route.name === 'landing' && (
-        <div className={`user-console-landing-stack${showRechargePanel ? ' has-rail' : ''}`}>
+        <div className="user-console-landing-stack">
           <section
             ref={dashboardSectionRef}
             id="console-dashboard-section"
@@ -2811,21 +2865,6 @@ export default function UserConsole(): JSX.Element {
               />
             </div>
           </section>
-
-          {showRechargePanel ? (
-            <div className="user-console-landing-rail">
-              <RechargePanel
-                text={text.recharge} dashboard={dashboard}
-                config={rechargeConfig} orders={rechargeOrders}
-                credits={rechargeCredits} months={rechargeMonths}
-                quote={rechargeQuote}
-                busy={rechargeBusy} error={rechargeError}
-                onCreditsChange={setRechargeCredits}
-                onMonthsChange={(value) => setRechargeMonths(Math.min(rechargeMaxMonths, Math.max(rechargeMinMonths, value)))}
-                onCreateOrder={() => void handleRechargeSubmit()}
-              />
-            </div>
-          ) : null}
 
           <section
             ref={tokensSectionRef}
@@ -2995,6 +3034,26 @@ export default function UserConsole(): JSX.Element {
             </div>
           )}
         </div>
+      )}
+
+      {!consoleEmptyState && route.name === 'billing' && (
+        <BillingPage
+          text={text.billing}
+          rechargeText={text.recharge}
+          summary={billingSummary}
+          config={rechargeConfig}
+          orders={rechargeOrders}
+          loading={loading}
+          credits={rechargeCredits}
+          months={rechargeMonths}
+          quote={rechargeQuote}
+          busy={rechargeBusy}
+          error={rechargeError}
+          language={language}
+          onCreditsChange={setRechargeCredits}
+          onMonthsChange={(value) => setRechargeMonths(Math.min(rechargeMaxMonths, Math.max(rechargeMinMonths, value)))}
+          onCreateOrder={() => void handleRechargeSubmit()}
+        />
       )}
 
       {!consoleEmptyState && route.name === 'token' && (

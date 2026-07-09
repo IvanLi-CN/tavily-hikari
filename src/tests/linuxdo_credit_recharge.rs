@@ -359,6 +359,130 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
 }
 
 #[tokio::test]
+async fn user_billing_month_summaries_split_recharge_and_admin_adjustments() {
+    let db_path = temp_db_path("user-billing-month-summaries");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_751_010_400);
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "user-billing-month-summaries".to_string(),
+            username: Some("billing_months".to_string()),
+            name: Some("Billing Months".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+
+    let quote_month_start = start_of_local_month_utc_ts(manual_clock.local_now());
+    let next_month_start = shift_local_month_start_utc_ts(quote_month_start, 1);
+    proxy
+        .create_account_entitlement(&AccountEntitlementRecord {
+            id: 0,
+            user_id: user.user_id.clone(),
+            scope_kind: ACCOUNT_ENTITLEMENT_SCOPE_MONTH.to_string(),
+            month_start: quote_month_start,
+            business_calls_1h_delta: 4,
+            daily_credits_delta: 5,
+            monthly_credits_delta: 6,
+            backend_note: "billing month adjustment".to_string(),
+            frontend_note: "billing month adjustment".to_string(),
+            source_kind: ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+            source_id: "billing-month-adjustment".to_string(),
+            actor_user_id: Some("admin".to_string()),
+            actor_display_name: Some("Admin".to_string()),
+            created_at: manual_clock.now_ts(),
+        })
+        .await
+        .expect("create admin monthly entitlement");
+
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_billing_month_summary".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+        credits: 1000,
+        months: 2,
+        money_cents: 10_000,
+        quote_month_start,
+        final_money_cents: 10_000,
+        final_hourly_delta: 20,
+        final_daily_delta: 100,
+        final_monthly_delta: 1000,
+        month_end_clamp_applied: false,
+        quote_snapshot_json: None,
+        trade_no: None,
+        payment_url: None,
+        order_name: "Billing month summary recharge".to_string(),
+        notify_payload: None,
+        created_at: manual_clock.now_ts(),
+        updated_at: manual_clock.now_ts(),
+        paid_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+    proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-billing-month-summary",
+            "ok=1",
+            manual_clock.now_ts() + 60,
+        )
+        .await
+        .expect("apply recharge payment");
+
+    let months = proxy
+        .list_user_billing_month_summaries(&user.user_id, quote_month_start, next_month_start)
+        .await
+        .expect("list user billing month summaries");
+    assert_eq!(months.len(), 2);
+
+    let current = months
+        .iter()
+        .find(|item| item.month_start == quote_month_start)
+        .expect("current month summary");
+    assert_eq!(current.recharge_credits, 1000);
+    assert_eq!(current.recharge_delta.hourly_delta, 20);
+    assert_eq!(current.recharge_delta.daily_delta, 100);
+    assert_eq!(current.recharge_delta.monthly_delta, 1000);
+    assert_eq!(current.adjustment_delta.hourly_delta, 4);
+    assert_eq!(current.adjustment_delta.daily_delta, 5);
+    assert_eq!(current.adjustment_delta.monthly_delta, 6);
+
+    let next = months
+        .iter()
+        .find(|item| item.month_start == next_month_start)
+        .expect("next month summary");
+    assert_eq!(next.recharge_credits, 1000);
+    assert_eq!(next.recharge_delta.hourly_delta, 20);
+    assert_eq!(next.recharge_delta.daily_delta, 100);
+    assert_eq!(next.recharge_delta.monthly_delta, 1000);
+    assert_eq!(next.adjustment_delta.hourly_delta, 0);
+    assert_eq!(next.adjustment_delta.daily_delta, 0);
+    assert_eq!(next.adjustment_delta.monthly_delta, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement() {
     let db_path = temp_db_path("linuxdo-recharge-clamp-schedule-entitlement");
     let db_str = db_path.to_string_lossy().to_string();

@@ -41,9 +41,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/demo.ts',
     {
-      max: 2328,
+      max: 2555,
       reason:
-        'Demo API fixtures now cover user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, admin passkey/password security states, and the Tavily usage-boundary probe on the shared demo shell.',
+        'Demo API fixtures now also cover the dedicated user billing summary surface, alongside user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, admin passkey/password security states, and the Tavily usage-boundary probe on the shared demo shell.',
     },
   ],
   [
@@ -113,16 +113,17 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3220,
-      reason: 'User console runtime still carries the route-level shell plus the Tavily API usage-boundary probe with recursive field-name leak detection while the new landing overview orchestration finishes splitting into dedicated hooks and sections.',
+      max: 3290,
+      reason:
+        'User console runtime now also owns the dedicated billing route, while the route-level shell and Tavily API usage-boundary probe with recursive field-name leak detection still await a broader extraction into dedicated hooks and sections.',
     },
   ],
   [
     'src/UserConsole.stories.tsx',
     {
-      max: 2200,
+      max: 2410,
       reason:
-        'Console Storybook proof now also keeps the month-end recharge quote, clamp, and expired-order evidence on the same stable owner-facing story surface.',
+        'Console Storybook proof now also keeps the dedicated billing summary fixture, alongside the month-end recharge quote, clamp, and expired-order evidence, on the same stable owner-facing story surface.',
     },
   ],
   [

@@ -12,11 +12,12 @@
 
 ### Goals
 
-- 登录用户可在 `/console` 购买月度积分额度包。
+- 登录用户可在独立的 `/console/billing` 页面理解并购买月度积分额度包。
 - 使用 Linux.do Credit 官方 LDC 创建订单：`type=ldcpay`、Ed25519 签名、跳转至平台认证支付页。
 - 支付成功后按服务器本地自然月展开权益，当前自然月从购买时所在月份到月底算第 1 个月。
 - 服务端 quote 以 `quote_month_start` 锁定报价月；若剩余天数下的当前月日均额度累加不足以覆盖完整月额度，则当前月 `monthlyLimit` 线性 clamp，并按裁掉的当前月月额度折价，`hourlyLimit` / `dailyLimit` 保持原档位。
 - 已生效权益叠加到账户有效 `hourlyLimit`、`dailyLimit` 与 `monthlyLimit`，不改变 hourly-any 请求频率额度。
+- 用户侧必须能最小可用地读懂“当前哪些额度来自充值、后续哪些自然月还会生效、现在的单价和购买规则是什么”，而不是只看到 stepper 与金额。
 - 管理端提供充值记录页，可查看、筛选、排序、按用户聚合订单，并在 TOTP 二次确认后执行退单或仅退款。
 
 ### Non-goals
@@ -32,7 +33,7 @@
 
 - 后端充值配置、订单创建、通知验签、订单查询封装、DB schema 与幂等权益发放。
 - 账户有效额度解析读取当前服务器本地自然月命中的充值权益。
-- 用户控制台充值卡片、订单历史、状态刷新与 Storybook 状态覆盖。
+- 用户控制台独立 billing 页、充值卡片、订单历史、权益构成摘要、未来月份时间线、状态刷新与 Storybook 状态覆盖。
 - Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定，以及最终成交 / 月底折抵 / `expired` 透出。
 
 ### Out of scope
@@ -77,6 +78,7 @@
 ### Core flows
 
 - 用户打开 `/console`，在充值卡片中用只读步进器选择积分额度与自然月数，并看到本次购买会增加多少小时、日、月额度。
+- 用户打开 `/console/billing`，在同一页先看到当前权益构成、资费规则、自然月时间线与近期订单，再在购买区用只读步进器选择积分额度与自然月数，并看到本次购买会增加多少小时、日、月额度。
 - 前端调用创建订单 API，后端生成唯一 `out_trade_no`，持久化 pending 订单，使用官方 LDC 签名调用 Linux.do Credit 创建订单。
 - 后端不跟随 Linux.do Credit 创建订单响应的跳转；若上游返回 3xx `Location`，将该地址作为支付 URL 返回给浏览器，由浏览器跳转到 Linux.do Credit 完成认证支付。
 - Linux.do Credit GET 通知本服务 notify endpoint；服务验签和校验金额后，将订单置为 paid，并按购买月份展开权益。
@@ -108,6 +110,7 @@
 | 接口（Name）                                          | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                      |
 | ----------------------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ---------------------------------- |
 | `GET /api/user/recharge/config`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 读取充值可用性、价格、当前权益摘要 |
+| `GET /api/user/billing/summary`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 用户可读的权益构成与未来月份摘要   |
 | `POST /api/user/recharge/quote`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 服务端 quote + 当前月折抵预览      |
 | `GET /api/user/recharge/orders`                       | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 用户订单历史                       |
 | `POST /api/user/recharge/orders`                      | HTTP         | external      | New            | `./contracts/http-apis.md` | backend         | user console        | 创建 Linux.do Credit 支付订单      |
@@ -153,6 +156,14 @@
 - Given 用户本月有 `3000` 充值权益，且基线/标签有效小时/日/月额度为 `100/500/5000`
   When 读取 dashboard 或做 quota precheck
   Then 有效小时/日/月额度为 `160/800/8000`。
+
+- Given 用户当前总额度同时包含基础额度、长期权益和充值权益
+  When 用户打开 `/console/billing`
+  Then 页面能把“长期/基础部分”和“充值带来的当前月增量”拆开解释，不暴露后台账本备注、操作者或原始 source id。
+
+- Given 用户存在未来两个月的充值排期
+  When 用户打开 `/console/billing`
+  Then 页面按自然月卡片时间线展示上月 / 本月 / 下月，并继续扩展到最近有效月份的下一个月，清楚呈现充值 credits 与月度增量；没有未来排期时也要给出明确提示。
 
 - Given 管理员需要调整用户基础额度
   When 在用户详情账号权益账本新增 `base` scope 记录
@@ -219,9 +230,9 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `UserConsole` 充值默认、月底折抵、测试价、禁用、隐藏；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录、`expired` 折抵记录。
-- Docs pages / state galleries to add/update: 用户控制台充值状态 gallery；管理端充值记录 TOTP、最终成交与折抵状态。
-- `play` / interaction coverage to add/update: stepper 调整、创建订单成功/失败路径、月底折抵提示、管理端未绑定 TOTP 提示与退款失败反馈。
+- Stories to add/update: `BillingPage` 默认、有未来月份、无订单、充值关闭、移动端；现有 `UserConsole` 充值相关故事继续覆盖月底折抵、测试价与隐藏态；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录、`expired` 折抵记录。
+- Docs pages / state galleries to add/update: 用户控制台 billing 页面状态 gallery；管理端充值记录 TOTP、最终成交与折抵状态。
+- `play` / interaction coverage to add/update: billing 页面关键分区可见性、stepper 调整、创建订单成功/失败路径、月底折抵提示、管理端未绑定 TOTP 提示与退款失败反馈。
 - Visual regression baseline changes (if any): 充值卡片桌面与移动布局，管理端记录表格新增最终成交列。
 
 ### Quality checks
@@ -234,6 +245,30 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+- source_type: ui_demo
+  demo_entry_or_url: /console/billing?demo=1
+  state: default
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x4096
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: 独立 `/console/billing` 页面在桌面端以整行横向自然月卡片作为主体，用户可直接比较上月 / 本月 / 下月，并继续切到后续排期月份；下方月份详情把基础接入额度、长期权益与标签调整合并为统一的“基础权益”，再单独对比当月调整与充值权益。
+
+![User console billing page desktop](./assets/console-billing-live-desktop-carousel.png)
+
+- source_type: ui_demo
+  demo_entry_or_url: /console/billing?demo=1
+  state: mobile
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 390x4096
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: 同一 billing 页面在移动端收敛为单卡横滑的自然月视图，左右切换按钮下沉到卡片底部，同时仍保留统一的“基础权益”、订单状态与购买控件的完整页面级阅读路径。
+
+![User console billing page mobile](./assets/console-billing-live-mobile-carousel.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Admin/Pages/UserDetailQuotaTab

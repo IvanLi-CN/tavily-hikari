@@ -2,6 +2,7 @@ export type UserConsoleLandingSection = 'dashboard' | 'tokens'
 
 export type UserConsoleRoute
   = | { name: 'landing'; section: UserConsoleLandingSection | null }
+    | { name: 'billing' }
     | { name: 'oauthCallback'; provider: string }
     | { name: 'token'; id: string }
     | { name: 'tokenLogs'; id: string }
@@ -58,6 +59,9 @@ export function parseUserConsolePath(pathname: string): UserConsoleRoute {
   if (normalizedPath === '/console/tokens') {
     return { name: 'landing', section: 'tokens' }
   }
+  if (normalizedPath === '/console/billing') {
+    return { name: 'billing' }
+  }
   if (normalizedPath === '/console/dashboard') {
     return { name: 'landing', section: 'dashboard' }
   }
@@ -66,6 +70,9 @@ export function parseUserConsolePath(pathname: string): UserConsoleRoute {
 }
 
 export function userConsoleRouteToPath(route: UserConsoleRoute): string {
+  if (route.name === 'billing') {
+    return '/console/billing'
+  }
   if (route.name === 'oauthCallback') {
     return `/console/oauth/${encodeURIComponent(route.provider)}/callback`
   }

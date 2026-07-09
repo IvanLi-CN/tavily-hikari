@@ -90,6 +90,7 @@ function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnT
 describe('UserConsole landing guide helpers', () => {
   it('derives header view, identity, and provider labels from the active session state', () => {
     expect(resolveUserConsoleView({ name: 'landing', section: 'dashboard' })).toBe('dashboard')
+    expect(resolveUserConsoleView({ name: 'billing' })).toBe('billing')
     expect(resolveUserConsoleView({ name: 'landing', section: 'tokens' })).toBe('tokens')
     expect(resolveUserConsoleView({ name: 'token', id: 'a1b2' })).toBe('tokenDetail')
     expect(resolveUserConsoleView({ name: 'oauthCallback', provider: 'linuxdo' })).toBe('oauthCallback')

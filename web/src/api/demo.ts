@@ -51,6 +51,13 @@ export function isDemoMode(): boolean {
   }
 }
 
+function demoAnnouncementPreviewMode(): 'active' | 'closed' {
+  if (typeof window === 'undefined') return 'active'
+  const params = new URLSearchParams(window.location.search)
+  const raw = params.get('announcements')?.trim().toLowerCase()
+  return raw === 'closed' || raw === 'none' ? 'closed' : 'active'
+}
+
 function nowSeconds(offset = 0): number {
   return Math.floor(Date.now() / 1000) + offset
 }
@@ -266,6 +273,189 @@ function demoRechargeConfig() {
     monthlyDeltaPerQuotaUnit: 1000,
     testPriceEnabled: true,
     ...demoRechargeSummary(),
+  }
+}
+
+function demoUserBillingSummary() {
+  const currentMonthStart = monthStartSeconds(0)
+  const effectiveUntilMonthStart = monthStartSeconds(2)
+
+  return {
+    currentMonthStart,
+    effectiveUntilMonthStart,
+    blockAll: false,
+    currentTotal: {
+      hourly: 110,
+      daily: 625,
+      monthly: 6250,
+    },
+    composition: {
+      baseAccess: {
+        hourly: 20,
+        daily: 120,
+        monthly: 1200,
+      },
+      tagAdjustments: {
+        hourly: 0,
+        daily: 0,
+        monthly: 0,
+      },
+      permanentEntitlements: {
+        hourly: 5,
+        daily: 25,
+        monthly: 250,
+      },
+      monthlyAdjustments: {
+        hourly: 25,
+        daily: 180,
+        monthly: 1800,
+      },
+      recharge: {
+        credits: 3000,
+        quota: {
+          hourly: 60,
+          daily: 300,
+          monthly: 3000,
+        },
+      },
+    },
+    timeline: [
+      {
+        monthStart: monthStartSeconds(-1),
+        isCurrentMonth: false,
+        persistentTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+        monthlyAdjustments: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+        recharge: {
+          credits: 0,
+          quota: {
+            hourly: 0,
+            daily: 0,
+            monthly: 0,
+          },
+        },
+        effectiveTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+      },
+      {
+        monthStart: currentMonthStart,
+        isCurrentMonth: true,
+        persistentTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+        monthlyAdjustments: {
+          hourly: 25,
+          daily: 180,
+          monthly: 1800,
+        },
+        recharge: {
+          credits: 3000,
+          quota: {
+            hourly: 60,
+            daily: 300,
+            monthly: 3000,
+          },
+        },
+        effectiveTotal: {
+          hourly: 110,
+          daily: 625,
+          monthly: 6250,
+        },
+      },
+      {
+        monthStart: monthStartSeconds(1),
+        isCurrentMonth: false,
+        persistentTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+        monthlyAdjustments: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+        recharge: {
+          credits: 3000,
+          quota: {
+            hourly: 60,
+            daily: 300,
+            monthly: 3000,
+          },
+        },
+        effectiveTotal: {
+          hourly: 85,
+          daily: 445,
+          monthly: 4450,
+        },
+      },
+      {
+        monthStart: monthStartSeconds(2),
+        isCurrentMonth: false,
+        persistentTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+        monthlyAdjustments: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+        recharge: {
+          credits: 3000,
+          quota: {
+            hourly: 60,
+            daily: 300,
+            monthly: 3000,
+          },
+        },
+        effectiveTotal: {
+          hourly: 85,
+          daily: 445,
+          monthly: 4450,
+        },
+      },
+      {
+        monthStart: monthStartSeconds(3),
+        isCurrentMonth: false,
+        persistentTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+        monthlyAdjustments: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+        recharge: {
+          credits: 0,
+          quota: {
+            hourly: 0,
+            daily: 0,
+            monthly: 0,
+          },
+        },
+        effectiveTotal: {
+          hourly: 25,
+          daily: 145,
+          monthly: 1450,
+        },
+      },
+    ],
   }
 }
 
@@ -1769,6 +1959,7 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   if (path === '/api/user/token') return jsonResponse({ token: DEMO_TOKEN })
   if (path === '/api/user/dashboard') return jsonResponse(demoUserDashboardSummary())
   if (path === '/api/user/recharge/config') return jsonResponse(demoRechargeConfig())
+  if (path === '/api/user/billing/summary') return jsonResponse(demoUserBillingSummary())
   if (path === '/api/user/recharge/quote' && method === 'POST') return jsonResponse(buildDemoRechargeQuote())
   if (path === '/api/user/recharge/orders') {
     if (method === 'POST') return handleCreateDemoRechargeOrder(init)
@@ -1830,7 +2021,13 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   }
   if (path === '/api/user/tokens') return jsonResponse(demoUserTokenSummaries())
   if (path.startsWith('/api/user/tokens/')) return handleUserTokenRoute(path, url)
-  if (path === '/api/user/announcements') return jsonResponse({ items: demoUserActiveAnnouncements(demoState.announcements) })
+  if (path === '/api/user/announcements') {
+    return jsonResponse({
+      items: demoAnnouncementPreviewMode() === 'closed'
+        ? []
+        : demoUserActiveAnnouncements(demoState.announcements),
+    })
+  }
   if (path === '/api/user/announcements/history') return jsonResponse({ items: demoUserAnnouncementHistory(demoState.announcements) })
 
   if (path === '/api/keys/validate' && method === 'POST') return jsonResponse({

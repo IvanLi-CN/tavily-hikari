@@ -785,6 +785,10 @@ async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_
         13
     } else if partial_bucket_start >= current_month_start {
         6
+    } else if partial_gap_end >= current_month_start {
+        // The public path keeps the visible request-log successes that resume inside the
+        // partial local-day bucket even when the UTC month starts mid-bucket.
+        3
     } else {
         0
     };

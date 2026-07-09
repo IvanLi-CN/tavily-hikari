@@ -1376,7 +1376,31 @@ impl TavilyProxy {
                 .iter()
                 .map(to_admin_user_tag_binding)
                 .collect(),
-        }))
+            }))
+    }
+
+    pub async fn resolve_user_quota_details(
+        &self,
+        user_id: &str,
+    ) -> Result<AdminUserQuotaDetails, ProxyError> {
+        let resolution = self
+            .key_store
+            .resolve_account_quota_resolution(user_id)
+            .await?;
+        Ok(AdminUserQuotaDetails {
+            base: to_admin_quota_limit_set(&resolution.base),
+            effective: to_admin_quota_limit_set(&resolution.effective),
+            breakdown: resolution
+                .breakdown
+                .iter()
+                .map(to_admin_quota_breakdown_entry)
+                .collect(),
+            tags: resolution
+                .tags
+                .iter()
+                .map(to_admin_user_tag_binding)
+                .collect(),
+        })
     }
 
     pub async fn linuxdo_credit_recharge_summary(
@@ -1412,6 +1436,17 @@ impl TavilyProxy {
                 user_id,
                 start_of_local_month_utc_ts(self.backend_time.local_now()),
             )
+            .await
+    }
+
+    pub async fn list_user_billing_month_summaries(
+        &self,
+        user_id: &str,
+        start_month: i64,
+        end_month: i64,
+    ) -> Result<Vec<UserBillingMonthSummary>, ProxyError> {
+        self.key_store
+            .list_user_billing_month_summaries_for_user(user_id, start_month, end_month)
             .await
     }
 

@@ -39,6 +39,7 @@ import {
   fetchTokenLogsList,
   fetchUserAnnouncementHistory,
   fetchUserAnnouncements,
+  fetchUserBillingSummary,
   fetchUserDashboard,
   fetchUserDashboardOverview,
   postUserLogout,
@@ -180,6 +181,7 @@ describe('admin user tag api helpers', () => {
     await fetchTokenMetrics('th-a1b2-secretsecret', todayWindow)
     await fetchUserDashboard(todayWindow)
     await fetchUserDashboardOverview(todayWindow)
+    await fetchUserBillingSummary()
     await fetchUserTokens(todayWindow)
     await fetchUserTokenDetail('a1b2', todayWindow)
 
@@ -196,9 +198,12 @@ describe('admin user tag api helpers', () => {
       '/api/user/dashboard/overview?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
     expect((fetchMock.mock.calls[4] as [string])[0]).toBe(
-      '/api/user/tokens?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+      '/api/user/billing/summary',
     )
     expect((fetchMock.mock.calls[5] as [string])[0]).toBe(
+      '/api/user/tokens?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[6] as [string])[0]).toBe(
       '/api/user/tokens/a1b2?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
   })

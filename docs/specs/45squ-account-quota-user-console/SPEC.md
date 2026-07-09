@@ -4,13 +4,14 @@
 
 - Status: 已完成（fast-track）
 - Created: 2026-03-02
-- Last: 2026-03-21
+- Last: 2026-07-09
 
 ## 背景 / 问题陈述
 
 - 当前配额判定与展示主要基于 access token 维度，无法沉淀到账户层。
 - LinuxDo 登录后仍停留在公共首页，缺少“我的控制台”入口与账户视角指标。
 - 用户端需要最小可用的控制台：账户仪表盘 + token 管理（当前每账户仅 1 个 token，只读）。
+- 随着自助充值与账号权益叠加进入常态，用户还需要一个独立的“权益与订单”页来理解自己当前额度构成、后续月份安排、资费规则与近期订单，而不是继续把这些说明塞进 dashboard 或 landing。
 
 ## 目标 / 非目标
 
@@ -20,7 +21,8 @@
 - 对历史绑定账户执行一次性回填：把 token 维度已用量/限额迁移到账户维度。
 - 已绑定账户 token 请求改为账户级配额判定；未绑定 token 继续 token 级判定。
 - 登录后统一进入 `/console`，并在访问 `/` 时对已登录用户自动跳转。
-- 新增用户控制台页面：`#/dashboard` 与 `#/tokens` + `#/tokens/:id`。
+- 新增用户控制台页面：`/console` dashboard、`/console/billing` 权益与订单、`/console/tokens` 与 `/console/tokens/:id`。
+- `/console/billing` 必须把当前权益构成、资费规则、未来自然月安排、近期订单与购买动作放在同一页中讲清楚，不混入账号资料语义。
 
 ### Non-goals
 
@@ -36,11 +38,11 @@
   - 账户级配额表、回填迁移、判定逻辑。
   - 用户控制台所需查询能力（dashboard/tokens/detail/secret/logs）。
 - `src/server.rs`
-  - 新增 `/api/user/dashboard`、`/api/user/tokens*`。
+  - 新增 `/api/user/dashboard`、`/api/user/billing/summary`、`/api/user/tokens*`。
   - 登录后 `/console` 路由与重定向策略。
 - `web/`
   - 新入口 `console.html` + `console-main.tsx`。
-  - 用户控制台页面（仪表盘、token 管理、token 详情）。
+  - 用户控制台页面（仪表盘、权益与订单、token 管理、token 详情）。
 
 ### Out of scope
 
@@ -73,6 +75,13 @@
 - Given 进入 `/console#/dashboard`
   Then 能看到账户维度用量与限额（hourly-any/hour/day/month）。
 
+- Given 进入 `/console/billing`
+  Then 能看懂当前总额度里哪些来自基础/长期权益、哪些来自当前月充值、哪些属于当前月调整，并能直接看到资费规则、可横向切换的自然月时间线、近期订单与购买入口。
+
+- Given `/console/billing` 没有未来月份充值排期
+  When 用户查看未来安排
+  Then 页面仍展示上月 / 本月 / 下月卡片，并用明确提示说明当前没有额外排期中的时效权益，而不是留白。
+
 - Given 进入 `/console#/tokens`
   Then 能看到 token 列表列（token id、状态与最近使用、成功统计、复制、详情入口），且不再把账户级共享配额或内部备注字段重复渲染到前台 token 行。
 
@@ -99,7 +108,61 @@
 - [x] M4: 前端 `/console` 仪表盘 + token 管理落地
 - [x] M5: fast-track 交付（push + PR + checks + review-loop）
 
+## Visual Evidence
+
+- source_type: ui_demo
+  demo_entry_or_url: /console/billing?demo=1&announcements=closed
+  state: default
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1600x1900
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: verifies the live desktop billing page on the stable announcement-closed demo route. The purchase area has been distilled to three short metrics only, with the misleading long explanatory sentence removed and the pricing semantics kept as "50.00 LDC 可换 1,000 月积分".
+
+![Live desktop billing page demo with clean monthly-credit wording](./assets/console-billing-monthly-credit-proof-wide.png)
+
+- source_type: ui_demo
+  demo_entry_or_url: /console/billing?demo=1&announcements=closed
+  state: narrow-page-proof
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 440x5200
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: verifies the same page at a narrow page-level viewport. The shorter purchase area still reads cleanly in the full mobile stack without reintroducing the removed explanatory paragraph.
+
+![Live narrow billing page proof with readable purchase guide](./assets/console-billing-monthly-credit-proof-narrow.png)
+
+- source_type: ui_demo
+  demo_entry_or_url: /console.html?demo=1 (route preloaded to /console/billing)
+  state: default
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x4096
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: verifies the billing month stage now keeps only one visual emphasis: the selected card. After desktop users select another month, the previously current month falls back to the same quiet unselected treatment as its peers, and the lower detail panel switches to that month while collapsing base access, long-lived entitlements, and tag adjustments into one merged base-entitlements row.
+
+![Live desktop billing page demo](./assets/console-billing-selected-month-desktop.png)
+
+- source_type: ui_demo
+  demo_entry_or_url: /console.html?demo=1 (route preloaded to /console/billing)
+  state: mobile
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 390x4096
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: verifies the same billing page on mobile keeps the month stage as the first surface, advances the selected month with the compact controls, and switches the lower month-detail panel to the newly selected card while keeping the persistent baseline quota as one merged base-entitlements row.
+
+![Live mobile billing page demo](./assets/console-billing-selected-month-mobile.png)
+
 ## Visual Evidence (PR)
+
+Storybook `User Console/Billing/Billing Page`: verifies the dedicated `/console/billing` page keeps the clay user-console language while splitting the experience into current composition, pricing rules, natural-month schedule, recent orders, and purchase actions on one screen.
+
+Storybook `User Console/Billing/Billing Page/Mobile`: verifies the same page collapses cleanly on a narrow viewport without losing the information order or purchase affordance.
 
 Storybook `User Console/UserConsole/Console Home Tokens Focus`: verifies the `/console` token list removes the former quota-window column, keeps token status plus recent activity in the list, and still exposes copy/detail/reset actions without horizontal overflow.
 
@@ -136,7 +199,12 @@ Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: renders MC
 
 ## 变更记录
 
+- 2026-07-09: 继续压缩 `/console/billing` 购买区文案，移除购买说明中的整句规则解释与测试价格提示，只保留三项短指标和充值面板内的额度增量，避免在最终页面里继续堆叠长文本。
+- 2026-07-09: 修正 `/console/billing` 购买说明文案语义，不再把 `1,000 月积分` 与 `50 LDC` 写成等价物；页面统一改成“月积分档位 / 生效月数”口径，并把被公告弹窗遮挡的旧证据替换为 `announcements=closed` 的干净整页证据。
 - 2026-03-18: 补充 Token Detail probe 实调回归覆盖；前端将 MCP/API 检测步骤抽成共享定义并用请求级测试锁定浏览器侧调用，后端再新增真实合同测试，直接拉起 Hikari 验证 `/mcp tools/list` 返回的全部广告工具都能继续通过 `/mcp tools/call` 命中 mock upstream，同时覆盖 `/api/tavily/search|extract|crawl|map|research|research/:id` 的真实调用链；运行时与 Storybook 的 MCP probe 也已改成发现后逐个 `tools/call`，并把 probe 状态收敛为独立 `Connectivity Checks` gallery，移除仅为展示 probe 状态存在的全页 `UserConsole` stories。
+- 2026-07-09: Billing 月份卡片取消“当前月”独立高亮；当前月只保留默认选中语义，未选中时与其他月份保持同一静态层级，相关桌面/移动端视觉证据已更新。
+- 2026-07-09: 所选月份详情把“基础接入额度 / 长期权益 / 标签调整”合并为统一的“基础权益”行，月度调整与充值权益继续独立展示，相关桌面/移动端视觉证据已同步更新。
+- 2026-07-08: 用户控制台新增独立 `/console/billing` 页面与顶部稳定入口；前端将权益构成、资费规则、未来自然月安排、近期订单与购买动作汇总为同页信息架构，后端补充 `/api/user/billing/summary` 供页面读取安全摘要。
 - 2026-03-21: 优化 Token Detail 的 MCP 检测气泡显示；`tools/call` 项统一改成“调用 {tool} 工具”式文案，工具名以 monospace chip 独立展示，并放宽气泡宽度以减少常见 Tavily 工具名的割裂换行。
 - 2026-06-20: 收紧 `/console` Token 列表语义，移除列表中的“配额窗口”整列与移动端对应 quota-window 条目；列表仅保留 token 自有识别信息、状态/最近使用、成功统计与操作入口，账户级共享配额回归到账户概览与 token 详情承载。
 - 2026-06-20: 补充前台展示约束，用户控制台 Token 列表不再展示内部 `note/备注` 字段；相关视觉证据已更新为去备注后的桌面/移动最终态。

@@ -9,6 +9,7 @@ import type {
   RechargeQuote,
   RequestRate,
   RequestRateScope,
+  UserBillingSummary,
   UserDashboard,
   UserDashboardOverview,
   UserTokenSummary,
@@ -317,6 +318,184 @@ const rechargeHiddenConfigSample: RechargeConfig = {
   ...rechargeConfigSample,
   visible: false,
   enabled: false,
+}
+
+const billingSummarySample: UserBillingSummary = {
+  currentMonthStart: rechargeConfigSample.currentMonthStart,
+  effectiveUntilMonthStart: rechargeConfigSample.effectiveUntilMonthStart,
+  blockAll: false,
+  currentTotal: {
+    hourly: 110,
+    daily: 625,
+    monthly: 6250,
+  },
+  composition: {
+    baseAccess: {
+      hourly: 20,
+      daily: 120,
+      monthly: 1200,
+    },
+    tagAdjustments: {
+      hourly: 0,
+      daily: 0,
+      monthly: 0,
+    },
+    permanentEntitlements: {
+      hourly: 5,
+      daily: 25,
+      monthly: 250,
+    },
+    monthlyAdjustments: {
+      hourly: 25,
+      daily: 180,
+      monthly: 1800,
+    },
+    recharge: {
+      credits: 3000,
+      quota: {
+        hourly: 60,
+        daily: 300,
+        monthly: 3000,
+      },
+    },
+  },
+  timeline: [
+    {
+      monthStart: 1_759_363_200,
+      isCurrentMonth: false,
+      persistentTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+      monthlyAdjustments: {
+        hourly: 0,
+        daily: 0,
+        monthly: 0,
+      },
+      recharge: {
+        credits: 0,
+        quota: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+      },
+      effectiveTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+    },
+    {
+      monthStart: rechargeConfigSample.currentMonthStart,
+      isCurrentMonth: true,
+      persistentTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+      monthlyAdjustments: {
+        hourly: 25,
+        daily: 180,
+        monthly: 1800,
+      },
+      recharge: {
+        credits: 3000,
+        quota: {
+          hourly: 60,
+          daily: 300,
+          monthly: 3000,
+        },
+      },
+      effectiveTotal: {
+        hourly: 110,
+        daily: 625,
+        monthly: 6250,
+      },
+    },
+    {
+      monthStart: 1_764_720_000,
+      isCurrentMonth: false,
+      persistentTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+      monthlyAdjustments: {
+        hourly: 0,
+        daily: 0,
+        monthly: 0,
+      },
+      recharge: {
+        credits: 3000,
+        quota: {
+          hourly: 60,
+          daily: 300,
+          monthly: 3000,
+        },
+      },
+      effectiveTotal: {
+        hourly: 85,
+        daily: 445,
+        monthly: 4450,
+      },
+    },
+    {
+      monthStart: rechargeConfigSample.effectiveUntilMonthStart!,
+      isCurrentMonth: false,
+      persistentTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+      monthlyAdjustments: {
+        hourly: 0,
+        daily: 0,
+        monthly: 0,
+      },
+      recharge: {
+        credits: 3000,
+        quota: {
+          hourly: 60,
+          daily: 300,
+          monthly: 3000,
+        },
+      },
+      effectiveTotal: {
+        hourly: 85,
+        daily: 445,
+        monthly: 4450,
+      },
+    },
+    {
+      monthStart: 1_769_904_000,
+      isCurrentMonth: false,
+      persistentTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+      monthlyAdjustments: {
+        hourly: 0,
+        daily: 0,
+        monthly: 0,
+      },
+      recharge: {
+        credits: 0,
+        quota: {
+          hourly: 0,
+          daily: 0,
+          monthly: 0,
+        },
+      },
+      effectiveTotal: {
+        hourly: 25,
+        daily: 145,
+        monthly: 1450,
+      },
+    },
+  ],
 }
 
 const rechargeOrdersSample: RechargeOrder[] = [
@@ -869,6 +1048,10 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
 
     if (url.pathname === '/api/user/dashboard/overview') {
       return jsonResponse(dashboardOverviewSample)
+    }
+
+    if (url.pathname === '/api/user/billing/summary') {
+      return jsonResponse(billingSummarySample)
     }
 
     if (url.pathname === '/api/user/recharge/config') {

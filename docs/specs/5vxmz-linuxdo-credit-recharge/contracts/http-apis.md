@@ -26,6 +26,44 @@
   - `currentEntitlementMonthlyDelta`
   - `effectiveUntilMonthStart`: latest entitled month start, or `null`
 
+## GET /api/user/billing/summary
+
+- Auth: `hikari_user_session`
+- Response `200`:
+  - `currentMonthStart`
+  - `effectiveUntilMonthStart`
+  - `blockAll`
+  - `currentTotal { hourly, daily, monthly }`
+  - `composition`
+    - `baseAccess { hourly, daily, monthly }`
+    - `tagAdjustments { hourly, daily, monthly }`
+    - `permanentEntitlements { hourly, daily, monthly }`
+    - `monthlyAdjustments { hourly, daily, monthly }`
+    - `recharge`
+      - `credits`
+      - `quota { hourly, daily, monthly }`
+  - `timeline[]`
+    - `monthStart`
+    - `isCurrentMonth`
+    - `persistentTotal { hourly, daily, monthly }`
+    - `monthlyAdjustments { hourly, daily, monthly }`
+    - `recharge`
+      - `credits`
+      - `quota { hourly, daily, monthly }`
+    - `effectiveTotal { hourly, daily, monthly }`
+
+- Semantics:
+  - Dedicated to the user-facing `/console/billing` page; it is not an admin ledger export.
+  - `composition` only exposes safe user-readable summaries and must not contain admin note,
+    actor, internal source id, or raw ledger rows.
+  - `timeline[].persistentTotal` represents the long-lived quota baseline the user can treat as
+    ongoing access, excluding current-month recharge and one-off month adjustments.
+  - `timeline[]` is a natural-month schedule from the previous server-local month through at least
+    the next month, and extends through the month after the latest effective recharge month when
+    time-limited quota is present.
+  - `timeline[].monthlyAdjustments` excludes recharge-derived deltas so the UI can explain month
+    adjustments and recharge increments separately.
+
 ## POST /api/user/recharge/quote
 
 - Auth: `hikari_user_session`
@@ -59,6 +97,9 @@
 
 - Auth: `hikari_user_session`
 - Response `200`: `{ "items": RechargeOrder[] }`
+- Semantics:
+  - The billing page continues to use this endpoint as the source of recent orders instead of
+    embedding order rows into `GET /api/user/billing/summary`.
 
 ## GET /api/user/recharge/orders/:out_trade_no
 

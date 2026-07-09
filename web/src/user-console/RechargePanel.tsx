@@ -75,6 +75,7 @@ interface RechargePanelText {
 
 interface RechargePanelProps {
   text: RechargePanelText
+  language: 'en' | 'zh'
   dashboard: UserDashboard | null
   config: RechargeConfig | null
   orders: RechargeOrder[]
@@ -86,6 +87,9 @@ interface RechargePanelProps {
   onCreditsChange: (value: number) => void
   onMonthsChange: (value: number) => void
   onCreateOrder: () => void
+  showSummary?: boolean
+  showOrders?: boolean
+  ordersLimit?: number
 }
 
 interface RechargePreviewMonth {
@@ -113,6 +117,7 @@ function rechargeStatusTone(status: string): StatusTone {
 
 export default function RechargePanel({
   text,
+  language,
   dashboard,
   config,
   orders,
@@ -124,6 +129,9 @@ export default function RechargePanel({
   onCreditsChange,
   onMonthsChange,
   onCreateOrder,
+  showSummary = true,
+  showOrders = true,
+  ordersLimit = 3,
 }: RechargePanelProps): JSX.Element {
   const [previewOpen, setPreviewOpen] = useState(false)
   const viewportMode = useViewportMode()
@@ -189,24 +197,28 @@ export default function RechargePanel({
         )}
       </header>
 
-      <div className="user-console-recharge-grid">
+      <div className={`user-console-recharge-grid${showOrders ? '' : ' user-console-recharge-grid-composer'}`}>
         <div className="user-console-recharge-main">
-          <div className="user-console-recharge-summary">
-            <div>
-              <span>{text.currentEntitlement}</span>
-              <strong>{formatNumber(currentEntitlement)}</strong>
+          {showSummary ? (
+            <div className="user-console-recharge-summary">
+              <div>
+                <span>{text.currentEntitlement}</span>
+                <strong>{formatNumber(currentEntitlement)}</strong>
+              </div>
+              <div>
+                <span>{text.currentMonthFinal}</span>
+                <strong>{formatNumber(currentMonthFinal)}</strong>
+              </div>
+              <div>
+                <span>{text.effectiveUntil}</span>
+                <strong>{effectiveUntil ? formatTimestamp(effectiveUntil) : text.noEntitlement}</strong>
+              </div>
+              {quote?.monthEndClampApplied ? <p className="user-console-recharge-test-price">{text.clampNotice}</p> : null}
+              {config?.testPriceEnabled && text.testPrice ? (
+                <p className="user-console-recharge-test-price">{text.testPrice}</p>
+              ) : null}
             </div>
-            <div>
-              <span>{text.currentMonthFinal}</span>
-              <strong>{formatNumber(currentMonthFinal)}</strong>
-            </div>
-            <div>
-              <span>{text.effectiveUntil}</span>
-              <strong>{effectiveUntil ? formatTimestamp(effectiveUntil) : text.noEntitlement}</strong>
-            </div>
-            {quote?.monthEndClampApplied ? <p className="user-console-recharge-test-price">{text.clampNotice}</p> : null}
-            {config?.testPriceEnabled ? <p className="user-console-recharge-test-price">{text.testPrice}</p> : null}
-          </div>
+          ) : null}
 
           {config?.enabled ? (
             <div className="user-console-recharge-form">
@@ -264,18 +276,18 @@ export default function RechargePanel({
               <div className="user-console-recharge-delta" aria-label={text.quotaDelta}>
                 {(quote
                   ? [
-                      [text.hourlyDelta, quote.currentMonthFinalHourlyDelta],
-                      [text.dailyDelta, quote.currentMonthFinalDailyDelta],
-                      [text.monthlyDelta, quote.currentMonthFinalMonthlyDelta],
+                      { kind: 'hourly' as const, label: text.hourlyDelta, value: quote.currentMonthFinalHourlyDelta },
+                      { kind: 'daily' as const, label: text.dailyDelta, value: quote.currentMonthFinalDailyDelta },
+                      { kind: 'monthly' as const, label: text.monthlyDelta, value: quote.currentMonthFinalMonthlyDelta },
                     ]
                   : [
-                      [text.hourlyDelta, 0],
-                      [text.dailyDelta, 0],
-                      [text.monthlyDelta, 0],
-                    ]).map(([label, value]) => (
+                      { kind: 'hourly' as const, label: text.hourlyDelta, value: 0 },
+                      { kind: 'daily' as const, label: text.dailyDelta, value: 0 },
+                      { kind: 'monthly' as const, label: text.monthlyDelta, value: 0 },
+                    ]).map(({ kind, label, value }) => (
                   <div key={label} className="user-console-recharge-delta-pill">
                     <span>{label}</span>
-                    <strong>+{formatNumber(Number(value))}</strong>
+                    <strong>{formatRechargeDeltaValue(kind, Number(value), language)}</strong>
                   </div>
                 ))}
               </div>
@@ -306,28 +318,30 @@ export default function RechargePanel({
           )}
         </div>
 
-        <div className="user-console-recharge-orders">
-          <h3>{text.orders}</h3>
-          <div className="user-console-recharge-orders-panel">
-            {orders.length === 0 ? (
-              <p className="empty-state">{text.noOrders}</p>
-            ) : (
-              <ul>
-                {orders.slice(0, 3).map((order) => (
-                  <li key={order.outTradeNo}>
-                    <div>
-                      <strong>{formatNumber(order.credits)} × {order.months}</strong>
-                      <span>{order.money} LDC · {formatTimestamp(order.createdAt)}{order.monthEndClampApplied ? ` · ${text.discountedAmount}` : ''}</span>
-                    </div>
-                    <StatusBadge tone={rechargeStatusTone(order.status)}>
-                      {text.status[order.status] ?? order.status}
-                    </StatusBadge>
-                  </li>
-                ))}
-              </ul>
-            )}
+        {showOrders ? (
+          <div className="user-console-recharge-orders">
+            <h3>{text.orders}</h3>
+            <div className="user-console-recharge-orders-panel">
+              {orders.length === 0 ? (
+                <p className="empty-state">{text.noOrders}</p>
+              ) : (
+                <ul>
+                  {orders.slice(0, ordersLimit).map((order) => (
+                    <li key={order.outTradeNo}>
+                      <div>
+                        <strong>{formatNumber(order.credits)} × {order.months}</strong>
+                        <span>{order.money} LDC · {formatTimestamp(order.createdAt)}{order.monthEndClampApplied ? ` · ${text.discountedAmount}` : ''}</span>
+                      </div>
+                      <StatusBadge tone={rechargeStatusTone(order.status)}>
+                        {text.status[order.status] ?? order.status}
+                      </StatusBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
 
       {viewportMode === 'small' ? (
@@ -376,6 +390,17 @@ const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 
 
 function formatNumber(value: number): string {
   return numberFormatter.format(value)
+}
+
+function formatRechargeDeltaValue(kind: 'hourly' | 'daily' | 'monthly', value: number, language: 'en' | 'zh'): string {
+  const formatted = formatNumber(value)
+  if (language === 'zh') {
+    if (kind === 'hourly') return `+${formatted} 次`
+    return `+${formatted} 积分`
+  }
+
+  if (kind === 'hourly') return `+${formatted} requests`
+  return `+${formatted} credits`
 }
 
 function currentBrowserMonthStartSeconds(): number {

@@ -24,6 +24,11 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         3160,
         "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending.",
     ),
+    (
+        "src/server/tests/api_keys_and_registration.rs",
+        3300,
+        "User auth/profile integration coverage now also carries the dedicated billing summary endpoint contract and related recharge/user-console assertions while the legacy consolidated server test file still awaits a broader extraction pass.",
+    ),
 ];
 
 fn visit(dir: &Path, out: &mut Vec<PathBuf>) {

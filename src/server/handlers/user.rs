@@ -1337,6 +1337,67 @@ struct RechargeOrdersView {
     items: Vec<RechargeOrderView>,
 }
 
+#[derive(Debug, Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+struct BillingQuotaView {
+    hourly: i64,
+    daily: i64,
+    monthly: i64,
+}
+
+impl BillingQuotaView {
+    fn from_limits(hourly: i64, daily: i64, monthly: i64) -> Self {
+        Self {
+            hourly,
+            daily,
+            monthly,
+        }
+    }
+
+    fn zero() -> Self {
+        Self::from_limits(0, 0, 0)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingRechargeView {
+    credits: i64,
+    quota: BillingQuotaView,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserBillingCompositionView {
+    base_access: BillingQuotaView,
+    tag_adjustments: BillingQuotaView,
+    permanent_entitlements: BillingQuotaView,
+    monthly_adjustments: BillingQuotaView,
+    recharge: BillingRechargeView,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserBillingMonthView {
+    month_start: i64,
+    is_current_month: bool,
+    persistent_total: BillingQuotaView,
+    monthly_adjustments: BillingQuotaView,
+    recharge: BillingRechargeView,
+    effective_total: BillingQuotaView,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserBillingSummaryView {
+    current_month_start: i64,
+    effective_until_month_start: Option<i64>,
+    block_all: bool,
+    current_total: BillingQuotaView,
+    composition: UserBillingCompositionView,
+    timeline: Vec<UserBillingMonthView>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateRechargeQuoteRequest {
@@ -1509,16 +1570,55 @@ fn linuxdo_credit_config_unavailable() -> (StatusCode, String) {
     (StatusCode::SERVICE_UNAVAILABLE, "recharge not configured".to_string())
 }
 
+fn clamp_non_negative(value: i64) -> i64 {
+    value.max(0)
+}
+
+fn quota_view_add(parts: &[BillingQuotaView]) -> BillingQuotaView {
+    BillingQuotaView::from_limits(
+        parts.iter().map(|item| item.hourly).sum(),
+        parts.iter().map(|item| item.daily).sum(),
+        parts.iter().map(|item| item.monthly).sum(),
+    )
+}
+
+fn clamp_quota_view(quota: BillingQuotaView) -> BillingQuotaView {
+    BillingQuotaView::from_limits(
+        clamp_non_negative(quota.hourly),
+        clamp_non_negative(quota.daily),
+        clamp_non_negative(quota.monthly),
+    )
+}
+
 fn user_local_month_start_utc_ts(now: chrono::DateTime<chrono::Local>) -> i64 {
     let first_day = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
         .expect("valid start of month date");
-    let naive = first_day
-        .and_hms_opt(0, 0, 0)
-        .expect("valid start of month time");
-    match chrono::Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc).timestamp(),
-        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&chrono::Utc).timestamp(),
-        chrono::LocalResult::None => now.with_timezone(&chrono::Utc).timestamp(),
+    user_local_midnight_utc_ts(first_day, now)
+}
+
+fn user_shift_local_month_start_utc_ts(current_month_start_utc_ts: i64, delta_months: i32) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(current_month_start_utc_ts, 0).single() else {
+        return current_month_start_utc_ts;
+    };
+    let local_dt = utc_dt.with_timezone(&Local);
+    let total_months = local_dt.year() * 12 + local_dt.month0() as i32 + delta_months;
+    let shifted_year = total_months.div_euclid(12);
+    let shifted_month0 = total_months.rem_euclid(12);
+    let shifted_month = (shifted_month0 + 1) as u32;
+    let shifted_day = chrono::NaiveDate::from_ymd_opt(shifted_year, shifted_month, 1)
+        .expect("valid shifted month date");
+    user_local_midnight_utc_ts(shifted_day, local_dt)
+}
+
+fn user_local_midnight_utc_ts(
+    date: chrono::NaiveDate,
+    fallback_now: chrono::DateTime<Local>,
+) -> i64 {
+    let naive = date.and_hms_opt(0, 0, 0).expect("valid local midnight");
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::None => fallback_now.with_timezone(&Utc).timestamp(),
     }
 }
 
@@ -1738,6 +1838,229 @@ async fn get_user_recharge_config(
         current_entitlement_daily_delta: summary.current_month_entitlement_daily_delta,
         current_entitlement_monthly_delta: summary.current_month_entitlement_monthly_delta,
         effective_until_month_start: summary.effective_until_month_start,
+    }))
+}
+
+async fn get_user_billing_summary(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<UserBillingSummaryView>, (StatusCode, String)> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    };
+
+    let user_id = &user_session.user.user_id;
+    let dashboard = state
+        .proxy
+        .user_dashboard_summary(user_id, None)
+        .await
+        .map_err(|err| {
+            eprintln!("get user billing summary dashboard error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load billing summary".to_string(),
+            )
+        })?;
+    let quota_details = state
+        .proxy
+        .resolve_user_quota_details(user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user billing summary quota error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load billing summary".to_string(),
+            )
+        })?;
+    let entitlement_summary = state
+        .proxy
+        .account_entitlement_summary(user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user billing summary entitlement error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load billing summary".to_string(),
+            )
+        })?;
+    let recharge_summary = state
+        .proxy
+        .linuxdo_credit_recharge_summary(user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user billing summary recharge error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load billing summary".to_string(),
+            )
+        })?;
+
+    let base_access = quota_details
+        .breakdown
+        .iter()
+        .find(|entry| entry.kind == "base")
+        .map(|entry| {
+            BillingQuotaView::from_limits(
+                entry.business_calls_1h_delta,
+                entry.daily_credits_delta,
+                entry.monthly_credits_delta,
+            )
+        })
+        .unwrap_or_else(BillingQuotaView::zero);
+    let tag_adjustments = quota_details
+        .breakdown
+        .iter()
+        .filter(|entry| entry.kind == "tag" && entry.effect_kind != "block_all")
+        .fold(BillingQuotaView::zero(), |current, entry| {
+            quota_view_add(&[
+                current,
+                BillingQuotaView::from_limits(
+                    entry.business_calls_1h_delta,
+                    entry.daily_credits_delta,
+                    entry.monthly_credits_delta,
+                ),
+            ])
+        });
+    let permanent_entitlements = quota_details
+        .breakdown
+        .iter()
+        .filter(|entry| entry.kind == "entitlement_permanent")
+        .fold(BillingQuotaView::zero(), |current, entry| {
+            quota_view_add(&[
+                current,
+                BillingQuotaView::from_limits(
+                    entry.business_calls_1h_delta,
+                    entry.daily_credits_delta,
+                    entry.monthly_credits_delta,
+                ),
+            ])
+        });
+    let timeline_start =
+        user_shift_local_month_start_utc_ts(entitlement_summary.current_month_start, -1);
+    let latest_effective_month = entitlement_summary
+        .effective_until_month_start
+        .unwrap_or(entitlement_summary.current_month_start)
+        .max(entitlement_summary.current_month_start);
+    let timeline_end = user_shift_local_month_start_utc_ts(latest_effective_month, 1)
+        .max(user_shift_local_month_start_utc_ts(entitlement_summary.current_month_start, 1));
+    let month_summaries = state
+        .proxy
+        .list_user_billing_month_summaries(user_id, timeline_start, timeline_end)
+        .await
+        .map_err(|err| {
+            eprintln!("get user billing summary timeline error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load billing summary".to_string(),
+            )
+        })?;
+    let month_summary_map: HashMap<i64, tavily_hikari::UserBillingMonthSummary> = month_summaries
+        .into_iter()
+        .map(|entry| (entry.month_start, entry))
+        .collect();
+    let current_month_recharge = month_summary_map.get(&entitlement_summary.current_month_start);
+    let recharge_quota = current_month_recharge
+        .map(|entry| {
+            BillingQuotaView::from_limits(
+                entry.recharge_delta.hourly_delta,
+                entry.recharge_delta.daily_delta,
+                entry.recharge_delta.monthly_delta,
+            )
+        })
+        .unwrap_or_else(|| {
+            BillingQuotaView::from_limits(
+                recharge_summary.current_month_entitlement_hourly_delta,
+                recharge_summary.current_month_entitlement_daily_delta,
+                recharge_summary.current_month_entitlement_monthly_delta,
+            )
+        });
+    let monthly_adjustments = BillingQuotaView::from_limits(
+        entitlement_summary.current_month_delta.hourly_delta - recharge_quota.hourly,
+        entitlement_summary.current_month_delta.daily_delta - recharge_quota.daily,
+        entitlement_summary.current_month_delta.monthly_delta - recharge_quota.monthly,
+    );
+    let block_all = quota_details
+        .breakdown
+        .iter()
+        .any(|entry| entry.kind == "tag" && entry.effect_kind == "block_all");
+    let current_total = BillingQuotaView::from_limits(
+        dashboard.business_calls_1h.limit,
+        dashboard.daily_credits_limit,
+        dashboard.monthly_credits_limit,
+    );
+    let persistent_total_raw = quota_view_add(&[base_access, tag_adjustments, permanent_entitlements]);
+    let persistent_total = if block_all {
+        BillingQuotaView::zero()
+    } else {
+        clamp_quota_view(persistent_total_raw)
+    };
+    let mut timeline = Vec::new();
+    let mut month_start = timeline_start;
+    while month_start <= timeline_end {
+        let entry = month_summary_map.get(&month_start);
+        let month_adjustments = entry
+            .map(|item| {
+                BillingQuotaView::from_limits(
+                    item.adjustment_delta.hourly_delta,
+                    item.adjustment_delta.daily_delta,
+                    item.adjustment_delta.monthly_delta,
+                )
+            })
+            .unwrap_or_else(BillingQuotaView::zero);
+        let recharge = entry
+            .map(|item| BillingRechargeView {
+                credits: item.recharge_credits,
+                quota: BillingQuotaView::from_limits(
+                    item.recharge_delta.hourly_delta,
+                    item.recharge_delta.daily_delta,
+                    item.recharge_delta.monthly_delta,
+                ),
+            })
+            .unwrap_or(BillingRechargeView {
+                credits: 0,
+                quota: BillingQuotaView::zero(),
+            });
+        let effective_total = if block_all {
+            BillingQuotaView::zero()
+        } else {
+            clamp_quota_view(quota_view_add(&[
+                persistent_total_raw,
+                month_adjustments,
+                recharge.quota,
+            ]))
+        };
+        timeline.push(UserBillingMonthView {
+            month_start,
+            is_current_month: month_start == entitlement_summary.current_month_start,
+            persistent_total,
+            monthly_adjustments: month_adjustments,
+            recharge,
+            effective_total,
+        });
+        month_start = user_shift_local_month_start_utc_ts(month_start, 1);
+    }
+
+    Ok(Json(UserBillingSummaryView {
+        current_month_start: entitlement_summary.current_month_start,
+        effective_until_month_start: entitlement_summary.effective_until_month_start,
+        block_all,
+        current_total,
+        composition: UserBillingCompositionView {
+            base_access,
+            tag_adjustments,
+            permanent_entitlements,
+            monthly_adjustments,
+            recharge: BillingRechargeView {
+                credits: current_month_recharge
+                    .map(|entry| entry.recharge_credits)
+                    .unwrap_or_default(),
+                quota: recharge_quota,
+            },
+        },
+        timeline,
     }))
 }
 

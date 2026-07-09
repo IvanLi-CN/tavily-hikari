@@ -199,6 +199,7 @@ pub async fn serve(
         .route("/api/user/dashboard", get(get_user_dashboard))
         .route("/api/user/dashboard/overview", get(get_user_dashboard_overview))
         .route("/api/user/dashboard/events", get(sse_user_dashboard))
+        .route("/api/user/billing/summary", get(get_user_billing_summary))
         .route(
             "/api/user/debug-info-sharing",
             put(put_user_debug_info_sharing),

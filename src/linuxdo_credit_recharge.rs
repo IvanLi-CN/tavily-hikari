@@ -141,6 +141,14 @@ pub struct AccountEntitlementSummary {
     pub effective_until_month_start: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserBillingMonthSummary {
+    pub month_start: i64,
+    pub recharge_credits: i64,
+    pub recharge_delta: LinuxDoCreditRechargeQuotaDelta,
+    pub adjustment_delta: LinuxDoCreditRechargeQuotaDelta,
+}
+
 #[derive(Debug, Clone)]
 pub struct LinuxDoCreditRechargeAdminAudit {
     pub current_month_entitlement_credits: i64,
@@ -152,7 +160,7 @@ pub struct LinuxDoCreditRechargeAdminAudit {
     pub entitlements: Vec<LinuxDoCreditRechargeEntitlement>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LinuxDoCreditRechargeQuotaDelta {
     pub hourly_delta: i64,
     pub daily_delta: i64,

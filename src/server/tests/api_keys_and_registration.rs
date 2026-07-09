@@ -1946,6 +1946,246 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn user_billing_summary_endpoint_returns_composition_and_timeline() {
+        use chrono::{Datelike as _, TimeZone as _};
+
+        let db_path = temp_db_path("user-billing-summary-endpoint");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-user-billing-summary".to_string(),
+                username: Some("billing_summary".to_string()),
+                name: Some("Billing Summary".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert oauth user");
+        let session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+        let now = Utc::now().timestamp();
+
+        proxy
+            .update_account_business_quota_limits(&user.user_id, 10, 20, 30)
+            .await
+            .expect("set base quota");
+        let negative_tag = proxy
+            .create_user_tag(
+                "billing_negative",
+                "Billing Negative",
+                Some("minus"),
+                "quota_delta",
+                -20,
+                -20,
+                -6_000,
+            )
+            .await
+            .expect("create negative tag");
+        proxy
+            .bind_user_tag_to_user(&user.user_id, &negative_tag.id)
+            .await
+            .expect("bind negative tag");
+
+        let now_local = Local::now();
+        let quote_month_start_naive =
+            chrono::NaiveDate::from_ymd_opt(now_local.year(), now_local.month(), 1)
+                .expect("valid month start")
+                .and_hms_opt(0, 0, 0)
+                .expect("valid local midnight");
+        let quote_month_start = match Local.from_local_datetime(&quote_month_start_naive) {
+            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+            chrono::LocalResult::None => now_local.with_timezone(&Utc).timestamp(),
+        };
+        proxy
+            .create_account_entitlement(&tavily_hikari::AccountEntitlementRecord {
+                id: 0,
+                user_id: user.user_id.clone(),
+                scope_kind: tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_PERMANENT.to_string(),
+                month_start: 0,
+                business_calls_1h_delta: 1,
+                daily_credits_delta: 2,
+                monthly_credits_delta: 3,
+                backend_note: "permanent".to_string(),
+                frontend_note: "permanent".to_string(),
+                source_kind: tavily_hikari::ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+                source_id: "perm-1".to_string(),
+                actor_user_id: Some("admin".to_string()),
+                actor_display_name: Some("Admin".to_string()),
+                created_at: now,
+            })
+            .await
+            .expect("create permanent entitlement");
+        proxy
+            .create_account_entitlement(&tavily_hikari::AccountEntitlementRecord {
+                id: 0,
+                user_id: user.user_id.clone(),
+                scope_kind: tavily_hikari::ACCOUNT_ENTITLEMENT_SCOPE_MONTH.to_string(),
+                month_start: quote_month_start,
+                business_calls_1h_delta: 4,
+                daily_credits_delta: 5,
+                monthly_credits_delta: 6,
+                backend_note: "monthly".to_string(),
+                frontend_note: "monthly".to_string(),
+                source_kind: tavily_hikari::ACCOUNT_ENTITLEMENT_SOURCE_KIND_ADMIN.to_string(),
+                source_id: "month-1".to_string(),
+                actor_user_id: Some("admin".to_string()),
+                actor_display_name: Some("Admin".to_string()),
+                created_at: now,
+            })
+            .await
+            .expect("create monthly entitlement");
+
+        let order = tavily_hikari::LinuxDoCreditRechargeOrder {
+            out_trade_no: "ldc_user_billing_summary".to_string(),
+            user_id: user.user_id.clone(),
+            status: tavily_hikari::LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+            credits: 1000,
+            months: 2,
+            money_cents: 10_000,
+            quote_month_start,
+            final_money_cents: 10_000,
+            final_hourly_delta: 7,
+            final_daily_delta: 8,
+            final_monthly_delta: 9,
+            month_end_clamp_applied: true,
+            quote_snapshot_json: None,
+            trade_no: None,
+            payment_url: None,
+            order_name: "Billing summary recharge".to_string(),
+            notify_payload: None,
+            created_at: now,
+            updated_at: now,
+            paid_at: None,
+            refunded_at: None,
+            refund_actor: None,
+            refund_payload: None,
+            last_notify_at: None,
+            last_error: None,
+        };
+        proxy
+            .create_linuxdo_credit_recharge_order(&order)
+            .await
+            .expect("create recharge order");
+        proxy
+            .apply_linuxdo_credit_recharge_payment(
+                &order.out_trade_no,
+                "trade-user-billing-summary",
+                "ok=1",
+                now + 60,
+            )
+            .await
+            .expect("apply recharge payment");
+
+        let addr =
+            spawn_user_oauth_recharge_server(proxy.clone(), linuxdo_credit_options_for_test(), true)
+                .await;
+        let client = Client::new();
+        let user_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", session.token);
+        let resp = client
+            .get(format!("http://{addr}/api/user/billing/summary"))
+            .header(reqwest::header::COOKIE, user_cookie)
+            .send()
+            .await
+            .expect("billing summary request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("billing summary json");
+        assert_eq!(
+            body.pointer("/composition/baseAccess/monthly").and_then(|value| value.as_i64()),
+            Some(30)
+        );
+        assert_eq!(
+            body.pointer("/composition/permanentEntitlements/monthly")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
+        assert_eq!(
+            body.pointer("/composition/monthlyAdjustments/monthly")
+                .and_then(|value| value.as_i64()),
+            Some(6)
+        );
+        assert_eq!(
+            body.pointer("/composition/recharge/credits").and_then(|value| value.as_i64()),
+            Some(1000)
+        );
+        let current_month_start = body
+            .pointer("/currentMonthStart")
+            .and_then(|value| value.as_i64())
+            .expect("currentMonthStart");
+        let effective_until_month_start = body
+            .pointer("/effectiveUntilMonthStart")
+            .and_then(|value| value.as_i64())
+            .expect("effectiveUntilMonthStart");
+        let timeline = body
+            .pointer("/timeline")
+            .and_then(|value| value.as_array())
+            .expect("timeline array");
+        assert_eq!(timeline.len(), 4);
+        assert!(
+            timeline
+                .first()
+                .and_then(|value| value.pointer("/monthStart"))
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default()
+                < current_month_start
+        );
+        assert!(
+            timeline
+                .last()
+                .and_then(|value| value.pointer("/monthStart"))
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default()
+                > effective_until_month_start
+        );
+        let current_entry = timeline
+            .iter()
+            .find(|value| {
+                value
+                    .pointer("/isCurrentMonth")
+                    .and_then(|field| field.as_bool())
+                    == Some(true)
+            })
+            .expect("current timeline entry");
+        let current_effective_monthly = current_entry
+            .pointer("/effectiveTotal/monthly")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_default();
+        assert_eq!(current_effective_monthly, 0);
+        assert_eq!(
+            body.pointer("/currentTotal/monthly")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+        let future_recharge_entry = timeline
+            .iter()
+            .find(|value| {
+                value
+                    .pointer("/monthStart")
+                    .and_then(|field| field.as_i64())
+                    .unwrap_or_default()
+                    > current_month_start
+                    && value.pointer("/recharge/credits").and_then(|field| field.as_i64()) == Some(1000)
+            })
+            .expect("future recharge timeline entry");
+        assert_eq!(
+            future_recharge_entry
+                .pointer("/recharge/credits")
+                .and_then(|value| value.as_i64()),
+            Some(1000)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn user_token_events_stream_snapshot_and_enforce_owner_scope() {
         let db_path = temp_db_path("linuxdo-user-token-events");
         let db_str = db_path.to_string_lossy().to_string();

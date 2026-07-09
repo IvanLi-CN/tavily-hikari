@@ -2401,6 +2401,7 @@ pub(super) async fn spawn_user_oauth_server_with_options(
         .route("/api/user/token", get(get_user_token))
         .route("/api/user/dashboard", get(get_user_dashboard))
         .route("/api/user/dashboard/overview", get(get_user_dashboard_overview))
+        .route("/api/user/billing/summary", get(get_user_billing_summary))
         .route("/api/user/dashboard/events", get(sse_user_dashboard))
         .route("/api/user/announcements", get(get_user_announcements))
         .route(
@@ -2451,6 +2452,7 @@ pub(super) async fn spawn_user_oauth_recharge_server(
     });
 
     let app = Router::new()
+        .route("/api/user/billing/summary", get(get_user_billing_summary))
         .route("/api/user/recharge/config", get(get_user_recharge_config))
         .route("/api/user/recharge/orders", post(post_user_recharge_order))
         .with_state(state);

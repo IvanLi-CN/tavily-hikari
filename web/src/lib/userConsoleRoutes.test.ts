@@ -10,6 +10,7 @@ describe('userConsoleRoutes', () => {
   it('parses landing paths into shared landing sections', () => {
     expect(parseUserConsolePath('/console')).toEqual({ name: 'landing', section: null })
     expect(parseUserConsolePath('/console/dashboard')).toEqual({ name: 'landing', section: 'dashboard' })
+    expect(parseUserConsolePath('/console/billing')).toEqual({ name: 'billing' })
     expect(parseUserConsolePath('/console/tokens')).toEqual({ name: 'landing', section: 'tokens' })
     expect(parseUserConsolePath('/console/oauth/linuxdo/callback')).toEqual({ name: 'oauthCallback', provider: 'linuxdo' })
   })
@@ -22,11 +23,13 @@ describe('userConsoleRoutes', () => {
   it('normalizes trailing slashes and console.html variants before parsing', () => {
     expect(normalizeUserConsolePathname('/console/')).toBe('/console')
     expect(normalizeUserConsolePathname('/console/dashboard/')).toBe('/console/dashboard')
+    expect(normalizeUserConsolePathname('/console/billing/')).toBe('/console/billing')
     expect(normalizeUserConsolePathname('/console/tokens/')).toBe('/console/tokens')
     expect(normalizeUserConsolePathname('/console.html')).toBe('/console')
     expect(normalizeUserConsolePathname('/console.html/tokens/')).toBe('/console/tokens')
 
     expect(parseUserConsolePath('/console/dashboard/')).toEqual({ name: 'landing', section: 'dashboard' })
+    expect(parseUserConsolePath('/console/billing/')).toEqual({ name: 'billing' })
     expect(parseUserConsolePath('/console/tokens/')).toEqual({ name: 'landing', section: 'tokens' })
     expect(parseUserConsolePath('/console.html/tokens')).toEqual({ name: 'landing', section: 'tokens' })
     expect(parseUserConsolePath('/console.html/oauth/linuxdo/callback')).toEqual({ name: 'oauthCallback', provider: 'linuxdo' })
@@ -48,6 +51,7 @@ describe('userConsoleRoutes', () => {
   it('serializes landing and token routes back to canonical paths', () => {
     expect(userConsoleRouteToPath({ name: 'landing', section: null })).toBe('/console')
     expect(userConsoleRouteToPath({ name: 'landing', section: 'dashboard' })).toBe('/console/dashboard')
+    expect(userConsoleRouteToPath({ name: 'billing' })).toBe('/console/billing')
     expect(userConsoleRouteToPath({ name: 'landing', section: 'tokens' })).toBe('/console/tokens')
     expect(userConsoleRouteToPath({ name: 'oauthCallback', provider: 'linuxdo' })).toBe('/console/oauth/linuxdo/callback')
     expect(userConsoleRouteToPath({ name: 'token', id: 'a/b' })).toBe('/console/tokens/a%2Fb')

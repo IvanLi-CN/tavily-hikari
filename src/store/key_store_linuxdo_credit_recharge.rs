@@ -1228,6 +1228,90 @@ impl KeyStore {
             .collect()
     }
 
+    pub(crate) async fn list_user_billing_month_summaries_for_user(
+        &self,
+        user_id: &str,
+        start_month: i64,
+        end_month: i64,
+    ) -> Result<Vec<UserBillingMonthSummary>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                ae.month_start AS month_start,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind = ? THEN COALESCE(le.credits, ae.monthly_credits_delta)
+                    ELSE 0
+                END), 0) AS recharge_credits,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind = ? THEN ae.business_calls_1h_delta
+                    ELSE 0
+                END), 0) AS recharge_hourly_delta,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind = ? THEN ae.daily_credits_delta
+                    ELSE 0
+                END), 0) AS recharge_daily_delta,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind = ? THEN ae.monthly_credits_delta
+                    ELSE 0
+                END), 0) AS recharge_monthly_delta,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind != ? THEN ae.business_calls_1h_delta
+                    ELSE 0
+                END), 0) AS adjustment_hourly_delta,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind != ? THEN ae.daily_credits_delta
+                    ELSE 0
+                END), 0) AS adjustment_daily_delta,
+                COALESCE(SUM(CASE
+                    WHEN ae.source_kind != ? THEN ae.monthly_credits_delta
+                    ELSE 0
+                END), 0) AS adjustment_monthly_delta
+            FROM account_entitlements ae
+            LEFT JOIN linuxdo_credit_recharge_entitlements le
+              ON le.out_trade_no = ae.source_id
+             AND le.month_start = ae.month_start
+            WHERE ae.user_id = ?
+              AND ae.scope_kind = ?
+              AND ae.month_start >= ?
+              AND ae.month_start <= ?
+            GROUP BY ae.month_start
+            ORDER BY ae.month_start ASC
+            "#,
+        )
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(ACCOUNT_ENTITLEMENT_SOURCE_KIND_RECHARGE)
+        .bind(user_id)
+        .bind(ACCOUNT_ENTITLEMENT_SCOPE_MONTH)
+        .bind(start_month)
+        .bind(end_month)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(UserBillingMonthSummary {
+                    month_start: row.try_get("month_start")?,
+                    recharge_credits: row.try_get("recharge_credits")?,
+                    recharge_delta: LinuxDoCreditRechargeQuotaDelta {
+                        hourly_delta: row.try_get("recharge_hourly_delta")?,
+                        daily_delta: row.try_get("recharge_daily_delta")?,
+                        monthly_delta: row.try_get("recharge_monthly_delta")?,
+                    },
+                    adjustment_delta: LinuxDoCreditRechargeQuotaDelta {
+                        hourly_delta: row.try_get("adjustment_hourly_delta")?,
+                        daily_delta: row.try_get("adjustment_daily_delta")?,
+                        monthly_delta: row.try_get("adjustment_monthly_delta")?,
+                    },
+                })
+            })
+            .collect()
+    }
+
     pub(crate) async fn linuxdo_credit_recharge_admin_audit(
         &self,
         user_id: &str,

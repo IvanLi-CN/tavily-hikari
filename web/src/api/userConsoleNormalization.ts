@@ -6,6 +6,13 @@ import type {
   UserDashboardProgressCard,
   UserTokenSummary,
 } from './runtime'
+import type {
+  BillingQuota,
+  UserBillingComposition,
+  UserBillingMonth,
+  UserBillingRecharge,
+  UserBillingSummary,
+} from './billing'
 import type { RechargeConfig, RechargeOrder, RechargeQuote, RechargeQuoteMonth } from './recharge'
 
 type RecordLike = Record<string, unknown>
@@ -111,6 +118,63 @@ function normalizeRechargeSummary(value: unknown): UserDashboard['recharge'] {
       'effectiveUntilMonthStart',
       'effective_until_month_start',
     ),
+  }
+}
+
+function normalizeBillingQuota(value: unknown): BillingQuota {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    hourly: readNumber(source, 'hourly', 'hourly'),
+    daily: readNumber(source, 'daily', 'daily'),
+    monthly: readNumber(source, 'monthly', 'monthly'),
+  }
+}
+
+function normalizeBillingRecharge(value: unknown): UserBillingRecharge {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    credits: readNumber(source, 'credits', 'credits'),
+    quota: normalizeBillingQuota(source.quota),
+  }
+}
+
+function normalizeBillingComposition(value: unknown): UserBillingComposition {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    baseAccess: normalizeBillingQuota(source.baseAccess ?? source.base_access),
+    tagAdjustments: normalizeBillingQuota(source.tagAdjustments ?? source.tag_adjustments),
+    permanentEntitlements: normalizeBillingQuota(source.permanentEntitlements ?? source.permanent_entitlements),
+    monthlyAdjustments: normalizeBillingQuota(source.monthlyAdjustments ?? source.monthly_adjustments),
+    recharge: normalizeBillingRecharge(source.recharge),
+  }
+}
+
+function normalizeUserBillingMonth(value: unknown): UserBillingMonth {
+  const source = isRecordLike(value) ? value : {}
+  return {
+    monthStart: readNumber(source, 'monthStart', 'month_start'),
+    isCurrentMonth: readBoolean(source, 'isCurrentMonth', 'is_current_month'),
+    persistentTotal: normalizeBillingQuota(source.persistentTotal ?? source.persistent_total),
+    monthlyAdjustments: normalizeBillingQuota(source.monthlyAdjustments ?? source.monthly_adjustments),
+    recharge: normalizeBillingRecharge(source.recharge),
+    effectiveTotal: normalizeBillingQuota(source.effectiveTotal ?? source.effective_total),
+  }
+}
+
+export function normalizeUserBillingSummary(value: unknown): UserBillingSummary {
+  const source = isRecordLike(value) ? value : {}
+  const timeline = Array.isArray(source.timeline) ? source.timeline.map(normalizeUserBillingMonth) : []
+  return {
+    currentMonthStart: readNumber(source, 'currentMonthStart', 'current_month_start'),
+    effectiveUntilMonthStart: readNullableNumber(
+      source,
+      'effectiveUntilMonthStart',
+      'effective_until_month_start',
+    ),
+    blockAll: readBoolean(source, 'blockAll', 'block_all'),
+    currentTotal: normalizeBillingQuota(source.currentTotal ?? source.current_total),
+    composition: normalizeBillingComposition(source.composition),
+    timeline,
   }
 }
 
