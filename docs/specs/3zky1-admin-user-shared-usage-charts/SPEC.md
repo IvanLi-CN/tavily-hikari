@@ -450,6 +450,7 @@
 - story_id_or_title: `admin-pages--users-usage`
 - target_program: `mock-only`
 - capture_scope: `browser-viewport`
+- sensitive_exclusion: `N/A`
 - requested_viewport: `1440-device-desktop`
 - viewport_strategy: `storybook-viewport`
 - submission_gate: `approved`
