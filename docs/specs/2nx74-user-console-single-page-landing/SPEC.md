@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-12
-- Last: 2026-07-07
+- Last: 2026-07-12
 
 ## 背景 / 问题陈述
 
@@ -17,6 +17,7 @@
 ### Goals
 
 - 将 `/console` 的 landing 体验收敛为一个纵向单页：账户概览在前，Token 列表在后。
+- 充值对当前用户可见时，桌面 landing 在账户概览右侧保留完整充值卡；小屏继续按单列内容流展示。
 - 保留旧 hash 兼容：访问 `#/dashboard` 或 `#/tokens` 时仍进入同一页，但自动定位到对应区块。
 - 保留 `#/tokens/:id` 作为独立 token detail 路由，并让 detail 返回操作固定落到单页内的 Token 列表区块。
 - 同步更新 Storybook、测试与快车道交付物，使验收口径围绕 merged landing 而不是双页面切换。
@@ -51,6 +52,7 @@
 ### MUST
 
 - `/console` 首屏同时渲染账户概览区块与 Token 列表区块。
+- 充值配置对当前用户可见时，`/console` 首屏还必须渲染完整充值卡及右栏布局；卡片不可见时不保留空右栏。
 - `#/dashboard` 与 `#/tokens` 保持可访问，并自动定位到 merged landing 的对应区块。
 - `#/tokens/:id` 保持 detail 页；点击 detail 返回按钮后进入 merged landing 的 Token 列表区块。
 - merged landing 与 token detail 统一渲染用户控制台 footer，包含控制台标题、GitHub 链接与版本展示/加载态。
@@ -127,6 +129,14 @@ None
   When 用户停留在 merged landing
   Then Token 区块展示既有空态，同时账户概览区块仍保持可见。
 
+- Given 当前用户可见充值配置
+  When `/console` 在桌面宽屏完成首屏渲染
+  Then 账户概览右侧显示完整充值卡，包含权益摘要、额度与月份步进器、报价预览、创建订单动作和近期订单。
+
+- Given 当前用户不可见充值配置
+  When `/console` 完成首屏渲染
+  Then 不渲染充值卡，且 landing stack 不启用右栏布局。
+
 - Given 用户访问 merged landing 或 token detail
   When 页面底部信息区完成渲染
   Then 两种视图都显示同一套用户控制台 footer，且 `/api/version` 延迟或失败不会影响主体内容显示。
@@ -198,6 +208,18 @@ None
   - evidence_note: 证明移动端仍只保留 token item 作为重复卡片层，并且 token 数据与充值 delta 不再横向溢出。
   - image:
     ![Console Home Mobile token focus decarded](./assets/console-landing-tokens-mobile-decard.png)
+- source_type=ui_demo
+  - demo_entry_or_url: `/console?demo=1&announcements=closed`
+  - state: `desktop-recharge-rail`
+  - target_program: `mock-only`
+  - capture_scope: `browser-viewport`
+  - requested_viewport: `2048x1600`
+  - viewport_strategy: `browser-capability-override`
+  - sensitive_exclusion: `N/A`
+  - submission_gate: `approved`
+  - evidence_note: 证明可见充值配置会在账户概览右侧恢复完整充值卡，包含权益摘要、档位与月数步进器、报价、预览、创建订单和近期订单；概览与 Token 列表仍保持同页结构且无横向溢出。
+  - image:
+    ![Console Home desktop recharge rail](./assets/console-landing-recharge-rail-desktop.jpg)
 
 ## 资产晋升（Asset promotion）
 

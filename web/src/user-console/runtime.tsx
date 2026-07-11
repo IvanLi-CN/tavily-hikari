@@ -18,6 +18,7 @@ import UserDashboardOverview from './UserDashboardOverview'
 import TokenListActions from './TokenListActions'
 import TokenListSummary from './TokenListSummary'
 import BillingPage from './BillingPage'
+import RechargePanel from './RechargePanel'
 import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rechargeControls'
 import TokenResetDialogs from './TokenResetDialogs'
 import TokenLogsHeader, {
@@ -2196,6 +2197,7 @@ export default function UserConsole(): JSX.Element {
   const showTokenListLoading = loading && tokens.length === 0, showEmptyTokens = !loading && tokens.length === 0
   const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
   const rechargeMinMonths = rechargeConfig?.minMonths ?? 1, rechargeMaxMonths = rechargeConfig?.maxMonths ?? 12
+  const showRechargePanel = rechargeConfig?.visible ?? false
   const currentViewDescription = isOAuthCallbackRoute
     ? oauthCallbackModel.description
     : baseCurrentViewDescription
@@ -2841,7 +2843,7 @@ export default function UserConsole(): JSX.Element {
       ) : null}
 
       {!consoleEmptyState && route.name === 'landing' && (
-        <div className="user-console-landing-stack">
+        <div className={`user-console-landing-stack${showRechargePanel ? ' has-rail' : ''}`}>
           <section
             ref={dashboardSectionRef}
             id="console-dashboard-section"
@@ -2873,6 +2875,26 @@ export default function UserConsole(): JSX.Element {
               />
             </div>
           </section>
+
+          {showRechargePanel ? (
+            <div className="user-console-landing-rail">
+              <RechargePanel
+                text={text.recharge}
+                language={language}
+                dashboard={dashboard}
+                config={rechargeConfig}
+                orders={rechargeOrders}
+                credits={rechargeCredits}
+                months={rechargeMonths}
+                quote={rechargeQuote}
+                busy={rechargeBusy}
+                error={rechargeError}
+                onCreditsChange={setRechargeCredits}
+                onMonthsChange={(value) => setRechargeMonths(Math.min(rechargeMaxMonths, Math.max(rechargeMinMonths, value)))}
+                onCreateOrder={() => void handleRechargeSubmit()}
+              />
+            </div>
+          ) : null}
 
           <section
             ref={tokensSectionRef}

@@ -113,9 +113,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3290,
+      max: 3310,
       reason:
-        'User console runtime now also owns the dedicated billing route, while the route-level shell and Tavily API usage-boundary probe with recursive field-name leak detection still await a broader extraction into dedicated hooks and sections.',
+        'User console runtime owns both the dedicated billing route and the restored visible recharge rail, while the route-level shell and Tavily API usage-boundary probe with recursive field-name leak detection still await a broader extraction into dedicated hooks and sections.',
     },
   ],
   [

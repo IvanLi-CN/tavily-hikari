@@ -1668,6 +1668,10 @@ export const ConsoleHome: Story = {
     if (canvasElement.querySelector('.user-console-announcements-trigger svg') == null) {
       throw new Error('Expected ConsoleHome to render a local svg icon inside the announcements trigger.')
     }
+    const landingStack = canvasElement.querySelector('.user-console-landing-stack')
+    if (!landingStack?.classList.contains('has-rail')) {
+      throw new Error('Expected visible recharge to restore the desktop landing rail layout.')
+    }
     const rechargeText = canvasElement.querySelector('.user-console-recharge-section')?.textContent ?? ''
     for (const expected of ['50.00 LDC', '+20', '+100', '+1,000']) {
       if (!rechargeText.includes(expected)) {
