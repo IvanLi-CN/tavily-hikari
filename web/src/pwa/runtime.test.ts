@@ -256,7 +256,7 @@ describe('PWA runtime update lifecycle', () => {
     }
   })
 
-  it('reloads when controller takeover completes after ready but before the click handler runs', async () => {
+  it('waits for the target worker to activate when controllerchange arrives before the click handler', async () => {
     const registration = new MockRegistration()
     const waitingWorker = new MockServiceWorker()
     waitingWorker.state = 'installed'

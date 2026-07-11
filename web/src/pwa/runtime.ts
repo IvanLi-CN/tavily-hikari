@@ -7,7 +7,6 @@ const LANGUAGE_STORAGE_KEY = 'tavily-hikari-language'
 const THEME_STORAGE_KEY = 'tavily-hikari-theme-mode'
 const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE'
 const ACTIVATION_TIMEOUT_MS = 10_000
-const ACTIVATION_FALLBACK_RELOAD_MS = 1_500
 
 export interface OfflineStateSnapshot {
   isOffline: boolean
@@ -34,7 +33,6 @@ let activationRequested = false
 let controllerReloadHandled = false
 let activationTimeout: number | null = null
 let controllerChangeObserved = false
-let controllerChangedSinceRegistration = false
 const observedActivationWorkers = new WeakSet<ServiceWorker>()
 
 const offlineListeners = new Set<(snapshot: OfflineStateSnapshot) => void>()
@@ -139,7 +137,6 @@ function observeControllerChange(): void {
   if (controllerChangeObserved) return
   controllerChangeObserved = true
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    controllerChangedSinceRegistration = true
     if (!activationRequested || controllerReloadHandled) return
     reloadForActivatedUpdate()
   })
@@ -288,22 +285,7 @@ export function activateWaitingPwaUpdate(): void {
   }
 
   const registeredWaitingWorker = currentRegistration?.waiting ?? null
-  if (controllerChangedSinceRegistration) {
-    if (registeredWaitingWorker?.state === 'installed') {
-      waitingWorker = registeredWaitingWorker
-      observeActivationWorker(registeredWaitingWorker)
-      publishUpdateState({ status: 'activating', hasUpdate: true, activationRequested: true })
-      if (!postActivationMessage(registeredWaitingWorker)) {
-        failActivation()
-      } else {
-        window.setTimeout(reloadForActivatedUpdate, ACTIVATION_FALLBACK_RELOAD_MS)
-      }
-      return
-    }
-    reloadForActivatedUpdate()
-    return
-  }
-  if (!registeredWaitingWorker && waitingWorkerActivated) {
+  if (waitingWorkerActivated) {
     reloadForActivatedUpdate()
     return
   }
