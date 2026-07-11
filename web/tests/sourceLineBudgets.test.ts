@@ -25,9 +25,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7640,
+      max: 7644,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, and system-settings proof data stay on the shared Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, system-settings proof data, and Users Usage 1h sorting proof stay on the shared Admin/Pages proof shell.',
     },
   ],
   [

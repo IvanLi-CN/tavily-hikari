@@ -427,15 +427,15 @@ mod admin_resources_tests {
     }
 
     #[test]
-    fn quota_sort_uses_limit_as_secondary_tiebreaker() {
+    fn business_calls_1h_sort_ignores_quota_limit() {
         let mut rows = [
-            mock_row("usr_b", Some(10), |summary| {
+            mock_row("usr_z", Some(10), |summary| {
                 summary.business_calls_1h.total_count = 40;
-                summary.business_calls_1h.limit = 200;
+                summary.business_calls_1h.limit = 100;
             }),
             mock_row("usr_a", Some(12), |summary| {
                 summary.business_calls_1h.total_count = 40;
-                summary.business_calls_1h.limit = 100;
+                summary.business_calls_1h.limit = 200;
             }),
         ];
 
@@ -449,6 +449,6 @@ mod admin_resources_tests {
         });
 
         let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
-        assert_eq!(ordered_ids, vec!["usr_a", "usr_b"]);
+        assert_eq!(ordered_ids, vec!["usr_a", "usr_z"]);
     }
 }

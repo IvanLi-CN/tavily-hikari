@@ -181,7 +181,7 @@
   - `pressure` 使用独立实线 dataset
   - `limit` 使用独立虚线 dataset，并与 `pressure` 用不同颜色区分
 - 月度历史缺口显示为无数据提示，不伪装成 `0`。
-- `/admin/analysis/usage` 保留 `5m 限流` 列，并只保留一个小时语义列，列表短标签显示为 `1h`；不再额外显示独立 `1h` 额度列。该列继续承载 `业务 1h` 语义，只展示 `totalCount` 与 `success/failure` 摘要，不提供排序；旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
+- `/admin/analysis/usage` 保留 `5m 限流` 列，并只保留一个小时语义列，列表短标签显示为 `1h`；不再额外显示独立 `1h` 额度列。该列继续承载 `业务 1h` 语义，只展示 `totalCount` 与 `success/failure` 摘要；表头支持升序、降序与重置，排序仅比较 rolling 1h `totalCount`，配额仅用于展示。旧 `/admin/users/usage` 仍渲染同一列与同一页面逻辑。
 - token 列表说明文案需明确：这里只展示 token 自己的状态、时间与成功统计，共享额度请看上方趋势图。
 - token 列表右上角提供“添加令牌”按钮；每行操作区提供删除按钮，但当用户仅剩 1 个 token 时必须禁用删除。
 
@@ -191,6 +191,7 @@
 - `/admin/users/:id?tab=quota|activity` 分别打开基础额度、共享额度趋势；`tab=identity|tags|tokens`
   兼容打开账户信息，非法 `tab` 规范化为默认账户信息。
 - 打开 `共享额度趋势` tab 后默认展示 `每小时` 图，且只请求一次 `businessCalls1h`。
+- 用户用量页点击 `1h` 表头后按 rolling 1h `totalCount` 排序；相同总数按用户 ID 稳定排序，不受 1h 配额大小影响。
 - 在 `共享额度趋势` 内切换到 `5m / 24h / 月` 时才触发对应接口请求，二次切回不重复请求。
 - 四张图都带明显的上限虚线；虚线必须按 bucket 对应的历史 `limitValue` 绘制，不能整图平铺当前 limit。
 - token 列表不再出现任何账户共享额度字段或易误导文案。
@@ -441,6 +442,23 @@
   `/admin/users/usage` 列表现只保留 `5m 限流` 与单一 `1h` 小时列，不再出现额外的独立 `1h` 额度列，也不再使用过长表头；该列继续承载 `业务 1h` 语义，按 `success + failure` 展示最近 rolling 1h 总量，并在次级文案中显示 `S/F` 拆分。Storybook surface 现直接复用真实 `UsersUsageScreen`，避免验收图与运行时列表口径漂移。空白裁剪脚本返回 `ambiguous_border`，因此按原图保留；证据绑定当前实现工作树。
 
 ![Users Usage 业务 1h 列](./assets/users-usage-business-1h-column.png)
+
+### Users Usage 1h 压力排序
+
+- asset: `docs/specs/3zky1-admin-user-shared-usage-charts/assets/users-usage-1h-pressure-sort.jpg`
+- source_type: `storybook_canvas`
+- story_id_or_title: `admin-pages--users-usage`
+- target_program: `mock-only`
+- capture_scope: `browser-viewport`
+- sensitive_exclusion: `N/A`
+- requested_viewport: `1440-device-desktop`
+- viewport_strategy: `storybook-viewport`
+- submission_gate: `approved`
+- PR: include
+- evidence_note:
+  点击 `1h` 表头后，降序箭头激活，`Bob Chen` 以 rolling 1h `totalCount=62` 排在 `Alice Wang` 的 `36` 之前；比较只使用实际调用总数，不受两人的 1h 配额 `60 / 120` 影响。空白裁剪因 `ambiguous_border` 安全保留原图。
+
+![Users Usage 1h 压力排序](./assets/users-usage-1h-pressure-sort.jpg)
 
 ### 用户详情业务 1h 摘要
 

@@ -126,7 +126,13 @@ export function UsersUsageScreen({
                     activeOrder={activeSortOrder}
                     onToggle={onToggleSort}
                   />
-                  <th>{usersStrings.usage.table.businessOneHour}</th>
+                  <AdminUsersSortableHeader
+                    label={usersStrings.usage.table.businessOneHour}
+                    field="businessCalls1hUsed"
+                    activeField={activeSortField}
+                    activeOrder={activeSortOrder}
+                    onToggle={onToggleSort}
+                  />
                   <AdminUsersSortableHeader
                     label={usersStrings.usage.table.daily}
                     field="dailyCreditsUsed"
