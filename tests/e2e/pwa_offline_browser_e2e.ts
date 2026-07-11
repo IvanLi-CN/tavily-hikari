@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
@@ -183,16 +183,40 @@ function ensureBackend(repoRoot: string): string {
   return binary;
 }
 
+function stageStaticRelease(repoRoot: string, tempRoot: string, releaseId: string): string {
+  const staticDir = path.join(tempRoot, "dist");
+  cpSync(path.join(repoRoot, "web", "dist"), staticDir, { recursive: true });
+  switchStaticRelease(staticDir, releaseId);
+  return staticDir;
+}
+
+function switchStaticRelease(staticDir: string, releaseId: string) {
+  writeFileSync(
+    path.join(staticDir, "version.json"),
+    `${JSON.stringify({ version: releaseId }, null, 2)}\n`,
+  );
+  for (const workerName of ["sw-public.js", "sw-admin.js"]) {
+    const workerPath = path.join(staticDir, workerName);
+    const source = readFileSync(workerPath, "utf8");
+    const next = source.replace(
+      /^const CACHE_NAME = .*;$/m,
+      `const CACHE_NAME = ${JSON.stringify(`tavily-hikari-${workerName}-e2e-${releaseId}`)};`,
+    );
+    if (next === source) throw new Error(`failed to rewrite cache name for ${workerName}`);
+    writeFileSync(workerPath, next);
+  }
+}
+
 function startBackend(
   backendBinary: string,
   repoRoot: string,
+  staticDir: string,
   backendPort: number,
   dbPath: string,
 ): {
   child: ChildProcessWithoutNullStreams;
   stop: () => void;
 } {
-  const staticDir = path.join(repoRoot, "web", "dist");
   const child = spawn(
     backendBinary,
     [
@@ -256,6 +280,25 @@ async function waitForHealth(baseUrl: string, child: ChildProcessWithoutNullStre
 
 async function waitForServiceWorker(page: import("playwright-core").Page) {
   await page.waitForFunction(() => navigator.serviceWorker.ready.then(() => true), undefined, { timeout: 20_000 });
+}
+
+async function waitForController(page: import("playwright-core").Page, scriptName: string) {
+  await page.waitForFunction(
+    (expectedScript) => navigator.serviceWorker.controller?.scriptURL.endsWith(expectedScript) === true,
+    scriptName,
+    { timeout: 20_000 },
+  );
+}
+
+async function waitForActiveRegistration(page: import("playwright-core").Page, scope: string) {
+  await page.waitForFunction(
+    async (expectedScope) => {
+      const registration = await navigator.serviceWorker.getRegistration(expectedScope);
+      return registration?.active?.state === "activated" && registration.waiting === null;
+    },
+    scope,
+    { timeout: 20_000 },
+  );
 }
 
 async function waitForSelector(page: import("playwright-core").Page, selector: string) {
@@ -347,8 +390,9 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${backendPort}`;
 
   ensureBuild(repoRoot);
+  const staticDir = stageStaticRelease(repoRoot, tempRoot, "release-a");
   const backendBinary = ensureBackend(repoRoot);
-  const backend = startBackend(backendBinary, repoRoot, backendPort, dbPath);
+  const backend = startBackend(backendBinary, repoRoot, staticDir, backendPort, dbPath);
   let browser: import("playwright-core").Browser | null = null;
 
   try {
@@ -366,6 +410,30 @@ async function main() {
     await publicPage.goto(`${baseUrl}/`, { waitUntil: "domcontentloaded" });
     await waitForSelector(publicPage, ".public-home");
     await waitForServiceWorker(publicPage);
+    await waitForController(publicPage, "/sw-public.js");
+
+    log("verifying an explicit app-shell update activates and reloads");
+    switchStaticRelease(staticDir, "release-b");
+    await publicPage.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      if (!registration) throw new Error("public service worker registration missing");
+      await registration.update();
+    });
+    await publicPage.waitForSelector(".update-banner", { state: "visible", timeout: 20_000 });
+    await publicPage.waitForFunction(
+      () => document.querySelector<HTMLButtonElement>(".update-banner-actions button")?.ariaBusy !== "true",
+      undefined,
+      { timeout: 20_000 },
+    );
+    await Promise.all([
+      publicPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20_000 }),
+      publicPage.locator(".update-banner-actions button").first().click(),
+    ]);
+    await waitForController(publicPage, "/sw-public.js");
+    const publicCacheKeys = await publicPage.evaluate(() => caches.keys());
+    if (!publicCacheKeys.some((key) => key.endsWith("e2e-release-b"))) {
+      throw new Error(`updated public cache missing: ${publicCacheKeys.join(", ")}`);
+    }
 
     log("verifying offline public shell");
     await setOffline(publicPage, true);
@@ -411,12 +479,26 @@ async function main() {
     log("opening admin login");
     await adminLoginPage.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
     await waitForSelector(adminLoginPage, "#admin-password-input");
+    await waitForServiceWorker(adminLoginPage);
+    await waitForController(adminLoginPage, "/sw-public.js");
     await adminLoginPage.fill("#admin-password-input", "pw-e2e-admin");
     log("signing into admin shell");
     await adminLoginPage.click("button[type=submit]");
     await adminLoginPage.waitForURL(/\/admin/, { timeout: 15_000 });
     await waitForSelector(adminLoginPage, ".admin-shell-content");
     await waitForServiceWorker(adminLoginPage);
+    await waitForActiveRegistration(adminLoginPage, "/admin/");
+    const adminRegistrationState = await adminLoginPage.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/admin/");
+      return {
+        active: registration?.active?.state ?? null,
+        waiting: registration?.waiting?.state ?? null,
+        bannerVisible: document.querySelector(".update-banner") !== null,
+      };
+    });
+    if (adminRegistrationState.active !== "activated" || adminRegistrationState.waiting !== null || adminRegistrationState.bannerVisible) {
+      throw new Error(`admin first-install lifecycle mismatch: ${JSON.stringify(adminRegistrationState)}`);
+    }
 
     log("verifying offline admin shell");
     await setOffline(adminLoginPage, true);

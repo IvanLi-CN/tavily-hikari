@@ -8,8 +8,8 @@ export const EN: TranslationShape = {
       updateBanner: {
         title: 'New update available',
         preparing: 'Caching the latest app shell and assets. You can keep working while it finishes.',
-        activating: 'Applying the update…',
-        description: (current, latest) => `Current ${current} → Ready ${latest}`, refresh: 'Reload now', refreshing: 'Preparing update…', dismiss: 'Remind me later',
+        activating: 'Applying the update…', failureTitle: 'Update could not finish', failureDescription: 'The new app shell did not take control. Try the update again when you are ready.',
+        description: (current, latest) => `Current ${current} → Ready ${latest}`, refresh: 'Reload now', refreshing: 'Preparing update…', retry: 'Retry update', dismiss: 'Remind me later',
       },
       heroTitle: 'Tavily Hikari Proxy',
       heroTagline: 'Transparent request visibility for your Tavily integration.',

@@ -1,4 +1,4 @@
-import { DownloadCloud, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, DownloadCloud, Loader2, RefreshCw } from 'lucide-react'
 
 import type { PublicTranslations } from '../i18n'
 import type { PwaUpdateStatus } from '../pwa/runtime'
@@ -25,26 +25,38 @@ export default function UpdateAvailableBanner({
   onDismiss,
 }: UpdateAvailableBannerProps): JSX.Element {
   const isActivating = status === 'activating'
+  const isFailed = status === 'activation-failed'
   const isPreparing = loading && !isActivating
-  const description = isActivating
+  const description = isFailed
+    ? strings.failureDescription
+    : isActivating
     ? strings.activating
     : isPreparing
       ? strings.preparing
       : strings.description(currentVersion ?? 'unknown', availableVersion ?? 'latest')
 
   return (
-    <section className="surface update-banner" role="status" aria-live="polite">
+    <section className={`surface update-banner${isFailed ? ' update-banner-failed' : ''}`} role="status" aria-live="polite">
       <div className="update-banner-status" aria-hidden="true">
-        {loading ? <Loader2 className="update-banner-spinner" size={19} /> : <DownloadCloud size={19} />}
+        {loading
+          ? <Loader2 className="update-banner-spinner" size={19} />
+          : isFailed
+            ? <AlertTriangle size={19} />
+            : <DownloadCloud size={19} />}
       </div>
       <div className="update-banner-text">
-        <strong>{strings.title}</strong>
+        <strong>{isFailed ? strings.failureTitle : strings.title}</strong>
         <span>{description}</span>
       </div>
       <div className="update-banner-actions">
-        <Button type="button" onClick={onUpdate} disabled={isActivating} aria-busy={loading}>
+        <Button
+          type="button"
+          onClick={onUpdate}
+          disabled={isActivating}
+          aria-busy={loading}
+        >
           {loading ? <Loader2 className="update-banner-button-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
-          {loading ? strings.refreshing : strings.refresh}
+          {loading ? strings.refreshing : isFailed ? strings.retry : strings.refresh}
         </Button>
         <Button type="button" variant="ghost" onClick={onDismiss} disabled={isActivating}>
           {strings.dismiss}

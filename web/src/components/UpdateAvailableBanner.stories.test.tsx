@@ -15,6 +15,9 @@ describe('UpdateAvailableBanner Storybook proofs', () => {
     expect(stories.Ready).toBeDefined()
     expect(stories.Installing.args).toMatchObject({ status: 'installing', loading: true })
     expect(stories.Activating.args).toMatchObject({ status: 'activating', loading: true })
+    expect(stories.ActivationFailed.args).toMatchObject({ status: 'activation-failed', loading: false })
+    expect(stories.ChineseActivationFailed.args).toMatchObject({ strings: ZH.public.updateBanner })
+    expect(stories.DarkActivationFailed.decorators).toHaveLength(1)
     expect(stories.ChineseReady.args).toMatchObject({ strings: ZH.public.updateBanner })
     expect(stories.DarkReady.decorators).toHaveLength(1)
   })
@@ -30,6 +33,9 @@ describe('UpdateAvailableBanner Storybook proofs', () => {
     const activatingMarkup = renderToStaticMarkup(
       createElement(renderStory!, { ...meta.args, ...(stories.Activating.args ?? {}) }),
     )
+    const failedMarkup = renderToStaticMarkup(
+      createElement(renderStory!, { ...meta.args, ...(stories.ActivationFailed.args ?? {}) }),
+    )
 
     expect(readyMarkup).toContain(EN.public.updateBanner.title)
     expect(readyMarkup).toContain('Current 0.2.0')
@@ -38,5 +44,9 @@ describe('UpdateAvailableBanner Storybook proofs', () => {
     expect(installingMarkup).toContain(EN.public.updateBanner.preparing)
     expect(installingMarkup).toContain(EN.public.updateBanner.refreshing)
     expect(activatingMarkup).toContain(EN.public.updateBanner.activating)
+    expect(failedMarkup).toContain(EN.public.updateBanner.failureTitle)
+    expect(failedMarkup).toContain(EN.public.updateBanner.failureDescription)
+    expect(failedMarkup).toContain(EN.public.updateBanner.retry)
+    expect(failedMarkup).not.toContain('aria-busy="true"')
   })
 })
