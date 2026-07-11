@@ -899,12 +899,11 @@ fn compare_admin_user_rows(
             right.summary.request_rate.limit,
             direction,
         ),
-        AdminUsersSortField::BusinessCalls1hUsed => compare_quota_usage(
-            left.summary.business_calls_1h.total_count,
-            left.summary.business_calls_1h.limit,
-            right.summary.business_calls_1h.total_count,
-            right.summary.business_calls_1h.limit,
-            direction,
+        AdminUsersSortField::BusinessCalls1hUsed => direction.apply(
+            left.summary
+                .business_calls_1h
+                .total_count
+                .cmp(&right.summary.business_calls_1h.total_count),
         ),
         AdminUsersSortField::DailyCreditsUsed => compare_quota_usage(
             left.summary.daily_credits_used,

@@ -2365,11 +2365,8 @@ function compareAdminUserSummaryRows(
           direction,
         )
       case 'businessCalls1hUsed':
-        return compareQuotaUsage(
-          left.businessCalls1h.totalCount,
-          left.businessCalls1h.limit,
-          right.businessCalls1h.totalCount,
-          right.businessCalls1h.limit,
+        return applySortDirection(
+          compareScalar(left.businessCalls1h.totalCount, right.businessCalls1h.totalCount),
           direction,
         )
       case 'dailyCreditsUsed':
@@ -6797,8 +6794,18 @@ export const UsersUsage: Story = {
     if (!headerTexts.includes('5m 限流')) {
       throw new Error('Expected users usage story to keep the 5m rate column.')
     }
+    const oneHourSortButton = canvasElement.querySelector<HTMLButtonElement>('[data-sort-field="businessCalls1hUsed"]')
+    if (!oneHourSortButton) {
+      throw new Error('Expected users usage story to expose a sortable 1h header.')
+    }
     if (getFirstRenderedUserLabel(canvasElement) !== 'Alice Wang') {
       throw new Error('Expected users usage story to start with Alice Wang as the first rendered row.')
+    }
+
+    oneHourSortButton.click()
+    await waitForStoryUi()
+    if (getFirstRenderedUserLabel(canvasElement) !== 'Bob Chen') {
+      throw new Error('Expected 1h sorting to prioritize the largest rolling business-call pressure.')
     }
 
     updateStorySearchInput(searchInput, 'charlie')

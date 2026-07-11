@@ -283,6 +283,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(usersMarkup).not.toContain('7天IP')
     expect(usageMarkup).toContain('IP 数')
     expect(usageMarkup).toContain('data-sort-field="recentIpCount7d"')
+    expect(usageMarkup).toContain('data-sort-field="businessCalls1hUsed"')
   })
 
   it('renders active-only user stories with the default filter hint and search fallback hint', () => {
