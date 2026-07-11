@@ -2,8 +2,8 @@
 
 ## 当前实现状态
 
-- 状态：已完成（含 Relay Mesh 品牌接入与 PWA 更新提示；待 Safari / iOS 手工补验）
-- 分支：`th/web-pwa-update-prompt`
+- 状态：已完成（含 Relay Mesh 品牌接入与可恢复 PWA 更新提示；待 Safari / iOS 手工补验）
+- 分支：`th/fix-pwa-update-activation-stall`
 
 ## 实现决策
 
@@ -18,6 +18,9 @@
 - public/admin service worker 安装阶段只负责 precache，不主动 `skipWaiting()`；用户确认更新后，页面向 waiting worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 激活消息。
 - `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；提示状态以 service worker 的 installing/ready 生命周期为准。
 - 更新提示由共享 runtime/hook 与 `UpdateAvailableBanner` 承载，覆盖 public、console、login、registration-paused 与 admin app shell。
+- 用户触发激活后以 `controllerchange` 或 waiting worker 的 `activated` 状态确认成功；后者使用单次 reload guard 兼容浏览器漏发当前页接管事件的情况。
+- 激活请求以 10 秒 watchdog 收口；超时、worker `redundant` 或激活消息发送异常都会进入 `activation-failed`，退出 loading 并允许用户重试或暂不提醒。
+- 首次安装与版本升级以当前 registration 自身是否已有 active worker 区分；public 根作用域 controller 不再让 admin 首装误报更新，admin waiting worker 会静默激活并在下一次 admin 导航接管。
 
 ## 待完成项
 
@@ -37,6 +40,11 @@
   - `cd web && bun run build`
   - `cd web && bun run build-storybook`
   - `cd web && bun run test:e2e:pwa-offline`
+- 2026-07-11:
+  - `cd web && bun test src/pwa/runtime.test.ts src/components/UpdateAvailableBanner.stories.test.tsx`
+  - `cd web && bun run build`
+  - `cd web && bun run test:e2e:pwa-offline`
+  - Chromium E2E 以同源临时静态目录模拟 release A/B，验证 public 更新接管、reload 与 admin 跨 scope 首装。
 
 ## 已实现内容
 
@@ -91,6 +99,8 @@
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
 - `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-activation-failed-storybook.png`
+- `docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-activation-failed-dark-storybook.png`
 
 ## 后续微调
 

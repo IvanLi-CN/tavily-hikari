@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-06-24
-- Last: 2026-07-08
+- Last: 2026-07-11
 
 ## 背景 / 问题陈述
 
@@ -99,6 +99,9 @@
   - 若新 worker 尚在安装或缓存资源，更新按钮保持 loading，等待 worker 进入 waiting 后再发送激活消息。
   - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`。
   - 页面只在用户主动更新后的 `controllerchange` 中 reload，避免静默打断当前任务。
+  - waiting worker 已进入 `activated` 但当前页未收到 `controllerchange` 时，页面允许执行一次受 guard 保护的 reload；不得形成刷新循环。
+  - 激活请求在 10 秒内既未接管页面也未确认 worker 已激活时，提示必须退出 loading 并进入可重试失败态；`redundant` 与消息发送异常同样按失败处理。
+- 首次安装 identity 时以当前 registration 是否已有 active worker 判定是否属于更新；public 根作用域 controller 不得让 admin 首次安装误报“有新版本”，此时 admin waiting worker 应静默激活。
 - 更新提示必须覆盖 `/`、`/console`、`/login`、`/registration-paused` 与 `/admin/**`，但继续保持 public/admin 双 service worker 边界。
 - 提示形态为 inline banner，不使用 modal，不强制用户立即刷新。
 
@@ -183,6 +186,14 @@
   When 用户点击更新按钮
   Then 页面发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 并在 `controllerchange` 后 reload。
 
+- Given 用户已请求激活 waiting worker
+  When 10 秒内没有 controller 接管、worker 激活确认或可恢复终态
+  Then 更新提示退出 loading，说明更新未完成，并允许用户重试或暂不提醒。
+
+- Given admin identity 首次注册且当前页面仅由 public 根作用域 service worker 控制
+  When admin worker 完成安装
+  Then admin worker 静默激活，不展示版本更新提示，不触发主动 reload。
+
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
@@ -218,6 +229,17 @@
 - `2026-07-08` PWA 更新提示 ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
 - `2026-07-08` PWA 更新提示 installing/loading 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
 - `2026-07-08` PWA 更新提示 dark ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
+- `2026-07-11` PWA 更新激活失败亮色态（Storybook canvas，mock-only，element capture，无敏感数据）：
+
+  PR: include
+
+  ![PWA 更新激活失败亮色态](./assets/update-banner-activation-failed-storybook.png)
+
+- `2026-07-11` PWA 更新激活失败暗色态（Storybook canvas，mock-only，element capture，无敏感数据）：
+
+  PR: include
+
+  ![PWA 更新激活失败暗色态](./assets/update-banner-activation-failed-dark-storybook.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -244,3 +266,4 @@
 - 2026-06-25: 补齐 Relay Mesh light/dark/mono 变体、主题感知 favicon 与全尺寸 PWA icon 覆盖，并更新品牌资产导出预览证据。
 - 2026-06-27: 品牌静态资源合同统一收口到 `/assets/*`；根路径 Relay Mesh 与 LinuxDo 品牌资源退出长期公开路由，仅保留 `/favicon.svg` 作为站点入口。
 - 2026-07-08: 补齐 public/admin PWA 更新提示合同，要求新 service worker 完成资源缓存后等待用户确认激活，并以 inline banner 覆盖全部 Web 入口。
+- 2026-07-11: 更新激活状态机增加 10 秒 watchdog、失败重试、`redundant`/消息异常终态与 activated 单次刷新回退，并按 registration 自身 active worker 区分首次安装与升级。

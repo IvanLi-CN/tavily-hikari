@@ -852,6 +852,15 @@ body:has(.user-console-cli-skills-guide-proof) #storybook-root {
   background: hsl(var(--accent) / 0.12);
 }
 
+.update-banner-failed {
+  border-color: hsl(var(--destructive) / 0.32);
+}
+
+.update-banner-failed .update-banner-status {
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.12);
+}
+
 .update-banner-text {
   display: flex;
   flex-direction: column;

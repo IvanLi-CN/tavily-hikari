@@ -53,11 +53,26 @@ export const Activating: Story = {
   },
 }
 
+export const ActivationFailed: Story = {
+  args: {
+    status: 'activation-failed',
+    loading: false,
+  },
+}
+
 export const ChineseReady: Story = {
   args: {
     strings: ZH.public.updateBanner,
     currentVersion: '0.2.0',
     availableVersion: '0.2.1',
+  },
+}
+
+export const ChineseActivationFailed: Story = {
+  args: {
+    strings: ZH.public.updateBanner,
+    status: 'activation-failed',
+    loading: false,
   },
 }
 
@@ -77,4 +92,16 @@ export const DarkReady: Story = {
       </div>
     ),
   ],
+}
+
+export const DarkActivationFailed: Story = {
+  args: {
+    strings: ZH.public.updateBanner,
+    status: 'activation-failed',
+    loading: false,
+  },
+  parameters: {
+    backgrounds: { default: 'dark' },
+  },
+  decorators: DarkReady.decorators,
 }

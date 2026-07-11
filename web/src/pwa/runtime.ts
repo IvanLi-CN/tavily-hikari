@@ -1,11 +1,12 @@
 import { isDemoMode } from '../api/demo'
 
 export type PwaIdentity = 'public' | 'admin'
-export type PwaUpdateStatus = 'idle' | 'checking' | 'installing' | 'ready' | 'activating'
+export type PwaUpdateStatus = 'idle' | 'checking' | 'installing' | 'ready' | 'activating' | 'activation-failed'
 
 const LANGUAGE_STORAGE_KEY = 'tavily-hikari-language'
 const THEME_STORAGE_KEY = 'tavily-hikari-theme-mode'
 const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE'
+const ACTIVATION_TIMEOUT_MS = 10_000
 
 export interface OfflineStateSnapshot {
   isOffline: boolean
@@ -29,6 +30,10 @@ let currentRegistration: ServiceWorkerRegistration | null = null
 let waitingWorker: ServiceWorker | null = null
 let activationRequested = false
 let controllerReloadHandled = false
+let activationTimeout: number | null = null
+let controllerChangeObserved = false
+let controllerChangedSinceRegistration = false
+const observedActivationWorkers = new WeakSet<ServiceWorker>()
 
 const offlineListeners = new Set<(snapshot: OfflineStateSnapshot) => void>()
 const updateListeners = new Set<(snapshot: PwaUpdateSnapshot) => void>()
@@ -60,16 +65,86 @@ function publishUpdateState(next: Partial<PwaUpdateSnapshot>): void {
   }
 }
 
+function clearActivationTimeout(): void {
+  if (activationTimeout === null) return
+  window.clearTimeout(activationTimeout)
+  activationTimeout = null
+}
+
+function ensureActivationTimeout(): void {
+  if (activationTimeout !== null) return
+  activationTimeout = window.setTimeout(() => {
+    if (activationRequested && !controllerReloadHandled) {
+      failActivation()
+    }
+  }, ACTIVATION_TIMEOUT_MS)
+}
+
+function reloadForActivatedUpdate(): void {
+  if (controllerReloadHandled) return
+  controllerReloadHandled = true
+  clearActivationTimeout()
+  window.location.reload()
+}
+
+function failActivation(): void {
+  clearActivationTimeout()
+  activationRequested = false
+  publishUpdateState({ status: 'activation-failed', hasUpdate: true, activationRequested: false })
+}
+
+function observeActivationWorker(worker: ServiceWorker): void {
+  if (observedActivationWorkers.has(worker)) return
+  observedActivationWorkers.add(worker)
+  worker.addEventListener('statechange', () => {
+    if (!activationRequested) return
+    if (worker.state === 'activated') {
+      reloadForActivatedUpdate()
+      return
+    }
+    if (worker.state === 'redundant') {
+      failActivation()
+    }
+  })
+}
+
+function postActivationMessage(worker: ServiceWorker): boolean {
+  try {
+    worker.postMessage({ type: ACTIVATE_UPDATE_MESSAGE })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function activateFirstInstallWorker(worker: ServiceWorker): void {
+  if (!postActivationMessage(worker)) {
+    publishUpdateState({ status: 'idle', hasUpdate: false, activationRequested: false })
+  }
+}
+
+function activateFirstInstallWhenWaiting(
+  registration: ServiceWorkerRegistration,
+  installedWorker: ServiceWorker,
+): void {
+  queueMicrotask(() => {
+    activateFirstInstallWorker(registration.waiting ?? installedWorker)
+  })
+}
+
+function observeControllerChange(): void {
+  if (controllerChangeObserved) return
+  controllerChangeObserved = true
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    controllerChangedSinceRegistration = true
+    if (!activationRequested || controllerReloadHandled) return
+    reloadForActivatedUpdate()
+  })
+}
+
 if (canUseDom()) {
   window.addEventListener('online', publishOfflineState)
   window.addEventListener('offline', publishOfflineState)
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!activationRequested || controllerReloadHandled) return
-      controllerReloadHandled = true
-      window.location.reload()
-    })
-  }
 }
 
 function shouldRegisterServiceWorker(): boolean {
@@ -105,48 +180,57 @@ export async function registerPwaServiceWorker(identity: PwaIdentity): Promise<v
     return
   }
 
+  observeControllerChange()
   const registration = await navigator.serviceWorker.register(swPath(identity), { scope: swScope(identity) })
   currentRegistration = registration
   observePwaRegistration(registration)
 }
 
 function observePwaRegistration(registration: ServiceWorkerRegistration): void {
+  controllerChangedSinceRegistration = false
   const maybeWaiting = registration.waiting
-  if (maybeWaiting && navigator.serviceWorker.controller) {
-    waitingWorker = maybeWaiting
-    publishUpdateState({ status: 'ready', hasUpdate: true })
+  if (maybeWaiting) {
+    if (registration.active) {
+      waitingWorker = maybeWaiting
+      observeActivationWorker(maybeWaiting)
+      publishUpdateState({ status: 'ready', hasUpdate: true })
+    } else {
+      activateFirstInstallWhenWaiting(registration, maybeWaiting)
+    }
   }
 
   const installing = registration.installing
   if (installing) {
-    observeInstallingWorker(installing)
+    observeInstallingWorker(registration, installing)
   }
 
   registration.addEventListener('updatefound', () => {
     const nextWorker = registration.installing
     if (!nextWorker) return
-    observeInstallingWorker(nextWorker)
+    observeInstallingWorker(registration, nextWorker)
   })
 }
 
-function observeInstallingWorker(worker: ServiceWorker): void {
-  const isControlledPage = Boolean(navigator.serviceWorker.controller)
-  if (isControlledPage) {
+function observeInstallingWorker(registration: ServiceWorkerRegistration, worker: ServiceWorker): void {
+  const isUpdate = Boolean(registration.active)
+  if (isUpdate) {
     publishUpdateState({ status: 'installing', hasUpdate: true })
   }
 
   worker.addEventListener('statechange', () => {
     if (worker.state === 'installing') {
-      if (isControlledPage) publishUpdateState({ status: 'installing', hasUpdate: true })
+      if (isUpdate) publishUpdateState({ status: 'installing', hasUpdate: true })
       return
     }
 
     if (worker.state === 'installed') {
-      if (!isControlledPage) {
+      if (!isUpdate) {
+        activateFirstInstallWhenWaiting(registration, worker)
         publishUpdateState({ status: 'idle', hasUpdate: false, activationRequested: false })
         return
       }
       waitingWorker = worker
+      observeActivationWorker(worker)
       publishUpdateState({ status: 'ready', hasUpdate: true })
       if (activationRequested) {
         activateWaitingPwaUpdate()
@@ -154,14 +238,22 @@ function observeInstallingWorker(worker: ServiceWorker): void {
       return
     }
 
-    if (worker.state === 'activated' && !activationRequested) {
+    if (worker.state === 'redundant' && activationRequested) {
+      failActivation()
+      return
+    }
+
+    if (worker.state === 'activated' && !isUpdate && !activationRequested) {
       publishUpdateState({ status: 'idle', hasUpdate: false, activationRequested: false })
     }
   })
 }
 
 export async function checkForPwaUpdate(): Promise<void> {
-  if (!currentRegistration) return
+  if (!currentRegistration) {
+    if (activationRequested) failActivation()
+    return
+  }
   if (currentUpdateState.status === 'installing' || currentUpdateState.status === 'ready' || currentUpdateState.status === 'activating') {
     return
   }
@@ -173,16 +265,31 @@ export async function checkForPwaUpdate(): Promise<void> {
     // Network failures while checking for an app shell update should not break the page.
   } finally {
     if (currentUpdateState.status === 'checking') {
-      publishUpdateState({ status: 'idle' })
+      if (activationRequested) {
+        failActivation()
+      } else {
+        publishUpdateState({ status: 'idle' })
+      }
     }
   }
 }
 
 export function activateWaitingPwaUpdate(): void {
-  activationRequested = true
-  publishUpdateState({ activationRequested: true })
+  if (!activationRequested) {
+    clearActivationTimeout()
+    activationRequested = true
+    controllerReloadHandled = false
+    publishUpdateState({ activationRequested: true })
+    ensureActivationTimeout()
+  }
 
-  const worker = waitingWorker ?? currentRegistration?.waiting ?? null
+  if (controllerChangedSinceRegistration) {
+    reloadForActivatedUpdate()
+    return
+  }
+
+  const registeredWaitingWorker = currentRegistration?.waiting ?? null
+  const worker = registeredWaitingWorker ?? (waitingWorker?.state === 'installed' ? waitingWorker : null)
   if (!worker) {
     if (currentUpdateState.status !== 'installing') {
       publishUpdateState({ status: 'checking' })
@@ -192,8 +299,11 @@ export function activateWaitingPwaUpdate(): void {
   }
 
   waitingWorker = worker
+  observeActivationWorker(worker)
   publishUpdateState({ status: 'activating', hasUpdate: true, activationRequested: true })
-  worker.postMessage({ type: ACTIVATE_UPDATE_MESSAGE })
+  if (!postActivationMessage(worker)) {
+    failActivation()
+  }
 }
 
 export function subscribeOfflineState(listener: (snapshot: OfflineStateSnapshot) => void): () => void {
