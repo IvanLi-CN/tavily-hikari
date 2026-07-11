@@ -21,7 +21,7 @@ export default function AdminNavButton({ icon, active = false, className, childr
       <span className="admin-nav-item-icon" aria-hidden="true">
         {icon}
       </span>
-      <span>{children}</span>
+      <span className="admin-nav-item-content">{children}</span>
     </Button>
   )
 }

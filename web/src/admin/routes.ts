@@ -219,6 +219,24 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   return { name: 'not-found', path }
 }
 
+export function canonicalAdminLocation(
+  pathname: string,
+  search = '',
+  hash = '',
+): string | null {
+  const path = normalize(pathname)
+  let canonicalPath: string | null = null
+  if (path === `${ADMIN_BASE}/rankings`) {
+    canonicalPath = `${ADMIN_BASE}/analysis/rankings`
+  } else if (path === `${ADMIN_BASE}/users/usage`) {
+    canonicalPath = `${ADMIN_BASE}/analysis/usage`
+  } else if (path === `${ADMIN_BASE}/settings`) {
+    canonicalPath = `${ADMIN_BASE}/system-settings`
+  }
+  if (!canonicalPath) return null
+  return `${canonicalPath}${search}${hash}`
+}
+
 export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): boolean {
   if (left.name !== right.name) return false
   if (left.name === 'module' && right.name === 'module') {
@@ -285,7 +303,7 @@ export function getRankingsTabFromSearch(search: string): RankingTabKey {
 
 export function rankingsPath(tab?: RankingTabKey | null): string {
   const normalizedTab = tab && RANKING_TABS.has(tab) ? tab : DEFAULT_RANKINGS_TAB
-  return `${ADMIN_BASE}/rankings?tab=${encodeURIComponent(normalizedTab)}`
+  return `${ADMIN_BASE}/analysis/rankings?tab=${encodeURIComponent(normalizedTab)}`
 }
 
 export function getUserDetailTabFromSearch(search: string): UserDetailTabKey {

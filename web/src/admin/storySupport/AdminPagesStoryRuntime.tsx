@@ -2235,7 +2235,7 @@ function MonthlyBrokenDrawerStoryCanvas({
 }): JSX.Element {
   return (
     <AdminPageFrame
-      activeModule="users"
+      activeModule="users-list"
       overlays={<StoryMonthlyBrokenDrawer open label={label} items={items} onOpenChange={() => undefined} />}
     >
       <section className="surface panel">
@@ -3105,7 +3105,15 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
     { target: 'keys', label: strings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
     { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
     { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
-    { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    {
+      target: 'users',
+      label: strings.nav.users,
+      icon: <Icon icon="mdi:account-group-outline" width={18} height={18} />,
+      children: [
+        { target: 'users-list', label: strings.users.table.user },
+        { target: 'user-tags', label: strings.users.table.tags },
+      ],
+    },
     { target: 'announcements', label: strings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
     { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
     {
@@ -3186,9 +3194,15 @@ export function AdminPageFrame({
           description: admin.jobs.description,
         }
       case 'users':
+      case 'users-list':
         return {
           title: admin.users.title,
           description: admin.users.description,
+        }
+      case 'user-tags':
+        return {
+          title: admin.users.catalog.title,
+          description: admin.users.catalog.description,
         }
       case 'alerts':
         return {
@@ -4848,7 +4862,7 @@ function UsersPageCanvas({
   }
 
   return (
-    <AdminPageFrame activeModule="users">
+    <AdminPageFrame activeModule="users-list">
       <section className="surface panel">
         <div className="panel-header admin-list-toolbar" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div className="admin-stacked-only">
@@ -4997,40 +5011,6 @@ function UsersPageCanvas({
         </div>
       </section>
 
-      <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h2>{users.catalog.summaryTitle}</h2>
-            <p className="panel-description">{users.catalog.summaryDescription}</p>
-          </div>
-          <button type="button" className="btn btn-outline">
-            {users.userTags.manageCatalog}
-          </button>
-        </div>
-        <div className="user-tag-summary-grid">
-          {MOCK_TAG_CATALOG.map((tag) => {
-            const isSystem = tag.systemKey != null
-            const isBlockAll = tag.effectKind === 'block_all'
-            const cardClasses = ['user-tag-summary-card', isBlockAll ? 'user-tag-summary-card-block' : '']
-              .filter(Boolean)
-              .join(' ')
-            return (
-              <article className={cardClasses} key={tag.id}>
-                <div className="user-tag-summary-card-head">
-                  <StoryUserTagBadge tag={{ ...tag }} users={users} />
-                  <StatusBadge tone={isSystem ? 'info' : isBlockAll ? 'error' : 'neutral'}>
-                    {isSystem ? users.catalog.scopeSystem : users.catalog.scopeCustom}
-                  </StatusBadge>
-                </div>
-                <div className="user-tag-summary-count">
-                  <strong>{formatNumber(tag.userCount)}</strong>
-                  <span className="panel-description">{users.catalog.summaryAccounts}</span>
-                </div>
-              </article>
-            )
-          })}
-        </div>
-      </section>
     </AdminPageFrame>
   )
 }
@@ -5727,7 +5707,7 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
   const editableTagId = 'team_lead'
 
   return (
-    <AdminPageFrame activeModule="users">
+    <AdminPageFrame activeModule="user-tags">
       <div className="admin-desktop-only">
         <AdminCompactIntro
           title={users.catalog.title}
@@ -5835,7 +5815,7 @@ function UserDetailPageCanvas({
   )
   return (
     <AdminPageFrame
-      activeModule="users"
+      activeModule="users-list"
       introActions={renderUserDetailTabs()}
       introOverride={{
         title: users.detail.title,
@@ -6441,14 +6421,15 @@ export const Rankings: Story = {
   },
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
-    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
-    if (!activeNavItem) {
-      throw new Error('Expected rankings page to mark the matching nav item as active.')
+    const parentNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-parent-active')
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    if (!parentNavItem || !activeSubitem) {
+      throw new Error('Expected rankings page to expand analysis navigation and mark the matching child item as active.')
     }
-    if (!activeNavItem.textContent?.includes('用户排行')) {
-      throw new Error('Expected active nav item to remain on rankings.')
+    if (!activeSubitem.textContent?.includes('用户排行')) {
+      throw new Error('Expected active nav child item to remain on rankings.')
     }
-    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    const navIcon = parentNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
     if (!navIcon) {
       throw new Error('Expected rankings nav item to render its bundled SVG icon.')
     }
@@ -6462,14 +6443,15 @@ export const RankingsDimension: Story = {
   },
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
-    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
-    if (!activeNavItem) {
-      throw new Error('Expected rankings dimension story to keep the rankings nav item active.')
+    const parentNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-parent-active')
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    if (!parentNavItem || !activeSubitem) {
+      throw new Error('Expected rankings dimension story to keep the analysis nav group expanded.')
     }
-    if (!activeNavItem.textContent?.includes('用户排行')) {
-      throw new Error('Expected active nav item to remain on rankings for the dimension story.')
+    if (!activeSubitem.textContent?.includes('用户排行')) {
+      throw new Error('Expected active nav child item to remain on rankings for the dimension story.')
     }
-    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    const navIcon = parentNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
     if (!navIcon) {
       throw new Error('Expected rankings dimension story to render its bundled SVG nav icon.')
     }
@@ -7533,14 +7515,15 @@ export const SystemSettings: Story = {
   },
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
-    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
-    if (!activeNavItem) {
-      throw new Error('Expected system settings page to mark the matching nav item as active.')
+    const parentNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-parent-active')
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    if (!parentNavItem || !activeSubitem) {
+      throw new Error('Expected system settings page to expand settings navigation and mark the general child item as active.')
     }
-    if (!activeNavItem.textContent?.includes('系统设置')) {
-      throw new Error('Expected active nav item to remain on system settings.')
+    if (!activeSubitem.textContent?.includes('常规设置')) {
+      throw new Error('Expected active nav child item to remain on general system settings.')
     }
-    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    const navIcon = parentNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
     if (!navIcon) {
       throw new Error('Expected system settings nav item to render its bundled SVG icon.')
     }

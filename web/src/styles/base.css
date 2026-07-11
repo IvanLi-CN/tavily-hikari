@@ -1047,6 +1047,25 @@ body.not-found-page-body,
 
 .admin-nav-item-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 24px; height: 24px; border-radius: 10px; color: hsl(var(--muted-foreground)); }
 
+.admin-nav-item-content {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-nav-item-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-nav-item-chevron {
+  flex: 0 0 auto;
+  color: hsl(var(--muted-foreground));
+}
+
 .admin-nav-item-icon > svg {
   width: 18px;
   height: 18px;

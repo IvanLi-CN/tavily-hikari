@@ -41,13 +41,12 @@
 - Historical note: `/api/users/:id/quota` was later removed. Current admin base quota changes are
   append-only `base` scope rows in `/api/users/:id/entitlements`.
 - `web/src/api.ts`、`web/src/AdminDashboard.tsx`、`web/src/i18n.tsx`
-  - 用户列表标签列、Tag Catalog、用户详情标签管理、基线额度编辑、有效额度明细展示。
+  - 用户列表标签列、独立标签目录页、用户详情标签管理、基线额度编辑、有效额度明细展示。
 - `web/src/admin/AdminPages.stories.tsx`
   - 覆盖 LinuxDo 系统标签、自定义标签、`block_all` 与负额度显示钳制场景。
 
 ### Out of scope
 
-- 新增独立标签管理路由。
 - 管理员手动解绑 LinuxDo 系统标签。
 - 将标签效果下沉到 token 级个体额度。
 
@@ -116,7 +115,10 @@
   Then 页面仍保留原有 `tagId` 精确过滤，并将关键字查询作为附加条件叠加，不会退化成纯模糊搜索。
 
 - Given 打开 `/admin/users`
-  Then 表格中显示用户标签（最多 3 个 badge，超出显示 `+N`），并有 Tag Catalog 面板可管理标签定义。
+  Then 表格中显示用户标签（最多 3 个 badge，超出显示 `+N`），保留 `tagId` 精确筛选语义，但不显示标签统计面板或“管理标签目录”入口。
+
+- Given 打开 `/admin/users/tags`
+  Then 直接进入标签目录页面，并由用户管理侧栏父级展开、“标签”子项激活。
 
 - Given 打开 `/admin/users/:id`
   Then 页面顺序固定为 `Identity → User Tags → Base Quota → Effective Quota Breakdown → Tokens`，且可即时看到标签变更与基线编辑后的有效额度刷新结果。
@@ -151,8 +153,12 @@
 
 - 用户管理主页
   ![用户管理主页](./assets/admin-users-list.png)
+- 用户管理主页（独立标签目录后）
+  ![用户管理主页（独立标签目录后）](./assets/admin-users-list-split.png)
 - 标签目录页
   ![标签目录页](./assets/admin-users-tags-catalog.png)
+- 标签目录页（二级菜单入口）
+  ![标签目录页（二级菜单入口）](./assets/admin-users-tags-subnav.png)
 - 标签编辑态（基线对齐后）
   ![标签编辑态（基线对齐后）](./assets/admin-users-tags-editing.png)
 - 标签删除二次确认
@@ -174,3 +180,4 @@
 - 2026-03-09: 通过 `cargo clippy -- -D warnings`、`cargo test`、`cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并在 `http://127.0.0.1:55173/admin/users` 与 `http://127.0.0.1:55173/admin/users/demo-user` 完成真实浏览器验收。
 - 2026-03-10: 根据主人确认补齐 5 张管理端视觉证据，统一归档到 `docs/specs/2mt2u-admin-user-tags-quota/assets/`，并修正标签目录编辑卡片与非编辑卡片的基线对齐。
 - 2026-06-26: 管理端标签/额度相关 UI 与合同同步切换到“每小时业务请求次数限额 / 每日积分限额 / 每月积分限额”；用户详情与用量页补充指标解释交互，business 1h 成为唯一小时业务额度入口。
+- 2026-07-08: 用户管理侧栏拆分为“用户 / 标签”二级菜单；`/admin/users` 移除标签统计面板与管理入口，标签目录 canonical path 固定为 `/admin/users/tags`。

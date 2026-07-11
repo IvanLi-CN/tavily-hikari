@@ -9,6 +9,7 @@ import {
   buildAdminKeysPath,
   buildAdminUsersOverviewPath,
   buildAdminUsersPath,
+  canonicalAdminLocation,
   getUserDetailTabFromSearch,
   getRankingsTabFromSearch,
   getAlertsViewFromSearch,
@@ -50,11 +51,20 @@ describe('admin user tag routes', () => {
   })
 
   it('builds and parses stable rankings tab paths', () => {
-    expect(rankingsPath()).toBe('/admin/rankings?tab=last24h')
-    expect(rankingsPath('uniqueIp')).toBe('/admin/rankings?tab=uniqueIp')
+    expect(rankingsPath()).toBe('/admin/analysis/rankings?tab=last24h')
+    expect(rankingsPath('uniqueIp')).toBe('/admin/analysis/rankings?tab=uniqueIp')
     expect(getRankingsTabFromSearch('')).toBe('last24h')
     expect(getRankingsTabFromSearch('?tab=businessCredits')).toBe('businessCredits')
     expect(getRankingsTabFromSearch('?tab=invalid')).toBe('last24h')
+  })
+
+  it('canonicalizes related admin legacy paths with query and hash intact', () => {
+    expect(canonicalAdminLocation('/admin/rankings', '?tab=uniqueIp', '#top')).toBe(
+      '/admin/analysis/rankings?tab=uniqueIp#top',
+    )
+    expect(canonicalAdminLocation('/admin/users/usage/', '?q=L2', '')).toBe('/admin/analysis/usage?q=L2')
+    expect(canonicalAdminLocation('/admin/settings', '', '#security')).toBe('/admin/system-settings#security')
+    expect(canonicalAdminLocation('/admin/users/tags', '?q=L2', '')).toBeNull()
   })
 
   it('builds and parses stable user detail tab paths', () => {
