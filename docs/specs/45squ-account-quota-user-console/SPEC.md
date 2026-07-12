@@ -121,15 +121,15 @@
 
 - source_type: ui_demo
   demo_entry_or_url: /console/billing?demo=1&announcements=closed
-  state: clay-theme-current-month-selected
+  state: clay-theme-current-month-pressed
   target_program: mock-only
   capture_scope: billing natural-month timeline
   requested_viewport: 1265x712
   viewport_strategy: ui-demo-source
   sensitive_exclusion: N/A
-  evidence_note: verifies the initial desktop timeline leaves the previous and next month unselected while the current month is the only selected card after layout synchronization, using the shared Clay material hierarchy.
+  evidence_note: verifies the initial desktop timeline leaves the previous and next month unselected while the current month is the only selected card after layout synchronization, using the shared Clay pressed material hierarchy.
 
-![Billing timeline defaults to the current month in the Clay theme](./assets/billing-current-month-clay-theme.jpg)
+![Billing timeline defaults to the current month with a Clay pressed state](./assets/billing-current-month-pressed.jpg)
 
 - source_type: ui_demo
   demo_entry_or_url: /console/billing?demo=1&announcements=closed
