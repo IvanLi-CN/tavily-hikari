@@ -127,6 +127,7 @@
   requested_viewport: 1265x712
   viewport_strategy: ui-demo-source
   sensitive_exclusion: N/A
+  PR: include
   evidence_note: verifies the initial desktop timeline leaves the previous and next month unselected while the current month is the only selected card after layout synchronization, using the shared Clay button elevation hierarchy and Lucide chevron month navigation.
 
 ![Billing timeline defaults to the current month with Clay lifted state and chevron navigation](./assets/billing-timeline-chevron-navigation.jpg)
