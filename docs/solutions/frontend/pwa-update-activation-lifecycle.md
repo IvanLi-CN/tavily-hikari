@@ -38,6 +38,9 @@ does not prove that the admin registration is performing an update.
 - Activate a first-install waiting worker silently. If another registration currently controls the
   page, expect the new registration to take over on the next in-scope navigation rather than
   requiring an immediate controller swap.
+- A worker-owned fetch failure is a separate boundary from `registration.update()`: catch rejected
+  same-origin network requests inside the service worker and return a non-success HTTP response
+  such as `503`, rather than passing a rejected promise to `respondWith`.
 
 ## Guardrails
 
@@ -48,3 +51,5 @@ does not prove that the admin registration is performing an update.
 - Test the state machine with deterministic worker mocks, then retain one real-browser two-release
   scenario that changes the service worker script on the same origin and proves controller/cache
   takeover.
+- Exercise the generated worker's fetch handler with a rejected `fetch`, including an MCP request,
+  so the regression test observes the same boundary as a browser `FetchEvent`.

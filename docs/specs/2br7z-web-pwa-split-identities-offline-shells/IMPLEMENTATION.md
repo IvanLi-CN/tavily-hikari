@@ -21,6 +21,9 @@
 - 用户触发激活后以 `controllerchange` 或 waiting worker 的 `activated` 状态确认成功；后者使用单次 reload guard 兼容浏览器漏发当前页接管事件的情况。
 - 激活请求以 10 秒 watchdog 收口；超时、worker `redundant` 或激活消息发送异常都会进入 `activation-failed`，退出 loading 并允许用户重试或暂不提醒。
 - 首次安装与版本升级以当前 registration 自身是否已有 active worker 区分；public 根作用域 controller 不再让 admin 首装误报更新，admin waiting worker 会静默激活并在下一次 admin 导航接管。
+- public/admin worker 对同源 network-only 与未预缓存请求共享网络失败转换：底层 `fetch` 拒绝时返回
+  `503 Service Unavailable`，避免 `respondWith` 的 rejected promise 在浏览器侧表现为未处理的
+  `FetchEvent` 网络错误。
 
 ## 待完成项
 
@@ -45,6 +48,9 @@
   - `cd web && bun run build`
   - `cd web && bun run test:e2e:pwa-offline`
   - Chromium E2E 以同源临时静态目录模拟 release A/B，验证 public 更新接管、reload 与 admin 跨 scope 首装。
+- 2026-07-12:
+  - `cd web && bun run build && bun test ./src/pwa/assetGraph.test.ts`
+  - 生成的 public/admin worker 在 MCP 与未预缓存资源网络拒绝时都返回 `503`。
 
 ## 已实现内容
 

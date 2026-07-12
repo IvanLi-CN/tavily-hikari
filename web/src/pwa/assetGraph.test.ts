@@ -78,3 +78,52 @@ test('built service workers wait for explicit update activation after precache',
     expect(source).not.toContain('await self.skipWaiting();')
   }
 })
+
+test('built service workers turn network-only fetch failures into a response', async () => {
+  const serviceWorkerPaths = [
+    path.resolve(import.meta.dir, '../../dist/sw-public.js'),
+    path.resolve(import.meta.dir, '../../dist/sw-admin.js'),
+  ]
+
+  for (const serviceWorkerPath of serviceWorkerPaths) {
+    const source = fs.readFileSync(serviceWorkerPath, 'utf8')
+    const listeners = new Map<string, (event: { request: Request; respondWith: (response: Promise<Response>) => void }) => void>()
+    const originalSelf = globalThis.self
+    const originalFetch = globalThis.fetch
+
+    Object.assign(globalThis, {
+      self: {
+        location: { origin: 'https://hikari.test' },
+        addEventListener(type: string, listener: (event: { request: Request; respondWith: (response: Promise<Response>) => void }) => void) {
+          listeners.set(type, listener)
+        },
+      },
+      fetch: () => Promise.reject(new TypeError('network unavailable')),
+    })
+
+    try {
+      new Function(source)()
+      const fetchListener = listeners.get('fetch')
+      expect(fetchListener).toBeDefined()
+
+      for (const requestUrl of [
+        'https://hikari.test/mcp/console/state?refresh=true',
+        'https://hikari.test/assets/lazy-chunk.js',
+      ]) {
+        let responsePromise: Promise<Response> | null = null
+        fetchListener?.({
+          request: new Request(requestUrl),
+          respondWith: (response) => {
+            responsePromise = response
+          },
+        })
+
+        expect(responsePromise).not.toBeNull()
+        const response = await responsePromise
+        expect(response.status).toBe(503)
+      }
+    } finally {
+      Object.assign(globalThis, { self: originalSelf, fetch: originalFetch })
+    }
+  }
+})

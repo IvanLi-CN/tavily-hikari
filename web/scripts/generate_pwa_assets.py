@@ -193,6 +193,18 @@ function isPrecached(requestUrl) {{
   return PRECACHE_URLS.includes(requestUrl.pathname);
 }}
 
+function networkFailureResponse() {{
+  return new Response(null, {{ status: 503, statusText: 'Service Unavailable' }});
+}}
+
+async function fetchWithNetworkFallback(request) {{
+  try {{
+    return await fetch(request);
+  }} catch {{
+    return networkFailureResponse();
+  }}
+}}
+
 function resolveOfflineFallback(pathname) {{
   if ({'pathname === "/admin" || pathname.startsWith("/admin/")' if reject_admin else 'false'}) {{
     return null;
@@ -211,7 +223,7 @@ self.addEventListener('fetch', (event) => {{
   if (requestUrl.origin !== self.location.origin) return;
 
   if (isNetworkOnly(request, requestUrl)) {{
-    event.respondWith(fetch(request));
+    event.respondWith(fetchWithNetworkFallback(request));
     return;
   }}
 
@@ -233,7 +245,7 @@ self.addEventListener('fetch', (event) => {{
   }}
 
   if (!isPrecached(requestUrl)) {{
-    event.respondWith(fetch(request));
+    event.respondWith(fetchWithNetworkFallback(request));
     return;
   }}
 

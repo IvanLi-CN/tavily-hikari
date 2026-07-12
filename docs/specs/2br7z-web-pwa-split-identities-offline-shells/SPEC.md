@@ -174,6 +174,11 @@
   When 触发 `/api/*`、SSE、MCP、登录提交、保存动作
   Then 一律保持 network failure 语义，不返回伪成功。
 
+- Given 同源的 network-only 或未预缓存请求被 public/admin service worker 拦截
+  When 底层网络请求拒绝
+  Then worker 必须返回可处理的 `503 Service Unavailable` 响应，而不是让 `FetchEvent`
+  的 `respondWith` promise 拒绝。
+
 - Given 后端报告新的 `frontend` 版本
   When 当前 identity 的 service worker 尚未完成新资源安装
   Then 页面只触发更新检查，不提示“可更新”。

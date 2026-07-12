@@ -8,3 +8,4 @@
 - 2026-06-27: 将 Relay Mesh、LinuxDo 与 favicon 位图依赖统一迁到 `/assets/*`，删除根路径品牌资源公开合同并补齐静态服务回归覆盖。
 - 2026-07-08: 更新生命周期改为 precache 完成后 waiting，页面用共享 inline banner 提示用户确认激活，避免后端版本变化时误报资源已 ready。
 - 2026-07-11: 修复用户确认更新后永久停在 `activating` 的状态机缺口。发送激活消息不再视为完成证据；runtime 现在等待 controller/worker 成功信号并以 watchdog、失败重试和单次 reload guard 收口，同时修正 public controller 干扰 admin 首装判断的问题。
+- 2026-07-12: 修复生成 Service Worker 将网络拒绝直接传给 `respondWith` 的缺口。MCP 与未预缓存的同源请求现在在网络不可达时返回 `503`，不再产生未处理的 `FetchEvent` promise rejection。
