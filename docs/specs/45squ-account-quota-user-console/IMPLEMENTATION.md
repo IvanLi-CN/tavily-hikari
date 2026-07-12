@@ -13,6 +13,7 @@
 - Billing 时间线首次布局只同步可见窗口，不覆盖当前月的默认选择；桌面端继续展示相邻三个月份卡片。
 - Billing 时间线卡片与导航复用共享 Clay card、pressed 与 button 阴影；当前月只以既有 primary/secondary 材质强化，不再使用孤立色相的悬浮阴影。
 - 当前月份选中态使用轻微凸起的 Clay button 层级，紫色仅用于边界、状态文字与选中层次。
+- Billing 时间线的月份导航使用 Lucide chevron 图标，并保留禁用态、辅助文本与鼠标悬停反馈。
 
 ## References
 

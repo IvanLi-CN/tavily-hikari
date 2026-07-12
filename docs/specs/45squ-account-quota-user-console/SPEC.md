@@ -121,15 +121,15 @@
 
 - source_type: ui_demo
   demo_entry_or_url: /console/billing?demo=1&announcements=closed
-  state: clay-theme-current-month-lifted
+  state: clay-theme-current-month-lifted-with-chevron-navigation
   target_program: mock-only
   capture_scope: billing natural-month timeline
   requested_viewport: 1265x712
   viewport_strategy: ui-demo-source
   sensitive_exclusion: N/A
-  evidence_note: verifies the initial desktop timeline leaves the previous and next month unselected while the current month is the only selected card after layout synchronization, using the shared Clay button elevation hierarchy.
+  evidence_note: verifies the initial desktop timeline leaves the previous and next month unselected while the current month is the only selected card after layout synchronization, using the shared Clay button elevation hierarchy and Lucide chevron month navigation.
 
-![Billing timeline defaults to the current month with a Clay lifted state](./assets/billing-current-month-lifted.jpg)
+![Billing timeline defaults to the current month with Clay lifted state and chevron navigation](./assets/billing-timeline-chevron-navigation.jpg)
 
 - source_type: ui_demo
   demo_entry_or_url: /console/billing?demo=1&announcements=closed

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 import type {
   RechargeConfig,
@@ -297,7 +298,11 @@ function TimelineNavButton({
       disabled={disabled}
       onClick={onClick}
     >
-      <span aria-hidden="true">{direction === 'prev' ? '←' : '→'}</span>
+      {direction === 'prev' ? (
+        <ChevronLeft aria-hidden="true" size={20} strokeWidth={2.25} />
+      ) : (
+        <ChevronRight aria-hidden="true" size={20} strokeWidth={2.25} />
+      )}
       <span className="sr-only">{label}</span>
     </button>
   )
