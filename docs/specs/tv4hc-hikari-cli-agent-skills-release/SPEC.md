@@ -135,9 +135,12 @@ capture_scope: browser-viewport
 requested_viewport=1440x1100
 viewport_strategy=browser-resize-fallback
 sensitive_exclusion: mock Storybook token only
-submission_gate: pending-owner-approval
+submission_gate: approved
+evidence_source_commit: a836951a
 evidence_note: Shows the desktop `CLI + Skills` guide with the release installer command and the
 global Agent Skills command.
+
+PR: include
 
 ![CLI + Skills global install desktop](./assets/cli-skills-global-desktop.png)
 
@@ -149,9 +152,12 @@ capture_scope: browser-viewport
 requested_viewport=390x900
 viewport_strategy=browser-resize-fallback
 sensitive_exclusion: mock Storybook token only
-submission_gate: pending-owner-approval
+submission_gate: approved
+evidence_source_commit: a836951a
 evidence_note: Shows the 390 px mobile guide with its compact selector, icon-only token control,
 and the horizontally scrollable Skills command ending in `--global`.
+
+PR: include
 
 ![CLI + Skills global install mobile](./assets/cli-skills-global-mobile.png)
 
