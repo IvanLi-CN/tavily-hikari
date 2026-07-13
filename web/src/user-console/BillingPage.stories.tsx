@@ -24,6 +24,15 @@ interface BillingPageStoryProps {
   error?: string | null
 }
 
+function formatMoney(value: number): string {
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+const storyNow = Math.floor(Date.now() / 1000)
+
 const billingSummaryWithFuture: UserBillingSummary = {
   currentMonthStart: 1_783_843_200,
   effectiveUntilMonthStart: 1_789_200_000,
@@ -367,10 +376,17 @@ const rechargeOrders: RechargeOrder[] = [
     monthEndClampApplied: false,
     tradeNo: 'trade-001',
     paymentUrl: null,
-    createdAt: 1_784_000_000,
-    updatedAt: 1_784_000_900,
-    paidAt: 1_784_000_900,
-    lastNotifyAt: 1_784_000_960,
+    createdAt: storyNow - 86_400 * 3,
+    payExpiresAt: storyNow - 86_400 * 3 + 600,
+    cancelAfterAt: storyNow - 86_400 * 2,
+    cancelledAt: null,
+    updatedAt: storyNow - 86_400 * 3 + 900,
+    paidAt: storyNow - 86_400 * 3 + 900,
+    refundedAt: null,
+    refundActor: null,
+    lastNotifyAt: storyNow - 86_400 * 3 + 960,
+    refundRetryAfterAt: null,
+    refundAttempts: 0,
     lastError: null,
   },
   {
@@ -387,12 +403,161 @@ const rechargeOrders: RechargeOrder[] = [
     monthEndClampApplied: true,
     tradeNo: null,
     paymentUrl: 'https://example.test/pay',
-    createdAt: 1_784_005_000,
-    updatedAt: 1_784_005_000,
+    createdAt: storyNow - 180,
+    payExpiresAt: storyNow + 420,
+    cancelAfterAt: storyNow + 86_220,
+    cancelledAt: null,
+    updatedAt: storyNow - 180,
     paidAt: null,
+    refundedAt: null,
+    refundActor: null,
     lastNotifyAt: null,
+    refundRetryAfterAt: null,
+    refundAttempts: 0,
     lastError: null,
   },
+  {
+    outTradeNo: 'ldc_order_expired_003',
+    status: 'expired',
+    credits: 1000,
+    months: 1,
+    money: '50.00',
+    quoteMonthStart: 1_783_843_200,
+    finalMoneyCents: 5000,
+    finalHourlyDelta: 20,
+    finalDailyDelta: 100,
+    finalMonthlyDelta: 1000,
+    monthEndClampApplied: false,
+    tradeNo: null,
+    paymentUrl: null,
+    createdAt: storyNow - 3600,
+    payExpiresAt: storyNow - 3000,
+    cancelAfterAt: storyNow + 82_800,
+    cancelledAt: null,
+    updatedAt: storyNow - 3000,
+    paidAt: null,
+    refundedAt: null,
+    refundActor: null,
+    lastNotifyAt: null,
+    refundRetryAfterAt: null,
+    refundAttempts: 0,
+    lastError: 'payment entry closed locally after 10 minutes',
+  },
+  {
+    outTradeNo: 'ldc_order_cancelled_004',
+    status: 'cancelled',
+    credits: 1000,
+    months: 1,
+    money: '50.00',
+    quoteMonthStart: 1_783_843_200,
+    finalMoneyCents: 5000,
+    finalHourlyDelta: 20,
+    finalDailyDelta: 100,
+    finalMonthlyDelta: 1000,
+    monthEndClampApplied: false,
+    tradeNo: null,
+    paymentUrl: null,
+    createdAt: storyNow - 90_000,
+    payExpiresAt: storyNow - 89_400,
+    cancelAfterAt: storyNow - 3_600,
+    cancelledAt: storyNow - 3_540,
+    updatedAt: storyNow - 3_540,
+    paidAt: null,
+    refundedAt: null,
+    refundActor: null,
+    lastNotifyAt: null,
+    refundRetryAfterAt: null,
+    refundAttempts: 0,
+    lastError: 'order cancelled after 24 hours',
+  },
+  {
+    outTradeNo: 'ldc_order_refunding_005',
+    status: 'refunding',
+    credits: 1000,
+    months: 1,
+    money: '30.00',
+    quoteMonthStart: 1_783_843_200,
+    finalMoneyCents: 3000,
+    finalHourlyDelta: 12,
+    finalDailyDelta: 60,
+    finalMonthlyDelta: 600,
+    monthEndClampApplied: true,
+    tradeNo: 'trade-005',
+    paymentUrl: null,
+    createdAt: storyNow - 7200,
+    payExpiresAt: storyNow - 6600,
+    cancelAfterAt: storyNow + 79_200,
+    cancelledAt: null,
+    updatedAt: storyNow - 240,
+    paidAt: storyNow - 600,
+    refundedAt: null,
+    refundActor: 'system:auto',
+    lastNotifyAt: storyNow - 540,
+    refundRetryAfterAt: storyNow + 300,
+    refundAttempts: 2,
+    lastError: 'paid month no longer matches quote month',
+  },
+  {
+    outTradeNo: 'ldc_order_refunded_006',
+    status: 'refunded',
+    credits: 1000,
+    months: 1,
+    money: '30.00',
+    quoteMonthStart: 1_783_843_200,
+    finalMoneyCents: 3000,
+    finalHourlyDelta: 12,
+    finalDailyDelta: 60,
+    finalMonthlyDelta: 600,
+    monthEndClampApplied: true,
+    tradeNo: 'trade-006',
+    paymentUrl: null,
+    createdAt: storyNow - 172_800,
+    payExpiresAt: storyNow - 172_200,
+    cancelAfterAt: storyNow - 86_400,
+    cancelledAt: null,
+    updatedAt: storyNow - 86_100,
+    paidAt: storyNow - 86_700,
+    refundedAt: storyNow - 86_100,
+    refundActor: 'system:auto',
+    lastNotifyAt: storyNow - 86_640,
+    refundRetryAfterAt: null,
+    refundAttempts: 1,
+    lastError: null,
+  },
+  ...Array.from({ length: 6 }, (_, index): RechargeOrder => {
+    const orderNumber = index + 7
+    const credits = (index + 2) * 1000
+    const months = index % 2 === 0 ? 1 : 2
+    const createdAt = storyNow - 86_400 * (index + 5)
+    const paidAt = createdAt + 720
+    return {
+      outTradeNo: `ldc_order_history_${String(orderNumber).padStart(3, '0')}`,
+      status: index % 3 === 0 ? 'paid' : index % 3 === 1 ? 'refundOnly' : 'failed',
+      credits,
+      months,
+      money: formatMoney((credits / 1000) * months * 50),
+      quoteMonthStart: 1_781_164_800,
+      finalMoneyCents: (credits / 1000) * months * 5000,
+      finalHourlyDelta: (credits / 1000) * 20,
+      finalDailyDelta: (credits / 1000) * 100,
+      finalMonthlyDelta: credits,
+      monthEndClampApplied: false,
+      tradeNo: index % 3 === 2 ? null : `trade-history-${orderNumber}`,
+      paymentUrl: null,
+      createdAt,
+      payExpiresAt: createdAt + 600,
+      cancelAfterAt: createdAt + 86_400,
+      cancelledAt: null,
+      updatedAt: index % 3 === 2 ? createdAt + 900 : paidAt,
+      paidAt: index % 3 === 2 ? null : paidAt,
+      refundedAt: index % 3 === 1 ? paidAt + 600 : null,
+      refundActor: index % 3 === 1 ? 'builtin-admin' : null,
+      lastNotifyAt: index % 3 === 2 ? null : paidAt + 60,
+      refundRetryAfterAt: null,
+      refundAttempts: 0,
+      lastError: index % 3 === 2 ? 'payment failed' : null,
+    }
+  }),
 ]
 
 function BillingPageStory({
@@ -511,6 +676,32 @@ export const Default: Story = {
     await expect(summary.queryByText('Long-lived entitlements')).not.toBeInTheDocument()
     await expect(summary.queryByText('Tag adjustments')).not.toBeInTheDocument()
     await expect(summary.getByText('4,450')).toBeInTheDocument()
+  },
+}
+
+export const LifecycleStates: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    for (const label of ['Pending', 'Closed', 'Cancelled', 'Refunding', 'Refunded']) {
+      await expect(canvas.getByText(label)).toBeInTheDocument()
+    }
+    const workbench = canvasElement.querySelector<HTMLElement>('.user-console-billing-workbench')
+    const ordersSection = canvasElement.querySelector<HTMLElement>('.user-console-billing-orders-section')
+    if (!workbench || !ordersSection) {
+      throw new Error('Expected the billing page workbench and full-width orders section to render.')
+    }
+    const workbenchWidth = workbench.getBoundingClientRect().width
+    const ordersWidth = ordersSection.getBoundingClientRect().width
+    if (workbenchWidth > 0 && ordersWidth / workbenchWidth < 0.92) {
+      throw new Error('Expected the recent orders section to span the billing page width.')
+    }
+    await expect(canvas.getByText('Page 1 / 2 · 12 orders')).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /^Next$/ }))
+    await expect(canvas.getByText('Page 2 / 2 · 12 orders')).toBeInTheDocument()
+    await expect(canvas.getByText('6,000 / 1')).toBeInTheDocument()
+    await expect(canvas.getByText('7,000 / 2')).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /^Previous$/ }))
+    await expect(canvas.getByText('Page 1 / 2 · 12 orders')).toBeInTheDocument()
   },
 }
 

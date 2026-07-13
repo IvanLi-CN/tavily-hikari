@@ -11,7 +11,7 @@ const meta = {
     docs: {
       description: {
         component: [
-          'Route-level admin review surface covering dashboard, keys, tokens, users, jobs, system settings, and forward proxy settings.',
+          'Route-level admin review surface covering dashboard, keys, tokens, users, recharge records, jobs, system settings, and forward proxy settings.',
           '',
           'Public docs: [Configuration & Access](../configuration-access.html) · [Deployment & Anonymity](../deployment-anonymity.html) · [Storybook Guide](../storybook-guide.html)',
         ].join('\n'),
@@ -81,6 +81,7 @@ export const UnboundTokenUsageEmpty = { ...RuntimeStories.UnboundTokenUsageEmpty
 export const UnboundTokenUsageError = { ...RuntimeStories.UnboundTokenUsageError }
 export const UnboundTokenUsageTokenDetailTrigger = { ...RuntimeStories.UnboundTokenUsageTokenDetailTrigger }
 export const UsersUsageTooltipProof = { ...RuntimeStories.UsersUsageTooltipProof }
+export const Recharges = { ...RuntimeStories.Recharges }
 export const MonthlyBrokenDrawerEmpty = { ...RuntimeStories.MonthlyBrokenDrawerEmpty }
 export const MonthlyBrokenDrawerSingleRow = { ...RuntimeStories.MonthlyBrokenDrawerSingleRow }
 export const MonthlyBrokenDrawerLongContent = { ...RuntimeStories.MonthlyBrokenDrawerLongContent }

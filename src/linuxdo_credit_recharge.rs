@@ -5,9 +5,14 @@ pub const LINUXDO_CREDIT_RECHARGE_STATUS_PENDING: &str = "pending";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_PAID: &str = "paid";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_FAILED: &str = "failed";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED: &str = "expired";
+pub const LINUXDO_CREDIT_RECHARGE_STATUS_CANCELLED: &str = "cancelled";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING: &str = "refunding";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED: &str = "refunded";
 pub const LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY: &str = "refundOnly";
+pub const LINUXDO_CREDIT_RECHARGE_PAY_EXPIRE_SECS: i64 = 10 * 60;
+pub const LINUXDO_CREDIT_RECHARGE_CANCEL_AFTER_SECS: i64 = 24 * 60 * 60;
+pub const LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR: &str = "system:auto";
+pub const LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE: &str = "externalSucceeded";
 pub const LINUXDO_CREDIT_RECHARGE_UNIT_CREDITS: i64 = 1000;
 pub const LINUXDO_CREDIT_RECHARGE_UNIT_PRICE_CENTS: i64 = 5_000;
 pub const LINUXDO_CREDIT_RECHARGE_MIN_MONTHS: i64 = 1;
@@ -45,12 +50,17 @@ pub struct LinuxDoCreditRechargeOrder {
     pub payment_url: Option<String>,
     pub order_name: String,
     pub notify_payload: Option<String>,
+    pub pay_expires_at: i64,
+    pub cancel_after_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub paid_at: Option<i64>,
+    pub cancelled_at: Option<i64>,
     pub refunded_at: Option<i64>,
     pub refund_actor: Option<String>,
     pub refund_payload: Option<String>,
+    pub refund_retry_after_at: Option<i64>,
+    pub refund_attempts: i64,
     pub last_notify_at: Option<i64>,
     pub last_error: Option<String>,
 }
@@ -207,6 +217,16 @@ pub struct LinuxDoCreditRechargeQuote {
     pub schedule: Vec<LinuxDoCreditRechargeQuoteMonth>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinuxDoCreditRefundExternalSuccessMarker {
+    pub phase: String,
+    pub next_status: String,
+    pub revoke_entitlements: bool,
+    pub refund_actor: String,
+    pub response: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LinuxDoCreditRechargePriceConfig {
     pub unit_credits: i64,
@@ -261,6 +281,61 @@ pub fn linuxdo_credit_recharge_quota_delta(credits: i64) -> LinuxDoCreditRecharg
             / LINUXDO_CREDIT_RECHARGE_UNIT_CREDITS,
         monthly_delta: credits,
     }
+}
+
+pub fn linuxdo_credit_recharge_pay_expires_at(created_at: i64) -> i64 {
+    created_at.saturating_add(LINUXDO_CREDIT_RECHARGE_PAY_EXPIRE_SECS)
+}
+
+pub fn linuxdo_credit_recharge_cancel_after_at(created_at: i64) -> i64 {
+    created_at.saturating_add(LINUXDO_CREDIT_RECHARGE_CANCEL_AFTER_SECS)
+}
+
+pub fn linuxdo_credit_recharge_system_refund_retry_delay_secs(attempts: i64) -> i64 {
+    match attempts.max(0) {
+        0 => 60,
+        1 => 5 * 60,
+        2 => 15 * 60,
+        3 => 60 * 60,
+        _ => 6 * 60 * 60,
+    }
+}
+
+pub fn decode_linuxdo_credit_refund_external_success_marker(
+    payload: Option<&str>,
+) -> Option<LinuxDoCreditRefundExternalSuccessMarker> {
+    let marker = serde_json::from_str::<LinuxDoCreditRefundExternalSuccessMarker>(payload?).ok()?;
+    (marker.phase == LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE).then_some(marker)
+}
+
+pub fn linuxdo_credit_refund_params(
+    client_id: &str,
+    client_secret: &str,
+    trade_no: &str,
+    out_trade_no: &str,
+    money: &str,
+) -> [(&'static str, String); 6] {
+    [
+        ("act", "refund".to_string()),
+        ("pid", client_id.to_string()),
+        ("key", client_secret.to_string()),
+        ("trade_no", trade_no.to_string()),
+        ("out_trade_no", out_trade_no.to_string()),
+        ("money", money.to_string()),
+    ]
+}
+
+pub fn linuxdo_credit_refund_url(submit_url: &str) -> Result<String, String> {
+    if submit_url.ends_with("/epay/pay/submit.php") {
+        return Ok(submit_url.replace("/epay/pay/submit.php", "/epay/api.php"));
+    }
+    if submit_url.ends_with("/pay/submit.php") {
+        return Ok(submit_url.replace("/pay/submit.php", "/api.php"));
+    }
+    if let Some((base, _)) = submit_url.rsplit_once("/pay/") {
+        return Ok(format!("{base}/api.php"));
+    }
+    Err("Linux.do Credit refund endpoint cannot be derived from submit URL".to_string())
 }
 
 pub fn linuxdo_credit_recharge_money_cents(

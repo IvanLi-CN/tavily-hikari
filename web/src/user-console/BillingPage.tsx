@@ -7,6 +7,7 @@ import type {
   RechargeQuote,
   UserBillingSummary,
 } from '../api'
+import AdminTablePagination from '../components/AdminTablePagination'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import { useViewportMode } from '../lib/responsive'
 import RechargePanel from './RechargePanel'
@@ -50,6 +51,9 @@ interface BillingText {
   orderCreatedAt: string
   orderImpact: string
   orderClampApplied: string
+  ordersPageSummary: string
+  ordersPreviousPage: string
+  ordersNextPage: string
 }
 
 interface RechargePanelText {
@@ -88,6 +92,7 @@ interface RechargePanelText {
   orders: string
   noOrders: string
   status: Record<string, string>
+  orderStatusDetail: Record<string, string>
 }
 
 interface BillingPageProps {
@@ -115,6 +120,8 @@ interface BillingQuota {
 }
 
 type BillingTimelineMonth = NonNullable<BillingPageProps['summary']>['timeline'][number]
+
+const ORDERS_PER_PAGE = 10
 
 function formatTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
@@ -160,11 +167,48 @@ function formatCreditStepValue(value: number, language: 'en' | 'zh'): string {
 
 function orderStatusTone(status: string): StatusTone {
   if (status === 'paid') return 'success'
-  if (status === 'pending') return 'warning'
-  if (status === 'failed' || status === 'expired' || status === 'refunded' || status === 'refundOnly') {
-    return 'error'
-  }
+  if (status === 'pending' || status === 'expired' || status === 'refunding') return 'warning'
+  if (status === 'failed') return 'error'
   return 'neutral'
+}
+
+function orderStatusDetail(
+  order: RechargeOrder,
+  text: RechargePanelText,
+  language: 'en' | 'zh',
+): string | null {
+  if (order.status === 'pending') {
+    return formatTemplate(text.orderStatusDetail.pending, {
+      time: formatDateTime(order.payExpiresAt, language),
+    })
+  }
+  if (order.status === 'paid' && order.paidAt != null) {
+    return formatTemplate(text.orderStatusDetail.paid, {
+      time: formatDateTime(order.paidAt, language),
+    })
+  }
+  if (order.status === 'failed') return text.orderStatusDetail.failed
+  if (order.status === 'expired') {
+    return formatTemplate(text.orderStatusDetail.expired, {
+      time: formatDateTime(order.payExpiresAt, language),
+    })
+  }
+  if (order.status === 'cancelled') {
+    return formatTemplate(text.orderStatusDetail.cancelled, {
+      time: formatDateTime(order.cancelledAt ?? order.cancelAfterAt, language),
+    })
+  }
+  if (order.status === 'refunding') {
+    if (order.refundRetryAfterAt != null) {
+      return `${text.orderStatusDetail.refunding} ${formatTemplate(text.orderStatusDetail.refundRetryAt, {
+        time: formatDateTime(order.refundRetryAfterAt, language),
+      })}`
+    }
+    return text.orderStatusDetail.refunding
+  }
+  if (order.status === 'refunded') return text.orderStatusDetail.refunded
+  if (order.status === 'refundOnly') return text.orderStatusDetail.refundOnly
+  return null
 }
 
 function isZeroQuota(value: BillingQuota): boolean {
@@ -399,6 +443,7 @@ export default function BillingPage({
   const [timelineVisibleCount, setTimelineVisibleCount] = useState<1 | 2 | 3>(1)
   const [timelineWindowIndex, setTimelineWindowIndex] = useState(0)
   const [selectedTimelineIndex, setSelectedTimelineIndex] = useState(0)
+  const [ordersPage, setOrdersPage] = useState(1)
   const timeline = summary?.timeline ?? []
   const rechargeVisible = config?.visible ?? false
   const purchaseConfig = rechargeVisible
@@ -496,6 +541,18 @@ export default function BillingPage({
         : null,
     },
   ] : []
+  const ordersTotalPages = Math.max(1, Math.ceil(orders.length / ORDERS_PER_PAGE))
+  const safeOrdersPage = Math.min(Math.max(ordersPage, 1), ordersTotalPages)
+  const visibleOrders = useMemo(() => {
+    if (orders.length === 0) return []
+    const start = (safeOrdersPage - 1) * ORDERS_PER_PAGE
+    return orders.slice(start, start + ORDERS_PER_PAGE)
+  }, [orders, safeOrdersPage])
+  const ordersPageSummary = formatTemplate(text.ordersPageSummary, {
+    page: safeOrdersPage,
+    totalPages: ordersTotalPages,
+    total: formatNumber(orders.length),
+  })
 
   useEffect(() => {
     const node = timelineViewportRef.current
@@ -583,6 +640,10 @@ export default function BillingPage({
       viewport.removeEventListener('scroll', handleScroll)
     }
   }, [timeline.length, visibleTimelineCount])
+
+  useEffect(() => {
+    setOrdersPage((current) => Math.min(Math.max(current, 1), ordersTotalPages))
+  }, [ordersTotalPages])
 
   useEffect(() => {
     if (timeline.length === 0) return
@@ -750,54 +811,6 @@ export default function BillingPage({
               <div className="empty-state">{text.emptyDelta}</div>
             )}
           </section>
-
-          <section className="surface panel user-console-section user-console-billing-section">
-            <header className="panel-header user-console-section-header">
-              <div>
-                <h2>{text.ordersTitle}</h2>
-                <p className="panel-description">{text.ordersDescription}</p>
-              </div>
-            </header>
-            {orders.length === 0 ? (
-              <div className="empty-state">{rechargeText.noOrders}</div>
-            ) : (
-              <div className="user-console-billing-orders-table" role="list">
-                {orders.slice(0, 6).map((order) => (
-                  <article key={order.outTradeNo} className="user-console-billing-order-row" role="listitem">
-                    <div className="user-console-billing-order-primary">
-                      <div className="user-console-billing-order-title-row">
-                        <h3>{formatNumber(order.credits)} × {order.months}</h3>
-                        {order.monthEndClampApplied ? (
-                          <span className="user-console-billing-inline-badge is-warm">{text.orderClampApplied}</span>
-                        ) : null}
-                      </div>
-                      <p>{formatTemplate(text.orderCreatedAt, {
-                        time: formatDateTime(order.createdAt, language),
-                      })}</p>
-                    </div>
-                    <div className="user-console-billing-order-facts">
-                      <strong>{formatNumber(order.credits)} / {order.months}</strong>
-                      <strong>{order.money} LDC</strong>
-                      <strong>{formatMonthLabel(order.quoteMonthStart, language)}</strong>
-                    </div>
-                    <div className="user-console-billing-order-impact">
-                      <span>{text.timelineEffective}</span>
-                      <strong>{formatTemplate(text.orderImpact, {
-                        hourly: formatNumber(order.finalHourlyDelta),
-                        daily: formatNumber(order.finalDailyDelta),
-                        monthly: formatNumber(order.finalMonthlyDelta),
-                      })}</strong>
-                    </div>
-                    <div className="user-console-billing-order-status">
-                      <StatusBadge tone={orderStatusTone(order.status)}>
-                        {rechargeText.status[order.status] ?? order.status}
-                      </StatusBadge>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
         </div>
 
         <aside className="user-console-landing-rail user-console-billing-side-column">
@@ -854,6 +867,73 @@ export default function BillingPage({
             showOrders={false}
           />
         </aside>
+
+        <section className="surface panel user-console-section user-console-billing-section user-console-billing-orders-section">
+          <header className="panel-header user-console-section-header">
+            <div>
+              <h2>{text.ordersTitle}</h2>
+              <p className="panel-description">{text.ordersDescription}</p>
+            </div>
+          </header>
+          {orders.length === 0 ? (
+            <div className="empty-state">{rechargeText.noOrders}</div>
+          ) : (
+            <>
+              <div className="user-console-billing-orders-table" role="list">
+                {visibleOrders.map((order) => {
+                  const detail = orderStatusDetail(order, rechargeText, language)
+                  return (
+                    <article key={order.outTradeNo} className="user-console-billing-order-row" role="listitem">
+                      <div className="user-console-billing-order-primary">
+                        <div className="user-console-billing-order-title-row">
+                          <h3>{formatNumber(order.credits)} × {order.months}</h3>
+                          {order.monthEndClampApplied ? (
+                            <span className="user-console-billing-inline-badge is-warm">{text.orderClampApplied}</span>
+                          ) : null}
+                        </div>
+                        <p>{formatTemplate(text.orderCreatedAt, {
+                          time: formatDateTime(order.createdAt, language),
+                        })}</p>
+                      </div>
+                      <div className="user-console-billing-order-facts">
+                        <strong>{formatNumber(order.credits)} / {order.months}</strong>
+                        <strong>{order.money} LDC</strong>
+                        <strong>{formatMonthLabel(order.quoteMonthStart, language)}</strong>
+                      </div>
+                      <div className="user-console-billing-order-impact">
+                        <span>{text.timelineEffective}</span>
+                        <strong>{formatTemplate(text.orderImpact, {
+                          hourly: formatNumber(order.finalHourlyDelta),
+                          daily: formatNumber(order.finalDailyDelta),
+                          monthly: formatNumber(order.finalMonthlyDelta),
+                        })}</strong>
+                        {detail ? <p className="user-console-billing-order-detail">{detail}</p> : null}
+                      </div>
+                      <div className="user-console-billing-order-status">
+                        <StatusBadge tone={orderStatusTone(order.status)}>
+                          {rechargeText.status[order.status] ?? order.status}
+                        </StatusBadge>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+              {ordersTotalPages > 1 ? (
+                <AdminTablePagination
+                  page={safeOrdersPage}
+                  totalPages={ordersTotalPages}
+                  pageSummary={ordersPageSummary}
+                  previousLabel={text.ordersPreviousPage}
+                  nextLabel={text.ordersNextPage}
+                  previousDisabled={safeOrdersPage <= 1}
+                  nextDisabled={safeOrdersPage >= ordersTotalPages}
+                  onPrevious={() => setOrdersPage((current) => Math.max(1, current - 1))}
+                  onNext={() => setOrdersPage((current) => Math.min(ordersTotalPages, current + 1))}
+                />
+              ) : null}
+            </>
+          )}
+        </section>
       </div>
     </div>
   )

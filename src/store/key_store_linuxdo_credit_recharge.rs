@@ -23,6 +23,14 @@ fn legacy_recharge_quote_month_start(created_at: i64, paid_at: Option<i64>) -> i
     start_of_local_month_utc_ts(local_time)
 }
 
+fn recharge_order_cancel_after_at(order: &LinuxDoCreditRechargeOrder) -> i64 {
+    if order.cancel_after_at > 0 {
+        order.cancel_after_at
+    } else {
+        linuxdo_credit_recharge_cancel_after_at(order.created_at)
+    }
+}
+
 impl KeyStore {
     pub(crate) async fn ensure_linuxdo_credit_recharge_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
@@ -45,9 +53,17 @@ impl KeyStore {
                 payment_url TEXT,
                 order_name TEXT NOT NULL,
                 notify_payload TEXT,
+                pay_expires_at INTEGER NOT NULL DEFAULT 0,
+                cancel_after_at INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 paid_at INTEGER,
+                cancelled_at INTEGER,
+                refunded_at INTEGER,
+                refund_actor TEXT,
+                refund_payload TEXT,
+                refund_retry_after_at INTEGER,
+                refund_attempts INTEGER NOT NULL DEFAULT 0,
                 last_notify_at INTEGER,
                 last_error TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -70,9 +86,14 @@ impl KeyStore {
             ("final_monthly_delta", "INTEGER NOT NULL DEFAULT 0"),
             ("month_end_clamp_applied", "INTEGER NOT NULL DEFAULT 0"),
             ("quote_snapshot_json", "TEXT"),
+            ("pay_expires_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancel_after_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancelled_at", "INTEGER"),
             ("refunded_at", "INTEGER"),
             ("refund_actor", "TEXT"),
             ("refund_payload", "TEXT"),
+            ("refund_retry_after_at", "INTEGER"),
+            ("refund_attempts", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             if !self
                 .table_column_exists("linuxdo_credit_recharge_orders", column)
@@ -88,6 +109,24 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_linuxdo_credit_recharge_orders_status_time
                ON linuxdo_credit_recharge_orders(status, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_linuxdo_credit_recharge_orders_pay_expiry
+               ON linuxdo_credit_recharge_orders(status, pay_expires_at ASC, created_at ASC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_linuxdo_credit_recharge_orders_cancel_after
+               ON linuxdo_credit_recharge_orders(status, cancel_after_at ASC, created_at ASC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_linuxdo_credit_recharge_orders_system_refund_retry
+               ON linuxdo_credit_recharge_orders(status, refund_actor, refund_retry_after_at ASC, created_at ASC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -170,6 +209,7 @@ impl KeyStore {
             }
         }
         self.backfill_linuxdo_credit_recharge_orders_v1().await?;
+        self.backfill_linuxdo_credit_recharge_orders_v2().await?;
         self.backfill_linuxdo_credit_recharge_entitlements_v1().await?;
         sqlx::query(
             r#"
@@ -262,6 +302,22 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn backfill_linuxdo_credit_recharge_orders_v2(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET pay_expires_at = created_at + ?,
+                   cancel_after_at = created_at + ?
+             WHERE pay_expires_at <= 0 OR cancel_after_at <= 0
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_PAY_EXPIRE_SECS)
+        .bind(LINUXDO_CREDIT_RECHARGE_CANCEL_AFTER_SECS)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn backfill_linuxdo_credit_recharge_entitlements_v1(&self) -> Result<(), ProxyError> {
         let rows = sqlx::query(
             r#"
@@ -296,6 +352,7 @@ impl KeyStore {
     fn linuxdo_credit_recharge_order_from_row(
         row: &sqlx::sqlite::SqliteRow,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        let created_at: i64 = row.try_get("created_at")?;
         Ok(LinuxDoCreditRechargeOrder {
             out_trade_no: row.try_get("out_trade_no")?,
             user_id: row.try_get("user_id")?,
@@ -317,12 +374,21 @@ impl KeyStore {
             payment_url: row.try_get("payment_url")?,
             order_name: row.try_get("order_name")?,
             notify_payload: row.try_get("notify_payload")?,
-            created_at: row.try_get("created_at")?,
+            pay_expires_at: row
+                .try_get("pay_expires_at")
+                .unwrap_or_else(|_| linuxdo_credit_recharge_pay_expires_at(created_at)),
+            cancel_after_at: row
+                .try_get("cancel_after_at")
+                .unwrap_or_else(|_| linuxdo_credit_recharge_cancel_after_at(created_at)),
+            created_at,
             updated_at: row.try_get("updated_at")?,
             paid_at: row.try_get("paid_at")?,
+            cancelled_at: row.try_get("cancelled_at").unwrap_or(None),
             refunded_at: row.try_get("refunded_at").unwrap_or(None),
             refund_actor: row.try_get("refund_actor").unwrap_or(None),
             refund_payload: row.try_get("refund_payload").unwrap_or(None),
+            refund_retry_after_at: row.try_get("refund_retry_after_at").unwrap_or(None),
+            refund_attempts: row.try_get("refund_attempts").unwrap_or(0),
             last_notify_at: row.try_get("last_notify_at")?,
             last_error: row.try_get("last_error")?,
         })
@@ -359,10 +425,12 @@ impl KeyStore {
                 out_trade_no, user_id, status, credits, months, money_cents,
                 quote_month_start, final_money_cents, final_hourly_delta, final_daily_delta,
                 final_monthly_delta, month_end_clamp_applied, quote_snapshot_json,
-                trade_no, payment_url, order_name, notify_payload, created_at, updated_at,
-                paid_at, refunded_at, refund_actor, refund_payload, last_notify_at, last_error
+                trade_no, payment_url, order_name, notify_payload, pay_expires_at,
+                cancel_after_at, created_at, updated_at, paid_at, cancelled_at, refunded_at,
+                refund_actor, refund_payload, refund_retry_after_at, refund_attempts,
+                last_notify_at, last_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&order.out_trade_no)
@@ -382,12 +450,17 @@ impl KeyStore {
         .bind(&order.payment_url)
         .bind(&order.order_name)
         .bind(&order.notify_payload)
+        .bind(order.pay_expires_at)
+        .bind(order.cancel_after_at)
         .bind(order.created_at)
         .bind(order.updated_at)
         .bind(order.paid_at)
+        .bind(order.cancelled_at)
         .bind(order.refunded_at)
         .bind(&order.refund_actor)
         .bind(&order.refund_payload)
+        .bind(order.refund_retry_after_at)
+        .bind(order.refund_attempts)
         .bind(order.last_notify_at)
         .bind(&order.last_error)
         .execute(&self.pool)
@@ -627,6 +700,218 @@ impl KeyStore {
             .collect()
     }
 
+    pub(crate) async fn expire_due_linuxdo_credit_recharge_orders(
+        &self,
+        expired_at: i64,
+        limit: i64,
+    ) -> Result<i64, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT out_trade_no
+            FROM linuxdo_credit_recharge_orders
+            WHERE status = ?
+              AND pay_expires_at > 0
+              AND pay_expires_at <= ?
+              AND cancel_after_at > ?
+            ORDER BY pay_expires_at ASC, created_at ASC, out_trade_no ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+        .bind(expired_at)
+        .bind(expired_at)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut changed = 0_i64;
+        for row in rows {
+            let out_trade_no: String = row.try_get("out_trade_no")?;
+            let result = sqlx::query(
+                r#"
+                UPDATE linuxdo_credit_recharge_orders
+                   SET status = ?, payment_url = NULL, updated_at = ?, last_error = NULL
+                 WHERE out_trade_no = ? AND status = ?
+                "#,
+            )
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+            .bind(expired_at)
+            .bind(out_trade_no)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+            .execute(&mut *tx)
+            .await?;
+            changed += result.rows_affected() as i64;
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    pub(crate) async fn cancel_due_linuxdo_credit_recharge_orders(
+        &self,
+        cancelled_at: i64,
+        limit: i64,
+    ) -> Result<i64, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT out_trade_no
+            FROM linuxdo_credit_recharge_orders
+            WHERE status IN (?, ?)
+              AND cancel_after_at > 0
+              AND cancel_after_at <= ?
+            ORDER BY cancel_after_at ASC, created_at ASC, out_trade_no ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+        .bind(cancelled_at)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut changed = 0_i64;
+        for row in rows {
+            let out_trade_no: String = row.try_get("out_trade_no")?;
+            let result = sqlx::query(
+                r#"
+                UPDATE linuxdo_credit_recharge_orders
+                   SET status = ?, payment_url = NULL, cancelled_at = COALESCE(cancelled_at, ?),
+                       updated_at = ?, last_error = NULL
+                 WHERE out_trade_no = ? AND status IN (?, ?)
+                "#,
+            )
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_CANCELLED)
+            .bind(cancelled_at)
+            .bind(cancelled_at)
+            .bind(out_trade_no)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+            .execute(&mut *tx)
+            .await?;
+            changed += result.rows_affected() as i64;
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    pub(crate) async fn linuxdo_credit_recharge_lifecycle_due(
+        &self,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        let due = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM linuxdo_credit_recharge_orders
+                WHERE (
+                    status = ?
+                    AND pay_expires_at > 0
+                    AND pay_expires_at <= ?
+                ) OR (
+                    status IN (?, ?)
+                    AND cancel_after_at > 0
+                    AND cancel_after_at <= ?
+                ) OR (
+                    status = ?
+                    AND refund_actor = ?
+                    AND TRIM(COALESCE(trade_no, '')) != ''
+                    AND (
+                        refund_payload LIKE '%\"phase\":\"externalSucceeded\"%'
+                        OR refund_retry_after_at IS NULL
+                        OR refund_retry_after_at <= ?
+                    )
+                )
+            )
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+        .bind(now)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+        .bind(now)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .bind(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(due > 0)
+    }
+
+    pub(crate) async fn list_linuxdo_credit_recharge_system_refund_candidates(
+        &self,
+        now: i64,
+        limit: i64,
+    ) -> Result<Vec<LinuxDoCreditRechargeOrder>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT *
+            FROM linuxdo_credit_recharge_orders
+            WHERE status = ?
+              AND refund_actor = ?
+              AND TRIM(COALESCE(trade_no, '')) != ''
+              AND (
+                    refund_payload LIKE '%"phase":"externalSucceeded"%'
+                    OR refund_retry_after_at IS NULL
+                    OR refund_retry_after_at <= ?
+              )
+            ORDER BY
+                CASE
+                    WHEN refund_payload LIKE '%"phase":"externalSucceeded"%' THEN 0
+                    ELSE 1
+                END ASC,
+                COALESCE(refund_retry_after_at, updated_at, created_at) ASC,
+                out_trade_no ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .bind(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+        .bind(now)
+        .bind(limit.clamp(1, 100))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(Self::linuxdo_credit_recharge_order_from_row)
+            .collect()
+    }
+
+    pub(crate) async fn mark_linuxdo_credit_recharge_order_system_refund_failure(
+        &self,
+        out_trade_no: &str,
+        attempts: i64,
+        retry_after_at: i64,
+        message: &str,
+        updated_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE linuxdo_credit_recharge_orders
+               SET refund_attempts = ?,
+                   refund_retry_after_at = ?,
+                   updated_at = ?,
+                   last_error = ?
+             WHERE out_trade_no = ? AND status = ? AND refund_actor = ?
+            "#,
+        )
+        .bind(attempts.max(0))
+        .bind(retry_after_at)
+        .bind(updated_at)
+        .bind(message)
+        .bind(out_trade_no)
+        .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
+        .bind(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(ProxyError::Other(
+                "recharge order system refund failure state could not be persisted".to_string(),
+            ));
+        }
+        self.fetch_linuxdo_credit_recharge_order(out_trade_no)
+            .await?
+            .ok_or_else(|| ProxyError::Other("recharge order disappeared".to_string()))
+    }
+
     pub(crate) async fn apply_linuxdo_credit_recharge_payment(
         &self,
         out_trade_no: &str,
@@ -657,49 +942,78 @@ impl KeyStore {
                 .unwrap_or_else(Utc::now)
                 .with_timezone(&Local),
         );
+        let cancel_after_at = recharge_order_cancel_after_at(&order);
+        let same_quote_month = order.quote_month_start <= 0 || order.quote_month_start == paid_month_start;
+        let within_cancel_window = paid_at <= cancel_after_at;
         let mut entitlement_month_starts = Vec::new();
         if matches!(
             order.status.as_str(),
-            LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
+            LINUXDO_CREDIT_RECHARGE_STATUS_PAID
+                | LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING
                 | LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
                 | LINUXDO_CREDIT_RECHARGE_STATUS_REFUND_ONLY
-                | LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED
         ) {
             sqlx::query(
                 r#"
                 UPDATE linuxdo_credit_recharge_orders
-                   SET notify_payload = ?, last_notify_at = ?, updated_at = ?
+                   SET trade_no = COALESCE(NULLIF(?, ''), trade_no),
+                       notify_payload = ?,
+                       paid_at = COALESCE(paid_at, ?),
+                       last_notify_at = ?,
+                       updated_at = ?
                  WHERE out_trade_no = ?
                 "#,
             )
+            .bind(trade_no)
             .bind(notify_payload)
+            .bind(paid_at)
             .bind(paid_at)
             .bind(paid_at)
             .bind(out_trade_no)
             .execute(&mut *tx)
             .await?;
         } else {
-            if order.quote_month_start > 0
-                && order.quote_month_start != paid_month_start
-                && order.status == LINUXDO_CREDIT_RECHARGE_STATUS_PENDING
-            {
+            let should_system_refund = !same_quote_month
+                || !within_cancel_window
+                || order.status == LINUXDO_CREDIT_RECHARGE_STATUS_CANCELLED;
+            if should_system_refund {
+                let reason = if !same_quote_month {
+                    "paid month no longer matches quote month"
+                } else {
+                    "payment arrived after local cancel deadline"
+                };
                 sqlx::query(
                     r#"
                     UPDATE linuxdo_credit_recharge_orders
-                       SET status = ?, trade_no = COALESCE(NULLIF(?, ''), trade_no),
-                           notify_payload = ?, paid_at = COALESCE(paid_at, ?),
-                           last_notify_at = ?, updated_at = ?, last_error = ?
-                     WHERE out_trade_no = ?
+                       SET status = ?,
+                           trade_no = COALESCE(NULLIF(?, ''), trade_no),
+                           payment_url = NULL,
+                           notify_payload = ?,
+                           paid_at = COALESCE(paid_at, ?),
+                           last_notify_at = ?,
+                           updated_at = ?,
+                           refund_actor = ?,
+                           refund_payload = NULL,
+                           refund_retry_after_at = ?,
+                           refund_attempts = 0,
+                           last_error = ?
+                     WHERE out_trade_no = ? AND status IN (?, ?, ?, ?)
                     "#,
                 )
-                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING)
                 .bind(trade_no)
                 .bind(notify_payload)
                 .bind(paid_at)
                 .bind(paid_at)
                 .bind(paid_at)
-                .bind("paid month no longer matches quote month")
+                .bind(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+                .bind(paid_at)
+                .bind(reason)
                 .bind(out_trade_no)
+                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_FAILED)
+                .bind(LINUXDO_CREDIT_RECHARGE_STATUS_CANCELLED)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -717,8 +1031,12 @@ impl KeyStore {
                        paid_at = COALESCE(paid_at, ?),
                        last_notify_at = ?,
                        updated_at = ?,
+                       refund_actor = NULL,
+                       refund_payload = NULL,
+                       refund_retry_after_at = NULL,
+                       refund_attempts = 0,
                        last_error = NULL
-                 WHERE out_trade_no = ?
+                 WHERE out_trade_no = ? AND status IN (?, ?, ?)
                 "#,
             )
             .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PAID)
@@ -728,6 +1046,9 @@ impl KeyStore {
             .bind(paid_at)
             .bind(paid_at)
             .bind(out_trade_no)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED)
+            .bind(LINUXDO_CREDIT_RECHARGE_STATUS_FAILED)
             .execute(&mut *tx)
             .await?;
 
@@ -853,6 +1174,7 @@ impl KeyStore {
             r#"
             UPDATE linuxdo_credit_recharge_orders
                SET status = ?, refunded_at = ?, refund_actor = ?, refund_payload = ?,
+                   refund_retry_after_at = NULL, refund_attempts = 0,
                    updated_at = ?, last_error = NULL
              WHERE out_trade_no = ? AND status = ?
             "#,
@@ -896,12 +1218,14 @@ impl KeyStore {
         let result = sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
-               SET refund_actor = ?, refund_payload = ?, updated_at = ?, last_error = ?
+               SET refund_actor = ?, refund_payload = ?, refund_retry_after_at = ?,
+                   updated_at = ?, last_error = ?
              WHERE out_trade_no = ? AND status = ?
             "#,
         )
         .bind(refund_actor)
         .bind(refund_payload)
+        .bind(updated_at)
         .bind(updated_at)
         .bind("external refund succeeded; local finalize pending")
         .bind(out_trade_no)
@@ -962,7 +1286,9 @@ impl KeyStore {
         let result = sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
-               SET status = ?, updated_at = ?, last_error = NULL
+               SET status = ?, refund_actor = NULL, refund_payload = NULL,
+                   refund_retry_after_at = NULL, refund_attempts = 0,
+                   updated_at = ?, last_error = NULL
              WHERE out_trade_no = ? AND status = ?
             "#,
         )
@@ -993,7 +1319,9 @@ impl KeyStore {
         sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
-               SET status = ?, updated_at = ?, last_error = ?
+               SET status = ?, refund_actor = NULL, refund_payload = NULL,
+                   refund_retry_after_at = NULL, refund_attempts = 0,
+                   updated_at = ?, last_error = ?
              WHERE out_trade_no = ? AND status = ?
             "#,
         )

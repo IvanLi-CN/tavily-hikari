@@ -1398,6 +1398,8 @@ fn spawn_business_background_tasks(state: Arc<AppState>) {
         spawn_linuxdo_user_status_sync_scheduler(state.clone());
     }
     spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
+    let _linuxdo_credit_recharge_lifecycle_scheduler =
+        spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone());
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());
     spawn_db_compaction_scheduler(state);

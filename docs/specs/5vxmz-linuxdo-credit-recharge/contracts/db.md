@@ -20,12 +20,17 @@
 - `order_name TEXT NOT NULL`
 - `notify_payload TEXT`
 - `created_at INTEGER NOT NULL`
+- `pay_expires_at INTEGER NOT NULL DEFAULT 0`
+- `cancel_after_at INTEGER NOT NULL DEFAULT 0`
+- `cancelled_at INTEGER`
 - `updated_at INTEGER NOT NULL`
 - `paid_at INTEGER`
 - `refunded_at INTEGER`
 - `refund_actor TEXT`
 - `refund_payload TEXT`
 - `last_notify_at INTEGER`
+- `refund_retry_after_at INTEGER`
+- `refund_attempts INTEGER NOT NULL DEFAULT 0`
 - `last_error TEXT`
 
 ## `linuxdo_credit_recharge_entitlements`
@@ -85,9 +90,15 @@ rollback anchor.
 - Repeated notifications update order metadata but must not duplicate recharge entitlement rows.
 - Existing rows in `linuxdo_credit_recharge_entitlements` are backfilled into `account_entitlements`
   as `source_kind='recharge'` rows while the legacy table remains in place.
-- `status` values are `pending`, `paid`, `failed`, `expired`, `refunding`, `refunded`, and `refundOnly`.
-  `refunding` is an internal in-progress reservation used before the external refund call.
-- `expired` means the order crossed out of its quote month before success landed, so no entitlements are written.
+- `status` values are `pending`, `paid`, `failed`, `expired`, `cancelled`, `refunding`,
+  `refunded`, and `refundOnly`.
+- `expired` means the order passed `pay_expires_at`, so the local UI and APIs must stop exposing
+  `payment_url`; a callback that still lands before `cancel_after_at` and within the same
+  `quote_month_start` may still settle to `paid`.
+- `cancelled` means the order passed `cancel_after_at`; any later success callback must go through
+  the automatic refund path instead of granting entitlements.
+- `refunding` is used both for admin-initiated refunds and for `refund_actor=system:auto`
+  late-payment compensation.
 - Refund audit details are persisted on the order row; TOTP codes are never stored.
 
 ## Admin TOTP meta records

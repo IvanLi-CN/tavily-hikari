@@ -227,9 +227,10 @@ export function normalizeRechargeConfig(value: unknown): RechargeConfig {
 
 export function normalizeRechargeOrder(value: unknown): RechargeOrder {
   const source = isRecordLike(value) ? value : {}
+  const createdAt = readNumber(source, 'createdAt', 'created_at')
   return {
     outTradeNo: readString(source, 'outTradeNo', 'out_trade_no'),
-    status: readString(source, 'status', 'status'),
+    status: readString(source, 'status', 'status') as RechargeOrder['status'],
     credits: readNumber(source, 'credits', 'credits'),
     months: readNumber(source, 'months', 'months'),
     money: readString(source, 'money', 'money'),
@@ -241,10 +242,17 @@ export function normalizeRechargeOrder(value: unknown): RechargeOrder {
     monthEndClampApplied: readBoolean(source, 'monthEndClampApplied', 'month_end_clamp_applied'),
     tradeNo: readNullableString(source, 'tradeNo', 'trade_no'),
     paymentUrl: readNullableString(source, 'paymentUrl', 'payment_url'),
-    createdAt: readNumber(source, 'createdAt', 'created_at'),
+    createdAt,
+    payExpiresAt: readNumber(source, 'payExpiresAt', 'pay_expires_at', createdAt + 600),
+    cancelAfterAt: readNumber(source, 'cancelAfterAt', 'cancel_after_at', createdAt + 86_400),
+    cancelledAt: readNullableNumber(source, 'cancelledAt', 'cancelled_at'),
     updatedAt: readNumber(source, 'updatedAt', 'updated_at'),
     paidAt: readNullableNumber(source, 'paidAt', 'paid_at'),
+    refundedAt: readNullableNumber(source, 'refundedAt', 'refunded_at'),
+    refundActor: readNullableString(source, 'refundActor', 'refund_actor'),
     lastNotifyAt: readNullableNumber(source, 'lastNotifyAt', 'last_notify_at'),
+    refundRetryAfterAt: readNullableNumber(source, 'refundRetryAfterAt', 'refund_retry_after_at'),
+    refundAttempts: readNumber(source, 'refundAttempts', 'refund_attempts'),
     lastError: readNullableString(source, 'lastError', 'last_error'),
   }
 }

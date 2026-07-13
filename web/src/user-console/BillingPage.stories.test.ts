@@ -6,6 +6,8 @@ describe('BillingPage stories', () => {
   it('keeps the acceptance-facing billing route states exported', () => {
     expect(meta.title).toBe('User Console/Billing/Billing Page')
     expect(stories.Default.args).toBeUndefined()
+    expect(stories.LifecycleStates.args).toBeUndefined()
+    expect(stories.LifecycleStates.play).toBeFunction()
     expect(stories.NoOrdersNoFuture.args).toMatchObject({
       orders: [],
     })

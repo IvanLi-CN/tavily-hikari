@@ -140,8 +140,12 @@
   - Moves payable orders to `paid` and creates monthly recharge entitlements from the payment
     month in `account_entitlements`, mirrored to the legacy recharge entitlement table.
   - Replayed callbacks update notify audit fields only and must not move `refunding`,
-    `refunded`, `refundOnly`, or `expired` orders back to `paid`.
-  - If the callback arrives after the quote month has ended, the order becomes `expired` and no entitlement rows are written.
+    `refunded`, `refundOnly`, or `cancelled` orders back to `paid`.
+  - `pending` and `expired` orders only settle to `paid` when the callback lands before
+    `cancel_after_at` and the callback month still matches `quote_month_start`.
+  - If the callback arrives after `cancel_after_at`, or the callback month has crossed out of
+    `quote_month_start`, the order becomes `refunding` with `refundActor=system:auto`; no
+    entitlement rows are written.
 
 ## GET /api/users/:id
 
@@ -199,7 +203,7 @@
 - Auth: admin request.
 - Query:
   - `user`: optional search across user id/display name/username/order/trade number.
-  - `status`: optional `pending|paid|failed|expired|refunding|refunded|refundOnly|all`.
+  - `status`: optional `pending|paid|failed|expired|cancelled|refunding|refunded|refundOnly|all`.
   - `startAt`, `endAt`: optional Unix timestamps matched against order creation time.
   - `sort`: `createdAt|paidAt|refundedAt|status`; default `createdAt`.
   - `order`: `asc|desc`; default `desc`.
@@ -277,7 +281,7 @@
 ## RechargeOrder
 
 - `outTradeNo`
-- `status`: `pending|paid|failed|expired|refunding|refunded|refundOnly`
+- `status`: `pending|paid|failed|expired|cancelled|refunding|refunded|refundOnly`
 - `credits`
 - `months`
 - `money`
@@ -290,9 +294,14 @@
 - `tradeNo`
 - `paymentUrl`
 - `createdAt`
+- `payExpiresAt`
+- `cancelAfterAt`
+- `cancelledAt`
 - `updatedAt`
 - `paidAt`
 - `refundedAt`
 - `refundActor`
 - `lastNotifyAt`
+- `refundRetryAfterAt`
+- `refundAttempts`
 - `lastError`

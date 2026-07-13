@@ -1,6 +1,14 @@
 import { requestJson, type SortDirection } from './runtime'
 
-export type AdminRechargeStatus = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded' | 'refundOnly'
+export type AdminRechargeStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'expired'
+  | 'cancelled'
+  | 'refunding'
+  | 'refunded'
+  | 'refundOnly'
 export type AdminRechargeSort = 'createdAt' | 'paidAt' | 'refundedAt' | 'status'
 export type AdminRechargeViewMode = 'flat' | 'user'
 
@@ -29,11 +37,16 @@ export interface AdminRechargeOrder {
   paymentUrl: string | null
   orderName: string
   createdAt: number
+  payExpiresAt: number
+  cancelAfterAt: number
+  cancelledAt: number | null
   updatedAt: number
   paidAt: number | null
   refundedAt: number | null
   refundActor: string | null
   lastNotifyAt: number | null
+  refundRetryAfterAt: number | null
+  refundAttempts: number
   lastError: string | null
 }
 

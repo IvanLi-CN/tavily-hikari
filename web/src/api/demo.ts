@@ -2266,6 +2266,7 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
   const amountLdc = quote.finalOrderMoneyCents / 100
   const outTradeNo = `ldc_demo_${Date.now()}`
   const paymentUrl = `${window.location.origin}/console/dashboard?demo_checkout=${encodeURIComponent(outTradeNo)}`
+  const createdAt = nowSeconds()
   const order: DemoRechargeOrder = {
     outTradeNo,
     userId: DEMO_TOKEN_OWNER.userId,
@@ -2283,12 +2284,17 @@ async function handleCreateDemoRechargeOrder(init?: RequestInit): Promise<Respon
     monthEndClampApplied: quote.monthEndClampApplied,
     tradeNo: null,
     paymentUrl,
-    createdAt: nowSeconds(),
-    updatedAt: nowSeconds(),
+    createdAt,
+    payExpiresAt: createdAt + 600,
+    cancelAfterAt: createdAt + 86_400,
+    cancelledAt: null,
+    updatedAt: createdAt,
     paidAt: null,
     refundedAt: null,
     refundActor: null,
     lastNotifyAt: null,
+    refundRetryAfterAt: null,
+    refundAttempts: 0,
     lastError: null,
   }
   demoState.rechargeOrders.unshift(order)

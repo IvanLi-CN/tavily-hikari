@@ -275,12 +275,17 @@ async fn linuxdo_credit_recharge_entitlement_starts_from_payment_month() {
         payment_url: None,
         order_name: "Payment month recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(payment_month - 60),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(payment_month - 60),
         created_at: payment_month - 60,
         updated_at: payment_month - 60,
         paid_at: None,
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };
@@ -426,12 +431,17 @@ async fn user_billing_month_summaries_split_recharge_and_admin_adjustments() {
         payment_url: None,
         order_name: "Billing month summary recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(manual_clock.now_ts()),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(manual_clock.now_ts()),
         created_at: manual_clock.now_ts(),
         updated_at: manual_clock.now_ts(),
         paid_at: None,
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };
@@ -552,12 +562,17 @@ async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement
         payment_url: None,
         order_name: "Clamp schedule recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(manual_clock.now_ts()),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(manual_clock.now_ts()),
         created_at: manual_clock.now_ts(),
         updated_at: manual_clock.now_ts(),
         paid_at: None,
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };
@@ -600,7 +615,139 @@ async fn linuxdo_credit_recharge_clamp_only_applies_to_current_month_entitlement
 }
 
 #[tokio::test]
-async fn linuxdo_credit_recharge_expired_orders_ignore_duplicate_success_callbacks() {
+async fn linuxdo_credit_recharge_expired_orders_can_settle_within_cancel_window() {
+    let db_path = temp_db_path("linuxdo-recharge-expired-in-window-settle");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_751_269_200);
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-expired-in-window".to_string(),
+            username: Some("expired_in_window".to_string()),
+            name: Some("Expired In Window".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+
+    let quote_month_start = start_of_local_month_utc_ts(manual_clock.local_now());
+    let quote = linuxdo_credit_recharge_quote(
+        1000,
+        1,
+        LinuxDoCreditRechargePriceConfig::normal(),
+        quote_month_start,
+        manual_clock.now_ts(),
+    )
+    .expect("quote");
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_expired_in_window".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+        credits: 1000,
+        months: 1,
+        money_cents: quote.full_order_money_cents,
+        quote_month_start,
+        final_money_cents: quote.final_order_money_cents,
+        final_hourly_delta: quote.current_month_final_hourly_delta,
+        final_daily_delta: quote.current_month_final_daily_delta,
+        final_monthly_delta: quote.current_month_final_monthly_delta,
+        month_end_clamp_applied: quote.month_end_clamp_applied,
+        quote_snapshot_json: Some(
+            serde_json::to_string(&serde_json::json!({
+                "version": 1,
+                "source": "server_quote",
+                "request": {
+                    "credits": 1000,
+                    "months": 1,
+                },
+                "quote": quote,
+            }))
+            .expect("serialize recharge quote snapshot"),
+        ),
+        trade_no: None,
+        payment_url: Some("https://example.test/pay/in-window".to_string()),
+        order_name: "Expired in-window recharge".to_string(),
+        notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(manual_clock.now_ts()),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(manual_clock.now_ts()),
+        created_at: manual_clock.now_ts(),
+        updated_at: manual_clock.now_ts(),
+        paid_at: None,
+        cancelled_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+
+    manual_clock.advance_wall(std::time::Duration::from_secs(
+        (LINUXDO_CREDIT_RECHARGE_PAY_EXPIRE_SECS + 5) as u64,
+    ));
+    let expired_rows = proxy
+        .expire_due_linuxdo_credit_recharge_orders(manual_clock.now_ts(), 10)
+        .await
+        .expect("expire due recharge orders");
+    assert_eq!(expired_rows, 1);
+    let expired = proxy
+        .get_linuxdo_credit_recharge_order(&order.out_trade_no)
+        .await
+        .expect("load expired order")
+        .expect("expired order exists");
+    assert_eq!(expired.status, LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED);
+    assert!(expired.payment_url.is_none());
+
+    let settled = proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-expired-in-window",
+            "ok=1",
+            manual_clock.now_ts(),
+        )
+        .await
+        .expect("settle expired recharge order");
+    assert_eq!(settled.status, LINUXDO_CREDIT_RECHARGE_STATUS_PAID);
+
+    let replayed = proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-expired-in-window",
+            "ok=2",
+            manual_clock.now_ts() + 60,
+        )
+        .await
+        .expect("replay settled recharge notify");
+    assert_eq!(replayed.status, LINUXDO_CREDIT_RECHARGE_STATUS_PAID);
+
+    let audit = proxy
+        .linuxdo_credit_recharge_admin_audit(&user.user_id)
+        .await
+        .expect("load recharge audit");
+    assert_eq!(audit.entitlements.len(), 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn linuxdo_credit_recharge_cross_month_success_enters_system_refunding() {
     let db_path = temp_db_path("linuxdo-recharge-expired-duplicate-notify");
     let db_str = db_path.to_string_lossy().to_string();
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_751_269_200);
@@ -665,12 +812,17 @@ async fn linuxdo_credit_recharge_expired_orders_ignore_duplicate_success_callbac
         payment_url: None,
         order_name: "Expired duplicate recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(manual_clock.now_ts()),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(manual_clock.now_ts()),
         created_at: manual_clock.now_ts(),
         updated_at: manual_clock.now_ts(),
         paid_at: None,
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };
@@ -681,7 +833,7 @@ async fn linuxdo_credit_recharge_expired_orders_ignore_duplicate_success_callbac
 
     let next_month = shift_local_month_start_utc_ts(quote_month_start, 1);
     let first_paid_at = next_month + 60;
-    let expired = proxy
+    let refunding = proxy
         .apply_linuxdo_credit_recharge_payment(
             &order.out_trade_no,
             "trade-expired-duplicate",
@@ -689,8 +841,12 @@ async fn linuxdo_credit_recharge_expired_orders_ignore_duplicate_success_callbac
             first_paid_at,
         )
         .await
-        .expect("expire recharge order");
-    assert_eq!(expired.status, LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED);
+        .expect("system refund recharge order");
+    assert_eq!(refunding.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING);
+    assert_eq!(
+        refunding.refund_actor.as_deref(),
+        Some(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+    );
 
     let retried = proxy
         .apply_linuxdo_credit_recharge_payment(
@@ -701,7 +857,122 @@ async fn linuxdo_credit_recharge_expired_orders_ignore_duplicate_success_callbac
         )
         .await
         .expect("replay recharge notify");
-    assert_eq!(retried.status, LINUXDO_CREDIT_RECHARGE_STATUS_EXPIRED);
+    assert_eq!(retried.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING);
+
+    let audit = proxy
+        .linuxdo_credit_recharge_admin_audit(&user.user_id)
+        .await
+        .expect("load recharge audit");
+    assert!(audit.entitlements.is_empty());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn linuxdo_credit_recharge_cancelled_orders_enter_system_refunding() {
+    let db_path = temp_db_path("linuxdo-recharge-cancelled-late-payment");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_751_269_200);
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "linuxdo-recharge-cancelled-late".to_string(),
+            username: Some("cancelled_late".to_string()),
+            name: Some("Cancelled Late".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert oauth user");
+
+    let quote_month_start = start_of_local_month_utc_ts(manual_clock.local_now());
+    let quote = linuxdo_credit_recharge_quote(
+        1000,
+        1,
+        LinuxDoCreditRechargePriceConfig::normal(),
+        quote_month_start,
+        manual_clock.now_ts(),
+    )
+    .expect("quote");
+    let order = LinuxDoCreditRechargeOrder {
+        out_trade_no: "ldc_cancelled_late".to_string(),
+        user_id: user.user_id.clone(),
+        status: LINUXDO_CREDIT_RECHARGE_STATUS_PENDING.to_string(),
+        credits: 1000,
+        months: 1,
+        money_cents: quote.full_order_money_cents,
+        quote_month_start,
+        final_money_cents: quote.final_order_money_cents,
+        final_hourly_delta: quote.current_month_final_hourly_delta,
+        final_daily_delta: quote.current_month_final_daily_delta,
+        final_monthly_delta: quote.current_month_final_monthly_delta,
+        month_end_clamp_applied: quote.month_end_clamp_applied,
+        quote_snapshot_json: None,
+        trade_no: None,
+        payment_url: Some("https://example.test/pay/cancelled".to_string()),
+        order_name: "Cancelled late recharge".to_string(),
+        notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(manual_clock.now_ts()),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(manual_clock.now_ts()),
+        created_at: manual_clock.now_ts(),
+        updated_at: manual_clock.now_ts(),
+        paid_at: None,
+        cancelled_at: None,
+        refunded_at: None,
+        refund_actor: None,
+        refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
+        last_notify_at: None,
+        last_error: None,
+    };
+    proxy
+        .create_linuxdo_credit_recharge_order(&order)
+        .await
+        .expect("create recharge order");
+
+    manual_clock.advance_wall(std::time::Duration::from_secs(
+        (LINUXDO_CREDIT_RECHARGE_CANCEL_AFTER_SECS + 5) as u64,
+    ));
+    let cancelled_rows = proxy
+        .cancel_due_linuxdo_credit_recharge_orders(manual_clock.now_ts(), 10)
+        .await
+        .expect("cancel due recharge orders");
+    assert_eq!(cancelled_rows, 1);
+    let cancelled = proxy
+        .get_linuxdo_credit_recharge_order(&order.out_trade_no)
+        .await
+        .expect("load cancelled order")
+        .expect("cancelled order exists");
+    assert_eq!(cancelled.status, LINUXDO_CREDIT_RECHARGE_STATUS_CANCELLED);
+    assert!(cancelled.payment_url.is_none());
+    assert_eq!(cancelled.cancelled_at, Some(manual_clock.now_ts()));
+
+    let refunding = proxy
+        .apply_linuxdo_credit_recharge_payment(
+            &order.out_trade_no,
+            "trade-cancelled-late",
+            "ok=1",
+            manual_clock.now_ts(),
+        )
+        .await
+        .expect("late cancelled recharge payment");
+    assert_eq!(refunding.status, LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDING);
+    assert_eq!(
+        refunding.refund_actor.as_deref(),
+        Some(LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR)
+    );
 
     let audit = proxy
         .linuxdo_credit_recharge_admin_audit(&user.user_id)
@@ -755,12 +1026,17 @@ async fn linuxdo_credit_admin_recharge_user_groups_are_paginated() {
                 payment_url: None,
                 order_name: "Grouped pagination recharge".to_string(),
                 notify_payload: None,
+                pay_expires_at: linuxdo_credit_recharge_pay_expires_at(now - index),
+                cancel_after_at: linuxdo_credit_recharge_cancel_after_at(now - index),
                 created_at: now - index,
                 updated_at: now - index,
                 paid_at: Some(now - index),
+                cancelled_at: None,
                 refunded_at: None,
                 refund_actor: None,
                 refund_payload: None,
+                refund_retry_after_at: None,
+                refund_attempts: 0,
                 last_notify_at: None,
                 last_error: None,
             })
@@ -833,12 +1109,17 @@ async fn linuxdo_credit_refund_reservation_blocks_duplicate_refunds() {
         payment_url: None,
         order_name: "Refund reservation recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(now - 60),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(now - 60),
         created_at: now - 60,
         updated_at: now - 60,
         paid_at: Some(now - 30),
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };
@@ -964,12 +1245,17 @@ async fn linuxdo_credit_payment_callback_does_not_resurrect_refunded_order() {
         payment_url: None,
         order_name: "Refund no resurrect recharge".to_string(),
         notify_payload: None,
+        pay_expires_at: linuxdo_credit_recharge_pay_expires_at(now - 60),
+        cancel_after_at: linuxdo_credit_recharge_cancel_after_at(now - 60),
         created_at: now - 60,
         updated_at: now - 60,
         paid_at: None,
+        cancelled_at: None,
         refunded_at: None,
         refund_actor: None,
         refund_payload: None,
+        refund_retry_after_at: None,
+        refund_attempts: 0,
         last_notify_at: None,
         last_error: None,
     };

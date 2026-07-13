@@ -71,6 +71,7 @@ interface RechargePanelText {
   orders: string
   noOrders: string
   status: Record<string, string>
+  orderStatusDetail: Record<string, string>
 }
 
 interface RechargePanelProps {
@@ -110,9 +111,47 @@ function formatRechargeMoney(value: number): string {
 
 function rechargeStatusTone(status: string): StatusTone {
   if (status === 'paid') return 'success'
-  if (status === 'failed' || status === 'expired') return 'error'
-  if (status === 'pending') return 'warning'
+  if (status === 'failed') return 'error'
+  if (status === 'pending' || status === 'expired' || status === 'refunding') return 'warning'
   return 'neutral'
+}
+
+function rechargeOrderStatusDetail(
+  order: RechargeOrder,
+  text: RechargePanelText,
+): string | null {
+  if (order.status === 'pending') {
+    return formatTemplate(text.orderStatusDetail.pending, {
+      time: formatTimestamp(order.payExpiresAt),
+    })
+  }
+  if (order.status === 'paid' && order.paidAt != null) {
+    return formatTemplate(text.orderStatusDetail.paid, {
+      time: formatTimestamp(order.paidAt),
+    })
+  }
+  if (order.status === 'failed') return text.orderStatusDetail.failed
+  if (order.status === 'expired') {
+    return formatTemplate(text.orderStatusDetail.expired, {
+      time: formatTimestamp(order.payExpiresAt),
+    })
+  }
+  if (order.status === 'cancelled') {
+    return formatTemplate(text.orderStatusDetail.cancelled, {
+      time: formatTimestamp(order.cancelledAt ?? order.cancelAfterAt),
+    })
+  }
+  if (order.status === 'refunding') {
+    if (order.refundRetryAfterAt != null) {
+      return `${text.orderStatusDetail.refunding} ${formatTemplate(text.orderStatusDetail.refundRetryAt, {
+        time: formatTimestamp(order.refundRetryAfterAt),
+      })}`
+    }
+    return text.orderStatusDetail.refunding
+  }
+  if (order.status === 'refunded') return text.orderStatusDetail.refunded
+  if (order.status === 'refundOnly') return text.orderStatusDetail.refundOnly
+  return null
 }
 
 export default function RechargePanel({
@@ -331,6 +370,9 @@ export default function RechargePanel({
                       <div>
                         <strong>{formatNumber(order.credits)} × {order.months}</strong>
                         <span>{order.money} LDC · {formatTimestamp(order.createdAt)}{order.monthEndClampApplied ? ` · ${text.discountedAmount}` : ''}</span>
+                        {rechargeOrderStatusDetail(order, text) ? (
+                          <span>{rechargeOrderStatusDetail(order, text)}</span>
+                        ) : null}
                       </div>
                       <StatusBadge tone={rechargeStatusTone(order.status)}>
                         {text.status[order.status] ?? order.status}

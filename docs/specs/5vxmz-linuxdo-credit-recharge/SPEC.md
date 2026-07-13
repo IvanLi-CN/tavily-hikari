@@ -34,7 +34,7 @@
 - 后端充值配置、订单创建、通知验签、订单查询封装、DB schema 与幂等权益发放。
 - 账户有效额度解析读取当前服务器本地自然月命中的充值权益。
 - 用户控制台概览右侧完整充值卡、独立 billing 页、订单历史、权益构成摘要、未来月份时间线、状态刷新与 Storybook 状态覆盖。
-- Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定，以及最终成交 / 月底折抵 / `expired` 透出。
+- Admin 用户详情只读审计区域、充值记录管理页、退款操作保护、全局管理端 TOTP 绑定，以及订单本地关闭 / 自动退款补偿状态透出。
 
 ### Out of scope
 
@@ -51,7 +51,9 @@
 - 用户选择的自然月数必须在 `1..=12` 内。
 - 订单金额按 `credits / 1000 * months * 50` 计算，并以两位小数字符串提交给 Linux.do Credit。
 - 订单创建必须持久化 `out_trade_no`、用户、购买额度、月数、金额、状态、创建/更新时间。
+- 充值订单的本地生命周期固定为 `pending -> expired -> cancelled`：`pay_expires_at = created_at + 10 分钟`，`cancel_after_at = created_at + 24 小时`；10 分钟后关闭支付入口，24 小时后硬关闭订单。
 - 异步通知必须校验订单存在、金额一致、状态成功、签名有效，并对重复通知幂等返回 `success`。
+- 成功回调只有在 `pending` / `expired` 且仍未超过 `cancel_after_at`、同时支付月份与 `quote_month_start` 相同的情况下才会发放权益；超过 24 小时或跨月晚到支付必须进入系统自动退款路径。
 - 权益必须按服务器本地自然月展开为 `(user_id, month_start, credits)`，同一订单同一月份只能发放一次。
 - 当前月份的充值权益必须按 `1000 月积分 => +20 小时额度、+100 日额度、+1000 月额度` 派生并加入账户有效 quota，正数小额测试价至少显示并生效 `+1` 小时/日额度；`block_all` 生效时最终额度仍为 0。
 
@@ -80,10 +82,11 @@
 - 用户打开 `/console`，在充值卡片中用只读步进器选择积分额度与自然月数，并看到本次购买会增加多少小时、日、月额度。
 - 用户打开 `/console/billing`，在同一页先看到当前权益构成、资费规则、自然月时间线与近期订单，再在购买区用只读步进器选择积分额度与自然月数，并看到本次购买会增加多少小时、日、月额度。
 - 前端调用创建订单 API，后端生成唯一 `out_trade_no`，持久化 pending 订单，使用官方 LDC 签名调用 Linux.do Credit 创建订单。
+- 生命周期 worker 负责在 bounded run 中处理三类任务：10 分钟本地过期 sweep、24 小时取消 sweep、系统自动退款重试；任何远程退款调用都不能在持有 SQLite 写 gate 时执行。
 - 后端不跟随 Linux.do Credit 创建订单响应的跳转；若上游返回 3xx `Location`，将该地址作为支付 URL 返回给浏览器，由浏览器跳转到 Linux.do Credit 完成认证支付。
-- Linux.do Credit GET 通知本服务 notify endpoint；服务验签和校验金额后，将订单置为 paid，并按购买月份展开权益。
+- Linux.do Credit GET 通知本服务 notify endpoint；服务验签和校验金额后，若订单仍在本地可认窗口内则置为 paid 并发放权益，否则转入 `refunding` / `refunded` 自动补偿路径。
 - quote 与下单请求必须逐字段一致；`POST /api/user/recharge/orders` 需要回传完整 quote 摘要，服务端按同一算法重算并校验，stale/mismatched quote 一律拒绝。
-- 用户回到 `/console?payment=<out_trade_no>` 后，控制台刷新 dashboard 和订单列表，显示当前生效额度与订单状态。
+- 用户回到 `/console?payment=<out_trade_no>` 后，控制台刷新 dashboard 和订单列表，显示当前生效额度与订单状态；当存在 `pending` / `expired` / `refunding` 订单时，前端按最近的 `pay_expires_at`、`cancel_after_at`、`refund_retry_after_at` 自动轻量刷新。
 - 管理员打开 `/admin/recharges` 后，后端返回订单列表、聚合数据和 `hasRechargeOrders`；前端仅在存在订单时展示导航项。
 - 管理员在充值记录列表或按用户聚合视图点击用户名时，跳转到用户详情页；用户详情页以表格形式展示覆盖所有充值周期前一个月至后一个月的额度月历。
 - 管理员执行退单时，服务先调用 Linux.do Credit `POST /epay/api.php` 全额退款接口；平台成功后订单状态置为 `refunded`，删除该订单权益并刷新额度快照。
@@ -95,13 +98,15 @@
 - 非登录用户访问充值 API 返回 `401`。
 - 金额、订单号或签名不匹配的通知返回 `400`，不发放权益。
 - 重复成功通知不重复插入权益，仍返回 `success`。
-- `quote_month_start` 所在自然月是订单与回调的唯一报价月份；若成功回调到达时已跨月，则订单转为 `expired` 且不发放权益。
+- `expired` 只表示“创建 10 分钟后本地关闭支付入口”，不是跨月语义；该状态下若用户早已在支付平台打开页面并在 24 小时内、同月成功支付，服务仍认单。
+- `quote_month_start` 所在自然月仍是订单的唯一报价月份；若成功回调到达时支付月份已跨出 `quote_month_start`，订单必须进入系统自动退款路径，不发放权益。
+- 超过 `cancel_after_at` 才到达的成功回调必须进入系统自动退款路径，不发放权益。
 - 过期月份权益不参与当前 quota 解析。
 - 未绑定 TOTP、TOTP 错误或失败次数锁定时，退款操作返回错误且不会调用 Linux.do Credit。
 - 前端已知 TOTP 未绑定时不应提交退款请求；若后端仍返回未绑定、验证码错误或锁定错误，确认弹窗必须保持打开并显示可理解的失败提示。
 - 前端尚未确认 TOTP 状态或状态读取失败时不应展示验证码输入或提交退款请求，必须先展示等待/错误提示。
 - 前端已知 TOTP 当前不可用（如缺少加密配置或调试环境禁用敏感操作）时不应展示验证码输入或提交退款请求，必须先展示不可用提示。
-- 已退款、失败或 pending 订单不能重复退款；重复操作明确拒绝。
+- 已退款、失败、pending、expired、cancelled 订单不能发起管理员退款；系统自动退款 worker 只处理 `refund_actor = system:auto` 的 `refunding` 订单，不能接管管理员手工退款单。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -149,9 +154,25 @@
   When 服务重新计算 quote 并逐字段校验
   Then 请求被拒绝且不会创建订单。
 
-- Given `pending` 订单跨月后才收到成功回调
+- Given `pending` 订单创建 10 分钟后仍未支付
+  When 生命周期 worker 处理到期订单
+  Then 订单转为 `expired`，`paymentUrl` 被清空，前端自动刷新后显示支付入口已关闭。
+
+- Given `pending` 或 `expired` 订单满 24 小时仍未支付
+  When 生命周期 worker 处理取消 sweep
+  Then 订单转为 `cancelled`，前端自动刷新后显示订单已取消。
+
+- Given `expired` 订单在 24 小时窗口内收到成功回调且支付月份仍等于 `quote_month_start`
   When 服务处理通知
-  Then 订单转为 `expired`，不发放权益，并保留最终值与折抵标记。
+  Then 订单转为 `paid`，只发放一次权益。
+
+- Given 订单超过 `cancel_after_at` 后才收到成功回调
+  When 服务处理通知
+  Then 订单转为 `refunding`，不发放权益，并由后台自动重试原路退款直到进入 `refunded`。
+
+- Given 月底折价订单在成功回调到达时支付月份不再等于 `quote_month_start`
+  When 服务处理通知
+  Then 订单转为 `refunding`，不发放权益，并保留最终值与折抵标记用于审计。
 
 - Given 用户本月有 `3000` 充值权益，且基线/标签有效小时/日/月额度为 `100/500/5000`
   When 读取 dashboard 或做 quota precheck
@@ -234,7 +255,7 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `BillingPage` 默认、有未来月份、无订单、充值关闭、移动端；现有 `UserConsole` 充值相关故事继续覆盖月底折抵、测试价与隐藏态；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录、`expired` 折抵记录。
+- Stories to add/update: `BillingPage` 默认、有未来月份、无订单、充值关闭、移动端、生命周期状态面；现有 `UserConsole` 充值相关故事继续覆盖月底折抵、测试价与隐藏态；`AdminRechargeRecordsModule` 平铺、聚合、未绑定 TOTP、退款失败反馈、空记录，以及 `expired` / `cancelled` / `refunding(system:auto)` / `refunded(system:auto)`。
 - Docs pages / state galleries to add/update: 用户控制台 billing 页面状态 gallery；管理端充值记录 TOTP、最终成交与折抵状态。
 - `play` / interaction coverage to add/update: billing 页面关键分区可见性、stepper 调整、创建订单成功/失败路径、月底折抵提示、管理端未绑定 TOTP 提示与退款失败反馈。
 - Visual regression baseline changes (if any): 充值卡片桌面与移动布局，管理端记录表格新增最终成交列。
@@ -287,10 +308,33 @@
 
 ![Admin user detail base quota ledger](./assets/admin-user-detail-base-quota-ledger.png)
 
+- source_type: ui_demo
+  demo_entry_or_url: /console/billing?announcements=closed (with VITE_DEMO_MODE=true)
+  state: recharge lifecycle states with paginated recent orders
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1600x3200
+  viewport_strategy: ui-demo-source
+  sensitive_exclusion: N/A
+  evidence_note: 前台 `/console/billing` demo 路由在关闭公告弹窗的稳定页面上，同时展示 `pending`、`expired`、`cancelled`、`refunding(system:auto)`、`refunded(system:auto)`；最近订单区保持整行通栏，不再只占购买区左半边，并新增每页 10 条分页与页脚页码，且每条记录仍带出本地关闭时间与自动退款说明。
+
+![Billing recharge lifecycle states](./assets/console-billing-lifecycle-states.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Admin/Pages/Recharges
+  state: recharge lifecycle page
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1600x1180
+  viewport_strategy: browser-resize-fallback
+  sensitive_exclusion: N/A
+  evidence_note: 管理端充值记录页以整页状态展示 `cancelled`、`expired`、`refunding(system:auto)`、`refunded(system:auto)`，并验证筛选栏在桌面宽度下完整铺满页面主内容区，而不是只占左半区。
+
+![Admin recharge lifecycle page](./assets/admin-recharge-page.png)
+
 ![Recharge burst price and quota controls](./assets/recharge-burst-price-story.png)
 ![Recharge month-end clamp and discounted quota](./assets/recharge-month-end-clamp.png)
 ![Admin recharge records flat desktop view](./assets/admin-recharge-records-flat.png)
-![Admin recharge records with expired clamp marker](./assets/admin-recharge-expired-clamp.png)
 ![Admin recharge refund TOTP confirmation](./assets/admin-recharge-refund-totp.png)
 ![Admin recharge bound TOTP confirmation](./assets/admin-recharge-bound-totp-confirmation.png)
 ![Admin recharge unbound TOTP prompt](./assets/admin-recharge-unbound-totp-prompt.png)

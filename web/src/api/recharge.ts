@@ -66,9 +66,19 @@ export interface RechargeQuote {
   schedule: RechargeQuoteMonth[]
 }
 
+export type RechargeOrderStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'expired'
+  | 'cancelled'
+  | 'refunding'
+  | 'refunded'
+  | 'refundOnly'
+
 export interface RechargeOrder {
   outTradeNo: string
-  status: string
+  status: RechargeOrderStatus
   credits: number
   months: number
   money: string
@@ -81,9 +91,16 @@ export interface RechargeOrder {
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
+  payExpiresAt: number
+  cancelAfterAt: number
+  cancelledAt: number | null
   updatedAt: number
   paidAt: number | null
+  refundedAt: number | null
+  refundActor: string | null
   lastNotifyAt: number | null
+  refundRetryAfterAt: number | null
+  refundAttempts: number
   lastError: string | null
 }
 

@@ -29,7 +29,7 @@ interface AdminRechargeRecordsModuleProps {
 
 export type RefundKind = 'refund' | 'refundOnly'
 
-const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'expired', 'refunding', 'refunded', 'refundOnly']
+const STATUS_OPTIONS: Array<AdminRechargeStatus | 'all'> = ['all', 'pending', 'paid', 'failed', 'expired', 'cancelled', 'refunding', 'refunded', 'refundOnly']
 const SORT_OPTIONS: AdminRechargeSort[] = ['createdAt', 'paidAt', 'refundedAt', 'status']
 
 function formatDate(ts: number | null | undefined): string {
@@ -345,7 +345,7 @@ export default function AdminRechargeRecordsModule({
                           <Button type="button" size="sm" variant="outline" className="admin-recharge-action-button" onClick={() => openRefundDialog(item, 'refundOnly')}>{strings.actions.refundOnly}</Button>
                         </div>
                       ) : (
-                        <span className="admin-recharge-action-state">{statusActionLabel(item.status, strings)}</span>
+                        <span className="admin-recharge-action-state">{statusActionLabel(item, strings)}</span>
                       )}
                     </td>
                   </tr>
@@ -545,9 +545,11 @@ function statusLabel(status: AdminRechargeStatus, strings: AdminTranslations['re
   return strings.status[status]
 }
 
-function statusActionLabel(status: AdminRechargeStatus, strings: AdminTranslations['recharges']): string {
-  if (status === 'paid') return strings.actions.refund
-  return strings.statusAction[status]
+function statusActionLabel(item: AdminRechargeOrder, strings: AdminTranslations['recharges']): string {
+  if (item.status === 'paid') return strings.actions.refund
+  if (item.status === 'refunding' && item.refundActor === 'system:auto') return strings.statusAction.refundingAuto
+  if (item.status === 'refunded' && item.refundActor === 'system:auto') return strings.statusAction.refundedAuto
+  return strings.statusAction[item.status]
 }
 
 export function refundErrorMessage(message: string, strings: AdminTranslations['recharges']): string {

@@ -339,6 +339,33 @@ function isConsoleEntryPath(pathname: string): boolean {
     || normalizedPath.startsWith('/console/tokens/')
 }
 
+function nextRechargeLifecycleRefreshAt(
+  orders: RechargeOrder[],
+  nowSeconds: number,
+): number | null {
+  let nextAt: number | null = null
+  const consider = (candidate: number | null | undefined) => {
+    if (candidate == null || !Number.isFinite(candidate)) return
+    if (nextAt == null || candidate < nextAt) nextAt = candidate
+  }
+
+  for (const order of orders) {
+    if (order.status === 'pending') {
+      consider(order.payExpiresAt)
+      consider(order.cancelAfterAt)
+      continue
+    }
+    if (order.status === 'expired') {
+      consider(order.cancelAfterAt)
+      continue
+    }
+    if (order.status === 'refunding') {
+      consider(order.refundRetryAfterAt ?? nowSeconds + 30)
+    }
+  }
+  return nextAt
+}
+
 function isPublicHomePath(pathname: string): boolean {
   return pathname === '/' || pathname === '/index.html'
 }
@@ -1539,6 +1566,35 @@ export default function UserConsole(): JSX.Element {
     }
   }, [abortActiveConsoleLoads, clearConsoleData, clearSensitiveConsoleState, redirectAfterLogoutIfNeeded, route.name, text.errors.load, todayWindow])
 
+  const refreshRechargeLifecycle = useCallback(async (signal: AbortSignal) => {
+    try {
+      const billingSummaryPromise = shouldRequireBillingSummary(route)
+        ? fetchUserBillingSummary(signal)
+        : Promise.resolve<UserBillingSummary | null>(null)
+
+      const [nextOverview, nextBillingSummary, nextRechargeConfig, nextRechargeOrders] = await Promise.all([
+        fetchUserDashboardOverview(todayWindow, signal),
+        billingSummaryPromise,
+        fetchUserRechargeConfig(signal).catch(() => null),
+        fetchUserRechargeOrders(signal).catch(() => []),
+      ])
+      if (signal.aborted) return
+      setDashboard(nextOverview.summary)
+      setDashboardOverview(nextOverview)
+      setRechargeConfig(nextRechargeConfig)
+      setRechargeOrders(nextRechargeOrders)
+      if (shouldRequireBillingSummary(route)) {
+        setBillingSummary(nextBillingSummary)
+      }
+    } catch (err) {
+      if (signal.aborted) return
+      if (errorStatus(err) === 401) {
+        abortActiveConsoleLoads()
+        await redirectAfterLogoutIfNeeded(window.location)
+      }
+    }
+  }, [abortActiveConsoleLoads, redirectAfterLogoutIfNeeded, route, todayWindow])
+
   useEffect(() => {
     if (route.name === 'oauthCallback') {
       return
@@ -2225,6 +2281,24 @@ export default function UserConsole(): JSX.Element {
     }
     return normalizeRechargeSelection(rechargeCredits, rechargeMonths, rechargeConfig)
   }, [rechargeConfig, rechargeCredits, rechargeMonths])
+
+  useEffect(() => {
+    if (consoleAvailability !== 'enabled') return
+    const now = Math.floor(Date.now() / 1000)
+    const nextAt = nextRechargeLifecycleRefreshAt(rechargeOrders, now)
+    if (nextAt == null) return
+    const delayMs = nextAt <= now
+      ? 5_000
+      : Math.max(1_000, Math.floor((nextAt - now) * 1000) + 500)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void refreshRechargeLifecycle(controller.signal)
+    }, delayMs)
+    return () => {
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [consoleAvailability, rechargeOrders, refreshRechargeLifecycle])
 
   useEffect(() => {
     if (!rechargeConfig?.enabled) {

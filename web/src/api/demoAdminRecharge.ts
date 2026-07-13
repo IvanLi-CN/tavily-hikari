@@ -1,12 +1,21 @@
 type JsonResponse = (payload: unknown, status?: number) => Response
 type NowSeconds = (offset?: number) => number
+type DemoRechargeOrderStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'expired'
+  | 'cancelled'
+  | 'refunding'
+  | 'refunded'
+  | 'refundOnly'
 
 export interface DemoRechargeOrder {
   outTradeNo: string
   userId: string
   userDisplayName: string
   username: string
-  status: string
+  status: DemoRechargeOrderStatus
   credits: number
   months: number
   money: string
@@ -19,63 +28,261 @@ export interface DemoRechargeOrder {
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
+  payExpiresAt: number
+  cancelAfterAt: number
+  cancelledAt: number | null
   updatedAt: number
   paidAt: number | null
   refundedAt: number | null
   refundActor: string | null
   lastNotifyAt: number | null
+  refundRetryAfterAt: number | null
+  refundAttempts: number
   lastError: string | null
 }
 
 export function createDemoRechargeOrders(nowSeconds: NowSeconds, origin: string): DemoRechargeOrder[] {
   return [
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_paid_001', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'paid', 3000, 3, 450, false, -3600 * 5, -3600 * 4, null),
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_refund_002', 'user-research', 'Research Team', 'research-team', 'refunded', 1000, 1, 50, false, -86400 * 3, -86400 * 3 + 900, -86400),
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_only_003', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'refundOnly', 2000, 2, 200, false, -86400 * 10, -86400 * 10 + 1200, -86400 * 2),
-    createDemoRechargeOrder(nowSeconds, origin, 'ldc_demo_expired_004', 'user-demo-admin', 'Hikari Demo Admin', 'hikari-demo', 'expired', 1000, 1, 50, true, -3600 * 2, null, null),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_paid_001',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'paid',
+      credits: 3000,
+      months: 3,
+      amountLdc: 450,
+      monthEndClampApplied: false,
+      createdOffset: -3600 * 5,
+      paidOffset: -3600 * 4,
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_refund_002',
+      userId: 'user-research',
+      userDisplayName: 'Research Team',
+      username: 'research-team',
+      status: 'refunded',
+      credits: 1000,
+      months: 1,
+      amountLdc: 50,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 3,
+      paidOffset: -86400 * 3 + 900,
+      refundedOffset: -86400,
+      refundActor: 'system:auto',
+      refundAttempts: 1,
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_only_003',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'refundOnly',
+      credits: 2000,
+      months: 2,
+      amountLdc: 200,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 10,
+      paidOffset: -86400 * 10 + 1200,
+      refundedOffset: -86400 * 2,
+      refundActor: 'demo-admin',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_pending_004',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'pending',
+      credits: 1000,
+      months: 1,
+      amountLdc: 50,
+      monthEndClampApplied: false,
+      createdOffset: -120,
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_expired_005',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'expired',
+      credits: 1000,
+      months: 1,
+      amountLdc: 50,
+      monthEndClampApplied: true,
+      createdOffset: -3600 * 2,
+      lastError: 'payment entry closed locally after 10 minutes',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_cancelled_006',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'cancelled',
+      credits: 1000,
+      months: 1,
+      amountLdc: 50,
+      monthEndClampApplied: false,
+      createdOffset: -90000,
+      cancelledOffset: -3600,
+      lastError: 'order cancelled after 24 hours',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_refunding_007',
+      userId: 'user-research',
+      userDisplayName: 'Research Team',
+      username: 'research-team',
+      status: 'refunding',
+      credits: 1000,
+      months: 1,
+      amountLdc: 30,
+      monthEndClampApplied: true,
+      createdOffset: -86400,
+      paidOffset: -1800,
+      refundActor: 'system:auto',
+      refundRetryAfterOffset: 300,
+      refundAttempts: 2,
+      lastError: 'paid month no longer matches quote month',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_paid_008',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'paid',
+      credits: 2000,
+      months: 1,
+      amountLdc: 100,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 6,
+      paidOffset: -86400 * 6 + 720,
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_only_009',
+      userId: 'user-research',
+      userDisplayName: 'Research Team',
+      username: 'research-team',
+      status: 'refundOnly',
+      credits: 3000,
+      months: 2,
+      amountLdc: 300,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 7,
+      paidOffset: -86400 * 7 + 960,
+      refundedOffset: -86400 * 3,
+      refundActor: 'demo-admin',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_failed_010',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'failed',
+      credits: 4000,
+      months: 1,
+      amountLdc: 200,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 8,
+      lastError: 'payment failed',
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_paid_011',
+      userId: 'user-ops',
+      userDisplayName: 'Ops Team',
+      username: 'ops-team',
+      status: 'paid',
+      credits: 5000,
+      months: 2,
+      amountLdc: 500,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 9,
+      paidOffset: -86400 * 9 + 720,
+    }),
+    createDemoRechargeOrder(nowSeconds, origin, {
+      outTradeNo: 'ldc_demo_refund_012',
+      userId: 'user-demo-admin',
+      userDisplayName: 'Hikari Demo Admin',
+      username: 'hikari-demo',
+      status: 'refunded',
+      credits: 6000,
+      months: 1,
+      amountLdc: 300,
+      monthEndClampApplied: false,
+      createdOffset: -86400 * 11,
+      paidOffset: -86400 * 11 + 960,
+      refundedOffset: -86400 * 4,
+      refundActor: 'system:auto',
+      refundAttempts: 1,
+    }),
   ]
+}
+
+interface CreateDemoRechargeOrderInput {
+  outTradeNo: string
+  userId: string
+  userDisplayName: string
+  username: string
+  status: DemoRechargeOrderStatus
+  credits: number
+  months: number
+  amountLdc: number
+  monthEndClampApplied: boolean
+  createdOffset: number
+  paidOffset?: number | null
+  refundedOffset?: number | null
+  cancelledOffset?: number | null
+  refundRetryAfterOffset?: number | null
+  refundActor?: string | null
+  refundAttempts?: number
+  lastError?: string | null
 }
 
 function createDemoRechargeOrder(
   nowSeconds: NowSeconds,
   origin: string,
-  outTradeNo: string,
-  userId: string,
-  userDisplayName: string,
-  username: string,
-  status: string,
-  credits: number,
-  months: number,
-  amountLdc: number,
-  monthEndClampApplied: boolean,
-  createdOffset: number,
-  paidOffset: number | null,
-  refundedOffset: number | null,
+  input: CreateDemoRechargeOrderInput,
 ): DemoRechargeOrder {
+  const createdAt = nowSeconds(input.createdOffset)
+  const payExpiresAt = createdAt + 600
+  const cancelAfterAt = createdAt + 86_400
+  const paidAt = input.paidOffset == null ? null : nowSeconds(input.paidOffset)
+  const refundedAt = input.refundedOffset == null ? null : nowSeconds(input.refundedOffset)
+  const cancelledAt = input.cancelledOffset == null
+    ? input.status === 'cancelled' ? cancelAfterAt : null
+    : nowSeconds(input.cancelledOffset)
+  const paymentUrl = input.status === 'pending'
+    ? `${origin}/console/dashboard?demo_checkout=${encodeURIComponent(input.outTradeNo)}`
+    : null
   return {
-    outTradeNo,
-    userId,
-    userDisplayName,
-    username,
-    status,
-    credits,
-    months,
-    money: monthEndClampApplied ? '30.00' : amountLdc.toFixed(2),
+    outTradeNo: input.outTradeNo,
+    userId: input.userId,
+    userDisplayName: input.userDisplayName,
+    username: input.username,
+    status: input.status,
+    credits: input.credits,
+    months: input.months,
+    money: input.monthEndClampApplied ? '30.00' : input.amountLdc.toFixed(2),
     quoteMonthStart: monthStartSeconds(),
-    finalMoneyCents: Math.round(amountLdc * 100),
-    finalHourlyDelta: credits >= 1000 ? 20 * (credits / 1000) : credits,
-    finalDailyDelta: credits >= 1000 ? 100 * (credits / 1000) : credits,
-    finalMonthlyDelta: credits >= 1000 ? credits : credits,
-    monthEndClampApplied,
-    tradeNo: paidOffset == null ? null : `linuxdo_${outTradeNo.slice(-3)}`,
-    paymentUrl: paidOffset == null ? `${origin}/console/dashboard?demo_checkout=${encodeURIComponent(outTradeNo)}` : null,
-    createdAt: nowSeconds(createdOffset),
-    updatedAt: nowSeconds(refundedOffset ?? paidOffset ?? createdOffset),
-    paidAt: paidOffset == null ? null : nowSeconds(paidOffset),
-    refundedAt: refundedOffset == null ? null : nowSeconds(refundedOffset),
-    refundActor: refundedOffset == null ? null : 'demo-admin',
-    lastNotifyAt: paidOffset == null ? null : nowSeconds(paidOffset + 60),
-    lastError: null,
+    finalMoneyCents: Math.round(input.amountLdc * 100),
+    finalHourlyDelta: input.credits >= 1000 ? 20 * (input.credits / 1000) : input.credits,
+    finalDailyDelta: input.credits >= 1000 ? 100 * (input.credits / 1000) : input.credits,
+    finalMonthlyDelta: input.credits,
+    monthEndClampApplied: input.monthEndClampApplied,
+    tradeNo: paidAt == null ? null : `linuxdo_${input.outTradeNo.slice(-3)}`,
+    paymentUrl,
+    createdAt,
+    payExpiresAt,
+    cancelAfterAt,
+    cancelledAt,
+    updatedAt: refundedAt ?? cancelledAt ?? paidAt ?? createdAt,
+    paidAt,
+    refundedAt,
+    refundActor: input.refundActor ?? (refundedAt == null ? null : 'demo-admin'),
+    lastNotifyAt: paidAt == null ? null : paidAt + 60,
+    refundRetryAfterAt: input.status === 'refunding'
+      ? input.refundRetryAfterOffset == null ? nowSeconds() + 300 : nowSeconds(input.refundRetryAfterOffset)
+      : null,
+    refundAttempts: input.status === 'refunding' ? (input.refundAttempts ?? 1) : 0,
+    lastError: input.lastError ?? null,
   }
 }
 
@@ -98,11 +305,16 @@ export function demoAdminRechargeOrder(order: DemoRechargeOrder) {
     paymentUrl: order.paymentUrl,
     orderName: `Linux.do Credit ${order.credits} credits`,
     createdAt: order.createdAt,
+    payExpiresAt: order.payExpiresAt,
+    cancelAfterAt: order.cancelAfterAt,
+    cancelledAt: order.cancelledAt,
     updatedAt: order.updatedAt,
     paidAt: order.paidAt,
     refundedAt: order.refundedAt,
     refundActor: order.refundActor,
     lastNotifyAt: order.lastNotifyAt,
+    refundRetryAfterAt: order.refundRetryAfterAt,
+    refundAttempts: order.refundAttempts,
     lastError: order.lastError,
   }
 }
@@ -154,13 +366,17 @@ export function handleDemoAdminRechargeAction(
   order.refundedAt = nowSeconds()
   order.refundActor = 'demo-admin'
   order.updatedAt = nowSeconds()
+  order.refundRetryAfterAt = null
+  order.refundAttempts = 0
   return jsonResponse(demoAdminRechargeOrder(order))
 }
 
 export function demoAdminUserRechargeAudit(orders: DemoRechargeOrder[], userId: string) {
   const userOrders = orders.filter((order) => order.userId === userId)
   const entitlements = userOrders
-    .filter((order) => order.paidAt != null && order.status !== 'refunded')
+    .filter((order) => order.paidAt != null
+      && order.status !== 'refunded'
+      && !(order.status === 'refunding' && order.refundActor === 'system:auto'))
     .flatMap((order, orderIndex) => range(order.months).map((month) => ({
       id: orderIndex * 100 + month + 1,
       outTradeNo: order.outTradeNo,
@@ -202,11 +418,16 @@ export function demoAdminUserRechargeAudit(orders: DemoRechargeOrder[], userId: 
       tradeNo: order.tradeNo,
       paymentUrl: order.paymentUrl,
       createdAt: order.createdAt,
+      payExpiresAt: order.payExpiresAt,
+      cancelAfterAt: order.cancelAfterAt,
+      cancelledAt: order.cancelledAt,
       updatedAt: order.updatedAt,
       paidAt: order.paidAt,
       refundedAt: order.refundedAt,
       refundActor: order.refundActor,
       lastNotifyAt: order.lastNotifyAt,
+      refundRetryAfterAt: order.refundRetryAfterAt,
+      refundAttempts: order.refundAttempts,
       lastError: order.lastError,
     })),
     entitlements,

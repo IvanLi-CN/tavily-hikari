@@ -1570,6 +1570,45 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn expire_due_linuxdo_credit_recharge_orders(
+        &self,
+        expired_at: i64,
+        limit: i64,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .expire_due_linuxdo_credit_recharge_orders(expired_at, limit)
+            .await
+    }
+
+    pub async fn cancel_due_linuxdo_credit_recharge_orders(
+        &self,
+        cancelled_at: i64,
+        limit: i64,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .cancel_due_linuxdo_credit_recharge_orders(cancelled_at, limit)
+            .await
+    }
+
+    pub async fn linuxdo_credit_recharge_lifecycle_due(
+        &self,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .linuxdo_credit_recharge_lifecycle_due(now)
+            .await
+    }
+
+    pub async fn list_linuxdo_credit_recharge_system_refund_candidates(
+        &self,
+        now: i64,
+        limit: i64,
+    ) -> Result<Vec<LinuxDoCreditRechargeOrder>, ProxyError> {
+        self.key_store
+            .list_linuxdo_credit_recharge_system_refund_candidates(now, limit)
+            .await
+    }
+
     pub async fn apply_linuxdo_credit_recharge_payment(
         &self,
         out_trade_no: &str,
@@ -1630,6 +1669,25 @@ impl TavilyProxy {
                 out_trade_no,
                 refund_actor,
                 refund_payload,
+                updated_at,
+            )
+            .await
+    }
+
+    pub async fn mark_linuxdo_credit_recharge_order_system_refund_failure(
+        &self,
+        out_trade_no: &str,
+        attempts: i64,
+        retry_after_at: i64,
+        message: &str,
+        updated_at: i64,
+    ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        self.key_store
+            .mark_linuxdo_credit_recharge_order_system_refund_failure(
+                out_trade_no,
+                attempts,
+                retry_after_at,
+                message,
                 updated_at,
             )
             .await

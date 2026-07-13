@@ -42,6 +42,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.UserDetailBusinessCalls1h).toMatchObject({})
     expect(adminPageStories.Alerts).toMatchObject({})
     expect(adminPageStories.AlertsMobile).toMatchObject({})
+    expect(adminPageStories.Recharges).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -200,6 +201,24 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('最近 7 天服务器小时压力')
     expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain('pressure-analysis-page')
+  })
+
+  it('renders the recharge page story with full-width filters and recharge navigation', () => {
+    const renderStory = adminPageStories.Recharges.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('充值记录')
+    expect(markup).toContain('admin-recharge-filter-row')
+    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-recharge-table')
   })
 
   it('renders the jobs story with manual trigger controls and source labels', () => {

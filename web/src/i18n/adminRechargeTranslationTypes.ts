@@ -46,8 +46,8 @@ export interface AdminRechargeTranslations {
   groupSummary: string
   groupCredits: string
   summary: Record<'orders' | 'actionable' | 'totpRequired' | 'totpSetupRequired' | 'totpUnavailable', string>
-  status: Record<'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded' | 'refundOnly', string>
-  statusAction: Record<'pending' | 'failed' | 'expired' | 'refunding' | 'refunded' | 'refundOnly', string>
+  status: Record<'pending' | 'paid' | 'failed' | 'expired' | 'cancelled' | 'refunding' | 'refunded' | 'refundOnly', string>
+  statusAction: Record<'pending' | 'failed' | 'expired' | 'cancelled' | 'refunding' | 'refunded' | 'refundOnly' | 'refundingAuto' | 'refundedAuto', string>
   amountLdc: string
   finalAmountLdc: string
   monthEndClampApplied: string

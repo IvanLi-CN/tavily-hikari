@@ -36,26 +36,68 @@
     color: hsl(var(--foreground));
     padding: 0.85rem;
   }
-  .admin-recharge-toolbar { display: grid; gap: 0.7rem; }
+  .admin-recharge-toolbar { display: grid; gap: 0.85rem; }
   .admin-recharge-toolbar-primary,
-  .admin-recharge-filter-row { align-items: end; display: grid; gap: 0.65rem; }
-  .admin-recharge-toolbar-primary { grid-template-columns: minmax(18rem, 1fr) auto; }
-  .admin-recharge-filter-row { grid-template-columns: repeat(5, minmax(9rem, 12rem)); }
+  .admin-recharge-filter-row {
+    align-items: end;
+    display: grid;
+    min-width: 0;
+  }
+  .admin-recharge-toolbar-primary {
+    column-gap: 0.75rem;
+    grid-template-columns: minmax(18rem, 1fr) auto;
+    row-gap: 0.75rem;
+  }
+  .admin-recharge-filter-row {
+    column-gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    row-gap: 0.75rem;
+    width: 100%;
+  }
   .admin-recharge-search-field,
-  .admin-recharge-filter-field { display: grid; gap: 0.28rem; min-width: 0; }
+  .admin-recharge-filter-field {
+    align-content: start;
+    display: grid;
+    gap: 0.4rem;
+    min-width: 0;
+  }
   .admin-recharge-filter-field span {
     color: hsl(var(--muted-foreground));
     font-size: 0.72rem;
     font-weight: 800;
+    letter-spacing: 0.06em;
+    line-height: 1.125rem;
+    min-height: 1.125rem;
+    text-transform: uppercase;
   }
   .admin-recharge-toolbar select {
-    background: hsl(var(--card));
-    border: 1px solid hsl(var(--border) / 0.55);
-    border-radius: 0.75rem;
-    font-weight: 700;
-    min-height: 2.5rem;
-    padding: 0 0.75rem;
+    background: hsl(var(--muted) / 0.6);
+    border: 1px solid hsl(var(--input) / 0.35);
+    border-radius: 1.25rem;
+    box-shadow: var(--shadow-clay-pressed);
+    color: hsl(var(--foreground));
+    font-size: 0.875rem;
+    font-weight: 650;
+    min-height: 3rem;
+    padding: 0 2.5rem 0 1rem;
+    transition:
+      border-color 0.18s ease,
+      box-shadow 0.18s ease,
+      background-color 0.18s ease,
+      color 0.18s ease;
     width: 100%;
+  }
+  .admin-recharge-toolbar select:hover {
+    background: hsl(var(--card) / 0.9);
+    border-color: hsl(var(--ring) / 0.42);
+  }
+  .admin-recharge-toolbar select:focus-visible {
+    background: hsl(var(--card) / 0.9);
+    border-color: hsl(var(--ring) / 0.45);
+    outline: none;
+    box-shadow:
+      var(--shadow-clay-pressed),
+      0 0 0 4px hsl(var(--ring) / 0.2);
   }
   .admin-recharge-table-scroll {
     background: hsl(var(--card) / 0.44);

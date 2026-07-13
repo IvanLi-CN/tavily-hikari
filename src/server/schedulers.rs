@@ -1,5 +1,14 @@
 use tavily_hikari::{
-    HaOutboxGcOptions, format_ha_outbox_gc_report_message, run_ha_outbox_gc_once,
+    HaOutboxGcOptions, LinuxDoCreditRechargeOrder,
+    LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE,
+    LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
+    LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR,
+    LinuxDoCreditRefundExternalSuccessMarker as SharedLinuxDoCreditRefundExternalSuccessMarker,
+    decode_linuxdo_credit_refund_external_success_marker,
+    format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
+    linuxdo_credit_recharge_system_refund_retry_delay_secs,
+    linuxdo_credit_refund_params as shared_linuxdo_credit_refund_params,
+    linuxdo_credit_refund_url as shared_linuxdo_credit_refund_url, run_ha_outbox_gc_once,
 };
 use tokio::time::Instant;
 fn random_delay_secs(max_inclusive: u64) -> u64 {
@@ -24,6 +33,10 @@ fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
     60
 }
 
+fn linuxdo_credit_recharge_lifecycle_recheck_secs() -> i64 {
+    30
+}
+
 fn scheduled_request_logs_gc_options() -> RequestLogsGcOptions {
     RequestLogsGcOptions {
         batch_size: 100,
@@ -35,6 +48,7 @@ fn scheduled_request_logs_gc_options() -> RequestLogsGcOptions {
 
 const LINUXDO_USER_STATUS_SYNC_JOB_TYPE: &str = "linuxdo_user_status_sync";
 const LINUXDO_USER_TAG_BINDING_REFRESH_JOB_TYPE: &str = "linuxdo_user_tag_binding_refresh";
+const LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE: &str = "linuxdo_credit_recharge_lifecycle";
 const TRIGGER_SOURCE_SCHEDULER: &str = "scheduler";
 const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
@@ -239,6 +253,7 @@ fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
             | "quota_sync/manual"
             | "quota_sync/hot"
             | LINUXDO_USER_STATUS_SYNC_JOB_TYPE
+            | LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE
             | "forward_proxy_geo_refresh"
     )
 }
@@ -1026,6 +1041,403 @@ fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) {
     });
 }
 
+fn spawn_linuxdo_credit_recharge_lifecycle_scheduler(
+    state: Arc<AppState>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let due = {
+                let _maintenance = acquire_db_maintenance_read_gate().await;
+                match state
+                    .proxy
+                    .linuxdo_credit_recharge_lifecycle_due(state.proxy.backend_time().now_ts())
+                    .await
+                {
+                    Ok(due) => due,
+                    Err(err) => {
+                        eprintln!("linuxdo-credit-recharge-lifecycle: due check error: {err}");
+                        false
+                    }
+                }
+            };
+            if due {
+                let _ = enqueue_scheduled_job_logged(
+                    state.as_ref(),
+                    LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE,
+                    None,
+                    TRIGGER_SOURCE_SCHEDULER,
+                    "linuxdo-credit-recharge-lifecycle",
+                )
+                .await;
+            }
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(
+                    linuxdo_credit_recharge_lifecycle_recheck_secs() as u64,
+                ))
+                .await;
+        }
+    })
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDoCreditSystemRefundResponse {
+    code: i64,
+    msg: Option<String>,
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+async fn run_linuxdo_credit_recharge_lifecycle_job(state: Arc<AppState>) {
+    run_linuxdo_credit_recharge_lifecycle_job_with_source(state, TRIGGER_SOURCE_SCHEDULER).await;
+}
+
+#[cfg(test)]
+async fn run_linuxdo_credit_recharge_lifecycle_job_with_source(
+    state: Arc<AppState>,
+    trigger_source: &'static str,
+) {
+    let Some(claimed_job) = claim_scheduled_job(
+        state.as_ref(),
+        LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE,
+        None,
+        trigger_source,
+        "linuxdo-credit-recharge-lifecycle",
+    )
+    .await
+    else {
+        return;
+    };
+
+    run_linuxdo_credit_recharge_lifecycle_claimed_job(state, claimed_job).await;
+}
+
+async fn post_linuxdo_credit_system_full_refund(
+    state: &AppState,
+    order: &LinuxDoCreditRechargeOrder,
+    trade_no: &str,
+) -> Result<String, String> {
+    let client_id = state
+        .linuxdo_credit
+        .client_id
+        .as_deref()
+        .ok_or_else(|| "Linux.do Credit client id missing".to_string())?;
+    let client_secret = state
+        .linuxdo_credit
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| "Linux.do Credit client secret missing".to_string())?;
+    let endpoint =
+        shared_linuxdo_credit_refund_url(&state.linuxdo_credit.submit_url)
+            .map_err(|err| err.to_string())?;
+    let money = format_linuxdo_credit_money(order.final_money_cents);
+    let params = shared_linuxdo_credit_refund_params(
+        client_id,
+        client_secret,
+        trade_no,
+        &order.out_trade_no,
+        &money,
+    );
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(format!("refund endpoint returned {status}: {text}"));
+    }
+    let parsed: LinuxDoCreditSystemRefundResponse =
+        serde_json::from_str(&text).map_err(|err| format!("invalid refund response: {err}"))?;
+    if parsed.code != 1 {
+        return Err(parsed.msg.unwrap_or_else(|| "refund failed".to_string()));
+    }
+    Ok(text)
+}
+
+async fn persist_linuxdo_credit_system_refund_success_marker_with_retry(
+    state: &AppState,
+    out_trade_no: &str,
+    marker: &SharedLinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<(), String> {
+    let marker_payload =
+        serde_json::to_string(marker).map_err(|err| format!("encode refund marker: {err}"))?;
+    let mut last_error = None;
+    for delay_ms in [0, 50, 200] {
+        if delay_ms > 0 {
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_millis(delay_ms))
+                .await;
+        }
+        match state
+            .proxy
+            .mark_linuxdo_credit_recharge_order_refund_external_succeeded(
+                out_trade_no,
+                LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR,
+                &marker_payload,
+                state.proxy.backend_time().now_ts(),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(format!(
+        "external refund succeeded but local success marker failed: {}",
+        last_error
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+async fn finalize_linuxdo_credit_system_refund_from_external_success(
+    state: Arc<AppState>,
+    order: &LinuxDoCreditRechargeOrder,
+    marker: &SharedLinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<(), String> {
+    if marker.phase != LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE
+        || marker.next_status != LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED
+        || marker.revoke_entitlements
+        || marker.refund_actor != LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR
+    {
+        return Err("system auto refund marker intent mismatch".to_string());
+    }
+    state
+        .proxy
+        .refund_linuxdo_credit_recharge_order(
+            &order.out_trade_no,
+            LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
+            LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR,
+            &marker.response,
+            state.proxy.backend_time().now_ts(),
+            false,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|err| format!("external refund succeeded; local finalize pending: {err}"))
+}
+
+async fn finalize_linuxdo_credit_system_refund_from_external_success_with_retry(
+    state: Arc<AppState>,
+    order: &LinuxDoCreditRechargeOrder,
+    marker: &SharedLinuxDoCreditRefundExternalSuccessMarker,
+) -> Result<(), String> {
+    let mut last_error = None;
+    for delay_ms in [0, 50, 200] {
+        if delay_ms > 0 {
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_millis(delay_ms))
+                .await;
+        }
+        match finalize_linuxdo_credit_system_refund_from_external_success(
+            state.clone(),
+            order,
+            marker,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        "external refund succeeded; local finalize pending".to_string()
+    }))
+}
+
+async fn run_linuxdo_credit_recharge_lifecycle_claimed_job(
+    state: Arc<AppState>,
+    claimed_job: ClaimedScheduledJob,
+) -> bool {
+    let ClaimedScheduledJob {
+        job_id,
+        _job_execution_gate,
+    } = claimed_job;
+    drop(_job_execution_gate);
+
+    let now = state.proxy.backend_time().now_ts();
+    let expired = match state
+        .proxy
+        .expire_due_linuxdo_credit_recharge_orders(now, 64)
+        .await
+    {
+        Ok(changed) => changed,
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+            return false;
+        }
+    };
+    let cancelled = match state
+        .proxy
+        .cancel_due_linuxdo_credit_recharge_orders(now, 64)
+        .await
+    {
+        Ok(changed) => changed,
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+            return false;
+        }
+    };
+    let candidates = match state
+        .proxy
+        .list_linuxdo_credit_recharge_system_refund_candidates(now, 24)
+        .await
+    {
+        Ok(candidates) => candidates,
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+            return false;
+        }
+    };
+    let refund_candidates = candidates.len() as i64;
+    let mut refund_success = 0_i64;
+    let mut refund_failure = 0_i64;
+    let mut first_failure = None::<String>;
+
+    for order in candidates {
+        let order_label = order.out_trade_no.clone();
+        if let Some(marker) =
+            decode_linuxdo_credit_refund_external_success_marker(order.refund_payload.as_deref())
+        {
+            match finalize_linuxdo_credit_system_refund_from_external_success_with_retry(
+                state.clone(),
+                &order,
+                &marker,
+            )
+            .await
+            {
+                Ok(()) => {
+                    refund_success += 1;
+                }
+                Err(err) => {
+                    refund_failure += 1;
+                    first_failure.get_or_insert_with(|| format!("{order_label}: {err}"));
+                }
+            }
+            continue;
+        }
+
+        let Some(trade_no) = order
+            .trade_no
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            refund_failure += 1;
+            first_failure.get_or_insert_with(|| {
+                format!("{order_label}: system auto refund requires trade_no")
+            });
+            continue;
+        };
+
+        match post_linuxdo_credit_system_full_refund(state.as_ref(), &order, trade_no).await {
+            Ok(response) => {
+                let marker = SharedLinuxDoCreditRefundExternalSuccessMarker {
+                    phase: LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE.to_string(),
+                    next_status: LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED.to_string(),
+                    revoke_entitlements: false,
+                    refund_actor: LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR.to_string(),
+                    response,
+                };
+                let marker_result = persist_linuxdo_credit_system_refund_success_marker_with_retry(
+                    state.as_ref(),
+                    &order.out_trade_no,
+                    &marker,
+                )
+                .await;
+                let finalize_result =
+                    finalize_linuxdo_credit_system_refund_from_external_success_with_retry(
+                        state.clone(),
+                        &order,
+                        &marker,
+                    )
+                    .await;
+                match (marker_result, finalize_result) {
+                    (_, Ok(())) => {
+                        refund_success += 1;
+                    }
+                    (Ok(()), Err(err)) => {
+                        refund_failure += 1;
+                        first_failure.get_or_insert_with(|| format!("{order_label}: {err}"));
+                    }
+                    (Err(marker_err), Err(finalize_err)) => {
+                        refund_failure += 1;
+                        first_failure.get_or_insert_with(|| {
+                            format!(
+                                "{order_label}: {finalize_err}; success marker also failed: {marker_err}"
+                            )
+                        });
+                    }
+                }
+            }
+            Err(err) => {
+                let next_attempts = order.refund_attempts.saturating_add(1);
+                let retry_after_at = state.proxy.backend_time().now_ts().saturating_add(
+                    linuxdo_credit_recharge_system_refund_retry_delay_secs(order.refund_attempts),
+                );
+                let failure_message = format!(
+                    "system auto refund attempt {next_attempts} failed: {err}"
+                );
+                let persisted = state
+                    .proxy
+                    .mark_linuxdo_credit_recharge_order_system_refund_failure(
+                        &order.out_trade_no,
+                        next_attempts,
+                        retry_after_at,
+                        &failure_message,
+                        state.proxy.backend_time().now_ts(),
+                    )
+                    .await;
+                refund_failure += 1;
+                match persisted {
+                    Ok(_) => {
+                        first_failure
+                            .get_or_insert_with(|| format!("{order_label}: {failure_message}"));
+                    }
+                    Err(persist_err) => {
+                        first_failure.get_or_insert_with(|| {
+                            format!(
+                                "{order_label}: {failure_message}; retry state persist failed: {persist_err}"
+                            )
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut message = format!(
+        "expired={expired} cancelled={cancelled} refund_candidates={refund_candidates} refund_success={refund_success} refund_failure={refund_failure}"
+    );
+    if let Some(first_failure) = first_failure {
+        message.push_str(&format!(" first_failure={first_failure}"));
+    }
+    let final_status = if refund_failure > 0 { "error" } else { "success" };
+    let _ = state
+        .proxy
+        .scheduled_job_finish(job_id, final_status, Some(&message))
+        .await;
+    final_status == "success"
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 async fn run_forward_proxy_geo_refresh_job(state: Arc<AppState>) {
@@ -1213,7 +1625,18 @@ async fn run_manual_claimed_job(
                 Ok(refreshed) => finish(state, "success", format!("refreshed={refreshed}")).await,
                 Err(err) => finish(state, "error", err.to_string()).await,
             }
-        },
+        }
+        LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE => {
+            drop(_job_execution_gate);
+            run_linuxdo_credit_recharge_lifecycle_claimed_job(
+                state,
+                ClaimedScheduledJob {
+                    job_id,
+                    _job_execution_gate: None,
+                },
+            )
+            .await
+        }
         "forward_proxy_geo_refresh" => {
             drop(_job_execution_gate);
             run_forward_proxy_geo_refresh_claimed_job(

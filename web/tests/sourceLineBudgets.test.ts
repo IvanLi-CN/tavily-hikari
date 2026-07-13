@@ -25,9 +25,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7644,
+      max: 7700,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, system-settings proof data, and Users Usage 1h sorting proof stay on the shared Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, system-settings proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
     },
   ],
   [
@@ -113,9 +113,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/user-console/runtime.tsx',
     {
-      max: 3310,
+      max: 3385,
       reason:
-        'User console runtime owns both the dedicated billing route and the restored visible recharge rail, while the route-level shell and Tavily API usage-boundary probe with recursive field-name leak detection still await a broader extraction into dedicated hooks and sections.',
+        'User console runtime owns the dedicated billing route, the restored visible recharge rail, and the pagination/late-payment billing states, while the route-level shell and Tavily API usage-boundary probe with recursive field-name leak detection still await a broader extraction into dedicated hooks and sections.',
     },
   ],
   [

@@ -2369,7 +2369,7 @@ export interface AdminUserRechargeAudit {
 
 export interface AdminUserRechargeOrderAudit {
   outTradeNo: string
-  status: string
+  status: import('./recharge').RechargeOrderStatus
   credits: number
   months: number
   money: string
@@ -2382,11 +2382,16 @@ export interface AdminUserRechargeOrderAudit {
   tradeNo: string | null
   paymentUrl: string | null
   createdAt: number
+  payExpiresAt: number
+  cancelAfterAt: number
+  cancelledAt: number | null
   updatedAt: number
   paidAt: number | null
   refundedAt: number | null
   refundActor: string | null
   lastNotifyAt: number | null
+  refundRetryAfterAt: number | null
+  refundAttempts: number
   lastError: string | null
 }
 

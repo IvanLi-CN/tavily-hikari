@@ -109,6 +109,7 @@ import ForwardProxySettingsModule from '../ForwardProxySettingsModule'
 import ModulePlaceholder from '../ModulePlaceholder'
 import SystemSettingsModule from '../SystemSettingsModule'
 import AdminSecuritySettingsModule from '../AdminSecuritySettingsModule'
+import AdminRechargeRecordsModule from '../AdminRechargeRecordsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
@@ -128,6 +129,7 @@ import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
 import AdminOverlayHost from '../AdminOverlayHost'
 import AnnouncementsModule from '../AnnouncementsModule'
 import { createStoryUserEntitlements, createStoryUserRechargeAudit } from './userRechargeFixtures'
+import { boundRechargeTotpStatus, rechargeStoryData } from './rechargeStoryData'
 import { rankingsStoryEmptySnapshot, rankingsStorySnapshot } from '../rankingsStoryData'
 const now = 1_762_380_000
 const pressureStoryNow = now + 33_600
@@ -3085,7 +3087,10 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
   }
 }
 
-function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
+function buildNavItems(
+  strings: AdminTranslations,
+  { includeRecharges = false }: { includeRecharges?: boolean } = {},
+): AdminNavItem[] {
   return [
     { target: 'dashboard', label: strings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
     {
@@ -3103,6 +3108,7 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
     { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
     { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    ...(includeRecharges ? [{ target: 'recharges' as const, label: strings.nav.recharges, icon: <Icon icon="mdi:credit-card-clock-outline" width={18} height={18} /> }] : []),
     { target: 'announcements', label: strings.nav.announcements, icon: <Icon icon="mdi:bullhorn-outline" width={18} height={18} /> },
     { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
     {
@@ -3127,6 +3133,7 @@ interface AdminPageFrameProps {
   overlays?: ReactNode
   beforeIntro?: ReactNode
   showDefaultShellChrome?: boolean
+  showRechargesNav?: boolean
   actions?: ReactNode; sidebarUtilityActions?: ReactNode
 }
 
@@ -3136,6 +3143,7 @@ export function AdminPageFrame({
   overlays,
   beforeIntro,
   showDefaultShellChrome = true,
+  showRechargesNav = false,
   actions, introActions, introOverride, sidebarUtilityActions,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useAdminTranslations()
@@ -3187,6 +3195,11 @@ export function AdminPageFrame({
           title: admin.users.title,
           description: admin.users.description,
         }
+      case 'recharges':
+        return {
+          title: admin.recharges.title,
+          description: admin.recharges.description,
+        }
       case 'alerts':
         return {
           title: admin.modules.alerts.title,
@@ -3229,7 +3242,7 @@ export function AdminPageFrame({
     <AdminOverlayHost overlays={overlays}>
       <AdminShell
         activeItem={activeModule}
-        navItems={buildNavItems(admin)}
+        navItems={buildNavItems(admin, { includeRecharges: showRechargesNav || activeModule === 'recharges' })}
         skipToContentLabel={admin.accessibility.skipToContent}
         onSelectItem={() => {}}
       >
@@ -6199,6 +6212,20 @@ function AnnouncementsPageCanvas(): JSX.Element {
   )
 }
 
+function RechargesPageCanvas(): JSX.Element {
+  return (
+    <AdminPageFrame activeModule="recharges" showRechargesNav>
+      <AdminRechargeRecordsModule
+        initialData={rechargeStoryData}
+        initialTotpStatus={boundRechargeTotpStatus}
+        disableAutoLoad
+        onOpenUser={() => {}}
+        onOpenSystemSettings={() => {}}
+      />
+    </AdminPageFrame>
+  )
+}
+
 function ProxySettingsPageCanvas(): JSX.Element {
   const admin = useAdminTranslations()
 
@@ -7487,6 +7514,35 @@ export const UserDetailIpUsage: Story = {
       if (!canvasElement.textContent?.includes(expected)) {
         throw new Error(`Expected the user detail IP story to include ${expected}.`)
       }
+    }
+  },
+}
+
+export const Recharges: Story = {
+  render: () => <RechargesPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const root = canvasElement.ownerDocument
+    const activeNavItem = root.querySelector<HTMLElement>('.admin-nav-item-active')
+    if (!activeNavItem?.textContent?.match(/充值记录|Recharges/)) {
+      throw new Error('Expected the recharge page story to mark recharge navigation as active.')
+    }
+    const intro = root.querySelector<HTMLElement>('.admin-compact-intro')
+    if (!intro?.textContent?.match(/充值记录|Recharge records/)) {
+      throw new Error('Expected the recharge page story to render the recharge page intro.')
+    }
+    const toolbar = root.querySelector<HTMLElement>('.admin-recharge-toolbar')
+    const filterRow = root.querySelector<HTMLElement>('.admin-recharge-filter-row')
+    if (!toolbar || !filterRow) {
+      throw new Error('Expected the recharge page story to render the toolbar and filter row.')
+    }
+    const toolbarWidth = toolbar.getBoundingClientRect().width
+    const filterWidth = filterRow.getBoundingClientRect().width
+    if (toolbarWidth > 0 && filterWidth / toolbarWidth < 0.92) {
+      throw new Error('Expected the recharge filter row to span the page toolbar width.')
     }
   },
 }

@@ -365,6 +365,10 @@
   gap: 12px;
 }
 
+.user-console-billing-orders-section {
+  grid-column: 1 / -1;
+}
+
 .user-console-billing-summary-head {
   display: flex;
   align-items: flex-start;
@@ -603,11 +607,12 @@
 .user-console-billing-orders-table {
   display: grid;
   gap: 0;
+  min-width: 0;
 }
 
 .user-console-billing-order-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(160px, 0.72fr) minmax(190px, 0.95fr) auto;
+  grid-template-columns: minmax(0, 1.2fr) minmax(190px, 0.84fr) minmax(280px, 1.2fr) auto;
   gap: 14px;
   align-items: center;
   padding: 14px 0;
