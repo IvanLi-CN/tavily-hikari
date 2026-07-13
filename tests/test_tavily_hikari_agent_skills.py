@@ -62,6 +62,7 @@ class TavilyHikariAgentSkillsTest(unittest.TestCase):
     def test_public_guidance_uses_only_the_global_install_command(self):
         public_paths = [
             ROOT / "README.md",
+            ROOT / "README.zh-CN.md",
             ROOT / "skills" / "README.md",
             ROOT / "docs-site" / "docs" / "en" / "quick-start.md",
             ROOT / "docs-site" / "docs" / "en" / "faq.md",

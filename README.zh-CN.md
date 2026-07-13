@@ -201,7 +201,7 @@ tvly-hikari research "compare MCP and CLI agent search" --json
 可选安装 Agent Skills：
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 `tvly-hikari` 会把 Hikari token 以 `0600` 权限写入
