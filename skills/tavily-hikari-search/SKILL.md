@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-search
+description: Search the web through Tavily Hikari with tvly-hikari.
+---
+
 # Tavily Hikari Search
 
 Use this skill when the task needs web search results through Tavily Hikari.

@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-map
+description: Discover site URLs through Tavily Hikari with tvly-hikari.
+---
+
 # Tavily Hikari Map
 
 Use this skill when a task needs URL discovery or site mapping through Tavily Hikari.

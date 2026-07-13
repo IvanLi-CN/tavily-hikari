@@ -108,7 +108,7 @@ tvly-hikari search "rust async runtime" --json
 Optional Agent Skills install:
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 The CLI stores the Hikari token with `0600` permissions and sends traffic to

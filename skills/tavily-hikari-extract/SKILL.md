@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-extract
+description: Extract URL content through Tavily Hikari with tvly-hikari.
+---
+
 # Tavily Hikari Extract
 
 Use this skill when the task needs content extraction from one or more URLs through Tavily Hikari.

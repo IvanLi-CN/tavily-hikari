@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-cli
+description: Run Tavily CLI workflows through a configured Tavily Hikari deployment.
+---
+
 # Tavily Hikari CLI
 
 Use this skill when a task needs Tavily search, extract, crawl, map, or research through a Tavily

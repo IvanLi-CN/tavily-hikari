@@ -1,5 +1,13 @@
 # History
 
+## 2026-07-13
+
+- Added required YAML frontmatter to every published Hikari Skill after `npx skills` correctly
+  rejected the prior package as invalid.
+- Locked all public Skill guidance and `--with-skills` to the user-level `--global` command.
+- Recorded and regression-tested the current `npx skills` global client mapping: Codex/OpenCode
+  use `~/.agents/skills`, while Claude Code uses `~/.claude/skills`.
+
 ## 2026-07-07
 
 - Created the `tv4hc` topic spec for the Tavily Hikari CLI + Agent Skills release.

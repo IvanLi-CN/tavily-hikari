@@ -129,7 +129,7 @@ TAVILY_API_KEY=th-<id>-<secret>
 可选安装 Agent Skills：
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 这里的 `TAVILY_API_KEY` 在下游语义里故意使用 Hikari token。Hikari 会在额度与审计检查后，在

@@ -7,8 +7,10 @@ curl -fsSL https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/i
   --base-url "https://<your-hikari-host>" \
   --token "th-<id>-<secret>"
 
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
+
+This installs the package globally in the active agent client's standard Skills location.
 
 The CLI wrapper injects:
 

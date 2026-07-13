@@ -12,6 +12,11 @@
 - `.github/workflows/release.yml` validates the scripts and uploads both CLI assets during stable
   and rc releases.
 - `skills/` contains the Hikari-specific Agent Skills package.
+- All seven Hikari Skills declare valid YAML `name` and `description` frontmatter so the
+  `npx skills` package and native client loaders can discover them.
+- Public installation guidance and the installer's `--with-skills` path use the user-level command
+  `npx skills add https://github.com/IvanLi-CN/tavily-hikari --global` without project scope or
+  an explicit agent selection.
 - User-facing guide data now includes `hikariCli`, surfaced as `CLI + Skills` in desktop tabs and
   mobile dropdowns.
 - Guide code blocks include copy controls using the existing clipboard helper.
@@ -24,6 +29,9 @@
   performed.
 - Installer tests assert that a custom `--config-dir` remains readable from the installed launcher.
 - UI guide tests assert generated installer and skills commands.
+- The optional `RUN_NPX_SKILLS_INTEGRATION=1` test installs the local package into isolated user
+  homes for Codex, OpenCode, and Claude Code, then verifies all seven skills through
+  `npx skills list --global`.
 - Visual evidence is captured from Storybook with Chrome DevTools Protocol viewport emulation. The
   mobile proof uses a 390 px viewport and verifies `scrollWidth=390` before writing the PNG.
 

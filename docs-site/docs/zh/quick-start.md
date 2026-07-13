@@ -104,7 +104,7 @@ tvly-hikari search "rust async runtime" --json
 可选安装 Agent Skills：
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 CLI 会以 `0600` 权限保存 Hikari token，并把流量发到 `<base-url>/api/tavily`。不要把 Tavily

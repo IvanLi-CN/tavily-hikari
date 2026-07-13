@@ -33,7 +33,7 @@ Tavily Hikari 已提供 `/mcp` 与 `/api/tavily/*` 两个稳定接入面，但 C
 - 不 fork 官方 `tavily-cli`，不重写 Tavily command 逻辑。
 - 不改变 `/api/tavily/*`、`/mcp`、计费、上游转发、HA 或 key 调度语义。
 - 不内置生产域名；所有安装命令通过 `--base-url` 显式配置。
-- 不默认安装 Agent Skills；只有 `--with-skills` 才执行 `npx skills add`。
+- 不默认安装 Agent Skills；只有 `--with-skills` 才执行全局 `npx skills add`。
 - 不在测试中访问 Tavily 生产上游。
 
 ## Contract
@@ -73,7 +73,7 @@ https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly
 - 若官方 `tvly` 不存在，优先尝试 `uv tool install tavily-cli`。
 - 若 `uv` 不可用或安装失败，输出明确的手动安装指引并失败。
 - 只有传入 `--with-skills` 才执行
-  `npx skills add https://github.com/IvanLi-CN/tavily-hikari`。
+  `npx skills add https://github.com/IvanLi-CN/tavily-hikari --global`。
 
 ### Agent Skills
 
@@ -88,6 +88,17 @@ https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/install-tvly
 - `tavily-hikari-best-practices`
 
 所有示例命令使用 `tvly-hikari ... --json`，并说明默认流量走 Hikari `/api/tavily` façade。
+
+每个 `SKILL.md` 必须以标准 YAML frontmatter 开始，包含与目录一致的非空 `name` 与非空
+`description`。面向用户的唯一安装命令是：
+
+```bash
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
+```
+
+不建议项目级安装，也不在公开命令中指定 agent。当前 `npx skills` 将 Codex 与 OpenCode
+作为 universal clients 安装到用户级 `~/.agents/skills`，并将 Claude Code 安装到用户级
+`~/.claude/skills`；选择与映射由 `npx skills` 负责。
 
 ### UI Guide
 
@@ -105,6 +116,7 @@ curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/
 
 - `bash -n scripts/install-tvly-hikari.sh scripts/tvly-hikari`
 - `python3 tests/test_tvly_hikari_cli.py`
+- `RUN_NPX_SKILLS_INTEGRATION=1 python3 tests/test_tavily_hikari_agent_skills.py`
 - `cd web && bun test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
@@ -120,28 +132,28 @@ story_id_or_title: `User Console/UserConsole / Console Home CLI Skills`
 state: desktop CLI + Skills guide with revealed token
 target_program: mock-only
 capture_scope: browser-viewport
-sensitive_exclusion: N/A
-submission_gate: approved
-evidence_note: Shows the desktop `CLI + Skills` guide with the release installer command,
-optional Agent Skills command, and non-wrapping horizontally scrollable code blocks.
+requested_viewport=1440x1100
+viewport_strategy=browser-resize-fallback
+sensitive_exclusion: mock Storybook token only
+submission_gate: pending-owner-approval
+evidence_note: Shows the desktop `CLI + Skills` guide with the release installer command and the
+global Agent Skills command.
 
-PR: include
-
-![CLI + Skills guide desktop](visual-evidence/cli-skills-desktop.png)
+![CLI + Skills global install desktop](./assets/cli-skills-global-desktop.png)
 
 source_type=storybook_canvas
-story_id_or_title: `User Console/UserConsole / Console Home CLI Skills`
-state: mobile CLI + Skills guide with revealed token
+story_id_or_title: `User Console/UserConsole / CLI + Skills Guide Fragment Mobile`
+state: mobile CLI + Skills guide with the global command scrolled to its tail
 target_program: mock-only
 capture_scope: browser-viewport
-sensitive_exclusion: N/A
-submission_gate: approved
-evidence_note: Shows the 390 px mobile guide state with an icon-only token reveal
-button and internally scrollable code blocks, verified with page `scrollWidth=390`.
+requested_viewport=390x900
+viewport_strategy=browser-resize-fallback
+sensitive_exclusion: mock Storybook token only
+submission_gate: pending-owner-approval
+evidence_note: Shows the 390 px mobile guide with its compact selector, icon-only token control,
+and the horizontally scrollable Skills command ending in `--global`.
 
-PR: include
-
-![CLI + Skills guide mobile](visual-evidence/cli-skills-mobile.png)
+![CLI + Skills global install mobile](./assets/cli-skills-global-mobile.png)
 
 ## Security
 

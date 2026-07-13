@@ -131,7 +131,7 @@ TAVILY_API_KEY=th-<id>-<secret>
 Optional Agent Skills:
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 `TAVILY_API_KEY` is intentionally the Hikari token in this downstream context. Hikari swaps in the

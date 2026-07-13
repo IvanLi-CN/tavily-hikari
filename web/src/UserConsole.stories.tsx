@@ -2191,8 +2191,8 @@ export const ConsoleHomeCliSkillsGuide: Story = {
     if (!proofText.includes('--token "th-a1b2-1234567890abcdef"')) {
       throw new Error('Expected the revealed guide token to flow into the installer command.')
     }
-    if (!proofText.includes('npx skills add https://github.com/IvanLi-CN/tavily-hikari')) {
-      throw new Error('Expected the optional Agent Skills install command to render.')
+    if (!proofText.includes('npx skills add https://github.com/IvanLi-CN/tavily-hikari --global')) {
+      throw new Error('Expected the optional global Agent Skills install command to render.')
     }
   },
 }

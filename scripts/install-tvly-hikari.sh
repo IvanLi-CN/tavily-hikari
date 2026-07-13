@@ -22,7 +22,7 @@ Options:
   --token <th-...>       Hikari access token to store in the local config
   --install-dir <dir>    CLI install directory (default: ~/.local/bin)
   --config-dir <dir>     Config directory (default: ~/.config/tavily-hikari-cli)
-  --with-skills          Also run: npx skills add https://github.com/IvanLi-CN/tavily-hikari
+  --with-skills          Also run: npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
   -h, --help             Show this help
 
 The installer writes config.json with mode 0600 when --base-url and --token are provided.
@@ -195,7 +195,7 @@ EOF
 install_skills() {
   [[ "${WITH_SKILLS}" -eq 1 ]] || return 0
   command -v npx >/dev/null 2>&1 || die "--with-skills requires npx"
-  npx skills add "${REPO_URL}"
+  npx skills add "${REPO_URL}" --global
 }
 
 ensure_tvly
@@ -210,5 +210,5 @@ Try:
   ${INSTALL_DIR}/tvly-hikari search "latest AI agent news" --json
 
 Optional Agent Skills install:
-  npx skills add ${REPO_URL}
+  npx skills add ${REPO_URL} --global
 EOF

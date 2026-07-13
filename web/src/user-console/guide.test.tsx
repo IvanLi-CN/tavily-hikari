@@ -17,7 +17,7 @@ describe('Hikari CLI guide content', () => {
     expect(samples[0].snippet).toContain('install-tvly-hikari.sh')
     expect(samples[0].snippet).toContain('--base-url "https://hikari.example.com"')
     expect(samples[0].snippet).toContain('--token "th-a1b2-secretsecret"')
-    expect(samples[1].snippet).toBe('npx skills add https://github.com/IvanLi-CN/tavily-hikari')
+    expect(samples[1].snippet).toBe('npx skills add https://github.com/IvanLi-CN/tavily-hikari --global')
   })
 
   it('converts highlighted snippets to copyable plain text', () => {

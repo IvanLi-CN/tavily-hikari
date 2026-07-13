@@ -41,7 +41,7 @@ curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/
 之后运行 `tvly-hikari search "query" --json`。Agent Skills 是可选安装：
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 wrapper 会在本地保存 Hikari token，并把官方 `tvly` 命令路由到

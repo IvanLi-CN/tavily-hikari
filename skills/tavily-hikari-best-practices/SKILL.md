@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-best-practices
+description: Guide agents to use Tavily Hikari safely through tvly-hikari.
+---
+
 # Tavily Hikari Best Practices
 
 Use this skill when deciding how to call Tavily Hikari from an agent workflow.

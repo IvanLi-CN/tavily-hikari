@@ -207,7 +207,7 @@ tvly-hikari research "compare MCP and CLI agent search" --json
 Optional Agent Skills install:
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 `tvly-hikari` stores the Hikari token in `~/.config/tavily-hikari-cli/config.json` with `0600`

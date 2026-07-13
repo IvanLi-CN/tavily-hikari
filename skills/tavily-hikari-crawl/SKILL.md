@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-crawl
+description: Crawl bounded sites through Tavily Hikari with tvly-hikari.
+---
+
 # Tavily Hikari Crawl
 
 Use this skill when a task needs to crawl a site or path through Tavily Hikari.

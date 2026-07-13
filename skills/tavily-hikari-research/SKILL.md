@@ -1,3 +1,8 @@
+---
+name: tavily-hikari-research
+description: Run multi-step Tavily research through Tavily Hikari with tvly-hikari.
+---
+
 # Tavily Hikari Research
 
 Use this skill when the task needs multi-step Tavily research through Tavily Hikari.

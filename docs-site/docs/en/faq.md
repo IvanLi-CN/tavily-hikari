@@ -43,7 +43,7 @@ curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/
 Then run `tvly-hikari search "query" --json`. Agent Skills are optional and installed separately:
 
 ```bash
-npx skills add https://github.com/IvanLi-CN/tavily-hikari
+npx skills add https://github.com/IvanLi-CN/tavily-hikari --global
 ```
 
 The wrapper stores a Hikari token locally and routes official `tvly` commands to

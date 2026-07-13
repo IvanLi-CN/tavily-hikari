@@ -244,7 +244,7 @@ class TvlyHikariCliTest(unittest.TestCase):
             self.assertIn(f"config: {config_dir / 'config.json'}", result.stdout)
             self.assertEqual(
                 npx_log.read_text(encoding="utf-8").strip(),
-                "skills add https://github.com/IvanLi-CN/tavily-hikari",
+                "skills add https://github.com/IvanLi-CN/tavily-hikari --global",
             )
 
     def test_installer_default_skips_skills_without_failing(self):

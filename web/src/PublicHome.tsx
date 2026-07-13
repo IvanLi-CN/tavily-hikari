@@ -1297,7 +1297,7 @@ function buildHikariCliInstallSnippet(baseUrl: string, prettyToken: string): str
 }
 
 function buildHikariSkillsSnippet(): string {
-  return 'npx skills add https://github.com/IvanLi-CN/tavily-hikari'
+  return 'npx skills add https://github.com/IvanLi-CN/tavily-hikari --global'
 }
 
 function guideSnippetToPlainText(snippet: string): string {
