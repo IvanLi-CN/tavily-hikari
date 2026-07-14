@@ -410,6 +410,7 @@ async function main() {
     await publicPage.goto(`${baseUrl}/`, { waitUntil: "domcontentloaded" });
     await waitForSelector(publicPage, ".public-home");
     await waitForServiceWorker(publicPage);
+    await publicPage.reload({ waitUntil: "domcontentloaded" });
     await waitForController(publicPage, "/sw-public.js");
 
     log("verifying an explicit app-shell update activates and reloads");
@@ -425,10 +426,14 @@ async function main() {
       undefined,
       { timeout: 20_000 },
     );
-    await Promise.all([
-      publicPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20_000 }),
-      publicPage.locator(".update-banner-actions button").first().click(),
+    const updateOutcome = await Promise.race([
+      publicPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).then(() => "reloaded" as const),
+      publicPage.waitForSelector(".update-banner-failed", { state: "visible", timeout: 15_000 }).then(() => "failed" as const),
+      publicPage.locator(".update-banner-actions button").first().click().then(() => new Promise<never>(() => {})),
     ]);
+    if (updateOutcome === "failed") {
+      throw new Error("public app-shell update entered activation-failed instead of reloading");
+    }
     await waitForController(publicPage, "/sw-public.js");
     const publicCacheKeys = await publicPage.evaluate(() => caches.keys());
     if (!publicCacheKeys.some((key) => key.endsWith("e2e-release-b"))) {
@@ -480,6 +485,7 @@ async function main() {
     await adminLoginPage.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
     await waitForSelector(adminLoginPage, "#admin-password-input");
     await waitForServiceWorker(adminLoginPage);
+    await adminLoginPage.reload({ waitUntil: "domcontentloaded" });
     await waitForController(adminLoginPage, "/sw-public.js");
     await adminLoginPage.fill("#admin-password-input", "pw-e2e-admin");
     log("signing into admin shell");

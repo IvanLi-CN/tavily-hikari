@@ -76,10 +76,11 @@ test('built service workers wait for explicit update activation after precache',
     expect(source).toContain('event.data.type === ACTIVATE_UPDATE_MESSAGE')
     expect(source).toContain('event.waitUntil(self.skipWaiting())')
     expect(source).not.toContain('await self.skipWaiting();')
+    expect(source).not.toContain('self.clients.claim()')
   }
 })
 
-test('built service workers turn network-only fetch failures into a response', async () => {
+test('built service workers leave network-only requests to the browser and contain runtime fetch failures', async () => {
   const serviceWorkerPaths = [
     path.resolve(import.meta.dir, '../../dist/sw-public.js'),
     path.resolve(import.meta.dir, '../../dist/sw-admin.js'),
@@ -111,22 +112,25 @@ test('built service workers turn network-only fetch failures into a response', a
       const fetchListener = listeners.get('fetch')
       expect(fetchListener).toBeDefined()
 
-      for (const requestUrl of [
-        'https://hikari.test/mcp/console/state?refresh=true',
-        'https://hikari.test/assets/lazy-chunk.js',
-      ]) {
-        let responsePromise: Promise<Response> | null = null
-        fetchListener?.({
-          request: new Request(requestUrl),
-          respondWith: (response) => {
-            responsePromise = response
-          },
-        })
+      let networkOnlyResponse: Promise<Response> | null = null
+      fetchListener?.({
+        request: new Request('https://hikari.test/mcp/console/state?refresh=true'),
+        respondWith: (response) => {
+          networkOnlyResponse = response
+        },
+      })
+      expect(networkOnlyResponse).toBeNull()
 
-        expect(responsePromise).not.toBeNull()
-        const response = await responsePromise
-        expect(response.status).toBe(503)
-      }
+      let runtimeResponse: Promise<Response> | null = null
+      fetchListener?.({
+        request: new Request('https://hikari.test/assets/lazy-chunk.js'),
+        respondWith: (response) => {
+          runtimeResponse = response
+        },
+      })
+      expect(runtimeResponse).not.toBeNull()
+      const response = await runtimeResponse
+      expect(response.status).toBe(503)
     } finally {
       Object.assign(globalThis, { self: originalSelf, fetch: originalFetch })
     }

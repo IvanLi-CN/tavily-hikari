@@ -98,6 +98,7 @@
 - 用户点击更新时：
   - 若新 worker 尚在安装或缓存资源，更新按钮保持 loading，等待 worker 进入 waiting 后再发送激活消息。
   - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`。
+  - worker 的 activate 事件只清理旧 cache，不调用 `clients.claim()`；版本更新由目标 worker 到达 `activated` 后 reload，并在新导航中接管页面。
   - 页面只在用户主动更新后的 `controllerchange` 中 reload，避免静默打断当前任务。
   - waiting worker 已进入 `activated` 但当前页未收到 `controllerchange` 时，页面允许执行一次受 guard 保护的 reload；不得形成刷新循环。
   - 激活请求在 10 秒内既未接管页面也未确认 worker 已激活时，提示必须退出 loading 并进入可重试失败态；`redundant` 与消息发送异常同样按失败处理。
@@ -111,7 +112,7 @@
 
 - 已访问过 `/`、`/console/**`、`/login`、`/registration-paused` 的用户，在离线时仍可打开相应壳页。
 - 页面框架、主题切换、静态文案与本地 UI 状态可用。
-- `/api/*`、`/mcp`、SSE、登录动作、保存动作一律 network-only，失败时显示明确错误。
+- `/api/*`、`/mcp`、SSE、登录动作、保存动作一律 network-only，Service Worker 不得对其调用 `respondWith`，由浏览器网络栈直接处理并在失败时显示明确错误。
 - 离线访问 `/admin` 时，public SW 不提供 admin shell fallback。
 
 ### Admin
@@ -174,7 +175,11 @@
   When 触发 `/api/*`、SSE、MCP、登录提交、保存动作
   Then 一律保持 network failure 语义，不返回伪成功。
 
-- Given 同源的 network-only 或未预缓存请求被 public/admin service worker 拦截
+- Given 同源的 network-only 请求命中 public/admin service worker fetch listener
+  When 请求属于 `/api/*`、SSE、MCP、认证或写操作
+  Then worker 不得调用 `respondWith`，请求必须由浏览器网络栈直接处理。
+
+- Given 同源的未预缓存普通运行时资源被 public/admin service worker 拦截
   When 底层网络请求拒绝
   Then worker 必须返回可处理的 `503 Service Unavailable` 响应，而不是让 `FetchEvent`
   的 `respondWith` promise 拒绝。
@@ -190,6 +195,10 @@
 - Given 新 service worker 已经 waiting
   When 用户点击更新按钮
   Then 页面发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 并在 `controllerchange` 后 reload。
+
+- Given 当前页面存在 SSE 或 MCP 等长连接
+  When waiting worker 收到激活请求
+  Then 旧 worker 不得持有这些 network-only 请求的 FetchEvent，新 worker 必须完成激活并由页面 reload 接管。
 
 - Given 用户已请求激活 waiting worker
   When 10 秒内没有 controller 接管、worker 激活确认或可恢复终态

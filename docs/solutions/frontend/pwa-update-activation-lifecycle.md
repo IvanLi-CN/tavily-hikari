@@ -38,9 +38,14 @@ does not prove that the admin registration is performing an update.
 - Activate a first-install waiting worker silently. If another registration currently controls the
   page, expect the new registration to take over on the next in-scope navigation rather than
   requiring an immediate controller swap.
-- A worker-owned fetch failure is a separate boundary from `registration.update()`: catch rejected
-  same-origin network requests inside the service worker and return a non-success HTTP response
-  such as `503`, rather than passing a rejected promise to `respondWith`.
+- Do not call `respondWith` for network-only API, MCP, SSE, authentication, or mutation requests.
+  A long-lived response keeps the old worker's FetchEvent alive and can prevent the replacement
+  worker from completing activation.
+- Do not call `clients.claim()` from the update worker's activate event. Let first installs take
+  control on the next in-scope navigation; for explicit updates, reload after the target worker
+  reaches `activated` so the new navigation selects the new controller.
+- Keep a contained `503` fallback only for ordinary same-origin runtime resources that the worker
+  intentionally owns and that are not precached.
 
 ## Guardrails
 
@@ -51,5 +56,7 @@ does not prove that the admin registration is performing an update.
 - Test the state machine with deterministic worker mocks, then retain one real-browser two-release
   scenario that changes the service worker script on the same origin and proves controller/cache
   takeover.
-- Exercise the generated worker's fetch handler with a rejected `fetch`, including an MCP request,
-  so the regression test observes the same boundary as a browser `FetchEvent`.
+- Exercise the generated worker's fetch handler to prove network-only requests never call
+  `respondWith`, while owned runtime requests still convert rejected fetches into `503` responses.
+- The real-browser two-release test must race successful navigation against the
+  `activation-failed` banner so a stalled update fails with the same symptom users see.
