@@ -10,3 +10,4 @@
 - 2026-07-11: 修复用户确认更新后永久停在 `activating` 的状态机缺口。发送激活消息不再视为完成证据；runtime 现在等待 controller/worker 成功信号并以 watchdog、失败重试和单次 reload guard 收口，同时修正 public controller 干扰 admin 首装判断的问题。
 - 2026-07-12: 尝试将 Service Worker 拥有请求的网络拒绝转换为 `503`，消除未处理的 `FetchEvent` promise rejection；后续真实更新复现进一步收窄了 network-only 请求的正确所有权边界。
 - 2026-07-14: 真实 Chromium A/B 更新复现确认 network-only 长连接被 Service Worker `respondWith` 接管会阻塞旧 worker 退场，并使新 worker停在 `activating`。network-only 请求改由浏览器直接处理，activate 阶段移除 `clients.claim()`，首次安装在下一次导航接管，版本更新由 `activated` 后 reload 完成。
+- 2026-07-15: 更新横幅改为只在 waiting worker ready 后通知用户，不再暴露 installing 中间态；当前/目标版本都改为具体版本号，且当前版本来自正在运行的 bundle。若用户暂不点击“立即刷新”，runtime 会在下一次刷新/离页前静默激活 waiting worker，使下次导航直接进入新版本。

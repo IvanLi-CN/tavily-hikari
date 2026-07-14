@@ -142,9 +142,22 @@ function observeControllerChange(): void {
   })
 }
 
+function silentlyPrepareWaitingWorkerForNextNavigation(): void {
+  const registeredWaitingWorker = currentRegistration?.waiting ?? null
+  const worker = registeredWaitingWorker ?? (waitingWorker?.state === 'installed' ? waitingWorker : null)
+  if (!worker) return
+  observeActivationWorker(worker)
+  void postActivationMessage(worker)
+}
+
 if (canUseDom()) {
   window.addEventListener('online', publishOfflineState)
   window.addEventListener('offline', publishOfflineState)
+  window.addEventListener('pagehide', () => {
+    if (activationRequested) return
+    if (!currentUpdateState.hasUpdate || currentUpdateState.status !== 'ready') return
+    silentlyPrepareWaitingWorkerForNextNavigation()
+  })
 }
 
 function shouldRegisterServiceWorker(): boolean {

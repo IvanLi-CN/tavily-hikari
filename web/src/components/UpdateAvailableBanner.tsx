@@ -33,7 +33,9 @@ export default function UpdateAvailableBanner({
     ? strings.activating
     : isPreparing
       ? strings.preparing
-      : strings.description(currentVersion ?? 'unknown', availableVersion ?? 'latest')
+      : currentVersion && availableVersion
+        ? strings.description(currentVersion, availableVersion)
+        : strings.readyFallback
 
   return (
     <section className={`surface update-banner${isFailed ? ' update-banner-failed' : ''}`} role="status" aria-live="polite">

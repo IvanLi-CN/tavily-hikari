@@ -1,0 +1,1 @@
+declare const __TAVILY_HIKARI_APP_VERSION__: string

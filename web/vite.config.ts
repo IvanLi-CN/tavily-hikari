@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
+import pkg from './package.json'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
 function withForwardAuth(target: string, forwardAuthValue: string): Partial<ProxyOptions> {
@@ -21,9 +22,13 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, rootDir, '')
   const forwardAuthValue = env.VITE_FORWARD_EMAIL || process.env.VITE_FORWARD_EMAIL || 'admin@example.com'
   const proxyTarget = env.VITE_PROXY_TARGET || process.env.VITE_PROXY_TARGET || 'http://127.0.0.1:58087'
+  const appVersion = env.VITE_APP_VERSION || process.env.VITE_APP_VERSION || pkg.version || '0.0.0'
 
   return {
     root: rootDir,
+    define: {
+      __TAVILY_HIKARI_APP_VERSION__: JSON.stringify(appVersion),
+    },
     plugins: [
       react(),
       {

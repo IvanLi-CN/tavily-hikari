@@ -178,6 +178,22 @@ describe('PWA runtime update lifecycle', () => {
     expect(waitingWorker.messages).toEqual([{ type: 'TAVILY_HIKARI_ACTIVATE_UPDATE' }])
   })
 
+  it('silently prepares the waiting worker during pagehide so the next refresh loads the new version', async () => {
+    const registration = new MockRegistration()
+    const waitingWorker = new MockServiceWorker()
+    waitingWorker.state = 'installed'
+    registration.waiting = waitingWorker
+    const { runtime } = await loadRuntimeWithMock(registration)
+
+    await runtime.registerPwaServiceWorker('public')
+    expect(runtime.getPwaUpdateSnapshot()).toMatchObject({ status: 'ready', hasUpdate: true })
+
+    window.dispatchEvent(new Event('pagehide'))
+
+    expect(waitingWorker.messages).toEqual([{ type: 'TAVILY_HIKARI_ACTIVATE_UPDATE' }])
+    expect(runtime.getPwaUpdateSnapshot()).toMatchObject({ status: 'ready', hasUpdate: true })
+  })
+
   it('fails activation when the waiting worker becomes redundant', async () => {
     const registration = new MockRegistration()
     const waitingWorker = new MockServiceWorker()

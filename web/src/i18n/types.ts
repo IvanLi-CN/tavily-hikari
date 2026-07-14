@@ -11,6 +11,7 @@ export interface LanguageContextValue {
 export interface PublicTranslations {
   updateBanner: {
     title: string; preparing: string; activating: string; failureTitle: string; failureDescription: string
+    readyFallback: string
     description: (current: string, latest: string) => string
     refresh: string; refreshing: string; retry: string; dismiss: string
   }

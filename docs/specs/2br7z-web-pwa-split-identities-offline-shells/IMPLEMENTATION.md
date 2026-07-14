@@ -16,10 +16,12 @@
 - 页面离线失败语义优先复用现有 unavailable/error surface，不引入离线成功假象。
 - 为避免 public root service worker 抢占已安装 admin app 的离线入口，admin 入口在运行时归一到 `/admin/`，并让 admin manifest/scope 与 SW 都锁定 `/admin/`。
 - public/admin service worker 安装阶段只负责 precache，不主动 `skipWaiting()`；用户确认更新后，页面向 waiting worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 激活消息。
-- `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；提示状态以 service worker 的 installing/ready 生命周期为准。
+- `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；安装/缓存中的中间态继续静默，只有 waiting worker 已 ready 或用户触发后的失败态才展示 banner。
+- 更新横幅的“当前版本”现在由当前 bundle 的编译期版本常量提供；“目标版本”会在初始版本探测、waiting worker ready、以及失败重试态重新向 `/api/version` 校准，避免回退到 `latest` 或把服务器版本误认成当前页版本。
 - 更新提示由共享 runtime/hook 与 `UpdateAvailableBanner` 承载，覆盖 public、console、login、registration-paused 与 admin app shell。
 - 用户触发激活后以 `controllerchange` 或 waiting worker 的 `activated` 状态确认成功；后者使用单次 reload guard 兼容浏览器漏发当前页接管事件的情况。
 - 激活请求以 10 秒 watchdog 收口；超时、worker `redundant` 或激活消息发送异常都会进入 `activation-failed`，退出 loading 并允许用户重试或暂不提醒。
+- 如果用户暂不点击“立即刷新”，runtime 会在 `pagehide` 时静默向 waiting worker 发送激活消息，让下一次导航直接进入新版本，而不在当前页强制打断操作。
 - 首次安装与版本升级以当前 registration 自身是否已有 active worker 区分；public 根作用域 controller 不再让 admin 首装误报更新，admin waiting worker 会静默激活并在下一次 admin 导航接管。
 - public/admin worker 不接管 `/api/*`、`/mcp`、SSE、认证与写请求等 network-only 流量，避免长连接 FetchEvent 阻塞旧 worker 退场；未预缓存的普通同源运行时资源仍在网络拒绝时返回 `503 Service Unavailable`。
 - worker activate 事件只清理旧 cache，不调用 `clients.claim()`；首次安装在下一次同 scope 导航接管，版本更新则由 runtime 在目标 worker 到达 `activated` 后 reload。
@@ -55,6 +57,10 @@
   - `cd web && bun test src/pwa/assetGraph.test.ts`
   - `cd web && bun run test:e2e:pwa-offline`
   - Chromium 两版本 E2E 直接断言更新必须 reload；若进入 `activation-failed` 则立即失败。
+- 2026-07-15:
+  - `cd web && bun test src/hooks/useUpdateAvailable.test.tsx`
+  - `cd web && bun test src/pwa/runtime.test.ts src/components/UpdateAvailableBanner.stories.test.tsx`
+  - `cd web && bun run build`
 
 ## 已实现内容
 

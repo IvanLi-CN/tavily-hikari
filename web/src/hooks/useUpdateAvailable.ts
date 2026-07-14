@@ -8,8 +8,13 @@ import {
   type PwaUpdateStatus,
 } from '../pwa/runtime'
 import { subscribeToSseOpen } from '../sse'
+import { getBundledFrontendVersion } from '../version'
 
 const DISMISS_KEY = 'update-dismissed-version'
+
+function shouldShowUpdateBanner(status: PwaUpdateStatus): boolean {
+  return status === 'ready' || status === 'activating' || status === 'activation-failed'
+}
 
 export interface UpdateAvailableState {
   currentVersion: string | null
@@ -22,11 +27,12 @@ export interface UpdateAvailableState {
 }
 
 export default function useUpdateAvailable(): UpdateAvailableState {
-  const [currentVersion, setCurrentVersion] = useState<string | null>(null)
+  const bundledVersionRef = useRef<string | null>(getBundledFrontendVersion())
+  const runningVersionRef = useRef<string | null>(bundledVersionRef.current)
+  const [currentVersion, setCurrentVersion] = useState<string | null>(bundledVersionRef.current)
   const [availableVersion, setAvailableVersion] = useState<string | null>(null)
   const [visible, setVisible] = useState(false)
   const [updateSnapshot, setUpdateSnapshot] = useState(() => getPwaUpdateSnapshot())
-  const initialVersionRef = useRef<string | null>(null)
   const dismissedVersionRef = useRef<string | null>(null)
 
   const loadVersion = useCallback(async (): Promise<VersionInfo | null> => {
@@ -45,15 +51,42 @@ export default function useUpdateAvailable(): UpdateAvailableState {
     }
   }, [])
 
-  // Fetch initial version
+  const syncVersionFromServer = useCallback(async () => {
+    const next = await loadVersion()
+    const nextFrontend = next?.frontend ?? null
+    if (!nextFrontend) return null
+
+    if (!runningVersionRef.current) {
+      const runningVersion = bundledVersionRef.current ?? nextFrontend
+      runningVersionRef.current = runningVersion
+      setCurrentVersion((previous) => previous ?? runningVersion)
+    }
+
+    if (runningVersionRef.current && nextFrontend !== runningVersionRef.current) {
+      setAvailableVersion(nextFrontend)
+    }
+
+    return nextFrontend
+  }, [loadVersion])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const v = await loadVersion()
+      const nextFrontend = await loadVersion()
       if (cancelled) return
-      const frontend = v?.frontend ?? null
-      setCurrentVersion(frontend)
-      initialVersionRef.current = frontend
+
+      const frontend = nextFrontend?.frontend ?? null
+      if (!frontend) return
+
+      if (!runningVersionRef.current) {
+        runningVersionRef.current = frontend
+        setCurrentVersion(frontend)
+        return
+      }
+
+      if (frontend !== runningVersionRef.current) {
+        setAvailableVersion(frontend)
+      }
     })()
     return () => {
       cancelled = true
@@ -63,22 +96,13 @@ export default function useUpdateAvailable(): UpdateAvailableState {
   useEffect(() => subscribePwaUpdateState(setUpdateSnapshot), [])
 
   const checkVersion = useCallback(async () => {
-    const next = await loadVersion()
-    const nextFrontend = next?.frontend ?? null
+    const nextFrontend = await syncVersionFromServer()
     if (!nextFrontend) return
 
-    const initial = initialVersionRef.current
-    if (!initial) {
-      initialVersionRef.current = nextFrontend
-      setCurrentVersion(nextFrontend)
-      return
-    }
-
-    if (nextFrontend !== initial) {
-      setAvailableVersion(nextFrontend)
+    if (runningVersionRef.current && nextFrontend !== runningVersionRef.current) {
       void checkForPwaUpdate()
     }
-  }, [loadVersion])
+  }, [syncVersionFromServer])
 
   // When SSE connects (or reconnects), re-check version and ask the SW to look for new assets.
   useEffect(() => {
@@ -89,17 +113,26 @@ export default function useUpdateAvailable(): UpdateAvailableState {
   }, [checkVersion])
 
   useEffect(() => {
-    if (!updateSnapshot.hasUpdate) {
+    if (
+      updateSnapshot.hasUpdate
+      && (updateSnapshot.status === 'ready' || updateSnapshot.status === 'activation-failed')
+    ) {
+      void syncVersionFromServer()
+    }
+  }, [syncVersionFromServer, updateSnapshot.hasUpdate, updateSnapshot.status])
+
+  useEffect(() => {
+    if (!updateSnapshot.hasUpdate || !shouldShowUpdateBanner(updateSnapshot.status)) {
       setVisible(false)
       return
     }
 
     const dismissed = dismissedVersionRef.current
     const candidateVersion = availableVersion ?? 'service-worker-update'
-    if (dismissed === candidateVersion) return
+    if (updateSnapshot.status !== 'activation-failed' && dismissed === candidateVersion) return
 
     setVisible(true)
-  }, [availableVersion, updateSnapshot.hasUpdate])
+  }, [availableVersion, updateSnapshot.hasUpdate, updateSnapshot.status])
 
   const dismiss = useCallback(() => {
     const candidateVersion = availableVersion ?? 'service-worker-update'
@@ -127,9 +160,7 @@ export default function useUpdateAvailable(): UpdateAvailableState {
     }
   }, [currentVersion])
 
-  const loading = updateSnapshot.status === 'checking'
-    || updateSnapshot.status === 'installing'
-    || updateSnapshot.status === 'activating'
+  const loading = updateSnapshot.status === 'activating'
 
   return {
     currentVersion,

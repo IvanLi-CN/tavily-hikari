@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-06-24
-- Last: 2026-07-11
+- Last: 2026-07-15
 
 ## 背景 / 问题陈述
 
@@ -94,14 +94,15 @@
 ## 更新提示合同
 
 - `sw-public.js` 与 `sw-admin.js` 安装时必须先完成 precache，再进入 waiting；不得在 install 阶段主动 `skipWaiting()`。
-- 页面检测到 `/api/version.frontend` 变化时，只触发当前 identity 的 `registration.update()`；用户可见的更新提示必须以 service worker 已发现新 worker、并至少进入 installing/ready 更新生命周期为准。
+- 页面检测到 `/api/version.frontend` 变化时，只触发当前 identity 的 `registration.update()`；用户可见的更新提示必须以 service worker 已发现 waiting worker 且新版资源已准备完成为准。安装/缓存中的中间态保持静默，不对用户暴露“正在更新”的提示。
+- 更新提示中的“当前版本”必须表示当前页面实际运行的前端 bundle 版本；“目标版本”必须表示后端当前提供、且与 waiting worker 对齐的具体版本号，不得回退为 `latest`、channel 名称或其他非版本号占位词。
 - 用户点击更新时：
-  - 若新 worker 尚在安装或缓存资源，更新按钮保持 loading，等待 worker 进入 waiting 后再发送激活消息。
-  - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`。
+  - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`，并立即刷新当前页以应用新版本。
   - worker 的 activate 事件只清理旧 cache，不调用 `clients.claim()`；版本更新由目标 worker 到达 `activated` 后 reload，并在新导航中接管页面。
   - 页面只在用户主动更新后的 `controllerchange` 中 reload，避免静默打断当前任务。
   - waiting worker 已进入 `activated` 但当前页未收到 `controllerchange` 时，页面允许执行一次受 guard 保护的 reload；不得形成刷新循环。
   - 激活请求在 10 秒内既未接管页面也未确认 worker 已激活时，提示必须退出 loading 并进入可重试失败态；`redundant` 与消息发送异常同样按失败处理。
+- 若用户不点击“立即刷新”，页面在下一次离开当前页或手动刷新时，会静默请求 waiting worker `skipWaiting()`，使下一次导航直接进入新版本。
 - 首次安装 identity 时以当前 registration 是否已有 active worker 判定是否属于更新；public 根作用域 controller 不得让 admin 首次安装误报“有新版本”，此时 admin waiting worker 应静默激活。
 - 更新提示必须覆盖 `/`、`/console`、`/login`、`/registration-paused` 与 `/admin/**`，但继续保持 public/admin 双 service worker 边界。
 - 提示形态为 inline banner，不使用 modal，不强制用户立即刷新。
@@ -186,15 +187,23 @@
 
 - Given 后端报告新的 `frontend` 版本
   When 当前 identity 的 service worker 尚未完成新资源安装
-  Then 页面只触发更新检查，不提示“可更新”。
+  Then 页面只触发更新检查，不提示“可更新”，后台继续静默完成安装。
+
+- Given 当前页面运行旧 bundle，而服务端已提供更新版本
+  When 更新提示出现
+  Then 提示中的当前/目标版本都必须是具体版本号，并准确表示“当前页版本 → 已准备的新版本”。
 
 - Given 新 service worker 正在安装并缓存资源
-  When 用户点击更新按钮
-  Then 更新按钮进入 loading，直到 worker ready 后激活并刷新当前页。
+  When 当前页继续工作
+  Then 页面保持静默，不向用户展示安装中的中间态。
 
 - Given 新 service worker 已经 waiting
   When 用户点击更新按钮
   Then 页面发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 并在 `controllerchange` 后 reload。
+
+- Given 新 service worker 已经 waiting 且用户没有点击更新按钮
+  When 用户随后手动刷新页面或离开后再次进入同一 identity
+  Then 下次导航必须直接进入新版本，而不是继续停留在旧 bundle。
 
 - Given 当前页面存在 SSE 或 MCP 等长连接
   When waiting worker 收到激活请求
@@ -240,7 +249,7 @@
 - `95768005+` Relay Mesh docs-site 品牌入口：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `95768005+` Relay Mesh PWA/icon 导出预览：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png` PR: include
 - `2026-06-27` 品牌静态资源 `/assets` 路由校准后的 admin 壳验证：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-admin-shell-assets-route-fixed.png` PR: include
-- `2026-07-08` PWA 更新提示 ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
+- `2026-07-15` PWA 更新提示 ready 状态（Storybook canvas，静默更新完成后通知 + 具体版本号 + “立即刷新”按钮）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
 - `2026-07-08` PWA 更新提示 installing/loading 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
 - `2026-07-08` PWA 更新提示 dark ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
 - `2026-07-11` PWA 更新激活失败亮色态（Storybook canvas，mock-only，element capture，无敏感数据）：
