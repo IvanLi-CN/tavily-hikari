@@ -149,7 +149,7 @@ import {
   parseAdminPath,
   rankingsPath,
   systemSettingsAdminPath,
-  systemSettingsPrivacyPath,
+  systemSettingsStatusPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
   buildAdminUsersPath,
@@ -307,8 +307,8 @@ import {
   type HaNodeDetail,
   type HaStatus,
   fetchForwardProxySettings,
+  fetchSystemStatus,
   fetchSystemSettingsEnvelope,
-  fetchUpstreamPrivacyStatus,
   fetchForwardProxyErrorStats,
   fetchForwardProxyStats,
   revalidateForwardProxyWithProgress,
@@ -3094,7 +3094,7 @@ function AdminDashboard(): JSX.Element {
       setUpstreamPrivacyStatusError(null)
 
       try {
-        const nextStatus = await fetchUpstreamPrivacyStatus(request.signal)
+        const nextStatus = await fetchSystemStatus(request.signal)
         if (request.signal.aborted) return
         setUpstreamPrivacyStatus(nextStatus)
         setUpstreamPrivacyStatusLoadState('ready')
@@ -3627,7 +3627,7 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     if (!(route.name === 'module'
       && route.module === 'system-settings'
-      && (route.systemSettingsView ?? 'general') === 'privacy')) {
+      && (route.systemSettingsView ?? 'general') === 'status')) {
       return
     }
 
@@ -3703,7 +3703,7 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     if (!(route.name === 'module'
       && route.module === 'system-settings'
-      && (route.systemSettingsView ?? 'general') === 'privacy'
+      && (route.systemSettingsView ?? 'general') === 'status'
       && upstreamPrivacyAutoRefreshEnabled)) {
       return
     }
@@ -4681,8 +4681,8 @@ function AdminDashboard(): JSX.Element {
         navigateToPath(systemSettingsHaPath())
         return
       }
-      if (target === 'system-settings-privacy') {
-        navigateToPath(systemSettingsPrivacyPath())
+      if (target === 'system-settings-status') {
+        navigateToPath(systemSettingsStatusPath())
         return
       }
       if (target === 'system-settings-admin') {
@@ -5099,7 +5099,7 @@ function AdminDashboard(): JSX.Element {
     }
     if (route.name === 'module' && route.module === 'system-settings') {
       tasks.push(loadSystemSettingsData({ signal: controller.signal, reason: 'refresh' }))
-      if ((route.systemSettingsView ?? 'general') === 'privacy') {
+      if ((route.systemSettingsView ?? 'general') === 'status') {
         tasks.push(loadUpstreamPrivacyStatusData({ signal: controller.signal, reason: 'refresh' }))
       }
     }
@@ -5986,7 +5986,7 @@ function AdminDashboard(): JSX.Element {
     || (route.name === 'module'
       && route.module === 'system-settings'
       && (systemSettingsBlocking
-        || ((route.systemSettingsView ?? 'general') === 'privacy' && upstreamPrivacyStatusBlocking)))
+        || ((route.systemSettingsView ?? 'general') === 'status' && upstreamPrivacyStatusBlocking)))
     || (route.name === 'module' && route.module === 'proxy-settings'
       && (forwardProxySettingsBlocking || forwardProxyStatsBlocking || forwardProxyErrorStatsBlocking))
     || (route.name === 'unbound-token-usage' && unboundTokenUsageBlocking)
@@ -6713,7 +6713,7 @@ function AdminDashboard(): JSX.Element {
       if (
         routeRef.current.name === 'module'
         && routeRef.current.module === 'system-settings'
-        && (routeRef.current.systemSettingsView ?? 'general') === 'privacy'
+        && (routeRef.current.systemSettingsView ?? 'general') === 'status'
       ) {
         try {
           await loadUpstreamPrivacyStatusData({ reason: 'refresh' })
@@ -7709,7 +7709,7 @@ function AdminDashboard(): JSX.Element {
       icon: <Icon icon="mdi:cog-outline" width={18} height={18} />,
       children: [
         { target: 'system-settings', label: systemSettingsStrings.subnav.general },
-        { target: 'system-settings-privacy', label: systemSettingsStrings.subnav.privacyStatus },
+        { target: 'system-settings-status', label: systemSettingsStrings.subnav.privacyStatus },
         { target: 'system-settings-admin', label: systemSettingsStrings.subnav.admin },
         { target: 'system-settings-ha', label: systemSettingsStrings.subnav.highAvailability },
         { target: 'proxy-settings', label: adminStrings.nav.proxySettings },
@@ -7721,8 +7721,8 @@ function AdminDashboard(): JSX.Element {
       ? route.module === 'system-settings'
         ? (route.systemSettingsView ?? 'general') === 'ha'
           ? 'system-settings-ha'
-          : (route.systemSettingsView ?? 'general') === 'privacy'
-            ? 'system-settings-privacy'
+          : (route.systemSettingsView ?? 'general') === 'status'
+            ? 'system-settings-status'
           : (route.systemSettingsView ?? 'general') === 'admin'
             ? 'system-settings-admin'
             : 'system-settings'
@@ -8947,7 +8947,7 @@ function AdminDashboard(): JSX.Element {
       ? 'ha'
       : 'general'
   const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
-  const showSystemSettingsPrivacy = showSystemSettings && systemSettingsView === 'privacy'
+  const showSystemSettingsStatus = showSystemSettings && systemSettingsView === 'status'
   const showSystemSettingsAdmin = showSystemSettings && systemSettingsView === 'admin'
 
   useEffect(() => {
@@ -9930,7 +9930,7 @@ function AdminDashboard(): JSX.Element {
               : systemSettingsStrings.ha.description,
           }
         }
-        if (systemSettingsView === 'privacy') {
+        if (systemSettingsView === 'status') {
           return {
             title: systemSettingsStrings.privacy.title,
             description: systemSettingsStrings.privacy.description,
@@ -12297,7 +12297,7 @@ function AdminDashboard(): JSX.Element {
         </AdminLazyBoundary>
       )}
 
-      {showSystemSettingsPrivacy && (
+      {showSystemSettingsStatus && (
         <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={260}>
           <LazyUpstreamPrivacyStatusModule
             strings={systemSettingsStrings.privacy}

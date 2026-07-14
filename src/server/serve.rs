@@ -314,6 +314,10 @@ pub async fn serve(
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
         .route(
+            "/api/settings/system/status",
+            get(get_upstream_privacy_status),
+        )
+        .route(
             "/api/settings/system/privacy-status",
             get(get_upstream_privacy_status),
         )

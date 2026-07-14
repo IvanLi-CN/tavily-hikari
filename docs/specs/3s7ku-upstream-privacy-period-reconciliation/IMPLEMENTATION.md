@@ -14,7 +14,7 @@
 - `SystemSettings` 已持久化 `upstreamProjectIdMode`、`upstreamProjectIdFixedValue`、`upstreamMcpUserAgent`，默认 `accessToken`，并对 fixed/UA 输入做长度与控制字符校验。
 - `accessToken` 模式已接入 `HMAC-SHA256(secret, "v1" + token_id + period_code)`，业务窗口按服务器本地时区 `S1=00-11`、`S2=11-22`、`S3=22-24` 切分。
 - 已落地完整窗口对账、Research 终态等待、24 小时 degraded 兜底、signed reconciliation adjustment 账本，以及对小时/日/月额度的归属修正。
-- 管理端已新增系统设置中的上游身份配置控件、`/admin/system-settings/privacy-status` 状态页、对应 Storybook coverage 与 mock-only UI 证据。
+- 管理端已新增系统设置中的上游身份配置控件、`/admin/system-settings/status` 系统状态页、对应 Storybook coverage 与 mock-only UI 证据。
 
 ## Remaining Gaps
 

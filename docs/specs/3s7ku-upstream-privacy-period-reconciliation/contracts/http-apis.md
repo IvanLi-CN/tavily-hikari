@@ -11,9 +11,9 @@
 默认值分别为 `accessToken`、空字符串、空字符串。`fixed` 模式要求固定值非空且不超过 128 字节；
 固定值与 UA 均拒绝控制字符，UA 不超过 256 字节。
 
-## Privacy status
+## System status
 
-`GET /api/settings/system/privacy-status` 为 admin-only，只读返回：
+`GET /api/settings/system/status` 为 admin-only，只读返回：
 
 - configured/effective Project ID 与 Header policy；
 - UA 是否省略及脱敏后的有效值；

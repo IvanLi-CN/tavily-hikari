@@ -3877,8 +3877,8 @@ export async function fetchSystemSettings(signal?: AbortSignal): Promise<SystemS
   return response.systemSettings ?? createEmptySystemSettings()
 }
 
-export async function fetchUpstreamPrivacyStatus(signal?: AbortSignal): Promise<UpstreamPrivacyStatus> {
-  return requestJson<UpstreamPrivacyStatus>('/api/settings/system/privacy-status', { signal })
+export async function fetchSystemStatus(signal?: AbortSignal): Promise<UpstreamPrivacyStatus> {
+  return requestJson<UpstreamPrivacyStatus>('/api/settings/system/status', { signal })
 }
 
 export function updateForwardProxySettings(

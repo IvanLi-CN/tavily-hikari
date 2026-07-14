@@ -2136,7 +2136,9 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   }
   if (path === '/api/settings/forward-proxy') return jsonResponse(demoState.forwardProxy)
   if (path === '/api/settings/system') return jsonResponse(demoState.systemSettings)
-  if (path === '/api/settings/system/privacy-status') return jsonResponse(createDemoUpstreamPrivacyStatus())
+  if (path === '/api/settings/system/status' || path === '/api/settings/system/privacy-status') {
+    return jsonResponse(createDemoUpstreamPrivacyStatus())
+  }
   if (path === '/api/settings/forward-proxy/validate') return jsonResponse({ ok: true, message: 'Demo proxy candidate is reachable', normalizedValue: 'socks5://demo.internal:1080', discoveredNodes: 3, latencyMs: 94, nodes: [{ displayName: 'HK edge', protocol: 'socks5', ok: true, latencyMs: 94, ip: '198.51.100.30', location: 'HK' }] })
   if (path === '/api/settings/forward-proxy/revalidate') return jsonResponse(demoState.forwardProxy)
   if (path === '/api/settings/forward-proxy/nodes/state') return jsonResponse({ results: demoState.forwardProxy.nodes.map((node) => ({ proxyKey: node.key, disabled: Boolean(node.disabled), disabledAt: node.disabledAt ?? null })) })

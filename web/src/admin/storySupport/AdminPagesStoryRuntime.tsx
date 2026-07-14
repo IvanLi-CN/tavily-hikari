@@ -3118,7 +3118,7 @@ function buildNavItems(
       icon: <Icon icon="mdi:cog-outline" width={18} height={18} />,
       children: [
         { target: 'system-settings', label: strings.systemSettings.subnav.general },
-        { target: 'system-settings-privacy', label: strings.systemSettings.subnav.privacyStatus },
+        { target: 'system-settings-status', label: strings.systemSettings.subnav.privacyStatus },
         { target: 'system-settings-admin', label: strings.systemSettings.subnav.admin },
         { target: 'system-settings-ha', label: strings.systemSettings.subnav.highAvailability },
         { target: 'proxy-settings', label: strings.nav.proxySettings },
@@ -3222,7 +3222,7 @@ export function AdminPageFrame({
           title: admin.systemSettings.admin.title,
           description: admin.systemSettings.admin.description,
         }
-      case 'system-settings-privacy':
+      case 'system-settings-status':
         return {
           title: admin.systemSettings.privacy.title,
           description: admin.systemSettings.privacy.description,
@@ -6382,11 +6382,11 @@ function SystemSettingsPageCanvas({
   )
 }
 
-function SystemSettingsPrivacyPageCanvas(): JSX.Element {
+function SystemSettingsStatusPageCanvas(): JSX.Element {
   const admin = useAdminTranslations()
 
   return (
-    <AdminPageFrame activeModule="system-settings-privacy">
+    <AdminPageFrame activeModule="system-settings-status">
       <UpstreamPrivacyStatusModule
         strings={admin.systemSettings.privacy}
         formStrings={admin.systemSettings.form}
@@ -7677,8 +7677,8 @@ export const SystemSettings: Story = {
   },
 }
 
-export const SystemSettingsPrivacy: Story = {
-  render: () => <SystemSettingsPrivacyPageCanvas />,
+export const SystemSettingsStatus: Story = {
+  render: () => <SystemSettingsStatusPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },
@@ -7686,12 +7686,12 @@ export const SystemSettingsPrivacy: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
     const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
     const activeText = activeSubitem?.textContent ?? ''
-    if (!activeText.includes('上游隐私状态') && !activeText.includes('Upstream Privacy Status')) {
-      throw new Error('Expected the upstream privacy status sidebar child item to be active.')
+    if (!activeText.includes('系统状态') && !activeText.includes('System Status')) {
+      throw new Error('Expected the system status sidebar child item to be active.')
     }
     const pageText = canvasElement.ownerDocument.body.textContent ?? ''
     if (!pageText.includes('出站 Header 白名单') && !pageText.includes('Outbound header allowlist')) {
-      throw new Error('Expected the privacy status page to render header allowlists.')
+      throw new Error('Expected the system status page to render header allowlists.')
     }
   },
 }

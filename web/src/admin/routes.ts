@@ -10,7 +10,7 @@ import type {
 export type AdminUsersCollectionView = 'users' | 'usage'
 export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
 export type AlertsCenterView = 'events' | 'groups'
-export type AdminSystemSettingsView = 'general' | 'privacy' | 'admin' | 'ha'
+export type AdminSystemSettingsView = 'general' | 'status' | 'admin' | 'ha'
 export type AdminAnalysisView = 'rankings' | 'usage' | 'pressure'
 export type RankingTabKey = 'last24h' | 'last7d' | 'last30d' | 'primarySuccess' | 'businessCredits' | 'uniqueIp'
 export type UserDetailTabKey = 'account' | 'quota' | 'activity'
@@ -204,8 +204,8 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/system-settings/admin`) {
     return { name: 'module', module: 'system-settings', systemSettingsView: 'admin' }
   }
-  if (path === `${ADMIN_BASE}/system-settings/privacy-status`) {
-    return { name: 'module', module: 'system-settings', systemSettingsView: 'privacy' }
+  if (path === `${ADMIN_BASE}/system-settings/status` || path === `${ADMIN_BASE}/system-settings/privacy-status`) {
+    return { name: 'module', module: 'system-settings', systemSettingsView: 'status' }
   }
   if (path === `${ADMIN_BASE}/system-settings/ha`) {
     return { name: 'module', module: 'system-settings', systemSettingsView: 'ha' }
@@ -316,8 +316,8 @@ export function systemSettingsAdminPath(): string {
   return `${ADMIN_BASE}/system-settings/admin`
 }
 
-export function systemSettingsPrivacyPath(): string {
-  return `${ADMIN_BASE}/system-settings/privacy-status`
+export function systemSettingsStatusPath(): string {
+  return `${ADMIN_BASE}/system-settings/status`
 }
 
 export function systemSettingsHaNodePath(nodeId: string): string {

@@ -17,7 +17,7 @@
 - `X-Project-ID` 支持 `passthrough / fixed / accessToken`，默认 `accessToken`。
 - 使用稳定 token id 与业务时间段派生不可逆上游项目标识，并在 HA 节点间保持一致。
 - 在完整窗口、全量 Rebalance 与旧 Control session 排空后执行一次幂等多退少补。
-- 提供只读“上游隐私状态”管理页，明确展示配置、实际生效状态、门禁与结算队列。
+- 提供只读“系统状态”管理页，明确展示配置、实际生效状态、门禁与结算队列。
 
 ### Non-goals
 
@@ -91,7 +91,7 @@
 
 ### 状态页
 
-- canonical route 为 `/admin/system-settings/privacy-status`，系统设置下级标签为“上游隐私状态”。
+- canonical route 为 `/admin/system-settings/status`，系统设置下级标签为“系统状态”。
 - 状态 API 区分 `configured / effective / pending / draining / active / degraded`。
 - 页面展示 Header policy、UA 实际值、Project ID 模式、三项 Rebalance/Control 门禁、下一 epoch、当前 period、
   Research 等待、usage 队列、最近 adjustment 和 degraded 原因。
@@ -154,13 +154,13 @@
 
   ![System settings upstream identity section](./assets/system-settings-upstream-identity-desktop.png)
 
-- desktop upstream privacy status page
+- desktop system status page
 
-  ![Upstream privacy status desktop](./assets/privacy-status-desktop.png)
+  ![System status desktop](./assets/privacy-status-desktop.png)
 
-- mobile upstream privacy status page
+- mobile system status page
 
-  ![Upstream privacy status mobile](./assets/privacy-status-mobile.png)
+  ![System status mobile](./assets/privacy-status-mobile.png)
 
 ## Related PRs
 

@@ -43,7 +43,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.Alerts).toMatchObject({})
     expect(adminPageStories.AlertsMobile).toMatchObject({})
     expect(adminPageStories.Recharges).toMatchObject({})
-    expect(adminPageStories.SystemSettingsPrivacy).toMatchObject({})
+    expect(adminPageStories.SystemSettingsStatus).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -398,8 +398,8 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('管理端 TOTP')
   })
 
-  it('renders the system settings privacy child nav item as active', () => {
-    const renderStory = adminPageStories.SystemSettingsPrivacy.render as (() => JSX.Element) | undefined
+  it('renders the system settings status child nav item as active', () => {
+    const renderStory = adminPageStories.SystemSettingsStatus.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
     const markup = renderToStaticMarkup(
@@ -410,7 +410,7 @@ describe('AdminPages Storybook proofs', () => {
       ),
     )
 
-    expect(markup).toContain('上游隐私状态')
+    expect(markup).toContain('系统状态')
     expect(markup).toContain('admin-nav-subitem-active')
     expect(markup).toContain('出站 Header 白名单')
     expect(markup).toContain('X-Project-ID')
