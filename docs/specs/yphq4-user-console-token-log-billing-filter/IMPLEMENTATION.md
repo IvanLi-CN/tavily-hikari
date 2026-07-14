@@ -12,6 +12,9 @@
   the separate token logs route.
 - Storybook coverage includes desktop token detail and mobile logs entry states, with visual evidence
   captured for the desktop 10-row scroll layout.
+- The desktop log table uses the shared `table-sticky-header` surface with an opaque fallback,
+  12px backdrop blur, and light/dark theme coverage so scrolled rows do not remain legible beneath
+  the header.
 
 ## Validation
 

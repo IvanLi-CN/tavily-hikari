@@ -415,6 +415,11 @@
     background: hsl(var(--muted) / 0.48);
   }
 
+  .dark .table-sticky-header thead th {
+    background: hsl(var(--card) / 0.94);
+    box-shadow: 0 1px 0 hsl(var(--border) / 0.78);
+  }
+
   .dark .table-wrapper .empty-state.alert,
   .dark .error-banner {
     border-color: hsl(var(--destructive) / 0.34);

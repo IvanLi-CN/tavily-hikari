@@ -2216,6 +2216,33 @@ export const CliSkillsGuideFragmentMobile: Story = {
   },
 }
 
+async function assertStickyLogHeader(canvasElement: HTMLElement) {
+  const scrollShell = canvasElement.querySelector<HTMLElement>('.user-console-logs-table-scroll')
+  const headerCell = canvasElement.querySelector<HTMLElement>('.user-console-logs-table thead th')
+  if (scrollShell == null || headerCell == null) {
+    throw new Error('Expected token detail to expose the scrollable logs table and its header.')
+  }
+
+  scrollShell.scrollTop = 112
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())))
+
+  if (scrollShell.scrollTop <= 0) {
+    throw new Error('Expected the recent-request table to scroll for sticky-header verification.')
+  }
+
+  const style = window.getComputedStyle(headerCell)
+  const webkitBackdropFilter = style.getPropertyValue('-webkit-backdrop-filter')
+  if (style.position !== 'sticky') {
+    throw new Error(`Expected recent-request header position to be sticky, got ${style.position}.`)
+  }
+  if (style.backgroundColor === 'transparent' || style.backgroundColor === 'rgba(0, 0, 0, 0)') {
+    throw new Error('Expected the sticky header to provide an opaque fallback surface.')
+  }
+  if (!`${style.backdropFilter} ${webkitBackdropFilter}`.includes('blur(12px)')) {
+    throw new Error('Expected the sticky header to apply the shared 12px backdrop blur.')
+  }
+}
+
 export const TokenDetailOverview: Story = {
   name: 'Token Detail Overview',
   args: tokenDetailOverviewArgs,
@@ -2253,6 +2280,8 @@ export const TokenDetailOverview: Story = {
     if (!creditedRows.includes('2') || !creditedRows.includes('—')) {
       throw new Error('Expected token detail logs to render both charged and uncharged credit values.')
     }
+
+    await assertStickyLogHeader(canvasElement)
 
     const billableButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-console-log-filter-tabs .segmented-tab'))
       .find((button) => button.textContent?.trim() === 'Quota usage')

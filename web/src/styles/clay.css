@@ -1024,6 +1024,16 @@
     white-space: nowrap;
   }
 
+  .table-sticky-header thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: hsl(var(--card) / 0.94);
+    -webkit-backdrop-filter: blur(12px) saturate(1.08);
+    backdrop-filter: blur(12px) saturate(1.08);
+    box-shadow: 0 1px 0 hsl(var(--border) / 0.72);
+  }
+
   .table-scroll-shell[data-table-density='compact'],
   table[data-table-density='compact'] {
     --admin-table-header-height: 2.05rem;

@@ -88,7 +88,7 @@ export default function TokenLogsPanel({
         {logs.length === 0 ? (
           <div className="empty-state alert">{text.emptyLogs}</div>
         ) : (
-          <table className="token-detail-table user-console-logs-table">
+          <table className="table-sticky-header token-detail-table user-console-logs-table">
             <thead>
               <tr>
                 <th>{text.table.request}</th>
