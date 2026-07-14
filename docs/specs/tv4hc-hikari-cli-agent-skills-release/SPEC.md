@@ -128,7 +128,7 @@ curl -fsSL "https://github.com/IvanLi-CN/tavily-hikari/releases/latest/download/
 ## Visual Evidence
 
 source_type=storybook_canvas
-story_id_or_title: `User Console/UserConsole / Console Home CLI Skills`
+story_id_or_title: `User Console/UserConsole / Setup Guide CLI + Skills`
 state: desktop CLI + Skills guide with revealed token
 target_program: mock-only
 capture_scope: browser-viewport
@@ -145,7 +145,7 @@ PR: include
 ![CLI + Skills global install desktop](./assets/cli-skills-global-desktop.png)
 
 source_type=storybook_canvas
-story_id_or_title: `User Console/UserConsole / CLI + Skills Guide Fragment Mobile`
+story_id_or_title: `User Console/UserConsole / Setup Guide CLI + Skills Mobile`
 state: mobile CLI + Skills guide with the global command scrolled to its tail
 target_program: mock-only
 capture_scope: browser-viewport

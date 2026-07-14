@@ -182,8 +182,6 @@
 
 ![Live mobile billing page demo](./assets/console-billing-selected-month-mobile.png)
 
-## Visual Evidence (PR)
-
 Storybook `User Console/Billing/Billing Page`: verifies the dedicated `/console/billing` page keeps the clay user-console language while splitting the experience into current composition, pricing rules, natural-month schedule, recent orders, and purchase actions on one screen.
 
 Storybook `User Console/Billing/Billing Page/Mobile`: verifies the same page collapses cleanly on a narrow viewport without losing the information order or purchase affordance.
@@ -209,6 +207,45 @@ Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: renders MC
 ![Token detail probe bubble in dark theme](./assets/token-detail-probe-bubble-dark.png)
 
 ![Token detail probe bubble in light theme](./assets/token-detail-probe-bubble-light.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1000
+  viewport_strategy: browser-resize-fallback
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: User Console/UserConsole / Setup Guide
+  state: desktop default with multiple enabled tokens
+  evidence_note: verifies `/console/setup` activates the new top-level Setup Guide tab, places the Token selector in the page header, and keeps all client tabs and configuration samples readable in one desktop viewport.
+
+![Setup guide desktop](./assets/setup-guide-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 390x844
+  viewport_strategy: browser-resize-fallback
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: User Console/UserConsole / Setup Guide Mobile
+  state: mobile default with compact client selector
+  evidence_note: verifies the four console tabs fit without clipping, the Token selector moves below the heading, and client instructions remain contained at 390 px.
+
+![Setup guide mobile](./assets/setup-guide-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1000
+  viewport_strategy: browser-resize-fallback
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: User Console/UserConsole / Token Detail Setup Action
+  state: desktop token detail header
+  evidence_note: verifies the Usage Guide action sits beside Back to Token List in the token-detail header without crowding the token field or connectivity controls.
+
+![Token detail setup action](./assets/token-detail-setup-action.png)
 
 - source_type: storybook_canvas
 - target_program: mock-only

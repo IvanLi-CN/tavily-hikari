@@ -16,7 +16,7 @@ describe('UserConsole Storybook acceptance controls', () => {
 
     expect(meta.argTypes?.consoleView).toMatchObject({
       name: 'Console view',
-      options: ['Console Home', 'Token Detail'],
+      options: ['Console Home', 'Setup Guide', 'Token Detail'],
       control: { type: 'inline-radio' },
     })
 
@@ -36,7 +36,7 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token list state',
       options: ['Single Token', 'Multiple Tokens', 'Empty'],
       control: { type: 'inline-radio' },
-      if: { arg: 'consoleView', eq: 'Console Home' },
+      if: { arg: 'consoleView', neq: 'Token Detail' },
     })
 
     expect(meta.argTypes?.tokenDetailPreview).toMatchObject({
@@ -94,23 +94,33 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Console Home Empty Tokens',
       args: { consoleView: 'Console Home', landingFocus: 'Token Focus', tokenListState: 'Empty' },
     })
-    expect(userConsoleStories.ConsoleHomeGuideTokenRevealed).toMatchObject({
-      name: 'Console Home Guide Token Revealed',
-      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
+    expect(userConsoleStories.SetupGuide).toMatchObject({
+      name: 'Setup Guide',
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens' },
     })
-    expect(userConsoleStories.ConsoleHomeCliSkillsGuide).toMatchObject({
-      name: 'Console Home CLI + Skills Guide',
-      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
+    expect(userConsoleStories.SetupGuideCliSkills).toMatchObject({
+      name: 'Setup Guide CLI + Skills',
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens', routePathOverride: '/console/setup?token=a1b2' },
     })
-    expect(userConsoleStories.CliSkillsGuideFragment).toMatchObject({
-      name: 'CLI + Skills Guide Fragment',
+    expect(userConsoleStories.SetupGuideMobile).toMatchObject({
+      name: 'Setup Guide Mobile',
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens' },
     })
-    expect(userConsoleStories.CliSkillsGuideFragmentMobile).toMatchObject({
-      name: 'CLI + Skills Guide Fragment Mobile',
+    expect(userConsoleStories.SetupGuideCliSkillsMobile).toMatchObject({
+      name: 'Setup Guide CLI + Skills Mobile',
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens' },
+    })
+    expect(userConsoleStories.SetupGuideEmpty).toMatchObject({
+      name: 'Setup Guide Empty',
+      args: { consoleView: 'Setup Guide', tokenListState: 'Empty' },
     })
     expect(userConsoleStories.TokenDetailOverview).toMatchObject({
       name: 'Token Detail Overview',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
+    })
+    expect(userConsoleStories.TokenDetailSetupAction).toMatchObject({
+      name: 'Token Detail Setup Action',
+      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
     })
     expect(userConsoleStories.TokenDetailMobileCredits).toMatchObject({
       name: 'Token Detail Mobile Logs Entry',
@@ -141,16 +151,9 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token Revealed',
       args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Token Revealed' },
     })
-    expect(userConsoleStories.TokenDetailGuideTokenRevealed).toMatchObject({
-      name: 'Token Detail Guide Token Revealed',
-      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
-    })
     expect(userConsoleStories.TokenDetailAdmin).toMatchObject({
       name: 'Token Detail Admin',
       args: { consoleView: 'Token Detail', isAdmin: true, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
-    })
-    expect(userConsoleStories.MobileGuideMenuProof).toMatchObject({
-      name: 'Mobile Guide Menu Proof',
     })
 
     expect(userConsoleStories).not.toHaveProperty('Dashboard')

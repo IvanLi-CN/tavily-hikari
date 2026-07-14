@@ -18,6 +18,7 @@ import UserDashboardOverview from './UserDashboardOverview'
 import TokenListActions from './TokenListActions'
 import TokenListSummary from './TokenListSummary'
 import BillingPage from './BillingPage'
+import SetupGuidePage from './SetupGuidePage'
 import RechargePanel from './RechargePanel'
 import { DEFAULT_RECHARGE_UNIT_CREDITS, normalizeRechargeSelection } from './rechargeControls'
 import TokenResetDialogs from './TokenResetDialogs'
@@ -286,11 +287,12 @@ function statusTone(status: string): StatusTone {
   return 'neutral'
 }
 
-type UserConsoleViewKey = 'dashboard' | 'billing' | 'tokens' | 'tokenDetail' | 'oauthCallback'
+type UserConsoleViewKey = 'dashboard' | 'billing' | 'tokens' | 'setup' | 'tokenDetail' | 'oauthCallback'
 
 function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
   if (route.name === 'oauthCallback') return 'oauthCallback'
   if (route.name === 'billing') return 'billing'
+  if (route.name === 'setup') return 'setup'
   if (route.name === 'token' || route.name === 'tokenLogs') return 'tokenDetail'
   if (route.section === 'tokens') return 'tokens'
   return 'dashboard'
@@ -334,6 +336,7 @@ function isConsoleEntryPath(pathname: string): boolean {
   return normalizedPath === '/console'
     || normalizedPath === '/console/dashboard'
     || normalizedPath === '/console/billing'
+    || normalizedPath === '/console/setup'
     || normalizedPath === '/console/tokens'
     || /^\/console\/oauth\/[^/]+\/callback$/.test(normalizedPath)
     || normalizedPath.startsWith('/console/tokens/')
@@ -510,33 +513,21 @@ function tokenLabel(tokenId: string): string {
   return `th-${tokenId}-************************`
 }
 
-function shouldRenderLandingGuide(route: ConsoleRoute, tokenCount: number): boolean {
-  return route.name === 'landing' && tokenCount === 1
+function resolveSetupTokenId(search: string, tokens: UserTokenSummary[]): string | null {
+  const requestedId = new URLSearchParams(search).get('token')
+  if (requestedId && tokens.some((token) => token.enabled && token.tokenId === requestedId)) {
+    return requestedId
+  }
+  return tokens.find((token) => token.enabled)?.tokenId ?? null
 }
 
-function resolveGuideTokenId(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
-  if (route.name === 'token' || route.name === 'tokenLogs') {
-    return route.id
-  }
-  if (tokens.length === 1) {
-    return tokens[0].tokenId
-  }
-  return null
-}
-
-function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): string {
-  const guideTokenId = resolveGuideTokenId(route, tokens)
+function resolveGuideToken(route: ConsoleRoute, setupTokenId: string | null = null): string {
+  const guideTokenId = route.name === 'setup' ? setupTokenId : null
   return guideTokenId ? tokenLabel(guideTokenId) : 'th-xxxx-xxxxxxxxxxxx'
 }
 
-function resolveGuideRevealContextKey(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
-  const guideTokenId = resolveGuideTokenId(route, tokens)
-  if (!guideTokenId) return null
-  if (route.name === 'token' || route.name === 'tokenLogs') {
-    return `token:${route.id}`
-  }
-  const landingSection = route.name === 'landing' ? route.section ?? 'landing' : route.name
-  return `landing:${landingSection}:${tokens.map((token) => token.tokenId).join(',')}`
+function resolveGuideRevealContextKey(route: ConsoleRoute, setupTokenId: string | null = null): string | null {
+  return route.name === 'setup' && setupTokenId ? `setup:${setupTokenId}` : null
 }
 
 function isActiveGuideRevealContext(revealedContextKey: string | null, currentContextKey: string | null): boolean {
@@ -1275,8 +1266,7 @@ export default function UserConsole(): JSX.Element {
   const [tokenSecretLoading, setTokenSecretLoading] = useState(false)
   const [tokenSecretError, setTokenSecretError] = useState<string | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
-  const [isMobileGuide, setIsMobileGuide] = useState(false)
-  const [detailGuideOpen, setDetailGuideOpen] = useState(false)
+  const [setupTokenId, setSetupTokenId] = useState<string | null>(null)
   const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_MCP_PROBE_STEP_COUNT))
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_API_PROBE_STEP_COUNT))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
@@ -1823,10 +1813,17 @@ export default function UserConsole(): JSX.Element {
     setGuideTokenError(null)
   }, [
     consoleAvailability,
-    route.name === 'token' || route.name === 'tokenLogs'
-      ? route.id
-      : `${route.name === 'landing' ? route.section ?? 'landing' : route.name}:${tokens.map((token) => token.tokenId).join(',')}`,
+    route.name,
+    setupTokenId,
   ])
+
+  useEffect(() => {
+    if (route.name !== 'setup') {
+      setSetupTokenId(null)
+      return
+    }
+    setSetupTokenId(resolveSetupTokenId(window.location.search, tokens))
+  }, [route, tokens])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
     const cacheTimer = tokenSecretCacheTimerRef.current.get(tokenId)
@@ -1965,9 +1962,9 @@ export default function UserConsole(): JSX.Element {
     return true
   }, [route])
 
-  const guideTokenId = useMemo(() => resolveGuideTokenId(route, tokens), [route, tokens])
-  const maskedGuideToken = useMemo(() => resolveGuideToken(route, tokens), [route, tokens])
-  const guideRevealContextKey = useMemo(() => resolveGuideRevealContextKey(route, tokens), [route, tokens])
+  const guideTokenId = route.name === 'setup' ? setupTokenId : null
+  const maskedGuideToken = useMemo(() => resolveGuideToken(route, setupTokenId), [route, setupTokenId])
+  const guideRevealContextKey = useMemo(() => resolveGuideRevealContextKey(route, setupTokenId), [route, setupTokenId])
   const guideTokenVisible =
     consoleAvailability === 'enabled'
     && guideTokenValue != null
@@ -2194,6 +2191,8 @@ export default function UserConsole(): JSX.Element {
     ? text.dashboard.description
     : currentView === 'billing'
       ? text.billing.description
+    : currentView === 'setup'
+      ? text.setup.description
     : currentView === 'tokens'
       ? text.tokens.description
       : text.detail.subtitle
@@ -2251,22 +2250,24 @@ export default function UserConsole(): JSX.Element {
   const consoleEmptyState = !isOAuthCallbackRoute && (consoleUnavailable || consoleLoggedOut || consoleNeedsLogin)
   const logoutVisible = !isOAuthCallbackRoute && profile?.userLoggedIn === true
   const showTokenListLoading = loading && tokens.length === 0, showEmptyTokens = !loading && tokens.length === 0
-  const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
   const rechargeMinMonths = rechargeConfig?.minMonths ?? 1, rechargeMaxMonths = rechargeConfig?.maxMonths ?? 12
   const showRechargePanel = rechargeConfig?.visible ?? false
   const currentViewDescription = isOAuthCallbackRoute
     ? oauthCallbackModel.description
     : baseCurrentViewDescription
-  const consoleSectionTabs = useMemo<ReadonlyArray<SegmentedTabsOption<'dashboard' | 'billing' | 'tokens'>>>(
+  const consoleSectionTabs = useMemo<ReadonlyArray<SegmentedTabsOption<'dashboard' | 'billing' | 'tokens' | 'setup'>>>(
     () => [
       { value: 'dashboard', label: text.header.views.dashboard },
       { value: 'billing', label: text.header.views.billing },
       { value: 'tokens', label: text.header.views.tokens },
+      { value: 'setup', label: text.header.views.setup },
     ],
-    [text.header.views.billing, text.header.views.dashboard, text.header.views.tokens],
+    [text.header.views.billing, text.header.views.dashboard, text.header.views.setup, text.header.views.tokens],
   )
-  const activeConsoleSection: 'dashboard' | 'billing' | 'tokens' = currentView === 'billing'
+  const activeConsoleSection: 'dashboard' | 'billing' | 'tokens' | 'setup' = currentView === 'billing'
     ? 'billing'
+    : currentView === 'setup'
+      ? 'setup'
     : currentView === 'tokens' || currentView === 'tokenDetail'
       ? 'tokens'
       : 'dashboard'
@@ -2368,19 +2369,21 @@ export default function UserConsole(): JSX.Element {
   }, [consoleEmptyState, route, scrollToLandingSection])
 
   useEffect(() => {
-    if (consoleEmptyState || (route.name !== 'token' && route.name !== 'tokenLogs')) return
+    if (consoleEmptyState || (route.name !== 'token' && route.name !== 'tokenLogs' && route.name !== 'setup')) return
     const frame = window.requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: 'auto' })
-      detailHeadingRef.current?.focus({ preventScroll: true })
+      if (route.name !== 'setup') {
+        detailHeadingRef.current?.focus({ preventScroll: true })
+      }
     })
     return () => window.cancelAnimationFrame(frame)
   }, [consoleEmptyState, route])
 
-  const navigateToRoute = useCallback((nextRoute: ConsoleRoute) => {
+  const navigateToRoute = useCallback((nextRoute: ConsoleRoute, search = '') => {
     const nextPath = userConsoleRouteToPath(nextRoute)
     const currentPath = normalizeUserConsolePathname(window.location.pathname || '')
-    if (currentPath !== nextPath || window.location.hash) {
-      window.history.pushState(null, '', `${nextPath}${window.location.search}`)
+    if (currentPath !== nextPath || window.location.search !== search || window.location.hash) {
+      window.history.pushState(null, '', `${nextPath}${search}`)
     }
     setRoute(nextRoute)
   }, [])
@@ -2671,6 +2674,10 @@ export default function UserConsole(): JSX.Element {
     landingScrollBehaviorRef.current = behavior
     navigateToRoute({ name: 'landing', section: 'tokens' })
   }
+  const goSetup = (tokenId?: string) => {
+    shouldScrollLandingSectionRef.current = false
+    navigateToRoute({ name: 'setup' }, tokenId ? `?token=${encodeURIComponent(tokenId)}` : '')
+  }
   const goTokenDetail = (tokenId: string) => {
     navigateToRoute({ name: 'token', id: tokenId })
   }
@@ -2895,7 +2902,7 @@ export default function UserConsole(): JSX.Element {
 
       {!consoleEmptyState && !isOAuthCallbackRoute ? (
         <div className="user-console-billing-nav-section">
-          <SegmentedTabs<'dashboard' | 'billing' | 'tokens'>
+          <SegmentedTabs<'dashboard' | 'billing' | 'tokens' | 'setup'>
             value={activeConsoleSection}
             onChange={(value) => {
               if (value === 'dashboard') {
@@ -2904,6 +2911,10 @@ export default function UserConsole(): JSX.Element {
               }
               if (value === 'billing') {
                 goBilling()
+                return
+              }
+              if (value === 'setup') {
+                goSetup()
                 return
               }
               goTokens()
@@ -3129,15 +3140,20 @@ export default function UserConsole(): JSX.Element {
               )}
             </div>
           </section>
-          {showLandingGuide && (
-            <div className="user-console-guide-slot">
-              {renderGuideSection({
-                sectionTitle: text.detail.guideTitle,
-                sectionDescription: text.detail.guideDescription,
-              })}
-            </div>
-          )}
         </div>
+      )}
+
+      {!consoleEmptyState && route.name === 'setup' && (
+        <SetupGuidePage
+          text={text.setup}
+          tokens={tokens}
+          selectedTokenId={setupTokenId}
+          onTokenChange={(nextTokenId) => {
+            setSetupTokenId(nextTokenId)
+            window.history.replaceState(null, '', `/console/setup?token=${encodeURIComponent(nextTokenId)}`)
+          }}
+          guide={setupTokenId ? renderGuideSection({ showHeading: false, embedded: true }) : null}
+        />
       )}
 
       {!consoleEmptyState && route.name === 'billing' && (
@@ -3171,10 +3187,16 @@ export default function UserConsole(): JSX.Element {
                   <span className="user-console-detail-description-short">{text.detail.subtitleShort}</span>
                 </p>
               </div>
-              <button type="button" className="btn btn-outline user-console-detail-back" onClick={() => goTokens()}>
-                <span className="user-console-detail-back-full">{text.detail.back}</span>
-                <span className="user-console-detail-back-short">{text.detail.backShort}</span>
-              </button>
+              <div className="user-console-detail-actions">
+                <Button type="button" variant="outline" onClick={() => goSetup(route.id)}>
+                  <Icon icon="mdi:book-open-page-variant-outline" width={18} height={18} aria-hidden="true" />
+                  {text.setup.detailAction}
+                </Button>
+                <button type="button" className="btn btn-outline user-console-detail-back" onClick={() => goTokens()}>
+                  <span className="user-console-detail-back-full">{text.detail.back}</span>
+                  <span className="user-console-detail-back-short">{text.detail.backShort}</span>
+                </button>
+              </div>
             </header>
 
             <div className="access-stats">
@@ -3260,34 +3282,6 @@ export default function UserConsole(): JSX.Element {
             statusTone={statusTone}
           />
 
-          <section className="surface panel user-console-guide-disclosure">
-            <button
-              type="button"
-              className="user-console-guide-disclosure-trigger"
-              aria-expanded={detailGuideOpen}
-              onClick={() => setDetailGuideOpen((current) => !current)}
-            >
-              <span className="user-console-guide-disclosure-copy">
-                <strong>{text.detail.guideTitle}</strong>
-                <span>{text.detail.guideDescription}</span>
-              </span>
-              <span className="user-console-guide-disclosure-action">
-                {detailGuideOpen ? text.detail.guideToggleHide : text.detail.guideToggleShow}
-                <Icon
-                  icon={detailGuideOpen ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                  width={18}
-                  height={18}
-                  aria-hidden="true"
-                />
-              </span>
-            </button>
-            {detailGuideOpen ? (
-              <div className="user-console-guide-disclosure-body">
-                {renderGuideSection({ showHeading: false, embedded: true })}
-              </div>
-            ) : null}
-          </section>
-
         </>
       )}
 
@@ -3371,13 +3365,12 @@ export {
   resolveDetailLogsPushIssueMessage,
   resolveGuideRevealContextKey,
   resolveGuideToken,
-  resolveGuideTokenId,
+  resolveSetupTokenId,
   resolveFallbackLogoutTarget,
   resolvePostLogoutTarget,
   resolveUserConsoleIdentityName,
   resolveUserConsoleProviderLabel,
   resolveUserConsoleView,
   shouldRedirectToLogoutTarget,
-  shouldRenderLandingGuide,
   toLoggedOutConsoleProfile,
 }

@@ -133,7 +133,7 @@
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  story_id_or_title: UserConsole/UserConsole/Console Home Guide Token Revealed
+  story_id_or_title: User Console/UserConsole / Setup Guide Token Revealed
   state: other tab with revealed token
   evidence_note: 验证单 token landing 导览在显示密钥后，其他页签同时展示通用 MCP 与 HTTP API 两种接入示例。
   image:

@@ -15,6 +15,54 @@
   max-width: 100%;
 }
 
+.user-console-setup-page {
+  display: grid;
+  gap: 18px;
+}
+
+.user-console-setup-header {
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.user-console-setup-heading {
+  min-width: 0;
+}
+
+.user-console-setup-token-select {
+  display: grid;
+  flex: 0 1 420px;
+  gap: 6px;
+  min-width: min(100%, 320px);
+}
+
+.user-console-setup-token-select > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.user-console-setup-token-select [role='combobox'] {
+  min-width: 0;
+}
+
+.user-console-setup-empty {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+.user-console-setup-empty span {
+  color: hsl(var(--muted-foreground));
+}
+
+.user-console-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .user-console-billing-overview-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -801,6 +849,31 @@
 }
 
 @media (max-width: 720px) {
+  .user-console-billing-nav-tabs.segmented-tabs-mobile-buttons .segmented-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 8px;
+    font-size: 0.78rem;
+  }
+
+  .user-console-setup-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .user-console-setup-token-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .user-console-detail-actions {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+  }
+
   .user-console-billing-stack {
     gap: 18px;
   }

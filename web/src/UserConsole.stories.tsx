@@ -15,22 +15,9 @@ import type {
   UserTokenSummary,
 } from './api'
 import UserConsole from './UserConsole'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from './components/ui/dropdown-menu'
-import { Icon, getGuideClientIconName } from './lib/icons'
-import {
-  GuideCodeSample,
-  MobileGuideDropdown,
-  buildGuideContent,
-  resolveGuideSamples,
-} from './user-console/guide'
 import { userConsoleRouteToPath } from './lib/userConsoleRoutes'
 
-type ConsoleView = 'Console Home' | 'Token Detail'
+type ConsoleView = 'Console Home' | 'Setup Guide' | 'Token Detail'
 type LandingFocus = 'Overview Focus' | 'Token Focus'
 type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
@@ -40,7 +27,7 @@ type RechargePreview = 'normal' | 'test-price' | 'disabled' | 'hidden'
 type RechargeQuotePreview = 'normal' | 'month-end-clamp'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
-type GuideRevealMode = 'none' | 'landing-guide' | 'landing-cli-skills' | 'detail-guide'
+type GuideRevealMode = 'none' | 'setup-guide' | 'setup-cli-skills'
 
 interface UserConsoleStoryArgs {
   consoleView: ConsoleView
@@ -72,12 +59,7 @@ type MockEventSourceShape = EventSource & {
 }
 
 const TOKEN_DETAIL_PATH = '/console/tokens/a1b2'
-const guideProofLabels = [
-  { id: 'codex', label: 'Codex CLI' },
-  { id: 'hikariCli', label: 'CLI + Skills' },
-  { id: 'claude', label: 'Claude Code' },
-  { id: 'vscode', label: 'VS Code' },
-] as const
+const SETUP_PATH = '/console/setup'
 const removedTokenQuotaLabels = ['配额窗口', 'Quota Windows', '任意请求(1h)', 'Any Req (1h)']
 const removedTokenQuotaLabelsMobile = [...removedTokenQuotaLabels, '小时', '日', '月']
 const removedTokenInternalLabels = ['primary', 'backup', '备注', 'Note']
@@ -208,6 +190,14 @@ const consoleHomeAdminTokenFocusArgs: UserConsoleStoryArgs = {
 const tokenDetailOverviewArgs: UserConsoleStoryArgs = {
   ...consoleHomeOverviewArgs,
   consoleView: 'Token Detail',
+  announcementPreview: 'None',
+}
+
+const setupGuideArgs: UserConsoleStoryArgs = {
+  ...consoleHomeOverviewArgs,
+  consoleView: 'Setup Guide',
+  tokenListState: 'Multiple Tokens',
+  announcementPreview: 'None',
 }
 
 const tokenDetailAdminOverviewArgs: UserConsoleStoryArgs = {
@@ -876,6 +866,7 @@ function jsonResponse(data: unknown, status = 200): Response {
 function routePathFromView(view: ConsoleView, landingFocus: LandingFocus, routePathOverride?: string): string {
   if (typeof routePathOverride === 'string') return routePathOverride
   if (view === 'Token Detail') return TOKEN_DETAIL_PATH
+  if (view === 'Setup Guide') return SETUP_PATH
   return userConsoleRouteToPath({
     name: 'landing',
     section: landingFocus === 'Token Focus' ? 'tokens' : 'dashboard',
@@ -883,9 +874,7 @@ function routePathFromView(view: ConsoleView, landingFocus: LandingFocus, routeP
 }
 
 function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
-  const tokenListMode = args.consoleView !== 'Console Home'
-    ? 'single'
-    : args.tokenListState === 'Empty'
+  const tokenListMode = args.tokenListState === 'Empty'
       ? 'empty'
       : args.tokenListState === 'Multiple Tokens'
         ? 'multiple'
@@ -900,146 +889,6 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
     tokenListMode,
     announcementPreview: args.announcementPreview ?? 'Active',
   }
-}
-
-function UserConsoleMobileGuideMenuProof(): JSX.Element {
-  const active = guideProofLabels[0]
-
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gap: 20,
-        maxWidth: 420,
-        margin: '0 auto',
-      }}
-    >
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>Mobile guide menu proof</h2>
-            <p className="panel-description">
-              The console guide dropdown uses the shared portal layer and must not clip inside the mobile token card.
-            </p>
-          </div>
-        </div>
-        <div
-          style={{
-            overflow: 'hidden',
-            borderRadius: 28,
-            border: '1px dashed hsl(var(--accent) / 0.42)',
-            background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.3))',
-            padding: 18,
-          }}
-        >
-          <div style={{ minHeight: 120 }}>
-            <DropdownMenu open>
-              <DropdownMenuTrigger asChild>
-                <button type="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon
-                      icon={getGuideClientIconName(active.id)}
-                      width={18}
-                      height={18}
-                      aria-hidden="true"
-                      style={{ color: '#475569' }}
-                    />
-                    {active.label}
-                  </span>
-                  <Icon
-                    icon="mdi:chevron-down"
-                    width={16}
-                    height={16}
-                    aria-hidden="true"
-                    style={{ color: '#647589' }}
-                  />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="guide-select-menu p-1">
-                {guideProofLabels.map((tab) => (
-                  <DropdownMenuItem
-                    key={tab.id}
-                    className={`flex items-center gap-2 ${tab.id === active.id ? 'bg-accent/45 text-accent-foreground' : ''}`}
-                  >
-                    <Icon
-                      icon={getGuideClientIconName(tab.id)}
-                      width={16}
-                      height={16}
-                      aria-hidden="true"
-                      style={{ color: '#475569' }}
-                    />
-                    <span className="truncate">{tab.label}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function UserConsoleCliSkillsGuideFragment({ compact = false }: { compact?: boolean }): JSX.Element {
-  const [activeGuide, setActiveGuide] = useState<'hikariCli'>('hikariCli')
-  const guide = buildGuideContent('en', 'https://hikari.example.com', 'th-a1b2-1234567890abcdef').hikariCli
-  const guideTabs = [
-    { id: 'codex' as const, label: 'Codex CLI' },
-    { id: 'hikariCli' as const, label: 'CLI + Skills' },
-    { id: 'claude' as const, label: 'Claude Code CLI' },
-    { id: 'vscode' as const, label: 'VS Code / Copilot' },
-  ]
-
-  return (
-    <main className="user-console-cli-skills-guide-proof">
-      <section className="surface panel public-home-guide">
-        <h2>Connect Tavily Hikari to common clients</h2>
-        {compact ? (
-          <div className="guide-select" aria-label="Client selector (mobile)">
-            <MobileGuideDropdown active={activeGuide} onChange={() => setActiveGuide('hikariCli')} labels={guideTabs} />
-          </div>
-        ) : (
-          <div className="guide-tabs">
-            {guideTabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={`guide-tab${tab.id === activeGuide ? ' active' : ''}`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="guide-panel">
-          <div className="guide-panel-header">
-            <h3>{guide.title}</h3>
-            <button type="button" className="guide-token-toggle btn btn-outline btn-sm" aria-pressed="true" aria-label="Hide token" title="Hide token">
-              <Icon icon="mdi:eye-off-outline" width={16} height={16} aria-hidden="true" />
-              <span>Hide token</span>
-            </button>
-          </div>
-          <ol>
-            {guide.steps.map((step, index) => (
-              <li key={index}>{step}</li>
-            ))}
-          </ol>
-          {resolveGuideSamples(guide).map((sample) => (
-            <div className="guide-sample" key={sample.title}>
-              <p className="guide-sample-title">{sample.title}</p>
-              <GuideCodeSample
-                copyLabel="Copy"
-                copyState="idle"
-                onCopy={() => undefined}
-                sample={sample}
-                sampleKey={sample.title}
-              />
-            </div>
-          ))}
-        </div>
-      </section>
-    </main>
-  )
 }
 
 export const __testables = {
@@ -1520,17 +1369,14 @@ function UserConsoleStory(
   useEffect(() => {
     if (!ready || guideRevealMode === 'none') return
     const timer = window.setTimeout(() => {
-      if (guideRevealMode === 'detail-guide') {
-        document.querySelector<HTMLButtonElement>('.user-console-guide-disclosure-trigger')?.click()
-      }
-      if (guideRevealMode === 'landing-cli-skills') {
+      if (guideRevealMode === 'setup-cli-skills') {
         const cliTab = Array.from(document.querySelectorAll<HTMLButtonElement>('.guide-tab'))
           .find((button) => button.textContent?.trim() === 'CLI + Skills')
         cliTab?.click()
       }
       const button = document.querySelector<HTMLButtonElement>('.guide-token-toggle')
       button?.click()
-    }, guideRevealMode === 'landing-guide' ? 200 : 120)
+    }, 180)
     return () => window.clearTimeout(timer)
   }, [guideRevealMode, ready])
 
@@ -1604,8 +1450,8 @@ const meta = {
   argTypes: {
     consoleView: {
       name: 'Console view',
-      description: 'Pick the merged console landing page or the dedicated token detail page.',
-      options: ['Console Home', 'Token Detail'],
+      description: 'Pick the merged console landing page, setup guide, or dedicated token detail page.',
+      options: ['Console Home', 'Setup Guide', 'Token Detail'],
       control: { type: 'inline-radio' },
     },
     isAdmin: {
@@ -1625,7 +1471,7 @@ const meta = {
       description: 'Pick the token list presentation for the merged landing page.',
       options: ['Single Token', 'Multiple Tokens', 'Empty'],
       control: { type: 'inline-radio' },
-      if: { arg: 'consoleView', eq: 'Console Home' },
+      if: { arg: 'consoleView', neq: 'Token Detail' },
     },
     tokenDetailPreview: {
       name: 'Token detail preview',
@@ -2166,16 +2012,41 @@ export const ConsoleHomeCopyFailureRecovery: Story = {
   render: (args) => <UserConsoleStory {...args} copyRecoveryMode="list-manual-bubble" />,
 }
 
-export const ConsoleHomeGuideTokenRevealed: Story = {
-  name: 'Console Home Guide Token Revealed',
-  args: consoleHomeTokenFocusArgs,
-  render: (args) => <UserConsoleStory {...args} guideRevealMode="landing-guide" />,
+export const SetupGuide: Story = {
+  name: 'Setup Guide',
+  args: setupGuideArgs,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 240))
+    if (!canvasElement.textContent?.includes('Usage Guide')) {
+      throw new Error('Expected the setup route to render the usage guide page.')
+    }
+    if (canvasElement.querySelector('[aria-label="Token used in setup examples"]') == null) {
+      throw new Error('Expected the setup guide to expose a Token selector.')
+    }
+    const setupTab = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.segmented-tab'))
+      .find((button) => button.textContent?.trim() === 'Setup Guide')
+    if (setupTab?.getAttribute('aria-checked') !== 'true') {
+      throw new Error('Expected the Setup Guide navigation tab to be active.')
+    }
+  },
 }
 
-export const ConsoleHomeCliSkillsGuide: Story = {
-  name: 'Console Home CLI + Skills Guide',
-  args: consoleHomeTokenFocusArgs,
-  render: (args) => <UserConsoleStory {...args} guideRevealMode="landing-cli-skills" />,
+export const SetupGuideTokenRevealed: Story = {
+  name: 'Setup Guide Token Revealed',
+  args: {
+    ...setupGuideArgs,
+    routePathOverride: `${SETUP_PATH}?token=a1b2`,
+  },
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="setup-guide" />,
+}
+
+export const SetupGuideCliSkills: Story = {
+  name: 'Setup Guide CLI + Skills',
+  args: {
+    ...setupGuideArgs,
+    routePathOverride: `${SETUP_PATH}?token=a1b2`,
+  },
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="setup-cli-skills" />,
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 520))
     const proofText = canvasElement.textContent ?? ''
@@ -2197,22 +2068,46 @@ export const ConsoleHomeCliSkillsGuide: Story = {
   },
 }
 
-export const CliSkillsGuideFragment: Story = {
-  name: 'CLI + Skills Guide Fragment',
-  args: consoleHomeTokenFocusArgs,
-  render: () => <UserConsoleCliSkillsGuideFragment />,
-  parameters: {
-    layout: 'fullscreen',
+export const SetupGuideMobile: Story = {
+  name: 'Setup Guide Mobile',
+  args: setupGuideArgs,
+  globals: { language: 'zh' },
+  parameters: { ...mobileViewport },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 240))
+    const page = canvasElement.querySelector<HTMLElement>('.user-console-setup-page')
+    if (!page || page.scrollWidth > page.clientWidth) {
+      throw new Error('Expected the mobile setup guide to fit without horizontal overflow.')
+    }
+    if (canvasElement.querySelector('.guide-select') == null) {
+      throw new Error('Expected the mobile setup guide to use the compact client selector.')
+    }
   },
 }
 
-export const CliSkillsGuideFragmentMobile: Story = {
-  name: 'CLI + Skills Guide Fragment Mobile',
-  args: consoleHomeTokenFocusArgs,
-  render: () => <UserConsoleCliSkillsGuideFragment compact />,
-  parameters: {
-    layout: 'fullscreen',
-    ...mobileViewport,
+export const SetupGuideCliSkillsMobile: Story = {
+  name: 'Setup Guide CLI + Skills Mobile',
+  args: setupGuideArgs,
+  globals: { language: 'en' },
+  parameters: { ...mobileViewport },
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="setup-cli-skills" />,
+}
+
+export const SetupGuideEmpty: Story = {
+  name: 'Setup Guide Empty',
+  args: {
+    ...setupGuideArgs,
+    tokenListState: 'Empty',
+  },
+  globals: { language: 'zh' },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    if (!canvasElement.textContent?.includes('暂无可用 Token')) {
+      throw new Error('Expected the setup guide to explain that no enabled Token is available.')
+    }
+    if (canvasElement.querySelector('.guide-panel') != null) {
+      throw new Error('Expected the empty setup guide not to render client configuration samples.')
+    }
   },
 }
 
@@ -2222,17 +2117,13 @@ export const TokenDetailOverview: Story = {
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 160))
 
-    const guideTrigger = canvasElement.querySelector<HTMLButtonElement>('.user-console-guide-disclosure-trigger')
-    if (guideTrigger == null) {
-      throw new Error('Expected token detail to render a collapsed setup guide trigger.')
+    const guideButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-console-detail-actions button'))
+      .find((button) => button.textContent?.trim() === 'Usage Guide')
+    if (guideButton == null) {
+      throw new Error('Expected token detail to render the Usage Guide action beside the back button.')
     }
-
-    if (guideTrigger.getAttribute('aria-expanded') !== 'false') {
-      throw new Error('Expected setup guide to be collapsed by default.')
-    }
-
-    if (canvasElement.querySelector('.user-console-guide-disclosure-body') != null) {
-      throw new Error('Expected setup guide body to stay out of the initial detail layout.')
+    if (canvasElement.querySelector('.user-console-guide-disclosure') != null) {
+      throw new Error('Expected token detail to remove the legacy embedded setup disclosure.')
     }
 
     if (canvasElement.querySelector('.user-console-logs-table th:nth-child(3)')?.textContent?.trim() !== 'Credits') {
@@ -2269,6 +2160,26 @@ export const TokenDetailOverview: Story = {
     const filteredText = canvasElement.querySelector('.user-console-logs-table')?.textContent ?? ''
     if (filteredText.includes('/api/tavily/usage')) {
       throw new Error('Expected quota-usage filter to exclude non-billable usage requests.')
+    }
+    guideButton.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 100))
+    if (`${window.location.pathname}${window.location.search}` !== '/console/setup?token=a1b2') {
+      throw new Error('Expected the detail Usage Guide action to open setup with the current Token selected.')
+    }
+  },
+}
+
+export const TokenDetailSetupAction: Story = {
+  name: 'Token Detail Setup Action',
+  args: tokenDetailOverviewArgs,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    const actions = canvasElement.querySelector<HTMLElement>('.user-console-detail-actions')
+    if (!actions || !actions.textContent?.includes('Usage Guide') || !actions.textContent?.includes('Back to Token List')) {
+      throw new Error('Expected the detail header to show both Usage Guide and back actions.')
+    }
+    if (actions.scrollWidth > actions.clientWidth) {
+      throw new Error('Expected the detail header actions to fit without overflow.')
     }
   },
 }
@@ -2388,23 +2299,7 @@ export const TokenRevealed: Story = {
   },
 }
 
-export const TokenDetailGuideTokenRevealed: Story = {
-  name: 'Token Detail Guide Token Revealed',
-  args: tokenDetailOverviewArgs,
-  render: (args) => <UserConsoleStory {...args} guideRevealMode="detail-guide" />,
-}
-
 export const TokenDetailAdmin: Story = {
   name: 'Token Detail Admin',
   args: tokenDetailAdminOverviewArgs,
-}
-
-export const MobileGuideMenuProof: Story = {
-  name: 'Mobile Guide Menu Proof',
-  args: consoleHomeOverviewArgs,
-  render: () => <UserConsoleMobileGuideMenuProof />,
-  parameters: {
-    layout: 'padded',
-    ...mobileViewport,
-  },
 }

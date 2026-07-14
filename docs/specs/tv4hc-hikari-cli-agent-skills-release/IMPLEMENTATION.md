@@ -20,7 +20,7 @@
 - User-facing guide data now includes `hikariCli`, surfaced as `CLI + Skills` in desktop tabs and
   mobile dropdowns.
 - Guide code blocks include copy controls using the existing clipboard helper.
-- Storybook includes `Console Home CLI + Skills Guide` for the new state.
+- Storybook includes `Setup Guide CLI + Skills` and its mobile variant for the current state.
 
 ## Verification Notes
 

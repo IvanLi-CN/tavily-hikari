@@ -17,7 +17,7 @@ import {
   resolveDetailLogsPushIssueMessage,
   resolveGuideRevealContextKey,
   resolveGuideToken,
-  resolveGuideTokenId,
+  resolveSetupTokenId,
   resolvePostLogoutTarget,
   resolveFallbackLogoutTarget,
   resolveUserConsoleIdentityName,
@@ -25,7 +25,6 @@ import {
   resolveUserConsoleView,
   shouldRequireBillingSummary,
   shouldRedirectToLogoutTarget,
-  shouldRenderLandingGuide,
   toLoggedOutConsoleProfile,
 } from './user-console/runtime'
 
@@ -418,56 +417,33 @@ describe('UserConsole landing guide helpers', () => {
     expect(resolveDetailLogsPushIssueMessage('closed', copy)).toBe('closed')
   })
 
-  it('shows the landing guide only when exactly one token is visible on the merged landing page', () => {
-    expect(shouldRenderLandingGuide({ name: 'landing', section: 'dashboard' }, 1)).toBe(true)
-    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 1)).toBe(true)
-    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 0)).toBe(false)
-    expect(shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 2)).toBe(false)
-    expect(shouldRenderLandingGuide({ name: 'token', id: 'a1b2' }, 1)).toBe(false)
+  it('uses the selected setup token in guide snippets only on the setup route', () => {
+    expect(resolveGuideToken({ name: 'setup' }, 'a1b2')).toBe('th-a1b2-************************')
+    expect(resolveGuideToken({ name: 'token', id: 'a1b2' }, 'a1b2')).toBe('th-xxxx-xxxxxxxxxxxx')
   })
 
-  it('prefers the detail token id and otherwise falls back to the single landing token mask', () => {
-    expect(resolveGuideToken({ name: 'token', id: 'a1b2' }, [])).toBe(
-      'th-a1b2-************************',
-    )
-    expect(resolveGuideToken(
-      { name: 'landing', section: 'tokens' },
-      [{ tokenId: 'c3d4' } as any],
-    )).toBe('th-c3d4-************************')
-    expect(resolveGuideToken(
-      { name: 'landing', section: 'dashboard' },
-      [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
-    )).toBe('th-xxxx-xxxxxxxxxxxx')
+  it('prefers an enabled query token and otherwise picks the first enabled token', () => {
+    const tokens = [
+      { tokenId: 'disabled', enabled: false },
+      { tokenId: 'a1b2', enabled: true },
+      { tokenId: 'c3d4', enabled: true },
+    ] as any
+    expect(resolveSetupTokenId('?token=c3d4', tokens)).toBe('c3d4')
+    expect(resolveSetupTokenId('?token=disabled', tokens)).toBe('a1b2')
+    expect(resolveSetupTokenId('?token=missing', tokens)).toBe('a1b2')
+    expect(resolveSetupTokenId('', [{ tokenId: 'disabled', enabled: false } as any])).toBeNull()
   })
 
-  it('returns the revealable guide token id only for token detail or single-token landing routes', () => {
-    expect(resolveGuideTokenId({ name: 'token', id: 'a1b2' }, [])).toBe('a1b2')
-    expect(resolveGuideTokenId(
-      { name: 'landing', section: 'tokens' },
-      [{ tokenId: 'c3d4' } as any],
-    )).toBe('c3d4')
-    expect(resolveGuideTokenId(
-      { name: 'landing', section: 'dashboard' },
-      [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
-    )).toBeNull()
-  })
-
-  it('derives a distinct guide reveal context for each route and visible token set', () => {
-    expect(resolveGuideRevealContextKey({ name: 'token', id: 'a1b2' }, [])).toBe('token:a1b2')
-    expect(resolveGuideRevealContextKey(
-      { name: 'landing', section: 'tokens' },
-      [{ tokenId: 'c3d4' } as any],
-    )).toBe('landing:tokens:c3d4')
-    expect(resolveGuideRevealContextKey(
-      { name: 'landing', section: 'dashboard' },
-      [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
-    )).toBeNull()
+  it('derives a distinct guide reveal context for the selected setup token', () => {
+    expect(resolveGuideRevealContextKey({ name: 'setup' }, 'a1b2')).toBe('setup:a1b2')
+    expect(resolveGuideRevealContextKey({ name: 'setup' }, null)).toBeNull()
+    expect(resolveGuideRevealContextKey({ name: 'token', id: 'a1b2' }, 'a1b2')).toBeNull()
   })
 
   it('renders a revealed guide token only while the reveal context still matches', () => {
-    expect(isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:a1b2')).toBe(true)
-    expect(isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
-    expect(isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
+    expect(isActiveGuideRevealContext('setup:a1b2', 'setup:a1b2')).toBe(true)
+    expect(isActiveGuideRevealContext('setup:a1b2', 'setup:b2c3')).toBe(false)
+    expect(isActiveGuideRevealContext('setup:a1b2', null)).toBe(false)
   })
 
   it('normalizes guide samples so the other tab can render both MCP and API examples', () => {
