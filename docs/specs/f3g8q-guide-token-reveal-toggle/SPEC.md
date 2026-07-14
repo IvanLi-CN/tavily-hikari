@@ -135,17 +135,6 @@
   submission_gate: pending-owner-approval
   story_id_or_title: User Console/UserConsole / Setup Guide Token Revealed
   state: other tab with revealed token
-  evidence_note: 验证单 token landing 导览在显示密钥后，其他页签同时展示通用 MCP 与 HTTP API 两种接入示例。
+  evidence_note: 验证 setup 页导览在显示所选 Token 密钥后，其他页签同时展示通用 MCP 与 HTTP API 两种接入示例。
   image:
   ![UserConsole landing other tab revealed](./assets/user-console-landing-guide-other-revealed.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: UserConsole/UserConsole/Token Detail Guide Token Revealed
-  state: other tab with revealed token
-  evidence_note: 验证 token detail 导览在显示密钥后，其他页签同步展示通用 MCP 与 HTTP API 两种接入示例。
-  image:
-  ![UserConsole detail other tab revealed](./assets/user-console-detail-guide-other-revealed.png)

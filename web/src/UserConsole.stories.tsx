@@ -2161,11 +2161,6 @@ export const TokenDetailOverview: Story = {
     if (filteredText.includes('/api/tavily/usage')) {
       throw new Error('Expected quota-usage filter to exclude non-billable usage requests.')
     }
-    guideButton.click()
-    await new Promise((resolve) => window.setTimeout(resolve, 100))
-    if (`${window.location.pathname}${window.location.search}` !== '/console/setup?token=a1b2') {
-      throw new Error('Expected the detail Usage Guide action to open setup with the current Token selected.')
-    }
   },
 }
 
@@ -2180,6 +2175,21 @@ export const TokenDetailSetupAction: Story = {
     }
     if (actions.scrollWidth > actions.clientWidth) {
       throw new Error('Expected the detail header actions to fit without overflow.')
+    }
+  },
+}
+
+export const TokenDetailSetupNavigation: Story = {
+  name: 'Token Detail Setup Navigation',
+  args: tokenDetailOverviewArgs,
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    const guideButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.user-console-detail-actions button'))
+      .find((button) => button.textContent?.trim() === 'Usage Guide')
+    guideButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 100))
+    if (`${window.location.pathname}${window.location.search}` !== '/console/setup?token=a1b2') {
+      throw new Error('Expected the detail Usage Guide action to open setup with the current Token selected.')
     }
   },
 }

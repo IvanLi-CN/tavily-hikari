@@ -122,6 +122,10 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token Detail Setup Action',
       args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
     })
+    expect(userConsoleStories.TokenDetailSetupNavigation).toMatchObject({
+      name: 'Token Detail Setup Navigation',
+      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
+    })
     expect(userConsoleStories.TokenDetailMobileCredits).toMatchObject({
       name: 'Token Detail Mobile Logs Entry',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
