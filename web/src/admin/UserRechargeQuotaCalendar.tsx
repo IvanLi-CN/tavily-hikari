@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import type { AdminUserDetail } from '../api'
 import type { AdminRechargeTranslations } from '../i18n/adminRechargeTranslationTypes'
+import { getRechargeMonthUsedQuota } from './rechargeQuotaCalendarUsage'
 
 interface UserRechargeQuotaCalendarProps {
   detail: AdminUserDetail
@@ -34,6 +35,9 @@ export function UserRechargeQuotaCalendar({
   const currentRecharge = detail.recharge?.currentMonthEntitlementMonthlyDelta
     ?? rows.find((row) => isSameLocalMonth(row.monthStart, Date.now() / 1000))?.monthlyDelta
     ?? 0
+  const currentMonthStart = detail.entitlements.currentMonthStart
+    || rows.find((row) => isSameLocalMonth(row.monthStart, Date.now() / 1000))?.monthStart
+    || null
   const effectiveUntil = detail.recharge?.effectiveUntilMonthStart
   const tableFacts = [
     formatTemplate(strings.currentMonthRecharge, { value: formatNumber(currentRecharge) }),
@@ -80,7 +84,7 @@ export function UserRechargeQuotaCalendar({
                 <td>{formatNumber(tagDelta)}</td>
                 <td>{formatNumber(row.monthlyDelta)}</td>
                 <td>{formatNumber(detail.quotaBase.monthlyCreditsLimit + tagDelta + row.monthlyDelta)}</td>
-                <td>{formatNumber(detail.monthlyCreditsUsed)}</td>
+                <td>{formatNumber(getRechargeMonthUsedQuota(row.monthStart, currentMonthStart, detail.monthlyCreditsUsed))}</td>
               </tr>
               ))}
             </tbody>
