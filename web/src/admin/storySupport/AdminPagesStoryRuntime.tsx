@@ -6396,8 +6396,8 @@ function SystemSettingsPrivacyPageCanvas(): JSX.Element {
           configuredProjectIdMode: 'accessToken',
           effectiveProjectIdMode: 'accessToken',
           fixedProjectIdConfigured: false,
-          configuredMcpUserAgent: 'codex-control/2026.07',
-          effectiveMcpUserAgent: 'codex-control/2026.07',
+          configuredMcpUserAgent: '',
+          effectiveMcpUserAgent: null,
           httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
           controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
           gates: [

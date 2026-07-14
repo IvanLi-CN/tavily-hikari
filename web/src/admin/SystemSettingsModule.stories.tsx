@@ -265,7 +265,7 @@ export const FixedProjectIdAndControlUa: Story = {
     <SystemSettingsCanvas
       upstreamProjectIdMode="fixed"
       upstreamProjectIdFixedValue="team-search-prod"
-      upstreamMcpUserAgent="codex-control/2026.07"
+      upstreamMcpUserAgent="custom-control-mcp"
     />
   ),
 }

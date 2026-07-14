@@ -76,6 +76,6 @@ describe('SystemSettingsModule Storybook proofs', () => {
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('X-Project-ID 策略')
     expect(markup).toContain('team-search-prod')
-    expect(markup).toContain('codex-control/2026.07')
+    expect(markup).toContain('custom-control-mcp')
   })
 })

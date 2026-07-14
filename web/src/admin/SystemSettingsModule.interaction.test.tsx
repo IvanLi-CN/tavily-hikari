@@ -114,7 +114,7 @@ describe('SystemSettingsModule interactions', () => {
     await flushEffects()
 
     await act(async () => {
-      setNativeTextValue(userAgentInput!, 'codex-control/2026.07')
+      setNativeTextValue(userAgentInput!, 'custom-control-mcp')
     })
     await flushEffects()
 
@@ -125,7 +125,7 @@ describe('SystemSettingsModule interactions', () => {
 
     expect(applied.at(-1)?.upstreamProjectIdMode).toBe('fixed')
     expect(applied.at(-1)?.upstreamProjectIdFixedValue).toBe('team-search-prod')
-    expect(applied.at(-1)?.upstreamMcpUserAgent).toBe('codex-control/2026.07')
+    expect(applied.at(-1)?.upstreamMcpUserAgent).toBe('custom-control-mcp')
 
     await act(async () => root.unmount())
   })

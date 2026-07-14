@@ -9,8 +9,8 @@ const readyStatus: UpstreamPrivacyStatus = {
   configuredProjectIdMode: 'accessToken',
   effectiveProjectIdMode: 'accessToken',
   fixedProjectIdConfigured: false,
-  configuredMcpUserAgent: 'codex-control/2026.07',
-  effectiveMcpUserAgent: 'codex-control/2026.07',
+  configuredMcpUserAgent: '',
+  effectiveMcpUserAgent: null,
   httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
   controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
   gates: [
@@ -67,6 +67,17 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Ready: Story = {}
+
+export const CustomControlUserAgentConfigured: Story = {
+  args: {
+    status: {
+      ...readyStatus,
+      phase: 'configured',
+      configuredMcpUserAgent: 'custom-control-mcp',
+      effectiveMcpUserAgent: 'custom-control-mcp',
+    },
+  },
+}
 
 export const Loading: Story = {
   args: {
