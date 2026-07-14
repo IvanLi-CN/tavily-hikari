@@ -917,10 +917,18 @@ export interface AdminTranslationsShape {
       phasePending: string
       phaseActive: string
       phaseDegraded: string
+      phaseConfiguredDescription: string
+      phaseDrainingDescription: string
+      phasePendingDescription: string
+      phaseActiveDescription: string
+      phaseDegradedDescription: string
       statusConfigured: string
       statusActive: string
       statusMissing: string
       statusOmitted: string
+      attentionTitle: string
+      attentionDescription: string
+      attentionClear: string
       gateTitle: string
       gateDescription: string
       gateReady: string
@@ -929,11 +937,19 @@ export interface AdminTranslationsShape {
       gateApiRebalance: string
       gateMcpRebalance: string
       gateControlSessionsDrained: string
+      effectiveTitle: string
       countersTitle: string
       counterControlSessions: string
       counterPendingResearch: string
       counterQueuedSettlements: string
       counterDegradedSettlements: string
+      issuePendingResearch: string
+      issueQueuedSettlements: string
+      issueDegradedSettlements: string
+      detailsTitle: string
+      detailsDescription: string
+      configurationTitle: string
+      configurationAligned: string
       headersTitle: string
       headersHttpTitle: string
       headersControlTitle: string

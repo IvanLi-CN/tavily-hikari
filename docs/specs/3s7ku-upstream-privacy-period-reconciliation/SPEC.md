@@ -156,11 +156,11 @@
 
 - desktop system status page
 
-  ![System status desktop](./assets/privacy-status-desktop.png)
+  ![System status desktop](./assets/system-status-desktop.png)
 
 - mobile system status page
 
-  ![System status mobile](./assets/privacy-status-mobile.png)
+  ![System status mobile](./assets/system-status-mobile.png)
 
 ## Related PRs
 

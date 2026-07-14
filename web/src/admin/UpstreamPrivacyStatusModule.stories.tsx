@@ -68,6 +68,25 @@ type Story = StoryObj<typeof meta>
 
 export const Ready: Story = {}
 
+export const Active: Story = {
+  args: {
+    status: {
+      ...readyStatus,
+      phase: 'active',
+      completedGates: 4,
+      activeControlSessions: 0,
+      pendingResearch: 0,
+      queuedSettlements: 0,
+      gates: readyStatus.gates.map((gate) => ({
+        ...gate,
+        ready: true,
+        detail: gate.key === 'controlSessionsDrained' ? '0' : gate.detail,
+      })),
+      recentAdjustments: [],
+    },
+  },
+}
+
 export const CustomControlUserAgentConfigured: Story = {
   args: {
     status: {

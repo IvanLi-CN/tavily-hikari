@@ -412,8 +412,8 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(markup).toContain('系统状态')
     expect(markup).toContain('admin-nav-subitem-active')
-    expect(markup).toContain('出站 Header 白名单')
-    expect(markup).toContain('X-Project-ID')
+    expect(markup).toContain('需要关注')
+    expect(markup).toContain('技术详情')
   })
 
   it('renders the system settings HA page with node inventory and active child nav', () => {

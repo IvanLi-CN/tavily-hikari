@@ -7689,9 +7689,16 @@ export const SystemSettingsStatus: Story = {
     if (!activeText.includes('系统状态') && !activeText.includes('System Status')) {
       throw new Error('Expected the system status sidebar child item to be active.')
     }
+    const details = canvasElement.querySelector<HTMLDetailsElement>('[data-testid=\"system-status-technical-details\"]')
+    if (!details) {
+      throw new Error('Expected the system status page to expose a technical-details disclosure.')
+    }
+    if (details.open) {
+      throw new Error('Expected the technical-details disclosure to stay collapsed by default.')
+    }
     const pageText = canvasElement.ownerDocument.body.textContent ?? ''
-    if (!pageText.includes('出站 Header 白名单') && !pageText.includes('Outbound header allowlist')) {
-      throw new Error('Expected the system status page to render header allowlists.')
+    if (!pageText.includes('需要关注') && !pageText.includes('Needs attention')) {
+      throw new Error('Expected the system status page to foreground the attention section.')
     }
   },
 }
