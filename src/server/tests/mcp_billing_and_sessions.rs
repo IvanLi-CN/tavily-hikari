@@ -1936,6 +1936,15 @@ use super::upstream_support_and_manual_jobs::*;
             TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
                 .await
                 .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.upstream_mcp_user_agent = "configured-control-agent/2".to_string();
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("save configured MCP user agent");
 
         let access_token = proxy
             .create_access_token(Some("mcp-session-header-forwarding"))
@@ -2032,7 +2041,7 @@ use super::upstream_support_and_manual_jobs::*;
         );
         assert_eq!(
             recorded[0].user_agent.as_deref(),
-            Some("tavily-hikari-mcp-proxy/1.0")
+            Some("configured-control-agent/2")
         );
         assert_eq!(recorded[1].method, "tools/list");
         assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
@@ -2044,7 +2053,7 @@ use super::upstream_support_and_manual_jobs::*;
         );
         assert_eq!(
             recorded[1].user_agent.as_deref(),
-            Some("tavily-hikari-mcp-proxy/1.0")
+            Some("configured-control-agent/2")
         );
 
         let _ = std::fs::remove_file(db_path);

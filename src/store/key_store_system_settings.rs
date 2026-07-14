@@ -62,6 +62,20 @@ impl KeyStore {
             .await?
             .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
             .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
+        let upstream_project_id_mode = self
+            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .await?
+            .as_deref()
+            .and_then(UpstreamProjectIdMode::from_meta_value)
+            .unwrap_or_default();
+        let upstream_project_id_fixed_value = self
+            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1)
+            .await?
+            .unwrap_or_default();
+        let upstream_mcp_user_agent = self
+            .get_meta_string(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
+            .await?
+            .unwrap_or_default();
         let recharge_feature_enabled = self
             .get_meta_i64(META_KEY_RECHARGE_FEATURE_ENABLED_V1)
             .await?
@@ -161,6 +175,9 @@ impl KeyStore {
             rebalance_mcp_session_percent,
             api_rebalance_enabled,
             api_rebalance_percent,
+            upstream_project_id_mode,
+            upstream_project_id_fixed_value,
+            upstream_mcp_user_agent,
             recharge_feature_enabled,
             recharge_user_enabled,
             admin_default_active_users_only,
@@ -220,6 +237,20 @@ impl KeyStore {
                 API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX,
             )));
         }
+        validate_upstream_header_setting(
+            "upstream_project_id_fixed_value",
+            &settings.upstream_project_id_fixed_value,
+            UPSTREAM_PROJECT_ID_FIXED_MAX_BYTES,
+            settings.upstream_project_id_mode != UpstreamProjectIdMode::Fixed,
+        )
+        .map_err(ProxyError::Other)?;
+        validate_upstream_header_setting(
+            "upstream_mcp_user_agent",
+            &settings.upstream_mcp_user_agent,
+            UPSTREAM_MCP_USER_AGENT_MAX_BYTES,
+            true,
+        )
+        .map_err(ProxyError::Other)?;
         if settings.user_blocked_key_base_limit < 0 {
             return Err(ProxyError::Other(
                 "user_blocked_key_base_limit must be a non-negative integer".to_string(),
@@ -270,6 +301,21 @@ impl KeyStore {
         self.set_meta_i64(
             META_KEY_API_REBALANCE_PERCENT_V1,
             settings.api_rebalance_percent,
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_PROJECT_ID_MODE_V1,
+            settings.upstream_project_id_mode.as_meta_value(),
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1,
+            &settings.upstream_project_id_fixed_value,
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_MCP_USER_AGENT_V1,
+            &settings.upstream_mcp_user_agent,
         )
         .await?;
         self.set_meta_i64(
@@ -374,6 +420,9 @@ impl KeyStore {
             rebalance_mcp_session_percent: settings.rebalance_mcp_session_percent,
             api_rebalance_enabled: settings.api_rebalance_enabled,
             api_rebalance_percent: settings.api_rebalance_percent,
+            upstream_project_id_mode: settings.upstream_project_id_mode,
+            upstream_project_id_fixed_value: settings.upstream_project_id_fixed_value.clone(),
+            upstream_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
             recharge_feature_enabled: settings.recharge_feature_enabled,
             recharge_user_enabled: settings.recharge_user_enabled,
             admin_default_active_users_only: settings.admin_default_active_users_only,

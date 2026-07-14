@@ -685,7 +685,7 @@ fn sanitize_headers_removes_blocked_and_keeps_allowed() {
 }
 
 #[test]
-fn sanitize_headers_rewrites_origin_and_referer() {
+fn sanitize_http_headers_drops_origin_referer_and_client_fingerprints() {
     let upstream = Url::parse("https://mcp.tavily.com:443/mcp").unwrap();
     let origin = origin_from_url(&upstream);
 
@@ -696,29 +696,18 @@ fn sanitize_headers_rewrites_origin_and_referer() {
         HeaderValue::from_static("https://proxy.local/mcp/endpoint"),
     );
 
+    headers.insert("User-Agent", HeaderValue::from_static("client-agent"));
+    headers.insert("X-Client-Trace", HeaderValue::from_static("stable-id"));
+
     let sanitized = sanitize_headers_inner(&headers, &upstream, &origin);
-    assert_eq!(
-        sanitized.headers.get("Origin").unwrap(),
-        &HeaderValue::from_str(&origin).unwrap()
-    );
-    assert!(
-        sanitized
-            .headers
-            .get("Referer")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with(&origin)
-    );
-    assert!(sanitized.forwarded.contains(&"origin".to_string()));
-    assert!(sanitized.forwarded.contains(&"referer".to_string()));
+    assert!(!sanitized.headers.contains_key("origin"));
+    assert!(!sanitized.headers.contains_key("referer"));
+    assert!(!sanitized.headers.contains_key("user-agent"));
+    assert!(!sanitized.headers.contains_key("x-client-trace"));
 }
 
 #[test]
-fn sanitize_headers_keeps_mcp_session_recovery_headers() {
-    let upstream = Url::parse("https://mcp.tavily.com/mcp").unwrap();
-    let origin = origin_from_url(&upstream);
-
+fn sanitize_mcp_headers_keeps_only_protocol_recovery_headers() {
     let mut headers = HeaderMap::new();
     headers.insert("Mcp-Session-Id", HeaderValue::from_static("session-123"));
     headers.insert(
@@ -729,7 +718,9 @@ fn sanitize_headers_keeps_mcp_session_recovery_headers() {
     headers.insert("X-Forwarded-For", HeaderValue::from_static("1.2.3.4"));
     headers.insert("X-Real-Ip", HeaderValue::from_static("1.2.3.4"));
 
-    let sanitized = sanitize_headers_inner(&headers, &upstream, &origin);
+    headers.insert("X-Mcp-Client-Id", HeaderValue::from_static("fingerprint"));
+
+    let sanitized = sanitize_mcp_headers_inner(&headers, None);
     assert_eq!(
         sanitized.headers.get("mcp-session-id").unwrap(),
         &HeaderValue::from_static("session-123")
@@ -744,6 +735,7 @@ fn sanitize_headers_keeps_mcp_session_recovery_headers() {
     );
     assert!(!sanitized.headers.contains_key("x-forwarded-for"));
     assert!(!sanitized.headers.contains_key("x-real-ip"));
+    assert!(!sanitized.headers.contains_key("x-mcp-client-id"));
     assert!(sanitized.forwarded.contains(&"mcp-session-id".to_string()));
     assert!(
         sanitized
@@ -756,7 +748,7 @@ fn sanitize_headers_keeps_mcp_session_recovery_headers() {
 }
 
 #[test]
-fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
+fn sanitize_mcp_headers_drops_fingerprints_and_uses_configured_user_agent() {
     let mut headers = HeaderMap::new();
     headers.insert("Accept", HeaderValue::from_static("application/json"));
     headers.insert(
@@ -779,7 +771,7 @@ fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
         HeaderValue::from_static("2025-03-26"),
     );
 
-    let sanitized = sanitize_mcp_headers_inner(&headers);
+    let sanitized = sanitize_mcp_headers_inner(&headers, Some("configured-control-agent/2"));
 
     assert_eq!(
         sanitized.headers.get("accept").unwrap(),
@@ -795,7 +787,7 @@ fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
     );
     assert_eq!(
         sanitized.headers.get("user-agent").unwrap(),
-        &HeaderValue::from_static(MCP_PROXY_USER_AGENT)
+        &HeaderValue::from_static("configured-control-agent/2")
     );
     assert!(!sanitized.headers.contains_key("accept-language"));
     assert!(!sanitized.headers.contains_key("origin"));
@@ -806,6 +798,17 @@ fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
     assert!(sanitized.dropped.contains(&"origin".to_string()));
     assert!(sanitized.dropped.contains(&"referer".to_string()));
     assert!(sanitized.dropped.contains(&"sec-ch-ua".to_string()));
+}
+
+#[test]
+fn sanitize_mcp_headers_omits_user_agent_when_configuration_is_empty() {
+    let mut headers = HeaderMap::new();
+    headers.insert("User-Agent", HeaderValue::from_static("client-agent"));
+
+    let sanitized = sanitize_mcp_headers_inner(&headers, Some(""));
+
+    assert!(!sanitized.headers.contains_key("user-agent"));
+    assert!(sanitized.dropped.contains(&"user-agent".to_string()));
 }
 
 fn temp_db_path(prefix: &str) -> PathBuf {

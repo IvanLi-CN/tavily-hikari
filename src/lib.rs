@@ -11,6 +11,7 @@ mod store;
 mod tavily_proxy;
 #[cfg(test)]
 mod tests;
+mod upstream_privacy;
 pub mod web_assets;
 
 pub use admin_token_filters::*;
@@ -49,6 +50,7 @@ pub use store::{
     HaEventsReadSession, PerfLogScope, emit_low_memory_protection_decision, emit_perf_log,
 };
 pub use tavily_proxy::*;
+pub use upstream_privacy::*;
 
 use std::{
     cell::Cell,
@@ -819,34 +821,6 @@ const BROKEN_KEY_SUBJECT_TOKEN: &str = "token";
 const BROKEN_KEY_SOURCE_AUTO: &str = "auto";
 const BROKEN_KEY_SOURCE_MANUAL: &str = "manual";
 
-const BLOCKED_HEADERS: &[&str] = &[
-    "forwarded",
-    "via",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-forwarded-server",
-    "x-original-forwarded-for",
-    "x-forwarded-protocol",
-    "x-real-ip",
-    "true-client-ip",
-    "cf-connecting-ip",
-    "cf-true-client-ip",
-    "cf-ipcountry",
-    "cf-ray",
-    "cf-visitor",
-    "x-cluster-client-ip",
-    "x-proxy-user-ip",
-    "fastly-client-ip",
-    "proxy-authorization",
-    "proxy-connection",
-    "akamai-origin-hop",
-    "x-akamai-edgescape",
-    "x-akamai-forwarded-for",
-    "cdn-loop",
-];
-
 pub(crate) fn is_binding_effect_code(code: &str) -> bool {
     matches!(
         code,
@@ -892,31 +866,6 @@ pub(crate) fn is_key_effect_code(code: &str) -> bool {
     )
 }
 
-const ALLOWED_HEADERS: &[&str] = &[
-    "accept",
-    "accept-encoding",
-    "accept-language",
-    "authorization",
-    "cache-control",
-    "content-type",
-    "last-event-id",
-    "mcp-protocol-version",
-    "mcp-session-id",
-    "pragma",
-    "user-agent",
-    "sec-ch-ua",
-    "sec-ch-ua-mobile",
-    "sec-ch-ua-platform",
-    "sec-fetch-site",
-    "sec-fetch-mode",
-    "sec-fetch-dest",
-    "sec-fetch-user",
-    "origin",
-    "referer",
-];
-
-const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
-
 // Default per-token quota limits. These are used when no environment override is provided.
 pub const TOKEN_HOURLY_LIMIT: i64 = 100;
 pub const TOKEN_DAILY_LIMIT: i64 = 500;
@@ -933,7 +882,6 @@ pub const REQUEST_RATE_LIMIT_MIN: i64 = 1;
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
 const MCP_SESSION_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
-const MCP_PROXY_USER_AGENT: &str = "tavily-hikari-mcp-proxy/1.0";
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT: i64 = 5;
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_MIN: i64 = 1;
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_MAX: i64 = 1_000;
@@ -1108,6 +1056,10 @@ const META_KEY_REBALANCE_MCP_ENABLED_V1: &str = "rebalance_mcp_enabled_v1";
 const META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1: &str = "rebalance_mcp_session_percent_v1";
 const META_KEY_API_REBALANCE_ENABLED_V1: &str = "api_rebalance_enabled_v1";
 const META_KEY_API_REBALANCE_PERCENT_V1: &str = "api_rebalance_percent_v1";
+const META_KEY_UPSTREAM_PROJECT_ID_MODE_V1: &str = "upstream_project_id_mode_v1";
+const META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1: &str = "upstream_project_id_fixed_value_v1";
+const META_KEY_UPSTREAM_MCP_USER_AGENT_V1: &str = "upstream_mcp_user_agent_v1";
+const META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1: &str = "upstream_project_id_hmac_secret_v1";
 const META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1: &str = "user_blocked_key_base_limit_v1";
 const META_KEY_GLOBAL_IP_LIMIT_V1: &str = "global_ip_limit_v1";
 const META_KEY_TRUSTED_PROXY_CIDRS_V1: &str = "trusted_proxy_cidrs_v1";
