@@ -114,6 +114,7 @@ import AdminRechargeRecordsModule from '../AdminRechargeRecordsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
+import { formatShadowDailyUsageComparison } from '../userUsageComparison'
 import { buildPressureDemoFixture } from '../../api/pressureDemoFixture'
 import {
   forwardProxyStorySavedAt,
@@ -1058,14 +1059,19 @@ function withQuotaDeltaCanonical<T extends SemanticQuotaDelta | LegacyQuotaDelta
 function withAdminUserSummaryCanonical<
   T extends {
     quotaDailyUsed: number
+    quotaShadowDailyUsed?: number | null
     quotaDailyLimit: number
     quotaMonthlyUsed: number
     quotaMonthlyLimit: number
   },
->(value: T): T & Pick<AdminUserSummary, 'dailyCreditsUsed' | 'dailyCreditsLimit' | 'monthlyCreditsUsed' | 'monthlyCreditsLimit'> {
+>(value: T): T & Pick<
+  AdminUserSummary,
+  'dailyCreditsUsed' | 'shadowDailyCreditsUsed' | 'dailyCreditsLimit' | 'monthlyCreditsUsed' | 'monthlyCreditsLimit'
+> {
   return {
     ...value,
     dailyCreditsUsed: value.quotaDailyUsed,
+    shadowDailyCreditsUsed: value.quotaShadowDailyUsed ?? null,
     dailyCreditsLimit: value.quotaDailyLimit,
     monthlyCreditsUsed: value.quotaMonthlyUsed,
     monthlyCreditsLimit: value.quotaMonthlyLimit,
@@ -1293,6 +1299,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 1_118,
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
+    quotaShadowDailyUsed: 5_208,
     quotaDailyLimit: 25_500,
     quotaMonthlyUsed: 142_922,
     quotaMonthlyLimit: 5_000,
@@ -1322,6 +1329,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 602,
     quotaHourlyLimit: 0,
     quotaDailyUsed: 10_009,
+    quotaShadowDailyUsed: 9_992,
     quotaDailyLimit: 0,
     quotaMonthlyUsed: 231_008,
     quotaMonthlyLimit: 0,
@@ -4948,6 +4956,14 @@ function UsersPageCanvas({
               <tbody>
                 {sortedUsers.map((item) => {
                   const dailyQuotaMetric = formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)
+                  const dailyShadowComparison = formatShadowDailyUsageComparison({
+                    actualUsed: item.dailyCreditsUsed,
+                    shadowUsed: item.shadowDailyCreditsUsed,
+                    limit: item.dailyCreditsLimit,
+                    usersStrings: users,
+                    formatQuotaUsagePair,
+                    formatNumber,
+                  })
                   const monthlyQuotaMetric = formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
                   const lastLoginMetric = formatStackedTimestamp(item.lastLoginAt, language)
@@ -4978,7 +4994,9 @@ function UsersPageCanvas({
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
                         <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
-                        <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
+                        <span className="admin-table-value-secondary">
+                          {dailyShadowComparison ?? dailyQuotaMetric.secondary}
+                        </span>
                       </div>
                     </td>
                     <td className="admin-users-compact-cell">
@@ -6349,6 +6367,7 @@ function SystemSettingsPageCanvas({
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
+          upstreamPreciseReconciliationEnabled: true,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -6398,6 +6417,7 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
           fixedProjectIdConfigured: false,
           configuredMcpUserAgent: '',
           effectiveMcpUserAgent: null,
+          upstreamPreciseReconciliationEnabled: true,
           httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
           controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
           gates: [
@@ -6806,6 +6826,9 @@ export const Users: Story = {
     if (getFirstRenderedUserLabel(canvasElement) !== 'Alice Wang') {
       throw new Error('Expected users story to start with Alice Wang as the first rendered row.')
     }
+    if (!canvasElement.textContent?.includes('新方案')) {
+      throw new Error('Expected users story to surface the comparison-only daily usage secondary line.')
+    }
 
     updateStorySearchInput(searchInput, 'bob')
     await waitForStoryUi(320)
@@ -6887,6 +6910,9 @@ export const UsersUsage: Story = {
     }
     if (!headerTexts.includes('5m 限流')) {
       throw new Error('Expected users usage story to keep the 5m rate column.')
+    }
+    if (!canvasElement.textContent?.includes('新方案')) {
+      throw new Error('Expected users usage story to surface the comparison-only daily usage secondary line.')
     }
     const oneHourSortButton = canvasElement.querySelector<HTMLButtonElement>('[data-sort-field="businessCalls1hUsed"]')
     if (!oneHourSortButton) {

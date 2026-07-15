@@ -46,6 +46,7 @@ describe('SystemSettingsModule rendering', () => {
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
+  upstreamPreciseReconciliationEnabled: true,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -83,6 +84,8 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(zhStrings.form.upstreamProjectIdModeLabel)
     expect(markup).toContain(zhStrings.form.upstreamProjectIdModeAccessToken)
     expect(markup).toContain(zhStrings.form.upstreamMcpUserAgentLabel)
+    expect(markup).toContain(zhStrings.form.upstreamPreciseReconciliationTitle)
+    expect(markup).toContain(zhStrings.form.upstreamPreciseReconciliationEnabledValue)
     expect(markup).toContain(zhStrings.form.apiRebalancePercentDisabledHint)
     expect(markup).toContain(zhStrings.form.rechargeFeatureLabel)
     expect(markup).toContain(zhStrings.form.rechargeUserLabel)
@@ -116,6 +119,7 @@ describe('SystemSettingsModule rendering', () => {
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
+  upstreamPreciseReconciliationEnabled: true,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -157,6 +161,7 @@ describe('SystemSettingsModule rendering', () => {
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
+  upstreamPreciseReconciliationEnabled: true,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -197,6 +202,7 @@ describe('SystemSettingsModule rendering', () => {
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
+  upstreamPreciseReconciliationEnabled: true,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,

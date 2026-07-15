@@ -2265,6 +2265,7 @@ export interface AdminUserSummary {
   requestRate: RequestRate
   businessCalls1h: BusinessCalls1hSummary
   dailyCreditsUsed: number
+  shadowDailyCreditsUsed: number | null
   dailyCreditsLimit: number
   monthlyCreditsUsed: number
   monthlyCreditsLimit: number
@@ -3833,6 +3834,7 @@ function createEmptySystemSettings(): SystemSettings {
     upstreamProjectIdMode: 'accessToken',
     upstreamProjectIdFixedValue: '',
     upstreamMcpUserAgent: '',
+    upstreamPreciseReconciliationEnabled: true,
     rechargeFeatureEnabled: false,
     rechargeUserEnabled: false,
     adminDefaultActiveUsersOnly: false,

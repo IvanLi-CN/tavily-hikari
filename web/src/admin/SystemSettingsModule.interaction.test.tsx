@@ -22,6 +22,7 @@ const initialSettings: SystemSettings = {
   upstreamProjectIdMode: 'accessToken',
   upstreamProjectIdFixedValue: '',
   upstreamMcpUserAgent: '',
+  upstreamPreciseReconciliationEnabled: true,
   rechargeFeatureEnabled: true,
   rechargeUserEnabled: true,
   adminDefaultActiveUsersOnly: false,
@@ -166,6 +167,51 @@ describe('SystemSettingsModule interactions', () => {
     await flushEffects()
 
     expect(applied.at(-1)?.rebalanceMcpEnabled).toBe(true)
+    expect(switchButton!.getAttribute('aria-checked')).toBe('false')
+
+    await act(async () => root.unmount())
+  })
+
+  it('saves the new reconciliation switch immediately', async () => {
+    const applied: SystemSettings[] = []
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    function Harness(): JSX.Element {
+      const [settings, setSettings] = useState<SystemSettings>(initialSettings)
+      return (
+        <SystemSettingsModule
+          strings={strings}
+          settings={settings}
+          loadState="ready"
+          error={null}
+          saving={false}
+          onApply={(nextSettings) => {
+            applied.push(nextSettings)
+            setSettings(nextSettings)
+          }}
+        />
+      )
+    }
+
+    await act(async () => {
+      root.render(<Harness />)
+    })
+    await flushEffects()
+
+    const switchButton = document.querySelector<HTMLButtonElement>(
+      '#system-settings-upstream-precise-reconciliation-switch',
+    )
+    expect(switchButton).not.toBeNull()
+    expect(switchButton!.getAttribute('aria-checked')).toBe('true')
+
+    await act(async () => {
+      switchButton!.click()
+    })
+    await flushEffects()
+
+    expect(applied.at(-1)?.upstreamPreciseReconciliationEnabled).toBe(false)
     expect(switchButton!.getAttribute('aria-checked')).toBe('false')
 
     await act(async () => root.unmount())

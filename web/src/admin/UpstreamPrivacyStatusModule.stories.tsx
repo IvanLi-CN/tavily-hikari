@@ -15,6 +15,7 @@ const pendingStatus: UpstreamPrivacyStatus = {
   fixedProjectIdConfigured: false,
   configuredMcpUserAgent: '',
   effectiveMcpUserAgent: null,
+  upstreamPreciseReconciliationEnabled: true,
   httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
   controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
   gates: [
@@ -88,6 +89,24 @@ const degradedStatus: UpstreamPrivacyStatus = {
       deltaCredits: 2,
       degradedReason: 'research_timeout_24h',
       createdAt: 1_783_958_800,
+    },
+  ],
+}
+
+const compareStatus: UpstreamPrivacyStatus = {
+  ...activeStatus,
+  phase: 'compare',
+  upstreamPreciseReconciliationEnabled: false,
+  queuedSettlements: 1,
+  recentAdjustments: [
+    {
+      settlementKey: 'shadow:v1:tok_demo:2026-07-14/S2',
+      tokenIdHint: 'tok_demo',
+      billingSubjectKind: 'account',
+      periodCode: '2026-07-14/S2',
+      deltaCredits: 4,
+      degradedReason: null,
+      createdAt: 1_783_959_000,
     },
   ],
 }
@@ -180,6 +199,12 @@ export const Active: Story = {
   },
 }
 
+export const CompareOnly: Story = {
+  args: {
+    status: compareStatus,
+  },
+}
+
 export const Degraded: Story = {
   args: {
     status: degradedStatus,
@@ -215,6 +240,7 @@ export const Gallery: Story = {
       {[
         { title: 'Pending', status: pendingStatus },
         { title: 'Draining', status: drainingStatus },
+        { title: 'Compare', status: compareStatus },
         { title: 'Active', status: activeStatus },
         { title: 'Degraded', status: degradedStatus },
       ].map((scenario) => (

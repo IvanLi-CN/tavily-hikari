@@ -309,6 +309,7 @@ export function normalizeAdminUserSummary(value: unknown): AdminUserSummary {
     requestRate,
     businessCalls1h,
     dailyCreditsUsed,
+    shadowDailyCreditsUsed: readNullableNumber(source, 'shadowDailyCreditsUsed', 'shadow_daily_credits_used'),
     dailyCreditsLimit,
     monthlyCreditsUsed,
     monthlyCreditsLimit,

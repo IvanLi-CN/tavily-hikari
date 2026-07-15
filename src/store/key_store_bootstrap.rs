@@ -1670,6 +1670,7 @@ impl KeyStore {
                 period_code TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 billing_subject TEXT NOT NULL,
+                settlement_mode TEXT NOT NULL DEFAULT 'actual',
                 period_start INTEGER NOT NULL,
                 period_end INTEGER NOT NULL,
                 request_count INTEGER NOT NULL DEFAULT 0,
@@ -1741,6 +1742,23 @@ impl KeyStore {
         .await?;
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS billing_reconciliation_shadow_adjustments (
+                settlement_key TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                billing_subject TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                delta_credits INTEGER NOT NULL,
+                attributed_at INTEGER NOT NULL,
+                degraded_reason TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS upstream_usage_rate_attempts (
                 id TEXT PRIMARY KEY,
                 key_id TEXT NOT NULL,
@@ -1750,6 +1768,16 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        if !self
+            .table_column_exists("upstream_reconciliation_usage", "settlement_mode")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE upstream_reconciliation_usage ADD COLUMN settlement_mode TEXT NOT NULL DEFAULT 'actual'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_period
                ON upstream_reconciliation_usage(period_end, token_id, period_code)"#,

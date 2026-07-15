@@ -1,3 +1,8 @@
+const RECONCILIATION_SETTLEMENT_MODE_ACTUAL: &str = "actual";
+const RECONCILIATION_SETTLEMENT_MODE_SHADOW: &str = "shadow";
+const RECONCILIATION_STATUS_SHADOW_SETTLED: &str = "shadow_settled";
+const RECONCILIATION_STATUS_SHADOW_DEGRADED: &str = "shadow_degraded";
+
 impl KeyStore {
     pub(crate) async fn count_active_control_mcp_sessions(
         &self,
@@ -63,6 +68,15 @@ impl KeyStore {
         if !eligible {
             return Ok(None);
         }
+        let settlement_mode = if self
+            .get_system_settings()
+            .await?
+            .upstream_precise_reconciliation_enabled
+        {
+            RECONCILIATION_SETTLEMENT_MODE_ACTUAL
+        } else {
+            RECONCILIATION_SETTLEMENT_MODE_SHADOW
+        };
         let now = self.backend_time.now_ts();
         let period = business_period_for_timestamp(now);
         let project_id = self
@@ -73,8 +87,9 @@ impl KeyStore {
             r#"
             INSERT INTO upstream_reconciliation_usage (
                 token_id, key_id, period_code, project_id, billing_subject,
-                period_start, period_end, request_count, first_used_at, last_used_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                settlement_mode, period_start, period_end, request_count,
+                first_used_at, last_used_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT(token_id, key_id, period_code) DO UPDATE SET
                 request_count = upstream_reconciliation_usage.request_count + 1,
                 last_used_at = excluded.last_used_at,
@@ -86,6 +101,7 @@ impl KeyStore {
         .bind(&period.code)
         .bind(project_id)
         .bind(billing_subject)
+        .bind(settlement_mode)
         .bind(period.starts_at)
         .bind(period.ends_at)
         .bind(now)
@@ -141,13 +157,14 @@ impl KeyStore {
         limit: i64,
     ) -> Result<Vec<UpstreamReconciliationCandidate>, ProxyError> {
         let now = self.backend_time.now_ts();
-        let rows = sqlx::query_as::<_, (String, String, String, String, i64, i64, i64)>(
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, i64)>(
             r#"
             SELECT
                 u.token_id,
                 u.period_code,
                 MIN(u.project_id),
                 MIN(u.billing_subject),
+                MIN(u.settlement_mode),
                 MIN(u.period_start),
                 MAX(u.period_end),
                 COALESCE((
@@ -183,6 +200,7 @@ impl KeyStore {
                     period_code,
                     project_id,
                     billing_subject,
+                    settlement_mode,
                     period_start,
                     period_end,
                     pending_research,
@@ -197,6 +215,7 @@ impl KeyStore {
                         period_code,
                         project_id,
                         billing_subject,
+                        settlement_mode,
                         period_start,
                         period_end,
                         pending_research,
@@ -482,6 +501,86 @@ impl KeyStore {
         Ok(true)
     }
 
+    pub(crate) async fn settle_upstream_reconciliation_shadow(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        upstream_usage: i64,
+        local_billed_credits: i64,
+    ) -> Result<bool, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
+        let delta = upstream_usage.saturating_sub(local_billed_credits);
+        let attributed_at = candidate.period_end.saturating_sub(60);
+        let mut tx = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO billing_reconciliation_shadow_adjustments (
+                settlement_key, token_id, billing_subject, period_code, delta_credits,
+                attributed_at, degraded_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&settlement_key)
+        .bind(&candidate.token_id)
+        .bind(&candidate.billing_subject)
+        .bind(&candidate.period_code)
+        .bind(delta)
+        .bind(attributed_at)
+        .bind(candidate.degraded.then_some("research_timeout_24h"))
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_settlements (
+                settlement_key, token_id, period_code, project_id, billing_subject,
+                period_start, period_end, status, upstream_usage, local_billed_credits,
+                delta_credits, degraded_reason, next_attempt_at, attempt_count,
+                created_at, updated_at, settled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)
+            ON CONFLICT(settlement_key) DO UPDATE SET
+                status = excluded.status,
+                upstream_usage = excluded.upstream_usage,
+                local_billed_credits = excluded.local_billed_credits,
+                delta_credits = excluded.delta_credits,
+                degraded_reason = excluded.degraded_reason,
+                next_attempt_at = NULL,
+                attempt_count = upstream_reconciliation_settlements.attempt_count + 1,
+                updated_at = excluded.updated_at,
+                settled_at = excluded.settled_at
+            "#,
+        )
+        .bind(&settlement_key)
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .bind(&candidate.project_id)
+        .bind(&candidate.billing_subject)
+        .bind(candidate.period_start)
+        .bind(candidate.period_end)
+        .bind(if candidate.degraded {
+            RECONCILIATION_STATUS_SHADOW_DEGRADED
+        } else {
+            RECONCILIATION_STATUS_SHADOW_SETTLED
+        })
+        .bind(upstream_usage)
+        .bind(local_billed_credits)
+        .bind(delta)
+        .bind(candidate.degraded.then_some("research_timeout_24h"))
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub(crate) async fn recent_reconciliation_adjustments(
         &self,
         limit: i64,
@@ -569,10 +668,43 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await?;
         let degraded = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM upstream_reconciliation_settlements WHERE status = 'degraded'",
+            "SELECT COUNT(*) FROM upstream_reconciliation_settlements WHERE status IN ('degraded', 'shadow_degraded')",
         )
         .fetch_one(&self.pool)
         .await?;
         Ok((pending_research, queued, degraded))
+    }
+
+    pub(crate) async fn shadow_daily_reconciled_usage_for_accounts(
+        &self,
+        user_ids: &[String],
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = QueryBuilder::new(
+            "SELECT SUBSTR(billing_subject, 9) AS user_id, COALESCE(SUM(delta_credits), 0) \
+             FROM billing_reconciliation_shadow_adjustments \
+             WHERE billing_subject IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            user_ids.iter().for_each(|user_id| {
+                separated.push_bind(format!("account:{user_id}"));
+            });
+        }
+        query
+            .push(") AND attributed_at >= ")
+            .push_bind(day_start)
+            .push(" AND attributed_at < ")
+            .push_bind(day_end)
+            .push(" GROUP BY billing_subject");
+        let rows = query
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
     }
 }

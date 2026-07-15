@@ -62,6 +62,8 @@ impl TavilyProxy {
             "draining"
         } else if next_epoch_at.is_some_and(|epoch| now < epoch) {
             "pending"
+        } else if !settings.upstream_precise_reconciliation_enabled {
+            "compare"
         } else {
             "active"
         };
@@ -73,6 +75,7 @@ impl TavilyProxy {
             configured_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
             effective_mcp_user_agent: (!settings.upstream_mcp_user_agent.is_empty())
                 .then_some(settings.upstream_mcp_user_agent),
+            upstream_precise_reconciliation_enabled: settings.upstream_precise_reconciliation_enabled,
             http_allowed_headers: vec![
                 "accept".to_string(),
                 "accept-encoding".to_string(),
@@ -131,6 +134,17 @@ impl TavilyProxy {
     ) -> Result<bool, ProxyError> {
         self.key_store
             .mark_upstream_reconciliation_research_terminal(request_id)
+            .await
+    }
+
+    pub async fn shadow_daily_reconciled_usage_for_accounts(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        let now = self.backend_time.now_utc().with_timezone(&Local);
+        let window = server_local_day_window_utc(now);
+        self.key_store
+            .shadow_daily_reconciled_usage_for_accounts(user_ids, window.start, window.end)
             .await
     }
 
@@ -269,11 +283,16 @@ impl TavilyProxy {
                 .key_store
                 .reconciliation_local_billed_credits(&candidate)
                 .await?;
-            if self
-                .key_store
-                .settle_upstream_reconciliation(&candidate, upstream_usage, local_billed)
-                .await?
-            {
+            let did_settle = if candidate.settlement_mode == "shadow" {
+                self.key_store
+                    .settle_upstream_reconciliation_shadow(&candidate, upstream_usage, local_billed)
+                    .await?
+            } else {
+                self.key_store
+                    .settle_upstream_reconciliation(&candidate, upstream_usage, local_billed)
+                    .await?
+            };
+            if did_settle {
                 settled += 1;
             }
         }

@@ -76,6 +76,11 @@ impl KeyStore {
             .get_meta_string(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
             .await?
             .unwrap_or_default();
+        let upstream_precise_reconciliation_enabled = self
+            .get_meta_i64(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
+            .await?
+            .unwrap_or(1)
+            != 0;
         let recharge_feature_enabled = self
             .get_meta_i64(META_KEY_RECHARGE_FEATURE_ENABLED_V1)
             .await?
@@ -178,6 +183,7 @@ impl KeyStore {
             upstream_project_id_mode,
             upstream_project_id_fixed_value,
             upstream_mcp_user_agent,
+            upstream_precise_reconciliation_enabled,
             recharge_feature_enabled,
             recharge_user_enabled,
             admin_default_active_users_only,
@@ -212,7 +218,9 @@ impl KeyStore {
             || current_settings.api_rebalance_percent != settings.api_rebalance_percent
             || current_settings.rebalance_mcp_enabled != settings.rebalance_mcp_enabled
             || current_settings.rebalance_mcp_session_percent
-                != settings.rebalance_mcp_session_percent;
+                != settings.rebalance_mcp_session_percent
+            || current_settings.upstream_precise_reconciliation_enabled
+                != settings.upstream_precise_reconciliation_enabled;
         if settings.request_rate_limit < REQUEST_RATE_LIMIT_MIN {
             return Err(ProxyError::Other(format!(
                 "request_rate_limit must be at least {}",
@@ -325,6 +333,11 @@ impl KeyStore {
             &settings.upstream_mcp_user_agent,
         )
         .await?;
+        self.set_meta_i64(
+            META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1,
+            i64::from(settings.upstream_precise_reconciliation_enabled),
+        )
+        .await?;
         if reconciliation_gate_changed {
             self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1, 0)
                 .await?;
@@ -434,6 +447,8 @@ impl KeyStore {
             upstream_project_id_mode: settings.upstream_project_id_mode,
             upstream_project_id_fixed_value: settings.upstream_project_id_fixed_value.clone(),
             upstream_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
+            upstream_precise_reconciliation_enabled: settings
+                .upstream_precise_reconciliation_enabled,
             recharge_feature_enabled: settings.recharge_feature_enabled,
             recharge_user_enabled: settings.recharge_user_enabled,
             admin_default_active_users_only: settings.admin_default_active_users_only,

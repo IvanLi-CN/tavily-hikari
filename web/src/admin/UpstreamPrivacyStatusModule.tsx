@@ -27,6 +27,7 @@ function phaseTone(phase: UpstreamPrivacyStatus['phase']): 'neutral' | 'info' | 
     case 'active':
       return 'success'
     case 'pending':
+    case 'compare':
       return 'info'
     case 'draining':
       return 'warning'
@@ -115,6 +116,7 @@ export default function UpstreamPrivacyStatusModule({
         configured: strings.phaseConfigured,
         draining: strings.phaseDraining,
         pending: strings.phasePending,
+        compare: strings.phaseCompare,
         active: strings.phaseActive,
         degraded: strings.phaseDegraded,
       } satisfies Record<UpstreamPrivacyStatus['phase'], string>)[status.phase]
@@ -125,6 +127,7 @@ export default function UpstreamPrivacyStatusModule({
         configured: strings.phaseConfiguredDescription,
         draining: strings.phaseDrainingDescription,
         pending: strings.phasePendingDescription,
+        compare: strings.phaseCompareDescription,
         active: strings.phaseActiveDescription,
         degraded: strings.phaseDegradedDescription,
       } satisfies Record<UpstreamPrivacyStatus['phase'], string>)[status.phase]
@@ -280,6 +283,14 @@ export default function UpstreamPrivacyStatusModule({
                   }
                 />
                 <PrivacyStat
+                  label={strings.reconciliationMode}
+                  value={
+                    status.upstreamPreciseReconciliationEnabled
+                      ? strings.statusActive
+                      : strings.statusCompareOnly
+                  }
+                />
+                <PrivacyStat
                   label={strings.userAgentEffective}
                   value={formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted)}
                 />
@@ -376,6 +387,14 @@ export default function UpstreamPrivacyStatusModule({
                     <PrivacyStat
                       label={strings.userAgentEffective}
                       value={formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted)}
+                    />
+                    <PrivacyStat
+                      label={strings.reconciliationMode}
+                      value={
+                        status.upstreamPreciseReconciliationEnabled
+                          ? strings.statusActive
+                          : strings.statusCompareOnly
+                      }
                     />
                     <PrivacyStat label={strings.generatedAt} value={timestampFormatter.format(new Date(status.generatedAt * 1000))} />
                   </div>

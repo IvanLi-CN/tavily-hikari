@@ -1059,6 +1059,8 @@ const META_KEY_API_REBALANCE_PERCENT_V1: &str = "api_rebalance_percent_v1";
 const META_KEY_UPSTREAM_PROJECT_ID_MODE_V1: &str = "upstream_project_id_mode_v1";
 const META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1: &str = "upstream_project_id_fixed_value_v1";
 const META_KEY_UPSTREAM_MCP_USER_AGENT_V1: &str = "upstream_mcp_user_agent_v1";
+const META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1: &str =
+    "upstream_precise_reconciliation_enabled_v1";
 const META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1: &str = "upstream_project_id_hmac_secret_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1: &str =
     "upstream_reconciliation_ready_after_v1";

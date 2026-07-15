@@ -963,6 +963,7 @@ function createDemoSystemSettings() {
     upstreamProjectIdMode: 'accessToken',
     upstreamProjectIdFixedValue: '',
     upstreamMcpUserAgent: '',
+    upstreamPreciseReconciliationEnabled: true,
     adminDefaultActiveUsersOnly: true,
     rechargeFeatureEnabled: true,
     rechargeUserEnabled: true,

@@ -94,6 +94,9 @@ async fn put_system_settings(
             upstream_mcp_user_agent: payload
                 .upstream_mcp_user_agent
                 .unwrap_or(current_settings.upstream_mcp_user_agent),
+            upstream_precise_reconciliation_enabled: payload
+                .upstream_precise_reconciliation_enabled
+                .unwrap_or(current_settings.upstream_precise_reconciliation_enabled),
             recharge_feature_enabled: payload
                 .recharge_feature_enabled
                 .unwrap_or(current_settings.recharge_feature_enabled),

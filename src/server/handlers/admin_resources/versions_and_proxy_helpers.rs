@@ -724,6 +724,7 @@ struct SystemSettingsUpdatePayload {
     upstream_project_id_mode: Option<tavily_hikari::UpstreamProjectIdMode>,
     upstream_project_id_fixed_value: Option<String>,
     upstream_mcp_user_agent: Option<String>,
+    upstream_precise_reconciliation_enabled: Option<bool>,
     recharge_feature_enabled: Option<bool>,
     recharge_user_enabled: Option<bool>,
     admin_default_active_users_only: Option<bool>,

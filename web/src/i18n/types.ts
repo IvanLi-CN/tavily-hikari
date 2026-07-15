@@ -915,17 +915,21 @@ export interface AdminTranslationsShape {
       phaseConfigured: string
       phaseDraining: string
       phasePending: string
+      phaseCompare: string
       phaseActive: string
       phaseDegraded: string
       phaseConfiguredDescription: string
       phaseDrainingDescription: string
       phasePendingDescription: string
+      phaseCompareDescription: string
       phaseActiveDescription: string
       phaseDegradedDescription: string
       statusConfigured: string
       statusActive: string
+      statusCompareOnly: string
       statusMissing: string
       statusOmitted: string
+      reconciliationMode: string
       attentionTitle: string
       attentionDescription: string
       attentionClear: string
@@ -1012,6 +1016,11 @@ export interface AdminTranslationsShape {
       upstreamMcpUserAgentPlaceholder: string
       currentUpstreamMcpUserAgentValue: string
       upstreamHttpUserAgentNotice: string
+      upstreamPreciseReconciliationTitle: string
+      upstreamPreciseReconciliationLabel: string
+      upstreamPreciseReconciliationHint: string
+      upstreamPreciseReconciliationEnabledValue: string
+      upstreamPreciseReconciliationDisabledValue: string
       rechargeFeatureLabel: string
       rechargeFeatureHint: string
       rechargeUserLabel: string
@@ -1100,6 +1109,7 @@ export interface AdminTranslationsShape {
       description: string
       open: string
       back: string
+      shadowComparisonValue: string
       table: {
         user: string
         status: string

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import meta, * as systemSettingsStories from './SystemSettingsModule.stories'
 
 describe('SystemSettingsModule Storybook proofs', () => {
-  it('keeps the default, request-rate, rebalance toggle, applying, error, and help-bubble stories available', () => {
+  it('keeps the default, request-rate, rebalance, comparison-only, applying, error, and help-bubble stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/SystemSettingsModule',
     })
@@ -17,6 +17,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.ApiRebalanceEnabled).toMatchObject({})
     expect(systemSettingsStories.ApiRebalanceDisabledSliderLocked).toMatchObject({})
     expect(systemSettingsStories.FixedProjectIdAndControlUa).toMatchObject({})
+    expect(systemSettingsStories.ComparisonOnlyReconciliation).toMatchObject({})
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
@@ -77,5 +78,14 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(markup).toContain('X-Project-ID 策略')
     expect(markup).toContain('team-search-prod')
     expect(markup).toContain('custom-control-mcp')
+  })
+
+  it('renders the comparison-only reconciliation story with the disabled-state copy', () => {
+    const renderStory =
+      systemSettingsStories.ComparisonOnlyReconciliation.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup).toContain('当前：仅对比展示，不影响真实扣费。')
   })
 })

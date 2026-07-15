@@ -26,6 +26,7 @@ function SystemSettingsCanvas(props: {
   upstreamProjectIdMode?: SystemSettings['upstreamProjectIdMode']
   upstreamProjectIdFixedValue?: string
   upstreamMcpUserAgent?: string
+  upstreamPreciseReconciliationEnabled?: boolean
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
   error?: string | null
   saving?: boolean
@@ -47,6 +48,7 @@ function SystemSettingsCanvas(props: {
     upstreamProjectIdMode: props.upstreamProjectIdMode ?? 'accessToken',
     upstreamProjectIdFixedValue: props.upstreamProjectIdFixedValue ?? '',
     upstreamMcpUserAgent: props.upstreamMcpUserAgent ?? '',
+    upstreamPreciseReconciliationEnabled: props.upstreamPreciseReconciliationEnabled ?? true,
     rechargeFeatureEnabled: true,
     rechargeUserEnabled: true,
     adminDefaultActiveUsersOnly: props.adminDefaultActiveUsersOnly ?? false,
@@ -213,6 +215,7 @@ const meta = {
       upstreamProjectIdMode: 'accessToken',
       upstreamProjectIdFixedValue: '',
       upstreamMcpUserAgent: '',
+      upstreamPreciseReconciliationEnabled: true,
       rechargeFeatureEnabled: true,
       rechargeUserEnabled: true,
       adminDefaultActiveUsersOnly: false,
@@ -268,6 +271,10 @@ export const FixedProjectIdAndControlUa: Story = {
       upstreamMcpUserAgent="custom-control-mcp"
     />
   ),
+}
+
+export const ComparisonOnlyReconciliation: Story = {
+  render: () => <SystemSettingsCanvas upstreamPreciseReconciliationEnabled={false} />,
 }
 
 export const Applying: Story = {

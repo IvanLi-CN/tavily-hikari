@@ -405,6 +405,10 @@ async fn list_users(
         .iter()
         .map(|row| row.user.user_id.clone())
         .collect();
+    let system_settings = state.proxy.get_system_settings().await.map_err(|err| {
+        eprintln!("get system settings for admin users error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let mut user_tags = if page_user_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
@@ -455,6 +459,20 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
+    let shadow_daily_usage = if page_user_ids.is_empty()
+        || system_settings.upstream_precise_reconciliation_enabled
+    {
+        std::collections::HashMap::new()
+    } else {
+        state
+            .proxy
+            .shadow_daily_reconciled_usage_for_accounts(&page_user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user shadow daily usage error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     for row in paged_rows {
         let tags = user_tags.remove(&row.user.user_id).unwrap_or_default();
         let api_key_count = api_key_counts
@@ -469,6 +487,10 @@ async fn list_users(
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
+        let shadow_daily_credits_used = shadow_daily_usage
+            .get(&row.user.user_id)
+            .map(|delta| row.summary.daily_credits_used.saturating_add(*delta))
+            .filter(|shadow_used| *shadow_used != row.summary.daily_credits_used);
         items.push(build_admin_user_summary_view(
             &row.user,
             &row.summary,
@@ -478,6 +500,7 @@ async fn list_users(
                 monthly_broken_limit: row.monthly_broken_limit,
                 recent_ip_count_24h,
                 recent_ip_count_7d,
+                shadow_daily_credits_used,
                 tags,
             },
         ));

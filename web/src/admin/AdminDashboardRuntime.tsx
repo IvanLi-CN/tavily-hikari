@@ -95,6 +95,7 @@ import {
   type AdminDisplayDensity,
 } from './displayDensity'
 import { fetchAllMonthlyBrokenKeyItems } from './fetchAllMonthlyBrokenKeyItems'
+import { formatShadowDailyUsageComparison } from './userUsageComparison'
 import type {
   ForwardProxyDraft,
   ForwardProxyValidationEntry,
@@ -12102,7 +12103,16 @@ function AdminDashboard(): JSX.Element {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((item) => (
+                    {users.map((item) => {
+                      const dailyShadowComparison = formatShadowDailyUsageComparison({
+                        actualUsed: item.dailyCreditsUsed,
+                        shadowUsed: item.shadowDailyCreditsUsed,
+                        limit: item.dailyCreditsLimit,
+                        usersStrings,
+                        formatQuotaUsagePair,
+                        formatNumber,
+                      })
+                      return (
                       <tr key={item.userId}>
                         <td className="admin-users-identity-cell">
                           <button
@@ -12132,7 +12142,13 @@ function AdminDashboard(): JSX.Element {
                           />
                         </td>
                         <td className="admin-users-compact-cell">
-                          <AdminTableValueStack {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)} />
+                          <AdminTableValueStack
+                            {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)}
+                            secondary={
+                              dailyShadowComparison
+                              ?? formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit).secondary
+                            }
+                          />
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)} />
@@ -12147,7 +12163,8 @@ function AdminDashboard(): JSX.Element {
                           <AdminTableValueStack {...formatStackedTimestamp(item.lastLoginAt, language)} />
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </>
               )}
@@ -12162,7 +12179,16 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <div className="empty-state alert">{usersStrings.empty.none}</div>
               ) : (
-                users.map((item) => (
+                users.map((item) => {
+                  const dailyShadowComparison = formatShadowDailyUsageComparison({
+                    actualUsed: item.dailyCreditsUsed,
+                    shadowUsed: item.shadowDailyCreditsUsed,
+                    limit: item.dailyCreditsLimit,
+                    usersStrings,
+                    formatQuotaUsagePair,
+                    formatNumber,
+                  })
+                  return (
                   <article key={item.userId} className="admin-mobile-card">
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.user}</span>
@@ -12191,7 +12217,10 @@ function AdminDashboard(): JSX.Element {
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.daily}</span>
-                      <strong>{formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}</strong>
+                      <AdminTableValueStack
+                        primary={formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}
+                        secondary={dailyShadowComparison}
+                      />
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.monthly}</span>
@@ -12210,7 +12239,8 @@ function AdminDashboard(): JSX.Element {
                       <strong>{formatTimestamp(item.lastLoginAt)}</strong>
                     </div>
                   </article>
-                ))
+                  )
+                })
               )}
             </AdminLoadingRegion>
 

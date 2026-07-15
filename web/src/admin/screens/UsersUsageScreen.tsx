@@ -6,6 +6,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import type { AdminUserSummary, AdminUsersSortField, SortDirection } from '../../api'
 import type { AdminTranslations } from '../../i18n'
 import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
+import { formatShadowDailyUsageComparison } from '../userUsageComparison'
 
 import type { QueryLoadState } from '../queryLoadState'
 
@@ -191,6 +192,14 @@ export function UsersUsageScreen({
                   const requestRate = resolveRequestRate(item, 'user')
                   const userLabel = item.displayName || item.username || item.userId
                   const userMeta = formatAdminUserListMeta(item)
+                  const dailyShadowComparison = formatShadowDailyUsageComparison({
+                    actualUsed: item.dailyCreditsUsed,
+                    shadowUsed: item.shadowDailyCreditsUsed,
+                    limit: item.dailyCreditsLimit,
+                    usersStrings,
+                    formatQuotaUsagePair,
+                    formatNumber,
+                  })
                   return (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
@@ -230,6 +239,10 @@ export function UsersUsageScreen({
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack
                           {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)}
+                          secondary={
+                            dailyShadowComparison
+                            ?? formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit).secondary
+                          }
                         />
                       </td>
                       <td className="admin-users-compact-cell">
@@ -292,6 +305,14 @@ export function UsersUsageScreen({
           ) : (
             users.map((item) => {
               const requestRate = resolveRequestRate(item, 'user')
+              const dailyShadowComparison = formatShadowDailyUsageComparison({
+                actualUsed: item.dailyCreditsUsed,
+                shadowUsed: item.shadowDailyCreditsUsed,
+                limit: item.dailyCreditsLimit,
+                usersStrings,
+                formatQuotaUsagePair,
+                formatNumber,
+              })
               return (
                 <article key={item.userId} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
@@ -327,7 +348,10 @@ export function UsersUsageScreen({
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.daily}</span>
-                    <strong>{formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}</strong>
+                    <AdminTableValueStack
+                      primary={formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}
+                      secondary={dailyShadowComparison}
+                    />
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthly}</span>

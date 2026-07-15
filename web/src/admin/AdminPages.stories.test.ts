@@ -222,6 +222,21 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-recharge-table')
   })
 
+  it('renders the users usage story with the comparison-only daily usage secondary line', () => {
+    const renderStory = adminPageStories.UsersUsage.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('新方案')
+  })
+
   it('renders the jobs story with manual trigger controls and source labels', () => {
     const renderStory = adminPageStories.Jobs.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()

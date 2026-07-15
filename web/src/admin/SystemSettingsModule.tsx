@@ -61,6 +61,7 @@ type NormalSystemSettingsOverrides = Partial<
     | 'upstreamProjectIdMode'
     | 'upstreamProjectIdFixedValue'
     | 'upstreamMcpUserAgent'
+    | 'upstreamPreciseReconciliationEnabled'
     | 'rechargeFeatureEnabled'
     | 'rechargeUserEnabled'
     | 'adminDefaultActiveUsersOnly'
@@ -286,6 +287,9 @@ export default function SystemSettingsModule({
   const [draftUpstreamMcpUserAgent, setDraftUpstreamMcpUserAgent] = useState(
     settings?.upstreamMcpUserAgent ?? '',
   )
+  const [draftUpstreamPreciseReconciliationEnabled, setDraftUpstreamPreciseReconciliationEnabled] = useState(
+    settings?.upstreamPreciseReconciliationEnabled ?? true,
+  )
   const [draftRechargeFeatureEnabled, setDraftRechargeFeatureEnabled] = useState(
     settings?.rechargeFeatureEnabled ?? true,
   )
@@ -321,6 +325,7 @@ export default function SystemSettingsModule({
     setDraftUpstreamProjectIdMode(settings?.upstreamProjectIdMode ?? 'accessToken')
     setDraftUpstreamProjectIdFixedValue(settings?.upstreamProjectIdFixedValue ?? '')
     setDraftUpstreamMcpUserAgent(settings?.upstreamMcpUserAgent ?? '')
+    setDraftUpstreamPreciseReconciliationEnabled(settings?.upstreamPreciseReconciliationEnabled ?? true)
     setDraftRechargeFeatureEnabled(settings?.rechargeFeatureEnabled ?? true)
     setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
     setDraftAdminDefaultActiveUsersOnly(settings?.adminDefaultActiveUsersOnly ?? false)
@@ -342,6 +347,7 @@ export default function SystemSettingsModule({
     settings?.upstreamProjectIdMode,
     settings?.upstreamProjectIdFixedValue,
     settings?.upstreamMcpUserAgent,
+    settings?.upstreamPreciseReconciliationEnabled,
     settings?.rechargeFeatureEnabled,
     settings?.rechargeUserEnabled,
     settings?.adminDefaultActiveUsersOnly,
@@ -431,6 +437,7 @@ export default function SystemSettingsModule({
       draftUpstreamProjectIdMode !== settings.upstreamProjectIdMode ||
       normalizedUpstreamProjectIdFixedValue !== settings.upstreamProjectIdFixedValue ||
       normalizedUpstreamMcpUserAgent !== settings.upstreamMcpUserAgent ||
+      draftUpstreamPreciseReconciliationEnabled !== settings.upstreamPreciseReconciliationEnabled ||
       draftRechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       draftRechargeUserEnabled !== settings.rechargeUserEnabled ||
       draftAdminDefaultActiveUsersOnly !== settings.adminDefaultActiveUsersOnly ||
@@ -520,6 +527,8 @@ export default function SystemSettingsModule({
       upstreamProjectIdMode: nextUpstreamProjectIdMode,
       upstreamProjectIdFixedValue: nextUpstreamProjectIdFixedValue,
       upstreamMcpUserAgent: nextUpstreamMcpUserAgent,
+      upstreamPreciseReconciliationEnabled:
+        overrides.upstreamPreciseReconciliationEnabled ?? draftUpstreamPreciseReconciliationEnabled,
       rechargeFeatureEnabled: overrides.rechargeFeatureEnabled ?? draftRechargeFeatureEnabled,
       rechargeUserEnabled: overrides.rechargeUserEnabled ?? draftRechargeUserEnabled,
       adminDefaultActiveUsersOnly:
@@ -544,6 +553,7 @@ export default function SystemSettingsModule({
       payload.upstreamProjectIdMode !== settings.upstreamProjectIdMode ||
       payload.upstreamProjectIdFixedValue !== settings.upstreamProjectIdFixedValue ||
       payload.upstreamMcpUserAgent !== settings.upstreamMcpUserAgent ||
+      payload.upstreamPreciseReconciliationEnabled !== settings.upstreamPreciseReconciliationEnabled ||
       payload.rechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       payload.rechargeUserEnabled !== settings.rechargeUserEnabled ||
       payload.adminDefaultActiveUsersOnly !== settings.adminDefaultActiveUsersOnly ||
@@ -1586,6 +1596,45 @@ export default function SystemSettingsModule({
                   <strong className="text-sm font-medium">{strings.form.upstreamHttpUserAgentNotice}</strong>
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section className="system-settings-config-section">
+            <h4>{strings.form.upstreamPreciseReconciliationTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--api">
+              <div className="system-settings-toggle-row">
+                <div className="system-settings-toggle-copy">
+                  <label className="text-sm font-medium" htmlFor="system-settings-upstream-precise-reconciliation-switch">
+                    {strings.form.upstreamPreciseReconciliationLabel}
+                  </label>
+                  <p className="text-xs text-muted-foreground">{strings.form.upstreamPreciseReconciliationHint}</p>
+                </div>
+                <Switch
+                  aria-label={strings.form.upstreamPreciseReconciliationLabel}
+                  id="system-settings-upstream-precise-reconciliation-switch"
+                  checked={draftUpstreamPreciseReconciliationEnabled}
+                  onCheckedChange={(checked) => {
+                    setDraftUpstreamPreciseReconciliationEnabled(checked)
+                    void commitNormalSettings({
+                      upstreamPreciseReconciliationEnabled: checked,
+                    }).then((saved) => {
+                      if (!saved) {
+                        setDraftUpstreamPreciseReconciliationEnabled(
+                          settings?.upstreamPreciseReconciliationEnabled ?? true,
+                        )
+                      }
+                    })
+                  }}
+                  disabled={saving}
+                />
+              </div>
+              {settings && (
+                <p className="system-settings-field-current text-xs text-muted-foreground">
+                  {draftUpstreamPreciseReconciliationEnabled
+                    ? strings.form.upstreamPreciseReconciliationEnabledValue
+                    : strings.form.upstreamPreciseReconciliationDisabledValue}
+                </p>
+              )}
             </div>
           </section>
 

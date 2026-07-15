@@ -13,6 +13,7 @@ export interface SystemSettings {
   upstreamProjectIdMode: UpstreamProjectIdMode
   upstreamProjectIdFixedValue: string
   upstreamMcpUserAgent: string
+  upstreamPreciseReconciliationEnabled: boolean
   rechargeFeatureEnabled: boolean
   rechargeUserEnabled: boolean
   adminDefaultActiveUsersOnly: boolean
@@ -46,12 +47,13 @@ export interface UpstreamReconciliationAdjustment {
 }
 
 export interface UpstreamPrivacyStatus {
-  phase: 'configured' | 'draining' | 'pending' | 'active' | 'degraded'
+  phase: 'configured' | 'draining' | 'pending' | 'compare' | 'active' | 'degraded'
   configuredProjectIdMode: UpstreamProjectIdMode
   effectiveProjectIdMode: UpstreamProjectIdMode
   fixedProjectIdConfigured: boolean
   configuredMcpUserAgent: string
   effectiveMcpUserAgent: string | null
+  upstreamPreciseReconciliationEnabled: boolean
   httpAllowedHeaders: string[]
   controlMcpAllowedHeaders: string[]
   gates: UpstreamPrivacyGate[]
@@ -85,6 +87,7 @@ export interface UpdateSystemSettingsPayload {
   upstreamProjectIdMode: UpstreamProjectIdMode
   upstreamProjectIdFixedValue: string
   upstreamMcpUserAgent: string
+  upstreamPreciseReconciliationEnabled: boolean
   rechargeFeatureEnabled: boolean
   rechargeUserEnabled: boolean
   adminDefaultActiveUsersOnly: boolean
