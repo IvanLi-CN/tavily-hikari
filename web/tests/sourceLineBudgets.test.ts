@@ -18,17 +18,17 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13580,
+      max: 13620,
       reason:
-        'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, upstream privacy status routing, active-user list filtering, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
+        'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, upstream privacy status routing, active-user list filtering, shadow reconciliation comparison wiring, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
     },
   ],
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7825,
+      max: 7900,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states, upstream privacy status proof data, rankings shell proof, system-settings proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, upstream privacy status proof data, rankings shell proof, system-settings proof data, shadow reconciliation comparison proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
     },
   ],
   [
@@ -106,9 +106,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/styles/clay.css',
     {
-      max: 2710,
+      max: 2780,
       reason:
-        'The clay theme stylesheet now includes the distilled system-status route refinements, upstream privacy panel states, public hero load-balancer motion layer, admin passkey reset/login polish, and six-digit TOTP input states while the themed public/auth/admin surfaces remain consolidated.',
+        'The clay theme stylesheet now includes the distilled system-status route refinements, upstream privacy panel states, shadow reconciliation table/status styling, public hero load-balancer motion layer, admin passkey reset/login polish, and six-digit TOTP input states while the themed public/auth/admin surfaces remain consolidated.',
     },
   ],
   [
