@@ -9,6 +9,11 @@
 
 ## Build, Test, and Development Commands
 
+- Repo tooling
+  - `bun install --frozen-lockfile` — install root tooling deps and run the shared hook installer.
+  - `bun run hooks:install` — reinstall the shared `post-checkout` hook and refresh `lefthook` commit hooks when the binary is available on `PATH`.
+  - `bun run worktree:setup` — force a strict linked-worktree repair for env/deps/`cargo fetch`.
+  - `bun run test:worktree-bootstrap` — run the linked-worktree bootstrap smoke contract.
 - Backend
   - `cargo build` — compile the server.
   - `cargo run -- --help` — show CLI flags; `--bind/--port/--db-path` etc.
@@ -19,7 +24,7 @@
   - `bun run build` — build SPA to `web/dist`; `bun run preview` — preview build.
   - `bun run storybook` — run Storybook dev server at `http://127.0.0.1:56006`.
 - Hooks
-  - `lefthook install` — enable pre-commit (`cargo fmt`, `clippy`, Markdown format) and commitlint.
+  - `bun install --frozen-lockfile` or `bun run hooks:install` — install the shared `post-checkout` hook; if `lefthook` exists on `PATH`, also refresh pre-commit (`cargo fmt`, `clippy`, Markdown format) and commitlint.
 
 ## Coding Style & Naming Conventions
 
@@ -57,6 +62,13 @@
   - Start: `scripts/start-frontend-dev.sh`
   - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing, then starts Vite with `bun run --bun dev`.
   - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
+
+- Linked worktrees:
+  - The first checkout in a linked worktree now runs a best-effort bootstrap through the shared `post-checkout` hook.
+  - Auto bootstrap only copies missing root `.env` / `.env.*` files from the primary worktree, restores missing root / `web` / `docs-site` Bun dependencies, and runs `cargo fetch --locked`.
+  - Auto bootstrap never blocks checkout; missing `lefthook`, `bun`, `cargo`, or source env files only warn.
+  - `bun run worktree:setup` is the explicit strict repair entrypoint.
+  - The contract intentionally does not restore `*.db`, `web/dist`, `web/storybook-static`, `downloads/`, browser caches, or other runtime artifacts.
 
 - Stop services:
   - Use the process manager or shell session that launched each service.
