@@ -43,6 +43,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(adminPageStories.Alerts).toMatchObject({})
     expect(adminPageStories.AlertsMobile).toMatchObject({})
     expect(adminPageStories.Recharges).toMatchObject({})
+    expect(adminPageStories.SystemSettingsStatus).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -221,6 +222,21 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-recharge-table')
   })
 
+  it('renders the users usage story with the dedicated comparison column', () => {
+    const renderStory = adminPageStories.UsersUsage.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('新方案 24h')
+  })
+
   it('renders the jobs story with manual trigger controls and source labels', () => {
     const renderStory = adminPageStories.Jobs.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
@@ -395,6 +411,24 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('管理员密码')
     expect(markup).toContain('Passkey 管理')
     expect(markup).toContain('管理端 TOTP')
+  })
+
+  it('renders the system settings status child nav item as active', () => {
+    const renderStory = adminPageStories.SystemSettingsStatus.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('系统状态')
+    expect(markup).toContain('admin-nav-subitem-active')
+    expect(markup).toContain('需要关注')
+    expect(markup).toContain('技术详情')
   })
 
   it('renders the system settings HA page with node inventory and active child nav', () => {

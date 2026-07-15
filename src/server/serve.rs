@@ -313,6 +313,14 @@ pub async fn serve(
         .route("/api/users/rankings/events", get(sse_user_rankings))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
+        .route(
+            "/api/settings/system/status",
+            get(get_upstream_privacy_status),
+        )
+        .route(
+            "/api/settings/system/privacy-status",
+            get(get_upstream_privacy_status),
+        )
         .route("/api/admin/recharges", get(get_admin_recharges))
         .route(
             "/api/admin/recharges/:out_trade_no/refund",
@@ -1389,6 +1397,7 @@ fn spawn_business_background_tasks(state: Arc<AppState>) {
     spawn_maintenance_worker(state.clone());
     spawn_quota_sync_scheduler(state.clone());
     spawn_token_usage_rollup_scheduler(state.clone());
+    spawn_upstream_reconciliation_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());
     spawn_ha_outbox_gc_scheduler(state.clone());
     spawn_mcp_sessions_gc_scheduler(state.clone());

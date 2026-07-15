@@ -298,7 +298,9 @@
         "tests::proxy_affinity_and_summary::quarantine_",
         "tests::proxy_affinity_and_summary::quarantined_",
         "tests::ha_outbox_and_compaction::sqlite_",
-        "tests::observability_and_lifecycle::published_"
+        "tests::observability_and_lifecycle::published_",
+        "tests::upstream_reconciliation::",
+        "upstream_privacy::tests::"
       ]
     },
     {

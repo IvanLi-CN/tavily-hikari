@@ -1,6 +1,7 @@
 use super::*;
 use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
+use tavily_hikari::UpstreamProjectIdMode;
 
     #[tokio::test]
     async fn admin_user_management_requires_admin() {
@@ -960,6 +961,10 @@ use super::upstream_support_and_manual_jobs::*;
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1183,6 +1188,10 @@ use super::upstream_support_and_manual_jobs::*;
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1280,6 +1289,10 @@ use super::upstream_support_and_manual_jobs::*;
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1447,7 +1460,8 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn tavily_http_search_default_rollout_uses_legacy_project_affinity_effect() {
+    async fn tavily_http_search_default_api_rebalance_disabled_uses_legacy_project_affinity_effect()
+    {
         let db_path = temp_db_path("http-search-project-header-forward");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -1463,6 +1477,15 @@ use super::upstream_support_and_manual_jobs::*;
         )
         .await
         .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.upstream_project_id_mode = UpstreamProjectIdMode::Passthrough;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable passthrough project id mode");
         let pool = connect_sqlite_test_pool(&db_str).await;
 
         let access_token = proxy
@@ -1548,7 +1571,7 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn tavily_http_search_api_rebalance_percent_100_uses_generic_selector() {
+    async fn tavily_http_search_api_rebalance_enabled_uses_generic_selector() {
         let db_path = temp_db_path("http-search-api-rebalance-enabled");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -1569,10 +1592,11 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("load system settings");
         settings.api_rebalance_enabled = true;
         settings.api_rebalance_percent = 100;
+        settings.upstream_project_id_mode = UpstreamProjectIdMode::Passthrough;
         proxy
             .set_system_settings(&settings)
             .await
-            .expect("enable API rebalance rollout");
+            .expect("enable API rebalance with passthrough project id mode");
         let pool = connect_sqlite_test_pool(&db_str).await;
         let access_token = proxy
             .create_access_token(Some("http-search-api-rebalance-enabled"))
@@ -1621,7 +1645,7 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn tavily_http_search_api_rebalance_percent_zero_uses_legacy_primary() {
+    async fn tavily_http_search_api_rebalance_disabled_uses_legacy_primary() {
         let db_path = temp_db_path("http-search-api-rebalance-zero");
         let db_str = db_path.to_string_lossy().to_string();
         let primary_secret = "tvly-http-api-rollout-zero-primary";
@@ -1671,18 +1695,18 @@ use super::upstream_support_and_manual_jobs::*;
             .get_system_settings()
             .await
             .expect("load system settings");
-        settings.api_rebalance_enabled = true;
+        settings.api_rebalance_enabled = false;
         settings.api_rebalance_percent = 0;
         proxy
             .set_system_settings(&settings)
             .await
-            .expect("set API rebalance zero rollout");
+            .expect("disable API rebalance");
 
         let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
         let resp = Client::new()
             .post(format!("http://{}/api/tavily/search", proxy_addr))
             .header("Authorization", format!("Bearer {}", token.token))
-            .json(&serde_json::json!({ "query": "api rebalance disabled by percent" }))
+            .json(&serde_json::json!({ "query": "api rebalance disabled" }))
             .send()
             .await
             .expect("request to proxy succeeds");
@@ -2725,6 +2749,10 @@ use super::upstream_support_and_manual_jobs::*;
                     tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,

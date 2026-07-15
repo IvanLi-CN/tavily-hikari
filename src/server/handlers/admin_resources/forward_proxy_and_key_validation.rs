@@ -85,6 +85,18 @@ async fn put_system_settings(
             api_rebalance_percent: payload
                 .api_rebalance_percent
                 .unwrap_or(current_settings.api_rebalance_percent),
+            upstream_project_id_mode: payload
+                .upstream_project_id_mode
+                .unwrap_or(current_settings.upstream_project_id_mode),
+            upstream_project_id_fixed_value: payload
+                .upstream_project_id_fixed_value
+                .unwrap_or(current_settings.upstream_project_id_fixed_value),
+            upstream_mcp_user_agent: payload
+                .upstream_mcp_user_agent
+                .unwrap_or(current_settings.upstream_mcp_user_agent),
+            upstream_precise_reconciliation_enabled: payload
+                .upstream_precise_reconciliation_enabled
+                .unwrap_or(current_settings.upstream_precise_reconciliation_enabled),
             recharge_feature_enabled: payload
                 .recharge_feature_enabled
                 .unwrap_or(current_settings.recharge_feature_enabled),
@@ -120,6 +132,8 @@ async fn put_system_settings(
                 || message.contains("mcp_session_affinity_key_count must be between")
                 || message.contains("rebalance_mcp_session_percent must be between")
                 || message.contains("api_rebalance_percent must be between")
+                || message.contains("upstream_project_id_fixed_value")
+                || message.contains("upstream_mcp_user_agent")
                 || message.contains("user_blocked_key_base_limit must be")
                 || message.contains("global_ip_limit must be")
                 || message.contains("request_log_retention")
@@ -135,6 +149,24 @@ async fn put_system_settings(
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
+        })
+}
+
+async fn get_upstream_privacy_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<tavily_hikari::UpstreamPrivacyStatus>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    state
+        .proxy
+        .upstream_privacy_status()
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("get upstream privacy status error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         })
 }
 

@@ -1,4 +1,303 @@
 impl TavilyProxy {
+    pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let settings = self.key_store.get_system_settings().await?;
+        let active_control_sessions = self
+            .key_store
+            .count_active_control_mcp_sessions(now)
+            .await?;
+        let period = business_period_for_timestamp(now);
+        let stored_epoch = self
+            .key_store
+            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1)
+            .await?
+            .unwrap_or(0);
+        let mode_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken;
+        let api_ready = settings.api_rebalance_enabled;
+        let mcp_ready = settings.rebalance_mcp_enabled;
+        let sessions_ready = active_control_sessions == 0;
+        let gates = vec![
+            UpstreamPrivacyGate {
+                key: "accessTokenMode".to_string(),
+                ready: mode_ready,
+                detail: format!("{:?}", settings.upstream_project_id_mode),
+            },
+            UpstreamPrivacyGate {
+                key: "apiRebalance".to_string(),
+                ready: api_ready,
+                detail: if api_ready { "enabled" } else { "disabled" }.to_string(),
+            },
+            UpstreamPrivacyGate {
+                key: "mcpRebalance".to_string(),
+                ready: mcp_ready,
+                detail: if mcp_ready { "enabled" } else { "disabled" }.to_string(),
+            },
+            UpstreamPrivacyGate {
+                key: "controlSessionsDrained".to_string(),
+                ready: sessions_ready,
+                detail: active_control_sessions.to_string(),
+            },
+        ];
+        let completed_gates = gates.iter().filter(|gate| gate.ready).count() as i64;
+        let total_gates = gates.len() as i64;
+        let (pending_research, queued_settlements, degraded_settlements) = self
+            .key_store
+            .upstream_reconciliation_queue_counts()
+            .await?;
+        let next_epoch_at = if completed_gates == total_gates {
+            Some(if stored_epoch > 0 {
+                stored_epoch
+            } else {
+                period.ends_at
+            })
+        } else {
+            None
+        };
+        let phase = if degraded_settlements > 0 {
+            "degraded"
+        } else if !mode_ready || !api_ready || !mcp_ready {
+            "configured"
+        } else if !sessions_ready {
+            "draining"
+        } else if next_epoch_at.is_some_and(|epoch| now < epoch) {
+            "pending"
+        } else if !settings.upstream_precise_reconciliation_enabled {
+            "compare"
+        } else {
+            "active"
+        };
+        Ok(UpstreamPrivacyStatus {
+            phase: phase.to_string(),
+            configured_project_id_mode: settings.upstream_project_id_mode,
+            effective_project_id_mode: settings.upstream_project_id_mode,
+            fixed_project_id_configured: !settings.upstream_project_id_fixed_value.is_empty(),
+            configured_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
+            effective_mcp_user_agent: (!settings.upstream_mcp_user_agent.is_empty())
+                .then_some(settings.upstream_mcp_user_agent),
+            upstream_precise_reconciliation_enabled: settings.upstream_precise_reconciliation_enabled,
+            http_allowed_headers: vec![
+                "accept".to_string(),
+                "accept-encoding".to_string(),
+                "content-type".to_string(),
+                "x-project-id (policy injected)".to_string(),
+            ],
+            control_mcp_allowed_headers: vec![
+                "accept".to_string(),
+                "accept-encoding".to_string(),
+                "cache-control".to_string(),
+                "content-type".to_string(),
+                "last-event-id".to_string(),
+                "mcp-protocol-version".to_string(),
+                "mcp-session-id".to_string(),
+                "pragma".to_string(),
+                "user-agent (configured only)".to_string(),
+            ],
+            gates,
+            completed_gates,
+            total_gates,
+            active_control_sessions,
+            current_period_code: period.code,
+            current_period_ends_at: period.ends_at,
+            next_epoch_at,
+            pending_research,
+            queued_settlements,
+            degraded_settlements,
+            recent_adjustments: self
+                .key_store
+                .recent_reconciliation_adjustments(10)
+                .await?,
+            generated_at: now,
+        })
+    }
+
+    pub async fn record_upstream_reconciliation_usage(
+        &self,
+        token_id: &str,
+        key_id: &str,
+        billing_subject: &str,
+        research_request_id: Option<&str>,
+    ) -> Result<Option<BusinessPeriod>, ProxyError> {
+        self.key_store
+            .record_upstream_reconciliation_usage(
+                token_id,
+                key_id,
+                billing_subject,
+                research_request_id,
+            )
+            .await
+    }
+
+    pub async fn mark_upstream_reconciliation_research_terminal(
+        &self,
+        request_id: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .mark_upstream_reconciliation_research_terminal(request_id)
+            .await
+    }
+
+    pub async fn shadow_daily_reconciled_usage_for_accounts(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        let now = self.backend_time.now_utc().with_timezone(&Local);
+        let window = server_local_day_window_utc(now);
+        self.key_store
+            .shadow_daily_reconciled_usage_for_accounts(user_ids, window.start, window.end)
+            .await
+    }
+
+    async fn fetch_upstream_project_usage(
+        &self,
+        key_id: &str,
+        usage_base: &str,
+        project_id: &str,
+    ) -> Result<i64, (ProxyError, Option<i64>)> {
+        let secret = self
+            .key_store
+            .fetch_api_key_secret(key_id)
+            .await
+            .map_err(|err| (err, None))?
+            .ok_or_else(|| (ProxyError::Database(sqlx::Error::RowNotFound), None))?;
+        let base = Url::parse(usage_base).map_err(|source| {
+            (
+                ProxyError::InvalidEndpoint {
+                    endpoint: usage_base.to_string(),
+                    source,
+                },
+                None,
+            )
+        })?;
+        let url = build_path_prefixed_url(&base, "/usage");
+        let response = self
+            .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
+                client
+                    .get(url.clone())
+                    .header("Authorization", format!("Bearer {secret}"))
+                    .header("X-Project-ID", project_id)
+                    .timeout(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
+            })
+            .await
+            .map(|(response, _)| response)
+            .map_err(|err| (err, None))?;
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(|seconds| self.backend_time.now_ts().saturating_add(seconds.max(1)));
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| (ProxyError::Http(err), retry_after))?;
+        if !status.is_success() {
+            return Err((
+                ProxyError::UsageHttp {
+                    status,
+                    body: String::from_utf8_lossy(&bytes).into_owned(),
+                },
+                retry_after,
+            ));
+        }
+        let json: Value = serde_json::from_slice(&bytes)
+            .map_err(|err| (ProxyError::Other(format!("invalid usage json: {err}")), None))?;
+        json.get("key")
+            .and_then(|key| key.get("usage"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                (
+                    ProxyError::QuotaDataMissing {
+                        reason: "missing key.usage for reconciliation".to_string(),
+                    },
+                    None,
+                )
+            })
+    }
+
+    pub async fn run_upstream_reconciliation_once(
+        &self,
+        usage_base: &str,
+    ) -> Result<i64, ProxyError> {
+        let (eligible, _, _) = self
+            .key_store
+            .refresh_upstream_reconciliation_epoch()
+            .await?;
+        if !eligible {
+            return Ok(0);
+        }
+        let candidates = self
+            .key_store
+            .next_upstream_reconciliation_candidates(20)
+            .await?;
+        let mut settled = 0;
+        for candidate in candidates {
+            let key_ids = self
+                .key_store
+                .reconciliation_key_ids(&candidate.token_id, &candidate.period_code)
+                .await?;
+            let mut upstream_usage = 0_i64;
+            let mut retry_at = None;
+            let mut retry_reason = None;
+            for key_id in key_ids {
+                match self
+                    .key_store
+                    .reserve_upstream_usage_attempt(&key_id)
+                    .await?
+                {
+                    Ok(()) => {}
+                    Err(next_attempt_at) => {
+                        retry_at = Some(next_attempt_at);
+                        retry_reason = Some("local_usage_rate_limit".to_string());
+                        break;
+                    }
+                }
+                match self
+                    .fetch_upstream_project_usage(&key_id, usage_base, &candidate.project_id)
+                    .await
+                {
+                    Ok(usage) => upstream_usage = upstream_usage.saturating_add(usage),
+                    Err((err, upstream_retry_at)) => {
+                        retry_at = Some(
+                            upstream_retry_at
+                                .unwrap_or_else(|| self.backend_time.now_ts().saturating_add(60)),
+                        );
+                        retry_reason = Some(err.to_string());
+                        break;
+                    }
+                }
+            }
+            if let Some(next_attempt_at) = retry_at {
+                self.key_store
+                    .mark_reconciliation_retry(
+                        &candidate,
+                        "rate_limited",
+                        next_attempt_at,
+                        retry_reason.as_deref(),
+                    )
+                    .await?;
+                continue;
+            }
+            let local_billed = self
+                .key_store
+                .reconciliation_local_billed_credits(&candidate)
+                .await?;
+            let did_settle = if candidate.settlement_mode == "shadow" {
+                self.key_store
+                    .settle_upstream_reconciliation_shadow(&candidate, upstream_usage, local_billed)
+                    .await?
+            } else {
+                self.key_store
+                    .settle_upstream_reconciliation(&candidate, upstream_usage, local_billed)
+                    .await?
+            };
+            if did_settle {
+                settled += 1;
+            }
+        }
+        Ok(settled)
+    }
+
     /// List keys whose quota hasn't been synced within `older_than_secs` seconds (or never).
     pub async fn list_keys_pending_quota_sync(
         &self,

@@ -1662,6 +1662,147 @@ impl KeyStore {
         self.ensure_billing_ledger_ha_shape().await?;
         self.ensure_billing_ledger_indexes().await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_reconciliation_usage (
+                token_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                billing_subject TEXT NOT NULL,
+                settlement_mode TEXT NOT NULL DEFAULT 'actual',
+                period_start INTEGER NOT NULL,
+                period_end INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                first_used_at INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (token_id, key_id, period_code)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_reconciliation_research (
+                request_id TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                terminal_at INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_reconciliation_settlements (
+                settlement_key TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                billing_subject TEXT NOT NULL,
+                period_start INTEGER NOT NULL,
+                period_end INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                upstream_usage INTEGER,
+                local_billed_credits INTEGER,
+                delta_credits INTEGER,
+                degraded_reason TEXT,
+                next_attempt_at INTEGER,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                settled_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS billing_reconciliation_adjustments (
+                settlement_key TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                billing_subject TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                delta_credits INTEGER NOT NULL,
+                attributed_at INTEGER NOT NULL,
+                degraded_reason TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS billing_reconciliation_shadow_adjustments (
+                settlement_key TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                billing_subject TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                delta_credits INTEGER NOT NULL,
+                attributed_at INTEGER NOT NULL,
+                degraded_reason TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_usage_rate_attempts (
+                id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                attempted_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        if !self
+            .table_column_exists("upstream_reconciliation_usage", "settlement_mode")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE upstream_reconciliation_usage ADD COLUMN settlement_mode TEXT NOT NULL DEFAULT 'actual'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_period
+               ON upstream_reconciliation_usage(period_end, token_id, period_code)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_research_period
+               ON upstream_reconciliation_research(token_id, period_code, terminal_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_settlement_status
+               ON upstream_reconciliation_settlements(status, next_attempt_at, period_end)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_upstream_usage_rate_attempts_key_time
+               ON upstream_usage_rate_attempts(key_id, attempted_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Upgrade: add mcp_status column if missing
         if !self
             .table_column_exists("auth_token_logs", "mcp_status")

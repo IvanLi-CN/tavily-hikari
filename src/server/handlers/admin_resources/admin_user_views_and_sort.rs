@@ -125,6 +125,7 @@ struct AdminUserSummaryView {
     request_rate: tavily_hikari::RequestRateView,
     business_calls_1h: AdminBusinessCalls1hSummaryView,
     daily_credits_used: i64,
+    shadow_daily_credits_used: Option<i64>,
     daily_credits_limit: i64,
     monthly_credits_used: i64,
     monthly_credits_limit: i64,
@@ -680,6 +681,7 @@ struct AdminUserSummaryViewInput {
     monthly_broken_limit: i64,
     recent_ip_count_24h: i64,
     recent_ip_count_7d: i64,
+    shadow_daily_credits_used: Option<i64>,
     tags: Vec<tavily_hikari::AdminUserTagBinding>,
 }
 
@@ -705,6 +707,7 @@ fn build_admin_user_summary_view(
             window_minutes: summary.business_calls_1h.window_minutes,
         },
         daily_credits_used: summary.daily_credits_used,
+        shadow_daily_credits_used: input.shadow_daily_credits_used,
         daily_credits_limit: summary.daily_credits_limit,
         monthly_credits_used: summary.monthly_credits_used,
         monthly_credits_limit: summary.monthly_credits_limit,

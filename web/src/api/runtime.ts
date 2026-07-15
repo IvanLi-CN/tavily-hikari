@@ -10,6 +10,7 @@ import type {
   AdminUserListStats,
   ForwardProxySettingsEnvelope,
   SystemSettings,
+  UpstreamPrivacyStatus,
   UpdateSystemSettingsPayload,
 } from './systemSettingsTypes'
 import type { AuthToken, AuthTokenSecret } from './tokens'
@@ -2264,6 +2265,7 @@ export interface AdminUserSummary {
   requestRate: RequestRate
   businessCalls1h: BusinessCalls1hSummary
   dailyCreditsUsed: number
+  shadowDailyCreditsUsed: number | null
   dailyCreditsLimit: number
   monthlyCreditsUsed: number
   monthlyCreditsLimit: number
@@ -3826,9 +3828,13 @@ function createEmptySystemSettings(): SystemSettings {
     authTokenLogRetentionDays: 92,
     mcpSessionAffinityKeyCount: 5,
     rebalanceMcpEnabled: false,
-    rebalanceMcpSessionPercent: 100,
+    rebalanceMcpSessionPercent: 0,
     apiRebalanceEnabled: false,
     apiRebalancePercent: 0,
+    upstreamProjectIdMode: 'accessToken',
+    upstreamProjectIdFixedValue: '',
+    upstreamMcpUserAgent: '',
+    upstreamPreciseReconciliationEnabled: false,
     rechargeFeatureEnabled: false,
     rechargeUserEnabled: false,
     adminDefaultActiveUsersOnly: false,
@@ -3871,6 +3877,10 @@ export async function fetchForwardProxySettings(signal?: AbortSignal): Promise<F
 export async function fetchSystemSettings(signal?: AbortSignal): Promise<SystemSettings> {
   const response = await fetchSystemSettingsEnvelope(signal)
   return response.systemSettings ?? createEmptySystemSettings()
+}
+
+export async function fetchSystemStatus(signal?: AbortSignal): Promise<UpstreamPrivacyStatus> {
+  return requestJson<UpstreamPrivacyStatus>('/api/settings/system/status', { signal })
 }
 
 export function updateForwardProxySettings(

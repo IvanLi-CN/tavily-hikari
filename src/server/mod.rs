@@ -71,12 +71,12 @@ use tavily_hikari::{
     display_result_status_for_request_kind, effective_request_logs_gc_at,
     effective_token_daily_limit, effective_token_hourly_limit, effective_token_monthly_limit,
     extract_mcp_has_error_by_id_from_bytes, extract_mcp_usage_credits_by_id_from_bytes,
-    extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
-    format_request_logs_gc_report_message, mcp_response_has_any_error,
-    mcp_response_has_any_success, normalize_operational_class_filter,
+    extract_research_request_id, extract_usage_credits_from_json_bytes,
+    extract_usage_credits_total_from_json_bytes, format_request_logs_gc_report_message,
+    mcp_response_has_any_error, mcp_response_has_any_success, normalize_operational_class_filter,
     operational_class_for_token_log, request_rate_limit, request_rate_limit_window_minutes,
-    resolve_client_ip_info, run_db_compaction_once, token_request_kind_billing_group_for_token_log,
-    token_request_kind_protocol_group,
+    research_response_is_terminal, resolve_client_ip_info, run_db_compaction_once,
+    token_request_kind_billing_group_for_token_log, token_request_kind_protocol_group,
 };
 use tokio::signal;
 #[cfg(unix)]

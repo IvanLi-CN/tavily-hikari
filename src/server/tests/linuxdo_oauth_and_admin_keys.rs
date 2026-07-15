@@ -1,6 +1,7 @@
 use super::*;
 use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
+use tavily_hikari::UpstreamProjectIdMode;
 
     pub(super) fn find_cookie_pair(headers: &reqwest::header::HeaderMap, cookie_name: &str) -> Option<String> {
         headers
@@ -1238,6 +1239,15 @@ use super::upstream_support_and_manual_jobs::*;
         )
         .await
         .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.upstream_project_id_mode = UpstreamProjectIdMode::Passthrough;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable passthrough project id mode for dev-open-admin fallback test");
         let pool = connect_sqlite_test_pool(&db_str).await;
 
         let key_rows = sqlx::query_as::<_, (String, String)>(
@@ -1382,10 +1392,11 @@ use super::upstream_support_and_manual_jobs::*;
             .expect("load system settings");
         settings.api_rebalance_enabled = true;
         settings.api_rebalance_percent = 100;
+        settings.upstream_project_id_mode = UpstreamProjectIdMode::Passthrough;
         proxy
             .set_system_settings(&settings)
             .await
-            .expect("enable API rebalance rollout for Hikari routing assertion");
+            .expect("enable API rebalance and passthrough project id mode for Hikari routing assertion");
         let token = proxy
             .create_access_token(Some("http-search-hikari-routing"))
             .await

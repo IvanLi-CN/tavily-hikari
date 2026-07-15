@@ -127,7 +127,8 @@ const HA_CONTROL_EVENT_TABLES: &[&str] = &[
     "users",
 ];
 
-const HA_BILLING_BASELINE_TABLES: &[&str] = &["billing_ledger"];
+const HA_BILLING_BASELINE_TABLES: &[&str] =
+    &["billing_ledger", "billing_reconciliation_adjustments"];
 
 const HA_RUNTIME_BASELINE_TABLES: &[&str] = &[
     "account_monthly_quota",
@@ -141,6 +142,10 @@ const HA_RUNTIME_BASELINE_TABLES: &[&str] = &[
     "research_requests",
     "token_primary_api_key_affinity",
     "token_usage_buckets",
+    "upstream_reconciliation_research",
+    "upstream_reconciliation_settlements",
+    "upstream_reconciliation_usage",
+    "upstream_usage_rate_attempts",
     "user_primary_api_key_affinity",
 ];
 
@@ -156,6 +161,10 @@ const HA_RUNTIME_EVENT_TABLES: &[&str] = &[
     "research_requests",
     "token_primary_api_key_affinity",
     "token_usage_buckets",
+    "upstream_reconciliation_research",
+    "upstream_reconciliation_settlements",
+    "upstream_reconciliation_usage",
+    "upstream_usage_rate_attempts",
     "user_primary_api_key_affinity",
 ];
 
@@ -166,6 +175,11 @@ const HA_META_KEYS: &[&str] = &[
     "admin_totp_secret_nonce_v1",
     "api_rebalance_enabled_v1",
     "api_rebalance_percent_v1",
+    "upstream_project_id_mode_v1",
+    "upstream_project_id_fixed_value_v1",
+    "upstream_mcp_user_agent_v1",
+    "upstream_project_id_hmac_secret_v1",
+    "upstream_reconciliation_ready_after_v1",
     "global_ip_limit_v1",
     "ha_full_master_node_id_v1",
     "mcp_session_affinity_key_count_v1",

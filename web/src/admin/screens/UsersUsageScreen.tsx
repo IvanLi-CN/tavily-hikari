@@ -6,6 +6,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import type { AdminUserSummary, AdminUsersSortField, SortDirection } from '../../api'
 import type { AdminTranslations } from '../../i18n'
 import { formatRequestRateSummary, resolveRequestRate } from '../../requestRate'
+import { buildShadowDailyUsageStack } from '../userUsageComparison'
 
 import type { QueryLoadState } from '../queryLoadState'
 
@@ -21,6 +22,7 @@ export interface UsersUsageScreenProps {
   users: AdminUserSummary[]
   language: 'en' | 'zh'
   usersStrings: AdminTranslations['users']
+  showShadowDailyColumn: boolean
   searchControls: ReactNode
   filterStatusText?: string | null
   loadState: QueryLoadState
@@ -61,6 +63,7 @@ export function UsersUsageScreen({
   users,
   language,
   usersStrings,
+  showShadowDailyColumn,
   searchControls,
   filterStatusText,
   loadState,
@@ -99,7 +102,7 @@ export function UsersUsageScreen({
       <section className="surface panel">
         <AdminTableShell
           className="jobs-table-wrapper admin-users-usage-table-wrapper admin-responsive-up"
-          tableClassName="jobs-table admin-users-table admin-users-usage-table"
+          tableClassName={`jobs-table admin-users-table admin-users-usage-table${showShadowDailyColumn ? ' admin-users-usage-table--shadow-compare' : ''}`}
           loadState={loadState}
           loadingLabel={loadingLabel}
           errorLabel={errorLabel}
@@ -108,7 +111,7 @@ export function UsersUsageScreen({
           {users.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={11}>
+                <td colSpan={showShadowDailyColumn ? 12 : 11}>
                   <div className="empty-state alert">{usersStrings.empty.none}</div>
                 </td>
               </tr>
@@ -140,6 +143,7 @@ export function UsersUsageScreen({
                     activeOrder={activeSortOrder}
                     onToggle={onToggleSort}
                   />
+                  {showShadowDailyColumn ? <th>{usersStrings.usage.table.shadowDaily}</th> : null}
                   <AdminUsersSortableHeader
                     label={usersStrings.usage.table.monthly}
                     field="monthlyCreditsUsed"
@@ -191,6 +195,14 @@ export function UsersUsageScreen({
                   const requestRate = resolveRequestRate(item, 'user')
                   const userLabel = item.displayName || item.username || item.userId
                   const userMeta = formatAdminUserListMeta(item)
+                  const shadowDailyUsage = buildShadowDailyUsageStack({
+                    actualUsed: item.dailyCreditsUsed,
+                    shadowUsed: item.shadowDailyCreditsUsed,
+                    limit: item.dailyCreditsLimit,
+                    usersStrings,
+                    formatNumber,
+                    formatQuotaStackValue,
+                  })
                   return (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
@@ -228,10 +240,13 @@ export function UsersUsageScreen({
                         />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)}
-                        />
+                        <AdminTableValueStack {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)} />
                       </td>
+                      {showShadowDailyColumn ? (
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...shadowDailyUsage} />
+                        </td>
+                      ) : null}
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack
                           {...formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)}
@@ -292,6 +307,14 @@ export function UsersUsageScreen({
           ) : (
             users.map((item) => {
               const requestRate = resolveRequestRate(item, 'user')
+              const shadowDailyUsage = buildShadowDailyUsageStack({
+                actualUsed: item.dailyCreditsUsed,
+                shadowUsed: item.shadowDailyCreditsUsed,
+                limit: item.dailyCreditsLimit,
+                usersStrings,
+                formatNumber,
+                formatQuotaStackValue,
+              })
               return (
                 <article key={item.userId} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
@@ -327,8 +350,14 @@ export function UsersUsageScreen({
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.daily}</span>
-                    <strong>{formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}</strong>
+                    <AdminTableValueStack {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)} />
                   </div>
+                  {showShadowDailyColumn ? (
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.usage.table.shadowDaily}</span>
+                      <AdminTableValueStack {...shadowDailyUsage} />
+                    </div>
+                  ) : null}
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthly}</span>
                     <strong>{formatQuotaUsagePair(item.monthlyCreditsUsed, item.monthlyCreditsLimit)}</strong>

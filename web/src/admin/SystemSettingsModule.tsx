@@ -7,6 +7,7 @@ import {
   type RequestLogRetentionProfile,
   type RequestLogRetentionSettings,
   type SystemSettings,
+  type UpstreamProjectIdMode,
 } from '../api'
 import type { QueryLoadState } from './queryLoadState'
 import type { AdminTranslations } from '../i18n'
@@ -15,6 +16,7 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { Icon } from '../lib/icons'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Switch } from '../components/ui/switch'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import {
@@ -54,9 +56,11 @@ type NormalSystemSettingsOverrides = Partial<
     | 'authTokenLogRetentionDays'
     | 'mcpSessionAffinityKeyCount'
     | 'rebalanceMcpEnabled'
-    | 'rebalanceMcpSessionPercent'
     | 'apiRebalanceEnabled'
-    | 'apiRebalancePercent'
+    | 'upstreamProjectIdMode'
+    | 'upstreamProjectIdFixedValue'
+    | 'upstreamMcpUserAgent'
+    | 'upstreamPreciseReconciliationEnabled'
     | 'rechargeFeatureEnabled'
     | 'rechargeUserEnabled'
     | 'adminDefaultActiveUsersOnly'
@@ -132,6 +136,16 @@ function isValidPercentDraft(value: string): value is `${number}` {
   if (!/^\d+$/.test(value)) return false
   const parsed = Number.parseInt(value, 10)
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 100
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+function isValidUpstreamHeaderDraft(value: string, maxBytes: number, allowEmpty: boolean): boolean {
+  if (!allowEmpty && value.length === 0) return false
+  if (/\p{Cc}/u.test(value)) return false
+  return utf8ByteLength(value) <= maxBytes
 }
 
 const clientIpHeaderPresets = [
@@ -223,9 +237,7 @@ function SystemSettingsHelpBubble({
             <p>{strings.form.requestRateLimitHint}</p>
             <p>{strings.form.countHint}</p>
             <p>{strings.form.rebalanceHint}</p>
-            <p>{strings.form.percentHint}</p>
             <p>{strings.form.apiRebalanceHint}</p>
-            <p>{strings.form.apiRebalancePercentHint}</p>
             <p>{strings.form.blockedKeyBaseLimitHint}</p>
             <p>{strings.form.applyScopeHint}</p>
           </div>
@@ -256,12 +268,18 @@ export default function SystemSettingsModule({
   )
   const [draftCount, setDraftCount] = useState(() => (settings ? String(settings.mcpSessionAffinityKeyCount) : ''))
   const [draftRebalanceEnabled, setDraftRebalanceEnabled] = useState(settings?.rebalanceMcpEnabled ?? false)
-  const [draftPercent, setDraftPercent] = useState(() =>
-    settings ? String(settings.rebalanceMcpSessionPercent) : '100',
-  )
   const [draftApiRebalanceEnabled, setDraftApiRebalanceEnabled] = useState(settings?.apiRebalanceEnabled ?? false)
-  const [draftApiRebalancePercent, setDraftApiRebalancePercent] = useState(() =>
-    settings ? String(settings.apiRebalancePercent) : '0',
+  const [draftUpstreamProjectIdMode, setDraftUpstreamProjectIdMode] = useState<UpstreamProjectIdMode>(
+    settings?.upstreamProjectIdMode ?? 'accessToken',
+  )
+  const [draftUpstreamProjectIdFixedValue, setDraftUpstreamProjectIdFixedValue] = useState(
+    settings?.upstreamProjectIdFixedValue ?? '',
+  )
+  const [draftUpstreamMcpUserAgent, setDraftUpstreamMcpUserAgent] = useState(
+    settings?.upstreamMcpUserAgent ?? '',
+  )
+  const [draftUpstreamPreciseReconciliationEnabled, setDraftUpstreamPreciseReconciliationEnabled] = useState(
+    settings?.upstreamPreciseReconciliationEnabled ?? false,
   )
   const [draftRechargeFeatureEnabled, setDraftRechargeFeatureEnabled] = useState(
     settings?.rechargeFeatureEnabled ?? true,
@@ -292,9 +310,11 @@ export default function SystemSettingsModule({
     setDraftAuthTokenLogRetentionDays(settings?.authTokenLogRetentionDays ?? 92)
     setDraftCount(settings ? String(settings.mcpSessionAffinityKeyCount) : '')
     setDraftRebalanceEnabled(settings?.rebalanceMcpEnabled ?? false)
-    setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
     setDraftApiRebalanceEnabled(settings?.apiRebalanceEnabled ?? false)
-    setDraftApiRebalancePercent(settings ? String(settings.apiRebalancePercent) : '0')
+    setDraftUpstreamProjectIdMode(settings?.upstreamProjectIdMode ?? 'accessToken')
+    setDraftUpstreamProjectIdFixedValue(settings?.upstreamProjectIdFixedValue ?? '')
+    setDraftUpstreamMcpUserAgent(settings?.upstreamMcpUserAgent ?? '')
+    setDraftUpstreamPreciseReconciliationEnabled(settings?.upstreamPreciseReconciliationEnabled ?? false)
     setDraftRechargeFeatureEnabled(settings?.rechargeFeatureEnabled ?? true)
     setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
     setDraftAdminDefaultActiveUsersOnly(settings?.adminDefaultActiveUsersOnly ?? false)
@@ -310,9 +330,11 @@ export default function SystemSettingsModule({
     settings?.authTokenLogRetentionDays,
     settings?.mcpSessionAffinityKeyCount,
     settings?.rebalanceMcpEnabled,
-    settings?.rebalanceMcpSessionPercent,
     settings?.apiRebalanceEnabled,
-    settings?.apiRebalancePercent,
+    settings?.upstreamProjectIdMode,
+    settings?.upstreamProjectIdFixedValue,
+    settings?.upstreamMcpUserAgent,
+    settings?.upstreamPreciseReconciliationEnabled,
     settings?.rechargeFeatureEnabled,
     settings?.rechargeUserEnabled,
     settings?.adminDefaultActiveUsersOnly,
@@ -340,8 +362,8 @@ export default function SystemSettingsModule({
 
   const normalizedRequestRateLimit = draftRequestRateLimit.trim()
   const normalizedCount = draftCount.trim()
-  const normalizedPercent = draftPercent.trim()
-  const normalizedApiRebalancePercent = draftApiRebalancePercent.trim()
+  const normalizedUpstreamProjectIdFixedValue = draftUpstreamProjectIdFixedValue.trim()
+  const normalizedUpstreamMcpUserAgent = draftUpstreamMcpUserAgent.trim()
   const normalizedBlockedKeyBaseLimit = draftBlockedKeyBaseLimit.trim()
   const normalizedGlobalIpLimit = draftGlobalIpLimit.trim()
   const normalizedTrustedProxyCidrs = normalizedTrustedProxyCidrsFromDraft(draftTrustedProxyCidrs)
@@ -355,31 +377,43 @@ export default function SystemSettingsModule({
     ? Number.parseInt(normalizedRequestRateLimit, 10)
     : null
   const parsedCount = isValidCountDraft(normalizedCount) ? Number.parseInt(normalizedCount, 10) : null
-  const parsedPercent = isValidPercentDraft(normalizedPercent) ? Number.parseInt(normalizedPercent, 10) : null
-  const parsedApiRebalancePercent = isValidPercentDraft(normalizedApiRebalancePercent)
-    ? Number.parseInt(normalizedApiRebalancePercent, 10)
-    : null
   const parsedBlockedKeyBaseLimit = isValidNonNegativeIntegerDraft(normalizedBlockedKeyBaseLimit)
     ? Number.parseInt(normalizedBlockedKeyBaseLimit, 10)
     : null
   const parsedGlobalIpLimit = isValidNonNegativeIntegerDraft(normalizedGlobalIpLimit)
     ? Number.parseInt(normalizedGlobalIpLimit, 10)
     : null
+  const effectiveDraftRebalancePercent = draftRebalanceEnabled ? 100 : 0
+  const effectiveDraftApiRebalancePercent = draftApiRebalanceEnabled ? 100 : 0
+  const upstreamProjectIdFixedValueValid = isValidUpstreamHeaderDraft(
+    normalizedUpstreamProjectIdFixedValue,
+    128,
+    draftUpstreamProjectIdMode !== 'fixed',
+  )
+  const upstreamMcpUserAgentValid = isValidUpstreamHeaderDraft(
+    normalizedUpstreamMcpUserAgent,
+    256,
+    true,
+  )
   const changed =
     settings != null &&
     parsedRequestRateLimit != null &&
     parsedCount != null &&
-    parsedPercent != null &&
-    parsedApiRebalancePercent != null &&
     parsedBlockedKeyBaseLimit != null &&
     parsedGlobalIpLimit != null &&
+    upstreamProjectIdFixedValueValid &&
+    upstreamMcpUserAgentValid &&
     (parsedRequestRateLimit !== settings.requestRateLimit ||
       draftAuthTokenLogRetentionDays !== settings.authTokenLogRetentionDays ||
       parsedCount !== settings.mcpSessionAffinityKeyCount ||
       draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
-      parsedPercent !== settings.rebalanceMcpSessionPercent ||
+      effectiveDraftRebalancePercent !== settings.rebalanceMcpSessionPercent ||
       draftApiRebalanceEnabled !== settings.apiRebalanceEnabled ||
-      parsedApiRebalancePercent !== settings.apiRebalancePercent ||
+      effectiveDraftApiRebalancePercent !== settings.apiRebalancePercent ||
+      draftUpstreamProjectIdMode !== settings.upstreamProjectIdMode ||
+      normalizedUpstreamProjectIdFixedValue !== settings.upstreamProjectIdFixedValue ||
+      normalizedUpstreamMcpUserAgent !== settings.upstreamMcpUserAgent ||
+      draftUpstreamPreciseReconciliationEnabled !== settings.upstreamPreciseReconciliationEnabled ||
       draftRechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       draftRechargeUserEnabled !== settings.rechargeUserEnabled ||
       draftAdminDefaultActiveUsersOnly !== settings.adminDefaultActiveUsersOnly ||
@@ -397,11 +431,10 @@ export default function SystemSettingsModule({
         ? strings.form.invalidRequestRateLimit
         : null,
     count: normalizedCount.length > 0 && parsedCount == null ? strings.form.invalidCount : null,
-    percent: normalizedPercent.length > 0 && parsedPercent == null ? strings.form.invalidPercent : null,
-    apiRebalancePercent:
-      normalizedApiRebalancePercent.length > 0 && parsedApiRebalancePercent == null
-        ? strings.form.invalidPercent
-        : null,
+    upstreamProjectIdFixedValue:
+      !upstreamProjectIdFixedValueValid ? strings.form.invalidUpstreamProjectIdFixedValue : null,
+    upstreamMcpUserAgent:
+      !upstreamMcpUserAgentValid ? strings.form.invalidUpstreamMcpUserAgent : null,
     blockedKeyBaseLimit:
       normalizedBlockedKeyBaseLimit.length > 0 && parsedBlockedKeyBaseLimit == null
         ? strings.form.invalidBlockedKeyBaseLimit
@@ -412,8 +445,8 @@ export default function SystemSettingsModule({
   const inlineError =
     fieldErrors.requestRateLimit ??
     fieldErrors.count ??
-    fieldErrors.percent ??
-    fieldErrors.apiRebalancePercent ??
+    fieldErrors.upstreamProjectIdFixedValue ??
+    fieldErrors.upstreamMcpUserAgent ??
     fieldErrors.blockedKeyBaseLimit ??
     fieldErrors.globalIpLimit ??
     parsedTrustedClientIpHeaders.duplicateError ??
@@ -422,18 +455,31 @@ export default function SystemSettingsModule({
   const blockedKeyBaseLimitErrorId = 'system-settings-blocked-key-base-limit-error'
   const globalIpLimitErrorId = 'system-settings-global-ip-limit-error'
   const affinityCountErrorId = 'system-settings-affinity-count-error'
-  const rebalancePercentErrorId = 'system-settings-rebalance-percent-error'
-  const apiRebalancePercentErrorId = 'system-settings-api-rebalance-percent-error'
+  const upstreamProjectIdFixedValueErrorId = 'system-settings-upstream-project-id-fixed-value-error'
+  const upstreamMcpUserAgentErrorId = 'system-settings-upstream-mcp-user-agent-error'
 
   const buildNormalSettingsPayload = (overrides: NormalSystemSettingsOverrides = {}): SystemSettings | null => {
+    const nextRebalanceMcpEnabled = overrides.rebalanceMcpEnabled ?? draftRebalanceEnabled
+    const nextApiRebalanceEnabled = overrides.apiRebalanceEnabled ?? draftApiRebalanceEnabled
+    const nextUpstreamProjectIdMode = overrides.upstreamProjectIdMode ?? draftUpstreamProjectIdMode
+    const nextUpstreamProjectIdFixedValue = (
+      overrides.upstreamProjectIdFixedValue ?? normalizedUpstreamProjectIdFixedValue
+    ).trim()
+    const nextUpstreamMcpUserAgent = (overrides.upstreamMcpUserAgent ?? normalizedUpstreamMcpUserAgent).trim()
+    const nextUpstreamProjectIdFixedValueValid = isValidUpstreamHeaderDraft(
+      nextUpstreamProjectIdFixedValue,
+      128,
+      nextUpstreamProjectIdMode !== 'fixed',
+    )
+    const nextUpstreamMcpUserAgentValid = isValidUpstreamHeaderDraft(nextUpstreamMcpUserAgent, 256, true)
     if (
       settings == null ||
       parsedRequestRateLimit == null ||
       parsedCount == null ||
-      parsedPercent == null ||
-      parsedApiRebalancePercent == null ||
       parsedBlockedKeyBaseLimit == null ||
-      parsedGlobalIpLimit == null
+      parsedGlobalIpLimit == null ||
+      !nextUpstreamProjectIdFixedValueValid ||
+      !nextUpstreamMcpUserAgentValid
     )
       return null
     return {
@@ -441,10 +487,15 @@ export default function SystemSettingsModule({
       authTokenLogRetentionDays:
         overrides.authTokenLogRetentionDays ?? draftAuthTokenLogRetentionDays,
       mcpSessionAffinityKeyCount: overrides.mcpSessionAffinityKeyCount ?? parsedCount,
-      rebalanceMcpEnabled: overrides.rebalanceMcpEnabled ?? draftRebalanceEnabled,
-      rebalanceMcpSessionPercent: overrides.rebalanceMcpSessionPercent ?? parsedPercent,
-      apiRebalanceEnabled: overrides.apiRebalanceEnabled ?? draftApiRebalanceEnabled,
-      apiRebalancePercent: overrides.apiRebalancePercent ?? parsedApiRebalancePercent,
+      rebalanceMcpEnabled: nextRebalanceMcpEnabled,
+      rebalanceMcpSessionPercent: nextRebalanceMcpEnabled ? 100 : 0,
+      apiRebalanceEnabled: nextApiRebalanceEnabled,
+      apiRebalancePercent: nextApiRebalanceEnabled ? 100 : 0,
+      upstreamProjectIdMode: nextUpstreamProjectIdMode,
+      upstreamProjectIdFixedValue: nextUpstreamProjectIdFixedValue,
+      upstreamMcpUserAgent: nextUpstreamMcpUserAgent,
+      upstreamPreciseReconciliationEnabled:
+        overrides.upstreamPreciseReconciliationEnabled ?? draftUpstreamPreciseReconciliationEnabled,
       rechargeFeatureEnabled: overrides.rechargeFeatureEnabled ?? draftRechargeFeatureEnabled,
       rechargeUserEnabled: overrides.rechargeUserEnabled ?? draftRechargeUserEnabled,
       adminDefaultActiveUsersOnly:
@@ -466,6 +517,10 @@ export default function SystemSettingsModule({
       payload.rebalanceMcpSessionPercent !== settings.rebalanceMcpSessionPercent ||
       payload.apiRebalanceEnabled !== settings.apiRebalanceEnabled ||
       payload.apiRebalancePercent !== settings.apiRebalancePercent ||
+      payload.upstreamProjectIdMode !== settings.upstreamProjectIdMode ||
+      payload.upstreamProjectIdFixedValue !== settings.upstreamProjectIdFixedValue ||
+      payload.upstreamMcpUserAgent !== settings.upstreamMcpUserAgent ||
+      payload.upstreamPreciseReconciliationEnabled !== settings.upstreamPreciseReconciliationEnabled ||
       payload.rechargeFeatureEnabled !== settings.rechargeFeatureEnabled ||
       payload.rechargeUserEnabled !== settings.rechargeUserEnabled ||
       payload.adminDefaultActiveUsersOnly !== settings.adminDefaultActiveUsersOnly ||
@@ -758,8 +813,6 @@ export default function SystemSettingsModule({
                 parsedTrustedClientIpHeaders.duplicateError != null ||
                 parsedRequestRateLimit == null ||
                 parsedCount == null ||
-                parsedPercent == null ||
-                parsedApiRebalancePercent == null ||
                 parsedBlockedKeyBaseLimit == null ||
                 parsedGlobalIpLimit == null ||
                 !trustedClientIpChanged
@@ -962,11 +1015,6 @@ export default function SystemSettingsModule({
                     {fieldErrors.requestRateLimit}
                   </p>
                 )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentRequestRateLimitValue.replace('{count}', String(settings.requestRateLimit))}
-                  </p>
-                )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {strings.form.requestRateLimitHint}
                 </p>
@@ -994,14 +1042,6 @@ export default function SystemSettingsModule({
                 {fieldErrors.blockedKeyBaseLimit && (
                   <p id={blockedKeyBaseLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.blockedKeyBaseLimit}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentBlockedKeyBaseLimitValue.replace(
-                      '{count}',
-                      String(settings.userBlockedKeyBaseLimit),
-                    )}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
@@ -1064,11 +1104,6 @@ export default function SystemSettingsModule({
                 {fieldErrors.globalIpLimit && (
                   <p id={globalIpLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.globalIpLimit}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentGlobalIpLimitValue.replace('{count}', String(settings.globalIpLimit))}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
@@ -1206,11 +1241,6 @@ export default function SystemSettingsModule({
                     {fieldErrors.count}
                   </p>
                 )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentValue.replace('{count}', String(settings.mcpSessionAffinityKeyCount))}
-                  </p>
-                )}
               </div>
 
               <div className="system-settings-toggle-row">
@@ -1236,65 +1266,6 @@ export default function SystemSettingsModule({
                 />
               </div>
 
-              <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-rebalance-percent">
-                  {strings.form.percentLabel}
-                </label>
-                <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
-                  <input
-                    id="system-settings-rebalance-percent"
-                    className="range"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={parsedPercent ?? 0}
-                    disabled={saving || !draftRebalanceEnabled}
-                    onChange={(event) => setDraftPercent(event.target.value)}
-                    onBlur={() => {
-                      void commitNormalSettings()
-                    }}
-                    aria-label={strings.form.percentLabel}
-                  />
-                  <Input
-                    id="system-settings-rebalance-percent-input"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draftPercent}
-                    disabled={saving || !draftRebalanceEnabled}
-                    onChange={(event) => setDraftPercent(event.target.value)}
-                    onBlur={() => {
-                      void commitNormalSettings()
-                    }}
-                    onKeyDown={handleCommitKeyDown}
-                    aria-label={strings.form.percentLabel}
-                    aria-invalid={fieldErrors.percent ? true : undefined}
-                    aria-describedby={fieldErrors.percent ? rebalancePercentErrorId : undefined}
-                  />
-                </div>
-                {fieldErrors.percent && (
-                  <p id={rebalancePercentErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
-                    {fieldErrors.percent}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentPercentValue.replace('{percent}', String(settings.rebalanceMcpSessionPercent))}
-                  </p>
-                )}
-                <p className="system-settings-field-hint text-xs text-muted-foreground">
-                  {draftRebalanceEnabled ? strings.form.percentHint : strings.form.percentDisabledHint}
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <section className="system-settings-config-section">
-            <h4>{strings.form.apiRebalanceTitle}</h4>
-            <div className="system-settings-field-grid system-settings-field-grid--api">
               <div className="system-settings-toggle-row">
                 <div className="system-settings-toggle-copy">
                   <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-switch">
@@ -1317,64 +1288,153 @@ export default function SystemSettingsModule({
                   disabled={saving}
                 />
               </div>
+            </div>
+          </section>
+
+          <section className="system-settings-config-section">
+            <h4>{strings.form.upstreamIdentityTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--api">
+              <div className="system-settings-field">
+                <label className="text-sm font-medium" htmlFor="system-settings-upstream-project-id-mode">
+                  {strings.form.upstreamProjectIdModeLabel}
+                </label>
+                <Select
+                  value={draftUpstreamProjectIdMode}
+                  disabled={saving}
+                  onValueChange={(value) => {
+                    const nextMode = value as UpstreamProjectIdMode
+                    setDraftUpstreamProjectIdMode(nextMode)
+                    void commitNormalSettings({
+                      upstreamProjectIdMode: nextMode,
+                    }).then((saved) => {
+                      if (!saved) {
+                        setDraftUpstreamProjectIdMode(settings?.upstreamProjectIdMode ?? nextMode)
+                      }
+                    })
+                  }}
+                >
+                  <SelectTrigger
+                    id="system-settings-upstream-project-id-mode"
+                    aria-label={strings.form.upstreamProjectIdModeLabel}
+                    className="system-settings-select-trigger"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end" className="system-settings-select-content">
+                    <SelectItem value="accessToken">{strings.form.upstreamProjectIdModeAccessToken}</SelectItem>
+                    <SelectItem value="passthrough">{strings.form.upstreamProjectIdModePassthrough}</SelectItem>
+                    <SelectItem value="fixed">{strings.form.upstreamProjectIdModeFixed}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
+                  {strings.form.upstreamProjectIdModeHint}
+                </p>
+              </div>
 
               <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-percent">
-                  {strings.form.apiRebalancePercentLabel}
+                <label className="text-sm font-medium" htmlFor="system-settings-upstream-project-id-fixed-value">
+                  {strings.form.upstreamProjectIdFixedValueLabel}
                 </label>
-                <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
-                  <input
-                    id="system-settings-api-rebalance-percent"
-                    className="range"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={parsedApiRebalancePercent ?? 0}
-                    disabled={saving || !draftApiRebalanceEnabled}
-                    onChange={(event) => setDraftApiRebalancePercent(event.target.value)}
-                    onBlur={() => {
-                      void commitNormalSettings()
-                    }}
-                    aria-label={strings.form.apiRebalancePercentLabel}
-                  />
-                  <Input
-                    id="system-settings-api-rebalance-percent-input"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draftApiRebalancePercent}
-                    disabled={saving || !draftApiRebalanceEnabled}
-                    onChange={(event) => setDraftApiRebalancePercent(event.target.value)}
-                    onBlur={() => {
-                      void commitNormalSettings()
-                    }}
-                    onKeyDown={handleCommitKeyDown}
-                    aria-label={strings.form.apiRebalancePercentLabel}
-                    aria-invalid={fieldErrors.apiRebalancePercent ? true : undefined}
-                    aria-describedby={fieldErrors.apiRebalancePercent ? apiRebalancePercentErrorId : undefined}
-                  />
-                </div>
-                {fieldErrors.apiRebalancePercent && (
-                  <p id={apiRebalancePercentErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
-                    {fieldErrors.apiRebalancePercent}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentApiRebalancePercentValue.replace(
-                      '{percent}',
-                      String(settings.apiRebalancePercent),
-                    )}
+                <Input
+                  id="system-settings-upstream-project-id-fixed-value"
+                  type="text"
+                  value={draftUpstreamProjectIdFixedValue}
+                  placeholder={strings.form.upstreamProjectIdFixedValuePlaceholder}
+                  disabled={saving}
+                  onChange={(event) => setDraftUpstreamProjectIdFixedValue(event.target.value)}
+                  onBlur={(event) => {
+                    void commitNormalSettings({
+                      upstreamProjectIdFixedValue: event.currentTarget.value.trim(),
+                    })
+                  }}
+                  onKeyDown={handleCommitKeyDown}
+                  aria-invalid={fieldErrors.upstreamProjectIdFixedValue ? true : undefined}
+                  aria-describedby={
+                    fieldErrors.upstreamProjectIdFixedValue ? upstreamProjectIdFixedValueErrorId : undefined
+                  }
+                />
+                {fieldErrors.upstreamProjectIdFixedValue && (
+                  <p
+                    id={upstreamProjectIdFixedValueErrorId}
+                    className="system-settings-field-error text-xs font-medium text-destructive"
+                  >
+                    {fieldErrors.upstreamProjectIdFixedValue}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
-                  {draftApiRebalanceEnabled
-                    ? strings.form.apiRebalancePercentHint
-                    : strings.form.apiRebalancePercentDisabledHint}
+                  {strings.form.upstreamProjectIdFixedValueHint}
                 </p>
+              </div>
+
+              <div className="system-settings-field">
+                <label className="text-sm font-medium" htmlFor="system-settings-upstream-mcp-user-agent">
+                  {strings.form.upstreamMcpUserAgentLabel}
+                </label>
+                <Input
+                  id="system-settings-upstream-mcp-user-agent"
+                  type="text"
+                  value={draftUpstreamMcpUserAgent}
+                  placeholder={strings.form.upstreamMcpUserAgentPlaceholder}
+                  disabled={saving}
+                  onChange={(event) => setDraftUpstreamMcpUserAgent(event.target.value)}
+                  onBlur={(event) => {
+                    void commitNormalSettings({
+                      upstreamMcpUserAgent: event.currentTarget.value.trim(),
+                    })
+                  }}
+                  onKeyDown={handleCommitKeyDown}
+                  aria-invalid={fieldErrors.upstreamMcpUserAgent ? true : undefined}
+                  aria-describedby={fieldErrors.upstreamMcpUserAgent ? upstreamMcpUserAgentErrorId : undefined}
+                />
+                {fieldErrors.upstreamMcpUserAgent && (
+                  <p
+                    id={upstreamMcpUserAgentErrorId}
+                    className="system-settings-field-error text-xs font-medium text-destructive"
+                  >
+                    {fieldErrors.upstreamMcpUserAgent}
+                  </p>
+                )}
+                <p className="system-settings-field-hint text-xs text-muted-foreground">
+                  {strings.form.upstreamMcpUserAgentHint}
+                </p>
+              </div>
+
+              <div className="system-settings-field system-settings-field--notice">
+                <div className="system-settings-field-copy">
+                  <strong className="text-sm font-medium">{strings.form.upstreamHttpUserAgentNotice}</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="system-settings-config-section">
+            <h4>{strings.form.upstreamPreciseReconciliationTitle}</h4>
+            <div className="system-settings-field-grid system-settings-field-grid--api">
+              <div className="system-settings-toggle-row">
+                <div className="system-settings-toggle-copy">
+                  <label className="text-sm font-medium" htmlFor="system-settings-upstream-precise-reconciliation-switch">
+                    {strings.form.upstreamPreciseReconciliationLabel}
+                  </label>
+                  <p className="text-xs text-muted-foreground">{strings.form.upstreamPreciseReconciliationHint}</p>
+                </div>
+                <Switch
+                  aria-label={strings.form.upstreamPreciseReconciliationLabel}
+                  id="system-settings-upstream-precise-reconciliation-switch"
+                  checked={draftUpstreamPreciseReconciliationEnabled}
+                  onCheckedChange={(checked) => {
+                    setDraftUpstreamPreciseReconciliationEnabled(checked)
+                    void commitNormalSettings({
+                      upstreamPreciseReconciliationEnabled: checked,
+                    }).then((saved) => {
+                        if (!saved) {
+                          setDraftUpstreamPreciseReconciliationEnabled(
+                          settings?.upstreamPreciseReconciliationEnabled ?? false,
+                          )
+                        }
+                      })
+                  }}
+                  disabled={saving}
+                />
               </div>
             </div>
           </section>

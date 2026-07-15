@@ -88,7 +88,12 @@ impl TavilyProxy {
 
         drop(url.query_pairs_mut());
 
-        let sanitized_headers = self.sanitize_headers(&request.headers, &request.path);
+        let settings = self.key_store.get_system_settings().await?;
+        let sanitized_headers = self.sanitize_headers(
+            &request.headers,
+            &request.path,
+            Some(&settings.upstream_mcp_user_agent),
+        );
         let gateway_mode = request.gateway_mode.as_deref().or_else(|| {
             request
                 .path
@@ -318,7 +323,13 @@ impl TavilyProxy {
 
         let url = build_path_prefixed_url(&base, upstream_path);
 
-        let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        self.apply_upstream_project_id_header(
+            &mut sanitized_headers,
+            original_headers,
+            auth_token_id,
+        )
+        .await?;
 
         // Build upstream request body by injecting Tavily key into api_key field.
         let mut upstream_options = options;
@@ -656,7 +667,13 @@ impl TavilyProxy {
             source,
         })?;
         let url = build_path_prefixed_url(&base, upstream_path);
-        let sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+        let mut sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+        self.apply_upstream_project_id_header(
+            &mut sanitized_headers,
+            original_headers,
+            auth_token_id,
+        )
+        .await?;
 
         let mut upstream_options = options;
         if let Value::Object(ref mut map) = upstream_options {
@@ -895,7 +912,13 @@ impl TavilyProxy {
             source,
         })?;
         let url = build_path_prefixed_url(&base, "/research");
-        let sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+        let mut sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+        self.apply_upstream_project_id_header(
+            &mut sanitized_headers,
+            original_headers,
+            auth_token_id,
+        )
+        .await?;
 
         let mut upstream_options = options;
         if let Value::Object(ref mut map) = upstream_options {
@@ -1159,7 +1182,13 @@ impl TavilyProxy {
 
         let url = build_path_prefixed_url(&base, "/research");
 
-        let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        self.apply_upstream_project_id_header(
+            &mut sanitized_headers,
+            original_headers,
+            auth_token_id,
+        )
+        .await?;
 
         // Build upstream request body by injecting Tavily key into api_key field.
         let mut upstream_options = options;
@@ -1433,7 +1462,13 @@ impl TavilyProxy {
 
         let url = build_path_prefixed_url(&base, upstream_path);
 
-        let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+        self.apply_upstream_project_id_header(
+            &mut sanitized_headers,
+            original_headers,
+            auth_token_id,
+        )
+        .await?;
 
         let redacted_request_body: Vec<u8> = Vec::new();
         let request_method = method.clone();

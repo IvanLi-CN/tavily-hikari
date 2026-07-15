@@ -7,15 +7,7 @@ enum TavilyUpstreamMode {
 const HIKARI_ROUTING_KEY_HEADER: &str = "x-hikari-routing-key";
 
 fn should_use_api_rebalance(settings: &tavily_hikari::SystemSettings) -> bool {
-    if !settings.api_rebalance_enabled || settings.api_rebalance_percent <= 0 {
-        return false;
-    }
-    if settings.api_rebalance_percent >= 100 {
-        return true;
-    }
-
-    let mut rng = rand::thread_rng();
-    rng.gen_range(0..100) < settings.api_rebalance_percent
+    settings.api_rebalance_enabled
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +117,40 @@ fn extract_hikari_routing_key(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+async fn record_rebalance_period_usage(
+    state: &Arc<AppState>,
+    use_rebalance: bool,
+    token_id: Option<&str>,
+    key_id: Option<&str>,
+    billing_subject: Option<&str>,
+    response_body: &[u8],
+    research_request_id: Option<&str>,
+) {
+    if !use_rebalance {
+        return;
+    }
+    let (Some(token_id), Some(key_id), Some(billing_subject)) =
+        (token_id, key_id, billing_subject)
+    else {
+        return;
+    };
+    let request_id = research_request_id
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_research_request_id(response_body));
+    if let Err(err) = state
+        .proxy
+        .record_upstream_reconciliation_usage(
+            token_id,
+            key_id,
+            billing_subject,
+            request_id.as_deref(),
+        )
+        .await
+    {
+        eprintln!("record upstream reconciliation usage failed: {err}");
+    }
 }
 
 fn chunked_credits(items: usize, chunk_size: usize, credits_per_chunk: i64) -> i64 {
@@ -588,6 +614,12 @@ async fn tavily_http_research_result(
 
     match result {
         Ok((resp, analysis)) => {
+            if research_response_is_terminal(&resp.body) {
+                let _ = state
+                    .proxy
+                    .mark_upstream_reconciliation_research_terminal(&request_id)
+                    .await;
+            }
             if let Some(tid) = token_id_for_logs.as_deref() {
                 let http_code = resp.status.as_u16() as i64;
                 let _ = state
@@ -1193,6 +1225,16 @@ async fn proxy_tavily_http_endpoint(
                         .await;
                 }
                 // Return the upstream response once billing either succeeded or we captured a local audit error.
+                record_rebalance_period_usage(
+                    &state,
+                    use_api_rebalance,
+                    token_id_for_logs.as_deref(),
+                    analysis.api_key_id.as_deref(),
+                    billing_subject.as_deref(),
+                    &resp.body,
+                    None,
+                )
+                .await;
                 return Ok(build_response(resp));
             }
             Err(err) => {
@@ -1441,6 +1483,16 @@ async fn proxy_tavily_http_endpoint(
             }
             // Always return the upstream response, even if local billing persistence fails.
             // Returning a 5xx here can trigger client retries and cause duplicate upstream charges.
+            record_rebalance_period_usage(
+                &state,
+                use_api_rebalance,
+                token_id_for_logs.as_deref(),
+                analysis.api_key_id.as_deref(),
+                billing_subject.as_deref(),
+                &resp.body,
+                None,
+            )
+            .await;
             Ok(build_response(resp))
         }
         Err(err) => {

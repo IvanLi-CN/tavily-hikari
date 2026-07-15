@@ -1,5 +1,7 @@
 import type { RequestLogRetentionSettings } from './requestLogRetention'
 
+export type UpstreamProjectIdMode = 'passthrough' | 'fixed' | 'accessToken'
+
 export interface SystemSettings {
   requestRateLimit: number
   authTokenLogRetentionDays: number
@@ -8,6 +10,10 @@ export interface SystemSettings {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  upstreamProjectIdMode: UpstreamProjectIdMode
+  upstreamProjectIdFixedValue: string
+  upstreamMcpUserAgent: string
+  upstreamPreciseReconciliationEnabled: boolean
   rechargeFeatureEnabled: boolean
   rechargeUserEnabled: boolean
   adminDefaultActiveUsersOnly: boolean
@@ -24,6 +30,46 @@ export interface AdminUserListStats {
   windowDays: number
 }
 
+export interface UpstreamPrivacyGate {
+  key: string
+  ready: boolean
+  detail: string
+}
+
+export interface UpstreamReconciliationAdjustment {
+  settlementKey: string
+  tokenIdHint: string
+  billingSubjectKind: string
+  periodCode: string
+  deltaCredits: number
+  degradedReason: string | null
+  createdAt: number
+}
+
+export interface UpstreamPrivacyStatus {
+  phase: 'configured' | 'draining' | 'pending' | 'compare' | 'active' | 'degraded'
+  configuredProjectIdMode: UpstreamProjectIdMode
+  effectiveProjectIdMode: UpstreamProjectIdMode
+  fixedProjectIdConfigured: boolean
+  configuredMcpUserAgent: string
+  effectiveMcpUserAgent: string | null
+  upstreamPreciseReconciliationEnabled: boolean
+  httpAllowedHeaders: string[]
+  controlMcpAllowedHeaders: string[]
+  gates: UpstreamPrivacyGate[]
+  completedGates: number
+  totalGates: number
+  activeControlSessions: number
+  currentPeriodCode: string
+  currentPeriodEndsAt: number
+  nextEpochAt: number | null
+  pendingResearch: number
+  queuedSettlements: number
+  degradedSettlements: number
+  recentAdjustments: UpstreamReconciliationAdjustment[]
+  generatedAt: number
+}
+
 export interface ForwardProxySettingsEnvelope {
   forwardProxy?: import('./runtime').ForwardProxySettings | null
   systemSettings?: SystemSettings | null
@@ -38,6 +84,10 @@ export interface UpdateSystemSettingsPayload {
   rebalanceMcpSessionPercent: number
   apiRebalanceEnabled: boolean
   apiRebalancePercent: number
+  upstreamProjectIdMode: UpstreamProjectIdMode
+  upstreamProjectIdFixedValue: string
+  upstreamMcpUserAgent: string
+  upstreamPreciseReconciliationEnabled: boolean
   rechargeFeatureEnabled: boolean
   rechargeUserEnabled: boolean
   adminDefaultActiveUsersOnly: boolean

@@ -109,7 +109,6 @@ async fn proxy_handler(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             !has_active_control_session
                 && settings.rebalance_mcp_enabled
-                && settings.rebalance_mcp_session_percent > 0
         }
     } else {
         false
@@ -451,9 +450,7 @@ async fn proxy_handler(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let proxy_session_id = nanoid::nanoid!(24);
         let ab_bucket = stable_rebalance_bucket(&proxy_session_id);
-        let use_rebalance = settings.rebalance_mcp_enabled
-            && settings.rebalance_mcp_session_percent > 0
-            && ab_bucket < settings.rebalance_mcp_session_percent;
+        let use_rebalance = settings.rebalance_mcp_enabled;
         planned_initialize_proxy_session_id = Some(proxy_session_id);
         planned_initialize_ab_bucket = Some(ab_bucket);
         planned_initialize_gateway_mode = if use_rebalance {
@@ -476,7 +473,7 @@ async fn proxy_handler(
             .get_system_settings()
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if settings.rebalance_mcp_enabled && settings.rebalance_mcp_session_percent > 0 {
+        if settings.rebalance_mcp_enabled {
             active_mcp_gateway_mode = tavily_hikari::MCP_GATEWAY_MODE_REBALANCE.to_string();
         }
     }
@@ -1491,6 +1488,27 @@ async fn proxy_handler(
 
                         total
                     };
+
+                    if credits > 0
+                        && active_mcp_gateway_mode
+                            == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+                        && let (Some(api_key_id), Some(subject)) =
+                            (api_key_id, billing_subject.as_deref())
+                    {
+                        let research_request_id = extract_research_request_id(&resp.body);
+                        if let Err(err) = state
+                            .proxy
+                            .record_upstream_reconciliation_usage(
+                                tid,
+                                api_key_id,
+                                subject,
+                                research_request_id.as_deref(),
+                            )
+                            .await
+                        {
+                            eprintln!("record MCP reconciliation usage failed: {err}");
+                        }
+                    }
 
                     if credits > 0 {
                         match if let Some(subject) = billing_subject.as_deref() {

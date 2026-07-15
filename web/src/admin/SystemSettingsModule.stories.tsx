@@ -20,9 +20,11 @@ function SystemSettingsCanvas(props: {
   count?: number
   blockedKeyBaseLimit?: number
   rebalanceEnabled?: boolean
-  rebalancePercent?: number
   apiRebalanceEnabled?: boolean
-  apiRebalancePercent?: number
+  upstreamProjectIdMode?: SystemSettings['upstreamProjectIdMode']
+  upstreamProjectIdFixedValue?: string
+  upstreamMcpUserAgent?: string
+  upstreamPreciseReconciliationEnabled?: boolean
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
   error?: string | null
   saving?: boolean
@@ -38,9 +40,13 @@ function SystemSettingsCanvas(props: {
     authTokenLogRetentionDays: 92,
     mcpSessionAffinityKeyCount: props.count ?? 5,
     rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
-    rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
+    rebalanceMcpSessionPercent: props.rebalanceEnabled ? 100 : 0,
     apiRebalanceEnabled: props.apiRebalanceEnabled ?? false,
-    apiRebalancePercent: props.apiRebalancePercent ?? 0,
+    apiRebalancePercent: props.apiRebalanceEnabled ? 100 : 0,
+    upstreamProjectIdMode: props.upstreamProjectIdMode ?? 'accessToken',
+    upstreamProjectIdFixedValue: props.upstreamProjectIdFixedValue ?? '',
+    upstreamMcpUserAgent: props.upstreamMcpUserAgent ?? '',
+    upstreamPreciseReconciliationEnabled: props.upstreamPreciseReconciliationEnabled ?? false,
     rechargeFeatureEnabled: true,
     rechargeUserEnabled: true,
     adminDefaultActiveUsersOnly: props.adminDefaultActiveUsersOnly ?? false,
@@ -201,9 +207,13 @@ const meta = {
       authTokenLogRetentionDays: 92,
       mcpSessionAffinityKeyCount: 5,
       rebalanceMcpEnabled: false,
-      rebalanceMcpSessionPercent: 100,
+      rebalanceMcpSessionPercent: 0,
       apiRebalanceEnabled: false,
       apiRebalancePercent: 0,
+      upstreamProjectIdMode: 'accessToken',
+      upstreamProjectIdFixedValue: '',
+      upstreamMcpUserAgent: '',
+      upstreamPreciseReconciliationEnabled: false,
       rechargeFeatureEnabled: true,
       rechargeUserEnabled: true,
       adminDefaultActiveUsersOnly: false,
@@ -236,25 +246,29 @@ export const CompactDensity: Story = {
 }
 
 export const RebalanceEnabled: Story = {
-  render: () => <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} />,
-}
-
-export const RebalanceDisabledSliderLocked: Story = {
-  render: () => <SystemSettingsCanvas rebalanceEnabled={false} rebalancePercent={35} />,
+  render: () => <SystemSettingsCanvas rebalanceEnabled />,
 }
 
 export const ApiRebalanceEnabled: Story = {
-  render: () => <SystemSettingsCanvas apiRebalanceEnabled apiRebalancePercent={25} />,
+  render: () => <SystemSettingsCanvas apiRebalanceEnabled />,
 }
 
-export const ApiRebalanceDisabledSliderLocked: Story = {
-  render: () => <SystemSettingsCanvas apiRebalanceEnabled={false} apiRebalancePercent={25} />,
+export const FixedProjectIdAndControlUa: Story = {
+  render: () => (
+    <SystemSettingsCanvas
+      upstreamProjectIdMode="fixed"
+      upstreamProjectIdFixedValue="team-search-prod"
+      upstreamMcpUserAgent="custom-control-mcp"
+    />
+  ),
+}
+
+export const ComparisonOnlyReconciliation: Story = {
+  render: () => <SystemSettingsCanvas upstreamPreciseReconciliationEnabled={false} />,
 }
 
 export const Applying: Story = {
-  render: () => (
-    <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} apiRebalanceEnabled apiRebalancePercent={25} saving />
-  ),
+  render: () => <SystemSettingsCanvas rebalanceEnabled apiRebalanceEnabled saving />,
 }
 
 export const ActiveUsersDefaultEnabled: Story = {
@@ -279,9 +293,7 @@ export const RequestRateEdited: Story = {
     <SystemSettingsCanvas
       requestRateLimit={80}
       rebalanceEnabled
-      rebalancePercent={35}
       apiRebalanceEnabled
-      apiRebalancePercent={25}
     />
   ),
 }
@@ -306,9 +318,7 @@ export const BlockedKeyBaseConfigured: Story = {
     <SystemSettingsCanvas
       blockedKeyBaseLimit={8}
       rebalanceEnabled
-      rebalancePercent={35}
       apiRebalanceEnabled
-      apiRebalancePercent={25}
     />
   ),
 }

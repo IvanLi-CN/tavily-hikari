@@ -6,17 +6,17 @@
 
 - Implementation: 已实现，等待 PR review/CI 收敛
 - Lifecycle: active
-- Catalog note: `/api/tavily/*` 通过 System Settings 开关与按请求比例进入 generic API rebalance selector，默认关闭 0%；Hikari routing key、Tavily adapter 兼容与 research lifecycle pinning 已接入。
+- Catalog note: `/api/tavily/*` 通过 System Settings 开关进入 generic API rebalance selector，默认关闭；兼容百分比字段已收敛为 `0|100`，Hikari routing key、Tavily adapter 兼容与 research lifecycle pinning 已接入。
 
 ## Coverage / rollout summary
 
-- `SystemSettings` 持久化 `api_rebalance_enabled` 与 `api_rebalance_percent`，默认 `false / 0`。
-- `/api/tavily/search|extract|crawl|map|research` 在开关开启且本请求随机 bucket 命中时使用 `api_rebalance_http` selector；否则走 legacy primary / Tavily adapter 选路。
+- `SystemSettings` 持久化 `api_rebalance_enabled`，并把兼容字段 `api_rebalance_percent` 归一化为 `0|100`。
+- `/api/tavily/search|extract|crawl|map|research` 在开关开启时统一使用 `api_rebalance_http` selector；否则走 legacy primary / Tavily adapter 选路。
 - 命中 API Rebalance 且无 routing key 的 API 请求使用 full-pool selector，不默认落到 user/token primary affinity。
 - `X-Hikari-Routing-Key` 被解析为本地 routing subject，转发上游前剥离。
 - `X-Project-ID` 在 API Rebalance 命中且没有 Hikari routing key 时作为 Tavily adapter fallback routing subject，并继续透传上游；未命中 API Rebalance 时保持 legacy HTTP project affinity。
-- `POST /api/tavily/research` 成功后记录 `request_id -> 实际 key_id`；`GET /api/tavily/research/:request_id` 不参与 rollout gating，只使用创建时记录的 key，记录 key 不可用时返回错误且不 fallback。
-- System Settings UI 提供 API Rebalance Switch、0-100 slider 与数字输入；关闭时比例控件禁用。
+- `POST /api/tavily/research` 成功后记录 `request_id -> 实际 key_id`；`GET /api/tavily/research/:request_id` 不参与额外分流，只使用创建时记录的 key，记录 key 不可用时返回错误且不 fallback。
+- System Settings UI 只保留 API Rebalance Switch；独立比例控件已移除。
 - Request log / dashboard effect bucket 已接入 generic API binding 与 selection effect code。
 - Admin 近期请求列表会把 `api_rebalance_*` binding / selection effect 识别为 API Rebalance 路径，在 Key pill 复用 Rebalance 标记，并为 API Rebalance effect 显示专用标签与说明。
 
@@ -49,12 +49,12 @@
 - `cargo test api_rebalance -- --nocapture`
 - `cargo test tavily_http_search_hikari_routing_key_is_internal_and_takes_affinity_precedence -- --nocapture`
 - `cargo test tavily_http_search_forwards_raw_x_project_id_and_logs_api_route_affinity_effect -- --nocapture`
-- `cargo test tavily_http_search_default_rollout_uses_legacy_project_affinity_effect -- --nocapture`
-- `cargo test tavily_http_search_api_rebalance_percent_100_uses_generic_selector -- --nocapture`
-- `cargo test tavily_http_search_api_rebalance_percent_zero_uses_legacy_primary -- --nocapture`
+- `cargo test tavily_http_search_default_api_rebalance_disabled_uses_legacy_project_affinity_effect -- --nocapture`
+- `cargo test tavily_http_search_api_rebalance_enabled_uses_generic_selector -- --nocapture`
+- `cargo test tavily_http_search_api_rebalance_disabled_uses_legacy_primary -- --nocapture`
 - `cargo test tavily_http_research_result_returns_error_when_pinned_key_unavailable_without_fallback -- --nocapture`
 - `cargo test tavily_http_research_result -- --nocapture`
-- `cargo test admin_system_settings_reject_invalid_api_rebalance_percent -- --nocapture`
+- `cargo test admin_system_settings_normalizes_api_rebalance_percent_to_toggle_state -- --nocapture`
 - `bun test web/src/admin/SystemSettingsModule.render.test.ts web/src/admin/SystemSettingsModule.stories.test.ts web/src/api.test.ts`
 - `bun --bun ./node_modules/.bin/tsc -b`
 - `bun --bun ./node_modules/.bin/storybook build --disable-telemetry`

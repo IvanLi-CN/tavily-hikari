@@ -18,32 +18,33 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13480,
-      reason: 'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, active-user list filtering, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
+      max: 13620,
+      reason:
+        'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, upstream privacy status routing, active-user list filtering, shadow reconciliation comparison wiring, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
     },
   ],
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7700,
+      max: 7900,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states, rankings shell proof, system-settings proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, upstream privacy status proof data, rankings shell proof, system-settings proof data, shadow reconciliation comparison proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
     },
   ],
   [
     'src/api/runtime.ts',
     {
-      max: 3977,
+      max: 4035,
       reason:
-        'API barrel still carries HA source settings, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, upstream privacy status contracts, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
     'src/api/demo.ts',
     {
-      max: 2555,
+      max: 2610,
       reason:
-        'Demo API fixtures now also cover the dedicated user billing summary surface, alongside user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, admin passkey/password security states, and the Tavily usage-boundary probe on the shared demo shell.',
+        'Demo API fixtures now also cover the upstream privacy status surface, dedicated user billing summary surface, user-console overview snapshots, alerts center mother-child aggregation states, request-record drawers, SSE proof states, auth-token retention settings, recharge availability evidence, admin passkey/password security states, and the Tavily usage-boundary probe on the shared demo shell.',
     },
   ],
   [
@@ -65,49 +66,49 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api.test.ts',
     {
-      max: 1720,
+      max: 1800,
       reason:
-        'Shared API contract coverage now includes auth-token retention settings, the user-console overview snapshot, events surface, the expanded admin rankings endpoint, and admin user base quota ledger contracts until the largest runtime suites are split out.',
+        'Shared API contract coverage now includes upstream privacy status, auth-token retention settings, the user-console overview snapshot, events surface, the expanded admin rankings endpoint, and admin user base quota ledger contracts until the largest runtime suites are split out.',
     },
   ],
   [
     'src/admin/SystemSettingsModule.tsx',
     {
-      max: 1573,
+      max: 1625,
       reason:
-        'System settings currently keeps the active-user default control, auth-token retention control, and supporting copy in the existing module pending a broader settings split.',
+        'System settings currently keeps the upstream privacy controls, active-user default control, auth-token retention control, and supporting copy in the existing module pending a broader settings split.',
     },
   ],
   [
     'src/i18n/translations/en.ts',
     {
-      max: 1620,
+      max: 1665,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared English runtime catalog.',
+        'Admin jobs maintenance copy, upstream privacy status copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared English runtime catalog.',
     },
   ],
   [
     'src/i18n/translations/zh.ts',
     {
-      max: 1619,
+      max: 1665,
       reason:
-        'Admin jobs maintenance copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared Chinese runtime catalog.',
+        'Admin jobs maintenance copy, upstream privacy status copy, the expanded admin rankings grouping/dimension strings, the dashboard grouped-alert summary copy, auth-token retention settings copy, and admin passkey/password security copy are still stored in the shared Chinese runtime catalog.',
     },
   ],
   [
     'src/i18n/types.ts',
     {
-      max: 1863,
+      max: 1950,
       reason:
-        'HA source settings mode-specific failure copy, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, auth-token retention settings copy, and admin passkey/password security copy remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, upstream privacy status strings, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, auth-token retention settings copy, and admin passkey/password security copy remain in the shared catalog contract.',
     },
   ],
   [
     'src/styles/clay.css',
     {
-      max: 2385,
+      max: 2780,
       reason:
-        'The clay theme stylesheet now includes the public hero load-balancer motion layer, admin passkey reset/login polish, and six-digit TOTP input states while the themed public/auth/admin surfaces remain consolidated.',
+        'The clay theme stylesheet now includes the distilled system-status route refinements, upstream privacy panel states, shadow reconciliation table/status styling, public hero load-balancer motion layer, admin passkey reset/login polish, and six-digit TOTP input states while the themed public/auth/admin surfaces remain consolidated.',
     },
   ],
   [

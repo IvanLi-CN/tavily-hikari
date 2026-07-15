@@ -2864,6 +2864,7 @@ include!("key_store_account_base_entitlement_backfill.rs");
 include!("key_store_admin_passkeys.rs");
 include!("key_store_sessions.rs");
 include!("key_store_system_settings.rs");
+include!("key_store_upstream_reconciliation.rs");
 include!("key_store_users_and_oauth.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
 include!("key_store_request_log_body_retention.rs");

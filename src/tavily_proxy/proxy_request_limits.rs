@@ -1207,12 +1207,56 @@ impl TavilyProxy {
             .await
     }
 
-    pub(crate) fn sanitize_headers(&self, headers: &HeaderMap, path: &str) -> SanitizedHeaders {
+    pub(crate) fn sanitize_headers(
+        &self,
+        headers: &HeaderMap,
+        path: &str,
+        mcp_user_agent: Option<&str>,
+    ) -> SanitizedHeaders {
         if path.starts_with("/mcp") {
-            sanitize_mcp_headers_inner(headers)
+            sanitize_mcp_headers_inner(headers, mcp_user_agent)
         } else {
             sanitize_headers_inner(headers, &self.upstream, &self.upstream_origin)
         }
+    }
+
+    pub(crate) async fn apply_upstream_project_id_header(
+        &self,
+        sanitized: &mut SanitizedHeaders,
+        original_headers: &HeaderMap,
+        auth_token_id: Option<&str>,
+    ) -> Result<Option<String>, ProxyError> {
+        sanitized.headers.remove("x-project-id");
+        sanitized.forwarded.retain(|name| name != "x-project-id");
+        let settings = self.key_store.get_system_settings().await?;
+        let project_id = match settings.upstream_project_id_mode {
+            UpstreamProjectIdMode::Passthrough => original_headers
+                .get("x-project-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            UpstreamProjectIdMode::Fixed => Some(settings.upstream_project_id_fixed_value),
+            UpstreamProjectIdMode::AccessToken => {
+                if let Some(token_id) = auth_token_id {
+                    let period = business_period_for_timestamp(self.backend_time.now_ts());
+                    Some(
+                        self.key_store
+                            .derive_upstream_project_id(token_id, &period.code)
+                            .await?,
+                    )
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(project_id) = project_id.as_deref() {
+            let value = HeaderValue::from_str(project_id)
+                .map_err(|_| ProxyError::Other("invalid upstream project id".to_string()))?;
+            sanitized.headers.insert("x-project-id", value);
+            sanitized.forwarded.push("x-project-id".to_string());
+        }
+        Ok(project_id)
     }
 
     pub async fn find_user_id_by_token(

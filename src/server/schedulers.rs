@@ -459,6 +459,22 @@ fn spawn_token_usage_rollup_scheduler(state: Arc<AppState>) {
     });
 }
 
+fn spawn_upstream_reconciliation_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            let _ = enqueue_scheduled_job_logged(
+                state.as_ref(),
+                "upstream_reconciliation",
+                None,
+                TRIGGER_SOURCE_SCHEDULER,
+                "upstream-reconciliation",
+            )
+            .await;
+            state.proxy.backend_time().sleep(Duration::from_secs(60)).await;
+        }
+    });
+}
+
 fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -1576,6 +1592,17 @@ async fn run_manual_claimed_job(
                     };
                     finish(state, "success", msg).await
                 }
+                Err(err) => finish(state, "error", err.to_string()).await,
+            }
+        }
+        "upstream_reconciliation" => {
+            drop(_job_execution_gate);
+            match state
+                .proxy
+                .run_upstream_reconciliation_once(&state.usage_base)
+                .await
+            {
+                Ok(settled) => finish(state, "success", format!("settled={settled}")).await,
                 Err(err) => finish(state, "error", err.to_string()).await,
             }
         }

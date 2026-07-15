@@ -1,3 +1,11 @@
+const fn normalized_mcp_rebalance_percent(enabled: bool) -> i64 {
+    if enabled { 100 } else { 0 }
+}
+
+const fn normalized_api_rebalance_percent(enabled: bool) -> i64 {
+    if enabled { 100 } else { 0 }
+}
+
 impl KeyStore {
     pub(crate) async fn effective_auth_token_log_retention_days(&self) -> Result<i64, ProxyError> {
         if let Some(value) = self
@@ -44,7 +52,7 @@ impl KeyStore {
             .await?
             .unwrap_or(i64::from(REBALANCE_MCP_ENABLED_DEFAULT))
             != 0;
-        let rebalance_mcp_session_percent = self
+        let _stored_rebalance_mcp_session_percent = self
             .get_meta_i64(META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1)
             .await?
             .unwrap_or(REBALANCE_MCP_SESSION_PERCENT_DEFAULT)
@@ -52,16 +60,38 @@ impl KeyStore {
                 REBALANCE_MCP_SESSION_PERCENT_MIN,
                 REBALANCE_MCP_SESSION_PERCENT_MAX,
             );
+        let rebalance_mcp_session_percent =
+            normalized_mcp_rebalance_percent(rebalance_mcp_enabled);
         let api_rebalance_enabled = self
             .get_meta_i64(META_KEY_API_REBALANCE_ENABLED_V1)
             .await?
             .unwrap_or(i64::from(API_REBALANCE_ENABLED_DEFAULT))
             != 0;
-        let api_rebalance_percent = self
+        let _stored_api_rebalance_percent = self
             .get_meta_i64(META_KEY_API_REBALANCE_PERCENT_V1)
             .await?
             .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
             .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
+        let api_rebalance_percent = normalized_api_rebalance_percent(api_rebalance_enabled);
+        let upstream_project_id_mode = self
+            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .await?
+            .as_deref()
+            .and_then(UpstreamProjectIdMode::from_meta_value)
+            .unwrap_or_default();
+        let upstream_project_id_fixed_value = self
+            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1)
+            .await?
+            .unwrap_or_default();
+        let upstream_mcp_user_agent = self
+            .get_meta_string(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
+            .await?
+            .unwrap_or_default();
+        let upstream_precise_reconciliation_enabled = self
+            .get_meta_i64(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
+            .await?
+            .unwrap_or(0)
+            != 0;
         let recharge_feature_enabled = self
             .get_meta_i64(META_KEY_RECHARGE_FEATURE_ENABLED_V1)
             .await?
@@ -161,6 +191,10 @@ impl KeyStore {
             rebalance_mcp_session_percent,
             api_rebalance_enabled,
             api_rebalance_percent,
+            upstream_project_id_mode,
+            upstream_project_id_fixed_value,
+            upstream_mcp_user_agent,
+            upstream_precise_reconciliation_enabled,
             recharge_feature_enabled,
             recharge_user_enabled,
             admin_default_active_users_only,
@@ -189,6 +223,19 @@ impl KeyStore {
         settings: &SystemSettings,
     ) -> Result<SystemSettings, ProxyError> {
         let current_settings = self.get_system_settings().await?;
+        let normalized_rebalance_mcp_session_percent =
+            normalized_mcp_rebalance_percent(settings.rebalance_mcp_enabled);
+        let normalized_api_rebalance_percent =
+            normalized_api_rebalance_percent(settings.api_rebalance_enabled);
+        let reconciliation_gate_changed = current_settings.upstream_project_id_mode
+            != settings.upstream_project_id_mode
+            || current_settings.api_rebalance_enabled != settings.api_rebalance_enabled
+            || current_settings.api_rebalance_percent != normalized_api_rebalance_percent
+            || current_settings.rebalance_mcp_enabled != settings.rebalance_mcp_enabled
+            || current_settings.rebalance_mcp_session_percent
+                != normalized_rebalance_mcp_session_percent
+            || current_settings.upstream_precise_reconciliation_enabled
+                != settings.upstream_precise_reconciliation_enabled;
         if settings.request_rate_limit < REQUEST_RATE_LIMIT_MIN {
             return Err(ProxyError::Other(format!(
                 "request_rate_limit must be at least {}",
@@ -205,7 +252,7 @@ impl KeyStore {
             )));
         }
         if !(REBALANCE_MCP_SESSION_PERCENT_MIN..=REBALANCE_MCP_SESSION_PERCENT_MAX)
-            .contains(&settings.rebalance_mcp_session_percent)
+            .contains(&normalized_rebalance_mcp_session_percent)
         {
             return Err(ProxyError::Other(format!(
                 "rebalance_mcp_session_percent must be between {} and {}",
@@ -213,13 +260,27 @@ impl KeyStore {
             )));
         }
         if !(API_REBALANCE_PERCENT_MIN..=API_REBALANCE_PERCENT_MAX)
-            .contains(&settings.api_rebalance_percent)
+            .contains(&normalized_api_rebalance_percent)
         {
             return Err(ProxyError::Other(format!(
                 "api_rebalance_percent must be between {} and {}",
                 API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX,
             )));
         }
+        validate_upstream_header_setting(
+            "upstream_project_id_fixed_value",
+            &settings.upstream_project_id_fixed_value,
+            UPSTREAM_PROJECT_ID_FIXED_MAX_BYTES,
+            settings.upstream_project_id_mode != UpstreamProjectIdMode::Fixed,
+        )
+        .map_err(ProxyError::Other)?;
+        validate_upstream_header_setting(
+            "upstream_mcp_user_agent",
+            &settings.upstream_mcp_user_agent,
+            UPSTREAM_MCP_USER_AGENT_MAX_BYTES,
+            true,
+        )
+        .map_err(ProxyError::Other)?;
         if settings.user_blocked_key_base_limit < 0 {
             return Err(ProxyError::Other(
                 "user_blocked_key_base_limit must be a non-negative integer".to_string(),
@@ -259,7 +320,7 @@ impl KeyStore {
         .await?;
         self.set_meta_i64(
             META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
-            settings.rebalance_mcp_session_percent,
+            normalized_rebalance_mcp_session_percent,
         )
         .await?;
         self.set_meta_i64(
@@ -269,9 +330,33 @@ impl KeyStore {
         .await?;
         self.set_meta_i64(
             META_KEY_API_REBALANCE_PERCENT_V1,
-            settings.api_rebalance_percent,
+            normalized_api_rebalance_percent,
         )
         .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_PROJECT_ID_MODE_V1,
+            settings.upstream_project_id_mode.as_meta_value(),
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1,
+            &settings.upstream_project_id_fixed_value,
+        )
+        .await?;
+        self.set_meta_string(
+            META_KEY_UPSTREAM_MCP_USER_AGENT_V1,
+            &settings.upstream_mcp_user_agent,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1,
+            i64::from(settings.upstream_precise_reconciliation_enabled),
+        )
+        .await?;
+        if reconciliation_gate_changed {
+            self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1, 0)
+                .await?;
+        }
         self.set_meta_i64(
             META_KEY_RECHARGE_FEATURE_ENABLED_V1,
             i64::from(settings.recharge_feature_enabled),
@@ -371,9 +456,14 @@ impl KeyStore {
             auth_token_log_retention_days: settings.auth_token_log_retention_days,
             mcp_session_affinity_key_count: settings.mcp_session_affinity_key_count,
             rebalance_mcp_enabled: settings.rebalance_mcp_enabled,
-            rebalance_mcp_session_percent: settings.rebalance_mcp_session_percent,
+            rebalance_mcp_session_percent: normalized_rebalance_mcp_session_percent,
             api_rebalance_enabled: settings.api_rebalance_enabled,
-            api_rebalance_percent: settings.api_rebalance_percent,
+            api_rebalance_percent: normalized_api_rebalance_percent,
+            upstream_project_id_mode: settings.upstream_project_id_mode,
+            upstream_project_id_fixed_value: settings.upstream_project_id_fixed_value.clone(),
+            upstream_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
+            upstream_precise_reconciliation_enabled: settings
+                .upstream_precise_reconciliation_enabled,
             recharge_feature_enabled: settings.recharge_feature_enabled,
             recharge_user_enabled: settings.recharge_user_enabled,
             admin_default_active_users_only: settings.admin_default_active_users_only,

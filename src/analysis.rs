@@ -427,24 +427,21 @@ pub fn mcp_response_has_any_success(body: &[u8]) -> bool {
 
 pub(crate) fn sanitize_headers_inner(
     headers: &HeaderMap,
-    upstream: &Url,
-    upstream_origin: &str,
+    _upstream: &Url,
+    _upstream_origin: &str,
 ) -> SanitizedHeaders {
+    const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type", "x-project-id"];
     let mut sanitized = HeaderMap::new();
     let mut forwarded = Vec::new();
     let mut dropped = Vec::new();
     for (name, value) in headers.iter() {
         let key = name.as_str().to_ascii_lowercase();
-        if !should_forward_header(name) {
+        if !ALLOWED_HEADERS.iter().any(|allowed| key == *allowed) {
             dropped.push(key);
             continue;
         }
-        if let Some(transformed) = transform_header_value(name, value, upstream, upstream_origin) {
-            sanitized.insert(name.clone(), transformed);
-            forwarded.push(key);
-        } else {
-            dropped.push(key);
-        }
+        sanitized.insert(name.clone(), value.clone());
+        forwarded.push(key);
     }
     SanitizedHeaders {
         headers: sanitized,
@@ -454,7 +451,7 @@ pub(crate) fn sanitize_headers_inner(
 }
 
 pub(crate) fn sanitize_rebalance_mcp_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
-    const ALLOWED_HEADERS: &[&str] = &["accept", "content-type"];
+    const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type", "x-project-id"];
 
     let mut sanitized = HeaderMap::new();
     let mut forwarded = Vec::new();
@@ -470,14 +467,6 @@ pub(crate) fn sanitize_rebalance_mcp_http_headers_inner(headers: &HeaderMap) -> 
         }
     }
 
-    sanitized.insert(
-        reqwest::header::USER_AGENT,
-        HeaderValue::from_static(MCP_PROXY_USER_AGENT),
-    );
-    if !forwarded.iter().any(|name| name == "user-agent") {
-        forwarded.push("user-agent".to_string());
-    }
-
     SanitizedHeaders {
         headers: sanitized,
         forwarded,
@@ -485,7 +474,10 @@ pub(crate) fn sanitize_rebalance_mcp_http_headers_inner(headers: &HeaderMap) -> 
     }
 }
 
-pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+pub(crate) fn sanitize_mcp_headers_inner(
+    headers: &HeaderMap,
+    configured_user_agent: Option<&str>,
+) -> SanitizedHeaders {
     const MCP_ALLOWED_HEADERS: &[&str] = &[
         "accept",
         "accept-encoding",
@@ -503,10 +495,7 @@ pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeader
 
     for (name, value) in headers.iter() {
         let key = name.as_str().to_ascii_lowercase();
-        let allowed = MCP_ALLOWED_HEADERS.iter().any(|allowed| key == *allowed)
-            || ALLOWED_PREFIXES
-                .iter()
-                .any(|prefix| key.starts_with(prefix));
+        let allowed = MCP_ALLOWED_HEADERS.iter().any(|allowed| key == *allowed);
 
         if !allowed {
             dropped.push(key);
@@ -517,11 +506,10 @@ pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeader
         forwarded.push(key);
     }
 
-    sanitized.insert(
-        reqwest::header::USER_AGENT,
-        HeaderValue::from_static(MCP_PROXY_USER_AGENT),
-    );
-    if !forwarded.iter().any(|name| name == "user-agent") {
+    if let Some(user_agent) = configured_user_agent.filter(|value| !value.is_empty())
+        && let Ok(value) = HeaderValue::from_str(user_agent)
+    {
+        sanitized.insert(reqwest::header::USER_AGENT, value);
         forwarded.push("user-agent".to_string());
     }
 
@@ -529,60 +517,6 @@ pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeader
         headers: sanitized,
         forwarded,
         dropped,
-    }
-}
-
-pub(crate) fn should_forward_header(name: &reqwest::header::HeaderName) -> bool {
-    let lower = name.as_str().to_ascii_lowercase();
-    if BLOCKED_HEADERS.iter().any(|blocked| lower == *blocked) {
-        return false;
-    }
-    if ALLOWED_HEADERS.iter().any(|allowed| lower == *allowed) {
-        return true;
-    }
-    if ALLOWED_PREFIXES
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-    {
-        return true;
-    }
-    if lower.starts_with("x-") && !lower.starts_with("x-forwarded-") && lower != "x-real-ip" {
-        return true;
-    }
-    false
-}
-
-pub(crate) fn transform_header_value(
-    name: &reqwest::header::HeaderName,
-    value: &HeaderValue,
-    upstream: &Url,
-    upstream_origin: &str,
-) -> Option<HeaderValue> {
-    let lower = name.as_str().to_ascii_lowercase();
-    match lower.as_str() {
-        "origin" => HeaderValue::from_str(upstream_origin).ok(),
-        "referer" => match value.to_str() {
-            Ok(raw) => {
-                if let Ok(mut url) = Url::parse(raw) {
-                    url.set_scheme(upstream.scheme()).ok()?;
-                    url.set_host(upstream.host_str()).ok()?;
-                    if let Some(port) = upstream.port() {
-                        url.set_port(Some(port)).ok()?;
-                    } else {
-                        url.set_port(None).ok()?;
-                    }
-                    if url.path().is_empty() {
-                        url.set_path("/");
-                    }
-                    HeaderValue::from_str(url.as_str()).ok()
-                } else {
-                    HeaderValue::from_str(upstream_origin).ok()
-                }
-            }
-            Err(_) => HeaderValue::from_str(upstream_origin).ok(),
-        },
-        "sec-fetch-site" => Some(HeaderValue::from_static("same-origin")),
-        _ => Some(value.clone()),
     }
 }
 
@@ -803,7 +737,7 @@ pub(crate) fn extract_research_request_id_from_path(path: &str) -> Option<String
         .ok()
 }
 
-pub(crate) fn extract_research_request_id(body: &[u8]) -> Option<String> {
+pub fn extract_research_request_id(body: &[u8]) -> Option<String> {
     let parsed = serde_json::from_slice::<Value>(body).ok()?;
     let request_id = parsed
         .get("request_id")

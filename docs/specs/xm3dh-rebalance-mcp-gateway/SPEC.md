@@ -10,7 +10,7 @@
 
 - 当前 `/mcp` follow-up 会话会绑定单个上游 MCP session 与单个 key，热点 key 容易放大 429。
 - 我们已经具备 `/api/tavily/*` 的 HTTP 代理、全量健康号池、429 backoff 与 research usage-diff 计费能力，但 `/mcp` 仍停留在 passthrough 模式。
-- 需要在不改变对外 `/mcp` URL 与鉴权格式的前提下，为 MCP 增加第二套“本地终止 + HTTP 转发”的后端执行策略，并通过开关与会话级 A/B 控制灰度。
+- 需要在不改变对外 `/mcp` URL 与鉴权格式的前提下，为 MCP 增加第二套“本地终止 + HTTP 转发”的后端执行策略，并通过全局开关与旧会话自然排空控制切换。
 
 ## 目标 / 非目标
 
@@ -20,8 +20,8 @@
 - 扩展系统设置与 Admin UI：
   - `mcpSessionAffinityKeyCount`
   - `rebalanceMcpEnabled`
-  - `rebalanceMcpSessionPercent`
-- `/mcp initialize` 按会话级 A/B 固化 `control` 或 `rebalance`；已有会话不随设置变更漂移。
+  - `rebalanceMcpSessionPercent`（兼容字段，仅按 `0|100` 归一化返回）
+- `/mcp initialize` 对新会话固定走 `control` 或 `rebalance`；已有会话不随设置变更漂移。
 - `rebalance` 模式下，本地处理 `initialize / ping / tools/list / prompts/list / resources/list / resources/templates/list / notifications/* / tools/call`。
 - `search / extract / crawl / map` 使用全量候选 key 排序，优先级固定为：active cooldown → 最近 60 秒 429 次数 → 最近 60 秒 billable 压力 → `last_used_at` LRU → stable rank。
 - `research` 继续保留 usage-diff 计费与 request-id 亲和模型，但改为通过本地 gateway 包装为 MCP JSON-RPC 响应。
@@ -50,7 +50,7 @@
   - 新增 strict Rebalance HTTP header allowlist。
   - 新增 MCP façade 用的 HTTP endpoint wrappers（含 research usage-diff）。
 - `src/server/proxy.rs`
-  - initialize A/B 决策。
+  - initialize 开关决策。
   - local MCP façade。
   - control / rebalance follow-up 分流。
   - session create/touch/update/revoke 逻辑按 gateway mode 分化。
@@ -77,8 +77,7 @@
   - `mcpSessionAffinityKeyCount`
   - `rebalanceMcpEnabled`
   - `rebalanceMcpSessionPercent`
-- `rebalanceMcpSessionPercent` 范围固定为 `0..100`。
-- 关闭功能时仍保留最近一次百分比配置，但运行时忽略该值。
+- `rebalanceMcpSessionPercent` 为兼容字段，只允许 `0|100`，并始终由 `rebalanceMcpEnabled` 归一化推导。
 
 ### MCP session model
 
@@ -88,7 +87,7 @@
 - `experiment_variant` 允许：
   - `control`
   - `rebalance`
-- `ab_bucket` 固定为 `0..99` 的稳定会话桶位。
+- `ab_bucket` 可继续保留为历史诊断字段，但不再决定运行时分流。
 - `routing_subject_hash` 只存 hash，不存原始项目路由标识。
 
 ### Rebalance MCP tool surface
@@ -163,11 +162,11 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given `rebalanceMcpEnabled=false` 或 `rebalanceMcpSessionPercent=0`
+- Given `rebalanceMcpEnabled=false`
   When 新建 `/mcp initialize` 会话
   Then 行为必须保持 control 路径，follow-up 继续 pin 上游 session 与 key。
 
-- Given `rebalanceMcpEnabled=true` 且 `rebalanceMcpSessionPercent=100`
+- Given `rebalanceMcpEnabled=true`
   When 新建 `/mcp initialize` 会话
   Then 会话必须直接进入 `rebalance_http`，且 `upstream_session_id` / `upstream_key_id` 为空。
 
@@ -251,7 +250,7 @@
   sensitive_exclusion: `N/A`
   submission_gate: `approved`
   state: `admin page composition`
-  evidence_note: 真实 Admin 页面组合态展示了系统设置页里新增的一键开关、比例滑块、禁用提示与保留值文案。
+  evidence_note: 真实 Admin 页面组合态展示了系统设置页里新增的一键开关、系统状态入口，以及去掉独立比例控件后的收口文案。
 
   ![Admin system settings page](./assets/admin-system-settings-page.png)
 

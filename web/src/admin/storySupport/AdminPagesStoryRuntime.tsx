@@ -108,11 +108,13 @@ import { ApiKeyBulkSyncProgressBubble } from '../ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from '../ForwardProxySettingsModule'
 import ModulePlaceholder from '../ModulePlaceholder'
 import SystemSettingsModule from '../SystemSettingsModule'
+import UpstreamPrivacyStatusModule from '../UpstreamPrivacyStatusModule'
 import AdminSecuritySettingsModule from '../AdminSecuritySettingsModule'
 import AdminRechargeRecordsModule from '../AdminRechargeRecordsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
+import { buildShadowDailyUsageStack } from '../userUsageComparison'
 import { buildPressureDemoFixture } from '../../api/pressureDemoFixture'
 import {
   forwardProxyStorySavedAt,
@@ -1057,14 +1059,19 @@ function withQuotaDeltaCanonical<T extends SemanticQuotaDelta | LegacyQuotaDelta
 function withAdminUserSummaryCanonical<
   T extends {
     quotaDailyUsed: number
+    quotaShadowDailyUsed?: number | null
     quotaDailyLimit: number
     quotaMonthlyUsed: number
     quotaMonthlyLimit: number
   },
->(value: T): T & Pick<AdminUserSummary, 'dailyCreditsUsed' | 'dailyCreditsLimit' | 'monthlyCreditsUsed' | 'monthlyCreditsLimit'> {
+>(value: T): T & Pick<
+  AdminUserSummary,
+  'dailyCreditsUsed' | 'shadowDailyCreditsUsed' | 'dailyCreditsLimit' | 'monthlyCreditsUsed' | 'monthlyCreditsLimit'
+> {
   return {
     ...value,
     dailyCreditsUsed: value.quotaDailyUsed,
+    shadowDailyCreditsUsed: value.quotaShadowDailyUsed ?? null,
     dailyCreditsLimit: value.quotaDailyLimit,
     monthlyCreditsUsed: value.quotaMonthlyUsed,
     monthlyCreditsLimit: value.quotaMonthlyLimit,
@@ -1292,6 +1299,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 1_118,
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
+    quotaShadowDailyUsed: 5_208,
     quotaDailyLimit: 25_500,
     quotaMonthlyUsed: 142_922,
     quotaMonthlyLimit: 5_000,
@@ -1321,6 +1329,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 602,
     quotaHourlyLimit: 0,
     quotaDailyUsed: 10_009,
+    quotaShadowDailyUsed: 9_992,
     quotaDailyLimit: 0,
     quotaMonthlyUsed: 231_008,
     quotaMonthlyLimit: 0,
@@ -3117,6 +3126,7 @@ function buildNavItems(
       icon: <Icon icon="mdi:cog-outline" width={18} height={18} />,
       children: [
         { target: 'system-settings', label: strings.systemSettings.subnav.general },
+        { target: 'system-settings-status', label: strings.systemSettings.subnav.privacyStatus },
         { target: 'system-settings-admin', label: strings.systemSettings.subnav.admin },
         { target: 'system-settings-ha', label: strings.systemSettings.subnav.highAvailability },
         { target: 'proxy-settings', label: strings.nav.proxySettings },
@@ -3147,6 +3157,7 @@ export function AdminPageFrame({
   actions, introActions, introOverride, sidebarUtilityActions,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useAdminTranslations()
+  const { language } = useLanguage()
   const isStackedAdminLayout = useAdminStackedLayout()
   const headerActions = actions ?? introActions
   const intro = introOverride ?? (() => {
@@ -3220,6 +3231,16 @@ export function AdminPageFrame({
           title: admin.systemSettings.admin.title,
           description: admin.systemSettings.admin.description,
         }
+      case 'system-settings-status': {
+        const systemStatusDescription =
+          language === 'zh'
+            ? '查看系统当前在出站 Header 白名单、`X-Project-ID` 策略、Control MCP UA、生效门禁与分段对账上的实际状态。'
+            : 'Review the effective system state for the outbound header allowlist, `X-Project-ID` policy, Control MCP UA, activation gates, and segmented reconciliation.'
+        return {
+          title: admin.systemSettings.privacy.title,
+          description: systemStatusDescription,
+        }
+      }
       case 'system-settings-ha':
         return {
           title: admin.systemSettings.ha.title,
@@ -4842,6 +4863,7 @@ function UsersPageCanvas({
       ? users.filterStatus.searchAll
       : users.filterStatus.defaultActiveOnly
     : null
+  const showShadowDailyUsageColumn = sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)
 
   const toggleSort = (field: AdminUsersSortField) => {
     const isActive = effectiveSortField === field
@@ -4895,7 +4917,7 @@ function UsersPageCanvas({
           {filteredUsers.length === 0 ? (
             <div className="empty-state alert">{users.empty.none}</div>
           ) : (
-            <table className="jobs-table admin-users-table admin-users-list-table">
+            <table className={`jobs-table admin-users-table admin-users-list-table${showShadowDailyUsageColumn ? ' admin-users-list-table--shadow-compare' : ''}`}>
               <thead>
                 <tr>
                   <th>{users.table.user}</th>
@@ -4908,6 +4930,7 @@ function UsersPageCanvas({
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
+                  {showShadowDailyUsageColumn ? <th>{users.table.shadowDaily}</th> : null}
                   <StoryAdminUsersSortableHeader
                     label={users.table.monthly}
                     field="monthlyCreditsUsed"
@@ -4941,6 +4964,14 @@ function UsersPageCanvas({
               <tbody>
                 {sortedUsers.map((item) => {
                   const dailyQuotaMetric = formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)
+                  const shadowDailyUsage = buildShadowDailyUsageStack({
+                    actualUsed: item.dailyCreditsUsed,
+                    shadowUsed: item.shadowDailyCreditsUsed,
+                    limit: item.dailyCreditsLimit,
+                    usersStrings: users,
+                    formatNumber,
+                    formatQuotaStackValue,
+                  })
                   const monthlyQuotaMetric = formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
                   const lastLoginMetric = formatStackedTimestamp(item.lastLoginAt, language)
@@ -4974,6 +5005,16 @@ function UsersPageCanvas({
                         <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
                       </div>
                     </td>
+                    {showShadowDailyUsageColumn ? (
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${shadowDailyUsage.primaryClassName ? ` ${shadowDailyUsage.primaryClassName}` : ''}`}>{shadowDailyUsage.primary}</span>
+                          {shadowDailyUsage.secondary ? (
+                            <span className="admin-table-value-secondary">{shadowDailyUsage.secondary}</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    ) : null}
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
                         <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
@@ -5195,6 +5236,7 @@ function UsersUsagePageCanvas({
         users={sortedUsers}
         language={language}
         usersStrings={users}
+        showShadowDailyColumn={sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)}
         searchControls={usageHeaderActions}
         filterStatusText={usersFilterStatusText}
         loadState="ready"
@@ -6334,9 +6376,13 @@ function SystemSettingsPageCanvas({
           authTokenLogRetentionDays: 92,
           mcpSessionAffinityKeyCount: 5,
           rebalanceMcpEnabled: false,
-          rebalanceMcpSessionPercent: 100,
+          rebalanceMcpSessionPercent: 0,
           apiRebalanceEnabled: false,
           apiRebalancePercent: 0,
+          upstreamProjectIdMode: 'accessToken',
+          upstreamProjectIdFixedValue: '',
+          upstreamMcpUserAgent: '',
+          upstreamPreciseReconciliationEnabled: false,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -6365,6 +6411,64 @@ function SystemSettingsPageCanvas({
           onToggle: () => {},
         }}
         onApply={() => {}}
+      />
+    </AdminPageFrame>
+  )
+}
+
+function SystemSettingsStatusPageCanvas(): JSX.Element {
+  const admin = useAdminTranslations()
+
+  return (
+    <AdminPageFrame activeModule="system-settings-status">
+      <UpstreamPrivacyStatusModule
+        strings={admin.systemSettings.privacy}
+        formStrings={admin.systemSettings.form}
+        language="zh"
+        status={{
+          phase: 'draining',
+          configuredProjectIdMode: 'accessToken',
+          effectiveProjectIdMode: 'accessToken',
+          fixedProjectIdConfigured: false,
+          configuredMcpUserAgent: '',
+          effectiveMcpUserAgent: null,
+          upstreamPreciseReconciliationEnabled: false,
+          httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
+          controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
+          gates: [
+            { key: 'accessTokenMode', ready: true, detail: 'AccessToken' },
+            { key: 'apiRebalance', ready: true, detail: 'enabled' },
+            { key: 'mcpRebalance', ready: true, detail: 'enabled' },
+            { key: 'controlSessionsDrained', ready: false, detail: '2' },
+          ],
+          completedGates: 3,
+          totalGates: 4,
+          activeControlSessions: 2,
+          currentPeriodCode: '2026-07-14/S2',
+          currentPeriodEndsAt: 1_783_994_400,
+          nextEpochAt: null,
+          pendingResearch: 1,
+          queuedSettlements: 2,
+          degradedSettlements: 0,
+          recentAdjustments: [
+            {
+              settlementKey: 'v1:tok_demo:2026-07-14/S1',
+              tokenIdHint: 'tok_demo',
+              billingSubjectKind: 'token',
+              periodCode: '2026-07-14/S1',
+              deltaCredits: -3,
+              degradedReason: null,
+              createdAt: 1_783_958_100,
+            },
+          ],
+          generatedAt: 1_783_958_400,
+        }}
+        loadState="ready"
+        error={null}
+        refreshing={false}
+        autoRefreshEnabled
+        onAutoRefreshChange={() => {}}
+        onRefresh={() => {}}
       />
     </AdminPageFrame>
   )
@@ -6737,6 +6841,12 @@ export const Users: Story = {
     if (getFirstRenderedUserLabel(canvasElement) !== 'Alice Wang') {
       throw new Error('Expected users story to start with Alice Wang as the first rendered row.')
     }
+    const usersHeaderTexts = Array.from(
+      canvasElement.querySelectorAll<HTMLTableCellElement>('.admin-users-list-table thead th'),
+    ).map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+    if (!usersHeaderTexts.includes('新方案 24h')) {
+      throw new Error('Expected users story to render the dedicated new-scheme daily comparison column.')
+    }
 
     updateStorySearchInput(searchInput, 'bob')
     await waitForStoryUi(320)
@@ -6818,6 +6928,9 @@ export const UsersUsage: Story = {
     }
     if (!headerTexts.includes('5m 限流')) {
       throw new Error('Expected users usage story to keep the 5m rate column.')
+    }
+    if (!headerTexts.includes('新方案 24h')) {
+      throw new Error('Expected users usage story to render the dedicated new-scheme daily comparison column.')
     }
     const oneHourSortButton = canvasElement.querySelector<HTMLButtonElement>('[data-sort-field="businessCalls1hUsed"]')
     if (!oneHourSortButton) {
@@ -7604,6 +7717,54 @@ export const SystemSettings: Story = {
     const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
     if (!navIcon) {
       throw new Error('Expected system settings nav item to render its bundled SVG icon.')
+    }
+  },
+}
+
+export const SystemSettingsStatus: Story = {
+  render: () => <SystemSettingsStatusPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    const activeText = activeSubitem?.textContent ?? ''
+    if (!activeText.includes('系统状态') && !activeText.includes('System Status')) {
+      throw new Error('Expected the system status sidebar child item to be active.')
+    }
+    const duplicateTitle = Array.from(canvasElement.querySelectorAll<HTMLHeadingElement>('h2')).find((heading) => {
+      const text = heading.textContent ?? ''
+      return text.includes('系统状态') || text.includes('System Status')
+    })
+    if (duplicateTitle) {
+      throw new Error('Expected the system status route to rely on the shared page title instead of a duplicate h2.')
+    }
+    const autoRefreshSwitch = Array.from(canvasElement.querySelectorAll<HTMLElement>('[role=\"switch\"]')).find((element) => {
+      const ariaLabel = element.getAttribute('aria-label') ?? ''
+      const labelledBy = element.getAttribute('aria-labelledby')
+      const labelledText = labelledBy
+        ? labelledBy
+            .split(/\s+/)
+            .map((id) => canvasElement.ownerDocument.getElementById(id)?.textContent ?? '')
+            .join(' ')
+        : ''
+      const accessibleName = `${ariaLabel} ${labelledText}`
+      return accessibleName.includes('自动刷新') || accessibleName.includes('Auto refresh')
+    })
+    if (!autoRefreshSwitch) {
+      throw new Error('Expected the system status page to expose an auto-refresh switch with an accessible name.')
+    }
+    const details = canvasElement.querySelector<HTMLDetailsElement>('[data-testid=\"system-status-technical-details\"]')
+    if (!details) {
+      throw new Error('Expected the system status page to expose a technical-details disclosure.')
+    }
+    if (details.open) {
+      throw new Error('Expected the technical-details disclosure to stay collapsed by default.')
+    }
+    const pageText = canvasElement.ownerDocument.body.textContent ?? ''
+    if (!pageText.includes('需要关注') && !pageText.includes('Needs attention')) {
+      throw new Error('Expected the system status page to foreground the attention section.')
     }
   },
 }

@@ -1131,7 +1131,7 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn mcp_initialize_rebalance_percent_100_uses_local_facade() {
+    async fn mcp_initialize_rebalance_enabled_uses_local_facade() {
         let db_path = temp_db_path("mcp-rebalance-local-init");
         let db_str = db_path.to_string_lossy().to_string();
         let expected_api_key = "tvly-rebalance-local-init";
@@ -1153,6 +1153,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1512,6 +1516,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 0,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1567,6 +1575,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1661,6 +1673,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -1900,6 +1916,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -2032,8 +2052,8 @@ use super::upstream_support_and_manual_jobs::*;
             "rebalance HTTP call must keep Content-Type"
         );
         assert!(
-            search_call.headers.contains_key("user-agent"),
-            "rebalance HTTP call must inject a dedicated User-Agent"
+            !search_call.headers.contains_key("user-agent"),
+            "rebalance HTTP call must omit User-Agent"
         );
         assert_eq!(
             search_call.body.get("query").and_then(Value::as_str),
@@ -2149,6 +2169,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -2258,6 +2282,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -2337,6 +2365,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -2407,6 +2439,10 @@ use super::upstream_support_and_manual_jobs::*;
                 rebalance_mcp_session_percent: 100,
                 api_rebalance_enabled: tavily_hikari::API_REBALANCE_ENABLED_DEFAULT,
                 api_rebalance_percent: tavily_hikari::API_REBALANCE_PERCENT_DEFAULT,
+                upstream_project_id_mode: tavily_hikari::UpstreamProjectIdMode::AccessToken,
+                upstream_project_id_fixed_value: String::new(),
+                upstream_mcp_user_agent: String::new(),
+                upstream_precise_reconciliation_enabled: true,
                 recharge_feature_enabled: true,
                 recharge_user_enabled: true,
                 admin_default_active_users_only: false,
@@ -2866,7 +2902,7 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(system_settings["mcpSessionAffinityKeyCount"].as_i64(), Some(5));
         assert_eq!(system_settings["requestRateLimit"].as_i64(), Some(request_rate_limit()));
         assert_eq!(system_settings["rebalanceMcpEnabled"].as_bool(), Some(false));
-        assert_eq!(system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(100));
+        assert_eq!(system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(0));
         assert_eq!(system_settings["rechargeFeatureEnabled"].as_bool(), Some(false));
         assert_eq!(system_settings["rechargeUserEnabled"].as_bool(), Some(false));
         assert_eq!(
@@ -2901,7 +2937,7 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(updated_system_body["mcpSessionAffinityKeyCount"].as_i64(), Some(3));
         assert_eq!(updated_system_body["requestRateLimit"].as_i64(), Some(72));
         assert_eq!(updated_system_body["rebalanceMcpEnabled"].as_bool(), Some(true));
-        assert_eq!(updated_system_body["rebalanceMcpSessionPercent"].as_i64(), Some(35));
+        assert_eq!(updated_system_body["rebalanceMcpSessionPercent"].as_i64(), Some(100));
         assert_eq!(updated_system_body["rechargeFeatureEnabled"].as_bool(), Some(false));
         assert_eq!(updated_system_body["rechargeUserEnabled"].as_bool(), Some(false));
         assert_eq!(updated_system_body["userBlockedKeyBaseLimit"].as_i64(), Some(8));
@@ -2922,7 +2958,7 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(persisted_system_settings["requestRateLimit"].as_i64(), Some(72));
         assert_eq!(persisted_system_settings["globalIpLimit"].as_i64(), Some(6));
         assert_eq!(persisted_system_settings["rebalanceMcpEnabled"].as_bool(), Some(true));
-        assert_eq!(persisted_system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(35));
+        assert_eq!(persisted_system_settings["rebalanceMcpSessionPercent"].as_i64(), Some(100));
         assert_eq!(persisted_system_settings["rechargeFeatureEnabled"].as_bool(), Some(false));
         assert_eq!(persisted_system_settings["rechargeUserEnabled"].as_bool(), Some(false));
         assert_eq!(persisted_system_settings["userBlockedKeyBaseLimit"].as_i64(), Some(8));
