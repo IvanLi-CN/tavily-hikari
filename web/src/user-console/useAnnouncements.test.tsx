@@ -20,8 +20,7 @@ async function flushEffects(): Promise<void> {
 
 const modalAnnouncement: Announcement = {
   id: 'ann-modal-1',
-  title: 'Modal notice',
-  body: 'Modal body',
+  content: '# Modal notice\n\nModal body',
   displayKind: 'modal',
   status: 'published',
   createdAt: 1,
@@ -32,8 +31,7 @@ const modalAnnouncement: Announcement = {
 
 const archivedAnnouncement: Announcement = {
   id: 'ann-archived-1',
-  title: 'Archived notice',
-  body: 'Archived body',
+  content: '# Archived notice\n\nArchived body',
   displayKind: 'ticker',
   status: 'archived',
   createdAt: 1,

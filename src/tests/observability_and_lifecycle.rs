@@ -2088,8 +2088,7 @@ async fn published_announcement_update_archives_previous_version() {
 
     let draft = store
         .create_announcement(AnnouncementMutation {
-            title: "Initial notice".to_string(),
-            body: "Initial body".to_string(),
+            content: "# Initial notice\n\nInitial body".to_string(),
             display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
         })
         .await
@@ -2115,8 +2114,7 @@ async fn published_announcement_update_archives_previous_version() {
         .update_announcement(
             &published.id,
             AnnouncementMutation {
-                title: "Updated notice".to_string(),
-                body: "Updated body".to_string(),
+                content: "# Updated notice\n\nUpdated body".to_string(),
                 display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
             },
         )
@@ -2125,7 +2123,7 @@ async fn published_announcement_update_archives_previous_version() {
         .expect("updated announcement exists");
     assert_ne!(revised.id, published.id);
     assert_eq!(revised.status, ANNOUNCEMENT_STATUS_PUBLISHED);
-    assert_eq!(revised.title, "Updated notice");
+    assert_eq!(revised.content, "# Updated notice\n\nUpdated body");
 
     let archived = store
         .get_announcement(&published.id)
@@ -2151,8 +2149,7 @@ async fn published_announcement_update_archives_previous_version() {
 
     let draft_only = store
         .create_announcement(AnnouncementMutation {
-            title: "Draft-only notice".to_string(),
-            body: "Never published".to_string(),
+            content: "# Draft-only notice\n\nNever published".to_string(),
             display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
         })
         .await
@@ -2185,8 +2182,7 @@ async fn published_announcement_update_archives_previous_version() {
         .update_announcement(
             &archived_revised.id,
             AnnouncementMutation {
-                title: "Edited archived notice".to_string(),
-                body: "Edited archived body".to_string(),
+                content: "# Edited archived notice\n\nEdited archived body".to_string(),
                 display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
             },
         )
@@ -2205,7 +2201,10 @@ async fn published_announcement_update_archives_previous_version() {
         archived_revised_after_edit.status,
         ANNOUNCEMENT_STATUS_ARCHIVED
     );
-    assert_eq!(archived_revised_after_edit.title, archived_revised.title);
+    assert_eq!(
+        archived_revised_after_edit.content,
+        archived_revised.content
+    );
 
     let history_after_archived_edit = store
         .list_user_announcement_history()
@@ -2224,7 +2223,7 @@ async fn published_announcement_update_archives_previous_version() {
         .expect("republished announcement exists");
     assert_ne!(republished.id, archived_revised.id);
     assert_eq!(republished.status, ANNOUNCEMENT_STATUS_PUBLISHED);
-    assert_eq!(republished.title, archived_revised.title);
+    assert_eq!(republished.content, archived_revised.content);
 
     let archived_revised_after_republish = store
         .get_announcement(&archived_revised.id)
@@ -2256,11 +2255,11 @@ async fn active_announcements_use_insert_order_for_same_second_ties() {
     sqlx::query(
         r#"
         INSERT INTO announcements (
-            id, title, body, display_kind, status,
+            id, content, display_kind, status,
             created_at, updated_at, published_at, archived_at
         ) VALUES
-            ('zzzzzzzz', 'Older modal', 'Older body', 'modal', 'published', ?, ?, ?, NULL),
-            ('22222222', 'Newer modal', 'Newer body', 'modal', 'published', ?, ?, ?, NULL)
+            ('zzzzzzzz', '# Older modal\n\nOlder body', 'modal', 'published', ?, ?, ?, NULL),
+            ('22222222', '# Newer modal\n\nNewer body', 'modal', 'published', ?, ?, ?, NULL)
         "#,
     )
     .bind(same_second)
@@ -2292,24 +2291,123 @@ async fn ticker_announcements_may_omit_body_but_modal_announcements_may_not() {
 
     let ticker = store
         .create_announcement(AnnouncementMutation {
-            title: "Ticker without details".to_string(),
-            body: "   ".to_string(),
+            content: "# Ticker without details".to_string(),
             display_kind: ANNOUNCEMENT_DISPLAY_TICKER.to_string(),
         })
         .await
         .expect("create ticker without body");
-    assert_eq!(ticker.body, "");
+    assert_eq!(ticker.content, "# Ticker without details");
 
     let modal = store
         .create_announcement(AnnouncementMutation {
-            title: "Modal without details".to_string(),
-            body: "   ".to_string(),
+            content: "# Modal without details".to_string(),
             display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
         })
         .await;
     assert!(
         modal.is_err(),
         "modal announcements still require body content"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn announcements_migrate_legacy_title_body_rows_into_content_only_markdown() {
+    let db_path = temp_db_path("announcement-legacy-content-migration");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let mut conn = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true),
+    )
+    .await
+    .expect("open legacy sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE announcements (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            display_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            published_at INTEGER,
+            archived_at INTEGER
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create legacy announcements");
+    sqlx::query(
+        r#"
+        INSERT INTO announcements (
+            id, title, body, display_kind, status, created_at, updated_at, published_at, archived_at
+        ) VALUES
+            ('legacy-modal', 'Legacy modal', 'Legacy body', 'modal', 'published', 1, 2, 2, NULL),
+            ('legacy-ticker', '', 'Standalone legacy body', 'ticker', 'draft', 3, 4, NULL, NULL)
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert legacy announcements");
+    drop(conn);
+
+    let store = KeyStore::new(&db_str).await.expect("keystore created");
+
+    let migrated_modal = store
+        .get_announcement("legacy-modal")
+        .await
+        .expect("load migrated modal")
+        .expect("migrated modal exists");
+    assert_eq!(migrated_modal.content, "# Legacy modal\n\nLegacy body");
+
+    let migrated_ticker = store
+        .get_announcement("legacy-ticker")
+        .await
+        .expect("load migrated ticker")
+        .expect("migrated ticker exists");
+    assert_eq!(migrated_ticker.content, "Standalone legacy body");
+
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('announcements')")
+            .fetch_all(&store.pool)
+            .await
+            .expect("list announcement columns");
+    assert!(columns.iter().any(|name| name == "content"));
+    assert!(!columns.iter().any(|name| name == "title"));
+    assert!(!columns.iter().any(|name| name == "body"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn modal_announcements_accept_setext_titles_but_reject_non_leading_headers() {
+    let db_path = temp_db_path("announcement-setext-modal-validation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let store = KeyStore::new(&db_str).await.expect("keystore created");
+
+    let setext_modal = store
+        .create_announcement(AnnouncementMutation {
+            content: "Service update\n---\n\nBody content".to_string(),
+            display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
+        })
+        .await
+        .expect("create setext modal");
+    assert_eq!(setext_modal.content, "Service update\n---\n\nBody content");
+
+    let missing_leading_title = store
+        .create_announcement(AnnouncementMutation {
+            content: "Lead paragraph first\n\n# Title later".to_string(),
+            display_kind: ANNOUNCEMENT_DISPLAY_MODAL.to_string(),
+        })
+        .await;
+    assert!(
+        missing_leading_title.is_err(),
+        "modal announcements should only recognize a title from the first non-empty block"
     );
 
     let _ = std::fs::remove_file(db_path);

@@ -18,11 +18,11 @@ import MarkdownContent from '../components/MarkdownContent'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import SegmentedTabs, { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
-import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import UserConsoleAnnouncements from '../user-console/Announcements'
 import { EN as USER_CONSOLE_EN, ZH as USER_CONSOLE_ZH } from '../user-console/text'
 import { Icon } from '../lib/icons'
+import { parseAnnouncementContent } from '../lib/announcementContent'
 import type { Language } from '../i18n'
 import { announcementCreatePath, announcementEditPath, announcementListPath } from './routes'
 
@@ -42,8 +42,7 @@ interface AnnouncementsModuleProps {
 }
 
 interface AnnouncementDraft {
-  title: string
-  body: string
+  content: string
   displayKind: AnnouncementDisplayKind
 }
 
@@ -57,8 +56,7 @@ type AnnouncementBodyMode = 'markdown' | 'split' | 'wysiwyg'
 type AnnouncementCopy = ReturnType<typeof copy>
 
 const EMPTY_DRAFT: AnnouncementDraft = {
-  title: '',
-  body: '',
+  content: '',
   displayKind: 'modal',
 }
 
@@ -78,24 +76,21 @@ function copy(language: Language) {
         backToList: '返回列表',
         formTitleNew: '新建公告',
         formTitleEdit: '编辑公告',
-        formDescriptionNew: '编写公告正文，选择展示方式后可保存草稿或直接发布。',
+        formDescriptionNew: '使用 Markdown 编写公告内容。首个 Header 会作为标题，选择展示方式后可保存草稿或直接发布。',
         formDescriptionEdit: '保存修改会更新草稿；发布后会让用户控制台显示最新内容。',
         formDescriptionPublished: '发布新版本会归档旧公告，并生成新公告 ID 重新提醒用户。',
         formDescriptionArchived: '编辑归档公告会保留历史记录，并生成新的草稿或发布项。',
         publishImpact: '发布后会立即对用户可见；归档后不再作为当前公告展示。',
-        titleLabel: '标题',
-        titlePlaceholder: '例如：维护窗口通知',
-        bodyLabel: '正文',
-        bodyOptionalLabel: '正文（横幅公告可留空）',
-        bodyPlaceholder: '写给用户看的公告内容。',
-        bodyOptionalPlaceholder: '可选：补充点击后展示的公告详情。',
-        bodyA11yHint: '正文支持 Markdown，保存时保留 Markdown 原文。',
-        bodyModeLabel: '正文编辑模式',
+        bodyLabel: '内容',
+        bodyPlaceholder: '使用 Markdown 编写公告内容。首个 Header 会作为标题。',
+        bodyOptionalPlaceholder: '可选：以 Markdown 补充点击后展示的公告详情；如果没有 Header，横幅会直接显示内容。',
+        bodyA11yHint: '内容支持 Markdown。首个 Header 会作为标题，并在展示时从正文中去重。',
+        bodyModeLabel: '内容编辑模式',
         bodyModeMarkdown: 'Markdown',
         bodyModeSplit: '左右对比',
         bodyModeWysiwyg: '所见即所得',
         bodyModeRenderLabel: 'Milkdown 只读渲染',
-        bodyModeRenderEmpty: '正文为空。',
+        bodyModeRenderEmpty: '内容为空。',
         displayLabel: '展示方式',
         modal: '弹窗',
         ticker: '横幅',
@@ -125,8 +120,9 @@ function copy(language: Language) {
           archive: '归档',
         },
         actionBusy: '处理中…',
-        validation: '标题和正文不能为空。',
-        validationTitle: '标题不能为空。',
+        validationContent: '内容不能为空。',
+        validationModalTitle: '弹窗公告内容必须以 Markdown 标题开头。',
+        validationModalBody: '弹窗公告标题后必须提供正文内容。',
         notFound: '公告不存在或已被删除。',
         saved: '公告已保存。',
         savedAndPublished: '公告已保存并发布。',
@@ -145,24 +141,21 @@ function copy(language: Language) {
         backToList: 'Back to list',
         formTitleNew: 'New announcement',
         formTitleEdit: 'Edit announcement',
-        formDescriptionNew: 'Write the announcement body, choose a display mode, then save a draft or publish directly.',
+        formDescriptionNew: 'Write announcement content in Markdown. The first header becomes the title, then save a draft or publish directly.',
         formDescriptionEdit: 'Saving updates the draft; publishing makes the latest content visible in the user console.',
         formDescriptionPublished: 'Publishing a new version archives the old item and creates a new ID so users are reminded again.',
         formDescriptionArchived: 'Editing an archived announcement keeps the history entry and creates a new draft or published item.',
         publishImpact: 'Publishing makes it visible immediately; archiving removes it from current announcements.',
-        titleLabel: 'Title',
-        titlePlaceholder: 'For example: maintenance window',
-        bodyLabel: 'Body',
-        bodyOptionalLabel: 'Body (optional for ticker)',
-        bodyPlaceholder: 'Write the user-facing announcement body.',
-        bodyOptionalPlaceholder: 'Optional: add details shown after opening the ticker.',
-        bodyA11yHint: 'The body supports Markdown and is saved as the original Markdown text.',
-        bodyModeLabel: 'Body editor mode',
+        bodyLabel: 'Content',
+        bodyPlaceholder: 'Write the announcement in Markdown. The first header becomes the title.',
+        bodyOptionalPlaceholder: 'Optional: add Markdown details shown after opening the ticker. Without a header, the ticker shows the content directly.',
+        bodyA11yHint: 'Content supports Markdown. The first header becomes the title and is removed from the rendered body.',
+        bodyModeLabel: 'Content editor mode',
         bodyModeMarkdown: 'Markdown',
         bodyModeSplit: 'Split',
         bodyModeWysiwyg: 'WYSIWYG',
         bodyModeRenderLabel: 'Milkdown read-only render',
-        bodyModeRenderEmpty: 'The body is empty.',
+        bodyModeRenderEmpty: 'The content is empty.',
         displayLabel: 'Display',
         modal: 'Modal',
         ticker: 'Ticker',
@@ -192,8 +185,9 @@ function copy(language: Language) {
           archive: 'Archive',
         },
         actionBusy: 'Working…',
-        validation: 'Title and body are required.',
-        validationTitle: 'Title is required.',
+        validationContent: 'Content is required.',
+        validationModalTitle: 'Modal announcements must start with a Markdown title.',
+        validationModalBody: 'Modal announcements need body content after the title.',
         notFound: 'Announcement was not found or has been deleted.',
         saved: 'Announcement saved.',
         savedAndPublished: 'Announcement saved and published.',
@@ -235,22 +229,29 @@ function formatTimestamp(value: number | null, language: Language): string {
 
 function toDraft(item: Announcement): AnnouncementDraft {
   return {
-    title: item.title,
-    body: item.body,
+    content: item.content,
     displayKind: item.displayKind,
   }
 }
 
 function toPayload(draft: AnnouncementDraft): AnnouncementMutationPayload {
   return {
-    title: draft.title.trim(),
-    body: draft.body.trim(),
+    content: draft.content.trim(),
     displayKind: draft.displayKind,
   }
 }
 
-export function isAnnouncementBodyRequired(displayKind: AnnouncementDisplayKind): boolean {
-  return displayKind !== 'ticker'
+export function validateAnnouncementContentInput(
+  content: string,
+  displayKind: AnnouncementDisplayKind,
+): 'content' | 'modal_title' | 'modal_body' | null {
+  const normalized = content.trim()
+  if (!normalized) return 'content'
+  if (displayKind !== 'modal') return null
+  const parsed = parseAnnouncementContent(normalized)
+  if (!parsed.hasTitle) return 'modal_title'
+  if (!parsed.hasBody) return 'modal_body'
+  return null
 }
 
 function editorDescription(mode: AnnouncementEditorMode, strings: AnnouncementCopy): string {
@@ -260,8 +261,8 @@ function editorDescription(mode: AnnouncementEditorMode, strings: AnnouncementCo
   return strings.formDescriptionEdit
 }
 
-export function estimateAnnouncementBodyRows(body: string): number {
-  const visualLines = body.split('\n').reduce((count, line) => (
+export function estimateAnnouncementContentRows(content: string): number {
+  const visualLines = content.split('\n').reduce((count, line) => (
     count + Math.max(1, Math.ceil(line.length / 72))
   ), 0)
   return Math.min(18, Math.max(6, visualLines + 2))
@@ -288,11 +289,11 @@ function AnnouncementBodyEditor({
       name="announcement-body"
       ariaLabelledBy="announcement-body-editor-label"
       ariaDescribedBy="announcement-body-editor-hint"
-      value={draft.body}
+      value={draft.content}
       placeholder={strings.bodyPlaceholder}
       rows={rows}
       disabled={saving}
-      onChange={(body) => onChangeDraft({ ...draft, body })}
+      onChange={(content) => onChangeDraft({ ...draft, content })}
     />
   )
 
@@ -305,7 +306,7 @@ function AnnouncementBodyEditor({
       <div className="announcements-body-split">
         {textarea}
         <MilkdownPreviewContent
-          value={draft.body || strings.bodyModeRenderEmpty}
+          value={draft.content || strings.bodyModeRenderEmpty}
           label={strings.bodyModeRenderLabel}
           className="announcements-body-milkdown-preview"
         />
@@ -319,10 +320,10 @@ function AnnouncementBodyEditor({
       name="announcement-body"
       ariaLabelledBy="announcement-body-editor-label"
       ariaDescribedBy="announcement-body-editor-hint"
-      value={draft.body}
+      value={draft.content}
       placeholder={strings.bodyPlaceholder}
       disabled={saving}
-      onChange={(body) => onChangeDraft({ ...draft, body })}
+      onChange={(content) => onChangeDraft({ ...draft, content })}
       fallback={textarea}
     />
   )
@@ -380,9 +381,8 @@ function AnnouncementEditorPanel({
 }): JSX.Element {
   const saving = submittingAction != null
   const isPublishedEdit = mode.kind === 'edit' && mode.status === 'published'
-  const bodyRequired = isAnnouncementBodyRequired(draft.displayKind)
   const [bodyMode, setBodyMode] = useState<AnnouncementBodyMode>('split')
-  const bodyRows = estimateAnnouncementBodyRows(draft.body)
+  const bodyRows = estimateAnnouncementContentRows(draft.content)
   const bodyModeOptions: ReadonlyArray<SegmentedTabsOption<AnnouncementBodyMode>> = [
     { value: 'markdown', label: strings.bodyModeMarkdown },
     { value: 'split', label: strings.bodyModeSplit },
@@ -428,17 +428,6 @@ function AnnouncementEditorPanel({
         </div>
       </div>
       <label className="announcements-field">
-        <span>{strings.titleLabel}</span>
-        <Input
-          id="announcement-title"
-          name="announcement-title"
-          value={draft.title}
-          placeholder={strings.titlePlaceholder}
-          onChange={(event) => onChangeDraft({ ...draft, title: event.target.value })}
-          maxLength={120}
-        />
-      </label>
-      <label className="announcements-field">
         <span>{strings.displayLabel}</span>
         <Select
           name="announcement-display-kind"
@@ -461,9 +450,7 @@ function AnnouncementEditorPanel({
       </label>
       <div className="announcements-field">
         <div className="announcements-body-heading">
-          <span id="announcement-body-editor-label">
-            {bodyRequired ? strings.bodyLabel : strings.bodyOptionalLabel}
-          </span>
+          <span id="announcement-body-editor-label">{strings.bodyLabel}</span>
           <SegmentedTabs<AnnouncementBodyMode>
             value={bodyMode}
             onChange={setBodyMode}
@@ -480,13 +467,31 @@ function AnnouncementEditorPanel({
           rows={bodyRows}
           strings={{
             ...strings,
-            bodyPlaceholder: bodyRequired ? strings.bodyPlaceholder : strings.bodyOptionalPlaceholder,
+            bodyPlaceholder: draft.displayKind === 'modal' ? strings.bodyPlaceholder : strings.bodyOptionalPlaceholder,
           }}
           saving={saving}
           onChangeDraft={onChangeDraft}
         />
       </div>
     </form>
+  )
+}
+
+function AnnouncementListPrimaryCopy({
+  item,
+}: {
+  item: Announcement
+}): JSX.Element {
+  const parsed = parseAnnouncementContent(item.content)
+  if (!parsed.titleMarkdown) {
+    return <span className="announcements-summary-text">{parsed.summary}</span>
+  }
+
+  return (
+    <>
+      <MarkdownContent content={parsed.titleMarkdown} inline className="announcements-title-markdown" />
+      {parsed.bodyMarkdown ? <MarkdownContent content={parsed.bodyMarkdown} compact /> : null}
+    </>
   )
 }
 
@@ -521,7 +526,7 @@ function TextareaFallback({
       aria-describedby={ariaDescribedBy}
       placeholder={placeholder}
       rows={rows}
-      maxLength={4000}
+      maxLength={4200}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
     />
@@ -634,8 +639,7 @@ function AnnouncementsListPanel({
                     <tr key={item.id}>
                       <td>
                         <div className="announcements-title-cell">
-                          <strong>{item.title}</strong>
-                          <MarkdownContent content={item.body} compact />
+                          <AnnouncementListPrimaryCopy item={item} />
                         </div>
                       </td>
                       <td>{displayLabel(item.displayKind, strings)}</td>
@@ -682,57 +686,70 @@ function AnnouncementsListPanel({
               </table>
             </div>
             <div className="admin-mobile-list admin-responsive-down">
-              {items.map((item) => (
-                <article key={item.id} className="admin-mobile-card announcements-mobile-card">
-                  <header className="announcements-mobile-header">
-                    <strong>{item.title}</strong>
-                    <StatusBadge tone={statusTone(item.status)}>
-                      {strings.status[item.status]}
-                    </StatusBadge>
-                  </header>
-                  <MarkdownContent
-                    content={item.body}
-                    className="announcements-mobile-body"
-                  />
-                  <div className="admin-mobile-kv">
-                    <span>{strings.table.display}</span>
-                    <strong>{displayLabel(item.displayKind, strings)}</strong>
-                  </div>
-                  <div className="admin-mobile-kv">
-                    <span>{strings.table.updated}</span>
-                    <strong>{formatTimestamp(item.updatedAt, language)}</strong>
-                  </div>
-                  <div className="table-actions announcements-mobile-actions">
-                    <Button type="button" variant="outline" size="xs" onClick={() => onPreview(item)}>
-                      {strings.actions.preview}
-                    </Button>
-                    <Button type="button" variant="outline" size="xs" onClick={() => onEdit(item)}>
-                      {strings.actions.edit}
-                    </Button>
-                    {item.status !== 'published' ? (
-                      <Button
-                        type="button"
-                        size="xs"
-                        onClick={() => onAct(item.id, 'publish')}
-                        disabled={busyId === item.id}
-                      >
-                        {busyId === item.id ? strings.actionBusy : strings.actions.publish}
-                      </Button>
+              {items.map((item) => {
+                const parsed = parseAnnouncementContent(item.content)
+                return (
+                  <article key={item.id} className="admin-mobile-card announcements-mobile-card">
+                    <header className="announcements-mobile-header">
+                      {parsed.titleMarkdown ? (
+                        <MarkdownContent
+                          content={parsed.titleMarkdown}
+                          inline
+                          className="announcements-title-markdown"
+                        />
+                      ) : (
+                        <strong className="announcements-summary-text">{parsed.summary}</strong>
+                      )}
+                      <StatusBadge tone={statusTone(item.status)}>
+                        {strings.status[item.status]}
+                      </StatusBadge>
+                    </header>
+                    {parsed.titleMarkdown && parsed.bodyMarkdown ? (
+                      <MarkdownContent
+                        content={parsed.bodyMarkdown}
+                        className="announcements-mobile-body"
+                      />
                     ) : null}
-                    {item.status !== 'archived' ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        onClick={() => onAct(item.id, 'archive')}
-                        disabled={busyId === item.id}
-                      >
-                        {busyId === item.id ? strings.actionBusy : strings.actions.archive}
+                    <div className="admin-mobile-kv">
+                      <span>{strings.table.display}</span>
+                      <strong>{displayLabel(item.displayKind, strings)}</strong>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{strings.table.updated}</span>
+                      <strong>{formatTimestamp(item.updatedAt, language)}</strong>
+                    </div>
+                    <div className="table-actions announcements-mobile-actions">
+                      <Button type="button" variant="outline" size="xs" onClick={() => onPreview(item)}>
+                        {strings.actions.preview}
                       </Button>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
+                      <Button type="button" variant="outline" size="xs" onClick={() => onEdit(item)}>
+                        {strings.actions.edit}
+                      </Button>
+                      {item.status !== 'published' ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          onClick={() => onAct(item.id, 'publish')}
+                          disabled={busyId === item.id}
+                        >
+                          {busyId === item.id ? strings.actionBusy : strings.actions.publish}
+                        </Button>
+                      ) : null}
+                      {item.status !== 'archived' ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          onClick={() => onAct(item.id, 'archive')}
+                          disabled={busyId === item.id}
+                        >
+                          {busyId === item.id ? strings.actionBusy : strings.actions.archive}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </article>
+                )
+              })}
             </div>
           </>
         )}
@@ -892,12 +909,17 @@ export default function AnnouncementsModule({
 
   const submit = async (action: AnnouncementSubmitAction) => {
     const payload = toPayload(draft)
-    if (!payload.title) {
-      setError(strings.validationTitle)
+    const validationError = validateAnnouncementContentInput(payload.content, payload.displayKind)
+    if (validationError === 'content') {
+      setError(strings.validationContent)
       return
     }
-    if (isAnnouncementBodyRequired(payload.displayKind) && !payload.body) {
-      setError(strings.validation)
+    if (validationError === 'modal_title') {
+      setError(strings.validationModalTitle)
+      return
+    }
+    if (validationError === 'modal_body') {
+      setError(strings.validationModalBody)
       return
     }
     setSubmittingAction(action)

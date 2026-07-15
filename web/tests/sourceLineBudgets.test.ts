@@ -121,9 +121,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/UserConsole.stories.tsx',
     {
-      max: 2410,
+      max: 2460,
       reason:
-        'Console Storybook proof now also keeps the dedicated billing summary fixture, alongside the month-end recharge quote, clamp, and expired-order evidence, on the same stable owner-facing story surface.',
+        'Console Storybook proof now also keeps the dedicated billing summary fixture, announcement content-driven states, alongside the month-end recharge quote, clamp, and expired-order evidence, on the same stable owner-facing story surface.',
     },
   ],
   [

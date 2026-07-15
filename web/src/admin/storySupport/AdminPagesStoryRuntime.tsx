@@ -6137,8 +6137,7 @@ function UserDetailPageCanvas({
 const STORY_ANNOUNCEMENTS: Announcement[] = [
   {
     id: 'ann-story-modal',
-    title: '维护窗口通知',
-    body: '**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
+    content: '# 维护窗口通知\n\n**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
     displayKind: 'modal',
     status: 'published',
     createdAt: 1_762_380_000,
@@ -6148,8 +6147,7 @@ const STORY_ANNOUNCEMENTS: Announcement[] = [
   },
   {
     id: 'ann-story-ticker',
-    title: '额度计数已刷新',
-    body: '每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
+    content: '# 额度计数已刷新\n\n每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
     displayKind: 'ticker',
     status: 'draft',
     createdAt: 1_762_378_000,

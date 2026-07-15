@@ -5,8 +5,7 @@ export type AnnouncementStatus = 'draft' | 'published' | 'archived'
 
 export interface Announcement {
   id: string
-  title: string
-  body: string
+  content: string
   displayKind: AnnouncementDisplayKind
   status: AnnouncementStatus
   createdAt: number
@@ -20,8 +19,7 @@ export interface AnnouncementsResponse {
 }
 
 export interface AnnouncementMutationPayload {
-  title: string
-  body: string
+  content: string
   displayKind: AnnouncementDisplayKind
 }
 

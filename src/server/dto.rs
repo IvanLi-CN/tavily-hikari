@@ -611,16 +611,14 @@ struct AlertsQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnnouncementMutationRequest {
-    title: String,
-    body: String,
+    content: String,
     display_kind: String,
 }
 
 impl From<AnnouncementMutationRequest> for tavily_hikari::AnnouncementMutation {
     fn from(value: AnnouncementMutationRequest) -> Self {
         Self {
-            title: value.title,
-            body: value.body,
+            content: value.content,
             display_kind: value.display_kind,
         }
     }
@@ -630,8 +628,7 @@ impl From<AnnouncementMutationRequest> for tavily_hikari::AnnouncementMutation {
 #[serde(rename_all = "camelCase")]
 struct AnnouncementView {
     id: String,
-    title: String,
-    body: String,
+    content: String,
     display_kind: String,
     status: String,
     created_at: i64,
@@ -644,8 +641,7 @@ impl From<tavily_hikari::Announcement> for AnnouncementView {
     fn from(value: tavily_hikari::Announcement) -> Self {
         Self {
             id: value.id,
-            title: value.title,
-            body: value.body,
+            content: value.content,
             display_kind: value.display_kind,
             status: value.status,
             created_at: value.created_at,

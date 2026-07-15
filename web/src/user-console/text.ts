@@ -28,6 +28,7 @@ export const EN = {
   announcements: {
     modalAcknowledge: 'Got it',
     tickerOpen: 'Open announcement details: {title}',
+    tickerDetails: 'Details',
     tickerClose: 'Dismiss announcement',
     historyTitle: 'Announcements',
     historyDescription: 'Current and archived notices from the service operator.',
@@ -460,6 +461,7 @@ export const ZH = {
   announcements: {
     modalAcknowledge: '知道了',
     tickerOpen: '查看公告详情：{title}',
+    tickerDetails: '详情',
     tickerClose: '关闭公告',
     historyTitle: '公告',
     historyDescription: '查看服务管理员发布的当前与历史公告。',

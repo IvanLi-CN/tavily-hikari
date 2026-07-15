@@ -1,7 +1,6 @@
 export interface DemoAnnouncement {
   id: string
-  title: string
-  body: string
+  content: string
   displayKind: 'modal' | 'ticker'
   status: 'draft' | 'published' | 'archived'
   createdAt: number
@@ -24,8 +23,7 @@ export function createDemoAnnouncements(nowSeconds: (offset?: number) => number)
   return [
     {
       id: 'ann-demo-modal',
-      title: '维护窗口通知',
-      body: '**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
+      content: '# 维护窗口通知\n\n**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
       displayKind: 'modal',
       status: 'published',
       createdAt: nowSeconds(-7200),
@@ -35,8 +33,7 @@ export function createDemoAnnouncements(nowSeconds: (offset?: number) => number)
     },
     {
       id: 'ann-demo-ticker',
-      title: '额度计数已刷新',
-      body: '每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
+      content: '# 额度计数已刷新\n\n每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
       displayKind: 'ticker',
       status: 'draft',
       createdAt: nowSeconds(-5400),
@@ -46,8 +43,7 @@ export function createDemoAnnouncements(nowSeconds: (offset?: number) => number)
     },
     {
       id: 'ann-demo-archived',
-      title: '端点迁移完成',
-      body: 'Tavily 兼容端点迁移已完成，详见 [迁移记录](https://example.com)。',
+      content: '# 端点迁移完成\n\nTavily 兼容端点迁移已完成，详见 [迁移记录](https://example.com)。',
       displayKind: 'ticker',
       status: 'archived',
       createdAt: nowSeconds(-172800),
@@ -190,8 +186,9 @@ async function demoAnnouncementPayload(
 ) {
   const body = await readJsonBody(init)
   return {
-    title: typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Demo announcement',
-    body: typeof body.body === 'string' && body.body.trim() ? body.body.trim() : 'Demo announcement body.',
+    content: typeof body.content === 'string' && body.content.trim()
+      ? body.content.trim()
+      : '# Demo announcement\n\nDemo announcement body.',
     displayKind: body.displayKind === 'ticker' ? 'ticker' as const : 'modal' as const,
   }
 }

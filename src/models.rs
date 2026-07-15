@@ -1402,8 +1402,7 @@ pub fn is_supported_announcement_status(value: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announcement {
     pub id: String,
-    pub title: String,
-    pub body: String,
+    pub content: String,
     pub display_kind: String,
     pub status: String,
     pub created_at: i64,
@@ -1414,8 +1413,7 @@ pub struct Announcement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnouncementMutation {
-    pub title: String,
-    pub body: String,
+    pub content: String,
     pub display_kind: String,
 }
 

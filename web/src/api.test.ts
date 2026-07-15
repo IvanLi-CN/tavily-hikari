@@ -86,8 +86,7 @@ describe('admin user tag api helpers', () => {
   it('routes announcement lifecycle requests through dedicated endpoints', async () => {
     const announcement = {
       id: 'ann/id 1',
-      title: 'Launch notice',
-      body: 'Maintenance window',
+      content: '# Launch notice\n\nMaintenance window',
       displayKind: 'modal',
       status: 'published',
       createdAt: 1,
@@ -106,13 +105,11 @@ describe('admin user tag api helpers', () => {
     globalThis.fetch = fetchMock as typeof fetch
 
     const createPayload = {
-      title: 'Launch notice',
-      body: 'Maintenance window',
+      content: '# Launch notice\n\nMaintenance window',
       displayKind: 'modal' as const,
     }
     const updatePayload = {
-      title: 'Updated notice',
-      body: '',
+      content: 'Updated ticker copy only',
       displayKind: 'ticker' as const,
     }
 

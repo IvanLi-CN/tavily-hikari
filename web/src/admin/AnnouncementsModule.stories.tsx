@@ -7,8 +7,7 @@ import type { Announcement } from '../api'
 const sampleAnnouncements: Announcement[] = [
   {
     id: 'ann-modal-01',
-    title: '维护窗口通知',
-    body: '**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
+    content: '# 维护窗口通知\n\n**今晚 23:00 至 23:10** 会重启 Tavily Hikari 服务。\n\n- MCP 会话可能短暂重连\n- HTTP API 会自动重试',
     displayKind: 'modal',
     status: 'published',
     createdAt: 1_762_380_000,
@@ -18,8 +17,7 @@ const sampleAnnouncements: Announcement[] = [
   },
   {
     id: 'ann-ticker-01',
-    title: '额度计数已刷新',
-    body: '每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
+    content: '# 额度计数已刷新\n\n每日额度窗口已刷新，用户控制台的 `Token` 详情现在也显示实时请求更新。',
     displayKind: 'ticker',
     status: 'draft',
     createdAt: 1_762_378_000,
@@ -28,9 +26,18 @@ const sampleAnnouncements: Announcement[] = [
     archivedAt: null,
   },
   {
+    id: 'ann-ticker-untitled-01',
+    content: '请查阅 [服务状态页](https://example.com/status) 获取实时进展。',
+    displayKind: 'ticker',
+    status: 'draft',
+    createdAt: 1_762_377_500,
+    updatedAt: 1_762_384_000,
+    publishedAt: null,
+    archivedAt: null,
+  },
+  {
     id: 'ann-archived-01',
-    title: '端点迁移完成',
-    body: 'Tavily 兼容端点迁移已完成，详见 [迁移记录](https://example.com)。',
+    content: '# 端点迁移完成\n\nTavily 兼容端点迁移已完成，详见 [迁移记录](https://example.com)。',
     displayKind: 'ticker',
     status: 'archived',
     createdAt: 1_762_200_000,
@@ -66,8 +73,7 @@ function installAnnouncementsFetchMock(items: Announcement[]): () => void {
       const payload = await request.clone().json().catch(() => ({}))
       const next: Announcement = {
         id: `ann-new-${currentItems.length + 1}`,
-        title: payload.title ?? 'New announcement',
-        body: payload.body ?? 'Body',
+        content: payload.content ?? '# New announcement\n\nBody',
         displayKind: payload.displayKind === 'ticker' ? 'ticker' : 'modal',
         status: 'draft',
         createdAt: 1_762_390_000,
@@ -99,8 +105,7 @@ function installAnnouncementsFetchMock(items: Announcement[]): () => void {
         return jsonResponse(item)
       }
       const payload = await request.clone().json().catch(() => ({}))
-      item.title = payload.title ?? item.title
-      item.body = payload.body ?? item.body
+      item.content = payload.content ?? item.content
       item.displayKind = payload.displayKind === 'ticker' ? 'ticker' : 'modal'
       item.updatedAt = 1_762_391_000
       return jsonResponse(item)
@@ -234,10 +239,16 @@ export const CreateAnnouncement: Story = {
     if (canvasElement.querySelector('.announcements-editor') == null) {
       throw new Error('Expected create editor to render.')
     }
+    if (canvasElement.querySelector('#announcement-title') != null) {
+      throw new Error('Expected create editor to remove the standalone title field.')
+    }
     const moduleSurface = canvasElement.querySelector<HTMLElement>('.announcements-module')
     const editor = canvasElement.querySelector<HTMLElement>('.announcements-editor')
     if (moduleSurface == null || editor == null) {
       throw new Error('Expected create editor to render inside the announcements module.')
+    }
+    if (!canvasElement.textContent?.includes('内容')) {
+      throw new Error('Expected create editor to rename the body field to content.')
     }
     if (editor.getBoundingClientRect().width < moduleSurface.getBoundingClientRect().width * 0.96) {
       throw new Error('Expected create editor to use the available module width.')
@@ -337,9 +348,12 @@ export const EditAnnouncementRoute: Story = {
     if (editor == null) {
       throw new Error('Expected edit route to render the announcement editor directly.')
     }
-    const titleInput = canvasElement.querySelector<HTMLInputElement>('#announcement-title')
-    if (titleInput?.value !== '额度计数已刷新') {
-      throw new Error('Expected edit route to load the selected announcement draft.')
+    if (canvasElement.querySelector('#announcement-title') != null) {
+      throw new Error('Expected edit route to remove the standalone title field.')
+    }
+    const contentInput = canvasElement.querySelector<HTMLTextAreaElement>('#announcement-body-editor')
+    if (!contentInput?.value.startsWith('# 额度计数已刷新')) {
+      throw new Error('Expected edit route to load the selected announcement content draft.')
     }
     const backButton = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('返回列表'))

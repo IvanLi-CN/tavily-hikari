@@ -22,7 +22,7 @@ type LandingFocus = 'Overview Focus' | 'Token Focus'
 type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
 type PushStatusPreview = 'Live' | 'Reconnecting' | 'Unsupported'
-type AnnouncementPreview = 'Active' | 'Ticker Bodyless' | 'Closed' | 'History Open' | 'None'
+type AnnouncementPreview = 'Active' | 'Ticker Title Only' | 'Ticker Untitled' | 'Closed' | 'History Open' | 'None'
 type RechargePreview = 'normal' | 'test-price' | 'disabled' | 'hidden'
 type RechargeQuotePreview = 'normal' | 'month-end-clamp'
 
@@ -775,8 +775,7 @@ const tokenLogsSample: ServerPublicTokenLogMock[] = Array.from({ length: 50 }, (
 
 const announcementModalSample: Announcement = {
   id: 'ann-modal-01',
-  title: 'Maintenance window',
-  body: '**Tavily Hikari will restart tonight** between 23:00 and 23:10.\n\n- Existing MCP sessions may reconnect once.\n- API requests should retry normally.',
+  content: '# Maintenance window\n\n**Tavily Hikari will restart tonight** between 23:00 and 23:10.\n\n- Existing MCP sessions may reconnect once.\n- API requests should retry normally.',
   displayKind: 'modal',
   status: 'published',
   createdAt: 1_762_380_000,
@@ -787,8 +786,7 @@ const announcementModalSample: Announcement = {
 
 const announcementTickerSample: Announcement = {
   id: 'ann-ticker-01',
-  title: 'Quota refresh',
-  body: 'Daily quota counters have refreshed. Token detail pages now include `live request` updates.',
+  content: '# Quota refresh\n\nDaily quota counters have refreshed. Token detail pages now include `live request` updates.',
   displayKind: 'ticker',
   status: 'published',
   createdAt: 1_762_378_000,
@@ -797,17 +795,21 @@ const announcementTickerSample: Announcement = {
   archivedAt: null,
 }
 
-const announcementBodylessTickerSample: Announcement = {
+const announcementTitleOnlyTickerSample: Announcement = {
   ...announcementTickerSample,
-  id: 'ann-ticker-empty-01',
-  title: 'Quota refresh complete',
-  body: '',
+  id: 'ann-ticker-title-only-01',
+  content: '# Quota refresh complete',
+}
+
+const announcementUntitledTickerSample: Announcement = {
+  ...announcementTickerSample,
+  id: 'ann-ticker-untitled-01',
+  content: 'Check the [status page](https://example.com) for live updates.',
 }
 
 const announcementArchivedSample: Announcement = {
   id: 'ann-archived-01',
-  title: 'Endpoint migration completed',
-  body: 'The previous Tavily-compatible endpoint migration has been completed. See [migration notes](https://example.com).',
+  content: '# Endpoint migration completed\n\nThe previous Tavily-compatible endpoint migration has been completed. See [migration notes](https://example.com).',
   displayKind: 'ticker',
   status: 'archived',
   createdAt: 1_762_200_000,
@@ -977,9 +979,11 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
     }
 
     if (url.pathname === '/api/user/announcements') {
-      const activeAnnouncements = state.announcementPreview === 'Ticker Bodyless'
-        ? [announcementBodylessTickerSample]
-        : [announcementModalSample, announcementTickerSample]
+      const activeAnnouncements = state.announcementPreview === 'Ticker Title Only'
+        ? [announcementTitleOnlyTickerSample]
+        : state.announcementPreview === 'Ticker Untitled'
+          ? [announcementUntitledTickerSample]
+          : [announcementModalSample, announcementTickerSample]
       return jsonResponse({
         items: state.announcementPreview === 'None'
           ? []
@@ -988,9 +992,11 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
     }
 
     if (url.pathname === '/api/user/announcements/history') {
-      const historyAnnouncements = state.announcementPreview === 'Ticker Bodyless'
-        ? [announcementBodylessTickerSample, announcementArchivedSample]
-        : [announcementModalSample, announcementTickerSample, announcementArchivedSample]
+      const historyAnnouncements = state.announcementPreview === 'Ticker Title Only'
+        ? [announcementTitleOnlyTickerSample, announcementArchivedSample]
+        : state.announcementPreview === 'Ticker Untitled'
+          ? [announcementUntitledTickerSample, announcementArchivedSample]
+          : [announcementModalSample, announcementTickerSample, announcementArchivedSample]
       return jsonResponse({
         items: state.announcementPreview === 'None'
           ? []
@@ -1312,7 +1318,8 @@ function UserConsoleStory(
       window.localStorage.setItem(storageKey, JSON.stringify({
         [announcementModalSample.id]: 1_762_390_000,
         [announcementTickerSample.id]: 1_762_390_120,
-        [announcementBodylessTickerSample.id]: 1_762_390_120,
+        [announcementTitleOnlyTickerSample.id]: 1_762_390_120,
+        [announcementUntitledTickerSample.id]: 1_762_390_120,
       }))
     } else {
       window.localStorage.removeItem(storageKey)
@@ -1755,7 +1762,7 @@ export const ConsoleHomeAnnouncements: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 120))
 
     const tickerDialog = canvasElement.ownerDocument.querySelector<HTMLElement>('.user-console-announcement-dialog')
-    if (!tickerDialog?.textContent?.includes(announcementTickerSample.title)) {
+    if (!tickerDialog?.textContent?.includes('Quota refresh')) {
       throw new Error('Expected clicking ticker announcement to open its detail dialog.')
     }
     if (!tickerDialog.textContent?.includes('Daily quota counters have refreshed')) {
@@ -1809,7 +1816,7 @@ export const ConsoleHomeTickerDetailClose: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 120))
 
     const tickerDialog = canvasElement.ownerDocument.querySelector<HTMLElement>('.user-console-announcement-dialog')
-    if (!tickerDialog?.textContent?.includes(announcementTickerSample.title)) {
+    if (!tickerDialog?.textContent?.includes('Quota refresh')) {
       throw new Error('Expected clicking ticker title to open its detail dialog.')
     }
 
@@ -1831,22 +1838,22 @@ export const ConsoleHomeTickerDetailClose: Story = {
 }
 
 export const ConsoleHomeBodylessTicker: Story = {
-  name: 'Console Home Bodyless Ticker',
+  name: 'Console Home Title Only Ticker',
   args: {
     consoleView: 'Console Home',
     isAdmin: false,
     landingFocus: 'Overview Focus',
-    announcementPreview: 'Ticker Bodyless',
+    announcementPreview: 'Ticker Title Only',
   },
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 180))
 
     const ticker = canvasElement.querySelector<HTMLElement>('.user-console-announcement-ticker')
     if (ticker == null) {
-      throw new Error('Expected bodyless ticker announcement to render.')
+      throw new Error('Expected title-only ticker announcement to render.')
     }
-    if (canvasElement.querySelector('.user-console-announcement-ticker-main--static') == null) {
-      throw new Error('Expected bodyless ticker copy to render without a details trigger.')
+    if (canvasElement.querySelector('.user-console-announcement-ticker-main--titled') == null) {
+      throw new Error('Expected title-only ticker copy to render as a titled banner without a details trigger.')
     }
 
     const closeAction = canvasElement.querySelector<HTMLButtonElement>('.user-console-announcement-ticker .user-console-announcement-close')
@@ -1854,10 +1861,38 @@ export const ConsoleHomeBodylessTicker: Story = {
     await new Promise((resolve) => window.setTimeout(resolve, 120))
 
     if (canvasElement.querySelector('.user-console-announcement-ticker') != null) {
-      throw new Error('Expected bodyless ticker close action to dismiss the announcement.')
+      throw new Error('Expected title-only ticker close action to dismiss the announcement.')
     }
     if (canvasElement.ownerDocument.querySelector('.user-console-announcement-dialog') != null) {
-      throw new Error('Expected bodyless ticker close action to avoid opening a detail dialog.')
+      throw new Error('Expected title-only ticker close action to avoid opening a detail dialog.')
+    }
+  },
+}
+
+export const ConsoleHomeUntitledTicker: Story = {
+  name: 'Console Home Untitled Ticker',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'Ticker Untitled',
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const ticker = canvasElement.querySelector<HTMLElement>('.user-console-announcement-ticker')
+    if (ticker == null) {
+      throw new Error('Expected untitled ticker announcement to render.')
+    }
+    if (canvasElement.querySelector('.user-console-announcement-ticker-main--untitled') == null) {
+      throw new Error('Expected untitled ticker copy to render inline without a separate title.')
+    }
+    if (!ticker.textContent?.includes('Check the status page for live updates.')) {
+      throw new Error('Expected untitled ticker to show the Markdown content directly.')
+    }
+    const link = ticker.querySelector<HTMLAnchorElement>('.user-console-announcement-ticker-content a')
+    if (link?.getAttribute('href') !== 'https://example.com') {
+      throw new Error('Expected untitled ticker content links to remain clickable.')
     }
   },
 }
@@ -1878,6 +1913,36 @@ export const ConsoleHomeAnnouncementHistory: Story = {
 
     if (canvasElement.ownerDocument.querySelector('.user-console-announcement-history') == null) {
       throw new Error('Expected announcement history drawer to render.')
+    }
+  },
+}
+
+export const ConsoleHomeAnnouncementHistoryUntitled: Story = {
+  name: 'Console Home Announcement History Untitled',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: true,
+    landingFocus: 'Overview Focus',
+    announcementPreview: 'Ticker Untitled',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    document.querySelector<HTMLButtonElement>('.user-console-announcements-trigger')?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const history = canvasElement.ownerDocument.querySelector<HTMLElement>('.user-console-announcement-history')
+    if (history == null) {
+      throw new Error('Expected untitled announcement history drawer to render.')
+    }
+    const firstItemText = history.querySelector('.user-console-announcement-history-item')?.textContent ?? ''
+    if (!firstItemText.includes('Check the status page for live updates.')) {
+      throw new Error('Expected untitled announcement history to render full content.')
+    }
+    if (firstItemText.includes('Untitled')) {
+      throw new Error('Expected untitled announcement history to avoid generating a fake title.')
     }
   },
 }

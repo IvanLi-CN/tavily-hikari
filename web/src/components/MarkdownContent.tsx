@@ -5,6 +5,8 @@ interface MarkdownContentProps {
   content: string
   className?: string
   compact?: boolean
+  inline?: boolean
+  compactWrap?: boolean
 }
 
 function safeMarkdownHref(href: string | undefined): string | null {
@@ -25,15 +27,20 @@ export default function MarkdownContent({
   content,
   className,
   compact = false,
+  inline = false,
+  compactWrap = false,
 }: MarkdownContentProps): JSX.Element {
   const classes = [
     'markdown-content',
     compact ? 'markdown-content-compact' : null,
+    inline ? 'markdown-content-inline' : null,
+    compactWrap ? 'markdown-content-compact-wrap' : null,
     className,
   ].filter(Boolean).join(' ')
+  const RootTag = inline ? 'span' : 'div'
 
   return (
-    <div className={classes}>
+    <RootTag className={classes}>
       <ReactMarkdown
         skipHtml
         remarkPlugins={[remarkGfm]}
@@ -59,6 +66,6 @@ export default function MarkdownContent({
       >
         {content}
       </ReactMarkdown>
-    </div>
+    </RootTag>
   )
 }

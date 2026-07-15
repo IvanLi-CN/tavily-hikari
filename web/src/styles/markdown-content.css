@@ -99,3 +99,46 @@
 .markdown-content-compact :where(li)::before {
   content: ' ';
 }
+
+.markdown-content-inline {
+  display: inline;
+  min-width: 0;
+}
+
+.markdown-content-inline > * {
+  display: inline;
+  margin: 0;
+}
+
+.markdown-content-inline :where(ul, ol, li, blockquote, pre, table, thead, tbody, tr, th, td) {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.markdown-content-inline :where(li)::before {
+  content: ' ';
+}
+
+.markdown-content-compact-wrap {
+  display: block;
+  min-width: 0;
+  color: inherit;
+}
+
+.markdown-content-compact-wrap > * {
+  display: inline;
+  margin: 0;
+}
+
+.markdown-content-compact-wrap :where(ul, ol, li, blockquote, pre, table, thead, tbody, tr, th, td) {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.markdown-content-compact-wrap :where(li)::before {
+  content: ' ';
+}

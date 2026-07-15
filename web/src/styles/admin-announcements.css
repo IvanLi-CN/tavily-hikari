@@ -459,12 +459,29 @@
   min-width: 0;
 }
 
-.announcements-title-cell strong,
+.announcements-title-markdown,
+.announcements-summary-text,
 .announcements-title-cell .markdown-content {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.announcements-title-markdown {
+  color: hsl(var(--foreground));
+  font-weight: 800;
+}
+
+.announcements-summary-text {
+  color: hsl(var(--muted-foreground));
+}
+
+.announcements-mobile-body {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .announcements-mobile-card {

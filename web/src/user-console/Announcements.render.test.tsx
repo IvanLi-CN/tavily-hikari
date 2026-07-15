@@ -11,8 +11,7 @@ import UserConsoleAnnouncements from './Announcements'
 function tickerAnnouncement(patch: Partial<Announcement> = {}): Announcement {
   return {
     id: 'ann-ticker-1',
-    title: 'Quota refreshed',
-    body: 'Daily quota counters have refreshed.',
+    content: '# Quota refreshed\n\nDaily quota counters have refreshed.',
     displayKind: 'ticker',
     status: 'published',
     createdAt: 1,
@@ -59,11 +58,11 @@ describe('UserConsoleAnnouncements', () => {
     const { root, onCloseAnnouncement } = await renderAnnouncements(item)
 
     const ticker = document.querySelector<HTMLElement>('.user-console-announcement-ticker')
-    expect(ticker?.textContent).toContain(item.title)
-    expect(ticker?.textContent).not.toContain(item.body)
+    expect(ticker?.textContent).toContain('Quota refreshed')
+    expect(ticker?.textContent).not.toContain('Daily quota counters have refreshed.')
 
     const detailButton = document.querySelector<HTMLButtonElement>(
-      `button[aria-label="${EN.announcements.tickerOpen.replace('{title}', item.title)}"]`,
+      `button[aria-label="${EN.announcements.tickerOpen.replace('{title}', 'Quota refreshed')}"]`,
     )
     expect(detailButton).not.toBeNull()
 
@@ -77,11 +76,28 @@ describe('UserConsoleAnnouncements', () => {
     await act(async () => root.unmount())
   })
 
-  it('dismisses ticker notifications directly when body content is empty', async () => {
-    const item = tickerAnnouncement({ body: '' })
+  it('keeps inline markdown links clickable inside derived titles', async () => {
+    const item = tickerAnnouncement({
+      content: '# Check the [status page](https://example.com)\n\nAdditional details.',
+    })
+    const { root } = await renderAnnouncements(item)
+
+    const titleLink = document.querySelector<HTMLAnchorElement>('.user-console-announcement-ticker-title a')
+    expect(titleLink?.getAttribute('href')).toBe('https://example.com')
+
+    const detailButton = document.querySelector<HTMLButtonElement>(
+      `button[aria-label="${EN.announcements.tickerOpen.replace('{title}', 'Check the status page')}"]`,
+    )
+    expect(detailButton).not.toBeNull()
+
+    await act(async () => root.unmount())
+  })
+
+  it('dismisses ticker notifications directly when only a title exists', async () => {
+    const item = tickerAnnouncement({ content: '# Quota refreshed' })
     const { root, onCloseAnnouncement } = await renderAnnouncements(item)
 
-    expect(document.querySelector('.user-console-announcement-ticker-main--static')).not.toBeNull()
+    expect(document.querySelector('.user-console-announcement-ticker-main--titled')).not.toBeNull()
 
     const closeButton = document.querySelector<HTMLButtonElement>(
       `button[aria-label="${EN.announcements.tickerClose}"]`,
@@ -95,6 +111,34 @@ describe('UserConsoleAnnouncements', () => {
     expect(onCloseAnnouncement).toHaveBeenCalledWith(item.id)
     expect(document.querySelector('.user-console-announcement-dialog')).toBeNull()
 
+    await act(async () => root.unmount())
+  })
+
+  it('renders untitled ticker content inline without opening details', async () => {
+    const item = tickerAnnouncement({
+      id: 'ann-ticker-untitled',
+      content: 'Check the [status page](https://example.com) for live updates.',
+    })
+    const { root, onCloseAnnouncement } = await renderAnnouncements(item)
+
+    const ticker = document.querySelector<HTMLElement>('.user-console-announcement-ticker')
+    expect(ticker?.textContent).toContain('Check the status page for live updates.')
+    expect(document.querySelector('.user-console-announcement-ticker-main--untitled')).not.toBeNull()
+    expect(document.querySelector(`button[aria-label="${EN.announcements.tickerDetails}"]`)).toBeNull()
+
+    const link = document.querySelector<HTMLAnchorElement>('.user-console-announcement-ticker-content a')
+    expect(link?.getAttribute('href')).toBe('https://example.com')
+
+    const closeButton = document.querySelector<HTMLButtonElement>(
+      `button[aria-label="${EN.announcements.tickerClose}"]`,
+    )
+    expect(closeButton).not.toBeNull()
+
+    await act(async () => {
+      closeButton?.click()
+    })
+
+    expect(onCloseAnnouncement).toHaveBeenCalledWith(item.id)
     await act(async () => root.unmount())
   })
 })

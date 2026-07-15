@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import type { Announcement } from '../api'
-import { StatusBadge } from '../components/StatusBadge'
 import MarkdownContent from '../components/MarkdownContent'
+import { StatusBadge } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import {
   Dialog,
@@ -18,8 +18,9 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '../components/ui/drawer'
-import { Icon } from '../lib/icons'
 import type { Language } from '../i18n'
+import { Icon } from '../lib/icons'
+import { parseAnnouncementContent } from '../lib/announcementContent'
 import type { EN } from './text'
 
 type UserConsoleText = typeof EN
@@ -64,8 +65,14 @@ function announcementHistoryTime(item: Announcement): number | null {
   return item.publishedAt ?? item.updatedAt
 }
 
-function hasAnnouncementBody(item: Announcement): boolean {
-  return item.body.trim().length > 0
+function AnnouncementTitleMarkdown({
+  markdown,
+  className,
+}: {
+  markdown: string
+  className?: string
+}): JSX.Element {
+  return <MarkdownContent content={markdown} inline className={className} />
 }
 
 export default function UserConsoleAnnouncements({
@@ -84,8 +91,23 @@ export default function UserConsoleAnnouncements({
     ?? null
   const tickerAnnouncement = activeAnnouncements.find((item) => item.displayKind === 'ticker' && !isClosed(item, closedRecords))
     ?? null
-  const tickerHasBody = tickerAnnouncement ? hasAnnouncementBody(tickerAnnouncement) : false
-  const tickerDetailAnnouncement = tickerAnnouncement?.id === tickerDetailId && tickerHasBody ? tickerAnnouncement : null
+
+  const modalParsed = useMemo(
+    () => (modalAnnouncement ? parseAnnouncementContent(modalAnnouncement.content) : null),
+    [modalAnnouncement],
+  )
+  const tickerParsed = useMemo(
+    () => (tickerAnnouncement ? parseAnnouncementContent(tickerAnnouncement.content) : null),
+    [tickerAnnouncement],
+  )
+  const tickerHasDetails = Boolean(tickerParsed?.hasTitle && tickerParsed.hasBody)
+  const tickerHasTitle = Boolean(tickerParsed?.hasTitle)
+  const tickerDetailAnnouncement = tickerAnnouncement?.id === tickerDetailId && tickerHasDetails ? tickerAnnouncement : null
+  const tickerDetailParsed = useMemo(
+    () => (tickerDetailAnnouncement ? parseAnnouncementContent(tickerDetailAnnouncement.content) : null),
+    [tickerDetailAnnouncement],
+  )
+
   const closeTickerDetailAnnouncement = (id: string) => {
     setTickerDetailId(null)
     onCloseAnnouncement(id)
@@ -93,55 +115,59 @@ export default function UserConsoleAnnouncements({
 
   return (
     <>
-      {tickerAnnouncement ? (
+      {tickerAnnouncement && tickerParsed ? (
         <section className="surface user-console-announcement-ticker" aria-live="polite">
-          {tickerHasBody ? (
-            <button
+          <div
+            className={[
+              'user-console-announcement-ticker-main',
+              tickerHasTitle ? 'user-console-announcement-ticker-main--titled' : 'user-console-announcement-ticker-main--untitled',
+            ].join(' ')}
+          >
+            <span className="user-console-announcement-ticker-icon" aria-hidden="true">
+              <Icon icon="mdi:bullhorn-outline" width={18} height={18} />
+            </span>
+            <span className="user-console-announcement-ticker-copy">
+              {tickerHasTitle && tickerParsed.titleMarkdown ? (
+                <AnnouncementTitleMarkdown
+                  markdown={tickerParsed.titleMarkdown}
+                  className="user-console-announcement-ticker-title"
+                />
+              ) : (
+                <MarkdownContent
+                  content={tickerParsed.fullContent}
+                  compactWrap
+                  className="user-console-announcement-ticker-content"
+                />
+              )}
+            </span>
+          </div>
+          {tickerHasDetails ? (
+            <Button
               type="button"
-              className="user-console-announcement-ticker-main"
-              aria-haspopup="dialog"
-              aria-label={strings.tickerOpen.replace('{title}', tickerAnnouncement.title)}
+              variant="ghost"
+              size="xs"
+              className="user-console-announcement-action"
+              aria-label={strings.tickerOpen.replace('{title}', tickerParsed.titleText ?? strings.ticker)}
               onClick={() => setTickerDetailId(tickerAnnouncement.id)}
             >
-              <span className="user-console-announcement-ticker-icon" aria-hidden="true">
-                <Icon icon="mdi:bullhorn-outline" width={18} height={18} />
-              </span>
-              <span className="user-console-announcement-ticker-copy">
-                <strong>{tickerAnnouncement.title}</strong>
-              </span>
-            </button>
+              <Icon icon="mdi:open-in-new" width={16} height={16} aria-hidden="true" />
+              <span>{strings.tickerDetails}</span>
+            </Button>
           ) : (
-            <div className="user-console-announcement-ticker-main user-console-announcement-ticker-main--static">
-              <span className="user-console-announcement-ticker-icon" aria-hidden="true">
-                <Icon icon="mdi:bullhorn-outline" width={18} height={18} />
-              </span>
-              <span className="user-console-announcement-ticker-copy">
-                <strong>{tickerAnnouncement.title}</strong>
-              </span>
-            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="user-console-announcement-close"
+              aria-label={strings.tickerClose}
+              onClick={() => {
+                setTickerDetailId(null)
+                onCloseAnnouncement(tickerAnnouncement.id)
+              }}
+            >
+              <Icon icon="mdi:close" width={16} height={16} aria-hidden="true" />
+            </Button>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            className="user-console-announcement-close"
-            aria-label={tickerHasBody ? strings.tickerOpen.replace('{title}', tickerAnnouncement.title) : strings.tickerClose}
-            onClick={() => {
-              if (tickerHasBody) {
-                setTickerDetailId(tickerAnnouncement.id)
-                return
-              }
-              setTickerDetailId(null)
-              onCloseAnnouncement(tickerAnnouncement.id)
-            }}
-          >
-            <Icon
-              icon={tickerHasBody ? 'mdi:open-in-new' : 'mdi:close'}
-              width={16}
-              height={16}
-              aria-hidden="true"
-            />
-          </Button>
         </section>
       ) : null}
 
@@ -153,13 +179,18 @@ export default function UserConsoleAnnouncements({
           }
         }}
       >
-        {modalAnnouncement ? (
+        {modalAnnouncement && modalParsed?.titleMarkdown ? (
           <DialogContent className="user-console-announcement-dialog" aria-describedby={undefined}>
             <DialogHeader>
-              <DialogTitle>{modalAnnouncement.title}</DialogTitle>
+              <DialogTitle>
+                <AnnouncementTitleMarkdown
+                  markdown={modalParsed.titleMarkdown}
+                  className="user-console-announcement-dialog-title"
+                />
+              </DialogTitle>
             </DialogHeader>
             <MarkdownContent
-              content={modalAnnouncement.body}
+              content={modalParsed.bodyMarkdown}
               className="user-console-announcement-dialog-body"
             />
             <DialogFooter>
@@ -179,13 +210,18 @@ export default function UserConsoleAnnouncements({
           }
         }}
       >
-        {tickerDetailAnnouncement ? (
+        {tickerDetailAnnouncement && tickerDetailParsed?.titleMarkdown ? (
           <DialogContent className="user-console-announcement-dialog" aria-describedby={undefined}>
             <DialogHeader>
-              <DialogTitle>{tickerDetailAnnouncement.title}</DialogTitle>
+              <DialogTitle>
+                <AnnouncementTitleMarkdown
+                  markdown={tickerDetailParsed.titleMarkdown}
+                  className="user-console-announcement-dialog-title"
+                />
+              </DialogTitle>
             </DialogHeader>
             <MarkdownContent
-              content={tickerDetailAnnouncement.body}
+              content={tickerDetailParsed.bodyMarkdown}
               className="user-console-announcement-dialog-body"
             />
             <DialogFooter>
@@ -210,38 +246,50 @@ export default function UserConsoleAnnouncements({
             {historyAnnouncements.length === 0 ? (
               <div className="empty-state alert">{strings.emptyHistory}</div>
             ) : (
-              historyAnnouncements.map((item) => (
-                <article key={item.id} className="user-console-announcement-history-item">
-                  <header>
-                    <div>
-                      <strong>{item.title}</strong>
-                      <span>
-                        {item.displayKind === 'ticker' ? strings.ticker : strings.modal}
-                        {' · '}
-                        {formatAnnouncementTime(announcementHistoryTime(item), language)}
-                      </span>
-                    </div>
-                    <StatusBadge tone={item.status === 'published' ? 'success' : 'neutral'}>
-                      {item.status === 'published' ? strings.published : strings.archived}
-                    </StatusBadge>
-                  </header>
-                  <MarkdownContent
-                    content={item.body}
-                    className="user-console-announcement-history-body"
-                  />
-                  {isClosed(item, closedRecords) ? (
-                    <div className="user-console-announcement-closed">
-                      <Icon icon="mdi:check-circle-outline" width={16} height={16} aria-hidden="true" />
-                      <span>
-                        {strings.closedAt.replace(
-                          '{time}',
-                          formatAnnouncementTime(closedRecords[item.id], language),
-                        )}
-                      </span>
-                    </div>
-                  ) : null}
-                </article>
-              ))
+              historyAnnouncements.map((item) => {
+                const parsed = parseAnnouncementContent(item.content)
+                const historyContent = parsed.hasTitle ? parsed.bodyMarkdown : parsed.fullContent
+
+                return (
+                  <article key={item.id} className="user-console-announcement-history-item">
+                    <header>
+                      <div>
+                        {parsed.titleMarkdown ? (
+                          <AnnouncementTitleMarkdown
+                            markdown={parsed.titleMarkdown}
+                            className="user-console-announcement-history-title"
+                          />
+                        ) : null}
+                        <span>
+                          {item.displayKind === 'ticker' ? strings.ticker : strings.modal}
+                          {' · '}
+                          {formatAnnouncementTime(announcementHistoryTime(item), language)}
+                        </span>
+                      </div>
+                      <StatusBadge tone={item.status === 'published' ? 'success' : 'neutral'}>
+                        {item.status === 'published' ? strings.published : strings.archived}
+                      </StatusBadge>
+                    </header>
+                    {historyContent ? (
+                      <MarkdownContent
+                        content={historyContent}
+                        className="user-console-announcement-history-body"
+                      />
+                    ) : null}
+                    {isClosed(item, closedRecords) ? (
+                      <div className="user-console-announcement-closed">
+                        <Icon icon="mdi:check-circle-outline" width={16} height={16} aria-hidden="true" />
+                        <span>
+                          {strings.closedAt.replace(
+                            '{time}',
+                            formatAnnouncementTime(closedRecords[item.id], language),
+                          )}
+                        </span>
+                      </div>
+                    ) : null}
+                  </article>
+                )
+              })
             )}
           </div>
         </DrawerContent>
