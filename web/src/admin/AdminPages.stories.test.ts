@@ -222,7 +222,7 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('admin-recharge-table')
   })
 
-  it('renders the users usage story with the comparison-only daily usage secondary line', () => {
+  it('renders the users usage story with the dedicated comparison column', () => {
     const renderStory = adminPageStories.UsersUsage.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
@@ -234,7 +234,7 @@ describe('AdminPages Storybook proofs', () => {
       ),
     )
 
-    expect(markup).toContain('新方案')
+    expect(markup).toContain('新方案 24h')
   })
 
   it('renders the jobs story with manual trigger controls and source labels', () => {

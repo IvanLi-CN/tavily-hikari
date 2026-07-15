@@ -872,6 +872,24 @@ function createDemoAdminUserListStats() {
   }
 }
 
+function demoShadowDailyCreditsUsed(user: {
+  userId: string
+  quotaDailyUsed: number
+  lastActivity: number | null
+}) {
+  if (user.lastActivity == null) return null
+
+  const delta =
+    user.userId === 'user-research'
+      ? -6
+      : user.userId === 'user-ops'
+        ? 4
+        : 8
+
+  const shadowUsed = Math.max(0, user.quotaDailyUsed + delta)
+  return shadowUsed === user.quotaDailyUsed ? null : shadowUsed
+}
+
 function filterDemoUsers(url: URL) {
   const query = (url.searchParams.get('q') ?? '').trim().toLowerCase()
   const explicitScope = url.searchParams.get('activityScope')
@@ -897,7 +915,12 @@ function filterDemoUsers(url: URL) {
       return haystacks.some((value) => value.toLowerCase().includes(query))
     })
   }
-  return items
+  return items.map((user) => ({
+    ...user,
+    shadowDailyCreditsUsed: demoState.systemSettings.upstreamPreciseReconciliationEnabled
+      ? null
+      : demoShadowDailyCreditsUsed(user),
+  }))
 }
 
 function createDemoJobs() {
@@ -963,7 +986,7 @@ function createDemoSystemSettings() {
     upstreamProjectIdMode: 'accessToken',
     upstreamProjectIdFixedValue: '',
     upstreamMcpUserAgent: '',
-    upstreamPreciseReconciliationEnabled: true,
+    upstreamPreciseReconciliationEnabled: false,
     adminDefaultActiveUsersOnly: true,
     rechargeFeatureEnabled: true,
     rechargeUserEnabled: true,
@@ -983,7 +1006,7 @@ function createDemoSystemSettings() {
 
 function createDemoUpstreamPrivacyStatus() {
   return {
-    phase: 'pending',
+    phase: 'draining',
     configuredProjectIdMode: 'accessToken',
     effectiveProjectIdMode: 'accessToken',
     fixedProjectIdConfigured: false,
@@ -1002,7 +1025,7 @@ function createDemoUpstreamPrivacyStatus() {
     activeControlSessions: 2,
     currentPeriodCode: '2026-07-14/S2',
     currentPeriodEndsAt: 1_783_994_400,
-    nextEpochAt: 1_783_994_400,
+    nextEpochAt: null,
     pendingResearch: 1,
     queuedSettlements: 2,
     degradedSettlements: 0,

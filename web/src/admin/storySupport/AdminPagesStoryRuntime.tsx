@@ -114,7 +114,7 @@ import AdminRechargeRecordsModule from '../AdminRechargeRecordsModule'
 import type { ApiKeyBulkSyncProgressState } from '../apiKeyBulkSyncProgress'
 import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
-import { formatShadowDailyUsageComparison } from '../userUsageComparison'
+import { buildShadowDailyUsageStack } from '../userUsageComparison'
 import { buildPressureDemoFixture } from '../../api/pressureDemoFixture'
 import {
   forwardProxyStorySavedAt,
@@ -4863,6 +4863,7 @@ function UsersPageCanvas({
       ? users.filterStatus.searchAll
       : users.filterStatus.defaultActiveOnly
     : null
+  const showShadowDailyUsageColumn = sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)
 
   const toggleSort = (field: AdminUsersSortField) => {
     const isActive = effectiveSortField === field
@@ -4916,7 +4917,7 @@ function UsersPageCanvas({
           {filteredUsers.length === 0 ? (
             <div className="empty-state alert">{users.empty.none}</div>
           ) : (
-            <table className="jobs-table admin-users-table admin-users-list-table">
+            <table className={`jobs-table admin-users-table admin-users-list-table${showShadowDailyUsageColumn ? ' admin-users-list-table--shadow-compare' : ''}`}>
               <thead>
                 <tr>
                   <th>{users.table.user}</th>
@@ -4929,6 +4930,7 @@ function UsersPageCanvas({
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
+                  {showShadowDailyUsageColumn ? <th>{users.table.shadowDaily}</th> : null}
                   <StoryAdminUsersSortableHeader
                     label={users.table.monthly}
                     field="monthlyCreditsUsed"
@@ -4962,13 +4964,13 @@ function UsersPageCanvas({
               <tbody>
                 {sortedUsers.map((item) => {
                   const dailyQuotaMetric = formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)
-                  const dailyShadowComparison = formatShadowDailyUsageComparison({
+                  const shadowDailyUsage = buildShadowDailyUsageStack({
                     actualUsed: item.dailyCreditsUsed,
                     shadowUsed: item.shadowDailyCreditsUsed,
                     limit: item.dailyCreditsLimit,
                     usersStrings: users,
-                    formatQuotaUsagePair,
                     formatNumber,
+                    formatQuotaStackValue,
                   })
                   const monthlyQuotaMetric = formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
@@ -5000,11 +5002,19 @@ function UsersPageCanvas({
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
                         <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
-                        <span className="admin-table-value-secondary">
-                          {dailyShadowComparison ?? dailyQuotaMetric.secondary}
-                        </span>
+                        <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
                       </div>
                     </td>
+                    {showShadowDailyUsageColumn ? (
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${shadowDailyUsage.primaryClassName ? ` ${shadowDailyUsage.primaryClassName}` : ''}`}>{shadowDailyUsage.primary}</span>
+                          {shadowDailyUsage.secondary ? (
+                            <span className="admin-table-value-secondary">{shadowDailyUsage.secondary}</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    ) : null}
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
                         <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
@@ -5226,6 +5236,7 @@ function UsersUsagePageCanvas({
         users={sortedUsers}
         language={language}
         usersStrings={users}
+        showShadowDailyColumn={sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)}
         searchControls={usageHeaderActions}
         filterStatusText={usersFilterStatusText}
         loadState="ready"
@@ -6373,7 +6384,7 @@ function SystemSettingsPageCanvas({
           upstreamProjectIdMode: 'accessToken',
           upstreamProjectIdFixedValue: '',
           upstreamMcpUserAgent: '',
-          upstreamPreciseReconciliationEnabled: true,
+          upstreamPreciseReconciliationEnabled: false,
           rechargeFeatureEnabled: true,
           rechargeUserEnabled: true,
           adminDefaultActiveUsersOnly: false,
@@ -6417,13 +6428,13 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
         formStrings={admin.systemSettings.form}
         language="zh"
         status={{
-          phase: 'pending',
+          phase: 'draining',
           configuredProjectIdMode: 'accessToken',
           effectiveProjectIdMode: 'accessToken',
           fixedProjectIdConfigured: false,
           configuredMcpUserAgent: '',
           effectiveMcpUserAgent: null,
-          upstreamPreciseReconciliationEnabled: true,
+          upstreamPreciseReconciliationEnabled: false,
           httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
           controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
           gates: [
@@ -6437,7 +6448,7 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
           activeControlSessions: 2,
           currentPeriodCode: '2026-07-14/S2',
           currentPeriodEndsAt: 1_783_994_400,
-          nextEpochAt: 1_783_994_400,
+          nextEpochAt: null,
           pendingResearch: 1,
           queuedSettlements: 2,
           degradedSettlements: 0,
@@ -6832,8 +6843,11 @@ export const Users: Story = {
     if (getFirstRenderedUserLabel(canvasElement) !== 'Alice Wang') {
       throw new Error('Expected users story to start with Alice Wang as the first rendered row.')
     }
-    if (!canvasElement.textContent?.includes('新方案')) {
-      throw new Error('Expected users story to surface the comparison-only daily usage secondary line.')
+    const usersHeaderTexts = Array.from(
+      canvasElement.querySelectorAll<HTMLTableCellElement>('.admin-users-list-table thead th'),
+    ).map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+    if (!usersHeaderTexts.includes('新方案 24h')) {
+      throw new Error('Expected users story to render the dedicated new-scheme daily comparison column.')
     }
 
     updateStorySearchInput(searchInput, 'bob')
@@ -6917,8 +6931,8 @@ export const UsersUsage: Story = {
     if (!headerTexts.includes('5m 限流')) {
       throw new Error('Expected users usage story to keep the 5m rate column.')
     }
-    if (!canvasElement.textContent?.includes('新方案')) {
-      throw new Error('Expected users usage story to surface the comparison-only daily usage secondary line.')
+    if (!headerTexts.includes('新方案 24h')) {
+      throw new Error('Expected users usage story to render the dedicated new-scheme daily comparison column.')
     }
     const oneHourSortButton = canvasElement.querySelector<HTMLButtonElement>('[data-sort-field="businessCalls1hUsed"]')
     if (!oneHourSortButton) {

@@ -222,7 +222,7 @@ export default function UpstreamPrivacyStatusModule({
           </p>
         ) : null}
         <div className="upstream-privacy-shell__actions">
-          <div className="upstream-privacy-auto-refresh">
+          <div className="upstream-privacy-auto-refresh" role="group" aria-labelledby={autoRefreshLabelId}>
             <span id={autoRefreshLabelId}>{strings.autoRefresh}</span>
             <Switch
               aria-labelledby={autoRefreshLabelId}
@@ -230,7 +230,14 @@ export default function UpstreamPrivacyStatusModule({
               onCheckedChange={onAutoRefreshChange}
             />
           </div>
-          <Button type="button" variant="outline" size="sm" onClick={() => void onRefresh()} disabled={refreshing}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="upstream-privacy-refresh-button"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+          >
             <Icon icon={refreshing ? 'mdi:loading' : 'mdi:refresh'} width={16} height={16} className={refreshing ? 'icon-spin' : undefined} />
             <span>{strings.refreshNow}</span>
           </Button>

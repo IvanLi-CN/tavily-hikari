@@ -1226,15 +1226,46 @@
   .upstream-privacy-auto-refresh {
     display: inline-flex;
     align-items: center;
-    gap: 0.65rem;
-    color: hsl(var(--muted-foreground));
+    justify-content: space-between;
+    min-height: 2.75rem;
+    padding: 0.32rem 0.38rem 0.32rem 0.92rem;
+    border: 1px solid hsl(var(--border) / 0.55);
+    border-radius: 1.25rem;
+    background: hsl(var(--card) / 0.82);
+    box-shadow: var(--shadow-clay-button);
+    gap: 0.75rem;
+    color: hsl(var(--foreground));
     font-size: 0.88rem;
     min-width: 0;
-    line-height: 1.4;
+    line-height: 1;
   }
 
   .upstream-privacy-auto-refresh > span {
+    font-weight: 700;
     overflow-wrap: anywhere;
+    white-space: nowrap;
+  }
+
+  .admin-main-content .upstream-privacy-auto-refresh button[role='switch'] {
+    width: 48px;
+    height: 28px;
+    min-width: 48px;
+    min-height: 28px;
+    padding-inline: 4px;
+    flex: none;
+  }
+
+  .admin-main-content .upstream-privacy-auto-refresh button[role='switch'] > span {
+    width: 20px;
+    height: 20px;
+  }
+
+  .admin-main-content .upstream-privacy-auto-refresh button[role='switch'][data-state='checked'] > span {
+    transform: translateX(20px);
+  }
+
+  .upstream-privacy-refresh-button {
+    flex: none;
   }
 
   .upstream-privacy-layout {
@@ -1502,6 +1533,25 @@
     }
   }
 
+  @media (max-width: 640px) {
+    .upstream-privacy-shell__toolbar {
+      align-items: stretch;
+    }
+
+    .upstream-privacy-shell__actions {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .upstream-privacy-auto-refresh {
+      flex: 1 1 12rem;
+    }
+
+    .upstream-privacy-refresh-button {
+      flex: 0 0 auto;
+    }
+  }
+
   .system-settings-field:first-child,
   .system-settings-toggle-row:first-child {
     border-top: 0;
@@ -1535,13 +1585,33 @@
   }
 
   .system-settings-field .input,
+  .system-settings-field .system-settings-select-trigger,
   .system-settings-range-control {
     grid-column: 2;
     grid-row: 1;
     min-height: 2.35rem;
   }
 
-  .system-settings-field-current,
+  .system-settings-select-trigger {
+    min-width: 0;
+    width: 100%;
+    inline-size: 100%;
+    max-inline-size: 100%;
+    justify-self: stretch;
+    padding-inline: 1rem 0.85rem;
+    font-weight: 600;
+  }
+
+  .system-settings-select-trigger > span {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .system-settings-select-content {
+    min-width: max(var(--radix-select-trigger-width), 16rem);
+    max-width: min(20rem, calc(100vw - 1rem));
+  }
+
   .system-settings-field-hint,
   .system-settings-field-error {
     grid-column: 1;
@@ -1551,18 +1621,9 @@
     line-height: 1.28;
   }
 
-  .system-settings-field-current {
-    grid-row: 2;
-    overflow: hidden;
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .system-settings-field-hint {
     display: none;
-    grid-row: 3;
+    grid-row: 2;
     overflow: hidden;
     font-size: 0.72rem;
     text-overflow: ellipsis;
@@ -1877,8 +1938,8 @@
     .system-settings-field > label,
     .system-settings-field-label-row,
     .system-settings-field .input,
+    .system-settings-field .system-settings-select-trigger,
     .system-settings-range-control,
-    .system-settings-field-current,
     .system-settings-field-hint,
     .system-settings-field-error,
     .system-settings-trusted-copy,

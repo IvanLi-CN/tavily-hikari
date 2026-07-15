@@ -41,22 +41,22 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(markup).toContain('data-state="instant-open"')
   })
 
-  it('renders the request-rate story with the current threshold copy', () => {
+  it('renders the request-rate story without redundant current-value copy', () => {
     const renderStory = systemSettingsStories.RequestRateEdited.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('5 分钟最大请求数')
-    expect(markup).toContain('当前阈值：80')
+    expect(markup).not.toContain('当前阈值：80')
   })
 
-  it('renders the blocked-key base limit story with the configured base value', () => {
+  it('renders the blocked-key base limit story without redundant current-value copy', () => {
     const renderStory = systemSettingsStories.BlockedKeyBaseConfigured.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('封禁数基础值')
-    expect(markup).toContain('当前基础值：8')
+    expect(markup).not.toContain('当前基础值：8')
   })
 
   it('renders the API rebalance story without rollout controls', () => {
@@ -65,6 +65,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
 
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('启用 API Rebalance')
+    expect(markup).not.toContain('Tavily API Rebalance')
     expect(markup).not.toContain('API 请求放量比例')
   })
 
@@ -78,12 +79,20 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(markup).toContain('custom-control-mcp')
   })
 
-  it('renders the comparison-only reconciliation story with the disabled-state copy', () => {
+  it('renders the comparison-only reconciliation story without redundant current-state copy', () => {
     const renderStory =
       systemSettingsStories.ComparisonOnlyReconciliation.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
 
     const markup = renderToStaticMarkup(createElement(renderStory!))
-    expect(markup).toContain('当前：仅对比展示，不影响真实扣费。')
+    expect(markup).not.toContain('当前：仅对比展示，不影响真实扣费。')
+  })
+
+  it('renders the default story without redundant current-state copy', () => {
+    const renderStory = meta.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup).not.toContain('当前：仅对比展示，不影响真实扣费。')
   })
 })

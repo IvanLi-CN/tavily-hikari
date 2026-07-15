@@ -90,7 +90,7 @@ impl KeyStore {
         let upstream_precise_reconciliation_enabled = self
             .get_meta_i64(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
             .await?
-            .unwrap_or(1)
+            .unwrap_or(0)
             != 0;
         let recharge_feature_enabled = self
             .get_meta_i64(META_KEY_RECHARGE_FEATURE_ENABLED_V1)

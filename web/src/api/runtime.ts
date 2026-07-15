@@ -3834,7 +3834,7 @@ function createEmptySystemSettings(): SystemSettings {
     upstreamProjectIdMode: 'accessToken',
     upstreamProjectIdFixedValue: '',
     upstreamMcpUserAgent: '',
-    upstreamPreciseReconciliationEnabled: true,
+    upstreamPreciseReconciliationEnabled: false,
     rechargeFeatureEnabled: false,
     rechargeUserEnabled: false,
     adminDefaultActiveUsersOnly: false,

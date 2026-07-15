@@ -981,14 +981,11 @@ export interface AdminTranslationsShape {
       limitsTitle: string
       gatewayTitle: string
       gatewaySectionTitle: string
-      apiRebalanceTitle: string
       upstreamIdentityTitle: string
       requestRateLimitLabel: string
       requestRateLimitHint: string
-      currentRequestRateLimitValue: string
       countLabel: string
       countHint: string
-      currentValue: string
       rebalanceLabel: string
       rebalanceHint: string
       percentLabel: string
@@ -1009,18 +1006,13 @@ export interface AdminTranslationsShape {
       upstreamProjectIdFixedValueLabel: string
       upstreamProjectIdFixedValueHint: string
       upstreamProjectIdFixedValuePlaceholder: string
-      currentUpstreamProjectIdModeValue: string
-      currentUpstreamProjectIdFixedValue: string
       upstreamMcpUserAgentLabel: string
       upstreamMcpUserAgentHint: string
       upstreamMcpUserAgentPlaceholder: string
-      currentUpstreamMcpUserAgentValue: string
       upstreamHttpUserAgentNotice: string
       upstreamPreciseReconciliationTitle: string
       upstreamPreciseReconciliationLabel: string
       upstreamPreciseReconciliationHint: string
-      upstreamPreciseReconciliationEnabledValue: string
-      upstreamPreciseReconciliationDisabledValue: string
       rechargeFeatureLabel: string
       rechargeFeatureHint: string
       rechargeUserLabel: string
@@ -1031,12 +1023,10 @@ export interface AdminTranslationsShape {
       activeUsersDefinition: string
       blockedKeyBaseLimitLabel: string
       blockedKeyBaseLimitHint: string
-      currentBlockedKeyBaseLimitValue: string
       authTokenLogRetentionDaysLabel: string
       authTokenLogRetentionDaysHint: string
       globalIpLimitLabel: string
       globalIpLimitHint: string
-      currentGlobalIpLimitValue: string
       applyScopeHint: string
       autosaveHint: string
       invalidRequestRateLimit: string
@@ -1086,6 +1076,7 @@ export interface AdminTranslationsShape {
       hourlyAny: string
       hourly: string
       daily: string
+      shadowDaily: string
       monthly: string
       ipCount: string
       successDaily: string
@@ -1117,6 +1108,7 @@ export interface AdminTranslationsShape {
         hourly: string
         businessOneHour: string
         daily: string
+        shadowDaily: string
         monthly: string
         monthlyBroken: string
         ipCount: string

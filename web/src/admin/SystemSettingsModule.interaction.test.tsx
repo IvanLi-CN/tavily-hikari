@@ -22,7 +22,7 @@ const initialSettings: SystemSettings = {
   upstreamProjectIdMode: 'accessToken',
   upstreamProjectIdFixedValue: '',
   upstreamMcpUserAgent: '',
-  upstreamPreciseReconciliationEnabled: true,
+  upstreamPreciseReconciliationEnabled: false,
   rechargeFeatureEnabled: true,
   rechargeUserEnabled: true,
   adminDefaultActiveUsersOnly: false,
@@ -125,15 +125,15 @@ describe('SystemSettingsModule interactions', () => {
       '#system-settings-upstream-precise-reconciliation-switch',
     )
     expect(switchButton).not.toBeNull()
-    expect(switchButton!.getAttribute('aria-checked')).toBe('true')
+    expect(switchButton!.getAttribute('aria-checked')).toBe('false')
 
     await act(async () => {
       switchButton!.click()
     })
     await flushEffects()
 
-    expect(applied.at(-1)?.upstreamPreciseReconciliationEnabled).toBe(false)
-    expect(switchButton!.getAttribute('aria-checked')).toBe('false')
+    expect(applied.at(-1)?.upstreamPreciseReconciliationEnabled).toBe(true)
+    expect(switchButton!.getAttribute('aria-checked')).toBe('true')
 
     await act(async () => root.unmount())
   })

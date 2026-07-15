@@ -16,6 +16,7 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { Icon } from '../lib/icons'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Switch } from '../components/ui/switch'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import {
@@ -278,7 +279,7 @@ export default function SystemSettingsModule({
     settings?.upstreamMcpUserAgent ?? '',
   )
   const [draftUpstreamPreciseReconciliationEnabled, setDraftUpstreamPreciseReconciliationEnabled] = useState(
-    settings?.upstreamPreciseReconciliationEnabled ?? true,
+    settings?.upstreamPreciseReconciliationEnabled ?? false,
   )
   const [draftRechargeFeatureEnabled, setDraftRechargeFeatureEnabled] = useState(
     settings?.rechargeFeatureEnabled ?? true,
@@ -313,7 +314,7 @@ export default function SystemSettingsModule({
     setDraftUpstreamProjectIdMode(settings?.upstreamProjectIdMode ?? 'accessToken')
     setDraftUpstreamProjectIdFixedValue(settings?.upstreamProjectIdFixedValue ?? '')
     setDraftUpstreamMcpUserAgent(settings?.upstreamMcpUserAgent ?? '')
-    setDraftUpstreamPreciseReconciliationEnabled(settings?.upstreamPreciseReconciliationEnabled ?? true)
+    setDraftUpstreamPreciseReconciliationEnabled(settings?.upstreamPreciseReconciliationEnabled ?? false)
     setDraftRechargeFeatureEnabled(settings?.rechargeFeatureEnabled ?? true)
     setDraftRechargeUserEnabled(settings?.rechargeUserEnabled ?? true)
     setDraftAdminDefaultActiveUsersOnly(settings?.adminDefaultActiveUsersOnly ?? false)
@@ -394,11 +395,6 @@ export default function SystemSettingsModule({
     256,
     true,
   )
-  const projectIdModeLabels: Record<UpstreamProjectIdMode, string> = {
-    passthrough: strings.form.upstreamProjectIdModePassthrough,
-    fixed: strings.form.upstreamProjectIdModeFixed,
-    accessToken: strings.form.upstreamProjectIdModeAccessToken,
-  }
   const changed =
     settings != null &&
     parsedRequestRateLimit != null &&
@@ -1019,11 +1015,6 @@ export default function SystemSettingsModule({
                     {fieldErrors.requestRateLimit}
                   </p>
                 )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentRequestRateLimitValue.replace('{count}', String(settings.requestRateLimit))}
-                  </p>
-                )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {strings.form.requestRateLimitHint}
                 </p>
@@ -1051,14 +1042,6 @@ export default function SystemSettingsModule({
                 {fieldErrors.blockedKeyBaseLimit && (
                   <p id={blockedKeyBaseLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.blockedKeyBaseLimit}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentBlockedKeyBaseLimitValue.replace(
-                      '{count}',
-                      String(settings.userBlockedKeyBaseLimit),
-                    )}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
@@ -1121,11 +1104,6 @@ export default function SystemSettingsModule({
                 {fieldErrors.globalIpLimit && (
                   <p id={globalIpLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
                     {fieldErrors.globalIpLimit}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentGlobalIpLimitValue.replace('{count}', String(settings.globalIpLimit))}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
@@ -1263,11 +1241,6 @@ export default function SystemSettingsModule({
                     {fieldErrors.count}
                   </p>
                 )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentValue.replace('{count}', String(settings.mcpSessionAffinityKeyCount))}
-                  </p>
-                )}
               </div>
 
               <div className="system-settings-toggle-row">
@@ -1293,12 +1266,6 @@ export default function SystemSettingsModule({
                 />
               </div>
 
-            </div>
-          </section>
-
-          <section className="system-settings-config-section">
-            <h4>{strings.form.apiRebalanceTitle}</h4>
-            <div className="system-settings-field-grid system-settings-field-grid--api">
               <div className="system-settings-toggle-row">
                 <div className="system-settings-toggle-copy">
                   <label className="text-sm font-medium" htmlFor="system-settings-api-rebalance-switch">
@@ -1321,7 +1288,6 @@ export default function SystemSettingsModule({
                   disabled={saving}
                 />
               </div>
-
             </div>
           </section>
 
@@ -1332,34 +1298,34 @@ export default function SystemSettingsModule({
                 <label className="text-sm font-medium" htmlFor="system-settings-upstream-project-id-mode">
                   {strings.form.upstreamProjectIdModeLabel}
                 </label>
-                <div className="grid gap-2">
-                  <select
-                    id="system-settings-upstream-project-id-mode"
-                    className="input h-12 px-4 py-3 text-sm font-medium leading-5"
-                    value={draftUpstreamProjectIdMode}
-                    disabled={saving}
-                  onChange={(event) => {
-                    setDraftUpstreamProjectIdMode(event.target.value as UpstreamProjectIdMode)
+                <Select
+                  value={draftUpstreamProjectIdMode}
+                  disabled={saving}
+                  onValueChange={(value) => {
+                    const nextMode = value as UpstreamProjectIdMode
+                    setDraftUpstreamProjectIdMode(nextMode)
+                    void commitNormalSettings({
+                      upstreamProjectIdMode: nextMode,
+                    }).then((saved) => {
+                      if (!saved) {
+                        setDraftUpstreamProjectIdMode(settings?.upstreamProjectIdMode ?? nextMode)
+                      }
+                    })
                   }}
-                    onBlur={(event) => {
-                      void commitNormalSettings({
-                        upstreamProjectIdMode: event.currentTarget.value as UpstreamProjectIdMode,
-                      })
-                    }}
+                >
+                  <SelectTrigger
+                    id="system-settings-upstream-project-id-mode"
+                    aria-label={strings.form.upstreamProjectIdModeLabel}
+                    className="system-settings-select-trigger"
                   >
-                    <option value="accessToken">{strings.form.upstreamProjectIdModeAccessToken}</option>
-                    <option value="passthrough">{strings.form.upstreamProjectIdModePassthrough}</option>
-                    <option value="fixed">{strings.form.upstreamProjectIdModeFixed}</option>
-                  </select>
-                  {settings && (
-                    <p className="system-settings-field-current text-xs text-muted-foreground">
-                      {strings.form.currentUpstreamProjectIdModeValue.replace(
-                        '{value}',
-                        projectIdModeLabels[settings.upstreamProjectIdMode],
-                      )}
-                    </p>
-                  )}
-                </div>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end" className="system-settings-select-content">
+                    <SelectItem value="accessToken">{strings.form.upstreamProjectIdModeAccessToken}</SelectItem>
+                    <SelectItem value="passthrough">{strings.form.upstreamProjectIdModePassthrough}</SelectItem>
+                    <SelectItem value="fixed">{strings.form.upstreamProjectIdModeFixed}</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {strings.form.upstreamProjectIdModeHint}
                 </p>
@@ -1395,14 +1361,6 @@ export default function SystemSettingsModule({
                     {fieldErrors.upstreamProjectIdFixedValue}
                   </p>
                 )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentUpstreamProjectIdFixedValue.replace(
-                      '{value}',
-                      settings.upstreamProjectIdFixedValue || '—',
-                    )}
-                  </p>
-                )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
                   {strings.form.upstreamProjectIdFixedValueHint}
                 </p>
@@ -1434,14 +1392,6 @@ export default function SystemSettingsModule({
                     className="system-settings-field-error text-xs font-medium text-destructive"
                   >
                     {fieldErrors.upstreamMcpUserAgent}
-                  </p>
-                )}
-                {settings && (
-                  <p className="system-settings-field-current text-xs text-muted-foreground">
-                    {strings.form.currentUpstreamMcpUserAgentValue.replace(
-                      '{value}',
-                      settings.upstreamMcpUserAgent || '—',
-                    )}
                   </p>
                 )}
                 <p className="system-settings-field-hint text-xs text-muted-foreground">
@@ -1476,23 +1426,16 @@ export default function SystemSettingsModule({
                     void commitNormalSettings({
                       upstreamPreciseReconciliationEnabled: checked,
                     }).then((saved) => {
-                      if (!saved) {
-                        setDraftUpstreamPreciseReconciliationEnabled(
-                          settings?.upstreamPreciseReconciliationEnabled ?? true,
-                        )
-                      }
-                    })
+                        if (!saved) {
+                          setDraftUpstreamPreciseReconciliationEnabled(
+                          settings?.upstreamPreciseReconciliationEnabled ?? false,
+                          )
+                        }
+                      })
                   }}
                   disabled={saving}
                 />
               </div>
-              {settings && (
-                <p className="system-settings-field-current text-xs text-muted-foreground">
-                  {draftUpstreamPreciseReconciliationEnabled
-                    ? strings.form.upstreamPreciseReconciliationEnabledValue
-                    : strings.form.upstreamPreciseReconciliationDisabledValue}
-                </p>
-              )}
             </div>
           </section>
 

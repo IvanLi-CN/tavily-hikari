@@ -150,14 +150,27 @@
 ## Visual Evidence
 
 - source: `ui_demo` (`http://127.0.0.1:55174`, mock-only browser demo)
-- desktop system settings upstream identity section
+- PR: include
+- desktop system settings reconciliation controls
 
-  ![System settings upstream identity section](./assets/system-settings-upstream-identity-desktop.png)
+  ![System settings reconciliation controls](./assets/system-settings-reconciliation-controls-desktop.png)
 
+- PR: include
+- desktop users list comparison column
+
+  ![Users list comparison column](./assets/users-list-shadow-comparison-desktop.png)
+
+- PR: include
+- desktop users usage comparison column
+
+  ![Users usage comparison column](./assets/users-usage-shadow-comparison-desktop.png)
+
+- PR: include
 - desktop system status page
 
   ![System status desktop](./assets/system-status-desktop.png)
 
+- PR: include
 - mobile system status page
 
   ![System status mobile](./assets/system-status-mobile.png)

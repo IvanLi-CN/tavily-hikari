@@ -95,7 +95,7 @@ import {
   type AdminDisplayDensity,
 } from './displayDensity'
 import { fetchAllMonthlyBrokenKeyItems } from './fetchAllMonthlyBrokenKeyItems'
-import { formatShadowDailyUsageComparison } from './userUsageComparison'
+import { buildShadowDailyUsageStack } from './userUsageComparison'
 import type {
   ForwardProxyDraft,
   ForwardProxyValidationEntry,
@@ -6473,6 +6473,9 @@ function AdminDashboard(): JSX.Element {
   }
 
   const usersTotalPages = useMemo(() => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)), [usersTotal])
+  const showShadowDailyUsageColumn =
+    systemSettings?.upstreamPreciseReconciliationEnabled === false
+    || (systemSettings == null && users.some((item) => item.shadowDailyCreditsUsed != null))
   const unboundTokenUsageTotalPages = useMemo(
     () => Math.max(1, Math.ceil(unboundTokenUsageTotal / USERS_PER_PAGE)),
     [unboundTokenUsageTotal],
@@ -9592,6 +9595,7 @@ function AdminDashboard(): JSX.Element {
           users={users}
           language={language}
           usersStrings={usersStrings}
+          showShadowDailyColumn={showShadowDailyUsageColumn}
           searchControls={
             <div style={{ display: 'grid', gap: 6 }}>
               <div className="users-search-controls users-search-controls--header">
@@ -12049,7 +12053,7 @@ function AdminDashboard(): JSX.Element {
             </div>
             <AdminTableShell
               className="jobs-table-wrapper"
-              tableClassName="jobs-table admin-users-table admin-users-list-table"
+              tableClassName={`jobs-table admin-users-table admin-users-list-table${showShadowDailyUsageColumn ? ' admin-users-list-table--shadow-compare' : ''}`}
               loadState={usersLoadState}
               loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
               errorLabel={usersError ?? loadingStateStrings.error}
@@ -12058,7 +12062,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={showShadowDailyUsageColumn ? 9 : 8}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -12077,6 +12081,7 @@ function AdminDashboard(): JSX.Element {
                         activeOrder={effectiveUsersSortOrder}
                         onToggle={toggleUsersSort}
                       />
+                      {showShadowDailyUsageColumn ? <th>{usersStrings.table.shadowDaily}</th> : null}
                       <AdminUsersSortableHeader
                         label={usersStrings.table.monthly}
                         field="monthlyCreditsUsed"
@@ -12109,13 +12114,13 @@ function AdminDashboard(): JSX.Element {
                   </thead>
                   <tbody>
                     {users.map((item) => {
-                      const dailyShadowComparison = formatShadowDailyUsageComparison({
+                      const shadowDailyUsage = buildShadowDailyUsageStack({
                         actualUsed: item.dailyCreditsUsed,
                         shadowUsed: item.shadowDailyCreditsUsed,
                         limit: item.dailyCreditsLimit,
                         usersStrings,
-                        formatQuotaUsagePair,
                         formatNumber,
+                        formatQuotaStackValue,
                       })
                       return (
                       <tr key={item.userId}>
@@ -12147,14 +12152,13 @@ function AdminDashboard(): JSX.Element {
                           />
                         </td>
                         <td className="admin-users-compact-cell">
-                          <AdminTableValueStack
-                            {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)}
-                            secondary={
-                              dailyShadowComparison
-                              ?? formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit).secondary
-                            }
-                          />
+                          <AdminTableValueStack {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)} />
                         </td>
+                        {showShadowDailyUsageColumn ? (
+                          <td className="admin-users-compact-cell">
+                            <AdminTableValueStack {...shadowDailyUsage} />
+                          </td>
+                        ) : null}
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.monthlyCreditsUsed, item.monthlyCreditsLimit)} />
                         </td>
@@ -12185,13 +12189,13 @@ function AdminDashboard(): JSX.Element {
                 <div className="empty-state alert">{usersStrings.empty.none}</div>
               ) : (
                 users.map((item) => {
-                  const dailyShadowComparison = formatShadowDailyUsageComparison({
+                  const shadowDailyUsage = buildShadowDailyUsageStack({
                     actualUsed: item.dailyCreditsUsed,
                     shadowUsed: item.shadowDailyCreditsUsed,
                     limit: item.dailyCreditsLimit,
                     usersStrings,
-                    formatQuotaUsagePair,
                     formatNumber,
+                    formatQuotaStackValue,
                   })
                   return (
                   <article key={item.userId} className="admin-mobile-card">
@@ -12222,11 +12226,14 @@ function AdminDashboard(): JSX.Element {
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.daily}</span>
-                      <AdminTableValueStack
-                        primary={formatQuotaUsagePair(item.dailyCreditsUsed, item.dailyCreditsLimit)}
-                        secondary={dailyShadowComparison}
-                      />
+                      <AdminTableValueStack {...formatQuotaStackValue(item.dailyCreditsUsed, item.dailyCreditsLimit)} />
                     </div>
+                    {showShadowDailyUsageColumn ? (
+                      <div className="admin-mobile-kv">
+                        <span>{usersStrings.table.shadowDaily}</span>
+                        <AdminTableValueStack {...shadowDailyUsage} />
+                      </div>
+                    ) : null}
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.monthly}</span>
                       <strong>{formatQuotaUsagePair(item.monthlyCreditsUsed, item.monthlyCreditsLimit)}</strong>
