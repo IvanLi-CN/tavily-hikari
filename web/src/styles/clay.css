@@ -1198,11 +1198,20 @@
     gap: 1rem;
   }
 
-  .upstream-privacy-shell__header {
+  .upstream-privacy-shell__toolbar {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
-    gap: 1rem;
+    align-items: center;
+    gap: 0.75rem 1rem;
+  }
+
+  .upstream-privacy-shell__meta {
+    margin: 0;
+    min-width: 0;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.82rem;
+    line-height: 1.45;
   }
 
   .upstream-privacy-shell__actions {
@@ -1210,6 +1219,7 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
+    margin-inline-start: auto;
     gap: 0.75rem;
   }
 
@@ -1219,6 +1229,12 @@
     gap: 0.65rem;
     color: hsl(var(--muted-foreground));
     font-size: 0.88rem;
+    min-width: 0;
+    line-height: 1.4;
+  }
+
+  .upstream-privacy-auto-refresh > span {
+    overflow-wrap: anywhere;
   }
 
   .upstream-privacy-layout {
@@ -1238,8 +1254,7 @@
   }
 
   .upstream-privacy-overview__main,
-  .upstream-privacy-overview__side,
-  .upstream-privacy-column {
+  .upstream-privacy-overview__side {
     display: grid;
     gap: 0.85rem;
   }
@@ -1293,10 +1308,6 @@
     border: 1px solid hsl(var(--border) / 0.5);
     border-radius: 1.15rem;
     background: hsl(var(--card) / 0.56);
-  }
-
-  .upstream-privacy-section--split {
-    gap: 1rem;
   }
 
   .upstream-privacy-counters {
@@ -1488,10 +1499,6 @@
     .upstream-privacy-overview__side {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       align-content: start;
-    }
-
-    .upstream-privacy-section--split {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 

@@ -7689,6 +7689,28 @@ export const SystemSettingsStatus: Story = {
     if (!activeText.includes('系统状态') && !activeText.includes('System Status')) {
       throw new Error('Expected the system status sidebar child item to be active.')
     }
+    const duplicateTitle = Array.from(canvasElement.querySelectorAll<HTMLHeadingElement>('h2')).find((heading) => {
+      const text = heading.textContent ?? ''
+      return text.includes('系统状态') || text.includes('System Status')
+    })
+    if (duplicateTitle) {
+      throw new Error('Expected the system status route to rely on the shared page title instead of a duplicate h2.')
+    }
+    const autoRefreshSwitch = Array.from(canvasElement.querySelectorAll<HTMLElement>('[role=\"switch\"]')).find((element) => {
+      const ariaLabel = element.getAttribute('aria-label') ?? ''
+      const labelledBy = element.getAttribute('aria-labelledby')
+      const labelledText = labelledBy
+        ? labelledBy
+            .split(/\s+/)
+            .map((id) => canvasElement.ownerDocument.getElementById(id)?.textContent ?? '')
+            .join(' ')
+        : ''
+      const accessibleName = `${ariaLabel} ${labelledText}`
+      return accessibleName.includes('自动刷新') || accessibleName.includes('Auto refresh')
+    })
+    if (!autoRefreshSwitch) {
+      throw new Error('Expected the system status page to expose an auto-refresh switch with an accessible name.')
+    }
     const details = canvasElement.querySelector<HTMLDetailsElement>('[data-testid=\"system-status-technical-details\"]')
     if (!details) {
       throw new Error('Expected the system status page to expose a technical-details disclosure.')

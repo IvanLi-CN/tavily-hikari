@@ -103,7 +103,7 @@
 | 接口（Name）          | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）            |
 | --------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ------------------------ |
 | System settings       | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | backend         | admin web           | 新增三项隐私设置         |
-| Privacy status        | HTTP API     | internal      | New            | `./contracts/http-apis.md` | backend         | admin web           | 只读、脱敏状态           |
+| System status         | HTTP API     | internal      | New            | `./contracts/http-apis.md` | backend         | admin web           | 只读、脱敏状态           |
 | Reconciliation tables | SQLite/HA    | internal      | New            | `./contracts/db.md`        | backend         | quota/audit/HA      | signed adjustment 与队列 |
 
 ### 契约文档（按 Kind 拆分）
@@ -138,7 +138,7 @@
 
 ### UI / Storybook
 
-- 更新 System Settings stories；新增 privacy status 正常、pending、draining、degraded、empty、error gallery。
+- 更新 System Settings stories；新增 system status 正常、pending、draining、degraded、empty、error gallery。
 - 手动刷新 interaction 覆盖；桌面与移动 mock-only 视觉证据。
 
 ### Quality checks

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useId, useMemo } from 'react'
 
 import type { QueryLoadState } from './queryLoadState'
 import type { Language, AdminTranslations } from '../i18n'
@@ -96,6 +96,7 @@ export default function UpstreamPrivacyStatusModule({
   onAutoRefreshChange,
   onRefresh,
 }: UpstreamPrivacyStatusModuleProps): JSX.Element {
+  const autoRefreshLabelId = useId()
   const timestampFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-US', {
@@ -201,18 +202,27 @@ export default function UpstreamPrivacyStatusModule({
         !== formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted))
     : 0
 
+  const showFixedProjectIdState = status
+    ? status.configuredProjectIdMode === 'fixed' || status.effectiveProjectIdMode === 'fixed'
+    : false
+
   return (
     <section className="surface panel upstream-privacy-shell">
-      <div className="panel-header upstream-privacy-shell__header">
-        <div>
-          <h2>{strings.title}</h2>
-          <p className="panel-description">{strings.description}</p>
-        </div>
+      <div className="upstream-privacy-shell__toolbar">
+        {status ? (
+          <p className="upstream-privacy-shell__meta">
+            {strings.generatedAt} · {timestampFormatter.format(new Date(status.generatedAt * 1000))}
+          </p>
+        ) : null}
         <div className="upstream-privacy-shell__actions">
-          <label className="upstream-privacy-auto-refresh">
-            <span>{strings.autoRefresh}</span>
-            <Switch checked={autoRefreshEnabled} onCheckedChange={onAutoRefreshChange} />
-          </label>
+          <div className="upstream-privacy-auto-refresh">
+            <span id={autoRefreshLabelId}>{strings.autoRefresh}</span>
+            <Switch
+              aria-labelledby={autoRefreshLabelId}
+              checked={autoRefreshEnabled}
+              onCheckedChange={onAutoRefreshChange}
+            />
+          </div>
           <Button type="button" variant="outline" size="sm" onClick={() => void onRefresh()} disabled={refreshing}>
             <Icon icon={refreshing ? 'mdi:loading' : 'mdi:refresh'} width={16} height={16} className={refreshing ? 'icon-spin' : undefined} />
             <span>{strings.refreshNow}</span>
@@ -305,42 +315,17 @@ export default function UpstreamPrivacyStatusModule({
               )}
             </section>
 
-            <section className="upstream-privacy-section upstream-privacy-section--split">
-              <div className="upstream-privacy-column">
-                <div className="panel-header">
-                  <div>
-                    <h3>{strings.effectiveTitle}</h3>
-                  </div>
-                </div>
-                <div className="upstream-privacy-counters">
-                  <PrivacyStat
-                    label={strings.projectIdModeEffective}
-                    value={modeLabel(formStrings, status.effectiveProjectIdMode)}
-                  />
-                  {(status.configuredProjectIdMode === 'fixed' || status.effectiveProjectIdMode === 'fixed') ? (
-                    <PrivacyStat
-                      label={strings.fixedConfigured}
-                      value={status.fixedProjectIdConfigured ? strings.statusConfigured : strings.statusMissing}
-                    />
-                  ) : null}
-                  <PrivacyStat
-                    label={strings.userAgentEffective}
-                    value={formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted)}
-                  />
+            <section className="upstream-privacy-section">
+              <div className="panel-header">
+                <div>
+                  <h3>{strings.countersTitle}</h3>
                 </div>
               </div>
-              <div className="upstream-privacy-column">
-                <div className="panel-header">
-                  <div>
-                    <h3>{strings.countersTitle}</h3>
-                  </div>
-                </div>
-                <div className="upstream-privacy-counters">
-                  <PrivacyStat label={strings.counterControlSessions} value={numberFormatter.format(status.activeControlSessions)} />
-                  <PrivacyStat label={strings.counterPendingResearch} value={numberFormatter.format(status.pendingResearch)} />
-                  <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
-                  <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
-                </div>
+              <div className="upstream-privacy-counters">
+                <PrivacyStat label={strings.counterControlSessions} value={numberFormatter.format(status.activeControlSessions)} />
+                <PrivacyStat label={strings.counterPendingResearch} value={numberFormatter.format(status.pendingResearch)} />
+                <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
+                <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
               </div>
             </section>
 
@@ -378,10 +363,12 @@ export default function UpstreamPrivacyStatusModule({
                       label={strings.projectIdModeEffective}
                       value={modeLabel(formStrings, status.effectiveProjectIdMode)}
                     />
-                    <PrivacyStat
-                      label={strings.fixedConfigured}
-                      value={status.fixedProjectIdConfigured ? strings.statusConfigured : strings.statusMissing}
-                    />
+                    {showFixedProjectIdState ? (
+                      <PrivacyStat
+                        label={strings.fixedConfigured}
+                        value={status.fixedProjectIdConfigured ? strings.statusConfigured : strings.statusMissing}
+                      />
+                    ) : null}
                     <PrivacyStat
                       label={strings.userAgentConfigured}
                       value={formatOptionalValue(status.configuredMcpUserAgent, strings.statusOmitted)}
