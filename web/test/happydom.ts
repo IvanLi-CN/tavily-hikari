@@ -1,10 +1,16 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { Chart as ChartJS } from 'chart.js'
 
 GlobalRegistrator.register({
   url: 'http://localhost/',
 })
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+// Happy DOM does not model responsive canvas reflow like a browser, so Chart.js
+// can recurse while trying to animate resize updates during test renders.
+ChartJS.defaults.animation = false
+ChartJS.defaults.responsive = false
 
 const DEFAULT_CLIENT_WIDTH = 1280
 const DEFAULT_CLIENT_HEIGHT = 720
