@@ -15,7 +15,6 @@ use super::upstream_support_and_manual_jobs::*;
             .add_or_undelete_key_in_group("tvly-existing", Some("old"))
             .await
             .expect("existing key created in old group");
-
         let options = SqliteConnectOptions::new()
             .filename(&db_str)
             .create_if_missing(true)
@@ -142,10 +141,8 @@ use super::upstream_support_and_manual_jobs::*;
         .expect("private key metadata");
         assert!(private_row.0.is_none(), "private ip should not be stored");
         assert!(private_row.1.is_none(), "private region should stay empty");
-
         let _ = std::fs::remove_file(db_path);
     }
-
     #[tokio::test]
     async fn api_keys_batch_structured_items_persist_assigned_proxy_hint_without_registration_metadata()
      {
