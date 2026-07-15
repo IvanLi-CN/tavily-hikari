@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
 import { resolveGuideSamples } from './user-console/guide'
+import { buildSetupGuideSearch, resolveSetupGuide } from './user-console/guideSearch'
 import {
   applyLoggedOutConsoleReset,
   buildApiProbeStepDefinitions,
@@ -120,6 +121,20 @@ describe('UserConsole landing guide helpers', () => {
 
     expect(resolveUserConsoleProviderLabel('linuxdo', { linuxdo: 'LinuxDo' })).toBe('LinuxDo')
     expect(resolveUserConsoleProviderLabel(null, { linuxdo: 'LinuxDo' })).toBeNull()
+  })
+
+  it('restores the setup guide tab from URL search and falls back to codex for unknown values', () => {
+    expect(resolveSetupGuide('?guide=hikariCli')).toBe('hikariCli')
+    expect(resolveSetupGuide('?guide=cursor')).toBe('cursor')
+    expect(resolveSetupGuide('?guide=unknown')).toBe('codex')
+    expect(resolveSetupGuide('')).toBe('codex')
+  })
+
+  it('keeps token and guide together when rewriting the setup guide URL', () => {
+    const next = new URLSearchParams(buildSetupGuideSearch('?from=share&token=a1b2', 'b2c3', 'hikariCli'))
+    expect(next.get('from')).toBe('share')
+    expect(next.get('token')).toBe('b2c3')
+    expect(next.get('guide')).toBe('hikariCli')
   })
 
   it('prefers the public home as the logout redirect when it is available', async () => {
