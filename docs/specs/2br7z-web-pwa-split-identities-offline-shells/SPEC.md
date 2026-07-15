@@ -249,7 +249,11 @@
 - `95768005+` Relay Mesh docs-site 品牌入口：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `95768005+` Relay Mesh PWA/icon 导出预览：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png` PR: include
 - `2026-06-27` 品牌静态资源 `/assets` 路由校准后的 admin 壳验证：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/relay-mesh-admin-shell-assets-route-fixed.png` PR: include
-- `2026-07-15` PWA 更新提示 ready 状态（Storybook canvas，静默更新完成后通知 + 具体版本号 + “立即刷新”按钮）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-ready-storybook.png`
+- `2026-07-15` PWA 更新提示 ready 状态（Storybook canvas，静默更新完成后通知 + 具体版本号 + “立即刷新”按钮）：
+
+  PR: include
+
+  ![PWA 更新提示 ready 状态](./assets/update-banner-ready-storybook.png)
 - `2026-07-08` PWA 更新提示 installing/loading 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-installing-storybook.png`
 - `2026-07-08` PWA 更新提示 dark ready 状态（Storybook canvas）：`docs/specs/2br7z-web-pwa-split-identities-offline-shells/assets/update-banner-dark-ready-storybook.png`
 - `2026-07-11` PWA 更新激活失败亮色态（Storybook canvas，mock-only，element capture，无敏感数据）：
