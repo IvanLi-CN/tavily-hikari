@@ -20,6 +20,14 @@ Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes m
 - Local docs-site: `cd docs-site && bun install --frozen-lockfile && bun run dev`
 - Local Storybook: `cd web && bun install --frozen-lockfile && bun run storybook`
 
+## Worktree Bootstrap
+
+- Run `bun install --frozen-lockfile` once in the primary worktree. The root `prepare` script installs the shared `post-checkout` hook and refreshes `lefthook` commit hooks when the `lefthook` binary is available on `PATH`.
+- The first checkout into a linked worktree now performs a best-effort bootstrap: copy missing root `.env` / `.env.*` files from the primary worktree, install missing root / `web` / `docs-site` Bun dependencies, and run `cargo fetch --locked`.
+- Automatic bootstrap never blocks checkout. Missing `lefthook`, `bun`, `cargo`, or source env files only emit warnings.
+- For an explicit repair, run `bun run worktree:setup`. It forces the same bootstrap steps again and fails only when an available restore command itself fails.
+- The bootstrap intentionally does not restore `*.db`, `web/dist`, `web/storybook-static`, `downloads/`, browser caches, Playwright install state, or other runtime artifacts.
+
 ## Why Tavily Hikari
 
 - **Key pool with fairness** – SQLite keeps last-used timestamps and assigns each access token a short‑lived “home” key; new or expired affinities are resolved via least‑recently‑used selection across active keys to keep wear balanced.
@@ -419,11 +427,12 @@ codex mcp list | grep tavily_hikari
 ## Development
 
 - Rust toolchain pinned to 1.91.0 via `rust-toolchain.toml`.
+- Repo tooling (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run hooks:install`, `bun run worktree:setup`, `bun run test:worktree-bootstrap`.
 - Common commands: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --locked --all-features`, `cargo run -- --help`.
 - Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run demo`, `bun run build` (uses Bun-forced `tsc -b` + `vite build`; see `web/bunfig.toml`).
-- Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` on every commit.
+- Hooks: `bun install --frozen-lockfile` or `bun run hooks:install` installs the shared `post-checkout` hook; if the `lefthook` binary is available on `PATH`, it also refreshes automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` commit hooks.
 - No-node proof: run `bun run validate:no-node-runtime` to verify the repo build/hook paths still pass when a failing `node` shim is prepended to `PATH`.
-- CI: `.github/workflows/ci.yml` runs lint/tests/build.
+- CI: `.github/workflows/ci.yml` runs the linked-worktree bootstrap smoke, lint/tests/build, and release prerequisites.
 - Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, Linux binary assets, GHCR images, and an upserted PR release comment.
 
 ## Release (PR labels)

@@ -17,6 +17,17 @@ permissions:
   contents: read
 
 jobs:
+  worktree-bootstrap-smoke:
+    name: Worktree Bootstrap Smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run linked worktree bootstrap smoke
+        run: bash scripts/test-worktree-bootstrap.sh
+
   web-assets:
     name: Web Assets
     runs-on: ubuntu-24.04
