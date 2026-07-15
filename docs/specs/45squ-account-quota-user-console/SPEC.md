@@ -4,7 +4,7 @@
 
 - Status: 已完成（fast-track）
 - Created: 2026-03-02
-- Last: 2026-07-09
+- Last: 2026-07-15
 
 ## 背景 / 问题陈述
 
@@ -24,6 +24,7 @@
 - 新增用户控制台页面：`/console` dashboard、`/console/billing` 权益与订单、`/console/tokens` 与 `/console/tokens/:id`。
 - `/console/billing` 必须把当前权益构成、资费规则、未来自然月安排、近期订单与购买动作放在同一页中讲清楚，不混入账号资料语义。
 - `/console` dashboard 在充值对当前用户可见时必须保留完整充值卡，复用 billing 页的订单、报价和创建订单状态。
+- `/console/setup` 在分享场景中必须把当前选中的客户端接入方法编码进 URL，保证打开链接后可直接定位到对应 guide 面板。
 
 ### Non-goals
 
@@ -93,6 +94,10 @@
 
 - Given 进入 `/console#/tokens`
   Then 能看到 token 列表列（token id、状态与最近使用、成功统计、复制、详情入口），且不再把账户级共享配额或内部备注字段重复渲染到前台 token 行。
+
+- Given 用户分享 `/console/setup?token=a1b2&guide=hikariCli`
+  When 接收者直接打开该链接
+  Then Setup Guide 页面必须预选 `a1b2` 对应 Token，并直接定位到 `CLI + Skills` guide 面板。
 
 - Given 用户在 `/console#/tokens/:id` 点击 `检测 MCP`
   When 浏览器发起 `tools/list` 探测

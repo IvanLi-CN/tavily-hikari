@@ -120,6 +120,7 @@ import {
   type UserConsoleRoute as ConsoleRoute,
 } from '../lib/userConsoleRoutes'
 import { GuideCodeSample, MobileGuideDropdown, buildGuideContent, resolveGuideCopyLabel, resolveGuideSamples, useGuideSampleCopy } from './guide'
+import { GUIDE_KEY_ORDER, DEFAULT_GUIDE_KEY, buildSetupGuideSearch, resolveSetupGuide } from './guideSearch'
 import { EN, ZH } from './text'
 import { useOfflineState } from '../pwa/useOfflineState'
 import { useOAuthCallbackFlow } from './useOAuthCallbackFlow'
@@ -176,8 +177,6 @@ interface ManualCopyBubbleState {
   anchorEl: HTMLElement | null
   value: string
 }
-
-const GUIDE_KEY_ORDER: GuideKey[] = ['codex', 'hikariCli', 'claude', 'vscode', 'claudeDesktop', 'cursor', 'windsurf', 'cherryStudio', 'other']
 
 interface McpProbeStepDefinition {
   id: string
@@ -1265,7 +1264,7 @@ export default function UserConsole(): JSX.Element {
   const [tokenSecretValue, setTokenSecretValue] = useState<string | null>(null)
   const [tokenSecretLoading, setTokenSecretLoading] = useState(false)
   const [tokenSecretError, setTokenSecretError] = useState<string | null>(null)
-  const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
+  const [activeGuide, setActiveGuide] = useState<GuideKey>(() => typeof window === 'undefined' ? DEFAULT_GUIDE_KEY : resolveSetupGuide(window.location.search))
   const [setupTokenId, setSetupTokenId] = useState<string | null>(null)
   const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_MCP_PROBE_STEP_COUNT))
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_API_PROBE_STEP_COUNT))
@@ -1824,6 +1823,8 @@ export default function UserConsole(): JSX.Element {
     }
     setSetupTokenId(resolveSetupTokenId(window.location.search, tokens))
   }, [route, tokens])
+
+  useEffect(() => { if (route.name === 'setup') setActiveGuide(resolveSetupGuide(window.location.search)) }, [route])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
     const cacheTimer = tokenSecretCacheTimerRef.current.get(tokenId)
@@ -2388,6 +2389,12 @@ export default function UserConsole(): JSX.Element {
     setRoute(nextRoute)
   }, [])
 
+  const handleSetupGuideChange = useCallback((nextGuide: GuideKey) => {
+    setActiveGuide(nextGuide)
+    if (route.name !== 'setup') return
+    window.history.replaceState(null, '', `${userConsoleRouteToPath(route)}${buildSetupGuideSearch(window.location.search, setupTokenId, nextGuide)}`)
+  }, [route, setupTokenId])
+
   const runMcpProbe = useCallback(async () => {
     if (route.name !== 'token' || anyProbeRunning) return
     const runId = probeRunIdRef.current + 1
@@ -2724,7 +2731,7 @@ export default function UserConsole(): JSX.Element {
       )}
       {isCompactLayout && (
         <div className="guide-select" aria-label="Client selector (mobile)">
-          <MobileGuideDropdown active={activeGuide} onChange={setActiveGuide} labels={guideTabs} />
+          <MobileGuideDropdown active={activeGuide} onChange={handleSetupGuideChange} labels={guideTabs} />
         </div>
       )}
       {!isCompactLayout && (
@@ -2734,7 +2741,7 @@ export default function UserConsole(): JSX.Element {
               key={tab.id}
               type="button"
               className={`guide-tab${activeGuide === tab.id ? ' active' : ''}`}
-              onClick={() => setActiveGuide(tab.id)}
+              onClick={() => handleSetupGuideChange(tab.id)}
             >
               {tab.label}
             </button>
@@ -2813,6 +2820,7 @@ export default function UserConsole(): JSX.Element {
     guideTokenLoading,
     guideTokenToggleLabel,
     guideTokenVisible,
+    handleSetupGuideChange,
     isCompactLayout,
     copyGuideSample,
     publicStrings.guide.dataSourceLabel,
@@ -3150,7 +3158,7 @@ export default function UserConsole(): JSX.Element {
           selectedTokenId={setupTokenId}
           onTokenChange={(nextTokenId) => {
             setSetupTokenId(nextTokenId)
-            window.history.replaceState(null, '', `/console/setup?token=${encodeURIComponent(nextTokenId)}`)
+            window.history.replaceState(null, '', `/console/setup${buildSetupGuideSearch(window.location.search, nextTokenId, activeGuide)}`)
           }}
           guide={setupTokenId ? renderGuideSection({ showHeading: false, embedded: true }) : null}
         />

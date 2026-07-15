@@ -100,7 +100,7 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
     expect(userConsoleStories.SetupGuideCliSkills).toMatchObject({
       name: 'Setup Guide CLI + Skills',
-      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens', routePathOverride: '/console/setup?token=a1b2' },
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens', routePathOverride: '/console/setup?token=a1b2&guide=hikariCli' },
     })
     expect(userConsoleStories.SetupGuideMobile).toMatchObject({
       name: 'Setup Guide Mobile',
@@ -108,7 +108,7 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
     expect(userConsoleStories.SetupGuideCliSkillsMobile).toMatchObject({
       name: 'Setup Guide CLI + Skills Mobile',
-      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens' },
+      args: { consoleView: 'Setup Guide', tokenListState: 'Multiple Tokens', routePathOverride: '/console/setup?token=a1b2&guide=hikariCli' },
     })
     expect(userConsoleStories.SetupGuideEmpty).toMatchObject({
       name: 'Setup Guide Empty',

@@ -2044,7 +2044,7 @@ export const SetupGuideCliSkills: Story = {
   name: 'Setup Guide CLI + Skills',
   args: {
     ...setupGuideArgs,
-    routePathOverride: `${SETUP_PATH}?token=a1b2`,
+    routePathOverride: `${SETUP_PATH}?token=a1b2&guide=hikariCli`,
   },
   render: (args) => <UserConsoleStory {...args} guideRevealMode="setup-cli-skills" />,
   play: async ({ canvasElement }) => {
@@ -2064,6 +2064,9 @@ export const SetupGuideCliSkills: Story = {
     }
     if (!proofText.includes('npx skills add https://github.com/IvanLi-CN/tavily-hikari --global')) {
       throw new Error('Expected the optional global Agent Skills install command to render.')
+    }
+    if (!window.location.search.includes('guide=hikariCli')) {
+      throw new Error('Expected the setup guide URL to keep the selected client method.')
     }
   },
 }
@@ -2087,7 +2090,10 @@ export const SetupGuideMobile: Story = {
 
 export const SetupGuideCliSkillsMobile: Story = {
   name: 'Setup Guide CLI + Skills Mobile',
-  args: setupGuideArgs,
+  args: {
+    ...setupGuideArgs,
+    routePathOverride: `${SETUP_PATH}?token=a1b2&guide=hikariCli`,
+  },
   globals: { language: 'en' },
   parameters: { ...mobileViewport },
   render: (args) => <UserConsoleStory {...args} guideRevealMode="setup-cli-skills" />,
