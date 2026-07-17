@@ -17,6 +17,7 @@ function shouldShowUpdateBanner(status: PwaUpdateStatus): boolean {
 }
 
 export interface UpdateAvailableState {
+  currentBackendVersion: string | null
   currentVersion: string | null
   availableVersion: string | null
   status: PwaUpdateStatus
@@ -29,6 +30,7 @@ export interface UpdateAvailableState {
 export default function useUpdateAvailable(): UpdateAvailableState {
   const bundledVersionRef = useRef<string | null>(getBundledFrontendVersion())
   const runningVersionRef = useRef<string | null>(bundledVersionRef.current)
+  const [currentBackendVersion, setCurrentBackendVersion] = useState<string | null>(null)
   const [currentVersion, setCurrentVersion] = useState<string | null>(bundledVersionRef.current)
   const [availableVersion, setAvailableVersion] = useState<string | null>(null)
   const [visible, setVisible] = useState(false)
@@ -53,7 +55,12 @@ export default function useUpdateAvailable(): UpdateAvailableState {
 
   const syncVersionFromServer = useCallback(async () => {
     const next = await loadVersion()
+    const nextBackend = next?.backend?.trim() || null
     const nextFrontend = next?.frontend ?? null
+
+    if (nextBackend) {
+      setCurrentBackendVersion(nextBackend)
+    }
     if (!nextFrontend) return null
 
     if (!runningVersionRef.current) {
@@ -72,10 +79,15 @@ export default function useUpdateAvailable(): UpdateAvailableState {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const nextFrontend = await loadVersion()
+      const nextVersion = await loadVersion()
       if (cancelled) return
 
-      const frontend = nextFrontend?.frontend ?? null
+      const backend = nextVersion?.backend?.trim() || null
+      if (backend) {
+        setCurrentBackendVersion(backend)
+      }
+
+      const frontend = nextVersion?.frontend ?? null
       if (!frontend) return
 
       if (!runningVersionRef.current) {
@@ -163,6 +175,7 @@ export default function useUpdateAvailable(): UpdateAvailableState {
   const loading = updateSnapshot.status === 'activating'
 
   return {
+    currentBackendVersion,
     currentVersion,
     availableVersion,
     status: updateSnapshot.status,

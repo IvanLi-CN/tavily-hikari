@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { buildOctoRillReleaseLink, formatVersionDisplay } from '../lib/releaseLinks'
 
 import type { VersionInfo } from '../api'
 
@@ -17,21 +18,7 @@ export function buildUserConsoleFooterRelease(version: VersionInfo | null): {
   href: string
   label: string
 } | null {
-  const raw = version?.backend.trim() ?? ''
-  if (raw.length === 0) {
-    return null
-  }
-
-  // Only stable semver builds map cleanly to a GitHub release tag.
-  if (!/^v?\d+\.\d+\.\d+$/.test(raw)) {
-    return null
-  }
-
-  const tag = raw.startsWith('v') ? raw : `v${raw}`
-  return {
-    href: `${REPO_URL}/releases/tag/${tag}`,
-    label: tag,
-  }
+  return buildOctoRillReleaseLink(version?.backend)
 }
 
 export default function UserConsoleFooter({
@@ -48,7 +35,7 @@ export default function UserConsoleFooter({
     ? buildUserConsoleFooterRelease(versionState.value)
     : null
   const versionLabel = versionState.status === 'ready'
-    ? versionState.value?.backend?.trim() || null
+    ? formatVersionDisplay(versionState.value?.backend)
     : null
 
   return (
@@ -77,7 +64,7 @@ export default function UserConsoleFooter({
         ) : versionLabel ? (
           <>
             {strings.tagPrefix}
-            <span>{versionLabel.startsWith('v') ? versionLabel : `v${versionLabel}`}</span>
+            <span>{versionLabel}</span>
           </>
         ) : versionState.status === 'error' ? (
           strings.errorVersion

@@ -222,7 +222,7 @@ function createDemoState() {
       userAvatarUrl: null,
     },
     haStatus: createDemoHaStatus(nowSeconds),
-    version: { backend: 'demo-web', frontend: '0.1.0-demo' },
+    version: { backend: '0.81.1', frontend: '0.1.0-demo' },
     tokens,
     tokenSecrets: new Map(tokens.map((token) => [token.id, token.id === DEMO_TOKEN_ID ? DEMO_TOKEN : `th-${token.id}-demoaccesssecret`])),
     keys,

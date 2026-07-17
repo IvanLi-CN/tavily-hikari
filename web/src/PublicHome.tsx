@@ -24,6 +24,7 @@ import ThemeToggle from './components/ThemeToggle'
 import UpdateAvailableBanner from './components/UpdateAvailableBanner'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
+import PublicHomeFooter from './components/PublicHomeFooter'
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
 import TokenSecretField from './components/TokenSecretField'
 import { Button } from './components/ui/button'
@@ -363,10 +364,6 @@ function PublicHome(): JSX.Element {
       })
     }, 1600)
   }, [])
-
-  const versionTagUrl = updateBanner.currentVersion
-    ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
-    : null
 
   const focusManualTokenField = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -912,22 +909,7 @@ function PublicHome(): JSX.Element {
         </div>
         {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={exampleToken} />}
       </section>
-      <footer className="surface public-home-footer">
-        <a className="footer-gh" href={REPO_URL} target="_blank" rel="noreferrer">
-          <Icon icon="mdi:github" width={18} height={18} aria-hidden="true" style={{ color: '#2563eb' }} />
-          <span>GitHub</span>
-        </a>
-        <div className="footer-version">
-          <span>{publicStrings.footer.version}</span>
-          {versionTagUrl ? (
-            <a href={versionTagUrl} target="_blank" rel="noreferrer">
-              <code>v{updateBanner.currentVersion}</code>
-            </a>
-          ) : (
-            <code>—</code>
-          )}
-        </div>
-      </footer>
+      <PublicHomeFooter versionLabel={publicStrings.footer.version} version={updateBanner.currentBackendVersion} />
       <Dialog
         open={isTokenAccessDialogOpen}
         onOpenChange={(open) => {

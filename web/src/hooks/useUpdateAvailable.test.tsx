@@ -117,6 +117,7 @@ describe('useUpdateAvailable', () => {
     })
     await flushEffects()
 
+    expect(latest?.currentBackendVersion).toBe('0.79.1')
     expect(latest?.currentVersion).toBe('0.79.0')
     expect(latest?.availableVersion).toBe('0.79.1')
     expect(latest?.visible).toBe(false)

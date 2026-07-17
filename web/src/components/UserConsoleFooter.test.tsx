@@ -24,11 +24,23 @@ describe('UserConsoleFooter', () => {
     expect(html).toContain('Tavily Hikari User Console')
     expect(html).toContain('Open GitHub repository')
     expect(html).toContain('href="https://github.com/IvanLi-CN/tavily-hikari"')
-    expect(html).toContain('href="https://github.com/IvanLi-CN/tavily-hikari/releases/tag/v0.2.0"')
+    expect(html).toContain('href="https://octo-rill.ivanli.cc/IvanLi-CN/tavily-hikari/releases?highlight=tag%3Av0.2.0&amp;highlight_active=tag%3Av0.2.0"')
     expect(html).toContain('v0.2.0')
   })
 
-  it('renders plain text when the version is a non-release build', () => {
+  it('renders a prerelease link without truncating the suffix', () => {
+    const html = renderToStaticMarkup(
+      <UserConsoleFooter
+        strings={strings}
+        versionState={{ status: 'ready', value: { backend: '0.2.0-rc.1', frontend: '0.2.0-rc.1' } }}
+      />,
+    )
+
+    expect(html).toContain('href="https://octo-rill.ivanli.cc/IvanLi-CN/tavily-hikari/releases?highlight=tag%3Av0.2.0-rc.1&amp;highlight_active=tag%3Av0.2.0-rc.1"')
+    expect(html).toContain('v0.2.0-rc.1')
+  })
+
+  it('renders plain text when the version is a blocked non-release build', () => {
     const html = renderToStaticMarkup(
       <UserConsoleFooter
         strings={strings}
@@ -37,7 +49,7 @@ describe('UserConsoleFooter', () => {
     )
 
     expect(html).toContain('v0.2.0-dev')
-    expect(html).not.toContain('/releases/tag/')
+    expect(html).not.toContain('octo-rill.ivanli.cc')
   })
 
   it('falls back to the loading copy while version data is still loading', () => {
@@ -56,10 +68,14 @@ describe('UserConsoleFooter', () => {
 })
 
 describe('buildUserConsoleFooterRelease', () => {
-  it('builds a release link for stable semver versions only', () => {
+  it('builds a release link for stable and prerelease versions but rejects blocked dev channels', () => {
     expect(buildUserConsoleFooterRelease({ backend: '0.2.0', frontend: '0.2.0' })).toEqual({
-      href: 'https://github.com/IvanLi-CN/tavily-hikari/releases/tag/v0.2.0',
+      href: 'https://octo-rill.ivanli.cc/IvanLi-CN/tavily-hikari/releases?highlight=tag%3Av0.2.0&highlight_active=tag%3Av0.2.0',
       label: 'v0.2.0',
+    })
+    expect(buildUserConsoleFooterRelease({ backend: '0.2.0-rc.1', frontend: '0.2.0-rc.1' })).toEqual({
+      href: 'https://octo-rill.ivanli.cc/IvanLi-CN/tavily-hikari/releases?highlight=tag%3Av0.2.0-rc.1&highlight_active=tag%3Av0.2.0-rc.1',
+      label: 'v0.2.0-rc.1',
     })
     expect(buildUserConsoleFooterRelease({ backend: '0.2.0-dev', frontend: '0.2.0-dev' })).toBeNull()
     expect(buildUserConsoleFooterRelease({ backend: 'ci-deadbeef', frontend: 'ci-deadbeef' })).toBeNull()

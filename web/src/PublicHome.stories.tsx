@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
+import PublicHomeFooter from './components/PublicHomeFooter'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
 import TokenSecretField from './components/TokenSecretField'
@@ -291,6 +292,27 @@ function PublicHomeGuideTokenRevealedProof(): JSX.Element {
   )
 }
 
+function PublicHomeFooterReleaseLinkProof(): JSX.Element {
+  const strings = useTranslate().public
+
+  return (
+    <main className="app-shell public-home">
+      <section className="surface panel" style={{ display: 'grid', gap: 20, maxWidth: 920, margin: '0 auto' }}>
+        <div className="panel-header">
+          <div>
+            <h2>Footer release link proof</h2>
+            <p className="panel-description">
+              Public footer now uses the backend release tag and jumps into the OctoRill releases list with the
+              matching record highlighted.
+            </p>
+          </div>
+        </div>
+        <PublicHomeFooter versionLabel={strings.footer.version} version="0.81.1" />
+      </section>
+    </main>
+  )
+}
+
 const meta = {
   title: 'Public/PublicHome',
   parameters: {
@@ -386,6 +408,22 @@ export const GuideTokenRevealedDarkMobile: Story = {
       description: {
         story:
           'Mobile dark-theme public guide proof for the repaired recessed code blocks, guide tabs, and clay surface contrast.',
+      },
+    },
+  },
+}
+
+export const FooterReleaseLinkProof: Story = {
+  args: {
+    showAdminAction: false,
+  },
+  render: () => <PublicHomeFooterReleaseLinkProof />,
+  parameters: {
+    layout: 'fullscreen',
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story: 'Footer-only proof for the backend-version OctoRill release highlighter link on the public home.',
       },
     },
   },
