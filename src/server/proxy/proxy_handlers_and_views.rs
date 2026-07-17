@@ -926,45 +926,6 @@ async fn proxy_handler(
             return Ok(resp);
         }
 
-        if billable_flag && !using_dev_open_admin_fallback {
-            match if let Some(subject) = billing_subject.as_deref() {
-                state
-                    .proxy
-                    .peek_token_business_calls_1h_limit_for_subject(subject)
-                    .await
-            } else {
-                state.proxy.peek_token_business_calls_1h_limit(tid).await
-            } {
-                Ok(Some(verdict)) => {
-                    if !verdict.allowed {
-                        let message = build_business_calls_1h_limit_error_message(&verdict);
-                        let _ = state
-                            .proxy
-                            .record_token_attempt_with_kind(
-                                tid,
-                                &method,
-                                &path,
-                                query.as_deref(),
-                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
-                                None,
-                                false,
-                                "quota_exhausted",
-                                Some(&message),
-                                &request_kind,
-                            )
-                            .await;
-                        let response = business_calls_1h_limit_exceeded_response(&verdict)?;
-                        return Ok(response);
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("business calls 1h limit check failed: {err}");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
-        }
-
         // 2) 业务配额（小时 / 日 / 月）只对 MCP 工具调用生效。
         if billable_flag {
             match if let Some(subject) = billing_subject.as_deref() {
@@ -1013,31 +974,91 @@ async fn proxy_handler(
         }
     }
 
+    let mut business_calls_reservation = None;
+    if let Some(tid) = token_id.as_deref()
+        && billable_flag
+        && !using_dev_open_admin_fallback
+    {
+        let reservation = if let Some(subject) = billing_subject.as_deref() {
+            state
+                .proxy
+                .reserve_token_business_calls_1h_limit_for_subject(subject)
+                .await
+        } else {
+            state.proxy.reserve_token_business_calls_1h_limit(tid).await
+        };
+        match reservation {
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::Reserved(reservation)) => {
+                business_calls_reservation = Some(reservation);
+            }
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::Denied(verdict)) => {
+                let message = build_business_calls_1h_limit_error_message(&verdict);
+                let _ = state
+                    .proxy
+                    .record_token_attempt_with_kind(
+                        tid,
+                        &method,
+                        &path,
+                        query.as_deref(),
+                        Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                        None,
+                        false,
+                        "quota_exhausted",
+                        Some(&message),
+                        &request_kind,
+                    )
+                    .await;
+                let response = business_calls_1h_limit_exceeded_response(&verdict)?;
+                return Ok(response);
+            }
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::NotApplicable) => {}
+            Err(err) => {
+                eprintln!("business calls 1h reserve failed: {err}");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     let mcp_session_init_guard = if is_mcp_initialize && incoming_proxy_session_id.is_none() {
-        let guard = state
+        let guard = match state
             .proxy
             .lock_mcp_session_init(token_id.as_deref(), token_user_id.as_deref())
             .await
-            .map_err(|err| {
+        {
+            Ok(guard) => guard,
+            Err(err) => {
+                state
+                    .proxy
+                    .release_business_calls_1h_reservation(business_calls_reservation.take())
+                    .await;
                 eprintln!("mcp session init lock failed: {err}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        if let Some(guard) = guard.as_ref() {
-            guard.ensure_live().map_err(|err| {
-                eprintln!("mcp session init lock lost before upstream initialize: {err}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        if let Some(guard) = guard.as_ref()
+            && let Err(err) = guard.ensure_live()
+        {
+            state
+                .proxy
+                .release_business_calls_1h_reservation(business_calls_reservation.take())
+                .await;
+            eprintln!("mcp session init lock lost before upstream initialize: {err}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
         guard
     } else {
         None
     };
 
-    if let Some(guard) = mcp_session_request_guard.as_ref() {
-        guard.ensure_live().map_err(|err| {
-            eprintln!("mcp session request lock lost before upstream send: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    if let Some(guard) = mcp_session_request_guard.as_ref()
+        && let Err(err) = guard.ensure_live()
+    {
+        state
+            .proxy
+            .release_business_calls_1h_reservation(business_calls_reservation.take())
+            .await;
+        eprintln!("mcp session request lock lost before upstream send: {err}");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     let control_gateway_mode = (is_mcp_request
@@ -1099,6 +1120,10 @@ async fn proxy_handler(
         {
             Ok(response) => Ok(response),
             Err(status) => {
+                state
+                    .proxy
+                    .release_business_calls_1h_reservation(business_calls_reservation.take())
+                    .await;
                 let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
@@ -1127,6 +1152,10 @@ async fn proxy_handler(
         {
             Ok(response) => Ok(response),
             Err(status) => {
+                state
+                    .proxy
+                    .release_business_calls_1h_reservation(business_calls_reservation.take())
+                    .await;
                 let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
@@ -1144,6 +1173,7 @@ async fn proxy_handler(
 
     match proxy_result {
         Ok(mut resp) => {
+            let analysis = analyze_mcp_attempt(resp.status, &resp.body);
             if is_mcp_request {
                 if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
                     if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
@@ -1295,21 +1325,37 @@ async fn proxy_handler(
                         }
                     }
                 } else if is_mcp_initialize && resp.status.is_success() {
-                    if let Some(guard) = mcp_session_init_guard.as_ref() {
-                        guard.ensure_live().map_err(|err| {
-                            eprintln!("mcp session init lock lost before session bind: {err}");
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?;
+                    if let Some(guard) = mcp_session_init_guard.as_ref()
+                        && let Err(err) = guard.ensure_live()
+                    {
+                        state
+                            .proxy
+                            .finalize_business_calls_1h_reservation_from_status(
+                                business_calls_reservation.take(),
+                                analysis.status,
+                                resp.request_log_id,
+                            )
+                            .await;
+                        eprintln!("mcp session init lock lost before session bind: {err}");
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
                     }
-                    let proxy_session_id = planned_initialize_proxy_session_id
-                        .as_deref()
-                        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+                    let Some(proxy_session_id) = planned_initialize_proxy_session_id.as_deref() else {
+                        state
+                            .proxy
+                            .finalize_business_calls_1h_reservation_from_status(
+                                business_calls_reservation.take(),
+                                analysis.status,
+                                resp.request_log_id,
+                            )
+                            .await;
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    };
                     if planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
                     {
                         let protocol_version = incoming_protocol_version
                             .as_deref()
                             .unwrap_or(REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT);
-                        state
+                        if state
                             .proxy
                             .create_or_replace_mcp_session_record(
                                 proxy_session_id,
@@ -1326,17 +1372,54 @@ async fn proxy_handler(
                                 None,
                             )
                             .await
-                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                            .is_err()
+                        {
+                            state
+                                .proxy
+                                .finalize_business_calls_1h_reservation_from_status(
+                                    business_calls_reservation.take(),
+                                    analysis.status,
+                                    resp.request_log_id,
+                                )
+                                .await;
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                        let proxy_header = match ReqHeaderValue::from_str(proxy_session_id) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                state
+                                    .proxy
+                                    .finalize_business_calls_1h_reservation_from_status(
+                                        business_calls_reservation.take(),
+                                        analysis.status,
+                                        resp.request_log_id,
+                                    )
+                                    .await;
+                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                            }
+                        };
                         resp.headers.insert(
                             HeaderName::from_static("mcp-session-id"),
-                            ReqHeaderValue::from_str(proxy_session_id)
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                            proxy_header,
                         );
                         if !resp.headers.contains_key("mcp-protocol-version") {
+                            let protocol_value = match ReqHeaderValue::from_str(protocol_version) {
+                                Ok(value) => value,
+                                Err(_) => {
+                                    state
+                                        .proxy
+                                        .finalize_business_calls_1h_reservation_from_status(
+                                            business_calls_reservation.take(),
+                                            analysis.status,
+                                            resp.request_log_id,
+                                        )
+                                        .await;
+                                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                                }
+                            };
                             resp.headers.insert(
                                 HeaderName::from_static("mcp-protocol-version"),
-                                ReqHeaderValue::from_str(protocol_version)
-                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                                protocol_value,
                             );
                         }
                     } else {
@@ -1350,7 +1433,7 @@ async fn proxy_handler(
                         if let (Some(upstream_session_id), Some(upstream_key_id)) =
                             (upstream_session_id.as_deref(), resp.api_key_id.as_deref())
                         {
-                            state
+                            if state
                                 .proxy
                                 .create_or_replace_mcp_session_record(
                                     proxy_session_id,
@@ -1367,11 +1450,35 @@ async fn proxy_handler(
                                     None,
                                 )
                                 .await
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                                .is_err()
+                            {
+                                state
+                                    .proxy
+                                    .finalize_business_calls_1h_reservation_from_status(
+                                        business_calls_reservation.take(),
+                                        analysis.status,
+                                        resp.request_log_id,
+                                    )
+                                    .await;
+                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                            }
+                            let proxy_header = match ReqHeaderValue::from_str(proxy_session_id) {
+                                Ok(value) => value,
+                                Err(_) => {
+                                    state
+                                        .proxy
+                                        .finalize_business_calls_1h_reservation_from_status(
+                                            business_calls_reservation.take(),
+                                            analysis.status,
+                                            resp.request_log_id,
+                                        )
+                                        .await;
+                                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                                }
+                            };
                             resp.headers.insert(
                                 HeaderName::from_static("mcp-session-id"),
-                                ReqHeaderValue::from_str(proxy_session_id)
-                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                                proxy_header,
                             );
                         }
                     }
@@ -1379,7 +1486,6 @@ async fn proxy_handler(
             }
             let mut billing_error: Option<String> = None;
             if let Some(tid) = token_id.as_deref() {
-                let analysis = analyze_mcp_attempt(resp.status, &resp.body);
                 let api_key_id = resp.api_key_id.as_deref();
                 let tavily_code: Option<i64> = analysis.tavily_status_code;
                 let result_status = analysis.status;
@@ -1648,11 +1754,23 @@ async fn proxy_handler(
                         .await;
                 }
             }
+            state
+                .proxy
+                .finalize_business_calls_1h_reservation_from_status(
+                    business_calls_reservation.take(),
+                    analysis.status,
+                    resp.request_log_id,
+                )
+                .await;
             // Always return the upstream response, even if local billing persistence fails.
             // Returning a 5xx here can trigger client retries and cause duplicate upstream charges.
             Ok(build_response(resp))
         }
         Err(err) => {
+            state
+                .proxy
+                .release_business_calls_1h_reservation(business_calls_reservation.take())
+                .await;
             eprintln!("proxy error: {err}");
             let pinned_mcp_session_unavailable =
                 matches!(&err, ProxyError::PinnedMcpSessionUnavailable);

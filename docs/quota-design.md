@@ -92,12 +92,24 @@
    - 若 verdict 不允许（`!allowed`），立即返回 429，并记录一次
      `quota_exhausted` 的尝试日志（错误信息为 “token quota exceeded on ... window ..."）。
 
-4. 若两层限额都允许，则继续调用 Tavily 上游；返回响应后，调用
+4. 对于会映射到账户共享额度的 billable 请求，在 credits 预检查通过后、真正出站前，再执行 account 级 `businessCalls1h` reservation：
+   - `businessCalls1h` 的 admission 口径是“最近 1 小时已完成业务调用 + 当前未过期 reservation”；
+   - reservation 只在单活节点内存中维护，默认 TTL 为 300 秒，并在后续 `reserve / snapshot / finalize` 时顺带 GC；
+   - 若 reservation 被拒绝，则立即返回 `429` 并记录一次本地 `quota_exhausted` 尝试日志，不会命中上游；
+   - 若 token 没有关联到账户共享额度 subject，则这一层返回 `NotApplicable`，继续沿 token 维度的原有配额路径。
+
+5. 若前面的限额都允许，则继续调用 Tavily 上游；返回响应后，调用
    `record_token_attempt` 写入：
    - 一条 `auth_token_logs` 明细；
    - 更新 `auth_tokens.total_requests` 与 `last_used_at`。
    - 注意：此处**不会再更新** `token_usage_buckets` 或 `auth_token_quota`，
-     聚合计数完全由 `check_token_quota()` 驱动。
+     这些聚合计数仍完全由 `check_token_quota()` 驱动。
+
+6. `businessCalls1h` reservation 的收口规则：
+   - 已经实际上游的请求按最终 `result_status` 结转为 completed success/failure；
+   - 本地 parse/validation 失败、pre-upstream block、或 transport error 未命中上游时释放 reservation；
+   - 如果上游已经执行，但本地 `auth_token_logs` / pending billing 写入失败，reservation 仍然要先在内存里 finalize，保证小时业务次数上限不会被错误放松；
+   - `quota_exhausted` 与所有 pre-upstream blocked 请求仍然不进入 completed `businessCalls1h` 统计，也不进入 owner-facing 的 `businessCalls1h` summary / series。
 
 ### MCP 非工具调用白名单（不计入业务配额）
 

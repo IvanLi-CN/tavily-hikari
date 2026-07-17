@@ -933,62 +933,6 @@ async fn proxy_tavily_http_endpoint(
     }
 
     if let Some(ref tid) = auth_token_id {
-        if !using_dev_open_admin_fallback {
-            let business_calls_limit = if let Some(subject) = billing_subject.as_deref() {
-                state
-                    .proxy
-                    .peek_token_business_calls_1h_limit_for_subject(subject)
-                    .await
-            } else {
-                state.proxy.peek_token_business_calls_1h_limit(tid).await
-            };
-            match business_calls_limit {
-                Ok(Some(verdict)) => {
-                    if !verdict.allowed {
-                        let message = build_business_calls_1h_limit_error_message(&verdict);
-                        let _ = state
-                            .proxy
-                            .record_token_attempt(
-                                tid,
-                                &method,
-                                &path,
-                                None,
-                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
-                                None,
-                                false,
-                                "quota_exhausted",
-                                Some(&message),
-                            )
-                            .await;
-                        let resp = business_calls_1h_limit_exceeded_response(&verdict)?;
-                        return Ok(resp);
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("business calls 1h limit check failed for {path}: {err}");
-                    if let Some(tid) = auth_token_id.as_deref() {
-                        let msg = err.to_string();
-                        let _ = state
-                            .proxy
-                            .record_token_attempt(
-                                tid,
-                                &method,
-                                &path,
-                                None,
-                                Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
-                                None,
-                                false,
-                                "error",
-                                Some(msg.as_str()),
-                            )
-                            .await;
-                    }
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
-        }
-
         match if let Some(subject) = billing_subject.as_deref() {
             state.proxy.peek_token_quota_for_subject(subject).await
         } else {
@@ -1045,6 +989,64 @@ async fn proxy_tavily_http_endpoint(
                         )
                         .await;
                 }
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    let mut business_calls_reservation = None;
+    if let Some(ref tid) = auth_token_id
+        && !using_dev_open_admin_fallback
+    {
+        let reservation = if let Some(subject) = billing_subject.as_deref() {
+            state
+                .proxy
+                .reserve_token_business_calls_1h_limit_for_subject(subject)
+                .await
+        } else {
+            state.proxy.reserve_token_business_calls_1h_limit(tid).await
+        };
+        match reservation {
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::Reserved(reservation)) => {
+                business_calls_reservation = Some(reservation);
+            }
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::Denied(verdict)) => {
+                let message = build_business_calls_1h_limit_error_message(&verdict);
+                let _ = state
+                    .proxy
+                    .record_token_attempt(
+                        tid,
+                        &method,
+                        &path,
+                        None,
+                        Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                        None,
+                        false,
+                        "quota_exhausted",
+                        Some(&message),
+                    )
+                    .await;
+                let resp = business_calls_1h_limit_exceeded_response(&verdict)?;
+                return Ok(resp);
+            }
+            Ok(tavily_hikari::BusinessCalls1hReservationOutcome::NotApplicable) => {}
+            Err(err) => {
+                eprintln!("business calls 1h reserve failed for {path}: {err}");
+                let msg = err.to_string();
+                let _ = state
+                    .proxy
+                    .record_token_attempt(
+                        tid,
+                        &method,
+                        &path,
+                        None,
+                        Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
+                        None,
+                        false,
+                        "error",
+                        Some(msg.as_str()),
+                    )
+                    .await;
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
@@ -1224,6 +1226,14 @@ async fn proxy_tavily_http_endpoint(
                         )
                         .await;
                 }
+                state
+                    .proxy
+                    .finalize_business_calls_1h_reservation_from_status(
+                        business_calls_reservation.take(),
+                        analysis.status,
+                        resp.request_log_id,
+                    )
+                    .await;
                 // Return the upstream response once billing either succeeded or we captured a local audit error.
                 record_rebalance_period_usage(
                     &state,
@@ -1238,6 +1248,10 @@ async fn proxy_tavily_http_endpoint(
                 return Ok(build_response(resp));
             }
             Err(err) => {
+                state
+                    .proxy
+                    .release_business_calls_1h_reservation(business_calls_reservation.take())
+                    .await;
                 eprintln!("tavily http {} proxy error: {err}", config.upstream_path);
                 if let Some(tid) = token_id_for_logs.as_deref() {
                     let msg = err.to_string();
@@ -1481,6 +1495,14 @@ async fn proxy_tavily_http_endpoint(
                     )
                     .await;
             }
+            state
+                .proxy
+                .finalize_business_calls_1h_reservation_from_status(
+                    business_calls_reservation.take(),
+                    analysis.status,
+                    resp.request_log_id,
+                )
+                .await;
             // Always return the upstream response, even if local billing persistence fails.
             // Returning a 5xx here can trigger client retries and cause duplicate upstream charges.
             record_rebalance_period_usage(
@@ -1496,6 +1518,10 @@ async fn proxy_tavily_http_endpoint(
             Ok(build_response(resp))
         }
         Err(err) => {
+            state
+                .proxy
+                .release_business_calls_1h_reservation(business_calls_reservation.take())
+                .await;
             eprintln!("tavily http {} proxy error: {err}", config.upstream_path);
             if let Some(tid) = token_id_for_logs.as_deref() {
                 let msg = err.to_string();

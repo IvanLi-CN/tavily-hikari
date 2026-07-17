@@ -908,3 +908,226 @@ async fn user_business_calls_1h_metadata_free_token_logs_stay_out_of_live_busine
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn user_business_calls_1h_reservations_enforce_limit_without_polluting_completed_views() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_600_000);
+    let db_path = temp_db_path("user-business-calls-1h-reservations");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "business-calls-reservations".to_string(),
+            username: Some("business_calls_reservations".to_string()),
+            name: Some("Business Calls Reservations".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("business-calls-reservations"))
+        .await
+        .expect("bind token");
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 1, 1_000, 10_000)
+        .await
+        .expect("set business call limit");
+
+    let first_reservation = match proxy
+        .reserve_token_business_calls_1h_limit(&token.id)
+        .await
+        .expect("reserve first request")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected first reservation to succeed, got {other:?}"),
+    };
+
+    let summary = proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("load summary with in-flight reservation");
+    assert_eq!(summary.business_calls_1h.success_count, 0);
+    assert_eq!(summary.business_calls_1h.failure_count, 0);
+    assert_eq!(summary.business_calls_1h.total_count, 0);
+
+    match proxy
+        .reserve_token_business_calls_1h_limit(&token.id)
+        .await
+        .expect("reserve second request")
+    {
+        BusinessCalls1hReservationOutcome::Denied(verdict) => {
+            assert!(!verdict.allowed);
+            assert_eq!(verdict.summary.limit, 1);
+            assert_eq!(verdict.summary.total_count, 1);
+            assert_eq!(verdict.summary.success_count, 0);
+            assert_eq!(verdict.summary.failure_count, 0);
+        }
+        other => panic!("expected second reservation to be denied, got {other:?}"),
+    }
+
+    proxy
+        .release_business_calls_1h_reservation(Some(first_reservation))
+        .await;
+
+    let completed_reservation = match proxy
+        .reserve_token_business_calls_1h_limit(&token.id)
+        .await
+        .expect("reserve replacement request")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected replacement reservation to succeed, got {other:?}"),
+    };
+    proxy
+        .finalize_business_calls_1h_reservation_from_status(
+            Some(completed_reservation),
+            OUTCOME_SUCCESS,
+            Some(9_001),
+        )
+        .await;
+
+    let summary = proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("load summary after finalize");
+    assert_eq!(summary.business_calls_1h.success_count, 1);
+    assert_eq!(summary.business_calls_1h.failure_count, 0);
+    assert_eq!(summary.business_calls_1h.total_count, 1);
+
+    let series = proxy
+        .admin_user_business_calls_1h_series(&user.user_id)
+        .await
+        .expect("load series after finalize");
+    let latest = series.points.last().expect("latest point");
+    assert_eq!(latest.pressure, Some(1));
+    assert_eq!(latest.bars.success, Some(1));
+    assert_eq!(latest.bars.failure, Some(0));
+
+    let quota_user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "business-calls-reservation-quota-exhausted".to_string(),
+            username: Some("business_calls_reservation_quota_exhausted".to_string()),
+            name: Some("Business Calls Reservation Quota Exhausted".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert quota-exhausted user");
+    let quota_token = proxy
+        .ensure_user_token_binding(
+            &quota_user.user_id,
+            Some("business-calls-reservation-quota-exhausted"),
+        )
+        .await
+        .expect("bind quota-exhausted token");
+    proxy
+        .update_account_business_quota_limits(&quota_user.user_id, 1, 1_000, 10_000)
+        .await
+        .expect("set quota-exhausted user limit");
+
+    let quota_reservation = match proxy
+        .reserve_token_business_calls_1h_limit(&quota_token.id)
+        .await
+        .expect("reserve quota-exhausted request")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected quota-exhausted reservation to succeed, got {other:?}"),
+    };
+    proxy
+        .finalize_business_calls_1h_reservation_from_status(
+            Some(quota_reservation),
+            OUTCOME_QUOTA_EXHAUSTED,
+            Some(9_002),
+        )
+        .await;
+
+    let quota_summary = proxy
+        .user_dashboard_summary(&quota_user.user_id, None)
+        .await
+        .expect("load quota-exhausted user summary");
+    assert_eq!(quota_summary.business_calls_1h.success_count, 0);
+    assert_eq!(quota_summary.business_calls_1h.failure_count, 0);
+    assert_eq!(quota_summary.business_calls_1h.total_count, 0);
+
+    let quota_replacement = match proxy
+        .reserve_token_business_calls_1h_limit(&quota_token.id)
+        .await
+        .expect("reserve after quota-exhausted release")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected reservation after quota_exhausted to succeed, got {other:?}"),
+    };
+    proxy
+        .release_business_calls_1h_reservation(Some(quota_replacement))
+        .await;
+
+    let ttl_user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "business-calls-reservation-ttl".to_string(),
+            username: Some("business_calls_reservation_ttl".to_string()),
+            name: Some("Business Calls Reservation TTL".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert ttl user");
+    let ttl_token = proxy
+        .ensure_user_token_binding(&ttl_user.user_id, Some("business-calls-reservation-ttl"))
+        .await
+        .expect("bind ttl token");
+    proxy
+        .update_account_business_quota_limits(&ttl_user.user_id, 1, 1_000, 10_000)
+        .await
+        .expect("set ttl user limit");
+
+    let expired_reservation = match proxy
+        .reserve_token_business_calls_1h_limit(&ttl_token.id)
+        .await
+        .expect("reserve ttl request")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected ttl reservation to succeed, got {other:?}"),
+    };
+    manual_clock.advance_wall(Duration::from_secs(301));
+    let fresh_reservation = match proxy
+        .reserve_token_business_calls_1h_limit(&ttl_token.id)
+        .await
+        .expect("reserve request after ttl gc")
+    {
+        BusinessCalls1hReservationOutcome::Reserved(reservation) => reservation,
+        other => panic!("expected reservation after ttl to succeed, got {other:?}"),
+    };
+    proxy
+        .release_business_calls_1h_reservation(Some(expired_reservation))
+        .await;
+    proxy
+        .release_business_calls_1h_reservation(Some(fresh_reservation))
+        .await;
+
+    let ttl_summary = proxy
+        .user_dashboard_summary(&ttl_user.user_id, None)
+        .await
+        .expect("load ttl user summary");
+    assert_eq!(ttl_summary.business_calls_1h.success_count, 0);
+    assert_eq!(ttl_summary.business_calls_1h.failure_count, 0);
+    assert_eq!(ttl_summary.business_calls_1h.total_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}

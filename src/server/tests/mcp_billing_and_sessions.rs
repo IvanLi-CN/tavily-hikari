@@ -1,6 +1,7 @@
 use super::*;
 use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
+use tower::ServiceExt;
 
     #[tokio::test]
     async fn mcp_batch_without_ids_search_and_research_charge_full_reserved_fallback_when_usage_missing()
@@ -1336,6 +1337,142 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(billing_state, "charged");
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_tavily_search_business_calls_reservation_survives_auth_token_log_write_failure()
+     {
+        let db_path = temp_db_path("mcp-tools-call-search-business-calls-reservation-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+
+        let expected_api_key = "tvly-mcp-tools-call-search-business-calls-reservation-key";
+        let (upstream_addr, hits) =
+            spawn_mock_mcp_upstream_for_tavily_search(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "github".to_string(),
+                provider_user_id: "mcp-tools-call-search-business-calls-reservation-user"
+                    .to_string(),
+                username: Some("mcp_business_calls_reservation".to_string()),
+                name: Some("MCP Business Calls Reservation".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: None,
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let access_token = proxy
+            .ensure_user_token_binding(
+                &user.user_id,
+                Some("github:mcp-tools-call-search-business-calls-reservation"),
+            )
+            .await
+            .expect("bind access token");
+        proxy
+            .update_account_business_quota_limits(&user.user_id, 1, 1_000, 10_000)
+            .await
+            .expect("set account business quota");
+
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+            dev_open_admin: false,
+            usage_base: upstream.clone(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+        let app = Router::new()
+            .route("/mcp", any(proxy_handler))
+            .route("/mcp/*path", any(mcp_subpath_reject_handler))
+            .with_state(state);
+
+        let build_request = |token: &str, query: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/mcp?tavilyApiKey={token}"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "method": "tools/call",
+                        "params": {
+                            "name": "tavily-search",
+                            "arguments": {
+                                "query": query,
+                                "search_depth": "basic"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("build request")
+        };
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_auth_token_logs_insert
+            BEFORE INSERT ON auth_token_logs
+            BEGIN
+              SELECT RAISE(ABORT, 'forced auth_token_log failure');
+            END;
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("install auth_token_logs trigger");
+
+        let resp1 = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.clone()
+                .oneshot(build_request(&access_token.token, "mcp reservation 1")),
+        )
+        .await
+        .expect("first request timed out")
+        .expect("first request");
+        assert_eq!(resp1.status(), StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let resp2 = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.oneshot(build_request(&access_token.token, "mcp reservation 2")),
+        )
+        .await
+        .expect("second request timed out")
+        .expect("second request");
+        assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "second MCP request should be blocked by finalized businessCalls1h event before upstream"
+        );
+
+        let token_log_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ?",
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count auth token logs");
+        assert_eq!(token_log_count, 0);
+        drop(resp1);
+        drop(resp2);
+        pool.close().await;
     }
 
     #[tokio::test]

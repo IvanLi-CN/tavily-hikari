@@ -72,7 +72,9 @@ struct MemoryRequestRateLimitState {
 #[derive(Clone, Debug, Default)]
 struct MemoryUserBusinessCalls1hState {
     entries: HashMap<String, VecDeque<UserBusinessCallEvent>>,
+    reservations: HashMap<String, VecDeque<UserBusinessCallReservationEntry>>,
     next_gc_at: i64,
+    next_reservation_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -86,6 +88,30 @@ struct UserBusinessCallEvent {
     request_log_id: Option<i64>,
     created_at: i64,
     outcome: UserBusinessCallOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserBusinessCallReservation {
+    user_id: String,
+    reservation_id: u64,
+    created_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UserBusinessCallReserveRequest {
+    now_ts: i64,
+    limit: i64,
+    window_minutes: i64,
+    rolling_window_secs: i64,
+    retention_secs: i64,
+    reservation_ttl_secs: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UserBusinessCallReservationEntry {
+    reservation_id: u64,
+    created_at: i64,
+    expires_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +132,19 @@ enum UserBusinessCallOutcome {
 struct UserBusinessCallCounts {
     success_count: i64,
     failure_count: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UserBusinessCallEnforcementCounts {
+    completed: UserBusinessCallCounts,
+    reservation_count: i64,
+}
+
+#[derive(Clone, Debug)]
+pub enum BusinessCalls1hReservationOutcome {
+    NotApplicable,
+    Reserved(UserBusinessCallReservation),
+    Denied(BusinessCalls1hLimitVerdict),
 }
 
 #[derive(Clone, Debug)]
@@ -1666,10 +1705,19 @@ impl UserBusinessCallCounts {
     }
 }
 
+impl UserBusinessCallEnforcementCounts {
+    fn total_count(&self) -> i64 {
+        self.completed
+            .total_count()
+            .saturating_add(self.reservation_count)
+    }
+}
+
 impl UserBusinessCalls1hWindow {
     const WINDOW_MINUTES: i64 = 60;
     const ROLLING_WINDOW_SECS: i64 = SECS_PER_HOUR;
     const RETENTION_SECS: i64 = 25 * SECS_PER_HOUR;
+    const RESERVATION_TTL_SECS: i64 = 5 * SECS_PER_MINUTE;
 
     pub(crate) fn new(store: Arc<KeyStore>, backend_time: BackendTime) -> Self {
         Self {
@@ -1813,15 +1861,78 @@ impl UserBusinessCalls1hWindow {
             .collect()
     }
 
-    pub async fn snapshot_for_user(&self, user_id: &str) -> BusinessCalls1hSummary {
-        self.snapshot_for_users(&[user_id.to_string()])
+    async fn enforcement_summary_for_user(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> BusinessCalls1hSummary {
+        let now_ts = self.backend_time.now_ts();
+        let counts = self
+            .backend
+            .enforcement_counts(
+                user_id,
+                now_ts,
+                self.rolling_window_secs,
+                self.retention_secs,
+                Self::RESERVATION_TTL_SECS,
+            )
+            .await;
+        BusinessCalls1hSummary {
+            success_count: counts.completed.success_count,
+            failure_count: counts.completed.failure_count,
+            total_count: counts.total_count(),
+            limit: limit.max(0),
+            window_minutes: self.window_minutes,
+        }
+    }
+
+    pub(crate) async fn reserve_for_user(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> BusinessCalls1hReservationOutcome {
+        self.backend
+            .reserve(
+                user_id,
+                UserBusinessCallReserveRequest {
+                    now_ts: self.backend_time.now_ts(),
+                    limit,
+                    window_minutes: self.window_minutes,
+                    rolling_window_secs: self.rolling_window_secs,
+                    retention_secs: self.retention_secs,
+                    reservation_ttl_secs: Self::RESERVATION_TTL_SECS,
+                },
+            )
             .await
-            .remove(user_id)
-            .unwrap_or(BusinessCalls1hSummary {
-                limit: 0,
-                window_minutes: self.window_minutes,
-                ..BusinessCalls1hSummary::default()
-            })
+    }
+
+    pub(crate) async fn finalize_reservation(
+        &self,
+        reservation: UserBusinessCallReservation,
+        request_log_id: Option<i64>,
+        outcome: UserBusinessCallOutcome,
+    ) {
+        self.backend
+            .finalize_reservation(
+                reservation,
+                request_log_id,
+                outcome,
+                self.backend_time.now_ts(),
+                self.retention_secs,
+                Self::RESERVATION_TTL_SECS,
+            )
+            .await;
+    }
+
+    pub(crate) async fn release_reservation(&self, reservation: UserBusinessCallReservation) {
+        self.backend
+            .release_reservation(
+                reservation,
+                self.backend_time.now_ts(),
+                self.retention_secs,
+                Self::RESERVATION_TTL_SECS,
+            )
+            .await;
     }
 
     pub(crate) async fn usage_series(&self, user_id: &str) -> Vec<AdminUserBusinessCalls1hPoint> {
@@ -1913,17 +2024,17 @@ impl TavilyProxy {
         let QuotaSubject::Account(user_id) = subject else {
             return Ok(None);
         };
-        let mut summary = self
-            .user_business_calls_1h_window
-            .snapshot_for_user(user_id)
-            .await;
-        summary.limit = self
+        let limit = self
             .key_store
             .resolve_account_quota_resolution(user_id)
             .await?
             .effective
             .business_calls_1h_limit
             .max(0);
+        let summary = self
+            .user_business_calls_1h_window
+            .enforcement_summary_for_user(user_id, limit)
+            .await;
         Ok(Some(BusinessCalls1hLimitVerdict::new(summary)))
     }
 
@@ -1943,6 +2054,81 @@ impl TavilyProxy {
         let subject = QuotaSubject::from_billing_subject(billing_subject)?;
         self.business_calls_1h_limit_verdict_for_subject(&subject)
             .await
+    }
+
+    async fn reserve_business_calls_1h_limit_for_subject(
+        &self,
+        subject: &QuotaSubject,
+    ) -> Result<BusinessCalls1hReservationOutcome, ProxyError> {
+        let QuotaSubject::Account(user_id) = subject else {
+            return Ok(BusinessCalls1hReservationOutcome::NotApplicable);
+        };
+        let limit = self
+            .key_store
+            .resolve_account_quota_resolution(user_id)
+            .await?
+            .effective
+            .business_calls_1h_limit
+            .max(0);
+        Ok(self
+            .user_business_calls_1h_window
+            .reserve_for_user(user_id, limit)
+            .await)
+    }
+
+    pub async fn reserve_token_business_calls_1h_limit(
+        &self,
+        token_id: &str,
+    ) -> Result<BusinessCalls1hReservationOutcome, ProxyError> {
+        let subject = self.token_quota.resolve_subject(token_id).await?;
+        self.reserve_business_calls_1h_limit_for_subject(&subject)
+            .await
+    }
+
+    pub async fn reserve_token_business_calls_1h_limit_for_subject(
+        &self,
+        billing_subject: &str,
+    ) -> Result<BusinessCalls1hReservationOutcome, ProxyError> {
+        let subject = QuotaSubject::from_billing_subject(billing_subject)?;
+        self.reserve_business_calls_1h_limit_for_subject(&subject)
+            .await
+    }
+
+    pub async fn finalize_business_calls_1h_reservation_from_status(
+        &self,
+        reservation: Option<UserBusinessCallReservation>,
+        result_status: &str,
+        request_log_id: Option<i64>,
+    ) {
+        let Some(reservation) = reservation else {
+            return;
+        };
+        if result_status == OUTCOME_QUOTA_EXHAUSTED {
+            self.user_business_calls_1h_window
+                .release_reservation(reservation)
+                .await;
+            return;
+        }
+        let outcome = if result_status == OUTCOME_SUCCESS {
+            UserBusinessCallOutcome::Success
+        } else {
+            UserBusinessCallOutcome::Failure
+        };
+        self.user_business_calls_1h_window
+            .finalize_reservation(reservation, request_log_id, outcome)
+            .await;
+    }
+
+    pub async fn release_business_calls_1h_reservation(
+        &self,
+        reservation: Option<UserBusinessCallReservation>,
+    ) {
+        let Some(reservation) = reservation else {
+            return;
+        };
+        self.user_business_calls_1h_window
+            .release_reservation(reservation)
+            .await;
     }
 }
 
@@ -2055,6 +2241,80 @@ impl UserBusinessCalls1hBackend {
             Self::Memory(backend) => {
                 backend
                     .snapshot_many(user_ids, now_ts, rolling_window_secs, retention_secs)
+                    .await
+            }
+        }
+    }
+
+    async fn enforcement_counts(
+        &self,
+        user_id: &str,
+        now_ts: i64,
+        rolling_window_secs: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) -> UserBusinessCallEnforcementCounts {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .enforcement_counts(
+                        user_id,
+                        now_ts,
+                        rolling_window_secs,
+                        retention_secs,
+                        reservation_ttl_secs,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn reserve(
+        &self,
+        user_id: &str,
+        request: UserBusinessCallReserveRequest,
+    ) -> BusinessCalls1hReservationOutcome {
+        match self {
+            Self::Memory(backend) => backend.reserve(user_id, request).await,
+        }
+    }
+
+    async fn finalize_reservation(
+        &self,
+        reservation: UserBusinessCallReservation,
+        request_log_id: Option<i64>,
+        outcome: UserBusinessCallOutcome,
+        now_ts: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .finalize_reservation(
+                        reservation,
+                        request_log_id,
+                        outcome,
+                        now_ts,
+                        retention_secs,
+                        reservation_ttl_secs,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn release_reservation(
+        &self,
+        reservation: UserBusinessCallReservation,
+        now_ts: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .release_reservation(reservation, now_ts, retention_secs, reservation_ttl_secs)
                     .await
             }
         }
@@ -2248,7 +2508,12 @@ impl MemoryUserBusinessCalls1hBackend {
         retention_secs: i64,
     ) {
         let mut state = self.state.lock().await;
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
         let preserved_live_events: Vec<(String, UserBusinessCallEvent)> = state
             .entries
             .iter()
@@ -2256,9 +2521,10 @@ impl MemoryUserBusinessCalls1hBackend {
                 queue
                     .iter()
                     .filter(move |event| {
-                        event.request_log_id.is_some_and(|request_log_id| {
-                            request_log_id > upper_bound_request_log_id
-                        })
+                        event.request_log_id.is_none()
+                            || event.request_log_id.is_some_and(|request_log_id| {
+                                request_log_id > upper_bound_request_log_id
+                            })
                     })
                     .cloned()
                     .map(|event| (user_id.clone(), event))
@@ -2281,7 +2547,12 @@ impl MemoryUserBusinessCalls1hBackend {
             let queue = state.entries.entry(user_id).or_default();
             Self::insert_event_sorted(queue, event);
         }
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
     }
 
     async fn record_event(
@@ -2292,7 +2563,12 @@ impl MemoryUserBusinessCalls1hBackend {
         retention_secs: i64,
     ) {
         let mut state = self.state.lock().await;
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
         let queue = state.entries.entry(user_id.to_string()).or_default();
         Self::insert_event_sorted(queue, event);
         Self::prune_queue(queue, now_ts, retention_secs);
@@ -2309,7 +2585,12 @@ impl MemoryUserBusinessCalls1hBackend {
         retention_secs: i64,
     ) -> HashMap<String, UserBusinessCallCounts> {
         let mut state = self.state.lock().await;
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
         let mut out = HashMap::with_capacity(user_ids.len());
         let mut empty_keys = Vec::new();
         for user_id in user_ids {
@@ -2331,6 +2612,131 @@ impl MemoryUserBusinessCalls1hBackend {
         out
     }
 
+    async fn enforcement_counts(
+        &self,
+        user_id: &str,
+        now_ts: i64,
+        rolling_window_secs: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) -> UserBusinessCallEnforcementCounts {
+        let mut state = self.state.lock().await;
+        Self::maybe_gc(&mut state, now_ts, retention_secs, reservation_ttl_secs);
+        Self::enforcement_counts_for_user(
+            &mut state,
+            user_id,
+            now_ts,
+            rolling_window_secs,
+            retention_secs,
+            reservation_ttl_secs,
+        )
+    }
+
+    async fn reserve(
+        &self,
+        user_id: &str,
+        request: UserBusinessCallReserveRequest,
+    ) -> BusinessCalls1hReservationOutcome {
+        let mut state = self.state.lock().await;
+        Self::maybe_gc(
+            &mut state,
+            request.now_ts,
+            request.retention_secs,
+            request.reservation_ttl_secs,
+        );
+        let counts = Self::enforcement_counts_for_user(
+            &mut state,
+            user_id,
+            request.now_ts,
+            request.rolling_window_secs,
+            request.retention_secs,
+            request.reservation_ttl_secs,
+        );
+        let summary = BusinessCalls1hSummary {
+            success_count: counts.completed.success_count,
+            failure_count: counts.completed.failure_count,
+            total_count: counts.total_count(),
+            limit: request.limit.max(0),
+            window_minutes: request.window_minutes,
+        };
+        let verdict = BusinessCalls1hLimitVerdict::new(summary);
+        if !verdict.allowed {
+            return BusinessCalls1hReservationOutcome::Denied(verdict);
+        }
+
+        state.next_reservation_id = state.next_reservation_id.saturating_add(1);
+        let reservation = UserBusinessCallReservation {
+            user_id: user_id.to_string(),
+            reservation_id: state.next_reservation_id,
+            created_at: request.now_ts,
+        };
+        let queue = state.reservations.entry(user_id.to_string()).or_default();
+        Self::insert_reservation_sorted(
+            queue,
+            UserBusinessCallReservationEntry {
+                reservation_id: reservation.reservation_id,
+                created_at: reservation.created_at,
+                expires_at: request
+                    .now_ts
+                    .saturating_add(request.reservation_ttl_secs.max(1)),
+            },
+        );
+        BusinessCalls1hReservationOutcome::Reserved(reservation)
+    }
+
+    async fn finalize_reservation(
+        &self,
+        reservation: UserBusinessCallReservation,
+        request_log_id: Option<i64>,
+        outcome: UserBusinessCallOutcome,
+        now_ts: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) {
+        let mut state = self.state.lock().await;
+        Self::maybe_gc(&mut state, now_ts, retention_secs, reservation_ttl_secs);
+        let created_at = Self::remove_reservation_entry(
+            &mut state,
+            &reservation.user_id,
+            reservation.reservation_id,
+            now_ts,
+        )
+        .unwrap_or(reservation.created_at);
+        let queue = state
+            .entries
+            .entry(reservation.user_id.clone())
+            .or_default();
+        Self::insert_event_sorted(
+            queue,
+            UserBusinessCallEvent {
+                request_log_id,
+                created_at,
+                outcome,
+            },
+        );
+        Self::prune_queue(queue, now_ts, retention_secs);
+        if queue.is_empty() {
+            state.entries.remove(&reservation.user_id);
+        }
+    }
+
+    async fn release_reservation(
+        &self,
+        reservation: UserBusinessCallReservation,
+        now_ts: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) {
+        let mut state = self.state.lock().await;
+        Self::maybe_gc(&mut state, now_ts, retention_secs, reservation_ttl_secs);
+        let _ = Self::remove_reservation_entry(
+            &mut state,
+            &reservation.user_id,
+            reservation.reservation_id,
+            now_ts,
+        );
+    }
+
     async fn retained_events_for_user(
         &self,
         user_id: &str,
@@ -2338,7 +2744,12 @@ impl MemoryUserBusinessCalls1hBackend {
         retention_secs: i64,
     ) -> Vec<UserBusinessCallEvent> {
         let mut state = self.state.lock().await;
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
         let Some(queue) = state.entries.get_mut(user_id) else {
             return Vec::new();
         };
@@ -2357,7 +2768,12 @@ impl MemoryUserBusinessCalls1hBackend {
         retention_secs: i64,
     ) -> HashMap<String, UserBusinessCallCounts> {
         let mut state = self.state.lock().await;
-        Self::maybe_gc(&mut state, now_ts, retention_secs);
+        Self::maybe_gc(
+            &mut state,
+            now_ts,
+            retention_secs,
+            UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
+        );
         let mut empty_keys = Vec::new();
         let mut out = HashMap::with_capacity(state.entries.len());
         for (user_id, queue) in &mut state.entries {
@@ -2375,7 +2791,12 @@ impl MemoryUserBusinessCalls1hBackend {
         out
     }
 
-    fn maybe_gc(state: &mut MemoryUserBusinessCalls1hState, now_ts: i64, retention_secs: i64) {
+    fn maybe_gc(
+        state: &mut MemoryUserBusinessCalls1hState,
+        now_ts: i64,
+        retention_secs: i64,
+        reservation_ttl_secs: i64,
+    ) {
         if now_ts < state.next_gc_at {
             return;
         }
@@ -2383,7 +2804,15 @@ impl MemoryUserBusinessCalls1hBackend {
             Self::prune_queue(queue, now_ts, retention_secs);
             !queue.is_empty()
         });
-        state.next_gc_at = now_ts.saturating_add(retention_secs.clamp(60, SECS_PER_HOUR));
+        state.reservations.retain(|_, queue| {
+            Self::prune_reservation_queue(queue, now_ts);
+            !queue.is_empty()
+        });
+        state.next_gc_at = now_ts.saturating_add(
+            retention_secs
+                .min(reservation_ttl_secs.max(1))
+                .clamp(60, SECS_PER_HOUR),
+        );
     }
 
     fn prune_queue(queue: &mut VecDeque<UserBusinessCallEvent>, now_ts: i64, retention_secs: i64) {
@@ -2391,6 +2820,18 @@ impl MemoryUserBusinessCalls1hBackend {
         while queue
             .front()
             .is_some_and(|event| event.created_at <= expires_at)
+        {
+            queue.pop_front();
+        }
+    }
+
+    fn prune_reservation_queue(
+        queue: &mut VecDeque<UserBusinessCallReservationEntry>,
+        now_ts: i64,
+    ) {
+        while queue
+            .front()
+            .is_some_and(|reservation| reservation.expires_at <= now_ts)
         {
             queue.pop_front();
         }
@@ -2414,6 +2855,17 @@ impl MemoryUserBusinessCalls1hBackend {
         queue.insert(insert_at, event);
     }
 
+    fn insert_reservation_sorted(
+        queue: &mut VecDeque<UserBusinessCallReservationEntry>,
+        reservation: UserBusinessCallReservationEntry,
+    ) {
+        let insert_at = queue
+            .iter()
+            .position(|existing| existing.created_at > reservation.created_at)
+            .unwrap_or(queue.len());
+        queue.insert(insert_at, reservation);
+    }
+
     fn rolling_counts(
         queue: &VecDeque<UserBusinessCallEvent>,
         now_ts: i64,
@@ -2425,5 +2877,64 @@ impl MemoryUserBusinessCalls1hBackend {
             counts.record(event.outcome);
         }
         counts
+    }
+
+    fn enforcement_counts_for_user(
+        state: &mut MemoryUserBusinessCalls1hState,
+        user_id: &str,
+        now_ts: i64,
+        rolling_window_secs: i64,
+        retention_secs: i64,
+        _reservation_ttl_secs: i64,
+    ) -> UserBusinessCallEnforcementCounts {
+        let (completed, remove_entry) = if let Some(queue) = state.entries.get_mut(user_id) {
+            Self::prune_queue(queue, now_ts, retention_secs);
+            (
+                Self::rolling_counts(queue, now_ts, rolling_window_secs),
+                queue.is_empty(),
+            )
+        } else {
+            (UserBusinessCallCounts::default(), false)
+        };
+        if remove_entry {
+            state.entries.remove(user_id);
+        }
+
+        let (reservation_count, remove_reservation) =
+            if let Some(queue) = state.reservations.get_mut(user_id) {
+                Self::prune_reservation_queue(queue, now_ts);
+                (queue.len() as i64, queue.is_empty())
+            } else {
+                (0, false)
+            };
+        if remove_reservation {
+            state.reservations.remove(user_id);
+        }
+        UserBusinessCallEnforcementCounts {
+            completed,
+            reservation_count,
+        }
+    }
+
+    fn remove_reservation_entry(
+        state: &mut MemoryUserBusinessCalls1hState,
+        user_id: &str,
+        reservation_id: u64,
+        now_ts: i64,
+    ) -> Option<i64> {
+        let (removed, should_remove) = {
+            let queue = state.reservations.get_mut(user_id)?;
+            Self::prune_reservation_queue(queue, now_ts);
+            let removed = queue
+                .iter()
+                .position(|reservation| reservation.reservation_id == reservation_id)
+                .and_then(|index| queue.remove(index))
+                .map(|reservation| reservation.created_at);
+            (removed, queue.is_empty())
+        };
+        if should_remove {
+            state.reservations.remove(user_id);
+        }
+        removed
     }
 }

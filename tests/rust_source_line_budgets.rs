@@ -31,8 +31,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/server/tests/tavily_http_search.rs",
-        3125,
-        "HTTP search integration coverage now also pins the upstream privacy project-id modes and rollout/header contracts while the legacy consolidated server test file still awaits a broader extraction pass.",
+        3250,
+        "HTTP search integration coverage now also carries the upstream privacy project-id modes, rollout/header contracts, and the business-call reservation regression path while the legacy consolidated server test file still awaits a broader extraction pass.",
     ),
     (
         "src/store/key_store_bootstrap.rs",

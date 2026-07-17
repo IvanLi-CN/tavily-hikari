@@ -36,6 +36,7 @@
 - 不伪造不可考的更早额度历史；在无法确认的时间段内，limit 线显示缺口（`null`）而不是平铺当前值。
 - 不伪造超出可追溯窗口的月度历史；历史缺口使用 `null` 呈现无数据。
 - 不把 `quota_exhausted`、本地 pre-upstream block 或其他未实际上游的请求计入业务调用 success/failure。
+- 允许运行时为了阻止同一 account 的并发穿透，在真正出站前维护内部 in-flight reservation；该 reservation 只用于 admission，不属于对外图表/摘要合同的一部分。
 
 ## 范围
 
@@ -148,6 +149,7 @@
 - `success` 仅指 `result_status = success`。
 - `failure` 指已经实际上游、但 `result_status != success && result_status != quota_exhausted` 的业务调用。
 - `quota_exhausted` 与所有 pre-upstream blocked 请求完全排除，不进入 success/failure，也不进入 pressure。
+- 运行时限流可以按“rolling 1h 已完成业务调用 + 未过期 reservation”做准入判断，但 `GET /api/users/:id` 与 `series=businessCalls1h` 仍只展示已完成的实际上游业务调用。
 - 同一语义也作为 `分析 -> 压力` 子模块里用户分布图的用户侧真相源，避免同一“压力”概念在 admin 内部分叉。
 
 ### `GET /api/users/:id`
