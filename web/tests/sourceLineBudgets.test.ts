@@ -18,25 +18,25 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/admin/AdminDashboardRuntime.tsx',
     {
-      max: 13620,
+      max: 13820,
       reason:
-        'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, upstream privacy status routing, active-user list filtering, shadow reconciliation comparison wiring, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
+        'Legacy admin dashboard runtime remains as a compatibility shell while HA source settings, upstream privacy status routing, active-user list filtering, shadow reconciliation comparison wiring, MCP session bindings route state, and the admin rankings live-status wiring finish converging before a larger extraction pass.',
     },
   ],
   [
     'src/admin/storySupport/AdminPagesStoryRuntime.tsx',
     {
-      max: 7900,
+      max: 8000,
       reason:
-        'Storybook proof runtime remains centralized temporarily while active-user admin states, upstream privacy status proof data, rankings shell proof, system-settings proof data, shadow reconciliation comparison proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
+        'Storybook proof runtime remains centralized temporarily while active-user admin states, upstream privacy status proof data, rankings shell proof, system-settings proof data, MCP session bindings page proof data, shadow reconciliation comparison proof data, Users Usage 1h sorting proof, and the recharge lifecycle page evidence continue to share the same Admin/Pages proof shell.',
     },
   ],
   [
     'src/api/runtime.ts',
     {
-      max: 4035,
+      max: 4055,
       reason:
-        'API barrel still carries HA source settings, upstream privacy status contracts, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, upstream privacy status contracts, MCP session bindings contracts, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [
