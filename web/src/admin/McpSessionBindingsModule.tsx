@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type {
   AdminMcpSessionBindingsPage,
@@ -9,17 +9,15 @@ import type { Language } from '../i18n'
 import type { QueryLoadState } from './queryLoadState'
 import type {
   AdminMcpSessionBindingsPathContext,
-  AdminMcpSessionBindingsStatusView,
 } from './routes'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminTablePagination from '../components/AdminTablePagination'
+import DateTimeRangeField from '../components/DateTimeRangeField'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog'
-import { Input } from '../components/ui/input'
-import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
-import { Icon } from '../lib/icons'
+import McpSessionBindingsStatusTabs from './McpSessionBindingsStatusTabs'
 
 interface McpSessionBindingsModuleProps {
   language: Language
@@ -27,9 +25,8 @@ interface McpSessionBindingsModuleProps {
   data: AdminMcpSessionBindingsPage | null
   loadState: QueryLoadState
   error: string | null
-  refreshing: boolean
   busy: boolean
-  onRefresh: () => Promise<void> | void
+  showStatusTabs?: boolean
   onNavigate: (next: AdminMcpSessionBindingsPathContext) => void
   onRevokeSelected: (proxySessionIds: string[]) => Promise<void> | void
   onRevokeFiltered: (query: AdminMcpSessionBindingsQuery) => Promise<void> | void
@@ -41,20 +38,17 @@ interface McpSessionBindingsModuleProps {
 function copyFor(language: Language) {
   if (language === 'zh') {
     return {
-      generatedAt: '按最近续约时间倒序排列',
       loading: '正在加载 session 绑定记录…',
       loadFailed: '读取 session 绑定记录失败。',
       empty: '当前筛选下没有 session 绑定记录。',
-      statusTabs: {
-        active: '活跃项',
-        revoked: '已释放',
-        all: '全部',
-      },
       filters: {
-        createdFrom: '创建时间起',
-        createdTo: '创建时间止',
-        updatedFrom: '续约时间起',
-        updatedTo: '续约时间止',
+        createdRange: '创建日期范围',
+        createdFrom: '创建日期起',
+        createdTo: '创建日期止',
+        updatedRange: '续约日期范围',
+        updatedFrom: '续约日期起',
+        updatedTo: '续约日期止',
+        rangeSeparator: '至',
         apply: '应用筛选',
         reset: '重置',
       },
@@ -70,7 +64,6 @@ function copyFor(language: Language) {
         clear: '清空选择',
       },
       actions: {
-        refresh: '刷新',
         release: '释放',
         releaseSelected: '释放已选',
         releaseFiltered: '释放当前筛选结果全部活跃会话',
@@ -107,20 +100,17 @@ function copyFor(language: Language) {
   }
 
   return {
-    generatedAt: 'Sorted by most recent renewal',
     loading: 'Loading session binding records…',
     loadFailed: 'Failed to load session binding records.',
     empty: 'No session binding records match the current filters.',
-    statusTabs: {
-      active: 'Active',
-      revoked: 'Revoked',
-      all: 'All',
-    },
     filters: {
-      createdFrom: 'Created from',
-      createdTo: 'Created to',
-      updatedFrom: 'Renewed from',
-      updatedTo: 'Renewed to',
+      createdRange: 'Created date range',
+      createdFrom: 'Created date from',
+      createdTo: 'Created date to',
+      updatedRange: 'Renewed date range',
+      updatedFrom: 'Renewed date from',
+      updatedTo: 'Renewed date to',
+      rangeSeparator: 'to',
       apply: 'Apply filters',
       reset: 'Reset',
     },
@@ -136,7 +126,6 @@ function copyFor(language: Language) {
       clear: 'Clear',
     },
     actions: {
-      refresh: 'Refresh',
       release: 'Release',
       releaseSelected: 'Release selected',
       releaseFiltered: 'Release all active sessions in current filter',
@@ -187,22 +176,26 @@ function formatIso8601WithOffset(date: Date): string {
   return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainderMinutes}`
 }
 
-function isoToDateTimeLocal(iso: string | null | undefined): string {
+function isoToDateInputValue(iso: string | null | undefined): string {
   if (!iso) return ''
   const parsed = new Date(iso)
   if (Number.isNaN(parsed.getTime())) return ''
   const year = parsed.getFullYear()
   const month = String(parsed.getMonth() + 1).padStart(2, '0')
   const day = String(parsed.getDate()).padStart(2, '0')
-  const hours = String(parsed.getHours()).padStart(2, '0')
-  const minutes = String(parsed.getMinutes()).padStart(2, '0')
-  return `${year}-${month}-${day}T${hours}:${minutes}`
+  return `${year}-${month}-${day}`
 }
 
-function dateTimeLocalToIso(value: string): string | null {
+function dateInputValueToIso(value: string, bound: 'start' | 'end'): string | null {
   const trimmed = value.trim()
   if (!trimmed) return null
-  const parsed = new Date(trimmed)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (!match) return null
+  const [, year, month, day] = match
+  const parsed =
+    bound === 'start'
+      ? new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0)
+      : new Date(Number(year), Number(month) - 1, Number(day), 23, 59, 59)
   if (Number.isNaN(parsed.getTime())) return null
   return formatIso8601WithOffset(parsed)
 }
@@ -240,9 +233,8 @@ export default function McpSessionBindingsModule({
   data,
   loadState,
   error,
-  refreshing,
   busy,
-  onRefresh,
+  showStatusTabs = true,
   onNavigate,
   onRevokeSelected,
   onRevokeFiltered,
@@ -263,19 +255,18 @@ export default function McpSessionBindingsModule({
     () => new Intl.NumberFormat(language === 'zh' ? 'zh-CN' : 'en-US'),
     [language],
   )
-  const [draftCreatedFrom, setDraftCreatedFrom] = useState(() => isoToDateTimeLocal(query.createdFrom))
-  const [draftCreatedTo, setDraftCreatedTo] = useState(() => isoToDateTimeLocal(query.createdTo))
-  const [draftUpdatedFrom, setDraftUpdatedFrom] = useState(() => isoToDateTimeLocal(query.updatedFrom))
-  const [draftUpdatedTo, setDraftUpdatedTo] = useState(() => isoToDateTimeLocal(query.updatedTo))
+  const [draftCreatedFrom, setDraftCreatedFrom] = useState(() => isoToDateInputValue(query.createdFrom))
+  const [draftCreatedTo, setDraftCreatedTo] = useState(() => isoToDateInputValue(query.createdTo))
+  const [draftUpdatedFrom, setDraftUpdatedFrom] = useState(() => isoToDateInputValue(query.updatedFrom))
+  const [draftUpdatedTo, setDraftUpdatedTo] = useState(() => isoToDateInputValue(query.updatedTo))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [confirmReleaseAllOpen, setConfirmReleaseAllOpen] = useState(false)
-  const statusTabsLabelId = useId()
 
   useEffect(() => {
-    setDraftCreatedFrom(isoToDateTimeLocal(query.createdFrom))
-    setDraftCreatedTo(isoToDateTimeLocal(query.createdTo))
-    setDraftUpdatedFrom(isoToDateTimeLocal(query.updatedFrom))
-    setDraftUpdatedTo(isoToDateTimeLocal(query.updatedTo))
+    setDraftCreatedFrom(isoToDateInputValue(query.createdFrom))
+    setDraftCreatedTo(isoToDateInputValue(query.createdTo))
+    setDraftUpdatedFrom(isoToDateInputValue(query.updatedFrom))
+    setDraftUpdatedTo(isoToDateInputValue(query.updatedTo))
   }, [query.createdFrom, query.createdTo, query.updatedFrom, query.updatedTo])
 
   useEffect(() => {
@@ -306,10 +297,10 @@ export default function McpSessionBindingsModule({
   const applyFilters = () => {
     onNavigate({
       status: query.status ?? 'active',
-      createdFrom: dateTimeLocalToIso(draftCreatedFrom),
-      createdTo: dateTimeLocalToIso(draftCreatedTo),
-      updatedFrom: dateTimeLocalToIso(draftUpdatedFrom),
-      updatedTo: dateTimeLocalToIso(draftUpdatedTo),
+      createdFrom: dateInputValueToIso(draftCreatedFrom, 'start'),
+      createdTo: dateInputValueToIso(draftCreatedTo, 'end'),
+      updatedFrom: dateInputValueToIso(draftUpdatedFrom, 'start'),
+      updatedTo: dateInputValueToIso(draftUpdatedTo, 'end'),
       page: 1,
     })
   }
@@ -341,105 +332,65 @@ export default function McpSessionBindingsModule({
 
   return (
     <section className="surface panel" style={{ display: 'grid', gap: 16 }}>
-      <div className="panel-header" style={{ alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <p className="panel-description">{copy.generatedAt}</p>
-          <div
-            role="group"
-            aria-labelledby={statusTabsLabelId}
-            style={{ display: 'grid', gap: 10, marginTop: 12 }}
-          >
-            <span id={statusTabsLabelId} className="sr-only">
-              status
-            </span>
-            <SegmentedTabs
-              value={query.status ?? 'active'}
-              onChange={(value) => {
-                onNavigate({
-                  ...query,
-                  status: value,
-                  page: 1,
-                })
-              }}
-              ariaLabel={language === 'zh' ? 'session 状态' : 'Session status'}
-              options={[
-                { value: 'active', label: copy.statusTabs.active },
-                { value: 'revoked', label: copy.statusTabs.revoked },
-                { value: 'all', label: copy.statusTabs.all },
-              ]}
-            />
-          </div>
+      {showStatusTabs ? (
+        <div className="panel-header" style={{ justifyContent: 'flex-end', gap: 12 }}>
+          <McpSessionBindingsStatusTabs
+            language={language}
+            value={query.status ?? 'active'}
+            onChange={(value) => {
+              onNavigate({
+                ...query,
+                status: value,
+                page: 1,
+              })
+            }}
+          />
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void onRefresh()}
-          disabled={refreshing || busy}
-        >
-          <Icon icon={refreshing ? 'mdi:loading' : 'mdi:refresh'} width={16} height={16} className={refreshing ? 'icon-spin' : undefined} />
-          <span>{copy.actions.refresh}</span>
-        </Button>
-      </div>
+      ) : null}
 
       <div className="surface" style={{ display: 'grid', gap: 12, padding: 16 }}>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <div>
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="mcp-session-bindings-created-from">
-              {copy.filters.createdFrom}
-            </label>
-            <Input
-              id="mcp-session-bindings-created-from"
-              type="datetime-local"
-              value={draftCreatedFrom}
-              onChange={(event) => setDraftCreatedFrom(event.target.value)}
-              disabled={busy}
-            />
+        <div className="mcp-session-bindings-filters">
+          <DateTimeRangeField
+            className="mcp-session-bindings-filters__field"
+            label={copy.filters.createdRange}
+            startId="mcp-session-bindings-created-from"
+            endId="mcp-session-bindings-created-to"
+            startLabel={copy.filters.createdFrom}
+            endLabel={copy.filters.createdTo}
+            startValue={draftCreatedFrom}
+            endValue={draftCreatedTo}
+            startSeparator={copy.filters.rangeSeparator}
+            startMax={draftCreatedTo}
+            endMin={draftCreatedFrom}
+            disabled={busy}
+            onStartChange={setDraftCreatedFrom}
+            onEndChange={setDraftCreatedTo}
+          />
+          <DateTimeRangeField
+            className="mcp-session-bindings-filters__field"
+            label={copy.filters.updatedRange}
+            startId="mcp-session-bindings-updated-from"
+            endId="mcp-session-bindings-updated-to"
+            startLabel={copy.filters.updatedFrom}
+            endLabel={copy.filters.updatedTo}
+            startValue={draftUpdatedFrom}
+            endValue={draftUpdatedTo}
+            startSeparator={copy.filters.rangeSeparator}
+            startMax={draftUpdatedTo}
+            endMin={draftUpdatedFrom}
+            disabled={busy}
+            onStartChange={setDraftUpdatedFrom}
+            onEndChange={setDraftUpdatedTo}
+          />
+
+          <div className="mcp-session-bindings-filters__actions">
+            <Button type="button" size="sm" onClick={applyFilters} disabled={busy}>
+              {copy.filters.apply}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={resetFilters} disabled={busy}>
+              {copy.filters.reset}
+            </Button>
           </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="mcp-session-bindings-created-to">
-              {copy.filters.createdTo}
-            </label>
-            <Input
-              id="mcp-session-bindings-created-to"
-              type="datetime-local"
-              value={draftCreatedTo}
-              onChange={(event) => setDraftCreatedTo(event.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="mcp-session-bindings-updated-from">
-              {copy.filters.updatedFrom}
-            </label>
-            <Input
-              id="mcp-session-bindings-updated-from"
-              type="datetime-local"
-              value={draftUpdatedFrom}
-              onChange={(event) => setDraftUpdatedFrom(event.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="mcp-session-bindings-updated-to">
-              {copy.filters.updatedTo}
-            </label>
-            <Input
-              id="mcp-session-bindings-updated-to"
-              type="datetime-local"
-              value={draftUpdatedTo}
-              onChange={(event) => setDraftUpdatedTo(event.target.value)}
-              disabled={busy}
-            />
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Button type="button" size="sm" onClick={applyFilters} disabled={busy}>
-            {copy.filters.apply}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={resetFilters} disabled={busy}>
-            {copy.filters.reset}
-          </Button>
         </div>
       </div>
 

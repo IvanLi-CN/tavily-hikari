@@ -110,6 +110,7 @@ import { ApiKeyBulkSyncProgressBubble } from '../ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from '../ForwardProxySettingsModule'
 import ModulePlaceholder from '../ModulePlaceholder'
 import McpSessionBindingsModule from '../McpSessionBindingsModule'
+import McpSessionBindingsStatusTabs from '../McpSessionBindingsStatusTabs'
 import SystemSettingsModule from '../SystemSettingsModule'
 import UpstreamPrivacyStatusModule from '../UpstreamPrivacyStatusModule'
 import AdminSecuritySettingsModule from '../AdminSecuritySettingsModule'
@@ -6533,6 +6534,13 @@ function SystemSettingsMcpSessionBindingsPageCanvas(): JSX.Element {
   return (
     <AdminPageFrame
       activeModule="system-settings"
+      introActions={
+        <McpSessionBindingsStatusTabs
+          language={language}
+          value="active"
+          onChange={() => undefined}
+        />
+      }
       introOverride={{
         title: language === 'zh' ? '遗留会话绑定记录' : 'Legacy session bindings',
         description:
@@ -6547,9 +6555,8 @@ function SystemSettingsMcpSessionBindingsPageCanvas(): JSX.Element {
         data={systemSettingsMcpSessionBindingsPage}
         loadState="ready"
         error={null}
-        refreshing={false}
         busy={false}
-        onRefresh={() => undefined}
+        showStatusTabs={false}
         onNavigate={() => undefined}
         onRevokeSelected={() => undefined}
         onRevokeFiltered={() => undefined}

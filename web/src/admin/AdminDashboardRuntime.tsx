@@ -76,6 +76,7 @@ import DashboardOverview, { type DashboardQuotaChargeCardData } from './Dashboar
 import AdminUserRankingsPage, { RankingsMeta } from './AdminUserRankingsPage'
 import PressureAnalysisScreen from './PressureAnalysisScreen'
 import AdminJobTriggerMenu from './AdminJobTriggerMenu'
+import McpSessionBindingsStatusTabs from './McpSessionBindingsStatusTabs'
 import { AnchoredApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import {
   createDashboardMonthMetrics,
@@ -9124,6 +9125,19 @@ function AdminDashboard(): JSX.Element {
   const showSystemSettingsStatus = showSystemSettings && systemSettingsView === 'status'
   const showSystemSettingsAdmin = showSystemSettings && systemSettingsView === 'admin'
 
+  const renderMcpSessionBindingsHeaderTabs = (): JSX.Element => (
+    <McpSessionBindingsStatusTabs
+      language={language}
+      value={mcpSessionBindingsRouteQuery.status ?? 'active'}
+      onChange={(value) =>
+        navigateMcpSessionBindings({
+          ...mcpSessionBindingsRouteQuery,
+          status: value,
+          page: 1,
+        })}
+    />
+  )
+
   useEffect(() => {
     if (!showSystemSettingsHa) return
     void refreshHaTimeline(null, false)
@@ -10601,6 +10615,7 @@ function AdminDashboard(): JSX.Element {
             userConsoleLabel={headerStrings.returnToConsole}
             userConsoleHref={userConsoleHref}
             onRefresh={handleManualRefresh}
+            extraActions={showMcpSessionBindings ? renderMcpSessionBindingsHeaderTabs() : undefined}
           />
         )
       )}
@@ -10635,6 +10650,8 @@ function AdminDashboard(): JSX.Element {
                             ? renderAlertsViewTabs()
                             : showAnnouncements
                               ? <div id={ANNOUNCEMENTS_HEADER_ACTION_SLOT_ID} />
+                              : showMcpSessionBindings
+                                ? renderMcpSessionBindingsHeaderTabs()
                               : undefined
           }
         />
@@ -12548,11 +12565,8 @@ function AdminDashboard(): JSX.Element {
             data={mcpSessionBindingsData}
             loadState={mcpSessionBindingsLoadState}
             error={mcpSessionBindingsError}
-            refreshing={isRefreshingLoadState(mcpSessionBindingsLoadState)}
             busy={mcpSessionBindingsBusy}
-            onRefresh={async () => {
-              await loadMcpSessionBindingsData({ reason: 'refresh' })
-            }}
+            showStatusTabs={false}
             onNavigate={navigateMcpSessionBindings}
             onRevokeSelected={handleRevokeSelectedMcpSessionBindings}
             onRevokeFiltered={handleRevokeFilteredMcpSessionBindings}

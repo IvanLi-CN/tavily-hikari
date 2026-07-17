@@ -116,9 +116,7 @@ function StoryCanvas(args: Partial<StoryArgs> & { initialItems?: AdminMcpSession
         data={page}
         loadState={args.loadState ?? 'ready'}
         error={args.error ?? null}
-        refreshing={args.refreshing ?? false}
         busy={args.busy ?? false}
-        onRefresh={() => undefined}
         onNavigate={setQuery}
         onRevokeSelected={(proxySessionIds) => revokeItems(new Set(proxySessionIds), 'admin_selected_revoke')}
         onRevokeFiltered={() => {
@@ -161,9 +159,7 @@ const meta = {
     data: buildPage(SAMPLE_ITEMS, { status: 'active', page: 1 }),
     loadState: 'ready',
     error: null,
-    refreshing: false,
     busy: false,
-    onRefresh: () => undefined,
     onNavigate: () => undefined,
     onRevokeSelected: () => undefined,
     onRevokeFiltered: () => undefined,
