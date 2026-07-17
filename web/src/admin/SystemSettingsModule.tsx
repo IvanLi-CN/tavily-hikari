@@ -37,6 +37,7 @@ interface SystemSettingsModuleProps {
   helpBubbleOpen?: boolean
   displayDensity?: AdminDisplayDensity
   userListStats?: AdminUserListStats | null
+  activeUpstreamMcpSessions?: number
   registrationPolicy?: {
     strings: AdminTranslations['users']['registration']
     checked: boolean | null
@@ -46,6 +47,7 @@ interface SystemSettingsModuleProps {
     onToggle: () => Promise<void> | void
   }
   onDisplayDensityChange?: (density: AdminDisplayDensity) => void
+  onOpenMcpSessionBindings?: () => void
   onApply: (settings: SystemSettings) => Promise<void> | void
 }
 
@@ -256,8 +258,10 @@ export default function SystemSettingsModule({
   helpBubbleOpen,
   displayDensity = 'comfortable',
   userListStats,
+  activeUpstreamMcpSessions = 0,
   registrationPolicy,
   onDisplayDensityChange = () => {},
+  onOpenMcpSessionBindings,
   onApply,
 }: SystemSettingsModuleProps): JSX.Element {
   const [draftRequestRateLimit, setDraftRequestRateLimit] = useState(() =>
@@ -1245,9 +1249,32 @@ export default function SystemSettingsModule({
 
               <div className="system-settings-toggle-row">
                 <div className="system-settings-toggle-copy">
-                  <label className="text-sm font-medium" htmlFor="system-settings-rebalance-switch">
-                    {strings.form.rebalanceLabel}
-                  </label>
+                  <div className="system-settings-field-label-row">
+                    <label className="text-sm font-medium" htmlFor="system-settings-rebalance-switch">
+                      {strings.form.rebalanceLabel}
+                    </label>
+                    {activeUpstreamMcpSessions > 0 && onOpenMcpSessionBindings ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              className="h-7 w-7 rounded-full px-0 text-amber-600 hover:text-amber-700"
+                              aria-label="upstream_mcp session"
+                              onClick={onOpenMcpSessionBindings}
+                            >
+                              <Icon icon="mdi:alert-circle-outline" width={16} height={16} aria-hidden="true" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            <span>upstream_mcp session · {activeUpstreamMcpSessions}</span>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : null}
+                  </div>
                   <p className="text-xs text-muted-foreground">{strings.form.rebalanceHint}</p>
                 </div>
                 <Switch

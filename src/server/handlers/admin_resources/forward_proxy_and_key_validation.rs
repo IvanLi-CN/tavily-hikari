@@ -17,11 +17,70 @@ async fn get_settings(
         eprintln!("get admin user list stats error: {err}");
         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
+    let active_upstream_mcp_sessions =
+        state
+            .proxy
+            .active_upstream_mcp_session_count()
+            .await
+            .map_err(|err| {
+                eprintln!("get active upstream mcp session count error: {err}");
+                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            })?;
     Ok(Json(SettingsResponse {
         forward_proxy: Some(forward_proxy),
         system_settings,
         admin_user_list_stats,
+        active_upstream_mcp_sessions,
     }))
+}
+
+fn parse_admin_mcp_session_timestamp_filter(
+    value: Option<&str>,
+) -> Result<Option<i64>, (StatusCode, String)> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => parse_iso_timestamp(raw)
+            .ok_or((StatusCode::BAD_REQUEST, "invalid RFC3339 timestamp".to_string()))
+            .map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn normalize_admin_mcp_session_bindings_query(
+    payload: AdminMcpSessionBindingsQueryPayload,
+) -> Result<tavily_hikari::AdminMcpSessionBindingsQuery, (StatusCode, String)> {
+    let created_from = parse_admin_mcp_session_timestamp_filter(payload.created_from.as_deref())?;
+    let created_to = parse_admin_mcp_session_timestamp_filter(payload.created_to.as_deref())?;
+    let updated_from = parse_admin_mcp_session_timestamp_filter(payload.updated_from.as_deref())?;
+    let updated_to = parse_admin_mcp_session_timestamp_filter(payload.updated_to.as_deref())?;
+
+    if let (Some(from), Some(to)) = (created_from, created_to)
+        && from > to
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "created_from must be earlier than or equal to created_to".to_string(),
+        ));
+    }
+    if let (Some(from), Some(to)) = (updated_from, updated_to)
+        && from > to
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "updated_from must be earlier than or equal to updated_to".to_string(),
+        ));
+    }
+
+    Ok(tavily_hikari::AdminMcpSessionBindingsQuery {
+        status: payload
+            .status
+            .unwrap_or(tavily_hikari::AdminMcpSessionBindingFilterStatus::Active),
+        created_from,
+        created_to,
+        updated_from,
+        updated_to,
+        page: payload.page.unwrap_or(1).max(1),
+        per_page: payload.per_page.unwrap_or(20).clamp(1, 100),
+    })
 }
 
 async fn get_forward_proxy_settings(
@@ -168,6 +227,79 @@ async fn get_upstream_privacy_status(
             eprintln!("get upstream privacy status error: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         })
+}
+
+async fn get_admin_mcp_session_bindings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AdminMcpSessionBindingsQueryPayload>,
+) -> Result<Json<tavily_hikari::AdminMcpSessionBindingsPage>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let query = normalize_admin_mcp_session_bindings_query(query)?;
+    state
+        .proxy
+        .admin_mcp_session_bindings_page(&query)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("get admin mcp session bindings error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
+async fn post_revoke_selected_admin_mcp_session_bindings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminMcpSessionBindingsRevokeSelectedPayload>,
+) -> Result<Json<tavily_hikari::AdminMcpSessionBindingsRevokeResult>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    require_full_master_write(state.as_ref()).await?;
+    if payload.proxy_session_ids.is_empty() {
+        return Ok(Json(tavily_hikari::AdminMcpSessionBindingsRevokeResult {
+            revoked_count: 0,
+        }));
+    }
+    let revoked_count = state
+        .proxy
+        .revoke_admin_selected_mcp_session_bindings(
+            &payload.proxy_session_ids,
+            "admin_selected_revoke",
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("revoke selected admin mcp session bindings error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })?;
+    Ok(Json(tavily_hikari::AdminMcpSessionBindingsRevokeResult {
+        revoked_count,
+    }))
+}
+
+async fn post_revoke_filtered_admin_mcp_session_bindings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AdminMcpSessionBindingsQueryPayload>,
+) -> Result<Json<tavily_hikari::AdminMcpSessionBindingsRevokeResult>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers).await {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    require_full_master_write(state.as_ref()).await?;
+    let query = normalize_admin_mcp_session_bindings_query(payload)?;
+    let revoked_count = state
+        .proxy
+        .revoke_admin_filtered_mcp_session_bindings(&query, "admin_filtered_revoke")
+        .await
+        .map_err(|err| {
+            eprintln!("revoke filtered admin mcp session bindings error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })?;
+    Ok(Json(tavily_hikari::AdminMcpSessionBindingsRevokeResult {
+        revoked_count,
+    }))
 }
 
 async fn get_observed_client_ip_requests(

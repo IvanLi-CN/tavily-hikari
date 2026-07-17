@@ -18,9 +18,16 @@ import {
   parseAdminPath,
   rankingsPath,
   systemSettingsAdminPath,
+  systemSettingsMcpSessionBindingsPath,
   systemSettingsStatusPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
+  getMcpSessionBindingsCreatedFromSearch,
+  getMcpSessionBindingsCreatedToSearch,
+  getMcpSessionBindingsUpdatedFromSearch,
+  getMcpSessionBindingsUpdatedToSearch,
+  getMcpSessionBindingsPageFromSearch,
+  getMcpSessionBindingsStatusFromSearch,
   tokenDetailPath,
   unboundTokenUsagePath,
   userDetailPath,
@@ -120,6 +127,40 @@ describe('admin user tag routes', () => {
       name: 'ha-node',
       nodeId: 'demo-standby',
     })
+  })
+
+  it('parses and builds the hidden MCP session bindings route', () => {
+    expect(parseAdminPath('/admin/system-settings/mcp-session-bindings')).toEqual({
+      name: 'mcp-session-bindings',
+    })
+    expect(systemSettingsMcpSessionBindingsPath()).toBe('/admin/system-settings/mcp-session-bindings')
+    expect(
+      systemSettingsMcpSessionBindingsPath({
+        status: 'all',
+        createdFrom: '2026-07-15T00:00:00+08:00',
+        createdTo: '2026-07-15T11:00:00+08:00',
+        updatedFrom: '2026-07-15T11:00:00+08:00',
+        updatedTo: '2026-07-15T22:00:00+08:00',
+        page: 3,
+      }),
+    ).toBe(
+      '/admin/system-settings/mcp-session-bindings?status=all&createdFrom=2026-07-15T00%3A00%3A00%2B08%3A00&createdTo=2026-07-15T11%3A00%3A00%2B08%3A00&updatedFrom=2026-07-15T11%3A00%3A00%2B08%3A00&updatedTo=2026-07-15T22%3A00%3A00%2B08%3A00&page=3',
+    )
+    expect(getMcpSessionBindingsStatusFromSearch('')).toBe('active')
+    expect(getMcpSessionBindingsStatusFromSearch('?status=revoked')).toBe('revoked')
+    expect(getMcpSessionBindingsCreatedFromSearch('?createdFrom=2026-07-15T00:00:00%2B08:00')).toBe(
+      '2026-07-15T00:00:00+08:00',
+    )
+    expect(getMcpSessionBindingsCreatedToSearch('?createdTo=2026-07-15T11:00:00%2B08:00')).toBe(
+      '2026-07-15T11:00:00+08:00',
+    )
+    expect(getMcpSessionBindingsUpdatedFromSearch('?updatedFrom=2026-07-15T11:00:00%2B08:00')).toBe(
+      '2026-07-15T11:00:00+08:00',
+    )
+    expect(getMcpSessionBindingsUpdatedToSearch('?updatedTo=2026-07-15T22:00:00%2B08:00')).toBe(
+      '2026-07-15T22:00:00+08:00',
+    )
+    expect(getMcpSessionBindingsPageFromSearch('?page=4')).toBe(4)
   })
 
   it('parses dedicated announcement editor routes before module fallback', () => {

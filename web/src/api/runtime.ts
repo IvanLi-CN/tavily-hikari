@@ -7,6 +7,9 @@ import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
 import type { RequestLogRetentionSettings } from './requestLogRetention'
 import type {
+  AdminMcpSessionBindingsPage,
+  AdminMcpSessionBindingsQuery,
+  AdminMcpSessionBindingsRevokeResult,
   AdminUserListStats,
   ForwardProxySettingsEnvelope,
   SystemSettings,
@@ -3866,6 +3869,7 @@ export async function fetchSystemSettingsEnvelope(signal?: AbortSignal): Promise
     forwardProxy: response.forwardProxy ?? createEmptyForwardProxySettings(),
     systemSettings: response.systemSettings ?? createEmptySystemSettings(),
     adminUserListStats: response.adminUserListStats ?? createEmptyAdminUserListStats(),
+    activeUpstreamMcpSessions: response.activeUpstreamMcpSessions ?? 0,
   }
 }
 
@@ -3881,6 +3885,63 @@ export async function fetchSystemSettings(signal?: AbortSignal): Promise<SystemS
 
 export async function fetchSystemStatus(signal?: AbortSignal): Promise<UpstreamPrivacyStatus> {
   return requestJson<UpstreamPrivacyStatus>('/api/settings/system/status', { signal })
+}
+
+function buildAdminMcpSessionBindingsSearch(query: AdminMcpSessionBindingsQuery): string {
+  const params = new URLSearchParams()
+  if (query.status) params.set('status', query.status)
+  if (query.createdFrom) params.set('created_from', query.createdFrom)
+  if (query.createdTo) params.set('created_to', query.createdTo)
+  if (query.updatedFrom) params.set('updated_from', query.updatedFrom)
+  if (query.updatedTo) params.set('updated_to', query.updatedTo)
+  if (query.page != null) params.set('page', String(query.page))
+  if (query.perPage != null) params.set('per_page', String(query.perPage))
+  const search = params.toString()
+  return search ? `?${search}` : ''
+}
+
+export async function fetchAdminMcpSessionBindings(
+  query: AdminMcpSessionBindingsQuery,
+  signal?: AbortSignal,
+): Promise<AdminMcpSessionBindingsPage> {
+  return requestJson<AdminMcpSessionBindingsPage>(
+    `/api/settings/system/mcp-session-bindings${buildAdminMcpSessionBindingsSearch(query)}`,
+    { signal },
+  )
+}
+
+export async function revokeSelectedAdminMcpSessionBindings(
+  proxySessionIds: string[],
+): Promise<AdminMcpSessionBindingsRevokeResult> {
+  return requestJson<AdminMcpSessionBindingsRevokeResult>(
+    '/api/settings/system/mcp-session-bindings/revoke-selected',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proxySessionIds }),
+    },
+  )
+}
+
+export async function revokeFilteredAdminMcpSessionBindings(
+  query: AdminMcpSessionBindingsQuery,
+): Promise<AdminMcpSessionBindingsRevokeResult> {
+  return requestJson<AdminMcpSessionBindingsRevokeResult>(
+    '/api/settings/system/mcp-session-bindings/revoke-filtered',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: query.status,
+        createdFrom: query.createdFrom ?? null,
+        createdTo: query.createdTo ?? null,
+        updatedFrom: query.updatedFrom ?? null,
+        updatedTo: query.updatedTo ?? null,
+        page: query.page ?? null,
+        perPage: query.perPage ?? null,
+      }),
+    },
+  )
 }
 
 export function updateForwardProxySettings(

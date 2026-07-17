@@ -680,6 +680,7 @@ struct SettingsResponse {
     forward_proxy: Option<tavily_hikari::ForwardProxySettingsResponse>,
     system_settings: tavily_hikari::SystemSettings,
     admin_user_list_stats: tavily_hikari::AdminUserListStats,
+    active_upstream_mcp_sessions: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -733,6 +734,24 @@ struct SystemSettingsUpdatePayload {
     trusted_proxy_cidrs: Option<Vec<String>>,
     trusted_client_ip_headers: Option<Vec<String>>,
     request_log_retention: Option<tavily_hikari::RequestLogRetentionSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminMcpSessionBindingsQueryPayload {
+    status: Option<tavily_hikari::AdminMcpSessionBindingFilterStatus>,
+    created_from: Option<String>,
+    created_to: Option<String>,
+    updated_from: Option<String>,
+    updated_to: Option<String>,
+    page: Option<i64>,
+    per_page: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminMcpSessionBindingsRevokeSelectedPayload {
+    proxy_session_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

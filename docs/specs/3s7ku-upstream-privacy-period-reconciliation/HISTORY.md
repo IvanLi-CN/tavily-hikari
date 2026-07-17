@@ -8,6 +8,8 @@
 - 2026-07-14: 业务日采用服务器现有业务时区，并固定三个窗口 `00-11 / 11-22 / 22-24`。
 - 2026-07-14: 结算只执行一次；Research 最长等待 24 小时，超时后 degraded 结算且不自动复核。
 - 2026-07-15: 去掉 API/MCP rebalance 百分比放量控件；新流量是否全量走 rebalance 只由两个开关决定，兼容百分比字段统一归一化为 `0|100`。
+- 2026-07-16: 拆开 shadow compare 与 precise cutover 门禁；compare-only 不再等待遗留 `upstream_mcp` session 排空，系统状态主相位改为“仅对比”。
+- 2026-07-16: 新增隐藏路由 `/admin/system-settings/mcp-session-bindings` 及其 warning/stat 卡入口，用于查询与释放异常 `upstream_mcp` session 绑定记录。
 
 ## Key Reasons / Replacements
 

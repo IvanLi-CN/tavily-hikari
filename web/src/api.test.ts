@@ -1600,7 +1600,7 @@ describe('admin user tag api helpers', () => {
             gates: [{ key: 'accessTokenMode', ready: true, detail: 'AccessToken' }],
             completedGates: 1,
             totalGates: 4,
-            activeControlSessions: 2,
+            activeUpstreamMcpSessions: 2,
             currentPeriodCode: '2026-07-14/S2',
             currentPeriodEndsAt: 1_783_994_400,
             nextEpochAt: 1_783_994_400,
@@ -1620,7 +1620,7 @@ describe('admin user tag api helpers', () => {
       phase: 'pending',
       configuredProjectIdMode: 'accessToken',
       currentPeriodCode: '2026-07-14/S2',
-      activeControlSessions: 2,
+      activeUpstreamMcpSessions: 2,
     })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/system/status')
   })

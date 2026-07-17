@@ -2863,6 +2863,7 @@ include!("key_store_keys.rs");
 include!("key_store_account_base_entitlement_backfill.rs");
 include!("key_store_admin_passkeys.rs");
 include!("key_store_sessions.rs");
+include!("key_store_mcp_session_bindings.rs");
 include!("key_store_system_settings.rs");
 include!("key_store_upstream_reconciliation.rs");
 include!("key_store_users_and_oauth.rs");

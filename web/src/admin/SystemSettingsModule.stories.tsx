@@ -32,6 +32,7 @@ function SystemSettingsCanvas(props: {
   displayDensity?: AdminDisplayDensity
   adminDefaultActiveUsersOnly?: boolean
   userListStats?: AdminUserListStats
+  activeUpstreamMcpSessions?: number
 }): JSX.Element {
   const [displayDensity, setDisplayDensity] = useState<AdminDisplayDensity>(props.displayDensity ?? 'comfortable')
   const [allowRegistration, setAllowRegistration] = useState(false)
@@ -74,6 +75,7 @@ function SystemSettingsCanvas(props: {
         helpBubbleOpen={props.helpBubbleOpen}
         displayDensity={displayDensity}
         userListStats={props.userListStats ?? { activeUsers90d: 128, totalUsers: 346, windowDays: 90 }}
+        activeUpstreamMcpSessions={props.activeUpstreamMcpSessions ?? 0}
         registrationPolicy={{
           strings: translations.zh.admin.users.registration,
           checked: allowRegistration,
@@ -85,6 +87,7 @@ function SystemSettingsCanvas(props: {
           onToggle: () => setAllowRegistration((current) => !current),
         }}
         onDisplayDensityChange={setDisplayDensity}
+        onOpenMcpSessionBindings={() => {}}
         onApply={(nextSettings) => {
           setCurrentSettings(nextSettings)
         }}
@@ -247,6 +250,10 @@ export const CompactDensity: Story = {
 
 export const RebalanceEnabled: Story = {
   render: () => <SystemSettingsCanvas rebalanceEnabled />,
+}
+
+export const RebalanceWarning: Story = {
+  render: () => <SystemSettingsCanvas rebalanceEnabled activeUpstreamMcpSessions={3} />,
 }
 
 export const ApiRebalanceEnabled: Story = {

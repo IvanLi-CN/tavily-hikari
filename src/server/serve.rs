@@ -321,6 +321,18 @@ pub async fn serve(
             "/api/settings/system/privacy-status",
             get(get_upstream_privacy_status),
         )
+        .route(
+            "/api/settings/system/mcp-session-bindings",
+            get(get_admin_mcp_session_bindings),
+        )
+        .route(
+            "/api/settings/system/mcp-session-bindings/revoke-selected",
+            post(post_revoke_selected_admin_mcp_session_bindings),
+        )
+        .route(
+            "/api/settings/system/mcp-session-bindings/revoke-filtered",
+            post(post_revoke_filtered_admin_mcp_session_bindings),
+        )
         .route("/api/admin/recharges", get(get_admin_recharges))
         .route(
             "/api/admin/recharges/:out_trade_no/refund",

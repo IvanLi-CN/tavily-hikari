@@ -146,6 +146,114 @@ async fn signed_reconciliation_adjustment_is_idempotent_and_restores_quota() {
 }
 
 #[tokio::test]
+async fn shadow_usage_records_even_when_active_upstream_mcp_sessions_block_precise_cutover() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-shadow-compare"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let token = proxy
+        .create_access_token(Some("reconciliation-shadow-compare"))
+        .await
+        .expect("create token");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save shadow compare settings");
+
+    sqlx::query(
+        r#"
+        INSERT INTO mcp_sessions (
+            proxy_session_id,
+            upstream_session_id,
+            upstream_key_id,
+            auth_token_id,
+            user_id,
+            protocol_version,
+            last_event_id,
+            gateway_mode,
+            experiment_variant,
+            ab_bucket,
+            routing_subject_hash,
+            fallback_reason,
+            rate_limited_until,
+            last_rate_limited_at,
+            last_rate_limit_reason,
+            created_at,
+            updated_at,
+            expires_at,
+            revoked_at,
+            revoke_reason
+        ) VALUES (?, ?, NULL, ?, NULL, '2025-03-26', NULL, ?, 'control', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, NULL)
+        "#,
+    )
+    .bind("sess-shadow-blocker")
+    .bind("upstream-shadow-blocker")
+    .bind(&token.id)
+    .bind(MCP_GATEWAY_MODE_UPSTREAM)
+    .bind(now - 300)
+    .bind(now - 60)
+    .bind(now + 3_600)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert active upstream session");
+
+    let (eligible, epoch, active_sessions) = proxy
+        .key_store
+        .refresh_upstream_reconciliation_epoch()
+        .await
+        .expect("refresh reconciliation epoch");
+    assert!(!eligible);
+    assert_eq!(epoch, 0);
+    assert_eq!(active_sessions, 1);
+
+    let period = proxy
+        .key_store
+        .record_upstream_reconciliation_usage(
+            &token.id,
+            "key-shadow-compare",
+            &format!("token:{}", token.id),
+            None,
+        )
+        .await
+        .expect("record shadow usage")
+        .expect("shadow period");
+    let row = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        SELECT period_code, settlement_mode, project_id
+        FROM upstream_reconciliation_usage
+        WHERE token_id = ? AND key_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(&token.id)
+    .bind("key-shadow-compare")
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch shadow usage row");
+    assert_eq!(row.0, period.code);
+    assert_eq!(row.1, "shadow");
+    assert!(!row.2.is_empty(), "project_id should still be derived");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

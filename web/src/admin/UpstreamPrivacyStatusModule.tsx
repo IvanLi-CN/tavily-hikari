@@ -19,6 +19,7 @@ interface UpstreamPrivacyStatusModuleProps {
   refreshing: boolean
   autoRefreshEnabled: boolean
   onAutoRefreshChange: (next: boolean) => void
+  onOpenMcpSessionBindings: () => void
   onRefresh: () => Promise<void> | void
 }
 
@@ -67,7 +68,7 @@ function gateLabel(
     case 'mcpRebalance':
       return language === 'zh' ? 'Rebalance MCP 已启用' : 'Rebalance MCP enabled'
     case 'controlSessionsDrained':
-      return strings.gateControlSessionsDrained
+      return language === 'zh' ? '`upstream_mcp` session 已排空' : '`upstream_mcp` sessions drained'
     default:
       return gate.key
   }
@@ -99,6 +100,7 @@ export default function UpstreamPrivacyStatusModule({
   refreshing,
   autoRefreshEnabled,
   onAutoRefreshChange,
+  onOpenMcpSessionBindings,
   onRefresh,
 }: UpstreamPrivacyStatusModuleProps): JSX.Element {
   const autoRefreshLabelId = useId()
@@ -114,6 +116,9 @@ export default function UpstreamPrivacyStatusModule({
     () => new Intl.NumberFormat(language === 'zh' ? 'zh-CN' : 'en-US'),
     [language],
   )
+  const sessionBindingCardLabel =
+    language === 'zh' ? '活跃 upstream_mcp session' : 'Active upstream_mcp sessions'
+  const sessionBindingSummaryLabel = sessionBindingCardLabel
 
   const phaseLabel = status
     ? ({
@@ -187,8 +192,8 @@ export default function UpstreamPrivacyStatusModule({
       !status
         ? []
         : [
-            ...(status.activeControlSessions > 0
-              ? [{ label: strings.counterControlSessions, value: numberFormatter.format(status.activeControlSessions) }]
+            ...(status.activeUpstreamMcpSessions > 0
+              ? [{ label: sessionBindingSummaryLabel, value: numberFormatter.format(status.activeUpstreamMcpSessions) }]
               : []),
             ...(status.pendingResearch > 0
               ? [{ label: strings.counterPendingResearch, value: numberFormatter.format(status.pendingResearch) }]
@@ -200,7 +205,7 @@ export default function UpstreamPrivacyStatusModule({
               ? [{ label: strings.counterDegradedSettlements, value: numberFormatter.format(status.degradedSettlements) }]
               : []),
           ],
-    [numberFormatter, status, strings],
+    [numberFormatter, sessionBindingSummaryLabel, status, strings],
   )
 
   const configurationDriftCount = status
@@ -212,6 +217,20 @@ export default function UpstreamPrivacyStatusModule({
   const showFixedProjectIdState = status
     ? status.configuredProjectIdMode === 'fixed' || status.effectiveProjectIdMode === 'fixed'
     : false
+  const sessionBindingCardDescription = status?.activeUpstreamMcpSessions
+    ? language === 'zh'
+      ? '这些会话仍会阻塞 precise cutover。点击进入绑定记录页后可逐条、批量或按当前筛选全部释放。'
+      : 'These sessions still block precise cutover. Open the binding records page to release one, selected, or all active matches.'
+    : language === 'zh'
+      ? '当前没有待处理的 legacy `upstream_mcp` session，precise cutover 不再受该门禁阻塞。'
+      : 'No legacy `upstream_mcp` sessions are pending. This gate no longer blocks precise cutover.'
+  const reconciliationModeLabel = status
+    ? status.phase === 'active'
+      ? strings.statusActive
+      : status.phase === 'compare'
+        ? strings.statusCompareOnly
+        : strings.statusConfigured
+    : strings.statusConfigured
 
   return (
     <section className="surface panel upstream-privacy-shell">
@@ -295,17 +314,31 @@ export default function UpstreamPrivacyStatusModule({
                 />
                 <PrivacyStat
                   label={strings.reconciliationMode}
-                  value={
-                    status.upstreamPreciseReconciliationEnabled
-                      ? strings.statusActive
-                      : strings.statusCompareOnly
-                  }
+                  value={reconciliationModeLabel}
                 />
                 <PrivacyStat
                   label={strings.userAgentEffective}
                   value={formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted)}
                 />
               </div>
+            </section>
+
+            <section className="upstream-privacy-section">
+              <button
+                type="button"
+                className="upstream-privacy-stat"
+                style={{ width: '100%', textAlign: 'left', cursor: 'pointer' }}
+                onClick={onOpenMcpSessionBindings}
+              >
+                <span>{sessionBindingCardLabel}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                  <strong>{numberFormatter.format(status.activeUpstreamMcpSessions)}</strong>
+                  <StatusBadge tone={status.activeUpstreamMcpSessions > 0 ? 'warning' : 'success'}>
+                    {status.activeUpstreamMcpSessions > 0 ? strings.gateWaiting : strings.gateReady}
+                  </StatusBadge>
+                </div>
+                <small>{sessionBindingCardDescription}</small>
+              </button>
             </section>
 
             <section className="upstream-privacy-section">
@@ -344,7 +377,7 @@ export default function UpstreamPrivacyStatusModule({
                 </div>
               </div>
               <div className="upstream-privacy-counters">
-                <PrivacyStat label={strings.counterControlSessions} value={numberFormatter.format(status.activeControlSessions)} />
+                <PrivacyStat label={sessionBindingSummaryLabel} value={numberFormatter.format(status.activeUpstreamMcpSessions)} />
                 <PrivacyStat label={strings.counterPendingResearch} value={numberFormatter.format(status.pendingResearch)} />
                 <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
                 <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
@@ -401,11 +434,7 @@ export default function UpstreamPrivacyStatusModule({
                     />
                     <PrivacyStat
                       label={strings.reconciliationMode}
-                      value={
-                        status.upstreamPreciseReconciliationEnabled
-                          ? strings.statusActive
-                          : strings.statusCompareOnly
-                      }
+                      value={reconciliationModeLabel}
                     />
                     <PrivacyStat label={strings.generatedAt} value={timestampFormatter.format(new Date(status.generatedAt * 1000))} />
                   </div>

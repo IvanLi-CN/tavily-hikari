@@ -2628,6 +2628,26 @@ pub(super) async fn spawn_admin_forward_proxy_server_with_geo_origin(
         .route("/api/settings", get(get_settings))
         .route("/api/settings/system", put(put_system_settings))
         .route(
+            "/api/settings/system/status",
+            get(get_upstream_privacy_status),
+        )
+        .route(
+            "/api/settings/system/privacy-status",
+            get(get_upstream_privacy_status),
+        )
+        .route(
+            "/api/settings/system/mcp-session-bindings",
+            get(get_admin_mcp_session_bindings),
+        )
+        .route(
+            "/api/settings/system/mcp-session-bindings/revoke-selected",
+            post(post_revoke_selected_admin_mcp_session_bindings),
+        )
+        .route(
+            "/api/settings/system/mcp-session-bindings/revoke-filtered",
+            post(post_revoke_filtered_admin_mcp_session_bindings),
+        )
+        .route(
             "/api/settings/forward-proxy",
             get(get_forward_proxy_settings).put(put_forward_proxy_settings),
         )

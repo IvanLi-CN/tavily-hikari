@@ -7,7 +7,7 @@
 - 现有 HTTP Header sanitizer 仍允许客户端 UA、浏览器指纹及部分未知 `x-*` 字段进入上游请求。
 - 既有 HTTP 规格要求原样透传 `X-Project-ID`，固定 MCP UA 也直接暴露项目身份。
 - Research 使用本地估算 credits；共享上游 Key 下无法仅靠账户累计 usage 精确归属单次请求。
-- 管理员缺少 configured/effective/draining 状态面，无法确认隐私设置与精准对账是否真正生效。
+- 管理员缺少系统状态与异常 `upstream_mcp` session 管理面，无法确认 shadow compare 是否在产数、precise cutover 是否被遗留 session 阻塞。
 
 ## 目标 / 非目标
 
@@ -17,7 +17,7 @@
 - `X-Project-ID` 支持 `passthrough / fixed / accessToken`，默认 `accessToken`。
 - 使用稳定 token id 与业务时间段派生不可逆上游项目标识，并在 HA 节点间保持一致。
 - 在完整窗口、API/MCP Rebalance 开关均启用且旧 Control session 排空后执行一次幂等多退少补。
-- 提供只读“系统状态”管理页，明确展示配置、实际生效状态、门禁与结算队列。
+- 提供“系统状态”页与隐藏的异常 `upstream_mcp` session 管理页，明确展示配置、实际生效状态、shadow/precise 门禁、结算队列与阻塞 session。
 
 ### Non-goals
 
@@ -51,7 +51,8 @@
 - `accessToken` 使用 `HMAC-SHA256(secret, "v1" + token_id + period_code)` 的完整 Base64URL-no-pad 输出。
 - secret 为自动生成的 32 字节 HA 同步秘密，任何 API、日志与状态页均不得返回。
 - 窗口按服务器业务时区划分为 `S1=00-11`、`S2=11-22`、`S3=22-24`。
-- 精准对账仅在 `accessToken`、API/MCP Rebalance 均启用（新流量全量走 rebalance）、Control session 为 0 且进入下一完整窗口时启用。
+- shadow compare 仅在 `accessToken`、API Rebalance 启用、MCP Rebalance 启用时开始产数，不要求活跃 `upstream_mcp` session 清零。
+- 精准对账仅在 `accessToken`、API/MCP Rebalance 均启用（新流量全量走 rebalance）、活跃 `upstream_mcp` session 为 0 且进入下一完整窗口时启用。
 - 结算只查询实际使用过的 `(token_id, upstream_key_id, period_code)`，每个 settlement key 只成功一次。
 - adjustment 支持正负值，归属原业务窗口并参与对应额度、HA billing 同步和审计。
 
@@ -77,6 +78,7 @@
 ### 生效 epoch 与业务窗口
 
 - Header 配置保存后立即影响新请求。
+- shadow compare 在静态条件满足后立即开始记录窗口 usage。
 - 精准对账 eligibility 从保存后下一时间段边界计算；边界前请求不进入精准窗口。
 - 任一门禁中途失效时，当前未结算窗口标记不完整且不结算；恢复后仍等待下一完整窗口。
 - period code 使用服务器现有业务时区，格式 `YYYY-MM-DD/S1|S2|S3`。
@@ -89,12 +91,22 @@
 - 唯一 settlement key 至少包含版本、token id、period code，重复任务与 HA 接管不得重复调整。
 - S3 可在次日执行，但 adjustment 的 `attributed_at` 仍落在原业务日末，不能增加次日额度。
 
+### Compare / precise 与异常 session 管理
+
+- 当 shadow compare 已经产数，但 precise 仍被遗留 `upstream_mcp` session 阻塞时，系统状态主相位显示“仅对比”，不再误显示成“排空旧会话中”。
+- `GET /api/settings/system/status` 与系统设置摘要都返回明确语义的活跃 `upstream_mcp` session 计数。
+- 新增隐藏路由 `/admin/system-settings/mcp-session-bindings`，路径归属 `system-settings`，但不出现在系统设置子导航中。
+- 管理页默认只看活跃项，支持 `active / revoked / all` 视图；筛选只包含创建时间范围、续约时间范围、状态，固定按 `updated_at desc` 排序并分页。
+- 释放动作分为单条释放、勾选批量释放、按当前筛选结果释放全部活跃会话；只有最后一种需要二次确认。
+
 ### 状态页
 
 - canonical route 为 `/admin/system-settings/status`，系统设置下级标签为“系统状态”。
-- 状态 API 区分 `configured / effective / pending / draining / active / degraded`。
-- 页面展示 Header policy、UA 实际值、Project ID 模式、API/MCP Rebalance 与 Control session 排空门禁、下一 epoch、当前 period、
-  Research 等待、usage 队列、最近 adjustment 和 degraded 原因。
+- 状态 API 区分 `configured / compare / pending / active / degraded`；其中 `compare` 表示 shadow 已产数但 precise 尚未切换。
+- 页面展示 Header policy、UA 实际值、Project ID 模式、API/MCP Rebalance 与 `upstream_mcp` session 门禁、下一 epoch、当前 period、
+  Research 等待、usage 队列、最近 adjustment、degraded 原因与活跃异常 session 数。
+- 系统设置页在“启用 Rebalance MCP”行只在活跃异常 session 数量大于 0 时显示 warning 图标，并跳转到隐藏管理页。
+- 系统状态页始终显示“活跃 `upstream_mcp` session”统计卡；数量大于 0 时使用 warning 语义，数量为 0 时使用 neutral/success 语义。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -104,6 +116,7 @@
 | --------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ------------------------ |
 | System settings       | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | backend         | admin web           | 新增三项隐私设置         |
 | System status         | HTTP API     | internal      | New            | `./contracts/http-apis.md` | backend         | admin web           | 只读、脱敏状态           |
+| MCP session bindings  | HTTP API     | internal      | New            | `./contracts/http-apis.md` | backend         | admin web           | 隐藏管理页查询与释放接口 |
 | Reconciliation tables | SQLite/HA    | internal      | New            | `./contracts/db.md`        | backend         | quota/audit/HA      | signed adjustment 与队列 |
 
 ### 契约文档（按 Kind 拆分）
@@ -116,10 +129,12 @@
 - Given 任意客户端指纹与未知 `x-*` Header，When 请求通过三条出站路径，Then 上游只收到该路径白名单字段。
 - Given UA 为空或非空，When Control MCP 新建连接，Then 分别省略 UA 或发送配置值；HTTP API 始终无 UA。
 - Given token secret 轮换、HA 节点切换或相同窗口重试，When 计算匿名 ID，Then 输出稳定一致；不同 token/窗口输出不同。
-- Given 任一门禁不是完整窗口持续满足，When 结算调度执行，Then 不产生 adjustment。
+- Given 遗留 `upstream_mcp` session 仍存在，但 `accessToken`、API Rebalance 与 MCP Rebalance 已启用，When 新请求进入当前窗口，Then shadow compare 持续产数且记录为 shadow settlement mode。
+- Given precise 门禁未形成完整窗口，When 结算调度执行，Then 不产生 precise adjustment。
 - Given 多 Key、Research 等待、Retry-After、重启或 HA 接管，When 窗口结算，Then 最终只产生一条幂等 signed adjustment。
 - Given 退款或补扣，When 查询账户或未绑定 Token 的相关额度，Then 原业务窗口统计立即反映差额，S3 不增加次日额度。
 - Given 状态 API 与页面，When secret、官方 key 或 token 存在，Then 任何响应与 UI 都不显示完整敏感值。
+- Given 管理员进入隐藏 session 管理页，When 使用状态/时间筛选并执行单条、批量或按筛选释放，Then 只有命中的活跃 `upstream_mcp` session 会被释放，已过期或已释放记录不会重复处理。
 
 ## 验收清单（Acceptance checklist）
 
@@ -138,7 +153,7 @@
 
 ### UI / Storybook
 
-- 更新 System Settings stories；新增 system status 正常、pending、draining、degraded、empty、error gallery。
+- 更新 System Settings stories；新增 system status compare、pending、active、degraded、empty、error gallery，以及隐藏 MCP session 管理页 stories。
 - 手动刷新 interaction 覆盖；桌面与移动 mock-only 视觉证据。
 
 ### Quality checks
@@ -179,6 +194,24 @@
 - verifies: the same system-status route keeps the switch, counters, gate chips, and summary cards readable on narrow screens without the previously broken switch layout.
 
   ![System status mobile](./assets/system-status-mobile.png)
+
+- PR: include
+- desktop system settings warning entry
+- verifies: when active `upstream_mcp` sessions still exist, the “启用 Rebalance MCP” row exposes a focused warning entry while the hidden management route stays out of navigation.
+
+  ![System settings warning entry](./assets/system-settings-rebalance-warning.png)
+
+- PR: include
+- desktop system status session card
+- verifies: the system status page foregrounds active `upstream_mcp` sessions as a precise-cutover blocker while keeping the top phase in “仅对比”.
+
+  ![System status blocked by sessions](./assets/system-status-blocked-by-sessions.png)
+
+- PR: include
+- desktop MCP session bindings management page
+- verifies: the hidden `/admin/system-settings/mcp-session-bindings` route defaults to active rows, exposes time-range filters, pagination, and safe revoke actions without surfacing raw upstream session ids.
+
+  ![MCP session bindings page](./assets/mcp-session-bindings-page.png)
 
 ## Related PRs
 

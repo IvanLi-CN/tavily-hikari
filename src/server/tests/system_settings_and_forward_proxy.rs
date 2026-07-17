@@ -2677,3 +2677,373 @@ use super::upstream_support_and_manual_jobs::*;
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[tokio::test]
+    async fn admin_system_status_reports_compare_phase_and_active_upstream_mcp_sessions() {
+        let db_path = temp_db_path("admin-system-status-compare-phase");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
+        let mut settings = proxy.get_system_settings().await.expect("load settings");
+        settings.upstream_project_id_mode = tavily_hikari::UpstreamProjectIdMode::AccessToken;
+        settings.api_rebalance_enabled = true;
+        settings.api_rebalance_percent = 100;
+        settings.rebalance_mcp_enabled = true;
+        settings.rebalance_mcp_session_percent = 100;
+        settings.upstream_precise_reconciliation_enabled = true;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("save compare-ready settings");
+        let token = proxy
+            .create_access_token(Some("admin-system-status-compare-phase"))
+            .await
+            .expect("create access token");
+        let now = proxy.backend_time().now_ts();
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            INSERT INTO mcp_sessions (
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            ) VALUES (?, ?, NULL, ?, NULL, '2025-03-26', NULL, ?, 'control', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, NULL)
+            "#,
+        )
+        .bind("sess-status-upstream-active")
+        .bind("upstream-status-active")
+        .bind(&token.id)
+        .bind(tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM)
+        .bind(now - 300)
+        .bind(now - 60)
+        .bind(now + 3_600)
+        .execute(&pool)
+        .await
+        .expect("insert active upstream session");
+
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+        let client = Client::new();
+
+        let settings_response = client
+            .get(format!("http://{addr}/api/settings"))
+            .send()
+            .await
+            .expect("get settings envelope");
+        assert_eq!(settings_response.status(), StatusCode::OK);
+        let settings_body = settings_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode settings envelope");
+        assert_eq!(
+            settings_body["activeUpstreamMcpSessions"].as_i64(),
+            Some(1)
+        );
+
+        let status_response = client
+            .get(format!("http://{addr}/api/settings/system/status"))
+            .send()
+            .await
+            .expect("get system status");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = status_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode system status");
+        assert_eq!(status_body["phase"].as_str(), Some("compare"));
+        assert_eq!(
+            status_body["activeUpstreamMcpSessions"].as_i64(),
+            Some(1)
+        );
+        assert_eq!(status_body["nextEpochAt"], serde_json::Value::Null);
+        assert!(status_body.get("activeControlSessions").is_none());
+        assert!(
+            status_body["gates"]
+                .as_array()
+                .expect("gates array")
+                .iter()
+                .any(|gate| {
+                    gate["key"].as_str() == Some("controlSessionsDrained")
+                        && gate["ready"].as_bool() == Some(false)
+                        && gate["detail"].as_str() == Some("1")
+                }),
+            "expected controlSessionsDrained gate to show one active upstream session"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_mcp_session_bindings_endpoints_filter_and_revoke_only_upstream_sessions() {
+        let db_path = temp_db_path("admin-mcp-session-bindings-endpoints");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
+        let token = proxy
+            .create_access_token(Some("admin-mcp-session-bindings"))
+            .await
+            .expect("create access token");
+        let now = proxy.backend_time().now_ts();
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        for (
+            proxy_session_id,
+            upstream_session_id,
+            gateway_mode,
+            created_at,
+            updated_at,
+            expires_at,
+            revoked_at,
+            revoke_reason,
+        ) in [
+            (
+                "sess-upstream-active-1",
+                "upstream-active-1",
+                tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM,
+                now - 600,
+                now - 50,
+                now + 3_600,
+                None,
+                None,
+            ),
+            (
+                "sess-upstream-active-2",
+                "upstream-active-2",
+                tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM,
+                now - 900,
+                now - 500,
+                now + 3_600,
+                None,
+                None,
+            ),
+            (
+                "sess-upstream-revoked",
+                "upstream-revoked",
+                tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM,
+                now - 1_400,
+                now - 700,
+                now + 3_600,
+                Some(now - 650),
+                Some("manual_revoked"),
+            ),
+            (
+                "sess-rebalance-active",
+                "rebalance-active",
+                tavily_hikari::MCP_GATEWAY_MODE_REBALANCE,
+                now - 400,
+                now - 10,
+                now + 3_600,
+                None,
+                None,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO mcp_sessions (
+                    proxy_session_id,
+                    upstream_session_id,
+                    upstream_key_id,
+                    auth_token_id,
+                    user_id,
+                    protocol_version,
+                    last_event_id,
+                    gateway_mode,
+                    experiment_variant,
+                    ab_bucket,
+                    routing_subject_hash,
+                    fallback_reason,
+                    rate_limited_until,
+                    last_rate_limited_at,
+                    last_rate_limit_reason,
+                    created_at,
+                    updated_at,
+                    expires_at,
+                    revoked_at,
+                    revoke_reason
+                ) VALUES (?, ?, NULL, ?, NULL, '2025-03-26', NULL, ?, 'control', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(proxy_session_id)
+            .bind(upstream_session_id)
+            .bind(&token.id)
+            .bind(gateway_mode)
+            .bind(created_at)
+            .bind(updated_at)
+            .bind(expires_at)
+            .bind(revoked_at)
+            .bind(revoke_reason)
+            .execute(&pool)
+            .await
+            .expect("insert mcp session fixture");
+        }
+
+        let addr = spawn_admin_forward_proxy_server(proxy.clone(), usage_base, true).await;
+        let client = Client::new();
+        let updated_from = chrono::Utc
+            .timestamp_opt(now - 100, 0)
+            .single()
+            .expect("updated_from timestamp")
+            .to_rfc3339();
+
+        let filtered_response = client
+            .get(format!(
+                "http://{addr}/api/settings/system/mcp-session-bindings?status=all&updatedFrom={}",
+                urlencoding::encode(&updated_from)
+            ))
+            .send()
+            .await
+            .expect("get filtered session bindings");
+        assert_eq!(filtered_response.status(), StatusCode::OK);
+        let filtered_body = filtered_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode filtered bindings");
+        assert_eq!(filtered_body["total"].as_i64(), Some(1));
+        assert_eq!(filtered_body["activeMatchingCount"].as_i64(), Some(1));
+        assert_eq!(
+            filtered_body["items"][0]["proxySessionId"].as_str(),
+            Some("sess-upstream-active-1")
+        );
+        assert!(filtered_body["items"][0].get("upstreamSessionId").is_none());
+
+        let all_response = client
+            .get(format!(
+                "http://{addr}/api/settings/system/mcp-session-bindings?status=all"
+            ))
+            .send()
+            .await
+            .expect("get all session bindings");
+        assert_eq!(all_response.status(), StatusCode::OK);
+        let all_body = all_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode all bindings");
+        assert_eq!(all_body["total"].as_i64(), Some(3));
+        assert_eq!(all_body["activeMatchingCount"].as_i64(), Some(2));
+        assert_eq!(
+            all_body["items"][0]["proxySessionId"].as_str(),
+            Some("sess-upstream-active-1")
+        );
+        assert_eq!(
+            all_body["items"][1]["proxySessionId"].as_str(),
+            Some("sess-upstream-active-2")
+        );
+        assert_eq!(
+            all_body["items"][2]["proxySessionId"].as_str(),
+            Some("sess-upstream-revoked")
+        );
+
+        let revoke_selected_response = client
+            .post(format!(
+                "http://{addr}/api/settings/system/mcp-session-bindings/revoke-selected"
+            ))
+            .json(&serde_json::json!({
+                "proxySessionIds": ["sess-upstream-active-2", "sess-rebalance-active"]
+            }))
+            .send()
+            .await
+            .expect("revoke selected bindings");
+        assert_eq!(revoke_selected_response.status(), StatusCode::OK);
+        let revoke_selected_body = revoke_selected_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode revoke selected");
+        assert_eq!(revoke_selected_body["revokedCount"].as_i64(), Some(1));
+
+        let revoke_filtered_response = client
+            .post(format!(
+                "http://{addr}/api/settings/system/mcp-session-bindings/revoke-filtered"
+            ))
+            .json(&serde_json::json!({
+                "status": "active",
+                "updatedFrom": updated_from
+            }))
+            .send()
+            .await
+            .expect("revoke filtered bindings");
+        assert_eq!(revoke_filtered_response.status(), StatusCode::OK);
+        let revoke_filtered_body = revoke_filtered_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode revoke filtered");
+        assert_eq!(revoke_filtered_body["revokedCount"].as_i64(), Some(1));
+
+        let final_response = client
+            .get(format!(
+                "http://{addr}/api/settings/system/mcp-session-bindings?status=all"
+            ))
+            .send()
+            .await
+            .expect("get final session bindings");
+        assert_eq!(final_response.status(), StatusCode::OK);
+        let final_body = final_response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode final bindings");
+        assert_eq!(final_body["activeMatchingCount"].as_i64(), Some(0));
+        assert_eq!(
+            final_body["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .filter(|item| item["status"].as_str() == Some("revoked"))
+                .count(),
+            3
+        );
+        assert!(
+            final_body["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .any(|item| {
+                    item["proxySessionId"].as_str() == Some("sess-upstream-active-1")
+                        && item["revokeReason"].as_str() == Some("admin_filtered_revoke")
+                })
+        );
+        assert!(
+            final_body["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .any(|item| {
+                    item["proxySessionId"].as_str() == Some("sess-upstream-active-2")
+                        && item["revokeReason"].as_str() == Some("admin_selected_revoke")
+                })
+        );
+
+        let rebalance_revoked_at = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT revoked_at FROM mcp_sessions WHERE proxy_session_id = ? LIMIT 1",
+        )
+        .bind("sess-rebalance-active")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch rebalance session revoke state");
+        assert_eq!(rebalance_revoked_at, None);
+
+        let _ = std::fs::remove_file(db_path);
+    }

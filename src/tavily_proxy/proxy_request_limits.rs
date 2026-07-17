@@ -1281,6 +1281,12 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn active_upstream_mcp_session_count(&self) -> Result<i64, ProxyError> {
+        self.key_store
+            .count_active_upstream_mcp_sessions(self.backend_time.now_ts())
+            .await
+    }
+
     pub async fn token_has_active_non_rebalance_mcp_session(
         &self,
         token_id: &str,
@@ -1419,6 +1425,33 @@ impl TavilyProxy {
     ) -> Result<(), ProxyError> {
         self.key_store
             .revoke_mcp_session(proxy_session_id, reason)
+            .await
+    }
+
+    pub async fn admin_mcp_session_bindings_page(
+        &self,
+        query: &AdminMcpSessionBindingsQuery,
+    ) -> Result<AdminMcpSessionBindingsPage, ProxyError> {
+        self.key_store.list_admin_mcp_session_bindings(query).await
+    }
+
+    pub async fn revoke_admin_selected_mcp_session_bindings(
+        &self,
+        proxy_session_ids: &[String],
+        reason: &str,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .revoke_admin_selected_mcp_session_bindings(proxy_session_ids, reason)
+            .await
+    }
+
+    pub async fn revoke_admin_filtered_mcp_session_bindings(
+        &self,
+        query: &AdminMcpSessionBindingsQuery,
+        reason: &str,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .revoke_admin_filtered_mcp_session_bindings(query, reason)
             .await
     }
 }

@@ -2,9 +2,9 @@ impl TavilyProxy {
     pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
         let now = self.backend_time.now_ts();
         let settings = self.key_store.get_system_settings().await?;
-        let active_control_sessions = self
+        let active_upstream_mcp_sessions = self
             .key_store
-            .count_active_control_mcp_sessions(now)
+            .count_active_upstream_mcp_sessions(now)
             .await?;
         let period = business_period_for_timestamp(now);
         let stored_epoch = self
@@ -15,7 +15,8 @@ impl TavilyProxy {
         let mode_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken;
         let api_ready = settings.api_rebalance_enabled;
         let mcp_ready = settings.rebalance_mcp_enabled;
-        let sessions_ready = active_control_sessions == 0;
+        let shadow_ready = mode_ready && api_ready && mcp_ready;
+        let sessions_ready = active_upstream_mcp_sessions == 0;
         let gates = vec![
             UpstreamPrivacyGate {
                 key: "accessTokenMode".to_string(),
@@ -35,7 +36,7 @@ impl TavilyProxy {
             UpstreamPrivacyGate {
                 key: "controlSessionsDrained".to_string(),
                 ready: sessions_ready,
-                detail: active_control_sessions.to_string(),
+                detail: active_upstream_mcp_sessions.to_string(),
             },
         ];
         let completed_gates = gates.iter().filter(|gate| gate.ready).count() as i64;
@@ -44,7 +45,7 @@ impl TavilyProxy {
             .key_store
             .upstream_reconciliation_queue_counts()
             .await?;
-        let next_epoch_at = if completed_gates == total_gates {
+        let next_epoch_at = if shadow_ready && settings.upstream_precise_reconciliation_enabled && sessions_ready {
             Some(if stored_epoch > 0 {
                 stored_epoch
             } else {
@@ -55,14 +56,12 @@ impl TavilyProxy {
         };
         let phase = if degraded_settlements > 0 {
             "degraded"
-        } else if !mode_ready || !api_ready || !mcp_ready {
+        } else if !shadow_ready {
             "configured"
-        } else if !sessions_ready {
-            "draining"
+        } else if !settings.upstream_precise_reconciliation_enabled || !sessions_ready {
+            "compare"
         } else if next_epoch_at.is_some_and(|epoch| now < epoch) {
             "pending"
-        } else if !settings.upstream_precise_reconciliation_enabled {
-            "compare"
         } else {
             "active"
         };
@@ -95,7 +94,7 @@ impl TavilyProxy {
             gates,
             completed_gates,
             total_gates,
-            active_control_sessions,
+            active_upstream_mcp_sessions,
             current_period_code: period.code,
             current_period_ends_at: period.ends_at,
             next_epoch_at,
@@ -219,11 +218,11 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
     ) -> Result<i64, ProxyError> {
-        let (eligible, _, _) = self
-            .key_store
-            .refresh_upstream_reconciliation_epoch()
-            .await?;
-        if !eligible {
+        let settings = self.key_store.get_system_settings().await?;
+        let shadow_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
+            && settings.api_rebalance_enabled
+            && settings.rebalance_mcp_enabled;
+        if !shadow_ready {
             return Ok(0);
         }
         let candidates = self

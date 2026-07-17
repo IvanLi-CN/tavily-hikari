@@ -12,6 +12,7 @@ export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
 export type AlertsCenterView = 'events' | 'groups'
 export type AdminSystemSettingsView = 'general' | 'status' | 'admin' | 'ha'
 export type AdminAnalysisView = 'rankings' | 'usage' | 'pressure'
+export type AdminMcpSessionBindingsStatusView = 'active' | 'revoked' | 'all'
 export type RankingTabKey = 'last24h' | 'last7d' | 'last30d' | 'primarySuccess' | 'businessCredits' | 'uniqueIp'
 export type UserDetailTabKey = 'account' | 'quota' | 'activity'
 
@@ -60,6 +61,7 @@ export type AdminPathRoute =
   | { name: 'user-tag-editor'; mode: 'edit'; id: string }
   | { name: 'announcement-editor'; mode: 'create' }
   | { name: 'announcement-editor'; mode: 'edit'; id: string }
+  | { name: 'mcp-session-bindings' }
   | { name: 'key'; id: string }
 
 const ADMIN_BASE = '/admin'
@@ -207,6 +209,9 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/system-settings/status` || path === `${ADMIN_BASE}/system-settings/privacy-status`) {
     return { name: 'module', module: 'system-settings', systemSettingsView: 'status' }
   }
+  if (path === `${ADMIN_BASE}/system-settings/mcp-session-bindings`) {
+    return { name: 'mcp-session-bindings' }
+  }
   if (path === `${ADMIN_BASE}/system-settings/ha`) {
     return { name: 'module', module: 'system-settings', systemSettingsView: 'ha' }
   }
@@ -259,6 +264,9 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
     if (left.mode === 'create' && right.mode === 'create') return true
     if (left.mode === 'edit' && right.mode === 'edit') return left.id === right.id
     return false
+  }
+  if (left.name === 'mcp-session-bindings' && right.name === 'mcp-session-bindings') {
+    return true
   }
   if (left.name === 'key' && right.name === 'key') {
     return left.id === right.id
@@ -318,6 +326,65 @@ export function systemSettingsAdminPath(): string {
 
 export function systemSettingsStatusPath(): string {
   return `${ADMIN_BASE}/system-settings/status`
+}
+
+export interface AdminMcpSessionBindingsPathContext {
+  status?: AdminMcpSessionBindingsStatusView | null
+  createdFrom?: string | null
+  createdTo?: string | null
+  updatedFrom?: string | null
+  updatedTo?: string | null
+  page?: number | null
+}
+
+export function systemSettingsMcpSessionBindingsPath(
+  context?: AdminMcpSessionBindingsPathContext,
+): string {
+  const params = new URLSearchParams()
+  const status = context?.status ?? 'active'
+  if (status !== 'active') params.set('status', status)
+  if (context?.createdFrom?.trim()) params.set('createdFrom', context.createdFrom.trim())
+  if (context?.createdTo?.trim()) params.set('createdTo', context.createdTo.trim())
+  if (context?.updatedFrom?.trim()) params.set('updatedFrom', context.updatedFrom.trim())
+  if (context?.updatedTo?.trim()) params.set('updatedTo', context.updatedTo.trim())
+  const page = Number.isFinite(context?.page) ? Math.max(1, Math.trunc(context?.page as number)) : 1
+  if (page > 1) params.set('page', String(page))
+  const search = params.toString()
+  return search
+    ? `${ADMIN_BASE}/system-settings/mcp-session-bindings?${search}`
+    : `${ADMIN_BASE}/system-settings/mcp-session-bindings`
+}
+
+export function getMcpSessionBindingsStatusFromSearch(search: string): AdminMcpSessionBindingsStatusView {
+  const value = new URLSearchParams(search).get('status')?.trim()
+  return value === 'revoked' || value === 'all' ? value : 'active'
+}
+
+function getOptionalSearchValue(search: string, key: string): string | null {
+  const value = new URLSearchParams(search).get(key)?.trim() ?? ''
+  return value.length > 0 ? value : null
+}
+
+export function getMcpSessionBindingsCreatedFromSearch(search: string): string | null {
+  return getOptionalSearchValue(search, 'createdFrom')
+}
+
+export function getMcpSessionBindingsCreatedToSearch(search: string): string | null {
+  return getOptionalSearchValue(search, 'createdTo')
+}
+
+export function getMcpSessionBindingsUpdatedFromSearch(search: string): string | null {
+  return getOptionalSearchValue(search, 'updatedFrom')
+}
+
+export function getMcpSessionBindingsUpdatedToSearch(search: string): string | null {
+  return getOptionalSearchValue(search, 'updatedTo')
+}
+
+export function getMcpSessionBindingsPageFromSearch(search: string): number {
+  const rawPage = new URLSearchParams(search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
 }
 
 export function systemSettingsHaNodePath(nodeId: string): string {

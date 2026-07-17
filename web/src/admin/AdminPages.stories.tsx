@@ -105,6 +105,21 @@ export const UserDetailIpUsage = { ...RuntimeStories.UserDetailIpUsage }
 export const Announcements = { ...RuntimeStories.Announcements }
 export const SystemSettings = { ...RuntimeStories.SystemSettings }
 export const SystemSettingsStatus = { ...RuntimeStories.SystemSettingsStatus }
+export const SystemSettingsMcpSessionBindings = {
+  ...RuntimeStories.SystemSettingsMcpSessionBindings,
+  globals: {
+    language: 'zh',
+  },
+  parameters: {
+    ...RuntimeStories.SystemSettingsMcpSessionBindings.parameters,
+    docs: {
+      description: {
+        story:
+          '隐藏的系统设置子路由，用于查看和释放仍绑定旧 upstream_mcp 链路的会话记录。',
+      },
+    },
+  },
+}
 export const SystemSettingsAdmin = { ...RuntimeStories.SystemSettingsAdmin }
 export const SystemSettingsHa = { ...HaStories.SystemSettingsHa }
 export const DashboardHaAttention = { ...HaStories.DashboardHaAttention }

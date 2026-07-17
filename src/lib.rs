@@ -1,5 +1,6 @@
 #[macro_use]
 mod runtime_logging;
+mod admin_mcp_session_bindings;
 mod admin_token_filters;
 mod analysis;
 mod backend_time;
@@ -14,6 +15,7 @@ mod tests;
 mod upstream_privacy;
 pub mod web_assets;
 
+pub use admin_mcp_session_bindings::*;
 pub use admin_token_filters::*;
 pub use analysis::{
     analyze_http_attempt, analyze_mcp_attempt, canonical_request_kind_key_for_filter,

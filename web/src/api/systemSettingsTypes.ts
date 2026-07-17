@@ -59,7 +59,7 @@ export interface UpstreamPrivacyStatus {
   gates: UpstreamPrivacyGate[]
   completedGates: number
   totalGates: number
-  activeControlSessions: number
+  activeUpstreamMcpSessions: number
   currentPeriodCode: string
   currentPeriodEndsAt: number
   nextEpochAt: number | null
@@ -74,6 +74,45 @@ export interface ForwardProxySettingsEnvelope {
   forwardProxy?: import('./runtime').ForwardProxySettings | null
   systemSettings?: SystemSettings | null
   adminUserListStats?: AdminUserListStats | null
+  activeUpstreamMcpSessions?: number | null
+}
+
+export type AdminMcpSessionBindingsFilterStatus = 'active' | 'revoked' | 'all'
+export type AdminMcpSessionBindingStatus = 'active' | 'expired' | 'revoked'
+
+export interface AdminMcpSessionBindingListItem {
+  proxySessionId: string
+  authTokenId: string | null
+  userId: string | null
+  upstreamKeyId: string | null
+  createdAt: number
+  updatedAt: number
+  expiresAt: number
+  status: AdminMcpSessionBindingStatus
+  revokedAt: number | null
+  revokeReason: string | null
+}
+
+export interface AdminMcpSessionBindingsPage {
+  items: AdminMcpSessionBindingListItem[]
+  total: number
+  page: number
+  perPage: number
+  activeMatchingCount: number
+}
+
+export interface AdminMcpSessionBindingsQuery {
+  status?: AdminMcpSessionBindingsFilterStatus
+  createdFrom?: string | null
+  createdTo?: string | null
+  updatedFrom?: string | null
+  updatedTo?: string | null
+  page?: number | null
+  perPage?: number | null
+}
+
+export interface AdminMcpSessionBindingsRevokeResult {
+  revokedCount: number
 }
 
 export interface UpdateSystemSettingsPayload {

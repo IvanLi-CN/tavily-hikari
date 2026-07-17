@@ -1006,12 +1006,13 @@ function createDemoSystemSettings() {
 
 function createDemoUpstreamPrivacyStatus() {
   return {
-    phase: 'draining',
+    phase: 'compare',
     configuredProjectIdMode: 'accessToken',
     effectiveProjectIdMode: 'accessToken',
     fixedProjectIdConfigured: false,
     configuredMcpUserAgent: '',
     effectiveMcpUserAgent: null,
+    upstreamPreciseReconciliationEnabled: true,
     httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
     controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
     gates: [
@@ -1022,7 +1023,7 @@ function createDemoUpstreamPrivacyStatus() {
     ],
     completedGates: 3,
     totalGates: 4,
-    activeControlSessions: 2,
+    activeUpstreamMcpSessions: 2,
     currentPeriodCode: '2026-07-14/S2',
     currentPeriodEndsAt: 1_783_994_400,
     nextEpochAt: null,

@@ -26,7 +26,7 @@ const pendingStatus: UpstreamPrivacyStatus = {
   ],
   completedGates: 3,
   totalGates: 4,
-  activeControlSessions: 2,
+  activeUpstreamMcpSessions: 2,
   currentPeriodCode: '2026-07-14/S2',
   currentPeriodEndsAt: 1_783_994_400,
   nextEpochAt: 1_783_994_400,
@@ -51,7 +51,7 @@ const activeStatus: UpstreamPrivacyStatus = {
   ...pendingStatus,
   phase: 'active',
   completedGates: 4,
-  activeControlSessions: 0,
+  activeUpstreamMcpSessions: 0,
   pendingResearch: 0,
   queuedSettlements: 0,
   gates: pendingStatus.gates.map((gate) => ({
@@ -62,11 +62,11 @@ const activeStatus: UpstreamPrivacyStatus = {
   recentAdjustments: [],
 }
 
-const drainingStatus: UpstreamPrivacyStatus = {
+const compareBlockedStatus: UpstreamPrivacyStatus = {
   ...pendingStatus,
-  phase: 'draining',
+  phase: 'compare',
   completedGates: 3,
-  activeControlSessions: 5,
+  activeUpstreamMcpSessions: 5,
   pendingResearch: 0,
   queuedSettlements: 0,
   gates: pendingStatus.gates.map((gate) => ({
@@ -141,6 +141,7 @@ const meta = {
     refreshing: false,
     autoRefreshEnabled: true,
     onAutoRefreshChange: () => undefined,
+    onOpenMcpSessionBindings: () => undefined,
     onRefresh: () => undefined,
   },
 } satisfies Meta<StoryArgs>
@@ -161,6 +162,7 @@ function renderWithStatus(status: UpstreamPrivacyStatus | null, overrides?: Part
       refreshing={overrides?.refreshing ?? false}
       autoRefreshEnabled={overrides?.autoRefreshEnabled ?? true}
       onAutoRefreshChange={overrides?.onAutoRefreshChange ?? (() => undefined)}
+      onOpenMcpSessionBindings={overrides?.onOpenMcpSessionBindings ?? (() => undefined)}
       onRefresh={overrides?.onRefresh ?? (() => undefined)}
     />
   )
@@ -187,9 +189,9 @@ function InteractionCanvas(args: StoryArgs): JSX.Element {
 
 export const Pending: Story = {}
 
-export const Draining: Story = {
+export const BlockedBySessions: Story = {
   args: {
-    status: drainingStatus,
+    status: compareBlockedStatus,
   },
 }
 
@@ -239,7 +241,7 @@ export const Gallery: Story = {
     <div style={{ display: 'grid', gap: 24 }}>
       {[
         { title: 'Pending', status: pendingStatus },
-        { title: 'Draining', status: drainingStatus },
+        { title: 'Blocked by sessions', status: compareBlockedStatus },
         { title: 'Compare', status: compareStatus },
         { title: 'Active', status: activeStatus },
         { title: 'Degraded', status: degradedStatus },

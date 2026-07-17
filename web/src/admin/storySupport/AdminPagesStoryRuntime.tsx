@@ -20,6 +20,8 @@ import type {
   AdminUserTokenSummary,
   AdminUserUsageSeries,
   AdminUserUsageSeriesKey,
+  AdminMcpSessionBindingListItem,
+  AdminMcpSessionBindingsPage,
   ApiKeyStats,
   AuthToken,
   JobGroup,
@@ -107,6 +109,7 @@ import { buildDashboardHourlyRequestWindowFixture } from '../dashboardHourlyChar
 import { ApiKeyBulkSyncProgressBubble } from '../ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from '../ForwardProxySettingsModule'
 import ModulePlaceholder from '../ModulePlaceholder'
+import McpSessionBindingsModule from '../McpSessionBindingsModule'
 import SystemSettingsModule from '../SystemSettingsModule'
 import UpstreamPrivacyStatusModule from '../UpstreamPrivacyStatusModule'
 import AdminSecuritySettingsModule from '../AdminSecuritySettingsModule'
@@ -6402,6 +6405,7 @@ function SystemSettingsPageCanvas({
         error={null}
         saving={false}
         userListStats={{ activeUsers90d: 12, totalUsers: 30, windowDays: 90 }}
+        activeUpstreamMcpSessions={2}
         registrationPolicy={{
           strings: admin.users.registration,
           checked: false,
@@ -6410,6 +6414,7 @@ function SystemSettingsPageCanvas({
           error: null,
           onToggle: () => {},
         }}
+        onOpenMcpSessionBindings={() => {}}
         onApply={() => {}}
       />
     </AdminPageFrame>
@@ -6426,13 +6431,13 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
         formStrings={admin.systemSettings.form}
         language="zh"
         status={{
-          phase: 'draining',
+          phase: 'compare',
           configuredProjectIdMode: 'accessToken',
           effectiveProjectIdMode: 'accessToken',
           fixedProjectIdConfigured: false,
           configuredMcpUserAgent: '',
           effectiveMcpUserAgent: null,
-          upstreamPreciseReconciliationEnabled: false,
+          upstreamPreciseReconciliationEnabled: true,
           httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
           controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
           gates: [
@@ -6443,7 +6448,7 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
           ],
           completedGates: 3,
           totalGates: 4,
-          activeControlSessions: 2,
+          activeUpstreamMcpSessions: 2,
           currentPeriodCode: '2026-07-14/S2',
           currentPeriodEndsAt: 1_783_994_400,
           nextEpochAt: null,
@@ -6468,7 +6473,89 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
         refreshing={false}
         autoRefreshEnabled
         onAutoRefreshChange={() => {}}
+        onOpenMcpSessionBindings={() => {}}
         onRefresh={() => {}}
+      />
+    </AdminPageFrame>
+  )
+}
+
+const systemSettingsMcpSessionBindingsItems: AdminMcpSessionBindingListItem[] = [
+  {
+    proxySessionId: 'sess-upstream-001',
+    authTokenId: 'tok_alpha',
+    userId: 'usr_alice',
+    upstreamKeyId: 'key-primary',
+    createdAt: 1_783_940_400,
+    updatedAt: 1_783_958_400,
+    expiresAt: 1_783_962_000,
+    status: 'active',
+    revokedAt: null,
+    revokeReason: null,
+  },
+  {
+    proxySessionId: 'sess-upstream-002',
+    authTokenId: 'tok_beta',
+    userId: 'usr_bob',
+    upstreamKeyId: 'key-backup',
+    createdAt: 1_783_941_200,
+    updatedAt: 1_783_957_500,
+    expiresAt: 1_783_961_800,
+    status: 'active',
+    revokedAt: null,
+    revokeReason: null,
+  },
+  {
+    proxySessionId: 'sess-upstream-003',
+    authTokenId: 'tok_gamma',
+    userId: 'usr_carla',
+    upstreamKeyId: 'key-eu',
+    createdAt: 1_783_931_200,
+    updatedAt: 1_783_950_200,
+    expiresAt: 1_783_954_000,
+    status: 'expired',
+    revokedAt: null,
+    revokeReason: null,
+  },
+]
+
+const systemSettingsMcpSessionBindingsPage: AdminMcpSessionBindingsPage = {
+  items: systemSettingsMcpSessionBindingsItems,
+  total: systemSettingsMcpSessionBindingsItems.length,
+  page: 1,
+  perPage: 20,
+  activeMatchingCount: systemSettingsMcpSessionBindingsItems.filter((item) => item.status === 'active').length,
+}
+
+function SystemSettingsMcpSessionBindingsPageCanvas(): JSX.Element {
+  const { language } = useLanguage()
+
+  return (
+    <AdminPageFrame
+      activeModule="system-settings"
+      introOverride={{
+        title: language === 'zh' ? '遗留会话绑定记录' : 'Legacy session bindings',
+        description:
+          language === 'zh'
+            ? '查看并释放遗留的 upstream_mcp 会话绑定记录。该路由归属系统设置，但不会出现在子导航中。'
+            : 'Review and release legacy upstream_mcp session bindings. This route belongs to system settings but stays hidden from the child navigation.',
+      }}
+    >
+      <McpSessionBindingsModule
+        language="zh"
+        query={{ status: 'active', page: 1 }}
+        data={systemSettingsMcpSessionBindingsPage}
+        loadState="ready"
+        error={null}
+        refreshing={false}
+        busy={false}
+        onRefresh={() => undefined}
+        onNavigate={() => undefined}
+        onRevokeSelected={() => undefined}
+        onRevokeFiltered={() => undefined}
+        onOpenUser={() => undefined}
+        onOpenToken={() => undefined}
+        onOpenKey={() => undefined}
       />
     </AdminPageFrame>
   )
@@ -7765,6 +7852,28 @@ export const SystemSettingsStatus: Story = {
     const pageText = canvasElement.ownerDocument.body.textContent ?? ''
     if (!pageText.includes('需要关注') && !pageText.includes('Needs attention')) {
       throw new Error('Expected the system status page to foreground the attention section.')
+    }
+  },
+}
+
+export const SystemSettingsMcpSessionBindings: Story = {
+  render: () => <SystemSettingsMcpSessionBindingsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
+    if (!activeNavItem?.textContent?.includes('系统设置')) {
+      throw new Error('Expected the hidden MCP session bindings route to remain under the system settings nav group.')
+    }
+    const activeSubitem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-subitem-active')
+    if (activeSubitem) {
+      throw new Error('Expected the hidden MCP session bindings route to avoid creating an active child-nav item.')
+    }
+    const pageText = canvasElement.ownerDocument.body.textContent ?? ''
+    if (!pageText.includes('释放当前筛选结果全部活跃会话')) {
+      throw new Error('Expected the hidden MCP session bindings route to expose the filtered revoke action.')
     }
   },
 }

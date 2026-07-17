@@ -3,8 +3,14 @@ const RECONCILIATION_SETTLEMENT_MODE_SHADOW: &str = "shadow";
 const RECONCILIATION_STATUS_SHADOW_SETTLED: &str = "shadow_settled";
 const RECONCILIATION_STATUS_SHADOW_DEGRADED: &str = "shadow_degraded";
 
+fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
+    settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
+        && settings.api_rebalance_enabled
+        && settings.rebalance_mcp_enabled
+}
+
 impl KeyStore {
-    pub(crate) async fn count_active_control_mcp_sessions(
+    pub(crate) async fn count_active_upstream_mcp_sessions(
         &self,
         now: i64,
     ) -> Result<i64, ProxyError> {
@@ -29,20 +35,18 @@ impl KeyStore {
     ) -> Result<(bool, i64, i64), ProxyError> {
         let now = self.backend_time.now_ts();
         let settings = self.get_system_settings().await?;
-        let active_control_sessions = self.count_active_control_mcp_sessions(now).await?;
-        let static_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
-            && settings.api_rebalance_enabled
-            && settings.rebalance_mcp_enabled;
+        let active_upstream_mcp_sessions = self.count_active_upstream_mcp_sessions(now).await?;
+        let static_ready = upstream_reconciliation_shadow_ready(&settings);
         let current = self
             .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1)
             .await?
             .unwrap_or(0);
-        if !static_ready || active_control_sessions > 0 {
+        if !static_ready || active_upstream_mcp_sessions > 0 {
             if current != 0 {
                 self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1, 0)
                     .await?;
             }
-            return Ok((false, 0, active_control_sessions));
+            return Ok((false, 0, active_upstream_mcp_sessions));
         }
         let ready_after = if current <= 0 {
             let next = business_period_for_timestamp(now).ends_at;
@@ -52,7 +56,7 @@ impl KeyStore {
         } else {
             current
         };
-        Ok((now >= ready_after, ready_after, active_control_sessions))
+        Ok((now >= ready_after, ready_after, active_upstream_mcp_sessions))
     }
 
     pub(crate) async fn record_upstream_reconciliation_usage(
@@ -62,15 +66,16 @@ impl KeyStore {
         billing_subject: &str,
         research_request_id: Option<&str>,
     ) -> Result<Option<BusinessPeriod>, ProxyError> {
-        let (eligible, _, _) = self.refresh_upstream_reconciliation_epoch().await?;
-        if !eligible {
+        let settings = self.get_system_settings().await?;
+        if !upstream_reconciliation_shadow_ready(&settings) {
             return Ok(None);
         }
-        let settlement_mode = if self
-            .get_system_settings()
-            .await?
-            .upstream_precise_reconciliation_enabled
-        {
+        let precise_cutover_ready = if settings.upstream_precise_reconciliation_enabled {
+            self.refresh_upstream_reconciliation_epoch().await?.0
+        } else {
+            false
+        };
+        let settlement_mode = if precise_cutover_ready {
             RECONCILIATION_SETTLEMENT_MODE_ACTUAL
         } else {
             RECONCILIATION_SETTLEMENT_MODE_SHADOW

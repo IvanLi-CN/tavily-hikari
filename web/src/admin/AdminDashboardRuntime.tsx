@@ -128,6 +128,7 @@ import { useAdminStackedLayout } from '../lib/responsive'
 import { formatRequestRateScope, formatRequestRateSummary, resolveRequestRate } from '../requestRate'
 import {
   type AdminAnalysisView,
+  type AdminMcpSessionBindingsPathContext,
   type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
@@ -150,10 +151,17 @@ import {
   parseAdminPath,
   rankingsPath,
   systemSettingsAdminPath,
+  systemSettingsMcpSessionBindingsPath,
   systemSettingsStatusPath,
   systemSettingsHaPath,
   systemSettingsHaNodePath,
   buildAdminUsersPath,
+  getMcpSessionBindingsCreatedFromSearch,
+  getMcpSessionBindingsCreatedToSearch,
+  getMcpSessionBindingsPageFromSearch,
+  getMcpSessionBindingsStatusFromSearch,
+  getMcpSessionBindingsUpdatedFromSearch,
+  getMcpSessionBindingsUpdatedToSearch,
   tokenDetailPath,
   unboundTokenUsagePath,
   userDetailPath,
@@ -291,6 +299,8 @@ import {
   type AdminUserTag,
   type AdminUserTagBinding,
   type AdminRechargeListResponse,
+  type AdminMcpSessionBindingsPage,
+  type AdminMcpSessionBindingsQuery,
   type SortDirection,
   type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
@@ -308,10 +318,13 @@ import {
   type HaNodeDetail,
   type HaStatus,
   fetchForwardProxySettings,
+  fetchAdminMcpSessionBindings,
   fetchSystemStatus,
   fetchSystemSettingsEnvelope,
   fetchForwardProxyErrorStats,
   fetchForwardProxyStats,
+  revokeFilteredAdminMcpSessionBindings,
+  revokeSelectedAdminMcpSessionBindings,
   revalidateForwardProxyWithProgress,
   updateForwardProxyNodesDisabled,
   updateSystemSettings,
@@ -354,6 +367,7 @@ const LazyAlertsCenter = lazy(() => import('./AlertsCenter'))
 const LazyAnnouncementsModule = lazy(() => import('./AnnouncementsModule'))
 const LazySystemSettingsModule = lazy(() => import('./SystemSettingsModule'))
 const LazyUpstreamPrivacyStatusModule = lazy(() => import('./UpstreamPrivacyStatusModule'))
+const LazyMcpSessionBindingsModule = lazy(() => import('./McpSessionBindingsModule'))
 const LazyAdminSecuritySettingsModule = lazy(() => import('./AdminSecuritySettingsModule'))
 const LazyAdminRechargeRecordsModule = lazy(() => import('./AdminRechargeRecordsModule'))
 const LazyUserDetailSharedUsagePanel = lazy(async () =>
@@ -1752,6 +1766,17 @@ function AdminDashboard(): JSX.Element {
   const jobsStrings = adminStrings.jobs
   const proxySettingsStrings = adminStrings.proxySettings
   const systemSettingsStrings = adminStrings.systemSettings
+  const mcpSessionBindingsRouteQuery = useMemo<AdminMcpSessionBindingsPathContext>(
+    () => ({
+      status: getMcpSessionBindingsStatusFromSearch(locationSearch),
+      createdFrom: getMcpSessionBindingsCreatedFromSearch(locationSearch),
+      createdTo: getMcpSessionBindingsCreatedToSearch(locationSearch),
+      updatedFrom: getMcpSessionBindingsUpdatedFromSearch(locationSearch),
+      updatedTo: getMcpSessionBindingsUpdatedToSearch(locationSearch),
+      page: getMcpSessionBindingsPageFromSearch(locationSearch),
+    }),
+    [locationSearch],
+  )
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -1931,6 +1956,7 @@ function AdminDashboard(): JSX.Element {
   const [forwardProxySettingsError, setForwardProxySettingsError] = useState<string | null>(null)
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null)
   const [adminUserListStats, setAdminUserListStats] = useState<AdminUserListStats | null>(null)
+  const [activeUpstreamMcpSessions, setActiveUpstreamMcpSessions] = useState(0)
   const [systemSettingsLoadState, setSystemSettingsLoadState] =
     useState<QueryLoadState>('initial_loading')
   const [systemSettingsError, setSystemSettingsError] = useState<string | null>(null)
@@ -1940,6 +1966,12 @@ function AdminDashboard(): JSX.Element {
     useState<QueryLoadState>('initial_loading')
   const [upstreamPrivacyStatusError, setUpstreamPrivacyStatusError] = useState<string | null>(null)
   const [upstreamPrivacyAutoRefreshEnabled, setUpstreamPrivacyAutoRefreshEnabled] = useState(true)
+  const [mcpSessionBindingsData, setMcpSessionBindingsData] =
+    useState<AdminMcpSessionBindingsPage | null>(null)
+  const [mcpSessionBindingsLoadState, setMcpSessionBindingsLoadState] =
+    useState<QueryLoadState>('initial_loading')
+  const [mcpSessionBindingsError, setMcpSessionBindingsError] = useState<string | null>(null)
+  const [mcpSessionBindingsBusy, setMcpSessionBindingsBusy] = useState(false)
   const [rechargeRecordsMeta, setRechargeRecordsMeta] = useState<AdminRechargeListResponse | null>(null)
   const [adminDisplayDensity, setAdminDisplayDensity] = useState<AdminDisplayDensity>(() =>
     readStoredAdminDisplayDensity(),
@@ -1986,11 +2018,13 @@ function AdminDashboard(): JSX.Element {
   const forwardProxySettingsAbortRef = useRef<AbortController | null>(null)
   const systemSettingsAbortRef = useRef<AbortController | null>(null)
   const upstreamPrivacyStatusAbortRef = useRef<AbortController | null>(null)
+  const mcpSessionBindingsAbortRef = useRef<AbortController | null>(null)
   const forwardProxyStatsAbortRef = useRef<AbortController | null>(null)
   const forwardProxyErrorStatsAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsLoadedRef = useRef(false)
   const systemSettingsLoadedRef = useRef(false)
   const upstreamPrivacyStatusLoadedRef = useRef(false)
+  const mcpSessionBindingsLoadedRef = useRef(false)
   const forwardProxyStatsLoadedRef = useRef(false)
   const forwardProxyErrorStatsLoadedRef = useRef(false)
   const needsSystemSettingsForUsers =
@@ -3048,6 +3082,7 @@ function AdminDashboard(): JSX.Element {
         if (request.signal.aborted) return
         setSystemSettings(envelope.systemSettings ?? null)
         setAdminUserListStats(envelope.adminUserListStats ?? null)
+        setActiveUpstreamMcpSessions(envelope.activeUpstreamMcpSessions ?? 0)
         setSystemSettingsLoadState('ready')
         setLastUpdated(new Date())
         systemSettingsLoadedRef.current = true
@@ -3111,6 +3146,52 @@ function AdminDashboard(): JSX.Element {
       }
     },
     [beginManagedRequest, loadingStateStrings.error],
+  )
+
+  const loadMcpSessionBindingsData = useCallback(
+    async ({
+      signal,
+      reason = 'refresh',
+    }: {
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
+    } = {}) => {
+      const request = beginManagedRequest(mcpSessionBindingsAbortRef, signal)
+      setMcpSessionBindingsLoadState(
+        reason === 'refresh'
+          ? getRefreshingLoadState(mcpSessionBindingsLoadedRef.current)
+          : getBlockingLoadState(mcpSessionBindingsLoadedRef.current),
+      )
+      setMcpSessionBindingsError(null)
+
+      try {
+        const nextData = await fetchAdminMcpSessionBindings(
+          {
+            status: mcpSessionBindingsRouteQuery.status ?? 'active',
+            createdFrom: mcpSessionBindingsRouteQuery.createdFrom ?? null,
+            createdTo: mcpSessionBindingsRouteQuery.createdTo ?? null,
+            updatedFrom: mcpSessionBindingsRouteQuery.updatedFrom ?? null,
+            updatedTo: mcpSessionBindingsRouteQuery.updatedTo ?? null,
+            page: mcpSessionBindingsRouteQuery.page ?? 1,
+            perPage: 20,
+          },
+          request.signal,
+        )
+        if (request.signal.aborted) return
+        setMcpSessionBindingsData(nextData)
+        setMcpSessionBindingsLoadState('ready')
+        setLastUpdated(new Date())
+        mcpSessionBindingsLoadedRef.current = true
+      } catch (err) {
+        if (request.signal.aborted) return
+        console.error(err)
+        setMcpSessionBindingsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setMcpSessionBindingsLoadState('error')
+      } finally {
+        request.cleanup()
+      }
+    },
+    [beginManagedRequest, loadingStateStrings.error, mcpSessionBindingsRouteQuery],
   )
 
   const loadForwardProxyStatsData = useCallback(
@@ -3640,6 +3721,20 @@ function AdminDashboard(): JSX.Element {
 
     return () => controller.abort()
   }, [route, loadUpstreamPrivacyStatusData])
+
+  useEffect(() => {
+    if (route.name !== 'mcp-session-bindings') {
+      return
+    }
+
+    const controller = new AbortController()
+    void loadMcpSessionBindingsData({
+      signal: controller.signal,
+      reason: mcpSessionBindingsLoadedRef.current ? 'switch' : 'initial',
+    })
+
+    return () => controller.abort()
+  }, [route, loadMcpSessionBindingsData])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -4593,6 +4688,12 @@ function AdminDashboard(): JSX.Element {
     setLocationSearch(nextUrl.search)
     setRoute((previous) => (isSameAdminRoute(previous, nextRoute) ? previous : nextRoute))
   }, [])
+  const navigateMcpSessionBindings = useCallback(
+    (context?: AdminMcpSessionBindingsPathContext) => {
+      navigateToPath(systemSettingsMcpSessionBindingsPath(context))
+    },
+    [navigateToPath],
+  )
   const buildUsersOverviewPath = useCallback(() => {
     const useUsersState =
       (route.name === 'module' && route.module === 'users')
@@ -6711,6 +6812,7 @@ function AdminDashboard(): JSX.Element {
       try {
         const envelope = await fetchSystemSettingsEnvelope()
         setAdminUserListStats(envelope.adminUserListStats ?? null)
+        setActiveUpstreamMcpSessions(envelope.activeUpstreamMcpSessions ?? 0)
       } catch (refreshErr) {
         console.error(refreshErr)
       }
@@ -6735,6 +6837,69 @@ function AdminDashboard(): JSX.Element {
       setSystemSettingsSaving(false)
     }
   }, [loadUpstreamPrivacyStatusData, systemSettingsStrings.form.saveFailed])
+  const refreshSystemSettingsSummaries = useCallback(async () => {
+    try {
+      const envelope = await fetchSystemSettingsEnvelope()
+      setSystemSettings(envelope.systemSettings ?? null)
+      setAdminUserListStats(envelope.adminUserListStats ?? null)
+      setActiveUpstreamMcpSessions(envelope.activeUpstreamMcpSessions ?? 0)
+      setSystemSettingsLoadState('ready')
+      systemSettingsLoadedRef.current = true
+    } catch (refreshErr) {
+      console.error(refreshErr)
+    }
+  }, [])
+  const refreshUpstreamPrivacyStatusSummary = useCallback(async () => {
+    try {
+      const nextStatus = await fetchSystemStatus()
+      setUpstreamPrivacyStatus(nextStatus)
+      setUpstreamPrivacyStatusLoadState('ready')
+      upstreamPrivacyStatusLoadedRef.current = true
+    } catch (refreshErr) {
+      console.error(refreshErr)
+    }
+  }, [])
+  const handleRevokeSelectedMcpSessionBindings = useCallback(
+    async (proxySessionIds: string[]) => {
+      if (proxySessionIds.length === 0) return
+      setMcpSessionBindingsBusy(true)
+      setError(null)
+      try {
+        await revokeSelectedAdminMcpSessionBindings(proxySessionIds)
+        await Promise.all([
+          loadMcpSessionBindingsData({ reason: 'refresh' }),
+          refreshSystemSettingsSummaries(),
+          refreshUpstreamPrivacyStatusSummary(),
+        ])
+      } catch (err) {
+        console.error(err)
+        setError(err instanceof Error ? err.message : 'Failed to revoke selected MCP sessions.')
+      } finally {
+        setMcpSessionBindingsBusy(false)
+      }
+    },
+    [loadMcpSessionBindingsData, refreshSystemSettingsSummaries, refreshUpstreamPrivacyStatusSummary],
+  )
+  const handleRevokeFilteredMcpSessionBindings = useCallback(
+    async (query: AdminMcpSessionBindingsQuery) => {
+      setMcpSessionBindingsBusy(true)
+      setError(null)
+      try {
+        await revokeFilteredAdminMcpSessionBindings(query)
+        await Promise.all([
+          loadMcpSessionBindingsData({ reason: 'refresh' }),
+          refreshSystemSettingsSummaries(),
+          refreshUpstreamPrivacyStatusSummary(),
+        ])
+      } catch (err) {
+        console.error(err)
+        setError(err instanceof Error ? err.message : 'Failed to revoke filtered MCP sessions.')
+      } finally {
+        setMcpSessionBindingsBusy(false)
+      }
+    },
+    [loadMcpSessionBindingsData, refreshSystemSettingsSummaries, refreshUpstreamPrivacyStatusSummary],
+  )
   const refreshUsersList = async () => {
     const settingsForUsers = await ensureUsersSystemSettings(undefined, systemSettings)
     const pagedUsers = await fetchAdminUsers(
@@ -7727,9 +7892,9 @@ function AdminDashboard(): JSX.Element {
           ? 'system-settings-ha'
           : (route.systemSettingsView ?? 'general') === 'status'
             ? 'system-settings-status'
-          : (route.systemSettingsView ?? 'general') === 'admin'
-            ? 'system-settings-admin'
-            : 'system-settings'
+            : (route.systemSettingsView ?? 'general') === 'admin'
+              ? 'system-settings-admin'
+              : 'system-settings'
         : route.module === 'analysis'
           ? route.analysisView === 'usage'
             ? 'analysis-usage'
@@ -7737,35 +7902,39 @@ function AdminDashboard(): JSX.Element {
               ? 'analysis-pressure'
               : 'analysis-rankings'
           : route.module
-        : route.name === 'ha-node'
-          ? 'system-settings-ha'
-        : route.name === 'key'
-          ? 'keys'
-          : route.name === 'user'
-              || route.name === 'user-tags'
-              || route.name === 'user-tag-editor'
-            ? 'users'
-            : route.name === 'announcement-editor'
-              ? 'announcements'
-            : route.name === 'not-found'
-              ? 'dashboard'
-              : 'tokens'
+      : route.name === 'ha-node'
+        ? 'system-settings-ha'
+        : route.name === 'mcp-session-bindings'
+          ? 'system-settings-status'
+          : route.name === 'key'
+            ? 'keys'
+            : route.name === 'user'
+                || route.name === 'user-tags'
+                || route.name === 'user-tag-editor'
+              ? 'users'
+              : route.name === 'announcement-editor'
+                ? 'announcements'
+                : route.name === 'not-found'
+                  ? 'dashboard'
+                  : 'tokens'
   const activeModule: AdminModuleId =
     route.name === 'module'
       ? route.module
       : route.name === 'ha-node'
         ? 'system-settings'
-      : route.name === 'key'
-        ? 'keys'
-        : route.name === 'user'
-            || route.name === 'user-tags'
-            || route.name === 'user-tag-editor'
-          ? 'users'
-          : route.name === 'announcement-editor'
-            ? 'announcements'
-          : route.name === 'not-found'
-            ? 'dashboard'
-            : 'tokens'
+        : route.name === 'mcp-session-bindings'
+          ? 'system-settings'
+          : route.name === 'key'
+            ? 'keys'
+            : route.name === 'user'
+                || route.name === 'user-tags'
+                || route.name === 'user-tag-editor'
+              ? 'users'
+              : route.name === 'announcement-editor'
+                ? 'announcements'
+                : route.name === 'not-found'
+                  ? 'dashboard'
+                  : 'tokens'
   const isTokensModule = activeModule === 'tokens'
   useLayoutEffect(() => {
     if (!isTokensModule || selectedTokenCount === 0) return
@@ -8950,6 +9119,7 @@ function AdminDashboard(): JSX.Element {
     : route.name === 'ha-node'
       ? 'ha'
       : 'general'
+  const showMcpSessionBindings = route.name === 'mcp-session-bindings'
   const showSystemSettingsHa = showSystemSettings && systemSettingsView === 'ha'
   const showSystemSettingsStatus = showSystemSettings && systemSettingsView === 'status'
   const showSystemSettingsAdmin = showSystemSettings && systemSettingsView === 'admin'
@@ -9803,7 +9973,8 @@ function AdminDashboard(): JSX.Element {
   const showAnnouncements = activeModule === 'announcements'
   const showRecharges = activeModule === 'recharges'
   const showAlerts = activeModule === 'alerts'
-  const showSystemSettingsGeneral = showSystemSettings && systemSettingsView === 'general'
+  const showSystemSettingsGeneral =
+    showSystemSettings && systemSettingsView === 'general' && !showMcpSessionBindings
   const showProxySettings = activeModule === 'proxy-settings'
   const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
 
@@ -9931,6 +10102,14 @@ function AdminDashboard(): JSX.Element {
           language === 'zh'
             ? '查看系统当前在出站 Header 白名单、`X-Project-ID` 策略、Control MCP UA、生效门禁与分段对账上的实际状态。'
             : 'Review the effective system state for the outbound header allowlist, `X-Project-ID` policy, Control MCP UA, activation gates, and segmented reconciliation.'
+        if (route.name === 'mcp-session-bindings') {
+          return {
+            title: language === 'zh' ? '遗留会话绑定记录' : 'Legacy session bindings',
+            description: language === 'zh'
+              ? '查看仍绑定旧 `upstream_mcp` 链路的会话记录，并按当前筛选结果执行单条、批量或全部释放。'
+              : 'Inspect session records that still bind to the legacy `upstream_mcp` path, then release individual, selected, or all active matches.',
+          }
+        }
         if (systemSettingsView === 'ha') {
           return {
             title: systemSettingsStrings.ha.title,
@@ -12325,6 +12504,7 @@ function AdminDashboard(): JSX.Element {
             saving={systemSettingsSaving}
             displayDensity={adminDisplayDensity}
             userListStats={adminUserListStats}
+            activeUpstreamMcpSessions={activeUpstreamMcpSessions}
             registrationPolicy={{
               strings: usersStrings.registration,
               checked: allowRegistration,
@@ -12334,6 +12514,7 @@ function AdminDashboard(): JSX.Element {
               onToggle: toggleAllowRegistration,
             }}
             onDisplayDensityChange={setAdminDisplayDensity}
+            onOpenMcpSessionBindings={() => navigateMcpSessionBindings()}
             onApply={saveSystemSettings}
           />
         </AdminLazyBoundary>
@@ -12351,9 +12532,33 @@ function AdminDashboard(): JSX.Element {
             refreshing={isRefreshingLoadState(upstreamPrivacyStatusLoadState)}
             autoRefreshEnabled={upstreamPrivacyAutoRefreshEnabled}
             onAutoRefreshChange={setUpstreamPrivacyAutoRefreshEnabled}
+            onOpenMcpSessionBindings={() => navigateMcpSessionBindings()}
             onRefresh={async () => {
               await loadUpstreamPrivacyStatusData({ reason: 'refresh' })
             }}
+          />
+        </AdminLazyBoundary>
+      )}
+
+      {showMcpSessionBindings && (
+        <AdminLazyBoundary loadingLabel={loadingStateStrings.switching} minHeight={260}>
+          <LazyMcpSessionBindingsModule
+            language={language}
+            query={mcpSessionBindingsRouteQuery}
+            data={mcpSessionBindingsData}
+            loadState={mcpSessionBindingsLoadState}
+            error={mcpSessionBindingsError}
+            refreshing={isRefreshingLoadState(mcpSessionBindingsLoadState)}
+            busy={mcpSessionBindingsBusy}
+            onRefresh={async () => {
+              await loadMcpSessionBindingsData({ reason: 'refresh' })
+            }}
+            onNavigate={navigateMcpSessionBindings}
+            onRevokeSelected={handleRevokeSelectedMcpSessionBindings}
+            onRevokeFiltered={handleRevokeFilteredMcpSessionBindings}
+            onOpenUser={(userId) => navigateUser(userId)}
+            onOpenToken={(tokenId) => navigateToken(tokenId)}
+            onOpenKey={(keyId) => navigateKey(keyId)}
           />
         </AdminLazyBoundary>
       )}

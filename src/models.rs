@@ -1046,7 +1046,7 @@ pub struct UpstreamPrivacyStatus {
     pub gates: Vec<UpstreamPrivacyGate>,
     pub completed_gates: i64,
     pub total_gates: i64,
-    pub active_control_sessions: i64,
+    pub active_upstream_mcp_sessions: i64,
     pub current_period_code: String,
     pub current_period_ends_at: i64,
     pub next_epoch_at: Option<i64>,

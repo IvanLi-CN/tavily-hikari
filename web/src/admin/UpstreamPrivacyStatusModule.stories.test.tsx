@@ -7,13 +7,13 @@ import UpstreamPrivacyStatusModule from './UpstreamPrivacyStatusModule'
 import { translations } from '../i18n'
 
 describe('SystemStatusModule Storybook proofs', () => {
-  it('keeps the pending, draining, compare, active, degraded, empty, error, and gallery stories available', () => {
+  it('keeps the pending, blocked-session, compare, active, degraded, empty, error, and gallery stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/Modules/SystemStatusModule',
     })
 
     expect(systemStatusStories.Pending).toMatchObject({})
-    expect(systemStatusStories.Draining).toMatchObject({})
+    expect(systemStatusStories.BlockedBySessions).toMatchObject({})
     expect(systemStatusStories.CompareOnly).toMatchObject({})
     expect(systemStatusStories.Active).toMatchObject({})
     expect(systemStatusStories.Degraded).toMatchObject({})
@@ -33,6 +33,7 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(markup).toContain('aria-labelledby')
     expect(markup).toContain('需要关注')
     expect(markup).toContain('对账落账模式')
+    expect(markup).toContain('活跃 upstream_mcp session')
   })
 
   it('renders the gallery story with the state matrix and error fallback', () => {
