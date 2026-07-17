@@ -26,6 +26,7 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(dashboardStories.HiddenSeriesEmpty).toMatchObject({})
     expect(dashboardStories.FixedRangeWithGaps).toMatchObject({})
     expect(dashboardStories.RecentAlertsDesktopEvidence).toMatchObject({})
+    expect(dashboardStories.RecentAlertsBusinessHourWindow).toMatchObject({})
     expect(dashboardStories.NoPreviousMonthComparison).toMatchObject({})
   })
 
@@ -73,6 +74,15 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(markup).toContain('>5<')
     expect(markup).toContain('dashboard-alerts-summary__field-label')
     expect(markup).not.toContain('deep-link into the grouped Alerts view')
+  })
+
+  it('prefers the real 60m business-call window over stale 5m group metadata', () => {
+    const args = dashboardStories.RecentAlertsBusinessHourWindow.args
+    const markup = renderToStaticMarkup(createElement(meta.component, args as never))
+    expect(markup).toContain('User request rate limited · 60m window')
+    expect(markup).not.toContain('User request rate limited · 5m window')
+    expect(markup).toContain('rolling 60m request-rate window')
+    expect(markup).not.toContain('rolling 5m request-rate window for MCP Search')
   })
 
   it('opens the user detail target from a grouped alert subject', async () => {

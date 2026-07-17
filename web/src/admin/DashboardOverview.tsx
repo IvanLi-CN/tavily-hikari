@@ -507,16 +507,32 @@ function compactWindowCountLabel(
   }
 }
 
-function getRecentAlertRateWindowLabel(group: DashboardRecentAlertGroup): string | null {
-  if (typeof group.semanticWindowMinutes === 'number' && group.semanticWindowMinutes > 0) {
-    return `${group.semanticWindowMinutes}m window`
+function extractRecentAlertWindowMinutes(group: DashboardRecentAlertGroup): number | null {
+  const eventWindowMinutes = group.latestEvent.semanticWindow?.windowMinutes
+  if (typeof eventWindowMinutes === 'number' && eventWindowMinutes > 0) {
+    return eventWindowMinutes
   }
+
   const windowText = [
     group.latestEvent.summary,
     group.latestEvent.errorMessage,
   ].filter(Boolean).join(' ')
   const match = windowText.match(/\b(?:rolling\s+)?(\d+)m\b/i) ?? windowText.match(/\bwindow=(\d+)m\b/i)
-  return match ? `${match[1]}m window` : null
+  if (match) {
+    const parsed = Number.parseInt(match[1] ?? '', 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return typeof group.semanticWindowMinutes === 'number' && group.semanticWindowMinutes > 0
+    ? group.semanticWindowMinutes
+    : null
+}
+
+function getRecentAlertRateWindowLabel(group: DashboardRecentAlertGroup): string | null {
+  const windowMinutes = extractRecentAlertWindowMinutes(group)
+  return windowMinutes != null ? `${windowMinutes}m window` : null
 }
 
 function getRecentAlertReasonBadgeLabel(group: DashboardRecentAlertGroup, typeLabel: string): string {

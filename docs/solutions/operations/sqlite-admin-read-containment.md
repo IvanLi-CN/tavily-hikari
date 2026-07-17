@@ -112,6 +112,11 @@ reads:
 - Prefer `auth_token_logs`-native fields and narrow joins on alert reads. If a path only needs
   request kind, failure class, token, or mirrored API-key metadata, do not widen it with a
   `LEFT JOIN request_logs` just to re-derive fields already stored on the alert-side truth table.
+- When a grouped alert projection carries both aggregate window columns and a hydrated
+  `latest_event`, prefer the latest event's semantic window for owner-facing copy. Mixed local
+  limit families can share one alert type while using different windows such as rolling `5m`
+  request-rate caps and rolling `60m` business-call caps; if the UI trusts stale group-level window
+  defaults first, dashboard badges can mislabel the actual alert cause.
 - For per-user IP statistics over `request_logs`, force the user/IP/time index on count, sample, and
   timeline reads. On large databases SQLite can prefer the visibility/time index for
   `visibility + created_at` predicates and then build temporary B-trees for `GROUP BY`,

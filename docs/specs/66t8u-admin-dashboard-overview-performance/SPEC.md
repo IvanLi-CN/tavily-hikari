@@ -207,6 +207,9 @@
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构；默认流量趋势绝对柱状图展示滚动 25 个小时槽，最后当前未满小时槽使用灰底与竖向虚线标识。
   PR: include
   ![管理仪表盘总览轻量快照验收图](./assets/dashboard-overview-performance-proof.png)
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `element`; story_id_or_title: `Admin/Components/DashboardOverview/RecentAlertsBusinessHourWindow`; state: `recent alerts 60m badge`; evidence_note: 验证 Recent alerts 分组卡片在最新事件属于 rolling `60m` business-call cap 时，徽标优先显示真实 `60m window`，不再沿用旧的 `5m window` 分组元数据；该证据绑定本次 dashboard 文案修复实现。
+  PR: include
+  ![管理仪表盘近期告警 60m 文案修复图](./assets/dashboard-recent-alerts-60m-window.png)
 
 ## Change log
 
@@ -228,4 +231,5 @@
   Rust 行数预算门禁。
 - 2026-06-26: 将 shared snapshot freshness 进一步收敛为 cheap quota charge token + recent-alerts token，新增独立 `DashboardQuotaChargeCache` / `DashboardRecentAlertsCache`，让 cache-hit 不再触发 quota sample baseline/window CTE 与 alerts grouped CTE；同时将 alerts events/groups/dashboard recent alerts 改为 `auth_token_logs` 优先、`request_logs` 按需回退，并补齐 quota/alerts/serialize phase-level perf 事件。
 - 2026-06-29: 修正流量趋势图默认小时窗为滚动 24 小时，确保图表前段不再固定落在自然日今日起点。
+- 2026-07-17: 修正 recent alerts 分组徽标的窗口文案优先级；当最新事件属于 rolling `60m` business-call cap 时，dashboard 现在会显示真实 `60m window`，而不是沿用旧的 `5m` 分组元数据。
 - 2026-07-07: 修正默认流量趋势绝对柱状图窗口为 24 个完整小时加当前未满小时，共 25 个小时槽，并用灰底与竖向虚线标识当前未满小时。

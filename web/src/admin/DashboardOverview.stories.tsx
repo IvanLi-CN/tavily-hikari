@@ -232,6 +232,35 @@ const recentAlerts: RecentAlertsSummary = {
   ],
 }
 
+const recentAlertsBusinessHourWindow: RecentAlertsSummary = {
+  ...recentAlerts,
+  topGroups: recentAlerts.topGroups.map((group, index) => {
+    if (index !== 0) {
+      return group
+    }
+
+    return {
+      ...group,
+      semanticWindowMinutes: 5,
+      latestEvent: {
+        ...group.latestEvent,
+        summary:
+          'Token tok_ops_01 was rate limited by the local rolling 60m request-rate window for MCP Search.',
+        errorMessage:
+          'business request count cap exceeded on rolling 60m window (limit 300, used 302)',
+        requestKind: { key: 'mcp_search', label: 'MCP Search', detail: 'search' },
+        semanticWindow: {
+          kind: 'request_rate',
+          windowMinutes: 60,
+          windowStart: 1_762_375_600,
+          windowEnd: 1_762_379_200,
+          windowKey: null,
+        },
+      },
+    }
+  }),
+}
+
 const todayMetrics = createDashboardTodayMetrics({
   today: {
     total_requests: 4_812,
@@ -1230,6 +1259,33 @@ export const RecentAlertsDesktopEvidence: Story = {
     const rows = alertsSummary.querySelectorAll('.dashboard-alerts-summary__row')
     if (rows.length === 0) {
       throw new Error('Expected grouped alert rows to render')
+    }
+  },
+}
+
+export const RecentAlertsBusinessHourWindow: Story = {
+  render: RecentAlertsDesktopEvidence.render,
+  args: {
+    ...Default.args,
+    recentAlerts: recentAlertsBusinessHourWindow,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Regression proof for grouped alerts that really belong to the rolling 60-minute business-call cap even when a stale 5-minute group value leaks through.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+
+    const text = canvasElement.textContent ?? ''
+    if (!text.includes('User request rate limited') || !text.includes('60m window')) {
+      throw new Error(`Expected the grouped alert badge to surface the real 60m window, received: ${text}`)
+    }
+    if (text.includes('User request rate limited · 5m window')) {
+      throw new Error('Expected the grouped alert badge to avoid the stale 5m label.')
     }
   },
 }

@@ -1602,6 +1602,16 @@ impl KeyStore {
             .into_iter()
             .filter_map(|group| {
                 let latest_event = latest_events_by_row_sort_id.get(&group.row_sort_id)?.clone();
+                let semantic_window_kind = latest_event
+                    .semantic_window
+                    .as_ref()
+                    .map(|value| value.kind.as_str().to_string())
+                    .or_else(|| group.semantic_window_kind.clone());
+                let semantic_window_minutes = latest_event
+                    .semantic_window
+                    .as_ref()
+                    .and_then(|value| value.window_minutes)
+                    .or(group.semantic_window_minutes);
                 Some(AlertGroupRecord {
                     id: if group.grouping_kind == "mother" {
                         semantic_mother_id_from_child(&latest_event, 0)
@@ -1623,8 +1633,8 @@ impl KeyStore {
                     last_seen: group.last_seen,
                     latest_event,
                     grouping_kind: group.grouping_kind,
-                    semantic_window_kind: group.semantic_window_kind,
-                    semantic_window_minutes: group.semantic_window_minutes,
+                    semantic_window_kind,
+                    semantic_window_minutes,
                     semantic_window_start: group.semantic_window_start,
                     semantic_window_end: group.semantic_window_end,
                     semantic_window_key: None,
@@ -2316,12 +2326,13 @@ mod alert_grouping_tests {
         .expect("insert request log")
     }
 
-    async fn insert_request_rate_alert(
+    async fn insert_request_rate_alert_with_error_message(
         store: &KeyStore,
         token_id: &str,
         created_at: i64,
         request_kind_key: &str,
         request_kind_label: &str,
+        error_message: &str,
     ) {
         sqlx::query(
             r#"
@@ -2339,17 +2350,36 @@ mod alert_grouping_tests {
                 selection_effect_code,
                 counts_business_quota,
                 created_at
-            ) VALUES (?, 'POST', '/mcp', ?, ?, ?, 'quota_exhausted', 'user request rate limit exceeded on rolling 5m window (limit 25, used 25)', 'none', 'none', 'none', 0, ?)
+            ) VALUES (?, 'POST', '/mcp', ?, ?, ?, 'quota_exhausted', ?, 'none', 'none', 'none', 0, ?)
             "#,
         )
         .bind(token_id)
         .bind(request_kind_key)
         .bind(request_kind_label)
         .bind(request_kind_label)
+        .bind(error_message)
         .bind(created_at)
         .execute(&store.pool)
         .await
         .expect("insert request-rate alert");
+    }
+
+    async fn insert_request_rate_alert(
+        store: &KeyStore,
+        token_id: &str,
+        created_at: i64,
+        request_kind_key: &str,
+        request_kind_label: &str,
+    ) {
+        insert_request_rate_alert_with_error_message(
+            store,
+            token_id,
+            created_at,
+            request_kind_key,
+            request_kind_label,
+            "user request rate limit exceeded on rolling 5m window (limit 25, used 25)",
+        )
+        .await;
     }
 
     async fn insert_upstream_usage_limit_alert(
@@ -2839,6 +2869,67 @@ mod alert_grouping_tests {
             compat.request_kind.as_ref().map(|value| value.key.as_str()),
             Some("api:search")
         );
+    }
+
+    #[tokio::test]
+    async fn recent_alerts_summary_uses_latest_event_window_minutes_for_business_call_caps() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let db_path = temp_dir.path().join("alerts-recent-summary-window-minutes.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_005_000);
+        let store = KeyStore::new_with_time(&db_str, backend_time)
+            .await
+            .expect("create key store");
+
+        let user_id = "usr_alerts_summary";
+        let token_id = "tok_alerts_summary";
+        seed_bound_user_and_token(
+            &store,
+            user_id,
+            token_id,
+            "Summary Alerts",
+            "summary-alerts",
+            1_700_000_000,
+        )
+        .await;
+
+        for (created_at, request_kind_key, request_kind_label) in [
+            (1_700_000_000_i64, "mcp_search", "MCP Search"),
+            (1_700_000_060_i64, "mcp_search", "MCP Search"),
+        ] {
+            insert_request_rate_alert_with_error_message(
+                &store,
+                token_id,
+                created_at,
+                request_kind_key,
+                request_kind_label,
+                "business request count cap exceeded on rolling 60m window (limit 300, used 302)",
+            )
+            .await;
+        }
+
+        let summary = store
+            .fetch_recent_alerts_summary(24)
+            .await
+            .expect("fetch recent alerts summary");
+        let group = summary
+            .top_groups
+            .iter()
+            .find(|item| item.alert_type == ALERT_TYPE_USER_REQUEST_RATE_LIMITED)
+            .expect("request-rate grouped alert");
+
+        assert_eq!(group.grouping_kind, "mother");
+        assert_eq!(group.semantic_window_kind.as_deref(), Some("request_rate"));
+        assert_eq!(group.semantic_window_minutes, Some(60));
+        assert_eq!(
+            group
+                .latest_event
+                .semantic_window
+                .as_ref()
+                .and_then(|value| value.window_minutes),
+            Some(60)
+        );
+        assert!(group.latest_event.summary.contains("rolling 60m request-rate window"));
     }
 
     #[tokio::test]
