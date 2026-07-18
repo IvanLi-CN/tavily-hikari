@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "baseline_policy": "explicit-waiver-required",
+    "require_signed_commits": true,
+    "branch_protection": {
+      "protected_branches": ["main"],
+      "require_pull_request": true,
+      "disallow_direct_pushes": true,
+      "require_up_to_date_branches": true,
+      "enforce_admins": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false
+    }
+  },
+  "required_checks": [
+    "Quality Gates Contract",
+    "Release intent label gate",
+    "Worktree Bootstrap Smoke",
+    "Web Assets",
+    "Lint & Checks",
+    "Backend Shard Plan",
+    "Backend Tests",
+    "Frontend Checks",
+    "Compose Smoke (ForwardAuth + Caddy)",
+    "Build (Release)",
+    "Docs Pages Gate"
+  ],
+  "informational_checks": ["build-docs", "build-storybook", "assemble-pages"],
+  "waivers": [],
+  "expected_pr_workflows": [
+    {
+      "workflow": "Quality Gates",
+      "jobs": ["Quality Gates Contract"]
+    },
+    {
+      "workflow": "PR Label Gate",
+      "jobs": ["Release intent label gate"]
+    },
+    {
+      "workflow": "CI Pipeline",
+      "jobs": [
+        "Worktree Bootstrap Smoke",
+        "Web Assets",
+        "Lint & Checks",
+        "Backend Shard Plan",
+        "Backend Tests",
+        "Frontend Checks",
+        "Compose Smoke (ForwardAuth + Caddy)",
+        "Build (Release)"
+      ]
+    },
+    {
+      "workflow": "Docs Pages",
+      "jobs": [
+        "Docs Pages Gate",
+        "build-docs",
+        "build-storybook",
+        "assemble-pages"
+      ]
+    }
+  ]
+}

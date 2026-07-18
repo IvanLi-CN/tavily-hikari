@@ -3,22 +3,8 @@ name: Docs Pages
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'docs-site/**'
-      - 'web/**'
-      - '.github/workflows/docs-pages.yml'
-      - '.github/scripts/assemble-pages-site.sh'
-      - 'README.md'
-      - 'README.zh-CN.md'
   push:
     branches: [main]
-    paths:
-      - 'docs-site/**'
-      - 'web/**'
-      - '.github/workflows/docs-pages.yml'
-      - '.github/scripts/assemble-pages-site.sh'
-      - 'README.md'
-      - 'README.zh-CN.md'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +15,44 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  docs-gate-plan:
+    name: Docs Pages Scope
+    runs-on: ubuntu-24.04
+    outputs:
+      run_docs: ${{ steps.detect.outputs.run_docs }}
+      changed_count: ${{ steps.detect.outputs.changed_count }}
+      matched_paths: ${{ steps.detect.outputs.matched_paths }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-related changes
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${PUSH_BEFORE_SHA}"
+          head_sha="${PUSH_AFTER_SHA}"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base_sha="${PR_BASE_SHA}"
+            head_sha="${PR_HEAD_SHA}"
+          fi
+          python3 .github/scripts/detect_docs_pages_changes.py \
+            --event-name "${EVENT_NAME}" \
+            --base-sha "${base_sha}" \
+            --head-sha "${head_sha}" \
+            --output-file "${GITHUB_OUTPUT}"
+
   build-docs:
+    needs: [docs-gate-plan]
+    if: ${{ needs.docs-gate-plan.outputs.run_docs == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -71,10 +94,12 @@ jobs:
           if-no-files-found: error
 
   build-storybook:
+    needs: [docs-gate-plan]
+    if: ${{ needs.docs-gate-plan.outputs.run_docs == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      STORYBOOK_DISABLE_TELEMETRY: '1'
+      STORYBOOK_DISABLE_TELEMETRY: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -101,8 +126,9 @@ jobs:
           if-no-files-found: error
 
   assemble-pages:
+    if: ${{ needs.docs-gate-plan.outputs.run_docs == 'true' }}
     runs-on: ubuntu-24.04
-    needs: [build-docs, build-storybook]
+    needs: [docs-gate-plan, build-docs, build-storybook]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -144,10 +170,55 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  deploy:
-    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+  docs-pages-gate:
+    name: Docs Pages Gate
     runs-on: ubuntu-24.04
-    needs: [assemble-pages]
+    if: ${{ always() }}
+    needs: [docs-gate-plan, build-docs, build-storybook, assemble-pages]
+    steps:
+      - name: Evaluate docs pages gate
+        env:
+          DOCS_GATE_PLAN_RESULT: ${{ needs.docs-gate-plan.result }}
+          RUN_DOCS: ${{ needs.docs-gate-plan.outputs.run_docs }}
+          CHANGED_COUNT: ${{ needs.docs-gate-plan.outputs.changed_count }}
+          MATCHED_PATHS: ${{ needs.docs-gate-plan.outputs.matched_paths }}
+          BUILD_DOCS_RESULT: ${{ needs.build-docs.result }}
+          BUILD_STORYBOOK_RESULT: ${{ needs.build-storybook.result }}
+          ASSEMBLE_PAGES_RESULT: ${{ needs.assemble-pages.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${DOCS_GATE_PLAN_RESULT}" != "success" ]]; then
+            echo "Docs Pages Gate failed because docs-gate-plan ended with result=${DOCS_GATE_PLAN_RESULT}"
+            exit 1
+          fi
+
+          if [[ "${RUN_DOCS}" != "true" ]]; then
+            echo "Docs Pages Gate satisfied via no-op."
+            echo "changed_count=${CHANGED_COUNT}"
+            echo "matched_paths=${MATCHED_PATHS:-<none>}"
+            exit 0
+          fi
+
+          for item in \
+            "build-docs:${BUILD_DOCS_RESULT}" \
+            "build-storybook:${BUILD_STORYBOOK_RESULT}" \
+            "assemble-pages:${ASSEMBLE_PAGES_RESULT}"
+          do
+            name="${item%%:*}"
+            result="${item#*:}"
+            if [[ "${result}" != "success" ]]; then
+              echo "Docs Pages Gate failed because ${name} ended with result=${result}"
+              exit 1
+            fi
+          done
+
+          echo "Docs Pages Gate passed."
+          echo "matched_paths=${MATCHED_PATHS}"
+
+  deploy:
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.docs-gate-plan.outputs.run_docs == 'true' }}
+    runs-on: ubuntu-24.04
+    needs: [docs-gate-plan, assemble-pages]
     permissions:
       contents: read
       pages: write
