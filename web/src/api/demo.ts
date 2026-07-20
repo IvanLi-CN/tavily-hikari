@@ -2598,7 +2598,6 @@ export function installDemoRuntime(): void {
   if (!isDemoMode() || typeof window === 'undefined' || window.__tavilyHikariDemoInstalled) return
   window.__tavilyHikariDemoInstalled = true
   document.documentElement.dataset.demoMode = 'true'
-
   const originalFetch = window.fetch.bind(window)
   window.__tavilyHikariDemoFetch = originalFetch
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2606,7 +2605,6 @@ export function installDemoRuntime(): void {
     if (response) return response
     return originalFetch(input, init)
   }
-
   window.__tavilyHikariDemoEventSource = window.EventSource
   window.EventSource = DemoEventSource as unknown as typeof EventSource
 }

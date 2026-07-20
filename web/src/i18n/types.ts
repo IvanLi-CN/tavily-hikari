@@ -1939,7 +1939,6 @@ export interface AdminTranslationsShape {
     tagPrefix: string
   }
 }
-
 export interface TranslationShape {
   common: {
     languageLabel: string
