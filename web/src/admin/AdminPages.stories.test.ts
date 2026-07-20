@@ -235,6 +235,7 @@ describe('AdminPages Storybook proofs', () => {
     )
 
     expect(markup).toContain('新方案 24h')
+    expect(markup).toContain('未生成')
   })
 
   it('renders the jobs story with manual trigger controls and source labels', () => {

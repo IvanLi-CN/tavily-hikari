@@ -1064,18 +1064,26 @@ function withAdminUserSummaryCanonical<
   T extends {
     quotaDailyUsed: number
     quotaShadowDailyUsed?: number | null
+    quotaShadowDailyAvailability?: 'confirmed' | 'unavailable' | null
     quotaDailyLimit: number
     quotaMonthlyUsed: number
     quotaMonthlyLimit: number
   },
 >(value: T): T & Pick<
   AdminUserSummary,
-  'dailyCreditsUsed' | 'shadowDailyCreditsUsed' | 'dailyCreditsLimit' | 'monthlyCreditsUsed' | 'monthlyCreditsLimit'
+  | 'dailyCreditsUsed'
+  | 'shadowDailyCreditsUsed'
+  | 'shadowDailyAvailability'
+  | 'dailyCreditsLimit'
+  | 'monthlyCreditsUsed'
+  | 'monthlyCreditsLimit'
 > {
   return {
     ...value,
     dailyCreditsUsed: value.quotaDailyUsed,
     shadowDailyCreditsUsed: value.quotaShadowDailyUsed ?? null,
+    shadowDailyAvailability:
+      value.quotaShadowDailyAvailability ?? (value.quotaShadowDailyUsed != null ? 'confirmed' : 'unavailable'),
     dailyCreditsLimit: value.quotaDailyLimit,
     monthlyCreditsUsed: value.quotaMonthlyUsed,
     monthlyCreditsLimit: value.quotaMonthlyLimit,
@@ -1333,7 +1341,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 602,
     quotaHourlyLimit: 0,
     quotaDailyUsed: 10_009,
-    quotaShadowDailyUsed: 9_992,
+    quotaShadowDailyUsed: 10_009,
     quotaDailyLimit: 0,
     quotaMonthlyUsed: 231_008,
     quotaMonthlyLimit: 0,
@@ -4867,7 +4875,9 @@ function UsersPageCanvas({
       ? users.filterStatus.searchAll
       : users.filterStatus.defaultActiveOnly
     : null
-  const showShadowDailyUsageColumn = sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)
+  const showShadowDailyUsageColumn = sortedUsers.some(
+    (item) => item.shadowDailyAvailability != null || item.shadowDailyCreditsUsed != null,
+  )
 
   const toggleSort = (field: AdminUsersSortField) => {
     const isActive = effectiveSortField === field
@@ -4971,6 +4981,7 @@ function UsersPageCanvas({
                   const shadowDailyUsage = buildShadowDailyUsageStack({
                     actualUsed: item.dailyCreditsUsed,
                     shadowUsed: item.shadowDailyCreditsUsed,
+                    shadowAvailability: item.shadowDailyAvailability,
                     limit: item.dailyCreditsLimit,
                     usersStrings: users,
                     formatNumber,
@@ -5240,7 +5251,9 @@ function UsersUsagePageCanvas({
         users={sortedUsers}
         language={language}
         usersStrings={users}
-        showShadowDailyColumn={sortedUsers.some((item) => item.shadowDailyCreditsUsed != null)}
+        showShadowDailyColumn={sortedUsers.some(
+          (item) => item.shadowDailyAvailability != null || item.shadowDailyCreditsUsed != null,
+        )}
         searchControls={usageHeaderActions}
         filterStatusText={usersFilterStatusText}
         loadState="ready"
@@ -6456,6 +6469,9 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
           pendingResearch: 1,
           queuedSettlements: 2,
           degradedSettlements: 0,
+          lastReconciliationRunAt: 1_783_958_250,
+          lastShadowAdjustmentAt: 1_783_958_100,
+          lastReconciliationEnqueueErrorAt: 1_783_957_900,
           recentAdjustments: [
             {
               settlementKey: 'v1:tok_demo:2026-07-14/S1',

@@ -117,6 +117,11 @@ month-tail public metrics scan.
   priority/source, do that coalescing through a read-only fast path. Requiring `BEGIN IMMEDIATE`
   before checking the active row turns harmless duplicate manual triggers into transient HTTP 500s
   whenever a bounded GC slice is holding SQLite's writer slot.
+- Apply that same reuse rule explicitly to compare-only reconciliation scheduling. `upstream_reconciliation`
+  should reuse an equivalent queued/running representative row before entering the write path, and
+  it should emit stable `component=reconciliation event=enqueue_reused|enqueue_exhausted` logs plus
+  status-page timestamps so operators can tell “writer contention prevented a new enqueue” apart
+  from “the worker is already draining the backlog”.
 - Keep `queued_at` separate from `started_at`. A queued job has been accepted but has not entered a
   DB execution window yet; collapsing those timestamps makes queue delay invisible and breaks admin
   diagnosis.

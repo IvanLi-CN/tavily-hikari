@@ -1066,6 +1066,12 @@ const META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1: &str =
 const META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1: &str = "upstream_project_id_hmac_secret_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1: &str =
     "upstream_reconciliation_ready_after_v1";
+const META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1: &str =
+    "upstream_reconciliation_last_run_at_v1";
+const META_KEY_UPSTREAM_RECONCILIATION_LAST_SHADOW_ADJUSTMENT_AT_V1: &str =
+    "upstream_reconciliation_last_shadow_adjustment_at_v1";
+const META_KEY_UPSTREAM_RECONCILIATION_LAST_ENQUEUE_ERROR_AT_V1: &str =
+    "upstream_reconciliation_last_enqueue_error_at_v1";
 const META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1: &str = "user_blocked_key_base_limit_v1";
 const META_KEY_GLOBAL_IP_LIMIT_V1: &str = "global_ip_limit_v1";
 const META_KEY_TRUSTED_PROXY_CIDRS_V1: &str = "trusted_proxy_cidrs_v1";

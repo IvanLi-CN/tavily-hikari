@@ -254,6 +254,146 @@ async fn shadow_usage_records_even_when_active_upstream_mcp_sessions_block_preci
 }
 
 #[tokio::test]
+async fn shadow_reconciliation_keeps_zero_delta_usage_and_updates_runtime_markers() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-shadow-zero-delta"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: "tok-shadow-zero".to_string(),
+        period_code: "2026-07-15/S2".to_string(),
+        project_id: "anonymous-project".to_string(),
+        billing_subject: "account:user-shadow-zero".to_string(),
+        settlement_mode: "shadow".to_string(),
+        period_start: now - 3_600,
+        period_end: now,
+        pending_research: 0,
+        degraded: false,
+    };
+    assert!(
+        proxy
+            .key_store
+            .settle_upstream_reconciliation_shadow(&candidate, 7, 7)
+            .await
+            .expect("shadow zero-delta settlement")
+    );
+
+    let usage = proxy
+        .shadow_daily_reconciled_usage_for_accounts(&["user-shadow-zero".to_string()])
+        .await
+        .expect("read zero-delta shadow usage");
+    assert_eq!(usage.get("user-shadow-zero"), Some(&0));
+
+    let (_, last_shadow_adjustment_at, _) = proxy
+        .key_store
+        .upstream_reconciliation_runtime_markers()
+        .await
+        .expect("read runtime markers");
+    assert_eq!(last_shadow_adjustment_at, Some(now));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn run_upstream_reconciliation_once_updates_runtime_markers() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-runtime-markers"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+
+    let token = proxy
+        .create_access_token(Some("reconciliation-runtime-markers"))
+        .await
+        .expect("create token");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-runtime-markers")
+        .await
+        .expect("create upstream key");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(&key_id)
+    .bind("2026-07-15/S1")
+    .bind("project-shadow-runtime")
+    .bind(format!("token:{}", token.id))
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .bind("shadow")
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert due reconciliation usage");
+
+    let app = Router::new().route(
+        "/usage",
+        get(|| async {
+            Json(serde_json::json!({
+                "key": { "usage": 0 }
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation usage upstream");
+    });
+
+    let settled = proxy
+        .run_upstream_reconciliation_once(&format!("http://{addr}"))
+        .await
+        .expect("run reconciliation once");
+    assert_eq!(settled, 1);
+    let (last_run_at, last_shadow_adjustment_at, _) = proxy
+        .key_store
+        .upstream_reconciliation_runtime_markers()
+        .await
+        .expect("read runtime markers");
+    assert_eq!(last_run_at, Some(now));
+    assert_eq!(last_shadow_adjustment_at, Some(now));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

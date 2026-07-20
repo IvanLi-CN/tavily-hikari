@@ -6578,7 +6578,8 @@ function AdminDashboard(): JSX.Element {
   const usersTotalPages = useMemo(() => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)), [usersTotal])
   const showShadowDailyUsageColumn =
     systemSettings?.upstreamPreciseReconciliationEnabled === false
-    || (systemSettings == null && users.some((item) => item.shadowDailyCreditsUsed != null))
+    || (systemSettings == null
+      && users.some((item) => item.shadowDailyAvailability != null || item.shadowDailyCreditsUsed != null))
   const unboundTokenUsageTotalPages = useMemo(
     () => Math.max(1, Math.ceil(unboundTokenUsageTotal / USERS_PER_PAGE)),
     [unboundTokenUsageTotal],
@@ -12317,6 +12318,7 @@ function AdminDashboard(): JSX.Element {
                       const shadowDailyUsage = buildShadowDailyUsageStack({
                         actualUsed: item.dailyCreditsUsed,
                         shadowUsed: item.shadowDailyCreditsUsed,
+                        shadowAvailability: item.shadowDailyAvailability,
                         limit: item.dailyCreditsLimit,
                         usersStrings,
                         formatNumber,
@@ -12392,6 +12394,7 @@ function AdminDashboard(): JSX.Element {
                   const shadowDailyUsage = buildShadowDailyUsageStack({
                     actualUsed: item.dailyCreditsUsed,
                     shadowUsed: item.shadowDailyCreditsUsed,
+                    shadowAvailability: item.shadowDailyAvailability,
                     limit: item.dailyCreditsLimit,
                     usersStrings,
                     formatNumber,

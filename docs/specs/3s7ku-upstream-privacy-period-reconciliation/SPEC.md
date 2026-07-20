@@ -130,6 +130,7 @@
 - Given UA 为空或非空，When Control MCP 新建连接，Then 分别省略 UA 或发送配置值；HTTP API 始终无 UA。
 - Given token secret 轮换、HA 节点切换或相同窗口重试，When 计算匿名 ID，Then 输出稳定一致；不同 token/窗口输出不同。
 - Given 遗留 `upstream_mcp` session 仍存在，但 `accessToken`、API Rebalance 与 MCP Rebalance 已启用，When 新请求进入当前窗口，Then shadow compare 持续产数且记录为 shadow settlement mode。
+- Given compare-only 用户列表或用户用量页，When shadow 结果已确认且 `delta=0`，Then `新方案 24h` 仍显示绝对值且不再折叠为空；When 当日 shadow 尚不可确认，Then 明确显示 unavailable 文案而不是静默横杠。
 - Given precise 门禁未形成完整窗口，When 结算调度执行，Then 不产生 precise adjustment。
 - Given 多 Key、Research 等待、Retry-After、重启或 HA 接管，When 窗口结算，Then 最终只产生一条幂等 signed adjustment。
 - Given 退款或补扣，When 查询账户或未绑定 Token 的相关额度，Then 原业务窗口统计立即反映差额，S3 不增加次日额度。
@@ -148,6 +149,7 @@
 ### Testing
 
 - Rust unit/integration: Header 白名单、派生稳定性、边界、eligibility、限速、Research、幂等与额度整合。
+- Rust unit/integration: compare-only `/api/users` confirmed/unavailable 三态、status 诊断时间戳、`upstream_reconciliation` enqueue reuse fast-path。
 - Web: route、settings、status states、Storybook interaction。
 - Full: `cargo test`、`cargo clippy -- -D warnings`、`bun test`、`bun run build`、`bun run build-storybook`。
 
@@ -186,6 +188,24 @@
 
   ![MCP session bindings page](./assets/mcp-session-bindings-page.png)
 
+- PR: include
+- desktop users list confirmed/unavailable comparison column
+- verifies: `/admin/users` keeps the `新方案 24h` absolute value visible even when confirmed shadow usage equals the current 24h value, still shows `较当前 ...` only for non-zero deltas, and marks unavailable rows explicitly instead of collapsing to `—`.
+
+  ![Users list confirmed and unavailable comparison column](./assets/admin-users-compare-shadow-desktop.png)
+
+- PR: include
+- desktop users usage confirmed/unavailable comparison column
+- verifies: `/admin/users/usage` mirrors the same confirmed-vs-unavailable contract, preserving the absolute compare-only value for equal confirmed rows and rendering unavailable rows as `Unavailable` instead of a silent dash.
+
+  ![Users usage confirmed and unavailable comparison column](./assets/admin-users-usage-compare-shadow-desktop.png)
+
+- PR: include
+- desktop system status reconciliation diagnostics
+- verifies: `/admin/system-settings/status` exposes the new runtime summary timestamps for the latest reconciliation run, latest shadow adjustment, and latest enqueue failure while preserving the existing phase / queue summaries.
+
+  ![System status reconciliation diagnostics](./assets/admin-system-status-reconciliation-diagnostics.png)
+
 ### Supporting evidence
 
 - PR: omit
@@ -196,13 +216,13 @@
 
 - PR: omit
 - desktop users list comparison column
-- verifies: when precise reconciliation stays disabled, `/admin/users` renders the dedicated `新方案 24h` comparison column next to the live 24h column.
+- verifies: when precise reconciliation stays disabled, `/admin/users` renders the dedicated `新方案 24h` comparison column next to the live 24h column, keeps equal-value confirmed rows visible, and marks unavailable rows explicitly.
 
   ![Users list comparison column](./assets/users-list-shadow-comparison-desktop.png)
 
 - PR: omit
 - desktop users usage comparison column
-- verifies: `/admin/users/usage` shows the same `新方案 24h` comparison column without collapsing the existing 5m / 1h / success-rate hierarchy.
+- verifies: `/admin/users/usage` shows the same `新方案 24h` comparison column without collapsing the existing 5m / 1h / success-rate hierarchy, while preserving equal confirmed values and explicit unavailable states.
 
   ![Users usage comparison column](./assets/users-usage-shadow-comparison-desktop.png)
 
@@ -226,6 +246,7 @@
 
 - 风险：上游 `/usage` 为累计接口，精准归属依赖每个 token/period 使用唯一匿名 project id。
 - 风险：SQLite 写竞争可能延迟结算；队列必须可恢复且不阻塞请求主路径。
+- 风险：compare-only 只对“已确认 shadow”显示绝对值；如果 reconciliation 长时间积压，owner-facing 页面仍会明确暴露 unavailable，而不是伪装成当前值。
 - 假设：上游对缺失 `X-Project-ID` 与按该 Header 查询 `/usage` 均保持官方支持。
 
 ## 参考（References）
