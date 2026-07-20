@@ -59,6 +59,35 @@ impl KeyStore {
         Ok((now >= ready_after, ready_after, active_upstream_mcp_sessions))
     }
 
+    pub(crate) async fn upstream_reconciliation_runtime_markers(
+        &self,
+    ) -> Result<(Option<i64>, Option<i64>, Option<i64>), ProxyError> {
+        Ok((
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1)
+                .await?,
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_SHADOW_ADJUSTMENT_AT_V1)
+                .await?,
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ENQUEUE_ERROR_AT_V1)
+                .await?,
+        ))
+    }
+
+    pub(crate) async fn mark_upstream_reconciliation_run_completed_at(
+        &self,
+        timestamp: i64,
+    ) -> Result<(), ProxyError> {
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1, timestamp)
+            .await
+    }
+
+    pub(crate) async fn mark_upstream_reconciliation_enqueue_error_at(
+        &self,
+        timestamp: i64,
+    ) -> Result<(), ProxyError> {
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ENQUEUE_ERROR_AT_V1, timestamp)
+            .await
+    }
+
     pub(crate) async fn record_upstream_reconciliation_usage(
         &self,
         token_id: &str,
@@ -510,6 +539,7 @@ impl KeyStore {
         upstream_usage: i64,
         local_billed_credits: i64,
     ) -> Result<bool, ProxyError> {
+        let started_at = std::time::Instant::now();
         let now = self.backend_time.now_ts();
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let delta = upstream_usage.saturating_sub(local_billed_credits);
@@ -580,7 +610,23 @@ impl KeyStore {
         .bind(now)
         .execute(&mut *tx)
         .await?;
+        set_meta_i64_executor(
+            &mut *tx,
+            META_KEY_UPSTREAM_RECONCILIATION_LAST_SHADOW_ADJUSTMENT_AT_V1,
+            now,
+        )
+        .await?;
         tx.commit().await?;
+        tracing::info!(
+            component = "reconciliation",
+            event = "shadow_adjustment_written",
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            job_type = "upstream_reconciliation",
+            settlement_key,
+            period_code = %candidate.period_code,
+            delta_credits = delta,
+            degraded = candidate.degraded,
+        );
         Ok(true)
     }
 

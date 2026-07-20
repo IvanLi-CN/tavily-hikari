@@ -1096,17 +1096,18 @@ export interface AdminTranslationsShape {
     actions: {
       view: string
     }
-    usage: {
-      title: string
-      description: string
-      open: string
-      back: string
-      shadowComparisonValue: string
-      table: {
-        user: string
-        status: string
-        hourlyAny: string
-        hourly: string
+      usage: {
+        title: string
+        description: string
+        open: string
+        back: string
+        shadowComparisonValue: string
+        shadowUnavailable: string
+        table: {
+          user: string
+          status: string
+          hourlyAny: string
+          hourly: string
         businessOneHour: string
         daily: string
         shadowDaily: string

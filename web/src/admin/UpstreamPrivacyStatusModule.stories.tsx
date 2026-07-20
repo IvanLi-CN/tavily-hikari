@@ -33,6 +33,9 @@ const pendingStatus: UpstreamPrivacyStatus = {
   pendingResearch: 1,
   queuedSettlements: 2,
   degradedSettlements: 0,
+  lastReconciliationRunAt: 1_783_958_250,
+  lastShadowAdjustmentAt: 1_783_958_100,
+  lastReconciliationEnqueueErrorAt: 1_783_957_900,
   recentAdjustments: [
     {
       settlementKey: 'v1:tok_demo:2026-07-14/S1',
@@ -60,6 +63,9 @@ const activeStatus: UpstreamPrivacyStatus = {
     detail: gate.key === 'controlSessionsDrained' ? '0' : gate.detail,
   })),
   recentAdjustments: [],
+  lastReconciliationRunAt: 1_783_958_500,
+  lastShadowAdjustmentAt: 1_783_958_100,
+  lastReconciliationEnqueueErrorAt: null,
 }
 
 const compareBlockedStatus: UpstreamPrivacyStatus = {
@@ -98,6 +104,7 @@ const compareStatus: UpstreamPrivacyStatus = {
   phase: 'compare',
   upstreamPreciseReconciliationEnabled: false,
   queuedSettlements: 1,
+  lastReconciliationEnqueueErrorAt: 1_783_957_900,
   recentAdjustments: [
     {
       settlementKey: 'shadow:v1:tok_demo:2026-07-14/S2',

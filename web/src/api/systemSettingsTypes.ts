@@ -66,6 +66,9 @@ export interface UpstreamPrivacyStatus {
   pendingResearch: number
   queuedSettlements: number
   degradedSettlements: number
+  lastReconciliationRunAt: number | null
+  lastShadowAdjustmentAt: number | null
+  lastReconciliationEnqueueErrorAt: number | null
   recentAdjustments: UpstreamReconciliationAdjustment[]
   generatedAt: number
 }

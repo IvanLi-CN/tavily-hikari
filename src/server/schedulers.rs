@@ -95,14 +95,32 @@ async fn enqueue_scheduled_job_logged(
         "job_type={job_type}, trigger_source={trigger_source}, key_id={}",
         key_id.unwrap_or("-")
     );
-    match enqueue_scheduled_job(state, job_type, key_id, trigger_source).await {
-        Ok(job_id) => {
+    match enqueue_scheduled_job_result(state, job_type, key_id, trigger_source).await {
+        Ok(result) => {
             tavily_hikari::emit_db_operation_slow_log(
                 "scheduled job enqueue",
                 started.elapsed(),
                 Some(context.as_str()),
             );
-            Some(job_id)
+            if job_type == "upstream_reconciliation" && !result.created {
+                let (pending_research, queued_settlements, degraded_settlements) = state
+                    .proxy
+                    .upstream_reconciliation_queue_counts()
+                    .await
+                    .unwrap_or((0, 0, 0));
+                tracing::info!(
+                    component = "reconciliation",
+                    event = "enqueue_reused",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    job_type,
+                    pending_research,
+                    queued_settlements,
+                    degraded_settlements,
+                    reused_status = %result.status,
+                    trigger_source = %result.trigger_source,
+                );
+            }
+            Some(result.job_id)
         }
         Err(err) => {
             tavily_hikari::emit_db_operation_error_log(
@@ -111,6 +129,37 @@ async fn enqueue_scheduled_job_logged(
                 Some(context.as_str()),
                 &err,
             );
+            if job_type == "upstream_reconciliation" {
+                let now = state.proxy.backend_time().now_ts();
+                if let Err(meta_err) = state
+                    .proxy
+                    .mark_upstream_reconciliation_enqueue_error_at(now)
+                    .await
+                {
+                    tracing::warn!(
+                        component = "reconciliation",
+                        event = "enqueue_error_meta_failed",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        job_type,
+                        err = %meta_err,
+                    );
+                }
+                let (pending_research, queued_settlements, degraded_settlements) = state
+                    .proxy
+                    .upstream_reconciliation_queue_counts()
+                    .await
+                    .unwrap_or((0, 0, 0));
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = "enqueue_exhausted",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    job_type,
+                    pending_research,
+                    queued_settlements,
+                    degraded_settlements,
+                    err = %err,
+                );
+            }
             tracing::warn!(
                 component = "scheduler",
                 event = "job_enqueue_failed",

@@ -198,6 +198,7 @@ export function UsersUsageScreen({
                   const shadowDailyUsage = buildShadowDailyUsageStack({
                     actualUsed: item.dailyCreditsUsed,
                     shadowUsed: item.shadowDailyCreditsUsed,
+                    shadowAvailability: item.shadowDailyAvailability,
                     limit: item.dailyCreditsLimit,
                     usersStrings,
                     formatNumber,
@@ -310,6 +311,7 @@ export function UsersUsageScreen({
               const shadowDailyUsage = buildShadowDailyUsageStack({
                 actualUsed: item.dailyCreditsUsed,
                 shadowUsed: item.shadowDailyCreditsUsed,
+                shadowAvailability: item.shadowDailyAvailability,
                 limit: item.dailyCreditsLimit,
                 usersStrings,
                 formatNumber,

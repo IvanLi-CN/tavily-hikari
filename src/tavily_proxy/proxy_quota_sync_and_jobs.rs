@@ -45,6 +45,14 @@ impl TavilyProxy {
             .key_store
             .upstream_reconciliation_queue_counts()
             .await?;
+        let (
+            last_reconciliation_run_at,
+            last_shadow_adjustment_at,
+            last_reconciliation_enqueue_error_at,
+        ) = self
+            .key_store
+            .upstream_reconciliation_runtime_markers()
+            .await?;
         let next_epoch_at = if shadow_ready && settings.upstream_precise_reconciliation_enabled && sessions_ready {
             Some(if stored_epoch > 0 {
                 stored_epoch
@@ -101,6 +109,9 @@ impl TavilyProxy {
             pending_research,
             queued_settlements,
             degraded_settlements,
+            last_reconciliation_run_at,
+            last_shadow_adjustment_at,
+            last_reconciliation_enqueue_error_at,
             recent_adjustments: self
                 .key_store
                 .recent_reconciliation_adjustments(10)
@@ -143,6 +154,19 @@ impl TavilyProxy {
         let window = server_local_day_window_utc(now);
         self.key_store
             .shadow_daily_reconciled_usage_for_accounts(user_ids, window.start, window.end)
+            .await
+    }
+
+    pub async fn upstream_reconciliation_queue_counts(&self) -> Result<(i64, i64, i64), ProxyError> {
+        self.key_store.upstream_reconciliation_queue_counts().await
+    }
+
+    pub async fn mark_upstream_reconciliation_enqueue_error_at(
+        &self,
+        timestamp: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .mark_upstream_reconciliation_enqueue_error_at(timestamp)
             .await
     }
 
@@ -218,83 +242,164 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
     ) -> Result<i64, ProxyError> {
+        let started_at = std::time::Instant::now();
+        let (pending_research_before, queued_settlements_before, degraded_settlements_before) =
+            self.key_store.upstream_reconciliation_queue_counts().await?;
         let settings = self.key_store.get_system_settings().await?;
         let shadow_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
             && settings.api_rebalance_enabled
             && settings.rebalance_mcp_enabled;
         if !shadow_ready {
+            tracing::info!(
+                component = "reconciliation",
+                event = "run_started",
+                elapsed_ms = 0_u64,
+                job_type = "upstream_reconciliation",
+                candidate_count = 0_i64,
+                pending_research = pending_research_before,
+                queued_settlements = queued_settlements_before,
+                degraded_settlements = degraded_settlements_before,
+            );
+            self.key_store
+                .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts())
+                .await?;
+            tracing::info!(
+                component = "reconciliation",
+                event = "run_completed",
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                job_type = "upstream_reconciliation",
+                candidate_count = 0_i64,
+                settled_count = 0_i64,
+                pending_research = pending_research_before,
+                queued_settlements = queued_settlements_before,
+                degraded_settlements = degraded_settlements_before,
+            );
             return Ok(0);
         }
         let candidates = self
             .key_store
             .next_upstream_reconciliation_candidates(20)
             .await?;
-        let mut settled = 0;
-        for candidate in candidates {
-            let key_ids = self
-                .key_store
-                .reconciliation_key_ids(&candidate.token_id, &candidate.period_code)
-                .await?;
-            let mut upstream_usage = 0_i64;
-            let mut retry_at = None;
-            let mut retry_reason = None;
-            for key_id in key_ids {
-                match self
+        let candidate_count = candidates.len() as i64;
+        tracing::info!(
+            component = "reconciliation",
+            event = "run_started",
+            elapsed_ms = 0_u64,
+            job_type = "upstream_reconciliation",
+            candidate_count,
+            pending_research = pending_research_before,
+            queued_settlements = queued_settlements_before,
+            degraded_settlements = degraded_settlements_before,
+        );
+        let result = async {
+            let mut settled = 0;
+            for candidate in candidates {
+                let key_ids = self
                     .key_store
-                    .reserve_upstream_usage_attempt(&key_id)
-                    .await?
-                {
-                    Ok(()) => {}
-                    Err(next_attempt_at) => {
-                        retry_at = Some(next_attempt_at);
-                        retry_reason = Some("local_usage_rate_limit".to_string());
-                        break;
-                    }
-                }
-                match self
-                    .fetch_upstream_project_usage(&key_id, usage_base, &candidate.project_id)
-                    .await
-                {
-                    Ok(usage) => upstream_usage = upstream_usage.saturating_add(usage),
-                    Err((err, upstream_retry_at)) => {
-                        retry_at = Some(
-                            upstream_retry_at
-                                .unwrap_or_else(|| self.backend_time.now_ts().saturating_add(60)),
-                        );
-                        retry_reason = Some(err.to_string());
-                        break;
-                    }
-                }
-            }
-            if let Some(next_attempt_at) = retry_at {
-                self.key_store
-                    .mark_reconciliation_retry(
-                        &candidate,
-                        "rate_limited",
-                        next_attempt_at,
-                        retry_reason.as_deref(),
-                    )
+                    .reconciliation_key_ids(&candidate.token_id, &candidate.period_code)
                     .await?;
-                continue;
+                let mut upstream_usage = 0_i64;
+                let mut retry_at = None;
+                let mut retry_reason = None;
+                for key_id in key_ids {
+                    match self
+                        .key_store
+                        .reserve_upstream_usage_attempt(&key_id)
+                        .await?
+                    {
+                        Ok(()) => {}
+                        Err(next_attempt_at) => {
+                            retry_at = Some(next_attempt_at);
+                            retry_reason = Some("local_usage_rate_limit".to_string());
+                            break;
+                        }
+                    }
+                    match self
+                        .fetch_upstream_project_usage(&key_id, usage_base, &candidate.project_id)
+                        .await
+                    {
+                        Ok(usage) => upstream_usage = upstream_usage.saturating_add(usage),
+                        Err((err, upstream_retry_at)) => {
+                            retry_at = Some(
+                                upstream_retry_at
+                                    .unwrap_or_else(|| self.backend_time.now_ts().saturating_add(60)),
+                            );
+                            retry_reason = Some(err.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(next_attempt_at) = retry_at {
+                    self.key_store
+                        .mark_reconciliation_retry(
+                            &candidate,
+                            "rate_limited",
+                            next_attempt_at,
+                            retry_reason.as_deref(),
+                        )
+                        .await?;
+                    continue;
+                }
+                let local_billed = self
+                    .key_store
+                    .reconciliation_local_billed_credits(&candidate)
+                    .await?;
+                let did_settle = if candidate.settlement_mode == "shadow" {
+                    self.key_store
+                        .settle_upstream_reconciliation_shadow(
+                            &candidate,
+                            upstream_usage,
+                            local_billed,
+                        )
+                        .await?
+                } else {
+                    self.key_store
+                        .settle_upstream_reconciliation(&candidate, upstream_usage, local_billed)
+                        .await?
+                };
+                if did_settle {
+                    settled += 1;
+                }
             }
-            let local_billed = self
-                .key_store
-                .reconciliation_local_billed_credits(&candidate)
-                .await?;
-            let did_settle = if candidate.settlement_mode == "shadow" {
-                self.key_store
-                    .settle_upstream_reconciliation_shadow(&candidate, upstream_usage, local_billed)
-                    .await?
-            } else {
-                self.key_store
-                    .settle_upstream_reconciliation(&candidate, upstream_usage, local_billed)
-                    .await?
-            };
-            if did_settle {
-                settled += 1;
+            Ok::<i64, ProxyError>(settled)
+        }
+        .await;
+        self.key_store
+            .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts())
+            .await?;
+        let (pending_research_after, queued_settlements_after, degraded_settlements_after) =
+            self.key_store.upstream_reconciliation_queue_counts().await?;
+        match result {
+            Ok(settled) => {
+                tracing::info!(
+                    component = "reconciliation",
+                    event = "run_completed",
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    job_type = "upstream_reconciliation",
+                    candidate_count,
+                    settled_count = settled,
+                    pending_research = pending_research_after,
+                    queued_settlements = queued_settlements_after,
+                    degraded_settlements = degraded_settlements_after,
+                );
+                Ok(settled)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = "run_completed",
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    job_type = "upstream_reconciliation",
+                    candidate_count,
+                    settled_count = 0_i64,
+                    pending_research = pending_research_after,
+                    queued_settlements = queued_settlements_after,
+                    degraded_settlements = degraded_settlements_after,
+                    err = %err,
+                );
+                Err(err)
             }
         }
-        Ok(settled)
     }
 
     /// List keys whose quota hasn't been synced within `older_than_secs` seconds (or never).

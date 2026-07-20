@@ -877,7 +877,7 @@ function demoShadowDailyCreditsUsed(user: {
   quotaDailyUsed: number
   lastActivity: number | null
 }) {
-  if (user.lastActivity == null) return null
+  if (user.lastActivity == null) return { shadowDailyCreditsUsed: null, shadowDailyAvailability: 'unavailable' as const }
 
   const delta =
     user.userId === 'user-research'
@@ -887,7 +887,10 @@ function demoShadowDailyCreditsUsed(user: {
         : 8
 
   const shadowUsed = Math.max(0, user.quotaDailyUsed + delta)
-  return shadowUsed === user.quotaDailyUsed ? null : shadowUsed
+  return {
+    shadowDailyCreditsUsed: shadowUsed,
+    shadowDailyAvailability: 'confirmed' as const,
+  }
 }
 
 function filterDemoUsers(url: URL) {
@@ -915,12 +918,16 @@ function filterDemoUsers(url: URL) {
       return haystacks.some((value) => value.toLowerCase().includes(query))
     })
   }
-  return items.map((user) => ({
-    ...user,
-    shadowDailyCreditsUsed: demoState.systemSettings.upstreamPreciseReconciliationEnabled
-      ? null
-      : demoShadowDailyCreditsUsed(user),
-  }))
+  return items.map((user) => {
+    const shadowDaily = demoState.systemSettings.upstreamPreciseReconciliationEnabled
+      ? { shadowDailyCreditsUsed: null, shadowDailyAvailability: null }
+      : demoShadowDailyCreditsUsed(user)
+    return {
+      ...user,
+      shadowDailyCreditsUsed: shadowDaily.shadowDailyCreditsUsed,
+      shadowDailyAvailability: shadowDaily.shadowDailyAvailability,
+    }
+  })
 }
 
 function createDemoJobs() {
@@ -1030,6 +1037,9 @@ function createDemoUpstreamPrivacyStatus() {
     pendingResearch: 1,
     queuedSettlements: 2,
     degradedSettlements: 0,
+    lastReconciliationRunAt: 1_783_958_250,
+    lastShadowAdjustmentAt: 1_783_958_100,
+    lastReconciliationEnqueueErrorAt: 1_783_957_900,
     recentAdjustments: [
       {
         settlementKey: 'v1:tok_demo:2026-07-14/S1',

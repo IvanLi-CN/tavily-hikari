@@ -459,9 +459,8 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
-    let shadow_daily_usage = if page_user_ids.is_empty()
-        || system_settings.upstream_precise_reconciliation_enabled
-    {
+    let shadow_compare_enabled = !system_settings.upstream_precise_reconciliation_enabled;
+    let shadow_daily_usage = if page_user_ids.is_empty() || !shadow_compare_enabled {
         std::collections::HashMap::new()
     } else {
         state
@@ -487,10 +486,17 @@ async fn list_users(
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
-        let shadow_daily_credits_used = shadow_daily_usage
-            .get(&row.user.user_id)
-            .map(|delta| row.summary.daily_credits_used.saturating_add(*delta))
-            .filter(|shadow_used| *shadow_used != row.summary.daily_credits_used);
+        let (shadow_daily_credits_used, shadow_daily_availability) = if shadow_compare_enabled {
+            match shadow_daily_usage.get(&row.user.user_id) {
+                Some(delta) => (
+                    Some(row.summary.daily_credits_used.saturating_add(*delta)),
+                    Some(AdminUserShadowDailyAvailability::Confirmed),
+                ),
+                None => (None, Some(AdminUserShadowDailyAvailability::Unavailable)),
+            }
+        } else {
+            (None, None)
+        };
         items.push(build_admin_user_summary_view(
             &row.user,
             &row.summary,
@@ -501,6 +507,7 @@ async fn list_users(
                 recent_ip_count_24h,
                 recent_ip_count_7d,
                 shadow_daily_credits_used,
+                shadow_daily_availability,
                 tags,
             },
         ));
