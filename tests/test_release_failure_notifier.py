@@ -25,13 +25,22 @@ MODULE = load_module()
 
 class ReleaseFailureNotifierTests(unittest.TestCase):
     class FakeApi:
-        def __init__(self, *, jobs_by_path: dict[str, list[dict]], logs_by_path: dict[str, str]) -> None:
-            self.jobs_by_path = jobs_by_path
-            self.logs_by_path = logs_by_path
+        def __init__(
+            self,
+            *,
+            jobs_by_path: dict[str, list[dict]] | None = None,
+            logs_by_path: dict[str, str] | None = None,
+            json_by_path: dict[str, object] | None = None,
+        ) -> None:
+            self.jobs_by_path = jobs_by_path or {}
+            self.logs_by_path = logs_by_path or {}
+            self.json_by_path = json_by_path or {}
             self.rerun_calls: list[tuple[str, dict | None]] = []
 
-        def request_json(self, path: str, *, method: str = "GET", payload: dict | None = None) -> dict:
+        def request_json(self, path: str, *, method: str = "GET", payload: dict | None = None) -> object:
             self.rerun_calls.append((f"json:{method}:{path}", payload))
+            if path in self.json_by_path:
+                return self.json_by_path[path]
             return {"jobs": self.jobs_by_path[path]}
 
         def request_text(
@@ -123,6 +132,18 @@ class ReleaseFailureNotifierTests(unittest.TestCase):
 
         self.assertFalse(result.transient_docker_failure)
         self.assertIn("no transient Docker signature", result.reason)
+
+    def test_release_intent_labels_recognize_patch_release(self):
+        decision = MODULE.classify_release_intent_labels(
+            [{"name": "type:patch"}, {"name": "channel:stable"}],
+            pr_number="454",
+            pr_url="https://example.test/pr/454",
+        )
+
+        self.assertTrue(decision.should_release)
+        self.assertEqual(decision.reason, "intent_release")
+        self.assertEqual(decision.release_intent_label, "type:patch")
+        self.assertEqual(decision.release_channel, "stable")
 
     def test_post_rerun_failures_keep_self_heal_context_in_alert_details(self):
         base = "resolved release target sha from Prepare logs"
@@ -244,6 +265,103 @@ class ReleaseFailureNotifierTests(unittest.TestCase):
         self.assertEqual(outputs["self_heal_attempted"], "true")
         self.assertIn("automatic failed-jobs rerun", outputs["extra_details"])
         self.assertFalse(any(path == "/repos/test/repo/actions/runs/42/rerun-failed-jobs" for path, _ in fake_api.rerun_calls))
+
+    def test_main_ci_pipeline_failure_with_release_intent_emits_alert(self):
+        fake_api = self.FakeApi(
+            jobs_by_path={
+                "/repos/test/repo/actions/runs/42/attempts/1/jobs?per_page=100": [
+                    {"id": 9, "name": "Backend Bin Tests (Bin Admin API)", "conclusion": "failure"},
+                    {"id": 10, "name": "Backend Tests", "conclusion": "failure"},
+                ]
+            },
+            json_by_path={
+                "/repos/test/repo/commits/fedcba9876543210fedcba9876543210fedcba98/pulls?per_page=100": [
+                    {"number": 454, "html_url": "https://example.test/pr/454"}
+                ],
+                "/repos/test/repo/issues/454/labels?per_page=100": [
+                    {"name": "type:patch"},
+                    {"name": "channel:stable"},
+                ],
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "github_output.txt"
+            summary_path = Path(tmpdir) / "github_summary.txt"
+            env = {
+                "GH_TOKEN": "test-token",
+                "REPOSITORY": "test/repo",
+                "WORKFLOW_NAME": "CI Pipeline",
+                "RUN_ID": "42",
+                "RUN_ATTEMPT": "1",
+                "RUN_EVENT": "push",
+                "HEAD_BRANCH": "main",
+                "HEAD_SHA": "fedcba9876543210fedcba9876543210fedcba98",
+                "TRIGGERING_ACTOR": "koha",
+                "GITHUB_OUTPUT": str(output_path),
+                "GITHUB_STEP_SUMMARY": str(summary_path),
+            }
+
+            with mock.patch.object(MODULE, "GitHubApi", return_value=fake_api):
+                with mock.patch.dict(os.environ, env, clear=False):
+                    result = MODULE.main()
+            outputs = self.parse_outputs(output_path)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(outputs["workflow_name"], "CI Pipeline")
+        self.assertEqual(outputs["release_intent_label"], "type:patch")
+        self.assertEqual(outputs["release_channel"], "stable")
+        self.assertEqual(outputs["alert_suppressed"], "false")
+        self.assertIn("main CI failed before release started", outputs["extra_details"])
+        self.assertIn("Backend Tests", outputs["extra_details"])
+        self.assertIn("type:patch", outputs["extra_details"])
+        self.assertFalse(any(path == "/repos/test/repo/actions/runs/42/rerun-failed-jobs" for path, _ in fake_api.rerun_calls))
+
+    def test_main_ci_pipeline_failure_without_release_intent_suppresses_alert(self):
+        fake_api = self.FakeApi(
+            jobs_by_path={
+                "/repos/test/repo/actions/runs/42/attempts/1/jobs?per_page=100": [
+                    {"id": 9, "name": "Backend Tests", "conclusion": "failure"}
+                ]
+            },
+            json_by_path={
+                "/repos/test/repo/commits/fedcba9876543210fedcba9876543210fedcba98/pulls?per_page=100": [
+                    {"number": 455, "html_url": "https://example.test/pr/455"}
+                ],
+                "/repos/test/repo/issues/455/labels?per_page=100": [
+                    {"name": "type:skip"},
+                    {"name": "channel:stable"},
+                ],
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "github_output.txt"
+            summary_path = Path(tmpdir) / "github_summary.txt"
+            env = {
+                "GH_TOKEN": "test-token",
+                "REPOSITORY": "test/repo",
+                "WORKFLOW_NAME": "CI Pipeline",
+                "RUN_ID": "42",
+                "RUN_ATTEMPT": "1",
+                "RUN_EVENT": "push",
+                "HEAD_BRANCH": "main",
+                "HEAD_SHA": "fedcba9876543210fedcba9876543210fedcba98",
+                "TRIGGERING_ACTOR": "koha",
+                "GITHUB_OUTPUT": str(output_path),
+                "GITHUB_STEP_SUMMARY": str(summary_path),
+            }
+
+            with mock.patch.object(MODULE, "GitHubApi", return_value=fake_api):
+                with mock.patch.dict(os.environ, env, clear=False):
+                    result = MODULE.main()
+            outputs = self.parse_outputs(output_path)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(outputs["release_intent_label"], "type:skip")
+        self.assertEqual(outputs["release_channel"], "stable")
+        self.assertEqual(outputs["alert_suppressed"], "true")
+        self.assertIn("suppressed", outputs["extra_details"])
 
 
 if __name__ == "__main__":

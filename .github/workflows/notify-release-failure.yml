@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Release
+      - CI Pipeline
     types:
       - completed
     branches:
@@ -35,6 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}

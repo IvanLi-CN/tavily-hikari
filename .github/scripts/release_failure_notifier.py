@@ -9,6 +9,8 @@ from typing import Sequence
 from urllib import error, request
 
 API_ACCEPT = "application/vnd.github+json"
+CI_PIPELINE_WORKFLOW_NAME = "CI Pipeline"
+RELEASE_WORKFLOW_NAME = "Release"
 SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
 ACTUAL_PATTERNS = [re.compile(r"\bRELEASE_TARGET_SHA=([0-9a-f]{40})\b")]
 REQUESTED_PATTERNS = [re.compile(r"\bRELEASE_REQUESTED_SHA=([0-9a-f]{40})\b")]
@@ -33,6 +35,9 @@ TRANSIENT_PATTERNS = [
     ("temporary-dns", re.compile(r"temporary failure in name resolution", re.IGNORECASE)),
     ("context-deadline", re.compile(r"context deadline exceeded", re.IGNORECASE)),
 ]
+RELEASE_INTENT_LABELS = {"type:docs", "type:skip", "type:patch", "type:minor", "type:major"}
+RELEASE_CHANNEL_LABELS = {"channel:stable", "channel:rc"}
+NON_RELEASING_INTENT_LABELS = {"type:docs", "type:skip"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,16 @@ class FailureClassification:
     transient_docker_failure: bool
     reason: str
     failed_job_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReleaseIntentDecision:
+    should_release: bool
+    reason: str
+    pr_number: str
+    pr_url: str
+    release_intent_label: str
+    release_channel: str
 
 
 class GitHubApi:
@@ -83,7 +98,7 @@ class GitHubApi:
             charset = resp.headers.get_content_charset() or "utf-8"
             return resp.read().decode(charset, errors="replace")
 
-    def request_json(self, path: str, *, method: str = "GET", payload: dict | None = None) -> dict:
+    def request_json(self, path: str, *, method: str = "GET", payload: dict | None = None) -> object:
         return json.loads(self.request_text(path, method=method, payload=payload))
 
 
@@ -157,6 +172,169 @@ def classify_failed_jobs(failed_jobs: Sequence[JobLog]) -> FailureClassification
     )
 
 
+def extract_failed_job_names(jobs: Sequence[object]) -> tuple[str, ...]:
+    failed_names: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if str(job.get("conclusion") or "").lower() != "failure":
+            continue
+        failed_names.append(str(job.get("name") or "unnamed job"))
+    return tuple(failed_names)
+
+
+def classify_release_intent_labels(
+    labels: Sequence[object],
+    *,
+    pr_number: str,
+    pr_url: str,
+) -> ReleaseIntentDecision:
+    names = [label.get("name", "") for label in labels if isinstance(label, dict)]
+    type_like = {name for name in names if name.startswith("type:")}
+    unknown_type = sorted(type_like - RELEASE_INTENT_LABELS)
+    present_intent = sorted({name for name in names if name in RELEASE_INTENT_LABELS})
+
+    channel_like = {name for name in names if name.startswith("channel:")}
+    unknown_channel = sorted(channel_like - RELEASE_CHANNEL_LABELS)
+    present_channel = sorted({name for name in names if name in RELEASE_CHANNEL_LABELS})
+
+    if unknown_channel:
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"unknown_channel_label({','.join(unknown_channel)})",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel="",
+        )
+
+    if len(present_channel) != 1:
+        reason = "missing_channel_label" if len(present_channel) == 0 else f"invalid_channel_label_count({len(present_channel)})"
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=reason,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel="",
+        )
+
+    channel_label = present_channel[0]
+    release_channel = "rc" if channel_label == "channel:rc" else "stable"
+
+    if unknown_type:
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"unknown_intent_label({','.join(unknown_type)})",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel=release_channel,
+        )
+
+    if len(present_intent) != 1:
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"invalid_intent_label_count({len(present_intent)})",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel=release_channel,
+        )
+
+    release_intent_label = present_intent[0]
+    if release_intent_label in NON_RELEASING_INTENT_LABELS:
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason="intent_skip",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label=release_intent_label,
+            release_channel=release_channel,
+        )
+
+    return ReleaseIntentDecision(
+        should_release=True,
+        reason="intent_release",
+        pr_number=pr_number,
+        pr_url=pr_url,
+        release_intent_label=release_intent_label,
+        release_channel=release_channel,
+    )
+
+
+def resolve_release_intent(api: GitHubApi, repository: str, sha: str) -> ReleaseIntentDecision:
+    try:
+        pulls = api.request_json(f"/repos/{repository}/commits/{sha}/pulls?per_page=100")
+    except Exception as exc:  # noqa: BLE001
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"api_failure:commit_pulls({type(exc).__name__})",
+            pr_number="",
+            pr_url="",
+            release_intent_label="",
+            release_channel="",
+        )
+
+    if not isinstance(pulls, list):
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason="ambiguous_or_missing_pr(count=0)",
+            pr_number="",
+            pr_url="",
+            release_intent_label="",
+            release_channel="",
+        )
+
+    if len(pulls) != 1:
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"ambiguous_or_missing_pr(count={len(pulls)})",
+            pr_number="",
+            pr_url="",
+            release_intent_label="",
+            release_channel="",
+        )
+
+    pull = pulls[0]
+    if not isinstance(pull, dict) or not isinstance(pull.get("number"), int):
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason="malformed_pr_payload",
+            pr_number="",
+            pr_url="",
+            release_intent_label="",
+            release_channel="",
+        )
+
+    pr_number = str(pull["number"])
+    pr_url = str(pull.get("html_url") or "")
+
+    try:
+        labels = api.request_json(f"/repos/{repository}/issues/{pr_number}/labels?per_page=100")
+    except Exception as exc:  # noqa: BLE001
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason=f"api_failure:pr_labels({type(exc).__name__})",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel="",
+        )
+
+    if not isinstance(labels, list):
+        return ReleaseIntentDecision(
+            should_release=False,
+            reason="malformed_labels_payload",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            release_intent_label="",
+            release_channel="",
+        )
+
+    return classify_release_intent_labels(labels, pr_number=pr_number, pr_url=pr_url)
+
+
 def pick_ref_label(run_event: str, head_branch: str) -> str:
     if run_event == "workflow_dispatch":
         if head_branch:
@@ -198,6 +376,27 @@ def compose_extra_details(
             )
         else:
             details.append(current_classification.reason)
+
+    return join_details(*details)
+
+
+def compose_ci_pipeline_extra_details(
+    release_intent: ReleaseIntentDecision,
+    failed_job_names: Sequence[str],
+) -> str:
+    details = ["main CI failed before release started"]
+    failed_jobs = ", ".join(failed_job_names)
+    if failed_jobs:
+        details.append(f"failed jobs: {failed_jobs}")
+
+    if release_intent.should_release:
+        pr_fragment = f"PR #{release_intent.pr_number}" if release_intent.pr_number else "PR unavailable"
+        details.append(
+            "release intent resolved to "
+            f"{release_intent.release_intent_label} on {release_intent.release_channel} channel ({pr_fragment})"
+        )
+    else:
+        details.append(f"release-intent gate suppressed Telegram alert ({release_intent.reason})")
 
     return join_details(*details)
 
@@ -313,6 +512,7 @@ def main() -> int:
     api_root = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     token = os.environ["GH_TOKEN"]
     repository = os.environ["REPOSITORY"]
+    workflow_name = os.environ.get("WORKFLOW_NAME", "").strip()
     run_id = os.environ["RUN_ID"]
     run_attempt_raw = os.environ.get("RUN_ATTEMPT", "").strip()
     run_event = os.environ.get("RUN_EVENT", "").strip()
@@ -333,65 +533,102 @@ def main() -> int:
     rerun_triggered = False
     rerun_error = ""
     self_heal_attempted = False
-
-    try:
-        current_jobs = list_jobs(api, repository, run_id, run_attempt=run_attempt)
-        current_resolved_sha, requested_sha, resolved_from, current_failed_jobs = inspect_jobs(
-            api,
-            repository,
-            current_jobs,
-        )
-        if current_resolved_sha:
-            resolved_sha = current_resolved_sha
-        elif requested_sha:
-            resolved_sha = requested_sha
-
-        base_extra_details = resolve_base_extra_details(
-            run_event=run_event,
-            resolved_sha=current_resolved_sha,
-            fallback_head_sha=fallback_head_sha,
-            requested_sha=requested_sha,
-            resolved_from=resolved_from,
-        )
-        current_classification = classify_failed_jobs(current_failed_jobs)
-        rerun_eligible = run_attempt == 1 and current_classification.transient_docker_failure
-
-        if run_attempt > 1:
-            first_attempt_jobs = list_jobs(api, repository, run_id, run_attempt=1)
-            _, _, _, first_attempt_failed_jobs = inspect_jobs(api, repository, first_attempt_jobs)
-            first_attempt_classification = classify_failed_jobs(first_attempt_failed_jobs)
-            self_heal_attempted = first_attempt_classification.transient_docker_failure
-
-        if rerun_eligible:
-            try:
-                trigger_failed_jobs_rerun(api, repository, run_id)
-                rerun_triggered = True
-            except Exception as exc:  # noqa: BLE001
-                rerun_error = f"{type(exc).__name__}: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        base_extra_details = resolve_base_extra_details(
-            run_event=run_event,
-            resolved_sha="",
-            fallback_head_sha=fallback_head_sha,
-            requested_sha="",
-            resolved_from="",
-            error_name=type(exc).__name__,
-        )
-        rerun_error = rerun_error or f"{type(exc).__name__}: {exc}"
-
-    extra_details = compose_extra_details(
-        base_extra_details,
-        run_attempt=run_attempt,
-        current_classification=current_classification,
-        first_attempt_classification=first_attempt_classification,
-        rerun_triggered=rerun_triggered,
-        rerun_error=rerun_error,
+    release_intent = ReleaseIntentDecision(
+        should_release=False,
+        reason="workflow_scope_not_release_intent_checked",
+        pr_number="",
+        pr_url="",
+        release_intent_label="",
+        release_channel="",
     )
-    alert_suppressed = rerun_triggered
+
+    if workflow_name == CI_PIPELINE_WORKFLOW_NAME:
+        try:
+            current_jobs = list_jobs(api, repository, run_id, run_attempt=run_attempt)
+            failed_job_names = extract_failed_job_names(current_jobs)
+            release_intent = resolve_release_intent(api, repository, fallback_head_sha)
+            current_classification = FailureClassification(
+                transient_docker_failure=False,
+                reason=f"ci_pipeline_release_gate:{release_intent.reason}",
+                failed_job_names=failed_job_names,
+            )
+            extra_details = compose_ci_pipeline_extra_details(release_intent, failed_job_names)
+            alert_suppressed = not release_intent.should_release
+        except Exception as exc:  # noqa: BLE001
+            current_classification = FailureClassification(
+                transient_docker_failure=False,
+                reason=f"ci_pipeline_release_gate:exception({type(exc).__name__})",
+                failed_job_names=(),
+            )
+            extra_details = join_details(
+                "main CI failed before release started",
+                f"release-intent gate suppressed Telegram alert (exception:{type(exc).__name__})",
+            )
+            alert_suppressed = True
+    else:
+        try:
+            current_jobs = list_jobs(api, repository, run_id, run_attempt=run_attempt)
+            current_resolved_sha, requested_sha, resolved_from, current_failed_jobs = inspect_jobs(
+                api,
+                repository,
+                current_jobs,
+            )
+            if current_resolved_sha:
+                resolved_sha = current_resolved_sha
+            elif requested_sha:
+                resolved_sha = requested_sha
+
+            base_extra_details = resolve_base_extra_details(
+                run_event=run_event,
+                resolved_sha=current_resolved_sha,
+                fallback_head_sha=fallback_head_sha,
+                requested_sha=requested_sha,
+                resolved_from=resolved_from,
+            )
+            current_classification = classify_failed_jobs(current_failed_jobs)
+            rerun_eligible = run_attempt == 1 and current_classification.transient_docker_failure
+
+            if run_attempt > 1:
+                first_attempt_jobs = list_jobs(api, repository, run_id, run_attempt=1)
+                _, _, _, first_attempt_failed_jobs = inspect_jobs(api, repository, first_attempt_jobs)
+                first_attempt_classification = classify_failed_jobs(first_attempt_failed_jobs)
+                self_heal_attempted = first_attempt_classification.transient_docker_failure
+
+            if rerun_eligible:
+                try:
+                    trigger_failed_jobs_rerun(api, repository, run_id)
+                    rerun_triggered = True
+                except Exception as exc:  # noqa: BLE001
+                    rerun_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            base_extra_details = resolve_base_extra_details(
+                run_event=run_event,
+                resolved_sha="",
+                fallback_head_sha=fallback_head_sha,
+                requested_sha="",
+                resolved_from="",
+                error_name=type(exc).__name__,
+            )
+            rerun_error = rerun_error or f"{type(exc).__name__}: {exc}"
+
+        extra_details = compose_extra_details(
+            base_extra_details,
+            run_attempt=run_attempt,
+            current_classification=current_classification,
+            first_attempt_classification=first_attempt_classification,
+            rerun_triggered=rerun_triggered,
+            rerun_error=rerun_error,
+        )
+        alert_suppressed = rerun_triggered
 
     write_output("ref_label", pick_ref_label(run_event, head_branch), output_path)
     write_output("head_sha", resolved_sha or fallback_head_sha, output_path)
     write_output("actor", actor, output_path)
+    write_output("workflow_name", workflow_name or RELEASE_WORKFLOW_NAME, output_path)
+    write_output("release_intent_label", release_intent.release_intent_label, output_path)
+    write_output("release_channel", release_intent.release_channel, output_path)
+    write_output("pr_number", release_intent.pr_number, output_path)
+    write_multiline_output("pr_url", release_intent.pr_url, output_path)
     write_multiline_output("extra_details", extra_details, output_path)
     write_output("transient_docker_failure", str(current_classification.transient_docker_failure).lower(), output_path)
     write_output("rerun_eligible", str(rerun_eligible).lower(), output_path)
@@ -404,7 +641,14 @@ def main() -> int:
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as handle:
             handle.write("### Release failure triage\n")
+            handle.write(f"- workflow_name: {workflow_name or RELEASE_WORKFLOW_NAME}\n")
             handle.write(f"- run_attempt: {run_attempt}\n")
+            if release_intent.release_intent_label or release_intent.reason != "workflow_scope_not_release_intent_checked":
+                handle.write(f"- release_intent_label: {release_intent.release_intent_label or '<none>'}\n")
+                handle.write(f"- release_channel: {release_intent.release_channel or '<none>'}\n")
+                handle.write(f"- release_intent_reason: {release_intent.reason}\n")
+                if release_intent.pr_number:
+                    handle.write(f"- pr_number: {release_intent.pr_number}\n")
             handle.write(f"- transient_docker_failure: {str(current_classification.transient_docker_failure).lower()}\n")
             handle.write(f"- rerun_eligible: {str(rerun_eligible).lower()}\n")
             handle.write(f"- rerun_triggered: {str(rerun_triggered).lower()}\n")
