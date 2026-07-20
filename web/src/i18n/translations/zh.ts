@@ -771,6 +771,7 @@ export const ZH: TranslationShape = {
           open: '查看用量界面',
           back: '返回用户管理',
           shadowComparisonValue: '较当前 {delta}',
+          shadowUnavailable: '未生成',
           table: {
             user: '用户',
             status: '状态',

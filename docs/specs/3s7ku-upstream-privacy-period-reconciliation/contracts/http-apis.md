@@ -21,6 +21,7 @@
 - eligibility gates、gate completion、phase、current period、next epoch；
 - `activeUpstreamMcpSessions`；
 - pending Research/usage queue 数量与最近 degraded 原因；
+- `lastReconciliationRunAt`、`lastShadowAdjustmentAt`、`lastReconciliationEnqueueErrorAt` 三个 compare-only / reconciliation 诊断时间戳；
 - 最近 signed adjustments（token 只显示稳定短 id，upstream key 只显示本地短 id）。
 
 响应不得包含 HMAC secret、官方 API key、完整 Hikari token 或客户端原始 `X-Project-ID`。
@@ -32,6 +33,21 @@ phase 当前为：
 - `pending`: precise 前置门禁已经满足，正在等待下一完整业务时间段。
 - `active`: precise reconciliation 已启用。
 - `degraded`: 至少一个窗口进入 degraded settlement。
+
+## Admin users
+
+`GET /api/users` 在 compare-only 模式下新增 shadow 对账语义字段：
+
+- `shadowDailyCreditsUsed: number | null`
+- `shadowDailyAvailability: "confirmed" | "unavailable" | null`
+
+compare-only 时合同固定为：
+
+- `confirmed` 且 `delta != 0`：返回新方案 `24h` 绝对值，并允许 UI 展示相对当前的 secondary delta。
+- `confirmed` 且 `delta == 0`：仍返回新方案 `24h` 绝对值，但 secondary delta 为空。
+- `unavailable`：`shadowDailyCreditsUsed = null`，owner-facing UI 必须明确显示 unavailable，而不是横杠或当前值。
+
+非 compare-only 路径可以返回 `shadowDailyAvailability = null`，前端不展示该列。
 
 ## MCP session bindings
 

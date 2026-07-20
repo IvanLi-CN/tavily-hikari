@@ -48,6 +48,14 @@ function formatSignedCount(value: number): string {
   return String(value)
 }
 
+function formatOptionalTimestamp(
+  value: number | null,
+  formatter: Intl.DateTimeFormat,
+  emptyLabel: string,
+): string {
+  return value == null ? emptyLabel : formatter.format(new Date(value * 1000))
+}
+
 interface StatusIssue {
   key: string
   title: string
@@ -231,6 +239,17 @@ export default function UpstreamPrivacyStatusModule({
         ? strings.statusCompareOnly
         : strings.statusConfigured
     : strings.statusConfigured
+  const diagnosticsLabels = language === 'zh'
+    ? {
+        lastRun: '最近对账运行',
+        lastShadowAdjustment: '最近 shadow 调整',
+        lastEnqueueError: '最近入队失败',
+      }
+    : {
+        lastRun: 'Last reconciliation run',
+        lastShadowAdjustment: 'Last shadow adjustment',
+        lastEnqueueError: 'Last enqueue error',
+      }
 
   return (
     <section className="surface panel upstream-privacy-shell">
@@ -381,6 +400,22 @@ export default function UpstreamPrivacyStatusModule({
                 <PrivacyStat label={strings.counterPendingResearch} value={numberFormatter.format(status.pendingResearch)} />
                 <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
                 <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
+                <PrivacyStat
+                  label={diagnosticsLabels.lastRun}
+                  value={formatOptionalTimestamp(status.lastReconciliationRunAt, timestampFormatter, strings.statusMissing)}
+                />
+                <PrivacyStat
+                  label={diagnosticsLabels.lastShadowAdjustment}
+                  value={formatOptionalTimestamp(status.lastShadowAdjustmentAt, timestampFormatter, strings.statusMissing)}
+                />
+                <PrivacyStat
+                  label={diagnosticsLabels.lastEnqueueError}
+                  value={formatOptionalTimestamp(
+                    status.lastReconciliationEnqueueErrorAt,
+                    timestampFormatter,
+                    strings.statusMissing,
+                  )}
+                />
               </div>
             </section>
 

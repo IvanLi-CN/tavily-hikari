@@ -808,6 +808,47 @@ async fn scheduled_job_mark_running_sets_started_at_after_queue_time() {
 }
 
 #[tokio::test]
+async fn scheduled_job_enqueue_reuses_upstream_reconciliation_without_waiting_for_write_lock() {
+    let db_path = temp_db_path("scheduled-job-enqueue-upstream-reconciliation-fast-path");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let running_job_id = proxy
+        .scheduled_job_claim("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .expect("claim upstream reconciliation job")
+        .expect("upstream reconciliation job created");
+    let mut immediate_conn = begin_held_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
+
+    let started = Instant::now();
+    let reused = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .expect("reuse running upstream reconciliation job");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "expected upstream reconciliation fast-path reuse, elapsed={:?}",
+        started.elapsed()
+    );
+    assert_eq!(reused.job_id, running_job_id);
+    assert!(!reused.created);
+    assert!(!reused.promoted);
+    assert_eq!(reused.status, "running");
+    assert_eq!(reused.trigger_source, "scheduler");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *immediate_conn)
+        .await
+        .expect("rollback immediate transaction");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn abandon_active_scheduled_jobs_abandons_queued_and_running_rows() {
     let db_path = temp_db_path("scheduled-job-abandon-active");
     let db_str = db_path.to_string_lossy().to_string();

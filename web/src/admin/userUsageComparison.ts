@@ -19,6 +19,7 @@ export function formatShadowDailyUsageComparison(args: {
 export function buildShadowDailyUsageStack(args: {
   actualUsed: number
   shadowUsed: number | null
+  shadowAvailability: 'confirmed' | 'unavailable' | null
   limit: number
   usersStrings: AdminTranslations['users']
   formatNumber: (value: number) => string
@@ -35,9 +36,15 @@ export function buildShadowDailyUsageStack(args: {
   secondary?: string | null
   primaryClassName?: string | null
 } {
-  const { actualUsed, shadowUsed, limit, usersStrings, formatNumber, formatQuotaStackValue } = args
+  const { actualUsed, shadowUsed, shadowAvailability, limit, usersStrings, formatNumber, formatQuotaStackValue } = args
 
-  if (shadowUsed == null) {
+  if (shadowAvailability === 'unavailable') {
+    return {
+      primary: usersStrings.usage.shadowUnavailable,
+      secondary: null,
+    }
+  }
+  if (shadowAvailability !== 'confirmed' || shadowUsed == null) {
     return {
       primary: '—',
       secondary: null,

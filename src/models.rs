@@ -1053,6 +1053,9 @@ pub struct UpstreamPrivacyStatus {
     pub pending_research: i64,
     pub queued_settlements: i64,
     pub degraded_settlements: i64,
+    pub last_reconciliation_run_at: Option<i64>,
+    pub last_shadow_adjustment_at: Option<i64>,
+    pub last_reconciliation_enqueue_error_at: Option<i64>,
     pub recent_adjustments: Vec<UpstreamReconciliationAdjustment>,
     pub generated_at: i64,
 }

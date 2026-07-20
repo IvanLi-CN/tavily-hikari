@@ -2269,6 +2269,7 @@ export interface AdminUserSummary {
   businessCalls1h: BusinessCalls1hSummary
   dailyCreditsUsed: number
   shadowDailyCreditsUsed: number | null
+  shadowDailyAvailability: 'confirmed' | 'unavailable' | null
   dailyCreditsLimit: number
   monthlyCreditsUsed: number
   monthlyCreditsLimit: number

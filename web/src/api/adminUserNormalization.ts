@@ -46,6 +46,15 @@ function readNullableNumber(value: RecordLike, camelKey: string, snakeKey = came
   return typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null
 }
 
+function readShadowDailyAvailability(
+  value: RecordLike,
+  camelKey: string,
+  snakeKey = camelKey,
+): 'confirmed' | 'unavailable' | null {
+  const candidate = value[camelKey] ?? value[snakeKey]
+  return candidate === 'confirmed' || candidate === 'unavailable' ? candidate : null
+}
+
 function normalizeRequestRate(value: unknown, fallback: RequestRate): RequestRate {
   if (!isRecordLike(value)) return fallback
   const scope = value.scope === 'user' || value.scope === 'token' ? value.scope : fallback.scope
@@ -310,6 +319,11 @@ export function normalizeAdminUserSummary(value: unknown): AdminUserSummary {
     businessCalls1h,
     dailyCreditsUsed,
     shadowDailyCreditsUsed: readNullableNumber(source, 'shadowDailyCreditsUsed', 'shadow_daily_credits_used'),
+    shadowDailyAvailability: readShadowDailyAvailability(
+      source,
+      'shadowDailyAvailability',
+      'shadow_daily_availability',
+    ),
     dailyCreditsLimit,
     monthlyCreditsUsed,
     monthlyCreditsLimit,

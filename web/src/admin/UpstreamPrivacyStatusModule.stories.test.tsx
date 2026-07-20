@@ -34,6 +34,9 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(markup).toContain('需要关注')
     expect(markup).toContain('对账落账模式')
     expect(markup).toContain('活跃 upstream_mcp session')
+    expect(markup).toContain('最近对账运行')
+    expect(markup).toContain('最近 shadow 调整')
+    expect(markup).toContain('最近入队失败')
   })
 
   it('renders the gallery story with the state matrix and error fallback', () => {
