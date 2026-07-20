@@ -360,6 +360,7 @@
         "server::tests::log_catalog_and_dashboard_sse::admin_",
         "server::tests::mcp_rebalance_and_follow_up::admin_",
         "server::tests::system_settings_and_forward_proxy::admin_",
+        "server::tests::system_settings_reconciliation_status::admin_",
         "server::tests::tavily_http_search::admin_",
         "server::tests::admin_logs_and_summary::api_",
         "server::tests::api_keys_and_registration::api_",
