@@ -31,6 +31,10 @@ init_repo() {
   git -C "$repo" init -b main >/dev/null
   git -C "$repo" config user.name 'Codex Test'
   git -C "$repo" config user.email 'codex-test@example.com'
+  # Keep the fixture repo fully synchronous so teardown does not race
+  # background Git maintenance on CI runners.
+  git -C "$repo" config gc.auto 0
+  git -C "$repo" config maintenance.auto false
   git -C "$repo" add .
   LEFTHOOK=0 git -C "$repo" commit -m 'fixture base' >/dev/null
   printf '\nfixture second commit\n' >> "$repo/README.md"
