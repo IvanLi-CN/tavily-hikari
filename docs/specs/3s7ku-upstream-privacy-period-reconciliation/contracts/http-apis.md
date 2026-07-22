@@ -22,6 +22,9 @@
 - `activeUpstreamMcpSessions`；
 - pending Research/usage queue 数量与最近 degraded 原因；
 - `lastReconciliationRunAt`、`lastShadowAdjustmentAt`、`lastReconciliationEnqueueErrorAt` 三个 compare-only / reconciliation 诊断时间戳；
+- `retryBuckets`：当前 `rate_limited` settlement 按 `upstream429`、`localUsageRateLimit`、`other` 分桶后的窗口数量；
+- `currentPeriodBoundUsersByKey`：当前业务时段内按上游 Key 聚合的绑定用户数，元素为 `{ keyIdHint, count }`；
+- `currentPeriodPendingProjectIdsByKey`：当前业务时段内按上游 Key 聚合的待查询 Project ID 数，元素为 `{ keyIdHint, count }`；
 - 最近 signed adjustments（token 只显示稳定短 id，upstream key 只显示本地短 id）。
 
 响应不得包含 HMAC secret、官方 API key、完整 Hikari token 或客户端原始 `X-Project-ID`。

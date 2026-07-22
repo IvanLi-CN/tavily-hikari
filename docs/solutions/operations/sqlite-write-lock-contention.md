@@ -122,6 +122,10 @@ month-tail public metrics scan.
   it should emit stable `component=reconciliation event=enqueue_reused|enqueue_exhausted` logs plus
   status-page timestamps so operators can tell “writer contention prevented a new enqueue” apart
   from “the worker is already draining the backlog”.
+- Do not mistake successful enqueue reuse for successful backlog drainage. If the reconciliation
+  worker repeatedly hits the same upstream key's `429` or local usage-query throttle, propagate one
+  key-scoped backoff to the due windows for that key and keep other keys eligible, otherwise the
+  scheduler can look healthy while the first candidate page never advances.
 - Keep `queued_at` separate from `started_at`. A queued job has been accepted but has not entered a
   DB execution window yet; collapsing those timestamps makes queue delay invisible and breaks admin
   diagnosis.

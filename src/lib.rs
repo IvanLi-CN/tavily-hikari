@@ -13,6 +13,7 @@ mod tavily_proxy;
 #[cfg(test)]
 mod tests;
 mod upstream_privacy;
+mod upstream_privacy_status;
 pub mod web_assets;
 
 pub use admin_mcp_session_bindings::*;
@@ -53,11 +54,12 @@ pub use store::{
 };
 pub use tavily_proxy::*;
 pub use upstream_privacy::*;
+pub use upstream_privacy_status::*;
 
 use std::{
     cell::Cell,
     cmp::min,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{

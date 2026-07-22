@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[tokio::test]
 async fn add_or_undelete_key_with_hint_only_proxy_affinity_refresh_invalidates_cached_record() {

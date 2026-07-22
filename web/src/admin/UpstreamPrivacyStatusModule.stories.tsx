@@ -8,6 +8,16 @@ import { translations } from '../i18n'
 
 type StoryArgs = ComponentProps<typeof UpstreamPrivacyStatusModule>
 
+const congestedBoundUsers = Array.from({ length: 14 }, (_, index) => ({
+  keyIdHint: `key-${String(index + 1).padStart(2, '0')}`,
+  count: Math.max(1, 28 - index * 2),
+}))
+
+const congestedPendingProjects = Array.from({ length: 15 }, (_, index) => ({
+  keyIdHint: `key-${String(index + 1).padStart(2, '0')}`,
+  count: Math.max(2, 72 - index * 4),
+}))
+
 const pendingStatus: UpstreamPrivacyStatus = {
   phase: 'pending',
   configuredProjectIdMode: 'accessToken',
@@ -36,6 +46,21 @@ const pendingStatus: UpstreamPrivacyStatus = {
   lastReconciliationRunAt: 1_783_958_250,
   lastShadowAdjustmentAt: 1_783_958_100,
   lastReconciliationEnqueueErrorAt: 1_783_957_900,
+  retryBuckets: {
+    upstream429: 3,
+    localUsageRateLimit: 1,
+    other: 0,
+  },
+  currentPeriodBoundUsersByKey: [
+    { keyIdHint: 'key-primary', count: 12 },
+    { keyIdHint: 'key-backup', count: 5 },
+    { keyIdHint: 'key-eu-west', count: 3 },
+  ],
+  currentPeriodPendingProjectIdsByKey: [
+    { keyIdHint: 'key-primary', count: 28 },
+    { keyIdHint: 'key-backup', count: 9 },
+    { keyIdHint: 'key-eu-west', count: 4 },
+  ],
   recentAdjustments: [
     {
       settlementKey: 'v1:tok_demo:2026-07-14/S1',
@@ -66,6 +91,13 @@ const activeStatus: UpstreamPrivacyStatus = {
   lastReconciliationRunAt: 1_783_958_500,
   lastShadowAdjustmentAt: 1_783_958_100,
   lastReconciliationEnqueueErrorAt: null,
+  retryBuckets: {
+    upstream429: 0,
+    localUsageRateLimit: 0,
+    other: 0,
+  },
+  currentPeriodBoundUsersByKey: [],
+  currentPeriodPendingProjectIdsByKey: [],
 }
 
 const compareBlockedStatus: UpstreamPrivacyStatus = {
@@ -105,6 +137,13 @@ const compareStatus: UpstreamPrivacyStatus = {
   upstreamPreciseReconciliationEnabled: false,
   queuedSettlements: 1,
   lastReconciliationEnqueueErrorAt: 1_783_957_900,
+  retryBuckets: {
+    upstream429: 7,
+    localUsageRateLimit: 2,
+    other: 1,
+  },
+  currentPeriodBoundUsersByKey: congestedBoundUsers,
+  currentPeriodPendingProjectIdsByKey: congestedPendingProjects,
   recentAdjustments: [
     {
       settlementKey: 'shadow:v1:tok_demo:2026-07-14/S2',

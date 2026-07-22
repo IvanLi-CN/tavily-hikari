@@ -1610,6 +1610,13 @@ describe('admin user tag api helpers', () => {
             lastReconciliationRunAt: 1_783_958_250,
             lastShadowAdjustmentAt: 1_783_958_100,
             lastReconciliationEnqueueErrorAt: 1_783_957_900,
+            retryBuckets: {
+              upstream429: 1,
+              localUsageRateLimit: 2,
+              other: 0,
+            },
+            currentPeriodBoundUsersByKey: [{ keyIdHint: 'key-primary', count: 7 }],
+            currentPeriodPendingProjectIdsByKey: [{ keyIdHint: 'key-primary', count: 21 }],
             recentAdjustments: [],
             generatedAt: 1_783_958_400,
           }),
@@ -1624,6 +1631,13 @@ describe('admin user tag api helpers', () => {
       configuredProjectIdMode: 'accessToken',
       currentPeriodCode: '2026-07-14/S2',
       activeUpstreamMcpSessions: 2,
+      retryBuckets: {
+        upstream429: 1,
+        localUsageRateLimit: 2,
+        other: 0,
+      },
+      currentPeriodBoundUsersByKey: [{ keyIdHint: 'key-primary', count: 7 }],
+      currentPeriodPendingProjectIdsByKey: [{ keyIdHint: 'key-primary', count: 21 }],
     })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/system/status')
   })
