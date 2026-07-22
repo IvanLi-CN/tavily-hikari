@@ -59,7 +59,7 @@ pub use upstream_privacy_status::*;
 use std::{
     cell::Cell,
     cmp::min,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
