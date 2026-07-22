@@ -20,6 +20,8 @@
 - 管理端已新增系统设置中的 warning 入口、`/admin/system-settings/status` 系统状态页中的活跃 `upstream_mcp` session 统计卡，以及隐藏路由 `/admin/system-settings/mcp-session-bindings` 的查询/释放管理面。
 - 系统状态主相位已纠偏：shadow 已产数但 precise 被旧 session 阻塞时，显示“仅对比”，不再显示“排空旧会话中”。
 - reconciliation 运行时已补充 `lastReconciliationRunAt`、`lastShadowAdjustmentAt`、`lastReconciliationEnqueueErrorAt` 三个全局摘要字段，并为 enqueue reuse / exhaustion、run started / completed、shadow adjustment written 输出结构化日志信号。
+- reconciliation backlog 诊断已区分 `rate_limited` 的上游 429、本地 usage 限流与其他重试；系统状态页同步展示当前时段每个上游 Key 的绑定用户数与待查询 Project ID 数活动图。
+- `upstream_reconciliation` worker 已对同一上游 Key 的到期窗口应用 key-scoped backoff：首次遇到 429 或本地 usage 限流后，本轮复用该 Key 的退避状态，不再反复查询同一 hot key，同时保留其他 Key 的结算机会。
 
 ## Remaining Gaps
 
@@ -36,6 +38,8 @@
 - `src/server/handlers/admin_resources/forward_proxy_and_key_validation.rs`
 - `web/src/admin/SystemSettingsModule.tsx`
 - `web/src/admin/UpstreamPrivacyStatusModule.tsx`
+- `web/src/api/systemSettingsTypes.ts`
+- `web/src/styles/clay.css`
 - `web/src/admin/McpSessionBindingsModule.tsx`
 - `web/src/admin/AdminDashboardRuntime.tsx`
 

@@ -61,6 +61,9 @@ The settlement worker must be safe to retry at any point:
 
 - repeated queue scans must not duplicate adjustments;
 - repeated upstream `/usage` reads must not create a second settlement row;
+- a hot upstream key that returns `429` or hits the proxy's local usage-query throttle should apply
+  one key-scoped backoff to all due windows for that key, instead of letting the next scheduler pass
+  immediately spend the whole candidate budget on the same key again;
 - takeover by another HA node must reuse the same settlement key;
 - process restarts must resume from durable recorded usage tuples and settlement state.
 
@@ -104,6 +107,10 @@ Operators need to know whether exact reconciliation is active or merely configur
 - queued settlements;
 - pending async work;
 - degraded settlements;
+- `rate_limited` buckets split into upstream `429`, local usage-query throttling, and other retry
+  causes;
+- current-period per-key activity, including bound-user count and pending Project ID count, with
+  sensitive ids shortened to stable local hints;
 - recent signed adjustments.
 
 This is why Tavily Hikari ships a dedicated `System Status` admin page instead of hiding the state

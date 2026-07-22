@@ -7,6 +7,7 @@ import {
 import { demoUserEntitlements } from './demoAccountEntitlements'
 import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRechargeAction, handleDemoAdminRecharges, type DemoRechargeOrder } from './demoAdminRecharge'
 import { createDemoHaStatus, handleDemoHaRoute } from './demoHa'
+import { createDemoUpstreamPrivacyStatus } from './upstreamPrivacyStatusFixtures'
 import { rankingsStorySnapshot } from '../admin/rankingsStoryData'
 import { buildDemoAnalysisPressureSnapshot } from './demoAnalysisPressure'
 import type { RechargeQuote } from './recharge'
@@ -1008,50 +1009,6 @@ function createDemoSystemSettings() {
       heavyUsage: { businessBodyDays: 3, nonBusinessBodyDays: 0, nonSuccessBodyDays: 1 },
       debugShared: { businessBodyDays: 14, nonBusinessBodyDays: 1, nonSuccessBodyDays: 7 },
     },
-  }
-}
-
-function createDemoUpstreamPrivacyStatus() {
-  return {
-    phase: 'compare',
-    configuredProjectIdMode: 'accessToken',
-    effectiveProjectIdMode: 'accessToken',
-    fixedProjectIdConfigured: false,
-    configuredMcpUserAgent: '',
-    effectiveMcpUserAgent: null,
-    upstreamPreciseReconciliationEnabled: true,
-    httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
-    controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
-    gates: [
-      { key: 'accessTokenMode', ready: true, detail: 'AccessToken' },
-      { key: 'apiRebalance', ready: true, detail: 'enabled' },
-      { key: 'mcpRebalance', ready: true, detail: 'enabled' },
-      { key: 'controlSessionsDrained', ready: false, detail: '2' },
-    ],
-    completedGates: 3,
-    totalGates: 4,
-    activeUpstreamMcpSessions: 2,
-    currentPeriodCode: '2026-07-14/S2',
-    currentPeriodEndsAt: 1_783_994_400,
-    nextEpochAt: null,
-    pendingResearch: 1,
-    queuedSettlements: 2,
-    degradedSettlements: 0,
-    lastReconciliationRunAt: 1_783_958_250,
-    lastShadowAdjustmentAt: 1_783_958_100,
-    lastReconciliationEnqueueErrorAt: 1_783_957_900,
-    recentAdjustments: [
-      {
-        settlementKey: 'v1:tok_demo:2026-07-14/S1',
-        tokenIdHint: 'tok_demo',
-        billingSubjectKind: 'token',
-        periodCode: '2026-07-14/S1',
-        deltaCredits: -3,
-        degradedReason: null,
-        createdAt: 1_783_958_100,
-      },
-    ],
-    generatedAt: 1_783_958_400,
   }
 }
 

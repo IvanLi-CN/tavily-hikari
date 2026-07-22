@@ -1,5 +1,9 @@
 use super::*;
 use chrono::{Local, LocalResult, TimeZone};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 fn local_ts(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
     match Local.with_ymd_and_hms(year, month, day, hour, minute, 0) {
@@ -389,6 +393,168 @@ async fn run_upstream_reconciliation_once_updates_runtime_markers() {
         .expect("read runtime markers");
     assert_eq!(last_run_at, Some(now));
     assert_eq!(last_shadow_adjustment_at, Some(now));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn run_upstream_reconciliation_once_applies_key_scoped_backoff_for_429() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-key-backoff-hot",
+            "tvly-reconciliation-key-backoff-cool",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+
+    let hot_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-key-backoff-hot")
+        .await
+        .expect("create hot upstream key");
+    let cool_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-key-backoff-cool")
+        .await
+        .expect("create cool upstream key");
+    for (token_id, key_id, project_id, billing_subject) in [
+        (
+            "token-hot-a",
+            hot_key_id.as_str(),
+            "project-hot-a",
+            "account:user-hot-a",
+        ),
+        (
+            "token-hot-b",
+            hot_key_id.as_str(),
+            "project-hot-b",
+            "account:user-hot-b",
+        ),
+        (
+            "token-cool",
+            cool_key_id.as_str(),
+            "project-cool",
+            "account:user-cool",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(token_id)
+        .bind(key_id)
+        .bind("2026-07-15/S1")
+        .bind(project_id)
+        .bind(billing_subject)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert due reconciliation usage");
+    }
+
+    let hot_hits = Arc::new(AtomicUsize::new(0));
+    let cool_hits = Arc::new(AtomicUsize::new(0));
+    let app_hot_hits = Arc::clone(&hot_hits);
+    let app_cool_hits = Arc::clone(&cool_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move |headers: HeaderMap| {
+            let hot_hits = Arc::clone(&app_hot_hits);
+            let cool_hits = Arc::clone(&app_cool_hits);
+            async move {
+                let authorization = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                if authorization.contains("tvly-reconciliation-key-backoff-hot") {
+                    hot_hits.fetch_add(1, Ordering::SeqCst);
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("retry-after", "300")],
+                        Json(serde_json::json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
+                }
+                if authorization.contains("tvly-reconciliation-key-backoff-cool") {
+                    cool_hits.fetch_add(1, Ordering::SeqCst);
+                    return Json(serde_json::json!({
+                        "key": { "usage": 4 }
+                    }))
+                    .into_response();
+                }
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation usage upstream");
+    });
+
+    let settled = proxy
+        .run_upstream_reconciliation_once(&format!("http://{addr}"))
+        .await
+        .expect("run reconciliation once");
+    assert_eq!(settled, 1);
+    assert_eq!(hot_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(cool_hits.load(Ordering::SeqCst), 1);
+
+    let hot_rate_limited: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM upstream_reconciliation_settlements
+        WHERE token_id IN ('token-hot-a', 'token-hot-b')
+          AND status = 'rate_limited'
+          AND degraded_reason = 'upstream429'
+          AND next_attempt_at >= ?
+        "#,
+    )
+    .bind(now + 300)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count hot key backoff settlements");
+    assert_eq!(hot_rate_limited, 2);
+
+    let cool_status: String = sqlx::query_scalar(
+        r#"
+        SELECT status
+        FROM upstream_reconciliation_settlements
+        WHERE token_id = 'token-cool'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read cool settlement");
+    assert_eq!(cool_status, "shadow_settled");
 
     let _ = std::fs::remove_file(db_path);
 }
