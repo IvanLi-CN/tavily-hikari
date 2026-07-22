@@ -2,11 +2,32 @@ const RECONCILIATION_SETTLEMENT_MODE_ACTUAL: &str = "actual";
 const RECONCILIATION_SETTLEMENT_MODE_SHADOW: &str = "shadow";
 const RECONCILIATION_STATUS_SHADOW_SETTLED: &str = "shadow_settled";
 const RECONCILIATION_STATUS_SHADOW_DEGRADED: &str = "shadow_degraded";
+pub(crate) const RECONCILIATION_STATUS_RATE_LIMITED: &str = "rate_limited";
+pub(crate) const RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT: &str =
+    "local_usage_rate_limit";
+pub(crate) const RECONCILIATION_RETRY_REASON_UPSTREAM_429: &str = "upstream429";
+pub(crate) const RECONCILIATION_RETRY_REASON_OTHER: &str = "other";
 
 fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
     settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
         && settings.api_rebalance_enabled
         && settings.rebalance_mcp_enabled
+}
+
+pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'static str {
+    let Some(reason) = reason else {
+        return RECONCILIATION_RETRY_REASON_OTHER;
+    };
+    if reason == RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT {
+        return RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT;
+    }
+    if reason == RECONCILIATION_RETRY_REASON_UPSTREAM_429 {
+        return RECONCILIATION_RETRY_REASON_UPSTREAM_429;
+    }
+    if reason.contains("usage http error 429") || reason.contains("429 Too Many Requests") {
+        return RECONCILIATION_RETRY_REASON_UPSTREAM_429;
+    }
+    RECONCILIATION_RETRY_REASON_OTHER
 }
 
 impl KeyStore {
@@ -351,6 +372,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
+        let normalized_reason = reason.map(|value| classify_reconciliation_retry_reason(Some(value)));
         sqlx::query(
             r#"
             INSERT INTO upstream_reconciliation_settlements (
@@ -374,13 +396,96 @@ impl KeyStore {
         .bind(candidate.period_start)
         .bind(candidate.period_end)
         .bind(status)
-        .bind(reason)
+        .bind(normalized_reason)
         .bind(next_attempt_at)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub(crate) async fn mark_reconciliation_key_retry(
+        &self,
+        key_id: &str,
+        next_attempt_at: i64,
+        reason: Option<&str>,
+    ) -> Result<i64, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let normalized_reason = classify_reconciliation_retry_reason(reason);
+        let changed = sqlx::query(
+            r#"
+            WITH candidate_windows AS (
+                SELECT
+                    u.token_id AS token_id,
+                    u.period_code AS period_code,
+                    MIN(u.project_id) AS project_id,
+                    MIN(u.billing_subject) AS billing_subject,
+                    MIN(u.period_start) AS period_start,
+                    MAX(u.period_end) AS period_end,
+                    COALESCE((
+                        SELECT COUNT(*)
+                        FROM upstream_reconciliation_research r
+                        WHERE r.token_id = u.token_id
+                          AND r.period_code = u.period_code
+                          AND r.terminal_at IS NULL
+                    ), 0) AS pending_research
+                FROM upstream_reconciliation_usage u
+                LEFT JOIN upstream_reconciliation_settlements s
+                  ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
+                WHERE u.key_id = ?
+                  AND u.period_end + 600 <= ?
+                  AND (s.settlement_key IS NULL OR (
+                        s.status IN ('pending', 'waiting', 'rate_limited')
+                        AND COALESCE(s.next_attempt_at, 0) <= ?
+                  ))
+                GROUP BY u.token_id, u.period_code
+            )
+            INSERT INTO upstream_reconciliation_settlements (
+                settlement_key, token_id, period_code, project_id, billing_subject,
+                period_start, period_end, status, degraded_reason, next_attempt_at,
+                attempt_count, created_at, updated_at
+            )
+            SELECT
+                'v1:' || token_id || ':' || period_code,
+                token_id,
+                period_code,
+                project_id,
+                billing_subject,
+                period_start,
+                period_end,
+                ?,
+                ?,
+                ?,
+                1,
+                ?,
+                ?
+            FROM candidate_windows
+            WHERE pending_research = 0 OR period_end + 86400 <= ?
+            ON CONFLICT(settlement_key) DO UPDATE SET
+                status = excluded.status,
+                degraded_reason = excluded.degraded_reason,
+                next_attempt_at = MAX(
+                    COALESCE(upstream_reconciliation_settlements.next_attempt_at, 0),
+                    excluded.next_attempt_at
+                ),
+                attempt_count = upstream_reconciliation_settlements.attempt_count + 1,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(key_id)
+        .bind(now)
+        .bind(now)
+        .bind(RECONCILIATION_STATUS_RATE_LIMITED)
+        .bind(normalized_reason)
+        .bind(next_attempt_at)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected() as i64;
+        Ok(changed)
     }
 
     pub(crate) async fn settle_upstream_reconciliation(
@@ -672,6 +777,98 @@ impl KeyStore {
                 },
             )
             .collect())
+    }
+
+    pub(crate) async fn upstream_reconciliation_retry_buckets(
+        &self,
+    ) -> Result<UpstreamReconciliationRetryBuckets, ProxyError> {
+        let rows = sqlx::query_as::<_, (Option<String>, i64)>(
+            r#"
+            SELECT degraded_reason, COUNT(*)
+            FROM upstream_reconciliation_settlements
+            WHERE status = ?
+            GROUP BY degraded_reason
+            "#,
+        )
+        .bind(RECONCILIATION_STATUS_RATE_LIMITED)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut buckets = UpstreamReconciliationRetryBuckets {
+            upstream_429: 0,
+            local_usage_rate_limit: 0,
+            other: 0,
+        };
+        for (reason, count) in rows {
+            match classify_reconciliation_retry_reason(reason.as_deref()) {
+                RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT => {
+                    buckets.local_usage_rate_limit += count;
+                }
+                RECONCILIATION_RETRY_REASON_UPSTREAM_429 => {
+                    buckets.upstream_429 += count;
+                }
+                _ => {
+                    buckets.other += count;
+                }
+            }
+        }
+        Ok(buckets)
+    }
+
+    pub(crate) async fn current_period_reconciliation_key_activity(
+        &self,
+        current_period_code: &str,
+    ) -> Result<(Vec<UpstreamKeyActivityPoint>, Vec<UpstreamKeyActivityPoint>), ProxyError> {
+        let bound_rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT
+                u.key_id,
+                COUNT(DISTINCT CASE
+                    WHEN u.billing_subject LIKE 'account:%' THEN SUBSTR(u.billing_subject, 9)
+                END) AS bound_users
+            FROM upstream_reconciliation_usage u
+            WHERE u.period_code = ?
+            GROUP BY u.key_id
+            HAVING bound_users > 0
+            ORDER BY bound_users DESC, u.key_id ASC
+            "#,
+        )
+        .bind(current_period_code)
+        .fetch_all(&self.pool)
+        .await?;
+        let pending_project_rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT
+                u.key_id,
+                COUNT(DISTINCT u.project_id) AS pending_project_ids
+            FROM upstream_reconciliation_usage u
+            LEFT JOIN upstream_reconciliation_settlements s
+              ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
+            WHERE u.period_code = ?
+              AND (s.settlement_key IS NULL OR s.status IN ('pending', 'waiting', 'rate_limited'))
+            GROUP BY u.key_id
+            HAVING pending_project_ids > 0
+            ORDER BY pending_project_ids DESC, u.key_id ASC
+            "#,
+        )
+        .bind(current_period_code)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok((
+            bound_rows
+                .into_iter()
+                .map(|(key_id, count)| UpstreamKeyActivityPoint {
+                    key_id_hint: key_id.chars().take(12).collect(),
+                    count,
+                })
+                .collect(),
+            pending_project_rows
+                .into_iter()
+                .map(|(key_id, count)| UpstreamKeyActivityPoint {
+                    key_id_hint: key_id.chars().take(12).collect(),
+                    count,
+                })
+                .collect(),
+        ))
     }
 
     pub(crate) async fn upstream_reconciliation_queue_counts(

@@ -2,7 +2,12 @@ import { useId, useMemo } from 'react'
 
 import type { QueryLoadState } from './queryLoadState'
 import type { Language, AdminTranslations } from '../i18n'
-import type { UpstreamPrivacyGate, UpstreamPrivacyStatus, UpstreamProjectIdMode } from '../api'
+import type {
+  UpstreamKeyActivityPoint,
+  UpstreamPrivacyGate,
+  UpstreamPrivacyStatus,
+  UpstreamProjectIdMode,
+} from '../api'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { StatusBadge } from '../components/StatusBadge'
 import { Icon } from '../lib/icons'
@@ -61,6 +66,26 @@ interface StatusIssue {
   title: string
   detail: string
   tone: 'warning' | 'error' | 'info'
+}
+
+const KEY_ACTIVITY_VISIBLE_ROWS = 12
+
+function compactKeyActivityPoints(
+  points: UpstreamKeyActivityPoint[],
+  remainderLabel: (count: number) => string,
+): UpstreamKeyActivityPoint[] {
+  const positivePoints = points.filter((point) => point.count > 0)
+  if (positivePoints.length <= KEY_ACTIVITY_VISIBLE_ROWS) return positivePoints
+
+  const visiblePoints = positivePoints.slice(0, KEY_ACTIVITY_VISIBLE_ROWS)
+  const remainderPoints = positivePoints.slice(KEY_ACTIVITY_VISIBLE_ROWS)
+  return [
+    ...visiblePoints,
+    {
+      keyIdHint: remainderLabel(remainderPoints.length),
+      count: remainderPoints.reduce((total, point) => total + point.count, 0),
+    },
+  ]
 }
 
 function gateLabel(
@@ -240,16 +265,44 @@ export default function UpstreamPrivacyStatusModule({
         : strings.statusConfigured
     : strings.statusConfigured
   const diagnosticsLabels = language === 'zh'
-    ? {
+      ? {
         lastRun: '最近对账运行',
         lastShadowAdjustment: '最近 shadow 调整',
         lastEnqueueError: '最近入队失败',
+        retryBucketsTitle: '重试原因分布',
+        retryBucketsDescription: '仅统计当前仍处于 rate_limited 的结算窗口，用来区分上游 429 与本地 usage 限流。',
+        retryBucketUpstream429: '429 上游限流',
+        retryBucketLocalUsageRateLimit: '本地 usage 限流',
+        retryBucketOther: '其他重试',
+        keyActivityTitle: '当前时段 Key 活动',
+        keyActivityDescription: '按上游 Key 聚合当前时段内的绑定用户数与待查询 Project ID 数，默认展示 Top 12。',
+        boundUsersByKeyTitle: '绑定用户数',
+        pendingProjectIdsByKeyTitle: '待查询 Project ID 数',
+        keyActivityEmpty: '当前时段暂无可展示的 Key 活动。',
+        keyActivityRemainder: (count: number) => `其余 ${numberFormatter.format(count)} 个 Key`,
       }
     : {
         lastRun: 'Last reconciliation run',
         lastShadowAdjustment: 'Last shadow adjustment',
         lastEnqueueError: 'Last enqueue error',
+        retryBucketsTitle: 'Retry reason distribution',
+        retryBucketsDescription: 'Counts settlement windows that are still rate_limited, split by upstream 429 versus local usage throttling.',
+        retryBucketUpstream429: 'Upstream 429',
+        retryBucketLocalUsageRateLimit: 'Local usage throttle',
+        retryBucketOther: 'Other retry',
+        keyActivityTitle: 'Current-period key activity',
+        keyActivityDescription: 'Groups current-period bound users and pending Project IDs by upstream key. Top 12 keys are shown by default.',
+        boundUsersByKeyTitle: 'Bound users',
+        pendingProjectIdsByKeyTitle: 'Pending Project IDs',
+        keyActivityEmpty: 'No key activity is available for the current period.',
+        keyActivityRemainder: (count: number) => `${numberFormatter.format(count)} other keys`,
       }
+  const boundUsersByKeyRows = status
+    ? compactKeyActivityPoints(status.currentPeriodBoundUsersByKey, diagnosticsLabels.keyActivityRemainder)
+    : []
+  const pendingProjectIdsByKeyRows = status
+    ? compactKeyActivityPoints(status.currentPeriodPendingProjectIdsByKey, diagnosticsLabels.keyActivityRemainder)
+    : []
 
   return (
     <section className="surface panel upstream-privacy-shell">
@@ -419,6 +472,53 @@ export default function UpstreamPrivacyStatusModule({
               </div>
             </section>
 
+            <section className="upstream-privacy-section" data-testid="system-status-retry-buckets">
+              <div className="panel-header">
+                <div>
+                  <h3>{diagnosticsLabels.retryBucketsTitle}</h3>
+                  <p className="panel-description">{diagnosticsLabels.retryBucketsDescription}</p>
+                </div>
+              </div>
+              <div className="upstream-privacy-counters">
+                <PrivacyStat
+                  label={diagnosticsLabels.retryBucketUpstream429}
+                  value={numberFormatter.format(status.retryBuckets.upstream429)}
+                />
+                <PrivacyStat
+                  label={diagnosticsLabels.retryBucketLocalUsageRateLimit}
+                  value={numberFormatter.format(status.retryBuckets.localUsageRateLimit)}
+                />
+                <PrivacyStat
+                  label={diagnosticsLabels.retryBucketOther}
+                  value={numberFormatter.format(status.retryBuckets.other)}
+                />
+              </div>
+            </section>
+
+            <section className="upstream-privacy-section" data-testid="system-status-key-activity">
+              <div className="panel-header">
+                <div>
+                  <h3>{diagnosticsLabels.keyActivityTitle}</h3>
+                  <p className="panel-description">{diagnosticsLabels.keyActivityDescription}</p>
+                </div>
+                <StatusBadge tone="info">{status.currentPeriodCode}</StatusBadge>
+              </div>
+              <div className="upstream-privacy-activity-grid">
+                <KeyActivityChart
+                  title={diagnosticsLabels.boundUsersByKeyTitle}
+                  points={boundUsersByKeyRows}
+                  emptyLabel={diagnosticsLabels.keyActivityEmpty}
+                  numberFormatter={numberFormatter}
+                />
+                <KeyActivityChart
+                  title={diagnosticsLabels.pendingProjectIdsByKeyTitle}
+                  points={pendingProjectIdsByKeyRows}
+                  emptyLabel={diagnosticsLabels.keyActivityEmpty}
+                  numberFormatter={numberFormatter}
+                />
+              </div>
+            </section>
+
             <details className="upstream-privacy-details" data-testid="system-status-technical-details">
               <summary className="upstream-privacy-details__summary">
                 <div>
@@ -563,6 +663,49 @@ function HeaderList({ title, items }: { title: string; items: string[] }): JSX.E
         </div>
       )}
     </div>
+  )
+}
+
+function KeyActivityChart({
+  title,
+  points,
+  emptyLabel,
+  numberFormatter,
+}: {
+  title: string
+  points: UpstreamKeyActivityPoint[]
+  emptyLabel: string
+  numberFormatter: Intl.NumberFormat
+}): JSX.Element {
+  const maxCount = points.reduce((max, point) => Math.max(max, point.count), 0)
+
+  return (
+    <article className="upstream-privacy-activity-card">
+      <div className="upstream-privacy-activity-card__head">
+        <strong>{title}</strong>
+        <span>{numberFormatter.format(points.length)}</span>
+      </div>
+      {points.length === 0 ? (
+        <div className="upstream-privacy-empty-note">{emptyLabel}</div>
+      ) : (
+        <div className="upstream-privacy-activity-bars">
+          {points.map((point) => {
+            const percentage = maxCount <= 0 ? 0 : Math.max(4, Math.round((point.count / maxCount) * 100))
+            return (
+              <div key={point.keyIdHint} className="upstream-privacy-activity-row">
+                <div className="upstream-privacy-activity-row__meta">
+                  <code>{point.keyIdHint}</code>
+                  <strong>{numberFormatter.format(point.count)}</strong>
+                </div>
+                <div className="upstream-privacy-activity-row__track" aria-hidden="true">
+                  <span style={{ width: `${percentage}%` }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </article>
   )
 }
 

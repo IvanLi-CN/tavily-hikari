@@ -5,7 +5,7 @@ use crate::store::*;
 use crate::*;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{
     OnceLock,
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},

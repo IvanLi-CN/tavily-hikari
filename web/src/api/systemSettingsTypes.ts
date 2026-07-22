@@ -46,6 +46,17 @@ export interface UpstreamReconciliationAdjustment {
   createdAt: number
 }
 
+export interface UpstreamReconciliationRetryBuckets {
+  upstream429: number
+  localUsageRateLimit: number
+  other: number
+}
+
+export interface UpstreamKeyActivityPoint {
+  keyIdHint: string
+  count: number
+}
+
 export interface UpstreamPrivacyStatus {
   phase: 'configured' | 'draining' | 'pending' | 'compare' | 'active' | 'degraded'
   configuredProjectIdMode: UpstreamProjectIdMode
@@ -69,6 +80,9 @@ export interface UpstreamPrivacyStatus {
   lastReconciliationRunAt: number | null
   lastShadowAdjustmentAt: number | null
   lastReconciliationEnqueueErrorAt: number | null
+  retryBuckets: UpstreamReconciliationRetryBuckets
+  currentPeriodBoundUsersByKey: UpstreamKeyActivityPoint[]
+  currentPeriodPendingProjectIdsByKey: UpstreamKeyActivityPoint[]
   recentAdjustments: UpstreamReconciliationAdjustment[]
   generatedAt: number
 }

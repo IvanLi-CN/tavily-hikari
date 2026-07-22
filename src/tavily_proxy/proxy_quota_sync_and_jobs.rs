@@ -45,6 +45,14 @@ impl TavilyProxy {
             .key_store
             .upstream_reconciliation_queue_counts()
             .await?;
+        let retry_buckets = self
+            .key_store
+            .upstream_reconciliation_retry_buckets()
+            .await?;
+        let (current_period_bound_users_by_key, current_period_pending_project_ids_by_key) = self
+            .key_store
+            .current_period_reconciliation_key_activity(&period.code)
+            .await?;
         let (
             last_reconciliation_run_at,
             last_shadow_adjustment_at,
@@ -112,6 +120,9 @@ impl TavilyProxy {
             last_reconciliation_run_at,
             last_shadow_adjustment_at,
             last_reconciliation_enqueue_error_at,
+            retry_buckets,
+            current_period_bound_users_by_key,
+            current_period_pending_project_ids_by_key,
             recent_adjustments: self
                 .key_store
                 .recent_reconciliation_adjustments(10)
@@ -292,15 +303,26 @@ impl TavilyProxy {
             degraded_settlements = degraded_settlements_before,
         );
         let result = async {
-            let mut settled = 0;
+            let mut settled = 0_i64;
+            let mut upstream_429_retry_windows = 0_i64;
+            let mut local_usage_rate_limit_windows = 0_i64;
+            let mut other_retry_windows = 0_i64;
+            let mut key_backoff_window_count = 0_i64;
+            let mut skipped_by_key_backoff = 0_i64;
+            let mut cooling_keys = HashSet::<String>::new();
             for candidate in candidates {
                 let key_ids = self
                     .key_store
                     .reconciliation_key_ids(&candidate.token_id, &candidate.period_code)
                     .await?;
+                if key_ids.iter().any(|key_id| cooling_keys.contains(key_id)) {
+                    skipped_by_key_backoff += 1;
+                    continue;
+                }
                 let mut upstream_usage = 0_i64;
                 let mut retry_at = None;
                 let mut retry_reason = None;
+                let mut retry_key_id = None;
                 for key_id in key_ids {
                     match self
                         .key_store
@@ -310,7 +332,9 @@ impl TavilyProxy {
                         Ok(()) => {}
                         Err(next_attempt_at) => {
                             retry_at = Some(next_attempt_at);
-                            retry_reason = Some("local_usage_rate_limit".to_string());
+                            retry_reason =
+                                Some(RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT.to_string());
+                            retry_key_id = Some(key_id.clone());
                             break;
                         }
                     }
@@ -325,20 +349,74 @@ impl TavilyProxy {
                                     .unwrap_or_else(|| self.backend_time.now_ts().saturating_add(60)),
                             );
                             retry_reason = Some(err.to_string());
+                            retry_key_id = Some(key_id.clone());
                             break;
                         }
                     }
                 }
-                if let Some(next_attempt_at) = retry_at {
-                    self.key_store
-                        .mark_reconciliation_retry(
-                            &candidate,
-                            "rate_limited",
+                match (retry_at, retry_reason, retry_key_id) {
+                    (Some(next_attempt_at), Some(retry_reason), Some(retry_key_id)) => {
+                        let reason_kind =
+                            classify_reconciliation_retry_reason(Some(retry_reason.as_str()));
+                        let changed = self
+                            .key_store
+                            .mark_reconciliation_key_retry(
+                                &retry_key_id,
+                                next_attempt_at,
+                                Some(retry_reason.as_str()),
+                            )
+                            .await?;
+                        let affected_window_count = if changed > 0 {
+                            changed
+                        } else {
+                            self.key_store
+                                .mark_reconciliation_retry(
+                                    &candidate,
+                                    RECONCILIATION_STATUS_RATE_LIMITED,
+                                    next_attempt_at,
+                                    Some(retry_reason.as_str()),
+                                )
+                                .await?;
+                            1
+                        };
+                        match reason_kind {
+                            RECONCILIATION_RETRY_REASON_UPSTREAM_429 => {
+                                upstream_429_retry_windows += affected_window_count;
+                            }
+                            RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT => {
+                                local_usage_rate_limit_windows += affected_window_count;
+                            }
+                            _ => {
+                                other_retry_windows += affected_window_count;
+                            }
+                        }
+                        key_backoff_window_count += affected_window_count;
+                        cooling_keys.insert(retry_key_id.clone());
+                        tracing::warn!(
+                            component = "reconciliation",
+                            event = "key_backoff_applied",
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            job_type = "upstream_reconciliation",
+                            key_id = %retry_key_id,
+                            period_code = %candidate.period_code,
+                            reason_kind,
                             next_attempt_at,
-                            retry_reason.as_deref(),
-                        )
-                        .await?;
-                    continue;
+                            affected_window_count,
+                        );
+                        continue;
+                    }
+                    (Some(next_attempt_at), reason, _) => {
+                        self.key_store
+                            .mark_reconciliation_retry(
+                                &candidate,
+                                RECONCILIATION_STATUS_RATE_LIMITED,
+                                next_attempt_at,
+                                reason.as_deref(),
+                            )
+                            .await?;
+                        continue;
+                    }
+                    _ => {}
                 }
                 let local_billed = self
                     .key_store
@@ -361,7 +439,14 @@ impl TavilyProxy {
                     settled += 1;
                 }
             }
-            Ok::<i64, ProxyError>(settled)
+            Ok::<(i64, i64, i64, i64, i64, i64), ProxyError>((
+                settled,
+                upstream_429_retry_windows,
+                local_usage_rate_limit_windows,
+                other_retry_windows,
+                key_backoff_window_count,
+                skipped_by_key_backoff,
+            ))
         }
         .await;
         self.key_store
@@ -370,7 +455,14 @@ impl TavilyProxy {
         let (pending_research_after, queued_settlements_after, degraded_settlements_after) =
             self.key_store.upstream_reconciliation_queue_counts().await?;
         match result {
-            Ok(settled) => {
+            Ok((
+                settled,
+                upstream_429_retry_windows,
+                local_usage_rate_limit_windows,
+                other_retry_windows,
+                key_backoff_window_count,
+                skipped_by_key_backoff,
+            )) => {
                 tracing::info!(
                     component = "reconciliation",
                     event = "run_completed",
@@ -381,6 +473,11 @@ impl TavilyProxy {
                     pending_research = pending_research_after,
                     queued_settlements = queued_settlements_after,
                     degraded_settlements = degraded_settlements_after,
+                    rate_limited_429_count = upstream_429_retry_windows,
+                    rate_limited_local_usage_count = local_usage_rate_limit_windows,
+                    rate_limited_other_count = other_retry_windows,
+                    key_backoff_window_count,
+                    skipped_by_key_backoff,
                 );
                 Ok(settled)
             }
@@ -395,6 +492,11 @@ impl TavilyProxy {
                     pending_research = pending_research_after,
                     queued_settlements = queued_settlements_after,
                     degraded_settlements = degraded_settlements_after,
+                    rate_limited_429_count = 0_i64,
+                    rate_limited_local_usage_count = 0_i64,
+                    rate_limited_other_count = 0_i64,
+                    key_backoff_window_count = 0_i64,
+                    skipped_by_key_backoff = 0_i64,
                     err = %err,
                 );
                 Err(err)

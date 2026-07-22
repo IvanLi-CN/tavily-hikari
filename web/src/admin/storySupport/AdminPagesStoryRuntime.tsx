@@ -120,6 +120,7 @@ import { retainVisibleApiKeySelection } from '../apiKeySelection'
 import { UsersUsageScreen } from '../screens/UsersUsageScreen'
 import { buildShadowDailyUsageStack } from '../userUsageComparison'
 import { buildPressureDemoFixture } from '../../api/pressureDemoFixture'
+import { storyUpstreamPrivacyStatus } from '../../api/upstreamPrivacyStatusFixtures'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStoryErrorStats,
@@ -6444,47 +6445,7 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
         strings={admin.systemSettings.privacy}
         formStrings={admin.systemSettings.form}
         language="zh"
-        status={{
-          phase: 'compare',
-          configuredProjectIdMode: 'accessToken',
-          effectiveProjectIdMode: 'accessToken',
-          fixedProjectIdConfigured: false,
-          configuredMcpUserAgent: '',
-          effectiveMcpUserAgent: null,
-          upstreamPreciseReconciliationEnabled: true,
-          httpAllowedHeaders: ['accept', 'accept-encoding', 'content-type', 'x-project-id (policy injected)'],
-          controlMcpAllowedHeaders: ['accept', 'cache-control', 'mcp-protocol-version', 'mcp-session-id', 'user-agent (configured only)'],
-          gates: [
-            { key: 'accessTokenMode', ready: true, detail: 'AccessToken' },
-            { key: 'apiRebalance', ready: true, detail: 'enabled' },
-            { key: 'mcpRebalance', ready: true, detail: 'enabled' },
-            { key: 'controlSessionsDrained', ready: false, detail: '2' },
-          ],
-          completedGates: 3,
-          totalGates: 4,
-          activeUpstreamMcpSessions: 2,
-          currentPeriodCode: '2026-07-14/S2',
-          currentPeriodEndsAt: 1_783_994_400,
-          nextEpochAt: null,
-          pendingResearch: 1,
-          queuedSettlements: 2,
-          degradedSettlements: 0,
-          lastReconciliationRunAt: 1_783_958_250,
-          lastShadowAdjustmentAt: 1_783_958_100,
-          lastReconciliationEnqueueErrorAt: 1_783_957_900,
-          recentAdjustments: [
-            {
-              settlementKey: 'v1:tok_demo:2026-07-14/S1',
-              tokenIdHint: 'tok_demo',
-              billingSubjectKind: 'token',
-              periodCode: '2026-07-14/S1',
-              deltaCredits: -3,
-              degradedReason: null,
-              createdAt: 1_783_958_100,
-            },
-          ],
-          generatedAt: 1_783_958_400,
-        }}
+        status={storyUpstreamPrivacyStatus}
         loadState="ready"
         error={null}
         refreshing={false}
