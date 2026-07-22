@@ -174,49 +174,57 @@
 
 ### PR subset
 
-- PR: include
+PR: include
+
 - desktop system settings warning entry
 - verifies: when active `upstream_mcp` sessions still exist, the “启用 Rebalance MCP” row exposes a focused warning entry while the hidden management route stays out of navigation.
 
   ![System settings warning entry](./assets/system-settings-rebalance-warning.png)
 
-- PR: include
+PR: include
+
 - desktop system status session blocker card
 - verifies: the system status page foregrounds active `upstream_mcp` sessions as a precise-cutover blocker while keeping the top phase in “仅对比”.
 
   ![System status blocked by sessions](./assets/system-status-blocked-by-sessions.png)
 
-- PR: include
+PR: include
+
 - desktop MCP session bindings management page
 - verifies: the hidden `/admin/system-settings/mcp-session-bindings` route defaults to active rows, uses two date-range filters with inline apply/reset actions, keeps revoke actions separate from filtering, and does not surface raw upstream session ids.
 
   ![MCP session bindings page](./assets/mcp-session-bindings-page.png)
 
-- PR: include
+PR: include
+
 - desktop users list confirmed/unavailable comparison column
 - verifies: `/admin/users` keeps the `新方案 24h` absolute value visible even when confirmed shadow usage equals the current 24h value, still shows `较当前 ...` only for non-zero deltas, and marks unavailable rows explicitly instead of collapsing to `—`.
 
   ![Users list confirmed and unavailable comparison column](./assets/admin-users-compare-shadow-desktop.png)
 
-- PR: include
+PR: include
+
 - desktop users usage confirmed/unavailable comparison column
 - verifies: `/admin/users/usage` mirrors the same confirmed-vs-unavailable contract, preserving the absolute compare-only value for equal confirmed rows and rendering unavailable rows as `Unavailable` instead of a silent dash.
 
   ![Users usage confirmed and unavailable comparison column](./assets/admin-users-usage-compare-shadow-desktop.png)
 
-- PR: include
+PR: include
+
 - desktop system status reconciliation diagnostics
 - verifies: `/admin/system-settings/status` exposes the new runtime summary timestamps for the latest reconciliation run, latest shadow adjustment, and latest enqueue failure while preserving the existing phase / queue summaries.
 
   ![System status reconciliation diagnostics](./assets/admin-system-status-reconciliation-diagnostics.png)
 
-- PR: include
+PR: include
+
 - desktop system status key activity charts
 - verifies: `/admin/system-settings/status` now adds the current-period per-upstream-key activity charts and rate-limited retry breakdown, so operators can see which keys bind more users and which keys still have the largest pending Project ID queues.
 
   ![System status key activity desktop](./assets/admin-system-status-key-activity-desktop.png)
 
-- PR: include
+PR: include
+
 - mobile system status key activity charts
 - verifies: the same diagnostic charts remain readable on narrow screens without collapsing the key labels or the retry breakdown.
 
@@ -224,31 +232,36 @@
 
 ### Supporting evidence
 
-- PR: omit
+Owner-facing only.
+
 - desktop system settings reconciliation controls
 - verifies: system settings now groups upstream identity controls and the new reconciliation enable switch under the same admin surface; `X-Project-ID` defaults to `accessToken`, Control MCP UA stays blank-by-default, and precise reconciliation remains disabled by default.
 
   ![System settings reconciliation controls](./assets/system-settings-reconciliation-controls-desktop.png)
 
-- PR: omit
+Owner-facing only.
+
 - desktop users list comparison column
 - verifies: when precise reconciliation stays disabled, `/admin/users` renders the dedicated `新方案 24h` comparison column next to the live 24h column, keeps equal-value confirmed rows visible, and marks unavailable rows explicitly.
 
   ![Users list comparison column](./assets/users-list-shadow-comparison-desktop.png)
 
-- PR: omit
+Owner-facing only.
+
 - desktop users usage comparison column
 - verifies: `/admin/users/usage` shows the same `新方案 24h` comparison column without collapsing the existing 5m / 1h / success-rate hierarchy, while preserving equal confirmed values and explicit unavailable states.
 
   ![Users usage comparison column](./assets/users-usage-shadow-comparison-desktop.png)
 
-- PR: omit
+Owner-facing only.
+
 - desktop system status page
 - verifies: `/admin/system-settings/status` uses the shared “系统状态” route, foregrounds only live gates / queues / counters, and keeps the detailed header allowlist + reconciliation disclosure below the fold.
 
   ![System status desktop](./assets/system-status-desktop.png)
 
-- PR: omit
+Owner-facing only.
+
 - mobile system status page
 - verifies: the same system-status route keeps the switch, counters, gate chips, and summary cards readable on narrow screens without the previously broken switch layout.
 
