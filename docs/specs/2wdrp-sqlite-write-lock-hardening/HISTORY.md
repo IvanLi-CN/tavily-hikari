@@ -195,3 +195,19 @@
 - Tightened post-ready scheduling to a writable-tenure edge: first startup or promotion into a
   writable role can run the non-core derived work once, repeated writable refreshes are suppressed,
   and demotion out of writable resets the gate for a later promotion.
+
+## 2026-07-22
+
+- Production `srv-101` re-opened the topic on the owner-facing admin path: the
+  `/admin/analysis/rankings?tab=last24h` shell still rendered, but `/api/users/rankings`,
+  `/api/summary`, `/api/summary/windows`, and `/api/analysis/pressure` could all sit behind the
+  full request-stats flush budget and miss first paint while `/health` remained green.
+- The shared root cause was not a second broken query family. These reads were still borrowing the
+  main pool's `5s` SQLite `busy_timeout` plus the write-side `10s` request-stats retry budget
+  before they could even decide whether to fall back.
+- Added a dedicated short-timeout `read_flush_pool`, capped read-side flush attempts to `250ms`,
+  and let summary/rankings/analysis-pressure-family handlers serve already durable stats when
+  transient writer contention outlives that small read budget.
+- Added lock-holding regression coverage proving those admin reads return promptly under write
+  contention and expose the queued delta after the lock clears, while the healthy-path
+  flush-before-read semantics remain intact.

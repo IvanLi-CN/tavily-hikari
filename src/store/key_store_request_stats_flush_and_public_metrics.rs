@@ -1,6 +1,47 @@
 impl KeyStore {
     pub(crate) async fn flush_request_stats_writes(&self) -> Result<(), ProxyError> {
-        const RETRY_BUDGET: Duration = Duration::from_secs(10);
+        self.flush_request_stats_writes_with_wait_policy(&self.pool, Duration::from_secs(10), None)
+            .await
+    }
+
+    pub(crate) async fn best_effort_flush_request_stats_writes_for_read(
+        &self,
+        read_operation: &'static str,
+    ) -> Result<(), ProxyError> {
+        const RETRY_BUDGET: Duration = Duration::from_millis(250);
+        let inflight_wait_deadline = self.backend_time.instant_now() + RETRY_BUDGET;
+        match self
+            .flush_request_stats_writes_with_wait_policy(
+                &self.read_flush_pool,
+                RETRY_BUDGET,
+                Some(inflight_wait_deadline),
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(err)
+                if is_transient_sqlite_write_error(&err)
+                    || is_request_stats_flush_wait_budget_exhausted(&err) =>
+            {
+                warn!(
+                    component = "admin_read",
+                    operation = read_operation,
+                    retry_budget_ms = RETRY_BUDGET.as_millis() as u64,
+                    error = %err,
+                    "serving durable stats without flushing pending request stats"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn flush_request_stats_writes_with_wait_policy(
+        &self,
+        pool: &SqlitePool,
+        retry_budget: Duration,
+        inflight_wait_deadline: Option<Instant>,
+    ) -> Result<(), ProxyError> {
         loop {
             let pending = {
                 let mut state = self.request_stats_coalescer.state.lock().await;
@@ -38,7 +79,23 @@ impl KeyStore {
                 drained_newest_pending_created_at,
             )) = pending
             else {
-                self.request_stats_coalescer.wait_until_flushed().await;
+                if let Some(deadline) = inflight_wait_deadline {
+                    let remaining = deadline.saturating_duration_since(self.backend_time.instant_now());
+                    if remaining.is_zero() {
+                        return Err(request_stats_flush_wait_budget_exhausted_error());
+                    }
+                    if tokio::time::timeout(
+                        remaining,
+                        self.request_stats_coalescer.wait_until_not_flushing(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err(request_stats_flush_wait_budget_exhausted_error());
+                    }
+                } else {
+                    self.request_stats_coalescer.wait_until_not_flushing().await;
+                }
                 continue;
             };
 
@@ -55,17 +112,19 @@ impl KeyStore {
                 request_path: "/internal/request-stats-flush",
                 request_kind: "internal:request-stats-flush",
                 billing_subject_kind: "unknown",
-                retry_budget_ms: RETRY_BUDGET.as_millis() as u64,
+                retry_budget_ms: retry_budget.as_millis() as u64,
                 pending_batch_counts: pending_batch_counts.as_str(),
                 oldest_pending_created_at: drained_oldest_pending_created_at,
                 newest_pending_created_at: drained_newest_pending_created_at,
             };
-            let deadline = self.backend_time.instant_now() + RETRY_BUDGET;
+            let retry_deadline = inflight_wait_deadline
+                .unwrap_or_else(|| self.backend_time.instant_now() + retry_budget);
             let operation_started = Instant::now();
             let mut retry_attempt = 0usize;
             let result = loop {
                 match self
                     .flush_request_stats_writes_once(
+                        pool,
                         &pending_dashboard_rollups,
                         &pending_api_key_usage,
                         &pending_auth_token_activity,
@@ -80,7 +139,7 @@ impl KeyStore {
                             break Err(err);
                         }
                         let now = self.backend_time.instant_now();
-                        if now >= deadline {
+                        if now >= retry_deadline {
                             log_sqlite_transient_write_exhaustion_with_fields(
                                 log_fields,
                                 retry_attempt + 1,
@@ -89,7 +148,7 @@ impl KeyStore {
                             );
                             break Err(err);
                         }
-                        let remaining = deadline.saturating_duration_since(now);
+                        let remaining = retry_deadline.saturating_duration_since(now);
                         let backoff = sqlite_transient_write_retry_delay(retry_attempt).min(remaining);
                         log_sqlite_transient_write_retry_with_fields(
                             log_fields,
@@ -173,6 +232,7 @@ impl KeyStore {
 
     async fn flush_request_stats_writes_once(
         &self,
+        pool: &SqlitePool,
         pending_dashboard_rollups: &HashMap<(i64, i64), DashboardRequestRollupCounts>,
         pending_api_key_usage: &HashMap<(String, i64), ApiKeyUsageBucketDelta>,
         pending_auth_token_activity: &HashMap<String, AuthTokenActivityDelta>,
@@ -180,7 +240,7 @@ impl KeyStore {
         pending_request_log_catalog: &HashMap<RequestLogCatalogRollupKey, i64>,
     ) -> Result<(), ProxyError> {
         let updated_at = Utc::now().timestamp();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = pool.begin().await?;
         let mut dashboard_entries = pending_dashboard_rollups
             .iter()
             .map(|(key, counts)| (*key, *counts))
@@ -502,4 +562,12 @@ impl KeyStore {
 
         Ok(success_count)
     }
+}
+
+fn request_stats_flush_wait_budget_exhausted_error() -> ProxyError {
+    ProxyError::Other("request stats flush wait budget exhausted".to_string())
+}
+
+fn is_request_stats_flush_wait_budget_exhausted(err: &ProxyError) -> bool {
+    matches!(err, ProxyError::Other(message) if message == "request stats flush wait budget exhausted")
 }

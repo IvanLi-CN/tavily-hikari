@@ -103,7 +103,8 @@ impl KeyStore {
         &self,
         since_bucket_start: i64,
     ) -> Result<i64, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.best_effort_flush_request_stats_writes_for_read("count_active_users_since_bucket")
+            .await?;
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(DISTINCT user_id)
                FROM account_usage_rollup_buckets
@@ -121,7 +122,6 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_admin_user_list_stats(&self) -> Result<AdminUserListStats, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let total_users = self.count_total_users().await?;
         let active_users_90d = self
             .count_active_users_since_bucket(self.admin_active_user_day_bucket_start())

@@ -445,7 +445,8 @@ impl KeyStore {
         &self,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.best_effort_flush_request_stats_writes_for_read("summary_windows")
+            .await?;
         let SummaryWindowBounds {
             today_start,
             today_end,
@@ -582,7 +583,8 @@ impl KeyStore {
         visible_buckets: i64,
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.best_effort_flush_request_stats_writes_for_read("dashboard_hourly_request_window")
+            .await?;
         if bucket_seconds <= 0 || visible_buckets <= 0 || retained_buckets <= 0 {
             return Ok(DashboardHourlyRequestWindow {
                 bucket_seconds,

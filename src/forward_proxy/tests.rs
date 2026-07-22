@@ -173,6 +173,7 @@ rule-providers:
             observability_database_path: None,
             _observability_lock: None,
             pool: pool.clone(),
+            read_flush_pool: pool.clone(),
             backend_time: crate::BackendTime::system(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             account_quota_resolution_cache: tokio::sync::RwLock::new(

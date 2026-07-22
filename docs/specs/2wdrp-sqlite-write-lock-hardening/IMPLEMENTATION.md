@@ -184,12 +184,18 @@
   - auth-token `total_requests/last_used_at` deltas,
   - account request-rate (`account_usage_rollup_buckets` five-minute) deltas.
 - Request-derived rollups now flush in one background batcher (`1s / 100 pending keys`) instead of
-  issuing synchronous rollup writes per request. Owner-facing summary, key-metrics, and request-log
-  catalog reads flush that coalescer before reading.
+  issuing synchronous rollup writes per request. Request-log catalog reads still flush that
+  coalescer before reading, while owner-facing summary/rankings/summary-window/active-user reads
+  now go through a bounded best-effort flush path.
 - `flush_request_stats_writes` now retries transient SQLite writer contention inside a bounded `10s`
   application budget before requeueing the drained batch. The retry/exhaustion logs include
   pending-batch counts plus the oldest/newest drained `created_at`, so operators can tell
   whether they are looking at recoverable flush pressure or final fail-closed exhaustion.
+- Read-side request-stats flushes now use a dedicated `read_flush_pool` with a `50ms`
+  SQLite `busy_timeout` and a `250ms` retry budget instead of borrowing the default
+  `5s busy_timeout` / `10s` write-side budget from the main store pool. If transient writer
+  contention persists past that read budget, the handler logs `component=admin_read` and serves
+  already durable stats while requeueing the pending batch.
 - Public `/api/public/metrics` and the first `metrics` event on `/api/public/events` now reuse the
   same freshness-gated read path on top of `dashboard_request_rollup_buckets`. The read path checks
   the last flushed timestamp plus the oldest pending request-stat write and only triggers one
@@ -319,7 +325,11 @@
   `startup_reopen_verified`, and the final `completed=true` contract now means “offline rebuild
   succeeded and a normal startup reopen succeeded,” not just “the offline sidecar tables were
   rebuilt.”
-- Added request-stats coverage proving summary/key-metric reads flush pending coalesced deltas
+- Added request-stats coverage proving summary/key-metric reads flush pending coalesced deltas on
+  the healthy path.
+- Added contention coverage proving `/api/summary`, rankings snapshot, and analysis-pressure
+  snapshot return promptly under a held SQLite writer lock, including the case where a full-budget
+  flush is already inflight, then expose the queued delta after the lock is released.
 
 ## 2026-06-22 evidence
 
@@ -339,6 +349,8 @@
 - `cargo test mcp_tools_call_tavily_search_retries_pending_billing_when_sqlite_writer_lock_releases -- --nocapture`
 - `cargo test ensure_user_token_binding_with_preferred_retries_when_begin_is_locked -- --nocapture`
 - `cargo test public_success_breakdown_waits_for_inflight_flush_before_serving_metrics -- --nocapture`
+- `cargo test request_rollup_public_metrics -- --nocapture`
+- `cargo test request_stats_coalescer_flushes_summary_and_key_metrics_on_read -- --nocapture`
 
 ## Rollout notes
 
@@ -350,7 +362,8 @@
   `operation=request stats persist`,
   `operation=insert_token_log_pending_billing`,
   `operation=apply_pending_billing_log`.
-  before returning.
+- Add `component=admin_read` to the same grep set when owner-facing stats appear stalled. That
+  separates “served durable fallback under contention” from “write-side retry budget exhausted”.
 - Added request-stats coverage proving auth-token activity reads and admin rate-5m usage-series
   reads flush pending coalesced deltas before returning.
 - Added request-log catalog coverage proving catalog reads still self-heal after direct SQL

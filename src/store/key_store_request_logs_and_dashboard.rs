@@ -2572,7 +2572,8 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.best_effort_flush_request_stats_writes_for_read("summary")
+            .await?;
         self.fetch_summary_without_flush().await
     }
 

@@ -648,6 +648,19 @@ impl KeyStore {
         )
         .await?;
         let observability_database_path = attached_database_path(&pool, "observability").await?;
+        let read_flush_pool = instrument_db_operation(
+            "sqlite startup open read flush pool",
+            Some(startup_context.as_str()),
+            open_sqlite_pool_forced_observability_with_busy_timeout(
+                &layout.core_database_path,
+                observability_database_path.as_deref(),
+                true,
+                false,
+                1,
+                SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
+            ),
+        )
+        .await?;
         if let Some(attached_path) = observability_database_path.as_deref()
             && sqlite_paths_match(&layout.core_database_path, attached_path)
             && layout.observability_database_path.as_deref() != Some(attached_path)
@@ -662,6 +675,7 @@ impl KeyStore {
             observability_database_path,
             _observability_lock: Some(observability_lock),
             pool,
+            read_flush_pool,
             backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
@@ -717,6 +731,19 @@ impl KeyStore {
         )
         .await?;
         let observability_database_path = attached_database_path(&pool, "observability").await?;
+        let read_flush_pool = instrument_db_operation(
+            "sqlite request logs gc open read flush pool",
+            Some(gc_context.as_str()),
+            open_sqlite_pool_forced_observability_with_busy_timeout(
+                &layout.core_database_path,
+                observability_database_path.as_deref(),
+                true,
+                false,
+                1,
+                SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
+            ),
+        )
+        .await?;
         if let Some(attached_path) = observability_database_path.as_deref()
             && sqlite_paths_match(&layout.core_database_path, attached_path)
             && layout.observability_database_path.as_deref() != Some(attached_path)
@@ -731,6 +758,7 @@ impl KeyStore {
             observability_database_path,
             _observability_lock: Some(observability_lock),
             pool,
+            read_flush_pool,
             backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),

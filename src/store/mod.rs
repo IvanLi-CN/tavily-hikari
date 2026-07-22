@@ -18,6 +18,8 @@ pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
 }
 
+pub(crate) const SQLITE_BUSY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
+pub(crate) const SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT: Duration = Duration::from_millis(50);
 pub(crate) const SQLITE_SLOW_STATEMENT_THRESHOLD: Duration = Duration::from_millis(250);
 pub(crate) const SQLITE_SLOW_OPERATION_THRESHOLD: Duration = Duration::from_secs(1);
 
@@ -678,21 +680,36 @@ pub(crate) async fn open_sqlite_pool(
     .await
 }
 
+fn sqlite_connect_options(
+    database_path: &str,
+    create_if_missing: bool,
+    read_only: bool,
+    busy_timeout: Duration,
+) -> SqliteConnectOptions {
+    let mut options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(create_if_missing)
+        .read_only(read_only)
+        .busy_timeout(busy_timeout)
+        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
+    if !read_only {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
+    options
+}
+
 pub(crate) async fn open_sqlite_pool_with_observability(
     database_path: &str,
     observability_database_path: Option<&str>,
     create_if_missing: bool,
     read_only: bool,
 ) -> Result<SqlitePool, ProxyError> {
-    let mut options = SqliteConnectOptions::new()
-        .filename(database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    let options = sqlite_connect_options(
+        database_path,
+        create_if_missing,
+        read_only,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    );
 
     let attach_context =
         sqlite_runtime_log_context(database_path, "runtime", read_only, create_if_missing);
@@ -757,15 +774,12 @@ async fn resolve_observability_attach_plan(
         });
     };
 
-    let mut options = SqliteConnectOptions::new()
-        .filename(core_database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    let options = sqlite_connect_options(
+        core_database_path,
+        create_if_missing,
+        read_only,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    );
 
     let probe_context = sqlite_runtime_log_context(
         core_database_path,
@@ -818,15 +832,31 @@ pub(crate) async fn open_sqlite_pool_forced_observability(
     read_only: bool,
     max_connections: u32,
 ) -> Result<SqlitePool, ProxyError> {
-    let mut options = SqliteConnectOptions::new()
-        .filename(core_database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    open_sqlite_pool_forced_observability_with_busy_timeout(
+        core_database_path,
+        observability_database_path,
+        create_if_missing,
+        read_only,
+        max_connections,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    )
+    .await
+}
+
+pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
+    core_database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+    max_connections: u32,
+    busy_timeout: Duration,
+) -> Result<SqlitePool, ProxyError> {
+    let options = sqlite_connect_options(
+        core_database_path,
+        create_if_missing,
+        read_only,
+        busy_timeout,
+    );
 
     let mut pool_options = SqlitePoolOptions::new()
         .min_connections(1)
@@ -2779,18 +2809,11 @@ impl RequestStatsCoalescer {
         signature
     }
 
-    pub(crate) async fn wait_until_flushed(&self) {
+    pub(crate) async fn wait_until_not_flushing(&self) {
         loop {
             let notified = {
                 let state = self.state.lock().await;
-                if !state.flushing
-                    && state.pending_dashboard_rollups.is_empty()
-                    && state.pending_api_key_usage.is_empty()
-                    && state.pending_auth_token_activity.is_empty()
-                    && state.pending_account_request_rollups.is_empty()
-                    && state.pending_request_log_catalog.is_empty()
-                    && !state.shutdown
-                {
+                if !state.flushing {
                     return;
                 }
                 self.flushed.clone().notified_owned()
@@ -2833,6 +2856,7 @@ pub(crate) struct KeyStore {
     pub(crate) observability_database_path: Option<String>,
     pub(crate) _observability_lock: Option<File>,
     pub(crate) pool: SqlitePool,
+    pub(crate) read_flush_pool: SqlitePool,
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:

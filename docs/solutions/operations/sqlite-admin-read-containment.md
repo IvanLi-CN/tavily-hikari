@@ -12,6 +12,7 @@ status: active
 related_specs:
   - docs/specs/ev4td-admin-recent-requests-performance-copy/SPEC.md
   - docs/specs/66t8u-admin-dashboard-overview-performance/SPEC.md
+  - docs/specs/2wdrp-sqlite-write-lock-hardening/SPEC.md
   - docs/specs/urk9j-admin-token-bulk-filters/SPEC.md
 ---
 
@@ -74,6 +75,11 @@ reads:
   day/month anchors, forward-proxy counts, retention window anchor, latest visible request-log id,
   exhausted-key ids, disabled-token coverage, recent-job signatures, recent-alert aggregates, and
   the current hour anchor.
+- For admin summary/rankings/analysis-pressure reads that only need request-stat rollups, split the
+  read path from the full write-side retry budget. Use a dedicated short-busy-timeout flush
+  connection or pool, cap synchronous flush attempts to a sub-second read budget, and fall back to
+  already durable rollups if contention persists. Requeueing the drained batch is better than
+  making first paint wait behind a multi-second writer retry loop.
 - When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
   “rebuild payload”. The probe path should use non-flushing summary / rollup reads plus a pending
   coalescer signature, while the actual shared-snapshot rebuild may flush once. Reusing the rebuild
@@ -161,6 +167,14 @@ reads:
   `HTTP 000 TOTAL 19.999741`, while the real `/admin/dashboard` shell still rendered and multiple
   tiles stayed stuck on `正在加载仪表盘数据…`. That combination is the signal that the dashboard
   shared-snapshot path itself has become the bottleneck, not the shell or auth path.
+- On 2026-07-22 the same production family regressed on another owner-facing surface:
+  `/admin/analysis/rankings?tab=last24h` rendered the shell but stayed on `等待首帧快照`, while
+  in-container `curl -m 5` to `/api/users/rankings`, `/api/summary`, `/api/summary/windows`, and
+  `/api/analysis/pressure` all timed out with `0 bytes` even though
+  `/api/stats/forward-proxy/summary` stayed fast. Logs around `2026-07-22 17:39` showed
+  `database is locked`, `request_logs gc bootstrap schema` taking about `33s`, and slow
+  `observability.request_logs` updates, which identified read-before-flush contention rather than
+  a broken page shell.
 
 ## Guardrails / Reuse Notes
 
