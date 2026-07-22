@@ -1387,6 +1387,7 @@
 
   .upstream-privacy-gates,
   .upstream-privacy-adjustments,
+  .upstream-privacy-activity-grid,
   .upstream-privacy-header-groups {
     display: grid;
     gap: 0.75rem;
@@ -1394,6 +1395,7 @@
 
   .upstream-privacy-gate,
   .upstream-privacy-adjustment,
+  .upstream-privacy-activity-card,
   .upstream-privacy-header-list,
   .upstream-privacy-stat {
     display: grid;
@@ -1405,12 +1407,57 @@
   }
 
   .upstream-privacy-gate__head,
-  .upstream-privacy-adjustment__head {
+  .upstream-privacy-adjustment__head,
+  .upstream-privacy-activity-card__head,
+  .upstream-privacy-activity-row__meta {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
+  }
+
+  .upstream-privacy-activity-card__head > span {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .upstream-privacy-activity-bars {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .upstream-privacy-activity-row {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .upstream-privacy-activity-row__meta code {
+    padding: 0.16rem 0.42rem;
+    border-radius: 0.52rem;
+    background: hsl(var(--muted) / 0.7);
+    color: hsl(var(--foreground));
+    font-size: 0.75rem;
+  }
+
+  .upstream-privacy-activity-row__meta strong {
+    font-size: 0.85rem;
+  }
+
+  .upstream-privacy-activity-row__track {
+    height: 0.55rem;
+    overflow: hidden;
+    border-radius: 999px;
+    background: hsl(var(--muted) / 0.62);
+  }
+
+  .upstream-privacy-activity-row__track > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background:
+      linear-gradient(90deg, hsl(var(--primary) / 0.82), hsl(var(--accent) / 0.72));
   }
 
   .upstream-privacy-pill-list {
@@ -1530,6 +1577,11 @@
     .upstream-privacy-overview__side {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       align-content: start;
+    }
+
+    .upstream-privacy-activity-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
     }
   }
 

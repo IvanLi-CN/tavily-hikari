@@ -37,6 +37,11 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(markup).toContain('最近对账运行')
     expect(markup).toContain('最近 shadow 调整')
     expect(markup).toContain('最近入队失败')
+    expect(markup).toContain('重试原因分布')
+    expect(markup).toContain('429 上游限流')
+    expect(markup).toContain('本地 usage 限流')
+    expect(markup).toContain('当前时段 Key 活动')
+    expect(markup).toContain('待查询 Project ID 数')
   })
 
   it('renders the gallery story with the state matrix and error fallback', () => {
@@ -47,6 +52,8 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(markup).toContain('Pending')
     expect(markup).toContain('Compare')
     expect(markup).toContain('Degraded')
+    expect(markup).toContain('其余 2 个 Key')
+    expect(markup).toContain('其余 3 个 Key')
     expect(markup).toContain(translations.zh.admin.systemSettings.privacy.loadFailed)
   })
 })

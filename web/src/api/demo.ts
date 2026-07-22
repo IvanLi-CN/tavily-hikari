@@ -1040,6 +1040,20 @@ function createDemoUpstreamPrivacyStatus() {
     lastReconciliationRunAt: 1_783_958_250,
     lastShadowAdjustmentAt: 1_783_958_100,
     lastReconciliationEnqueueErrorAt: 1_783_957_900,
+    retryBuckets: {
+      upstream429: 1,
+      localUsageRateLimit: 1,
+      other: 0,
+    },
+    currentPeriodBoundUsersByKey: [
+      { keyIdHint: 'key-primary', count: 12 },
+      { keyIdHint: 'key-backup', count: 5 },
+    ],
+    currentPeriodPendingProjectIdsByKey: [
+      { keyIdHint: 'key-primary', count: 28 },
+      { keyIdHint: 'key-backup', count: 9 },
+      { keyIdHint: 'key-cold', count: 3 },
+    ],
     recentAdjustments: [
       {
         settlementKey: 'v1:tok_demo:2026-07-14/S1',

@@ -6472,6 +6472,22 @@ function SystemSettingsStatusPageCanvas(): JSX.Element {
           lastReconciliationRunAt: 1_783_958_250,
           lastShadowAdjustmentAt: 1_783_958_100,
           lastReconciliationEnqueueErrorAt: 1_783_957_900,
+          retryBuckets: {
+            upstream429: 4,
+            localUsageRateLimit: 2,
+            other: 1,
+          },
+          currentPeriodBoundUsersByKey: [
+            { keyIdHint: 'key-primary', count: 19 },
+            { keyIdHint: 'key-backup', count: 8 },
+            { keyIdHint: 'key-eu-west', count: 4 },
+          ],
+          currentPeriodPendingProjectIdsByKey: [
+            { keyIdHint: 'key-primary', count: 48 },
+            { keyIdHint: 'key-backup', count: 17 },
+            { keyIdHint: 'key-eu-west', count: 7 },
+            { keyIdHint: 'key-cold', count: 3 },
+          ],
           recentAdjustments: [
             {
               settlementKey: 'v1:tok_demo:2026-07-14/S1',

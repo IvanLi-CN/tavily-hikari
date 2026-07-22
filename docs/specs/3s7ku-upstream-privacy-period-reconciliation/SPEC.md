@@ -105,6 +105,8 @@
 - 状态 API 区分 `configured / compare / pending / active / degraded`；其中 `compare` 表示 shadow 已产数但 precise 尚未切换。
 - 页面展示 Header policy、UA 实际值、Project ID 模式、API/MCP Rebalance 与 `upstream_mcp` session 门禁、下一 epoch、当前 period、
   Research 等待、usage 队列、最近 adjustment、degraded 原因与活跃异常 session 数。
+- 页面展示 reconciliation 的 `rate_limited` 原因分布，必须区分上游 429、本地 usage 限流与其他重试；复杂原因留在日志与系统状态页，不进入用户列表每行。
+- 页面展示当前时段按上游 Key 聚合的活动图：绑定用户数与待查询 Project ID 数默认显示 Top 12，并用一行汇总剩余 Key。
 - 系统设置页在“启用 Rebalance MCP”行只在活跃异常 session 数量大于 0 时显示 warning 图标，并跳转到隐藏管理页。
 - 系统状态页始终显示“活跃 `upstream_mcp` session”统计卡；数量大于 0 时使用 warning 语义，数量为 0 时使用 neutral/success 语义。
 
@@ -135,6 +137,8 @@
 - Given 多 Key、Research 等待、Retry-After、重启或 HA 接管，When 窗口结算，Then 最终只产生一条幂等 signed adjustment。
 - Given 退款或补扣，When 查询账户或未绑定 Token 的相关额度，Then 原业务窗口统计立即反映差额，S3 不增加次日额度。
 - Given 状态 API 与页面，When secret、官方 key 或 token 存在，Then 任何响应与 UI 都不显示完整敏感值。
+- Given reconciliation backlog 中存在 `rate_limited` 窗口，When 管理员查看系统状态页，Then 能区分上游 429、本地 usage 限流与其他重试，并能看到当前时段每个上游 Key 的绑定用户数与待查询 Project ID 数分布。
+- Given 同一上游 Key 的多个窗口同时到期且首次 `/usage` 查询收到 429 或本地 usage 限流，When reconciliation worker 执行，Then 该 Key 的到期窗口整体进入同一退避时间，本轮不再反复打同一个 Key，其他 Key 的候选仍可继续结算。
 - Given 管理员进入隐藏 session 管理页，When 使用状态/时间筛选并执行单条、批量或按筛选释放，Then 只有命中的活跃 `upstream_mcp` session 会被释放，已过期或已释放记录不会重复处理。
 
 ## 验收清单（Acceptance checklist）
@@ -149,7 +153,7 @@
 ### Testing
 
 - Rust unit/integration: Header 白名单、派生稳定性、边界、eligibility、限速、Research、幂等与额度整合。
-- Rust unit/integration: compare-only `/api/users` confirmed/unavailable 三态、status 诊断时间戳、`upstream_reconciliation` enqueue reuse fast-path。
+- Rust unit/integration: compare-only `/api/users` confirmed/unavailable 三态、status 诊断时间戳、retry bucket / 当前时段 Key 活动字段、`upstream_reconciliation` enqueue reuse fast-path 与 key-scoped backoff。
 - Web: route、settings、status states、Storybook interaction。
 - Full: `cargo test`、`cargo clippy -- -D warnings`、`bun test`、`bun run build`、`bun run build-storybook`。
 
@@ -205,6 +209,18 @@
 - verifies: `/admin/system-settings/status` exposes the new runtime summary timestamps for the latest reconciliation run, latest shadow adjustment, and latest enqueue failure while preserving the existing phase / queue summaries.
 
   ![System status reconciliation diagnostics](./assets/admin-system-status-reconciliation-diagnostics.png)
+
+- PR: include
+- desktop system status key activity charts
+- verifies: `/admin/system-settings/status` now adds the current-period per-upstream-key activity charts and rate-limited retry breakdown, so operators can see which keys bind more users and which keys still have the largest pending Project ID queues.
+
+  ![System status key activity desktop](./assets/admin-system-status-key-activity-desktop.png)
+
+- PR: include
+- mobile system status key activity charts
+- verifies: the same diagnostic charts remain readable on narrow screens without collapsing the key labels or the retry breakdown.
+
+  ![System status key activity mobile](./assets/admin-system-status-key-activity-mobile.png)
 
 ### Supporting evidence
 
