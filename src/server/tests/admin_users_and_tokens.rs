@@ -3664,7 +3664,10 @@ use super::upstream_support_and_manual_jobs::*;
             rankings_json
                 .get("generatedAt")
                 .and_then(|value| value.as_i64()),
-            Some(0)
+            rankings_json
+                .get("generatedAt")
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value > 0)
         );
         assert_eq!(
             rankings_json
@@ -3677,8 +3680,10 @@ use super::upstream_support_and_manual_jobs::*;
             rankings_json
                 .pointer("/last24h/uniqueIpTop")
                 .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(0)
+                .and_then(|value| value.first())
+                .and_then(|value| value.get("value"))
+                .and_then(|value| value.as_i64()),
+            Some(1)
         );
 
         let mut events_resp = client
@@ -3704,14 +3709,19 @@ use super::upstream_support_and_manual_jobs::*;
             snapshot_json
                 .get("generatedAt")
                 .and_then(|value| value.as_i64()),
-            Some(0)
+            snapshot_json
+                .get("generatedAt")
+                .and_then(|value| value.as_i64())
+                .filter(|value| *value > 0)
         );
         assert_eq!(
             snapshot_json
                 .pointer("/last24h/uniqueIpTop")
                 .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(0)
+                .and_then(|value| value.first())
+                .and_then(|value| value.get("value"))
+                .and_then(|value| value.as_i64()),
+            Some(1)
         );
 
         sqlx::query("ROLLBACK")

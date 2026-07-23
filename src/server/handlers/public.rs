@@ -1202,8 +1202,8 @@ async fn build_dashboard_overview_payload(
         cache.build_count = cache.build_count.saturating_add(1);
     }
 
-    let summary = state.proxy.summary().await?;
     let summary_windows = state.proxy.summary_windows().await?;
+    let summary = state.proxy.summary_without_flush().await?;
     let hourly_request_window = state.proxy.dashboard_hourly_request_window().await?;
     let month_series = state.proxy.dashboard_month_series(&summary_windows).await?;
     let dashboard_rollup_signature = state
@@ -1858,7 +1858,7 @@ async fn load_dashboard_overview_snapshot(
         if let Ok(snapshot) = result.as_ref() {
             cache.cached = Some(CachedDashboardOverviewSnapshot {
                 snapshot: snapshot.clone(),
-                freshness: snapshot.freshness.clone(),
+                freshness: freshness.clone(),
             });
             tavily_hikari::emit_low_memory_protection_decision(
                 "admin_read",
