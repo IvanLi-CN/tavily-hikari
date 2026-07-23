@@ -121,10 +121,8 @@ impl KeyStore {
             return Ok(true);
         }
         let ready_after = self
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1)
-            .await?
-            .filter(|value| *value > 0)
-            .unwrap_or_else(|| business_period_for_timestamp(now).ends_at);
+            .load_or_initialize_upstream_reconciliation_ready_after(now)
+            .await?;
         Ok(now < ready_after)
     }
 
@@ -231,6 +229,23 @@ impl KeyStore {
         }
         tx.commit().await?;
         Ok(Some(period))
+    }
+
+    async fn load_or_initialize_upstream_reconciliation_ready_after(
+        &self,
+        now: i64,
+    ) -> Result<i64, ProxyError> {
+        if let Some(ready_after) = self
+            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1)
+            .await?
+            .filter(|value| *value > 0)
+        {
+            return Ok(ready_after);
+        }
+        let ready_after = business_period_for_timestamp(now).ends_at;
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1, ready_after)
+            .await?;
+        Ok(ready_after)
     }
 
     pub(crate) async fn mark_upstream_reconciliation_research_terminal(
