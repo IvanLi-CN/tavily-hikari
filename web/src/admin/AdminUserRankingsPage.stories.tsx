@@ -97,6 +97,17 @@ export const ErrorState: Story = {
   render: (args) => <InteractiveRender {...args} />,
 }
 
+export const StaleSnapshot: Story = {
+  args: {
+    snapshot: {
+      ...rankingsStorySnapshot,
+      stale: true,
+    },
+    connectionState: 'degraded',
+  },
+  render: (args) => <InteractiveRender {...args} />,
+}
+
 export const ConnectingState: Story = {
   args: {
     connectionState: 'connecting',

@@ -169,7 +169,9 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn user_rankings_snapshot(&self) -> Result<UserRankingsSnapshot, ProxyError> {
+    async fn user_rankings_snapshot_internal(
+        &self,
+    ) -> Result<(UserRankingsSnapshot, RequestStatsReadFreshness), ProxyError> {
         const USER_RANKINGS_CACHE_TTL: Duration = Duration::from_secs(10);
         const USER_RANKINGS_REFRESH_INTERVAL_SECS: i64 = 10;
 
@@ -182,8 +184,17 @@ impl TavilyProxy {
                         .instant_now()
                         .saturating_duration_since(cached.generated_at)
                         < USER_RANKINGS_CACHE_TTL
+                    && !self
+                        .key_store
+                        .request_stats_coalescer
+                        .try_has_pending_or_flushing_work()
+                    && self
+                        .key_store
+                        .request_stats_coalescer
+                        .try_request_stats_version()
+                        == Some(cached.request_stats_version)
                 {
-                    return Ok(cached.value.clone());
+                    return Ok((cached.value.clone(), RequestStatsReadFreshness::Fresh));
                 }
                 if cache.loading {
                     Some(cache.notify.clone().notified_owned())
@@ -200,22 +211,98 @@ impl TavilyProxy {
 
             let mut load_guard = UserRankingsLoadGuard::new(self.user_rankings_cache.clone());
             let generated_at = self.backend_time.now_ts();
+            let request_stats_version = self
+                .key_store
+                .request_stats_coalescer
+                .try_request_stats_version();
             let snapshot = self
                 .key_store
-                .fetch_user_rankings_snapshot(generated_at, USER_RANKINGS_REFRESH_INTERVAL_SECS)
+                .fetch_user_rankings_snapshot_with_freshness(
+                    generated_at,
+                    USER_RANKINGS_REFRESH_INTERVAL_SECS,
+                )
                 .await;
             let mut cache = self.user_rankings_cache.lock().await;
             cache.loading = false;
-            if let Ok(value) = snapshot.as_ref() {
-                cache.cached = Some(CachedUserRankingsSnapshot {
-                    generated_at: self.backend_time.instant_now(),
-                    value: value.clone(),
-                });
-            }
+            let result = match snapshot {
+                Ok((value, RequestStatsReadFreshness::Fresh)) => {
+                    if let Some(request_stats_version) = request_stats_version {
+                        cache.cached = Some(CachedUserRankingsSnapshot {
+                            generated_at: self.backend_time.instant_now(),
+                            request_stats_version,
+                            value: value.clone(),
+                        });
+                    }
+                    Ok((value, RequestStatsReadFreshness::Fresh))
+                }
+                Ok((value, RequestStatsReadFreshness::DurableFallback)) => {
+                    Ok((value, RequestStatsReadFreshness::DurableFallback))
+                }
+                Err(err) => Err(err),
+            };
             cache.notify.notify_waiters();
             load_guard.disarm();
-            return snapshot;
+            return result;
         }
+    }
+
+    pub async fn user_rankings_snapshot_with_stale_flag(
+        &self,
+    ) -> Result<(UserRankingsSnapshot, bool), ProxyError> {
+        self.user_rankings_snapshot_internal()
+            .await
+            .map(|(snapshot, freshness)| {
+                (
+                    snapshot,
+                    matches!(freshness, RequestStatsReadFreshness::DurableFallback),
+                )
+            })
+    }
+
+    pub async fn user_rankings_snapshot(&self) -> Result<UserRankingsSnapshot, ProxyError> {
+        self.user_rankings_snapshot_with_stale_flag()
+            .await
+            .map(|(snapshot, _stale)| snapshot)
+    }
+
+    #[doc(hidden)]
+    pub async fn enqueue_user_rankings_rollup_for_test(
+        &self,
+        user_id: &str,
+        created_at: i64,
+        result_status: &str,
+    ) {
+        let mut state = self.key_store.request_stats_coalescer.state.lock().await;
+        let entry = state
+            .pending_account_request_rollups
+            .entry(AccountRequestRollupKey {
+                user_id: user_id.to_string(),
+                five_minute_bucket_start: created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES),
+                day_bucket_start: local_day_bucket_start_utc_ts(created_at),
+            })
+            .or_default();
+        entry.request_count += 1;
+        if result_status == OUTCOME_SUCCESS {
+            entry.primary_success += 1;
+        }
+        RequestStatsCoalescer::bump_request_stats_version(&mut state);
+        state.oldest_pending_created_at = Some(
+            state
+                .oldest_pending_created_at
+                .map(|current| current.min(created_at))
+                .unwrap_or(created_at),
+        );
+        state.newest_pending_created_at = Some(
+            state
+                .newest_pending_created_at
+                .map(|current| current.max(created_at))
+                .unwrap_or(created_at),
+        );
+        if RequestStatsCoalescer::pending_key_count(&state) > 0 && state.flush_deadline.is_none() {
+            state.flush_deadline = Some(Instant::now() + RequestStatsCoalescer::FLUSH_INTERVAL);
+        }
+        drop(state);
+        self.key_store.request_stats_coalescer.wake.notify_one();
     }
 
     pub async fn analysis_pressure_snapshot(&self) -> Result<AnalysisPressureSnapshot, ProxyError> {
@@ -368,7 +455,7 @@ impl TavilyProxy {
                     .collect::<Vec<_>>(),
             )
             .await?;
-        let all_user_stats = self.get_admin_user_list_stats().await?;
+        let total_users = self.key_store.count_total_users().await?;
         let rows = active_rows
             .into_iter()
             .map(|row| {
@@ -387,7 +474,7 @@ impl TavilyProxy {
         let mut row_pressures = rows.iter().map(|row| row.pressure).collect::<Vec<_>>();
         row_pressures.sort_unstable();
         let active_users = rows.len() as i64;
-        let zero_pressure_users = all_user_stats.total_users.saturating_sub(active_users);
+        let zero_pressure_users = total_users.saturating_sub(active_users);
         let current_pressure = rows.iter().map(|row| row.pressure).sum::<i64>();
 
         let server_7d_warmup_hours = SERVER_7D_MA_WINDOWS
@@ -1070,6 +1157,118 @@ impl TavilyProxy {
         Ok(windows)
     }
 
+    #[doc(hidden)]
+    pub async fn dashboard_overview_read_components_at(
+        &self,
+        now: chrono::DateTime<Local>,
+    ) -> Result<
+        (
+            SummaryWindows,
+            ProxySummary,
+            DashboardHourlyRequestWindow,
+            [i64; 19],
+            [i64; 10],
+        ),
+        ProxyError,
+    > {
+        const DASHBOARD_HOURLY_BUCKET_SECS: i64 = 5 * SECS_PER_MINUTE;
+        const DASHBOARD_HOURLY_VISIBLE_BUCKETS: i64 = 73;
+        const DASHBOARD_HOURLY_RETAINED_BUCKETS: i64 = 589;
+
+        let today_start = start_of_local_day_utc_ts(now);
+        let yesterday_start = previous_local_day_start_utc_ts(now);
+        let month_start = start_of_local_month_utc_ts(now);
+        let month_period_end = crate::shift_local_month_start_utc_ts(month_start, 1);
+        let previous_month_start = previous_local_month_start_utc_ts(now);
+        let month_quota_charge_start = start_of_month(now.with_timezone(&Utc)).timestamp();
+        let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
+        let today_period_end = next_local_day_start_utc_ts(today_start);
+        let today_elapsed = today_end.saturating_sub(today_start);
+        let yesterday_end = yesterday_start.saturating_add(today_elapsed);
+        let bounds = SummaryWindowBounds {
+            today_start,
+            today_end,
+            today_period_end,
+            yesterday_start,
+            yesterday_end,
+            month_start,
+            month_quota_charge_start,
+            month_period_end,
+            previous_month_start,
+            previous_month_end: month_start,
+        };
+        let now_ts = today_end.saturating_sub(1);
+        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
+        let hot_stale_before = now_ts.saturating_sub(15 * 60);
+        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
+        let stale_key_count = self
+            .dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
+            .await?;
+        let local_bucket_start =
+            now.timestamp() - now.timestamp().rem_euclid(DASHBOARD_HOURLY_BUCKET_SECS);
+        let (
+            mut summary_windows,
+            summary,
+            hourly_request_window,
+            dashboard_rollup_signature,
+            pending_dashboard_rollup_signature,
+        ) = self
+            .key_store
+            .fetch_dashboard_overview_consistent_read(
+                bounds,
+                local_bucket_start,
+                DASHBOARD_HOURLY_BUCKET_SECS,
+                DASHBOARD_HOURLY_VISIBLE_BUCKETS,
+                DASHBOARD_HOURLY_RETAINED_BUCKETS,
+            )
+            .await?;
+        let quota_charge = self
+            .dashboard_quota_charge_snapshot(bounds, stale_key_count)
+            .await?;
+        summary_windows.today.quota_charge.upstream_actual_credits =
+            quota_charge.today.upstream_actual_credits;
+        summary_windows.today.quota_charge.sampled_key_count = quota_charge.today.sampled_key_count;
+        summary_windows.today.quota_charge.stale_key_count = quota_charge.today.stale_key_count;
+        summary_windows.today.quota_charge.latest_sync_at = quota_charge.today.latest_sync_at;
+        summary_windows.yesterday.quota_charge.upstream_actual_credits =
+            quota_charge.yesterday.upstream_actual_credits;
+        summary_windows.yesterday.quota_charge.sampled_key_count =
+            quota_charge.yesterday.sampled_key_count;
+        summary_windows.yesterday.quota_charge.stale_key_count =
+            quota_charge.yesterday.stale_key_count;
+        summary_windows.yesterday.quota_charge.latest_sync_at =
+            quota_charge.yesterday.latest_sync_at;
+        summary_windows.month.quota_charge.upstream_actual_credits =
+            quota_charge.month.upstream_actual_credits;
+        summary_windows.month.quota_charge.sampled_key_count = quota_charge.month.sampled_key_count;
+        summary_windows.month.quota_charge.stale_key_count = quota_charge.month.stale_key_count;
+        summary_windows.month.quota_charge.latest_sync_at = quota_charge.month.latest_sync_at;
+        Ok((
+            summary_windows,
+            summary,
+            hourly_request_window,
+            dashboard_rollup_signature,
+            pending_dashboard_rollup_signature,
+        ))
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn install_dashboard_overview_read_pause_for_test(
+        &self,
+    ) -> crate::store::RequestStatsPostFlushPause {
+        self.key_store.install_dashboard_overview_read_pause().await
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn wait_until_request_stats_flush_finishes_for_test(&self) {
+        self.key_store
+            .request_stats_coalescer
+            .wait_until_not_flushing()
+            .await;
+    }
+
     pub async fn dashboard_month_series(
         &self,
         summary_windows: &SummaryWindows,
@@ -1106,6 +1305,48 @@ impl TavilyProxy {
             .request_stats_coalescer
             .pending_dashboard_freshness_signature()
             .await
+    }
+
+    #[doc(hidden)]
+    pub async fn debug_enqueue_request_stats_rollup_for_test(
+        &self,
+        api_key_id: Option<&str>,
+        created_at: i64,
+        outcome: &str,
+    ) {
+        let mut counts = DashboardRequestRollupCounts {
+            total_requests: 1,
+            api_billable: 1,
+            ..DashboardRequestRollupCounts::default()
+        };
+        match outcome {
+            OUTCOME_SUCCESS => {
+                counts.success_count = 1;
+                counts.valuable_success_count = 1;
+            }
+            OUTCOME_ERROR => {
+                counts.error_count = 1;
+                counts.valuable_failure_count = 1;
+            }
+            OUTCOME_QUOTA_EXHAUSTED => {
+                counts.quota_exhausted_count = 1;
+                counts.valuable_failure_count = 1;
+            }
+            _ => {
+                counts.unknown_count = 1;
+            }
+        }
+        self.key_store
+            .request_stats_coalescer
+            .enqueue_request_log_rollups(
+                api_key_id,
+                "test-auth-token",
+                None,
+                created_at,
+                counts,
+                None,
+            )
+            .await;
     }
 
     #[doc(hidden)]

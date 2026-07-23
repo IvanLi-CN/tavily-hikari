@@ -164,6 +164,8 @@
         "tests::request_rollup::observability_",
         "tests::maintenance_and_mcp_affinity::mcp_",
         "tests::request_rollup::public_",
+        "tests::request_rollup_public_metrics::admin_",
+        "tests::request_rollup_public_metrics::analysis_",
         "tests::request_rollup_public_metrics::public_",
         "tests::jobs_and_request_log_retention::quota_",
         "tests::request_rollup::quota_",

@@ -188,8 +188,8 @@ impl KeyStore {
         })
     }
 
-    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
-        &self,
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
         let row = sqlx::query(
@@ -219,7 +219,7 @@ impl KeyStore {
             "#,
         )
         .bind(range_start)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?;
         Ok([
             row.try_get("bucket_count")?,
@@ -242,6 +242,18 @@ impl KeyStore {
             row.try_get("api_billable_sum")?,
             row.try_get("local_estimated_credits_sum")?,
         ])
+    }
+
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let signature =
+            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start)
+                .await?;
+        tx.commit().await?;
+        Ok(signature)
     }
 
     pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
@@ -441,11 +453,10 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
-    pub(crate) async fn fetch_summary_windows(
-        &self,
+    async fn fetch_summary_windows_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let SummaryWindowBounds {
             today_start,
             today_end,
@@ -458,30 +469,29 @@ impl KeyStore {
             previous_month_start,
             previous_month_end,
         } = bounds;
-        let mut tx = self.pool.begin().await?;
         let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut tx,
+            &mut *tx,
             SECS_PER_MINUTE,
             today_start,
             Some(today_end),
         )
         .await?;
         let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut tx,
+            &mut *tx,
             SECS_PER_MINUTE,
             yesterday_start,
             Some(yesterday_end),
         )
         .await?;
         let month_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut tx,
+            &mut *tx,
             month_start,
             today_start,
             today_end,
         )
         .await?;
         let month_charge_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut tx,
+            &mut *tx,
             month_quota_charge_start,
             today_start,
             today_end,
@@ -513,7 +523,7 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(yesterday_start.min(month_start))
         .bind(today_end)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
 
         let month_lifecycle_row = sqlx::query(
@@ -533,10 +543,8 @@ impl KeyStore {
         )
         .bind(month_start)
         .bind(month_start)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-
-        tx.commit().await?;
 
         Ok(SummaryWindows {
             today: SummaryWindowMetrics {
@@ -575,14 +583,25 @@ impl KeyStore {
         })
     }
 
-    pub(crate) async fn fetch_dashboard_hourly_request_window(
+    pub(crate) async fn fetch_summary_windows(
         &self,
+        bounds: SummaryWindowBounds,
+    ) -> Result<SummaryWindows, ProxyError> {
+        self.best_effort_flush_request_stats_writes_for_read("summary_windows")
+            .await?;
+        let mut tx = self.pool.begin().await?;
+        let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
+        tx.commit().await?;
+        Ok(windows)
+    }
+
+    async fn fetch_dashboard_hourly_request_window_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         current_bucket_start: i64,
         bucket_seconds: i64,
         visible_buckets: i64,
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        self.flush_request_stats_writes().await?;
         if bucket_seconds <= 0 || visible_buckets <= 0 || retained_buckets <= 0 {
             return Ok(DashboardHourlyRequestWindow {
                 bucket_seconds,
@@ -661,7 +680,7 @@ impl KeyStore {
         .bind(SECS_PER_MINUTE)
         .bind(series_start)
         .bind(series_end_exclusive)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await?;
 
         let buckets = rows
@@ -689,6 +708,79 @@ impl KeyStore {
             retained_buckets,
             buckets,
         })
+    }
+
+    pub(crate) async fn fetch_dashboard_hourly_request_window(
+        &self,
+        current_bucket_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        self.best_effort_flush_request_stats_writes_for_read("dashboard_hourly_request_window")
+            .await?;
+        let mut tx = self.pool.begin().await?;
+        let window = Self::fetch_dashboard_hourly_request_window_tx(
+            &mut tx,
+            current_bucket_start,
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(window)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn fetch_dashboard_overview_consistent_read(
+        &self,
+        bounds: SummaryWindowBounds,
+        current_bucket_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<
+        (
+            SummaryWindows,
+            ProxySummary,
+            DashboardHourlyRequestWindow,
+            [i64; 19],
+            [i64; 10],
+        ),
+        ProxyError,
+    > {
+        self.best_effort_flush_request_stats_writes_for_read("dashboard_overview_snapshot")
+            .await?;
+        let pending_dashboard_rollup_signature =
+            self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
+        let mut tx = self.pool.begin().await?;
+        let summary_windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
+        #[cfg(debug_assertions)]
+        self.wait_for_dashboard_overview_read_pause_if_installed().await;
+        let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
+        let dashboard_rollup_signature =
+            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(
+                &mut tx,
+                summary_windows.previous_month_start,
+            )
+            .await?;
+        let hourly_request_window = Self::fetch_dashboard_hourly_request_window_tx(
+            &mut tx,
+            current_bucket_start,
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((
+            summary_windows,
+            summary,
+            hourly_request_window,
+            dashboard_rollup_signature,
+            pending_dashboard_rollup_signature,
+        ))
     }
 
     #[cfg(test)]

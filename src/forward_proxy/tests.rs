@@ -173,6 +173,7 @@ rule-providers:
             observability_database_path: None,
             _observability_lock: None,
             pool: pool.clone(),
+            read_flush_pool: pool.clone(),
             backend_time: crate::BackendTime::system(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             account_quota_resolution_cache: tokio::sync::RwLock::new(
@@ -187,6 +188,8 @@ rule-providers:
             admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            #[cfg(test)]
+            dashboard_overview_read_pause: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             ),

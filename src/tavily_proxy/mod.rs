@@ -218,6 +218,7 @@ struct CachedDashboardHourlyRequestWindow {
 #[derive(Clone, Debug)]
 struct CachedUserRankingsSnapshot {
     generated_at: Instant,
+    request_stats_version: u64,
     value: UserRankingsSnapshot,
 }
 

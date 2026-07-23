@@ -70,6 +70,277 @@ async fn compute_signatures_reuses_dashboard_boundary_contract() {
 }
 
 #[tokio::test]
+async fn dashboard_overview_snapshot_caches_rebuilt_freshness_after_emitted_snapshot() {
+    let db_path = temp_db_path("dashboard-overview-cache-key-freshness");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-cache-key-freshness".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    let initial = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("initial overview snapshot");
+    reset_dashboard_overview_build_count(&state).await;
+
+    let created_at = Utc::now().timestamp();
+    state
+        .proxy
+        .debug_enqueue_dashboard_credit_rollups(created_at, 7)
+        .await;
+
+    let (probe_sig, _) = compute_signatures(&state)
+        .await
+        .expect("compute signatures after pending rollup");
+    let probe_sig = probe_sig.expect("summary signature after pending rollup");
+    assert_ne!(
+        probe_sig.freshness.pending_dashboard_rollup_signature,
+        initial.freshness.pending_dashboard_rollup_signature,
+        "cheap freshness should notice pending rollup work before the shared snapshot is rebuilt",
+    );
+
+    let (_event, emitted_sig) = build_snapshot_event(&state)
+        .await
+        .expect("snapshot event after pending rollup");
+
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let cache = cache_handle.lock().await;
+    let cached = cache.cached.as_ref().expect("cached overview snapshot");
+    assert_eq!(
+        cached.freshness, emitted_sig.freshness,
+        "shared overview cache should advance to the rebuilt freshness emitted to SSE clients"
+    );
+    assert_eq!(
+        cached.snapshot.freshness, emitted_sig.freshness,
+        "cached snapshot payload should keep the rebuilt freshness emitted to SSE clients"
+    );
+    assert_eq!(
+        cached.freshness, cached.snapshot.freshness,
+        "cache key freshness should stay aligned with the rebuilt snapshot freshness after pending rollups flush"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_overview_snapshot_keeps_summary_totals_in_sync_with_flushed_windows() {
+    let db_path = temp_db_path("dashboard-overview-summary-sync");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-summary-sync".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    proxy
+        .debug_enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(60),
+            "success",
+        )
+        .await;
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    let snapshot = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("overview snapshot after pending rollup");
+
+    assert_eq!(
+        snapshot.payload.summary.total_requests, 1,
+        "overview summary totals should include the pending request-stats batch once the first flush-capable read succeeds",
+    );
+    assert_eq!(
+        snapshot.payload.summary.success_count, 1,
+        "overview summary success totals should stay aligned with the flushed request-stats batch",
+    );
+    assert_eq!(
+        snapshot.payload.summary_windows.today.total_requests, 1,
+        "today summary window should reflect the same flushed request-stats batch",
+    );
+    assert_eq!(
+        snapshot.payload.summary_windows.today.success_count, 1,
+        "today summary window success totals should stay aligned with the overview summary",
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_overview_snapshot_keeps_one_stale_boundary_when_background_flush_finishes_mid_build(
+) {
+    let db_path = temp_db_path("dashboard-overview-stale-boundary");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-stale-boundary".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    proxy
+        .debug_enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(60),
+            "success",
+        )
+        .await;
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    let pause = state
+        .proxy
+        .install_dashboard_overview_read_pause_for_test()
+        .await;
+
+    let lock_options = SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+        .await
+        .expect("open lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("lock writer");
+
+    let state_for_snapshot = state.clone();
+    let snapshot_handle =
+        tokio::spawn(async move { load_dashboard_overview_snapshot(&state_for_snapshot).await });
+
+    tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+        .await
+        .expect("overview read reached mid-build pause");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release writer lock");
+    lock_conn.close().await.expect("close lock connection");
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        state.proxy.wait_until_request_stats_flush_finishes_for_test(),
+    )
+    .await
+    .expect("background flush should finish once the writer lock is released");
+
+    pause.release();
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), snapshot_handle)
+        .await
+        .expect("overview snapshot should finish once the pause is released")
+        .expect("overview snapshot join")
+        .expect("overview snapshot result");
+
+    let stale_hourly_primary_success = snapshot
+        .payload
+        .hourly_request_window
+        .buckets
+        .iter()
+        .map(|bucket| bucket.primary_success)
+        .sum::<i64>();
+    assert_eq!(snapshot.payload.summary.total_requests, 0);
+    assert_eq!(snapshot.payload.summary_windows.today.total_requests, 0);
+    assert_eq!(
+        stale_hourly_primary_success, 0,
+        "hourly window should stay on the same stale snapshot boundary as summary totals",
+    );
+    assert_ne!(
+        snapshot.freshness.pending_dashboard_rollup_signature,
+        [0_i64; 10],
+        "emitted freshness must keep the pre-flush pending signature for a stale snapshot",
+    );
+
+    let refreshed = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("refreshed overview snapshot");
+    let refreshed_hourly_primary_success = refreshed
+        .payload
+        .hourly_request_window
+        .buckets
+        .iter()
+        .map(|bucket| bucket.primary_success)
+        .sum::<i64>();
+    assert_eq!(refreshed.payload.summary.total_requests, 1);
+    assert_eq!(refreshed.payload.summary_windows.today.total_requests, 1);
+    assert_eq!(refreshed_hourly_primary_success, 1);
+    assert_eq!(refreshed.freshness.pending_dashboard_rollup_signature, [0_i64; 10]);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn dashboard_overview_snapshot_is_reused_within_the_same_freshness_wave() {
     let db_path = temp_db_path("dashboard-overview-shared-snapshot");
     let db_str = db_path.to_string_lossy().to_string();
@@ -294,6 +565,21 @@ async fn dashboard_snapshot_event_uses_rebuilt_freshness_after_pending_rollups()
         emitted_sig.freshness.pending_dashboard_rollup_signature,
         probe_sig.freshness.pending_dashboard_rollup_signature,
         "emitted snapshot freshness should reflect the rebuilt post-flush state, not the stale pre-rebuild probe",
+    );
+
+    reset_dashboard_overview_build_count(&state).await;
+    let cached = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("cached overview snapshot after flush-backed rebuild");
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "the first request after a flush-backed rebuild should reuse the cached snapshot instead of rebuilding again",
+    );
+    assert_eq!(
+        cached.freshness,
+        emitted_sig.freshness,
+        "shared cache entries should be keyed by the rebuilt freshness token",
     );
 
     let _ = std::fs::remove_file(db_path);

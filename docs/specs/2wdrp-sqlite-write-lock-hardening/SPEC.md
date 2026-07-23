@@ -173,10 +173,13 @@ source when a usable persisted runtime already exists.
 - Pending/charged billing truth may move to a dedicated `billing_ledger` table as long as pending
   replay, settlement idempotency, and admin/history compatibility remain intact.
 - Request-derived dashboard/API-key/catalog rollups may be buffered in-memory and flushed in bounded
-  windows, provided owner-facing reads flush or self-heal before returning stale results.
+  windows, provided owner-facing reads either complete one bounded synchronous flush inside a small
+  read-path budget or self-heal by serving already durable data while the pending batch stays queued
+  for the next successful flush.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
-  stays synchronous and owner-facing reads flush before returning.
+  stays synchronous and owner-facing reads use the same bounded-flush-or-durable-fallback contract
+  instead of inheriting the full write-side retry budget.
 - Observability-heavy tables may live in a separate attached SQLite file when they are not required
   for synchronous billing truth. In that layout, `request_logs`, request-derived rollups, and other
   rebuildable observability tables are allowed to be eventually consistent and are not required to
@@ -270,6 +273,11 @@ source when a usable persisted runtime already exists.
 - Public success metrics continue to wait for inflight request-stat flushes, but the month-tail
   fallback no longer emits the retained-log wide scan shape
   `WITH scoped_logs AS (...) FROM observability.request_logs` on the public metrics path.
+- When a competing SQLite writer outlives the short admin-read flush budget but clears before the
+  full write-side retry budget, `/api/summary`, `GET /api/users/rankings`, and
+  analysis-pressure/user-activity reads still return durable data promptly instead of timing out
+  behind the full `10s` request-stats flush retry window. Once the lock clears, a later read must
+  expose the queued delta.
 - Overlapping DB-backed maintenance jobs in one process run through one persisted queue and one
   maintenance worker, so a second job is accepted/coalesced as `queued` instead of competing for the
   SQLite writer slot.

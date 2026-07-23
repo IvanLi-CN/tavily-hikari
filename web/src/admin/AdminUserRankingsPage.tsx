@@ -794,7 +794,10 @@ export function RankingsMeta({
   connectionState,
   language,
 }: RankingsMetaProps): JSX.Element {
-  const lastUpdated = snapshot ? formatTimestamp(snapshot.generatedAt, language) : null
+  const lastUpdated =
+    snapshot && !snapshot.stale && snapshot.generatedAt > 0
+      ? formatTimestamp(snapshot.generatedAt, language)
+      : null
   const refreshCopy = strings.refreshEvery.replace(
     '{seconds}',
     String(snapshot?.refreshIntervalSecs ?? DEFAULT_RANKINGS_REFRESH_INTERVAL_SECS),
@@ -886,6 +889,7 @@ export default function AdminUserRankingsPage({
   )
   const loadingCards = useMemo(() => buildLoadingCards(strings, activeTab), [activeTab, strings])
   const showLoadingSkeleton = loading && !snapshot
+  const showStaleHint = snapshot?.stale ?? false
 
   return (
     <section className="admin-rankings-page">
@@ -955,6 +959,8 @@ export default function AdminUserRankingsPage({
           ) : null}
         </div>
       ) : null}
+
+      {!error && showStaleHint ? <div className="admin-ranking-stale-hint">{strings.staleHint}</div> : null}
 
       {showLoadingSkeleton ? (
         <section className="admin-ranking-window">

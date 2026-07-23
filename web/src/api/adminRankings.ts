@@ -22,6 +22,7 @@ export interface AdminUserRankingWindow {
 export interface AdminUserRankingsSnapshot {
   generatedAt: number
   refreshIntervalSecs: number
+  stale: boolean
   last24h: AdminUserRankingWindow
   last7d: AdminUserRankingWindow
   last30d: AdminUserRankingWindow

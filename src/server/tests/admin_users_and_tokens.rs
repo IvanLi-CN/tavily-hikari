@@ -3457,6 +3457,10 @@ use super::upstream_support_and_manual_jobs::*;
             Some(10)
         );
         assert_eq!(
+            rankings_json.get("stale").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
             rankings_json
                 .pointer("/last24h/primarySuccessTop/0/user/userId")
                 .and_then(|value| value.as_str()),
@@ -3540,6 +3544,10 @@ use super::upstream_support_and_manual_jobs::*;
             Some(expected_primary_top.0.as_str())
         );
         assert_eq!(
+            snapshot_json.get("stale").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
             snapshot_json
                 .pointer("/last30d/uniqueIpTop/0/value")
                 .and_then(|value| value.as_i64()),
@@ -3557,6 +3565,168 @@ use super::upstream_support_and_manual_jobs::*;
                 .and_then(|value| value.as_str()),
             Some("Bob Lin")
         );
+
+        drop(events_resp);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_user_rankings_http_and_sse_surface_stale_fallback_snapshots() {
+        let db_path = temp_db_path("admin-user-rankings-stale-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-rankings-stale".to_string(),
+                username: Some("stale_rankings".to_string()),
+                name: Some("Stale Rankings".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert stale rankings user");
+
+        let created_at = Utc::now()
+            .timestamp()
+            .saturating_sub(5 * 60 + 1);
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                method,
+                path,
+                status_code,
+                tavily_status_code,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                response_body,
+                created_at,
+                request_user_id,
+                visibility,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers
+            ) VALUES (
+                'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'HTTP | search', NULL, ?, ?, ?, NULL, ?, 'cf-connecting-ip', 1, NULL
+            )
+            "#,
+        )
+        .bind(created_at)
+        .bind(&user.user_id)
+        .bind(tavily_hikari::REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind("198.51.100.88")
+        .execute(&pool)
+        .await
+        .expect("insert visible request log");
+
+        proxy
+            .enqueue_user_rankings_rollup_for_test(&user.user_id, created_at, "success")
+            .await;
+
+        let lock_options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(false)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+            .await
+            .expect("open lock connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("lock writer");
+
+        let admin_password = "admin-user-rankings-stale-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let (client, admin_cookie) = login_builtin_admin_cookie(admin_addr, admin_password).await;
+
+        let rankings_resp = client
+            .get(format!("http://{}/api/users/rankings", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("rankings request");
+        assert_eq!(rankings_resp.status(), reqwest::StatusCode::OK);
+        let rankings_json: serde_json::Value = rankings_resp
+            .json()
+            .await
+            .expect("rankings json");
+        assert_eq!(
+            rankings_json.get("stale").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            rankings_json
+                .get("generatedAt")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/primarySuccessTop")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            rankings_json
+                .pointer("/last24h/uniqueIpTop")
+                .and_then(|value| value.as_array())
+                .and_then(|value| value.first())
+                .and_then(|value| value.get("value"))
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/users/rankings/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("rankings sse request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let snapshot_event = read_sse_event_until(
+            &mut events_resp,
+            |chunk| chunk.contains("event: snapshot"),
+            "rankings stale snapshot event",
+        )
+        .await;
+        let snapshot_json = decode_sse_json_text(&snapshot_event);
+        assert_eq!(
+            snapshot_json.get("stale").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            snapshot_json
+                .get("generatedAt")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/last24h/uniqueIpTop")
+                .and_then(|value| value.as_array())
+                .and_then(|value| value.first())
+                .and_then(|value| value.get("value"))
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release writer lock");
+        lock_conn.close().await.expect("close lock connection");
 
         drop(events_resp);
         let _ = std::fs::remove_file(db_path);

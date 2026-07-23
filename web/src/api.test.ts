@@ -492,6 +492,7 @@ describe('admin user tag api helpers', () => {
       Promise.resolve(new Response(JSON.stringify({
         generatedAt: 1_781_763_600,
         refreshIntervalSecs: 10,
+        stale: false,
         last24h: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
         last7d: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
         last30d: { primarySuccessTop: [], businessCreditsTop: [], uniqueIpTop: [] },
@@ -506,6 +507,7 @@ describe('admin user tag api helpers', () => {
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/users/rankings')
     expect(snapshot.refreshIntervalSecs).toBe(10)
+    expect(snapshot.stale).toBe(false)
     expect(snapshot.last24h.primarySuccessTop).toEqual([])
     expect(snapshot.last24h.uniqueIpTop).toEqual([])
   })

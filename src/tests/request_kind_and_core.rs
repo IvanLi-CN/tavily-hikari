@@ -2286,7 +2286,8 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         database_path: db_path.to_string_lossy().into_owned(),
         observability_database_path: sqlite_test_layout(&db_str).observability_database_path,
         _observability_lock: None,
-        pool,
+        pool: pool.clone(),
+        read_flush_pool: pool,
         backend_time: BackendTime::system(),
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: RwLock::new(std::collections::HashMap::new()),
@@ -2297,6 +2298,8 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
         #[cfg(test)]
         forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),
+        #[cfg(test)]
+        dashboard_overview_read_pause: Arc::new(Mutex::new(None)),
         forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(
             std::collections::HashSet::new(),
         ),

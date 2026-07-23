@@ -228,13 +228,25 @@ async function flushUi(ms = 0): Promise<void> {
   })
 }
 
+function restoreWindowEventSource(eventSource: typeof EventSource | undefined): void {
+  if (typeof eventSource === 'undefined') {
+    delete (window as Window & { EventSource?: typeof EventSource }).EventSource
+    return
+  }
+  Object.defineProperty(window, 'EventSource', {
+    configurable: true,
+    writable: true,
+    value: eventSource,
+  })
+}
+
 function withDemoMode(path: string): string {
   return path
 }
 
 function resetDemoRuntime(): void {
   window.fetch = originalFetch
-  window.EventSource = originalEventSource
+  restoreWindowEventSource(originalEventSource)
   delete document.documentElement.dataset.demoMode
   delete window.__tavilyHikariDemoFetch
   delete window.__tavilyHikariDemoEventSource
@@ -283,6 +295,21 @@ function assertRouteRendered(container: HTMLElement, expectation: RouteExpectati
   if (expectation.text) {
     expect(main?.textContent).toContain(expectation.text)
   }
+}
+
+async function waitForRouteRendered(container: HTMLElement, expectation: RouteExpectation, timeoutMs = 1600): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let lastError: unknown = null
+  while (Date.now() <= deadline) {
+    try {
+      assertRouteRendered(container, expectation)
+      return
+    } catch (error) {
+      lastError = error
+      await flushUi(40)
+    }
+  }
+  throw lastError ?? new Error(`Timed out waiting for route ${window.location.pathname}${window.location.search}`)
 }
 
 async function navigateTo(path: string): Promise<void> {
@@ -334,13 +361,11 @@ beforeEach(() => {
 
 afterEach(async () => {
   console.error = originalConsoleError
-  window.fetch = originalFetch
-  window.EventSource = originalEventSource
+  resetDemoRuntime()
   window.matchMedia = originalMatchMedia
   window.requestAnimationFrame = originalRequestAnimationFrame
   window.cancelAnimationFrame = originalCancelAnimationFrame
   HTMLElement.prototype.scrollIntoView = originalScrollIntoView
-  resetDemoRuntime()
   window.localStorage.removeItem(DEMO_STORAGE_KEY)
   document.body.innerHTML = ''
 })
@@ -351,14 +376,14 @@ describe('AdminDashboard route switches', () => {
       const { container, root } = await mountAdminDashboard(routeCase.startPath)
 
       try {
-        assertRouteRendered(container, {})
+        await waitForRouteRendered(container, {})
 
         await navigateTo(routeCase.nextPath)
-        assertRouteRendered(container, routeCase.nextExpectation)
+        await waitForRouteRendered(container, routeCase.nextExpectation)
 
         if (routeCase.returnPath && routeCase.returnExpectation) {
           await navigateTo(routeCase.returnPath)
-          assertRouteRendered(container, routeCase.returnExpectation)
+          await waitForRouteRendered(container, routeCase.returnExpectation)
         }
 
         expect(hookOrderErrors()).toEqual([])

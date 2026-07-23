@@ -244,6 +244,7 @@ const last30dUniqueIp = buildRows(withMockAvatars([
 export const rankingsStorySnapshot: AdminUserRankingsSnapshot = {
   generatedAt: 1_781_763_600,
   refreshIntervalSecs: 10,
+  stale: false,
   last24h: {
     primarySuccessTop: last24hPrimary,
     businessCreditsTop: last24hCredits,
@@ -264,6 +265,7 @@ export const rankingsStorySnapshot: AdminUserRankingsSnapshot = {
 export const rankingsStoryEmptySnapshot: AdminUserRankingsSnapshot = {
   generatedAt: rankingsStorySnapshot.generatedAt,
   refreshIntervalSecs: rankingsStorySnapshot.refreshIntervalSecs,
+  stale: false,
   last24h: {
     primarySuccessTop: [],
     businessCreditsTop: [],

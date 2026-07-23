@@ -13,6 +13,7 @@ node_modules
 !.codex/skills/ui-ux-pro-max/**
 .codex/skills/ui-ux-pro-max/scripts/__pycache__/
 .codex-artifacts/
+.impeccable/
 .serena/
 web/node_modules
 web/dist

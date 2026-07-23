@@ -101,6 +101,7 @@ struct UserRankingWindowView {
 struct UserRankingsSnapshotView {
     generated_at: i64,
     refresh_interval_secs: i64,
+    stale: bool,
     last24h: UserRankingWindowView,
     last7d: UserRankingWindowView,
     last30d: UserRankingWindowView,
@@ -249,11 +250,13 @@ fn build_user_ranking_window_view(
 
 fn build_user_rankings_snapshot_view(
     snapshot: tavily_hikari::UserRankingsSnapshot,
+    stale: bool,
     cfg: &LinuxDoOAuthOptions,
 ) -> UserRankingsSnapshotView {
     UserRankingsSnapshotView {
-        generated_at: snapshot.generated_at,
+        generated_at: if stale { 0 } else { snapshot.generated_at },
         refresh_interval_secs: snapshot.refresh_interval_secs,
+        stale,
         last24h: build_user_ranking_window_view(snapshot.last24h, cfg),
         last7d: build_user_ranking_window_view(snapshot.last7d, cfg),
         last30d: build_user_ranking_window_view(snapshot.last30d, cfg),
@@ -289,9 +292,9 @@ async fn get_user_rankings(
 
     state
         .proxy
-        .user_rankings_snapshot()
+        .user_rankings_snapshot_with_stale_flag()
         .await
-        .map(|snapshot| Json(build_user_rankings_snapshot_view(snapshot, &state.linuxdo_oauth)))
+        .map(|(snapshot, stale)| Json(build_user_rankings_snapshot_view(snapshot, stale, &state.linuxdo_oauth)))
         .map_err(|err| {
             eprintln!("user rankings error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -309,9 +312,10 @@ async fn sse_user_rankings(
 
     let stream = stream! {
         loop {
-            match state.proxy.user_rankings_snapshot().await {
-                Ok(snapshot) => {
-                    let view = build_user_rankings_snapshot_view(snapshot, &state.linuxdo_oauth);
+            match state.proxy.user_rankings_snapshot_with_stale_flag().await {
+                Ok((snapshot, stale)) => {
+                    let view =
+                        build_user_rankings_snapshot_view(snapshot, stale, &state.linuxdo_oauth);
                     match serde_json::to_string(&view) {
                         Ok(json) => yield Ok(Event::default().event("snapshot").data(json)),
                         Err(_) => yield Ok(Event::default().event("degraded").data("{}")),
@@ -1192,18 +1196,16 @@ async fn build_dashboard_overview_payload(
         cache.build_count = cache.build_count.saturating_add(1);
     }
 
-    let summary = state.proxy.summary().await?;
-    let summary_windows = state.proxy.summary_windows().await?;
-    let hourly_request_window = state.proxy.dashboard_hourly_request_window().await?;
+    let now_local = state.proxy.backend_time().local_now();
+    let now_utc = now_local.with_timezone(&Utc);
+    let (
+        summary_windows,
+        summary,
+        hourly_request_window,
+        dashboard_rollup_signature,
+        pending_dashboard_rollup_signature,
+    ) = state.proxy.dashboard_overview_read_components_at(now_local).await?;
     let month_series = state.proxy.dashboard_month_series(&summary_windows).await?;
-    let dashboard_rollup_signature = state
-        .proxy
-        .dashboard_rollup_freshness_signature_without_flush(summary_windows.previous_month_start)
-        .await?;
-    let pending_dashboard_rollup_signature = state
-        .proxy
-        .pending_dashboard_rollup_freshness_signature()
-        .await;
     let dashboard_api_key_lifecycle_signature = state
         .proxy
         .dashboard_api_key_lifecycle_signature(summary_windows.previous_month_start)
@@ -1219,7 +1221,7 @@ async fn build_dashboard_overview_payload(
             summary_windows.month_period_end,
         )
         .await?;
-    let now_ts = state.proxy.backend_time().now_ts();
+    let now_ts = now_utc.timestamp();
     let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
     let hot_stale_before = now_ts.saturating_sub(15 * 60);
     let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
@@ -1231,7 +1233,7 @@ async fn build_dashboard_overview_payload(
         .proxy
         .dashboard_quota_charge_token(
             dashboard_stale_key_count,
-            start_of_month_dt(state.proxy.backend_time().now_utc()).timestamp(),
+            start_of_month_dt(now_utc).timestamp(),
             summary_windows.today_end,
         )
         .await?;
@@ -1281,7 +1283,7 @@ async fn build_dashboard_overview_payload(
         .unwrap_or_else(|_| tavily_hikari::RecentAlertsSummary::default());
     let recent_alerts_token = dashboard_recent_alerts_token_or_fallback(state, 24, &recent_alerts).await;
 
-    let hourly_window_anchor = dashboard_hourly_window_anchor(state.proxy.backend_time().now_ts());
+    let hourly_window_anchor = dashboard_hourly_window_anchor(now_ts);
     let recent_job_signatures = recent_jobs
         .iter()
         .map(|job| (job.id, job.status.clone(), job.finished_at))

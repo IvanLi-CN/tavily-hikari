@@ -1,10 +1,23 @@
 impl KeyStore {
+    #[cfg(test)]
     pub(crate) async fn fetch_user_rankings_snapshot(
         &self,
         generated_at: i64,
         refresh_interval_secs: i64,
     ) -> Result<UserRankingsSnapshot, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.fetch_user_rankings_snapshot_with_freshness(generated_at, refresh_interval_secs)
+            .await
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    pub(crate) async fn fetch_user_rankings_snapshot_with_freshness(
+        &self,
+        generated_at: i64,
+        refresh_interval_secs: i64,
+    ) -> Result<(UserRankingsSnapshot, RequestStatsReadFreshness), ProxyError> {
+        let freshness = self
+            .best_effort_flush_request_stats_writes_for_read("user_rankings_snapshot")
+            .await?;
 
         let last24h = self
             .fetch_user_ranking_window(generated_at.saturating_sub(SECS_PER_DAY), generated_at)
@@ -22,13 +35,16 @@ impl KeyStore {
             )
             .await?;
 
-        Ok(UserRankingsSnapshot {
-            generated_at,
-            refresh_interval_secs,
-            last24h,
-            last7d,
-            last30d,
-        })
+        Ok((
+            UserRankingsSnapshot {
+                generated_at,
+                refresh_interval_secs,
+                last24h,
+                last7d,
+                last30d,
+            },
+            freshness,
+        ))
     }
 
     async fn fetch_user_ranking_window(

@@ -2492,7 +2492,9 @@ impl KeyStore {
         })
     }
 
-    pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
+    pub(crate) async fn fetch_summary_without_flush_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+    ) -> Result<ProxySummary, ProxyError> {
         let totals_row = sqlx::query(
             r#"
             SELECT
@@ -2504,7 +2506,7 @@ impl KeyStore {
             WHERE bucket_secs = 86400
             "#,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?;
 
         let key_counts_row = sqlx::query(
@@ -2531,13 +2533,13 @@ impl KeyStore {
         .bind(STATUS_ACTIVE)
         .bind(STATUS_EXHAUSTED)
         .bind(STATUS_ACTIVE)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?;
 
         let last_activity = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT MAX(last_used_at) FROM api_keys WHERE deleted_at IS NULL",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?
         .and_then(normalize_timestamp);
 
@@ -2553,7 +2555,7 @@ impl KeyStore {
               AND aq.key_id IS NULL
             "#,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(ProxySummary {
@@ -2571,8 +2573,16 @@ impl KeyStore {
         })
     }
 
+    pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok(summary)
+    }
+
     pub(crate) async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
-        self.flush_request_stats_writes().await?;
+        self.best_effort_flush_request_stats_writes_for_read("summary")
+            .await?;
         self.fetch_summary_without_flush().await
     }
 

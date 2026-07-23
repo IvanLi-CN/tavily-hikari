@@ -18,6 +18,8 @@ pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
 }
 
+pub(crate) const SQLITE_BUSY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
+pub(crate) const SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT: Duration = Duration::from_millis(50);
 pub(crate) const SQLITE_SLOW_STATEMENT_THRESHOLD: Duration = Duration::from_millis(250);
 pub(crate) const SQLITE_SLOW_OPERATION_THRESHOLD: Duration = Duration::from_secs(1);
 
@@ -441,90 +443,7 @@ pub(crate) fn classify_billing_subject_kind(billing_subject: &str) -> &'static s
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SqliteContentionLogFields<'a> {
-    pub(crate) operation: &'a str,
-    pub(crate) request_path: &'a str,
-    pub(crate) request_kind: &'a str,
-    pub(crate) billing_subject_kind: &'a str,
-    pub(crate) retry_budget_ms: u64,
-    pub(crate) pending_batch_counts: &'a str,
-    pub(crate) oldest_pending_created_at: Option<i64>,
-    pub(crate) newest_pending_created_at: Option<i64>,
-}
-
-pub(crate) fn log_sqlite_transient_write_retry_with_fields(
-    fields: SqliteContentionLogFields<'_>,
-    attempt: usize,
-    backoff: Duration,
-    elapsed: Duration,
-    err: &ProxyError,
-) {
-    warn!(
-        component = "db",
-        event = "sqlite_transient_write_retry",
-        operation = fields.operation,
-        request_path = fields.request_path,
-        request_kind = fields.request_kind,
-        attempt,
-        backoff_ms = backoff.as_millis() as u64,
-        elapsed_ms = elapsed.as_millis() as u64,
-        retry_budget_ms = fields.retry_budget_ms,
-        pending_batch_counts = fields.pending_batch_counts,
-        oldest_pending_created_at = fields.oldest_pending_created_at.unwrap_or_default(),
-        newest_pending_created_at = fields.newest_pending_created_at.unwrap_or_default(),
-        billing_subject_kind = fields.billing_subject_kind,
-        err = %err,
-        "{}: transient sqlite write error (request_path={}, request_kind={}, attempt={}, backoff={}ms, elapsed={}ms, retry_budget={}ms, pending_batch_counts={}, oldest_pending_created_at={}, newest_pending_created_at={}, billing_subject_kind={}): {}",
-        fields.operation,
-        fields.request_path,
-        fields.request_kind,
-        attempt,
-        backoff.as_millis(),
-        elapsed.as_millis(),
-        fields.retry_budget_ms,
-        fields.pending_batch_counts,
-        fields.oldest_pending_created_at.unwrap_or_default(),
-        fields.newest_pending_created_at.unwrap_or_default(),
-        fields.billing_subject_kind,
-        err,
-    );
-}
-
-pub(crate) fn log_sqlite_transient_write_exhaustion_with_fields(
-    fields: SqliteContentionLogFields<'_>,
-    attempts: usize,
-    elapsed: Duration,
-    err: &ProxyError,
-) {
-    warn!(
-        component = "db",
-        event = "sqlite_transient_write_exhausted",
-        operation = fields.operation,
-        request_path = fields.request_path,
-        request_kind = fields.request_kind,
-        attempts,
-        elapsed_ms = elapsed.as_millis() as u64,
-        retry_budget_ms = fields.retry_budget_ms,
-        pending_batch_counts = fields.pending_batch_counts,
-        oldest_pending_created_at = fields.oldest_pending_created_at.unwrap_or_default(),
-        newest_pending_created_at = fields.newest_pending_created_at.unwrap_or_default(),
-        billing_subject_kind = fields.billing_subject_kind,
-        err = %err,
-        "{}: transient sqlite write retry budget exhausted (request_path={}, request_kind={}, attempts={}, elapsed={}ms, retry_budget={}ms, pending_batch_counts={}, oldest_pending_created_at={}, newest_pending_created_at={}, billing_subject_kind={}): {}",
-        fields.operation,
-        fields.request_path,
-        fields.request_kind,
-        attempts,
-        elapsed.as_millis(),
-        fields.retry_budget_ms,
-        fields.pending_batch_counts,
-        fields.oldest_pending_created_at.unwrap_or_default(),
-        fields.newest_pending_created_at.unwrap_or_default(),
-        fields.billing_subject_kind,
-        err,
-    );
-}
+include!("sqlite_contention_logging.rs");
 
 pub(crate) fn is_invalid_current_month_billing_subject_error(err: &ProxyError) -> bool {
     match err {
@@ -678,21 +597,36 @@ pub(crate) async fn open_sqlite_pool(
     .await
 }
 
+fn sqlite_connect_options(
+    database_path: &str,
+    create_if_missing: bool,
+    read_only: bool,
+    busy_timeout: Duration,
+) -> SqliteConnectOptions {
+    let mut options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(create_if_missing)
+        .read_only(read_only)
+        .busy_timeout(busy_timeout)
+        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
+    if !read_only {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
+    options
+}
+
 pub(crate) async fn open_sqlite_pool_with_observability(
     database_path: &str,
     observability_database_path: Option<&str>,
     create_if_missing: bool,
     read_only: bool,
 ) -> Result<SqlitePool, ProxyError> {
-    let mut options = SqliteConnectOptions::new()
-        .filename(database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    let options = sqlite_connect_options(
+        database_path,
+        create_if_missing,
+        read_only,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    );
 
     let attach_context =
         sqlite_runtime_log_context(database_path, "runtime", read_only, create_if_missing);
@@ -757,15 +691,12 @@ async fn resolve_observability_attach_plan(
         });
     };
 
-    let mut options = SqliteConnectOptions::new()
-        .filename(core_database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    let options = sqlite_connect_options(
+        core_database_path,
+        create_if_missing,
+        read_only,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    );
 
     let probe_context = sqlite_runtime_log_context(
         core_database_path,
@@ -818,15 +749,31 @@ pub(crate) async fn open_sqlite_pool_forced_observability(
     read_only: bool,
     max_connections: u32,
 ) -> Result<SqlitePool, ProxyError> {
-    let mut options = SqliteConnectOptions::new()
-        .filename(core_database_path)
-        .create_if_missing(create_if_missing)
-        .read_only(read_only)
-        .busy_timeout(Duration::from_secs(5))
-        .log_slow_statements(LevelFilter::Warn, SQLITE_SLOW_STATEMENT_THRESHOLD);
-    if !read_only {
-        options = options.journal_mode(SqliteJournalMode::Wal);
-    }
+    open_sqlite_pool_forced_observability_with_busy_timeout(
+        core_database_path,
+        observability_database_path,
+        create_if_missing,
+        read_only,
+        max_connections,
+        SQLITE_BUSY_TIMEOUT_DEFAULT,
+    )
+    .await
+}
+
+pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
+    core_database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+    max_connections: u32,
+    busy_timeout: Duration,
+) -> Result<SqlitePool, ProxyError> {
+    let options = sqlite_connect_options(
+        core_database_path,
+        create_if_missing,
+        read_only,
+        busy_timeout,
+    );
 
     let mut pool_options = SqlitePoolOptions::new()
         .min_connections(1)
@@ -857,6 +804,27 @@ pub(crate) async fn open_sqlite_pool_forced_observability(
                 .await
                 .map_err(ProxyError::Database)
         },
+    )
+    .await
+}
+
+pub(crate) async fn open_admin_read_flush_pool(
+    operation: &'static str,
+    context: &str,
+    core_database_path: &str,
+    observability_database_path: Option<&str>,
+) -> Result<SqlitePool, ProxyError> {
+    instrument_db_operation(
+        operation,
+        Some(context),
+        open_sqlite_pool_forced_observability_with_busy_timeout(
+            core_database_path,
+            observability_database_path,
+            true,
+            false,
+            1,
+            SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
+        ),
     )
     .await
 }
@@ -2498,6 +2466,7 @@ pub(crate) struct RequestStatsCoalescerState {
     pub(crate) pending_account_request_rollups:
         HashMap<AccountRequestRollupKey, AccountUsageRollupDelta>,
     pub(crate) pending_request_log_catalog: HashMap<RequestLogCatalogRollupKey, i64>,
+    pub(crate) request_stats_version: u64,
     pub(crate) oldest_pending_created_at: Option<i64>,
     pub(crate) newest_pending_created_at: Option<i64>,
     pub(crate) flushing_oldest_created_at: Option<i64>,
@@ -2516,12 +2485,25 @@ pub(crate) struct RequestStatsCoalescer {
     pub(crate) post_flush_pause: Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone)]
-pub(crate) struct RequestStatsPostFlushPause {
+pub struct RequestStatsPostFlushPause {
     pub(crate) arrived: Arc<Notify>,
     pub(crate) release: Arc<Notify>,
     pub(crate) released: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RequestStatsPostFlushPause {
+    #[doc(hidden)]
+    pub async fn wait_until_arrived(&self) {
+        self.arrived.notified().await;
+    }
+
+    #[doc(hidden)]
+    pub fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.release.notify_waiters();
+    }
 }
 
 impl Default for RequestStatsCoalescer {
@@ -2546,6 +2528,10 @@ impl RequestStatsCoalescer {
             + state.pending_auth_token_activity.len()
             + state.pending_account_request_rollups.len()
             + state.pending_request_log_catalog.len()
+    }
+
+    pub(crate) fn bump_request_stats_version(state: &mut RequestStatsCoalescerState) {
+        state.request_stats_version = state.request_stats_version.wrapping_add(1);
     }
 
     fn mark_flush_deadline_if_pending(state: &mut RequestStatsCoalescerState) {
@@ -2623,6 +2609,7 @@ impl RequestStatsCoalescer {
                     .entry(request_log_catalog_key)
                     .or_default() += 1;
             }
+            Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
@@ -2645,6 +2632,7 @@ impl RequestStatsCoalescer {
                 0,
                 0,
             );
+            Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
@@ -2700,6 +2688,7 @@ impl RequestStatsCoalescer {
                     .or_default()
                     .local_estimated_credits += credits;
             }
+            Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
             Self::mark_flush_deadline_if_pending(&mut state);
         }
@@ -2779,18 +2768,11 @@ impl RequestStatsCoalescer {
         signature
     }
 
-    pub(crate) async fn wait_until_flushed(&self) {
+    pub(crate) async fn wait_until_not_flushing(&self) {
         loop {
             let notified = {
                 let state = self.state.lock().await;
-                if !state.flushing
-                    && state.pending_dashboard_rollups.is_empty()
-                    && state.pending_api_key_usage.is_empty()
-                    && state.pending_auth_token_activity.is_empty()
-                    && state.pending_account_request_rollups.is_empty()
-                    && state.pending_request_log_catalog.is_empty()
-                    && !state.shutdown
-                {
+                if !state.flushing {
                     return;
                 }
                 self.flushed.clone().notified_owned()
@@ -2799,31 +2781,31 @@ impl RequestStatsCoalescer {
         }
     }
 
+    pub(crate) fn try_has_pending_or_flushing_work(&self) -> bool {
+        self.state
+            .try_lock()
+            .map(|state| state.flushing || Self::pending_key_count(&state) > 0)
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn try_request_stats_version(&self) -> Option<u64> {
+        self.state
+            .try_lock()
+            .ok()
+            .map(|state| state.request_stats_version)
+    }
+
     #[cfg(test)]
     pub(crate) async fn install_post_flush_pause(&self) -> RequestStatsPostFlushPause {
-        let pause = RequestStatsPostFlushPause {
-            arrived: Arc::new(Notify::new()),
-            release: Arc::new(Notify::new()),
-            released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
+        let pause = new_request_stats_test_pause();
         let mut slot = self.post_flush_pause.lock().await;
         *slot = Some(pause.clone());
         pause
     }
 
     #[cfg(test)]
-    pub(crate) async fn take_post_flush_pause(&self) -> Option<RequestStatsPostFlushPause> {
-        self.post_flush_pause.lock().await.take()
-    }
-
-    #[cfg(test)]
     pub(crate) async fn wait_for_post_flush_pause_if_installed(&self) {
-        if let Some(pause) = self.take_post_flush_pause().await {
-            pause.arrived.notify_waiters();
-            while !pause.released.load(std::sync::atomic::Ordering::SeqCst) {
-                pause.release.notified().await;
-            }
-        }
+        wait_for_request_stats_test_pause_if_installed(&self.post_flush_pause).await;
     }
 }
 
@@ -2833,6 +2815,7 @@ pub(crate) struct KeyStore {
     pub(crate) observability_database_path: Option<String>,
     pub(crate) _observability_lock: Option<File>,
     pub(crate) pool: SqlitePool,
+    pub(crate) read_flush_pool: SqlitePool,
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:
@@ -2844,9 +2827,50 @@ pub(crate) struct KeyStore {
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    pub(crate) dashboard_overview_read_pause: Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
     // Lightweight failpoint registry used by integration tests to simulate a lost quota
     // subject lease after precheck but before settlement.
     pub(crate) forced_quota_subject_lock_loss_subjects: std::sync::Mutex<HashSet<String>>,
+}
+
+#[cfg(any(test, debug_assertions))]
+fn new_request_stats_test_pause() -> RequestStatsPostFlushPause {
+    RequestStatsPostFlushPause {
+        arrived: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+        released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+async fn wait_for_request_stats_test_pause_if_installed(
+    slot: &Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
+) {
+    if let Some(pause) = slot.lock().await.take() {
+        pause.arrived.notify_waiters();
+        while !pause.released.load(std::sync::atomic::Ordering::SeqCst) {
+            pause.release.notified().await;
+        }
+    }
+}
+
+impl KeyStore {
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPostFlushPause {
+        let pause = new_request_stats_test_pause();
+        let mut slot = self.dashboard_overview_read_pause.lock().await;
+        *slot = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    pub(crate) async fn wait_for_dashboard_overview_read_pause_if_installed(&self) {
+        wait_for_request_stats_test_pause_if_installed(&self.dashboard_overview_read_pause).await;
+    }
 }
 
 include!("key_store_bootstrap.rs");

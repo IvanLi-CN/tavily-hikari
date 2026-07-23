@@ -34,6 +34,18 @@ async function flushEffects(): Promise<void> {
 }
 
 async function mountRankingsPage(activeTab: RankingTabKey = 'last24h'): Promise<MountedRankingsPage> {
+  return mountRankingsPageWithProps({ activeTab })
+}
+
+async function mountRankingsPageWithProps({
+  activeTab = 'last24h',
+  snapshot = rankingsStorySnapshot,
+  connectionState = 'live',
+}: {
+  activeTab?: RankingTabKey
+  snapshot?: typeof rankingsStorySnapshot
+  connectionState?: 'connecting' | 'live' | 'degraded'
+}): Promise<MountedRankingsPage> {
   const selectedUsers: string[] = []
   const container = document.createElement('div')
   container.style.width = '1440px'
@@ -48,10 +60,10 @@ async function mountRankingsPage(activeTab: RankingTabKey = 'last24h'): Promise<
           <AdminUserRankingsPage
             strings={ZH.admin.rankings}
             language="zh"
-            snapshot={rankingsStorySnapshot}
+            snapshot={snapshot}
             loading={false}
             error={null}
-            connectionState="live"
+            connectionState={connectionState}
             showHeader={false}
             activeTab={activeTab}
             onTabChange={() => {}}
@@ -141,6 +153,24 @@ describe('AdminUserRankingsPage rendering contracts', () => {
     })
     await flushEffects()
     expect(container.querySelectorAll('.admin-ranking-chart-hit-target.is-interactive').length).toBe(0)
+
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
+  it('shows a stale hint and suppresses misleading last-updated text for stale fallback snapshots without a fresh timestamp', async () => {
+    const { container, root } = await mountRankingsPageWithProps({
+      snapshot: {
+        ...rankingsStorySnapshot,
+        generatedAt: 1_700_000_000,
+        stale: true,
+      },
+      connectionState: 'degraded',
+    })
+
+    expect(container.textContent).toContain('当前展示最近一次成功快照，连接恢复后会自动刷新。')
+    expect(container.textContent).not.toContain('最后更新')
 
     await act(async () => {
       root.unmount()

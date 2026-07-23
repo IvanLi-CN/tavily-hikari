@@ -1095,11 +1095,21 @@ impl KeyStore {
         )
         .await?;
         let observability_database_path = attached_database_path(&pool, "observability").await?;
+        let read_flush_pool = open_sqlite_pool_forced_observability_with_busy_timeout(
+            &layout.core_database_path,
+            observability_database_path.as_deref(),
+            true,
+            false,
+            1,
+            SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
+        )
+        .await?;
         let store = Self {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: None,
             pool,
+            read_flush_pool,
             backend_time: BackendTime::system(),
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
@@ -1110,6 +1120,8 @@ impl KeyStore {
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
+            #[cfg(debug_assertions)]
+            dashboard_overview_read_pause: Arc::new(Mutex::new(None)),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
         store.ensure_meta_schema().await?;

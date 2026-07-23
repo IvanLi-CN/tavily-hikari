@@ -276,6 +276,10 @@ month-tail public metrics scan.
 - If an owner-facing read depends on coalesced rollups, prefer a freshness-gated flush over an
   unconditional flush. This keeps near-real-time semantics without turning every public/admin read
   into a write barrier under SQLite's single-writer budget.
+- For owner-facing admin reads that can tolerate already durable rollups, bound the read-side flush
+  separately from the write-side retry budget. A dedicated short-timeout connection/pool and a
+  small synchronous retry budget keep `/api/summary`, rankings, and analysis-pressure first paint
+  responsive while the pending batch stays queued for a later successful flush.
 - Do not let an SSE freshness poll become that write barrier by accident. In this service,
   `/api/events` was polling every 2 seconds; when its freshness path called the same
   `summary_windows` / rollup-flush helpers as the dashboard rebuild, it re-heated SQLite write
