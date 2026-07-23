@@ -1,4 +1,13 @@
 impl TavilyProxy {
+    pub async fn upstream_reconciliation_shadow_compare_active_with_settings(
+        &self,
+        settings: &SystemSettings,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .upstream_reconciliation_shadow_compare_active_with_settings(settings)
+            .await
+    }
+
     pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
         let now = self.backend_time.now_ts();
         let settings = self.key_store.get_system_settings().await?;

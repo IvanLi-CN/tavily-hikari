@@ -1019,7 +1019,8 @@ pub struct AccountShadowDailyProjection {
     pub confirmed_delta_credits: i64,
     pub observed_window_count: i64,
     pub resolved_window_count: i64,
-    pub has_shadow_projection_data: bool,
+    pub shadow_observed_window_count: i64,
+    pub shadow_resolved_window_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

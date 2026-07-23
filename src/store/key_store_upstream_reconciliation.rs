@@ -35,6 +35,10 @@ fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
         && settings.rebalance_mcp_enabled
 }
 
+fn upstream_reconciliation_precise_cutover_configured(settings: &SystemSettings) -> bool {
+    upstream_reconciliation_shadow_ready(settings) && settings.upstream_precise_reconciliation_enabled
+}
+
 pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'static str {
     let Some(reason) = reason else {
         return RECONCILIATION_RETRY_REASON_OTHER;
@@ -101,6 +105,19 @@ impl KeyStore {
         Ok((now >= ready_after, ready_after, active_upstream_mcp_sessions))
     }
 
+    pub(crate) async fn upstream_reconciliation_shadow_compare_active_with_settings(
+        &self,
+        settings: &SystemSettings,
+    ) -> Result<bool, ProxyError> {
+        if !upstream_reconciliation_shadow_ready(settings) {
+            return Ok(false);
+        }
+        if !settings.upstream_precise_reconciliation_enabled {
+            return Ok(true);
+        }
+        Ok(!self.refresh_upstream_reconciliation_epoch().await?.0)
+    }
+
     pub(crate) async fn upstream_reconciliation_runtime_markers(
         &self,
     ) -> Result<(Option<i64>, Option<i64>, Option<i64>), ProxyError> {
@@ -141,7 +158,8 @@ impl KeyStore {
         if !upstream_reconciliation_shadow_ready(&settings) {
             return Ok(None);
         }
-        let precise_cutover_ready = if settings.upstream_precise_reconciliation_enabled {
+        let precise_cutover_ready = if upstream_reconciliation_precise_cutover_configured(&settings)
+        {
             self.refresh_upstream_reconciliation_epoch().await?.0
         } else {
             false
@@ -1159,7 +1177,8 @@ impl KeyStore {
                     confirmed_delta_credits,
                     observed_window_count: 0,
                     resolved_window_count: 0,
-                    has_shadow_projection_data: true,
+                    shadow_observed_window_count: 0,
+                    shadow_resolved_window_count: 0,
                 },
             );
         }
@@ -1210,11 +1229,13 @@ impl KeyStore {
                     confirmed_delta_credits: 0,
                     observed_window_count: 0,
                     resolved_window_count: 0,
-                    has_shadow_projection_data: false,
+                    shadow_observed_window_count: 0,
+                    shadow_resolved_window_count: 0,
                 });
             entry.observed_window_count += total_windows;
             entry.resolved_window_count += terminal_windows;
-            entry.has_shadow_projection_data = true;
+            entry.shadow_observed_window_count += total_windows;
+            entry.shadow_resolved_window_count += terminal_windows;
         }
 
         let mut actual_window_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
@@ -1272,7 +1293,8 @@ impl KeyStore {
                     confirmed_delta_credits: 0,
                     observed_window_count: 0,
                     resolved_window_count: 0,
-                    has_shadow_projection_data: false,
+                    shadow_observed_window_count: 0,
+                    shadow_resolved_window_count: 0,
                 });
             entry.observed_window_count += total_windows;
             entry.resolved_window_count += terminal_windows;

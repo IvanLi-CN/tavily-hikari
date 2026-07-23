@@ -459,13 +459,19 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
-    let shadow_compare_enabled = !system_settings.upstream_precise_reconciliation_enabled;
-    let shadow_projection_ready = shadow_compare_enabled
-        && system_settings.upstream_project_id_mode
-            == tavily_hikari::UpstreamProjectIdMode::AccessToken
-        && system_settings.api_rebalance_enabled
-        && system_settings.rebalance_mcp_enabled;
-    let shadow_daily_projection = if page_user_ids.is_empty() || !shadow_compare_enabled {
+    let shadow_compare_active = if page_user_ids.is_empty() {
+        false
+    } else {
+        state
+            .proxy
+            .upstream_reconciliation_shadow_compare_active_with_settings(&system_settings)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user shadow compare state error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
+    let shadow_daily_projection = if page_user_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         state
@@ -493,9 +499,12 @@ async fn list_users(
             .unwrap_or_default();
         let projection = shadow_daily_projection.get(&row.user.user_id);
         let has_persisted_shadow_projection =
-            projection.is_some_and(|value| value.has_shadow_projection_data);
+            projection.is_some_and(|value| {
+                value.shadow_observed_window_count > 0
+                    && value.shadow_observed_window_count == value.shadow_resolved_window_count
+            });
         let show_shadow_projection =
-            shadow_compare_enabled && (shadow_projection_ready || has_persisted_shadow_projection);
+            shadow_compare_active || has_persisted_shadow_projection;
         let (shadow_daily_credits_used, shadow_daily_availability) = if show_shadow_projection {
             let shadow_daily_credits_used = Some(
                 row.summary.daily_credits_used.saturating_add(

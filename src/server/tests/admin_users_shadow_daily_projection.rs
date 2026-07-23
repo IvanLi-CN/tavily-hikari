@@ -1,7 +1,7 @@
 use super::*;
 use super::core_support_and_parsing::temp_db_path;
 use super::upstream_support_and_manual_jobs::spawn_admin_users_server;
-use tavily_hikari::UpstreamProjectIdMode;
+use tavily_hikari::{MCP_GATEWAY_MODE_UPSTREAM, UpstreamProjectIdMode};
 
 #[tokio::test]
 async fn list_users_reports_shadow_daily_usage_as_confirmed_or_projected() {
@@ -687,6 +687,221 @@ async fn list_users_hides_actual_only_projection_until_compare_ready() {
     .execute(&pool)
     .await
     .expect("insert actual usage row");
+
+    let addr = spawn_admin_users_server(proxy, true).await;
+    let response = Client::new()
+        .get(format!("http://{addr}/api/users?page=1&per_page=20"))
+        .send()
+        .await
+        .expect("list users request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.expect("list users json");
+    let items = body["items"].as_array().expect("items array");
+    let user_item = items
+        .iter()
+        .find(|item| item["userId"].as_str() == Some(user.user_id.as_str()))
+        .expect("user row");
+    assert!(user_item["shadowDailyCreditsUsed"].is_null());
+    assert!(user_item["shadowDailyAvailability"].is_null());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn list_users_keeps_shadow_projection_during_precise_cutover_pending() {
+    let db_path = temp_db_path("admin-users-shadow-daily-precise-cutover-pending");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options(
+        vec!["tvly-admin-users-shadow-cutover-pending".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        tavily_hikari::TavilyProxyOptions::from_database_path(&db_str),
+    )
+    .await
+    .expect("proxy created");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save precise settings");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "admin-users-shadow-cutover-pending".to_string(),
+            username: Some("shadow-cutover-pending".to_string()),
+            name: Some("Shadow Cutover Pending".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("shadow-cutover-pending-token"))
+        .await
+        .expect("bind user token");
+    proxy
+        .charge_token_quota(&token.id, 9)
+        .await
+        .expect("charge user quota");
+
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&db_str)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("open reconciliation pool");
+    let now = proxy.backend_time().now_ts();
+    sqlx::query(
+        r#"
+        INSERT INTO mcp_sessions (
+            proxy_session_id,
+            upstream_session_id,
+            upstream_key_id,
+            auth_token_id,
+            user_id,
+            protocol_version,
+            last_event_id,
+            gateway_mode,
+            experiment_variant,
+            ab_bucket,
+            routing_subject_hash,
+            fallback_reason,
+            rate_limited_until,
+            last_rate_limited_at,
+            last_rate_limit_reason,
+            created_at,
+            updated_at,
+            expires_at,
+            revoked_at,
+            revoke_reason
+        ) VALUES (?, ?, NULL, ?, NULL, '2025-03-26', NULL, ?, 'control', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, NULL)
+        "#,
+    )
+    .bind("sess-admin-users-shadow-cutover-pending")
+    .bind("upstream-admin-users-shadow-cutover-pending")
+    .bind(&token.id)
+    .bind(MCP_GATEWAY_MODE_UPSTREAM)
+    .bind(now - 300)
+    .bind(now - 60)
+    .bind(now + 3_600)
+    .execute(&pool)
+    .await
+    .expect("insert active upstream session");
+
+    proxy
+        .record_upstream_reconciliation_usage(
+            &token.id,
+            "key-shadow-cutover-pending",
+            &format!("account:{}", user.user_id),
+            None,
+        )
+        .await
+        .expect("record shadow usage during pending cutover")
+        .expect("shadow period");
+
+    let addr = spawn_admin_users_server(proxy, true).await;
+    let response = Client::new()
+        .get(format!("http://{addr}/api/users?page=1&per_page=20"))
+        .send()
+        .await
+        .expect("list users request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.expect("list users json");
+    let items = body["items"].as_array().expect("items array");
+    let user_item = items
+        .iter()
+        .find(|item| item["userId"].as_str() == Some(user.user_id.as_str()))
+        .expect("user row");
+    assert_eq!(user_item["shadowDailyCreditsUsed"].as_i64(), Some(9));
+    assert_eq!(
+        user_item["shadowDailyAvailability"].as_str(),
+        Some("projected")
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn list_users_hides_unsettled_shadow_projection_after_gates_turn_off() {
+    let db_path = temp_db_path("admin-users-shadow-daily-unsettled-after-gates-off");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options(
+        vec!["tvly-admin-users-shadow-unsettled".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        tavily_hikari::TavilyProxyOptions::from_database_path(&db_str),
+    )
+    .await
+    .expect("proxy created");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "admin-users-shadow-unsettled".to_string(),
+            username: Some("shadow-unsettled".to_string()),
+            name: Some("Shadow Unsettled".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("shadow-unsettled-token"))
+        .await
+        .expect("bind user token");
+    proxy
+        .charge_token_quota(&token.id, 9)
+        .await
+        .expect("charge user quota");
+    proxy
+        .record_upstream_reconciliation_usage(
+            &token.id,
+            "key-shadow-unsettled",
+            &format!("account:{}", user.user_id),
+            None,
+        )
+        .await
+        .expect("record shadow usage")
+        .expect("shadow period");
+
+    settings.api_rebalance_enabled = false;
+    settings.api_rebalance_percent = 0;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("disable gate before settlement");
 
     let addr = spawn_admin_users_server(proxy, true).await;
     let response = Client::new()
