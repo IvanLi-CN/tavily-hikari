@@ -1,5 +1,7 @@
 const RECONCILIATION_SETTLEMENT_MODE_ACTUAL: &str = "actual";
 const RECONCILIATION_SETTLEMENT_MODE_SHADOW: &str = "shadow";
+const RECONCILIATION_STATUS_SETTLED: &str = "settled";
+const RECONCILIATION_STATUS_DEGRADED: &str = "degraded";
 const RECONCILIATION_STATUS_SHADOW_SETTLED: &str = "shadow_settled";
 const RECONCILIATION_STATUS_SHADOW_DEGRADED: &str = "shadow_degraded";
 pub(crate) const RECONCILIATION_STATUS_RATE_LIMITED: &str = "rate_limited";
@@ -819,9 +821,9 @@ impl KeyStore {
         .bind(candidate.period_start)
         .bind(candidate.period_end)
         .bind(if candidate.degraded {
-            "degraded"
+            RECONCILIATION_STATUS_DEGRADED
         } else {
-            "settled"
+            RECONCILIATION_STATUS_SETTLED
         })
         .bind(upstream_usage)
         .bind(local_billed_credits)
@@ -1245,15 +1247,25 @@ impl KeyStore {
             .push_bind(RECONCILIATION_SETTLEMENT_MODE_SHADOW)
             .push(
                 ") GROUP BY u.token_id, u.period_code, u.billing_subject) \
-                 SELECT SUBSTR(billing_subject, 9) AS user_id, COUNT(*) AS exact_windows \
-                 FROM actual_only_windows \
-                 GROUP BY billing_subject",
+                 SELECT SUBSTR(w.billing_subject, 9) AS user_id, COUNT(*) AS total_windows, \
+                 COALESCE(SUM(CASE WHEN s.status IN (",
+            );
+        actual_window_query
+            .push_bind(RECONCILIATION_STATUS_SETTLED)
+            .push(", ")
+            .push_bind(RECONCILIATION_STATUS_DEGRADED)
+            .push(
+                ") THEN 1 ELSE 0 END), 0) AS terminal_windows \
+                 FROM actual_only_windows w \
+                 LEFT JOIN upstream_reconciliation_settlements s \
+                   ON s.settlement_key = 'v1:' || w.token_id || ':' || w.period_code \
+                 GROUP BY w.billing_subject",
             );
         let actual_window_rows = actual_window_query
-            .build_query_as::<(String, i64)>()
+            .build_query_as::<(String, i64, i64)>()
             .fetch_all(&self.pool)
             .await?;
-        for (user_id, exact_windows) in actual_window_rows {
+        for (user_id, total_windows, terminal_windows) in actual_window_rows {
             let entry = projections
                 .entry(user_id)
                 .or_insert(AccountShadowDailyProjection {
@@ -1262,8 +1274,8 @@ impl KeyStore {
                     resolved_window_count: 0,
                     has_shadow_projection_data: false,
                 });
-            entry.observed_window_count += exact_windows;
-            entry.resolved_window_count += exact_windows;
+            entry.observed_window_count += total_windows;
+            entry.resolved_window_count += terminal_windows;
         }
         Ok(projections)
     }
