@@ -460,7 +460,12 @@ async fn list_users(
             })?
     };
     let shadow_compare_enabled = !system_settings.upstream_precise_reconciliation_enabled;
-    let shadow_daily_projection = if page_user_ids.is_empty() || !shadow_compare_enabled {
+    let shadow_projection_ready = shadow_compare_enabled
+        && system_settings.upstream_project_id_mode
+            == tavily_hikari::UpstreamProjectIdMode::AccessToken
+        && system_settings.api_rebalance_enabled
+        && system_settings.rebalance_mcp_enabled;
+    let shadow_daily_projection = if page_user_ids.is_empty() || !shadow_projection_ready {
         std::collections::HashMap::new()
     } else {
         state
@@ -486,7 +491,7 @@ async fn list_users(
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
-        let (shadow_daily_credits_used, shadow_daily_availability) = if shadow_compare_enabled {
+        let (shadow_daily_credits_used, shadow_daily_availability) = if shadow_projection_ready {
             let projection = shadow_daily_projection.get(&row.user.user_id);
             let shadow_daily_credits_used = Some(
                 row.summary.daily_credits_used.saturating_add(

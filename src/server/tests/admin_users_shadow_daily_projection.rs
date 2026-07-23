@@ -482,3 +482,66 @@ async fn list_users_reports_shadow_daily_usage_as_confirmed_or_projected() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn list_users_hides_shadow_projection_until_compare_ready() {
+    let db_path = temp_db_path("admin-users-shadow-daily-not-ready");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options(
+        vec!["tvly-admin-users-shadow-not-ready".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        tavily_hikari::TavilyProxyOptions::from_database_path(&db_str),
+    )
+    .await
+    .expect("proxy created");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings without shadow readiness");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "admin-users-shadow-not-ready".to_string(),
+            username: Some("shadow-not-ready".to_string()),
+            name: Some("Shadow Not Ready".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("shadow-not-ready-token"))
+        .await
+        .expect("bind user token");
+    proxy
+        .charge_token_quota(&token.id, 9)
+        .await
+        .expect("charge user quota");
+
+    let addr = spawn_admin_users_server(proxy, true).await;
+    let response = Client::new()
+        .get(format!("http://{addr}/api/users?page=1&per_page=20"))
+        .send()
+        .await
+        .expect("list users request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.expect("list users json");
+    let items = body["items"].as_array().expect("items array");
+    let user_item = items
+        .iter()
+        .find(|item| item["userId"].as_str() == Some(user.user_id.as_str()))
+        .expect("user row");
+    assert!(user_item["shadowDailyCreditsUsed"].is_null());
+    assert!(user_item["shadowDailyAvailability"].is_null());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
