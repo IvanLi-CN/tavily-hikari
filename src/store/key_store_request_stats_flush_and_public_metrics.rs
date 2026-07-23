@@ -1,3 +1,9 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestStatsReadFreshness {
+    Fresh,
+    DurableFallback,
+}
+
 impl KeyStore {
     pub(crate) async fn flush_request_stats_writes(&self) -> Result<(), ProxyError> {
         self.flush_request_stats_writes_with_wait_policy(&self.pool, Duration::from_secs(10), None)
@@ -7,7 +13,7 @@ impl KeyStore {
     pub(crate) async fn best_effort_flush_request_stats_writes_for_read(
         &self,
         read_operation: &'static str,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<RequestStatsReadFreshness, ProxyError> {
         const RETRY_BUDGET: Duration = Duration::from_millis(250);
         let inflight_wait_deadline = self.backend_time.instant_now() + RETRY_BUDGET;
         match self
@@ -18,7 +24,7 @@ impl KeyStore {
             )
             .await
         {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(RequestStatsReadFreshness::Fresh),
             Err(err)
                 if is_transient_sqlite_write_error(&err)
                     || is_request_stats_flush_wait_budget_exhausted(&err) =>
@@ -30,7 +36,7 @@ impl KeyStore {
                     error = %err,
                     "serving durable stats without flushing pending request stats"
                 );
-                Ok(())
+                Ok(RequestStatsReadFreshness::DurableFallback)
             }
             Err(err) => Err(err),
         }

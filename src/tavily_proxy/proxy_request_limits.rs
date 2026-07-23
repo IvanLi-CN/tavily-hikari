@@ -202,11 +202,14 @@ impl TavilyProxy {
             let generated_at = self.backend_time.now_ts();
             let snapshot = self
                 .key_store
-                .fetch_user_rankings_snapshot(generated_at, USER_RANKINGS_REFRESH_INTERVAL_SECS)
+                .fetch_user_rankings_snapshot_with_freshness(
+                    generated_at,
+                    USER_RANKINGS_REFRESH_INTERVAL_SECS,
+                )
                 .await;
             let mut cache = self.user_rankings_cache.lock().await;
             cache.loading = false;
-            if let Ok(value) = snapshot.as_ref() {
+            if let Ok((value, RequestStatsReadFreshness::Fresh)) = snapshot.as_ref() {
                 cache.cached = Some(CachedUserRankingsSnapshot {
                     generated_at: self.backend_time.instant_now(),
                     value: value.clone(),
@@ -214,7 +217,7 @@ impl TavilyProxy {
             }
             cache.notify.notify_waiters();
             load_guard.disarm();
-            return snapshot;
+            return snapshot.map(|(value, _)| value);
         }
     }
 

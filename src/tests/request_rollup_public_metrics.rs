@@ -587,10 +587,27 @@ async fn admin_user_rankings_snapshot_returns_promptly_when_flush_hits_write_loc
     let db_path = temp_db_path("admin-user-rankings-write-lock-fallback");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-admin-rankings-lock").await;
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "user-rankings-fallback".to_string(),
+            username: Some("rankings_fallback".to_string()),
+            name: Some("Rankings Fallback".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("create rankings user");
+    let created_at = proxy
+        .backend_time()
+        .now_ts()
+        .saturating_sub(SECS_PER_FIVE_MINUTES + 1);
 
     proxy
         .key_store
-        .enqueue_request_stats_rollup_for_test(None, proxy.backend_time().now_ts(), OUTCOME_SUCCESS)
+        .enqueue_request_stats_rollup_for_user_for_test(&user.user_id, created_at, OUTCOME_SUCCESS)
         .await;
 
     let mut lock_conn = open_write_lock_connection(&db_str).await;
@@ -607,6 +624,26 @@ async fn admin_user_rankings_snapshot_returns_promptly_when_flush_hits_write_loc
         .await
         .expect("release writer lock");
     lock_conn.close().await.expect("close lock connection");
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("flush request stats after lock release");
+
+    let refreshed = proxy
+        .user_rankings_snapshot()
+        .await
+        .expect("rankings should refresh immediately after contention clears");
+    assert_eq!(
+        refreshed
+            .last24h
+            .primary_success_top
+            .first()
+            .map(|row| (row.user.user_id.as_str(), row.value)),
+        Some((user.user_id.as_str(), 1)),
+        "fallback snapshots must not remain cached after the durable flush succeeds"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
