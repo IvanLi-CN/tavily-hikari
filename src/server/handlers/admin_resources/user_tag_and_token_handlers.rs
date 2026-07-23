@@ -498,15 +498,25 @@ async fn list_users(
             .copied()
             .unwrap_or_default();
         let projection = shadow_daily_projection.get(&row.user.user_id);
-        let has_persisted_shadow_projection =
-            projection.is_some_and(|value| {
-                value.shadow_observed_window_count > 0
-                    && value.shadow_observed_window_count == value.shadow_resolved_window_count
-            });
+        let precise_cutover_configured = system_settings.upstream_project_id_mode
+            == tavily_hikari::UpstreamProjectIdMode::AccessToken
+            && system_settings.api_rebalance_enabled
+            && system_settings.rebalance_mcp_enabled
+            && system_settings.upstream_precise_reconciliation_enabled;
+        let has_pending_shadow_projection = projection.is_some_and(|value| {
+            value.shadow_observed_window_count > value.shadow_resolved_window_count
+        });
+        let has_persisted_shadow_projection = projection.is_some_and(|value| {
+            value.shadow_observed_window_count > 0
+                && value.shadow_observed_window_count == value.shadow_resolved_window_count
+        });
+        let show_hybrid_shadow_projection =
+            shadow_compare_active
+                || (precise_cutover_configured && has_pending_shadow_projection);
         let show_shadow_projection =
-            shadow_compare_active || has_persisted_shadow_projection;
+            show_hybrid_shadow_projection || has_persisted_shadow_projection;
         let (shadow_daily_credits_used, shadow_daily_availability) = if show_shadow_projection {
-            let shadow_daily_credits_used = Some(if shadow_compare_active {
+            let shadow_daily_credits_used = Some(if show_hybrid_shadow_projection {
                 row.summary.daily_credits_used.saturating_add(
                     projection.map(|value| value.confirmed_delta_credits).unwrap_or_default(),
                 )
@@ -515,15 +525,18 @@ async fn list_users(
                     .map(|value| value.shadow_settled_credits_used)
                     .unwrap_or_default()
             });
-            let shadow_daily_availability = if projection.is_some_and(|value| {
-                value.observed_window_count > 0
-                    && value.observed_window_count == value.resolved_window_count
-            })
-                || (projection.is_none() && row.summary.daily_credits_used == 0)
-            {
-                Some(AdminUserShadowDailyAvailability::Confirmed)
+            let shadow_daily_availability = if show_hybrid_shadow_projection {
+                if projection.is_some_and(|value| {
+                    value.observed_window_count > 0
+                        && value.observed_window_count == value.resolved_window_count
+                }) || (projection.is_none() && row.summary.daily_credits_used == 0)
+                {
+                    Some(AdminUserShadowDailyAvailability::Confirmed)
+                } else {
+                    Some(AdminUserShadowDailyAvailability::Projected)
+                }
             } else {
-                Some(AdminUserShadowDailyAvailability::Projected)
+                Some(AdminUserShadowDailyAvailability::Confirmed)
             };
             (shadow_daily_credits_used, shadow_daily_availability)
         } else {
