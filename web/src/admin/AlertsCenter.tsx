@@ -33,6 +33,7 @@ import {
   getAlertUntilFromSearch,
   getAlertUserIdFromSearch,
   getAlertsViewFromSearch,
+  modulePath,
   type AlertsCenterView,
 } from './routes'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
@@ -72,6 +73,8 @@ function alertTypeTone(type: AlertType): StatusTone {
   switch (type) {
     case 'upstream_key_blocked':
     case 'user_quota_exhausted':
+    case 'api_key_exhausted':
+    case 'job_failed':
       return 'error'
     case 'upstream_usage_limit_432':
     case 'upstream_rate_limited_429':
@@ -167,7 +170,9 @@ function hasClickableGroupSubject(group: AlertGroup): boolean {
     ? Boolean(group.user?.userId)
     : group.subjectKind === 'token'
       ? Boolean(group.token?.id)
-      : Boolean(group.key?.id)
+      : group.subjectKind === 'key'
+        ? Boolean(group.key?.id)
+        : Boolean(group.job?.id)
 }
 
 function isCompatibilityGroup(group: Pick<AlertGroup, 'groupingKind'>): boolean {
@@ -182,7 +187,7 @@ function defaultCopy(language: Language) {
   return language === 'zh'
     ? {
         title: '告警中心',
-        description: '查看 429、上游用量限制 432、上游 Key 封禁、本地请求限流与额度耗尽事件，并按同一筛选口径聚合。',
+        description: '查看 429、上游用量限制 432、上游 Key 封禁、API Key 耗尽、任务失败、本地请求限流与额度耗尽事件，并按同一筛选口径聚合。',
         tabs: { events: '事件记录', groups: '聚合告警' },
         filters: {
           type: '告警类型',
@@ -258,6 +263,7 @@ function defaultCopy(language: Language) {
         openUser: '查看用户',
         openToken: '查看令牌',
         openKey: '查看 Key',
+        openJobs: '查看任务',
         requestDrawer: {
           title: '请求详情',
           requestBody: '请求体',
@@ -273,11 +279,13 @@ function defaultCopy(language: Language) {
           upstream_key_blocked: '上游 Key 封禁',
           user_request_rate_limited: '用户请求限流',
           user_quota_exhausted: '用户额度耗尽',
+          api_key_exhausted: 'API Key 耗尽',
+          job_failed: '任务失败',
         },
       }
     : {
         title: 'Alerts',
-        description: 'Review upstream 429s, upstream usage-limit 432 events, upstream key blocks, local request-rate limits, and quota exhaustion with shared filters.',
+        description: 'Review upstream 429s, upstream usage-limit 432 events, upstream key blocks, API key exhaustion, job failures, local request-rate limits, and quota exhaustion with shared filters.',
         tabs: { events: 'Events', groups: 'Groups' },
         filters: {
           type: 'Alert type',
@@ -353,6 +361,7 @@ function defaultCopy(language: Language) {
         openUser: 'Open user',
         openToken: 'Open token',
         openKey: 'Open key',
+        openJobs: 'Open jobs',
         requestDrawer: {
           title: 'Request details',
           requestBody: 'Request body',
@@ -368,6 +377,8 @@ function defaultCopy(language: Language) {
           upstream_key_blocked: 'Upstream key blocked',
           user_request_rate_limited: 'User request rate limited',
           user_quota_exhausted: 'User quota exhausted',
+          api_key_exhausted: 'API key exhausted',
+          job_failed: 'Job failed',
         },
       }
 }
@@ -1028,6 +1039,11 @@ export default function AlertsCenter({
                               {event.key.label ?? event.key.id}
                             </button>
                           ) : null}
+                          {event.job ? (
+                            <button type="button" className="alerts-center-related-link alerts-center-related-link--mono" onClick={() => onNavigate(modulePath('jobs'))}>
+                              {`${copy.openJobs} #${event.job.id}`}
+                            </button>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell className="alerts-center-col alerts-center-col--request">
@@ -1122,6 +1138,10 @@ export default function AlertsCenter({
                                     }
                                     if (group.subjectKind === 'key' && group.key?.id) {
                                       onOpenKey(group.key.id)
+                                      return
+                                    }
+                                    if (group.subjectKind === 'job' && group.job?.id) {
+                                      onNavigate(modulePath('jobs'))
                                     }
                                   }}
                                 >

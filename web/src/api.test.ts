@@ -414,8 +414,6 @@ describe('admin user tag api helpers', () => {
             exhaustedKeys: [],
             recentLogs: [],
             recentJobs: [],
-            disabledTokens: [],
-            tokenCoverage: 'ok',
             recentAlerts: {
               windowHours: 24,
               totalEvents: 3,
@@ -484,7 +482,6 @@ describe('admin user tag api helpers', () => {
     expect(overview.monthSeries.current).toHaveLength(31)
     expect(overview.monthSeries.current[7]?.total).toBeNull()
     expect(overview.monthSeries.comparison[0]?.total).toBe(90)
-    expect(overview.tokenCoverage).toBe('ok')
     expect(overview.recentAlerts.totalEvents).toBe(3)
     expect(overview.recentAlerts.groupedCountWindows.map((item) => item.windowHours)).toEqual([1, 24, 168])
     expect(overview.recentAlerts.topGroups[0]?.latestEvent.request?.id).toBe(91)

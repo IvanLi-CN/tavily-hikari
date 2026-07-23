@@ -1196,8 +1196,6 @@ function demoDashboardOverview(now = Date.now()) {
     exhaustedKeys: demoState.keys.filter((key) => key.status !== 'active'),
     recentLogs: demoState.logs.slice(0, 8),
     recentJobs: demoState.jobs.slice(0, 6).map(serverJobToView),
-    disabledTokens: demoState.tokens.filter((token) => !token.enabled),
-    tokenCoverage: 'ok',
     recentAlerts: demoRecentAlerts(),
   }
 }

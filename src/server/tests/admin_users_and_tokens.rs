@@ -43,18 +43,18 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn admin_dashboard_sse_snapshot_refreshes_when_disabled_token_feed_breaks() {
-        let db_path = temp_db_path("admin-dashboard-snapshot-disabled-token-feed-error");
+    async fn admin_dashboard_sse_snapshot_refreshes_when_recent_alerts_change() {
+        let db_path = temp_db_path("admin-dashboard-snapshot-recent-alerts-change");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(
-            vec!["tvly-admin-dashboard-disabled-token-feed-error".to_string()],
+            vec!["tvly-admin-dashboard-recent-alerts-change".to_string()],
             DEFAULT_UPSTREAM,
             &db_str,
         )
         .await
         .expect("proxy created");
 
-        let admin_password = "admin-dashboard-disabled-token-feed-password";
+        let admin_password = "admin-dashboard-recent-alerts-change-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -97,15 +97,8 @@ use super::upstream_support_and_manual_jobs::*;
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
             .expect("initial snapshot data");
-        let initial_json: serde_json::Value =
+        let _initial_json: serde_json::Value =
             serde_json::from_str(initial_data).expect("initial snapshot payload json");
-        assert_eq!(
-            initial_json
-                .get("tokenCoverage")
-                .and_then(|value| value.as_str()),
-            Some("ok")
-        );
-
         let options = SqliteConnectOptions::new()
             .filename(&db_str)
             .create_if_missing(true)
@@ -118,10 +111,32 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("open db pool");
 
-        sqlx::query("DROP TABLE auth_tokens")
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                counts_business_quota,
+                created_at
+            ) VALUES ('alerts-bound', 'POST', '/mcp', NULL, 429, -1, 'mcp_search', 'MCP Search', 'POST /mcp', 'quota_exhausted', 'hourly any-request limit exceeded', 'none', 'none', 'none', 0, ?)
+            "#,
+        )
+            .bind(Utc::now().timestamp())
             .execute(&pool)
             .await
-            .expect("drop auth_tokens");
+            .expect("insert recent alert auth token log");
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut buffer = String::new();
@@ -148,33 +163,22 @@ use super::upstream_support_and_manual_jobs::*;
                 };
                 let payload: serde_json::Value =
                     serde_json::from_str(data).expect("refreshed snapshot payload json");
-                if payload
-                    .get("tokenCoverage")
-                    .and_then(|value| value.as_str())
-                    == Some("error")
-                {
-                    refreshed_snapshot = Some(payload);
-                    break;
-                }
+                refreshed_snapshot = Some(payload);
+                break;
             }
             if refreshed_snapshot.is_some() {
                 break;
             }
         }
 
-        let refreshed_snapshot = refreshed_snapshot.expect("token coverage snapshot refresh");
+        let refreshed_snapshot = refreshed_snapshot.expect("dashboard snapshot refresh");
+        assert!(refreshed_snapshot.get("summary").is_some());
+        assert!(refreshed_snapshot.get("recentAlerts").is_some());
         assert_eq!(
             refreshed_snapshot
-                .get("tokenCoverage")
-                .and_then(|value| value.as_str()),
-            Some("error")
-        );
-        assert_eq!(
-            refreshed_snapshot
-                .get("disabledTokens")
-                .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(0)
+                .pointer("/recentAlerts/totalEvents")
+                .and_then(|value| value.as_i64()),
+            Some(1)
         );
 
         drop(events_resp);

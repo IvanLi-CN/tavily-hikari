@@ -829,8 +829,6 @@ const DASHBOARD_RECENT_LOGS_LIMIT: usize = 5;
 const DASHBOARD_TREND_SOURCE_LIMIT: usize = 64;
 const DASHBOARD_TREND_WINDOW_SIZE: usize = 8;
 const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
-const DASHBOARD_DISABLED_TOKENS_LIMIT: usize = 5;
-const DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT: usize = DASHBOARD_DISABLED_TOKENS_LIMIT + 1;
 const DASHBOARD_OVERVIEW_LOADING_STALE_AFTER: Duration = Duration::from_secs(30);
 const DASHBOARD_RECENT_ALERTS_TOKEN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -861,10 +859,6 @@ struct DashboardOverviewPayload {
     recent_logs: Vec<RequestLogView>,
     #[serde(rename = "recentJobs")]
     recent_jobs: Vec<JobLogView>,
-    #[serde(rename = "disabledTokens")]
-    disabled_tokens: Vec<AuthTokenView>,
-    #[serde(rename = "tokenCoverage")]
-    token_coverage: String,
     #[serde(rename = "recentAlerts")]
     recent_alerts: DashboardRecentAlertsView,
 }
@@ -1290,32 +1284,8 @@ async fn build_dashboard_overview_payload(
         .await
         .unwrap_or_else(|_| tavily_hikari::RecentAlertsSummary::default());
     let recent_alerts_token = dashboard_recent_alerts_token_or_fallback(state, 24, &recent_alerts).await;
-    let (mut disabled_tokens, token_coverage) = match state
-        .proxy
-        .list_dashboard_disabled_tokens(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
-        .await
-    {
-        Ok(disabled_tokens) => {
-            let token_coverage = if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
-                "truncated"
-            } else {
-                "ok"
-            };
-            (disabled_tokens, token_coverage)
-        }
-        Err(_) => (Vec::new(), "error"),
-    };
-    if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
-        disabled_tokens.truncate(DASHBOARD_DISABLED_TOKENS_LIMIT);
-    }
 
     let hourly_window_anchor = dashboard_hourly_window_anchor(state.proxy.backend_time().now_ts());
-    let disabled_tokens_error = token_coverage == "error";
-    let disabled_token_truncated = token_coverage == "truncated";
-    let disabled_token_ids = disabled_tokens
-        .iter()
-        .map(|token| token.id.clone())
-        .collect::<Vec<_>>();
     let recent_job_signatures = recent_jobs
         .iter()
         .map(|job| (job.id, job.status.clone(), job.finished_at))
@@ -1356,8 +1326,6 @@ async fn build_dashboard_overview_payload(
             exhausted_keys: exhausted_keys.into_iter().map(ApiKeyView::from_list).collect(),
             recent_logs,
             recent_jobs: recent_jobs.into_iter().map(JobLogView::from).collect(),
-            disabled_tokens: disabled_tokens.into_iter().map(AuthTokenView::from).collect(),
-            token_coverage: token_coverage.to_string(),
             recent_alerts: recent_alerts_view,
         },
         freshness: DashboardOverviewFreshness {
@@ -1393,9 +1361,6 @@ async fn build_dashboard_overview_payload(
             recent_request_logs,
             trend_request_logs,
             recent_jobs: recent_job_signatures,
-            disabled_tokens: disabled_token_ids,
-            disabled_tokens_error,
-            disabled_tokens_truncated: disabled_token_truncated,
             recent_alerts_token,
             recent_alerts_total_events: recent_alerts.total_events,
             recent_alerts_grouped_count: recent_alerts.grouped_count,
@@ -1622,14 +1587,6 @@ async fn compute_dashboard_overview_freshness(
         .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
         .await
         .unwrap_or_default();
-    let (disabled_tokens, disabled_tokens_error) = match state
-        .proxy
-        .list_dashboard_disabled_token_ids(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
-        .await
-    {
-        Ok(disabled_tokens) => (disabled_tokens, false),
-        Err(_) => (Vec::new(), true),
-    };
     let recent_jobs = state
         .proxy
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
@@ -1668,13 +1625,6 @@ async fn compute_dashboard_overview_freshness(
         recent_request_logs,
         trend_request_logs,
         recent_jobs,
-        disabled_tokens: disabled_tokens
-            .iter()
-            .take(DASHBOARD_DISABLED_TOKENS_LIMIT)
-            .cloned()
-            .collect(),
-        disabled_tokens_error,
-        disabled_tokens_truncated: disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT,
         recent_alerts_token,
         recent_alerts_total_events: recent_alerts.total_events,
         recent_alerts_grouped_count: recent_alerts.grouped_count,

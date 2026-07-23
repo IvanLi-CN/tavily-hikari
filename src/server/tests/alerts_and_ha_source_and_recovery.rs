@@ -334,6 +334,11 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
                 tavily_hikari::ALERT_TYPE_USER_QUOTA_EXHAUSTED.to_string(),
                 0
             ),
+            (
+                tavily_hikari::ALERT_TYPE_API_KEY_EXHAUSTED.to_string(),
+                0
+            ),
+            (tavily_hikari::ALERT_TYPE_JOB_FAILED.to_string(), 0),
         ]
     );
     assert_ne!(before_sig, after_sig);

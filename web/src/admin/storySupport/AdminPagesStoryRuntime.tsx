@@ -3603,17 +3603,11 @@ export function DashboardPageCanvas({ beforeIntro }: { beforeIntro?: ReactNode }
             }
           }),
         }}
-        tokenCoverage="truncated"
-        tokens={MOCK_TOKENS}
-        keys={MOCK_KEYS}
         logs={MOCK_REQUESTS}
         jobs={MOCK_JOBS}
         recentAlerts={STORY_RECENT_ALERTS}
-        onOpenModule={() => {}}
         onOpenRecentAlerts={() => {}}
         onOpenUser={() => {}}
-        onOpenToken={() => {}}
-        onOpenKey={() => {}}
       />
     </AdminPageFrame>
   )

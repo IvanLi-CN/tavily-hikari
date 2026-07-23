@@ -303,21 +303,10 @@ export interface AdminTranslationsShape {
     chartTypeMcpBillable: string
     chartTypeApiNonBillable: string
     chartTypeApiBillable: string
-    riskTitle: string
-    riskDescription: string
-    riskEmpty: string
     actionsTitle: string
     actionsDescription: string
     recentRequests: string
     recentJobs: string
-    openModule: string
-    openToken: string
-    openKey: string
-    disabledTokenRisk: string
-    exhaustedKeyRisk: string
-    failedJobRisk: string
-    tokenCoverageTruncated: string
-    tokenCoverageError: string
     recentAlertsTitle: string
     recentAlertsDescription: string
     recentAlertsOverviewTitle: string
@@ -347,6 +336,8 @@ export interface AdminTranslationsShape {
       upstream_key_blocked: string
       user_request_rate_limited: string
       user_quota_exhausted: string
+      api_key_exhausted: string
+      job_failed: string
     }
   }
   rankings: {

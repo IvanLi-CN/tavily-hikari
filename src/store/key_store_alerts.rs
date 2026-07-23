@@ -35,6 +35,15 @@ struct AlertEventProjectionRow {
     reason_code: Option<String>,
     reason_summary: Option<String>,
     reason_detail: Option<String>,
+    job_id: Option<i64>,
+    job_type: Option<String>,
+    job_trigger_source: Option<String>,
+    job_status: Option<String>,
+    job_attempt: Option<i64>,
+    job_message: Option<String>,
+    job_queued_at: Option<i64>,
+    job_started_at: Option<i64>,
+    job_finished_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +202,7 @@ fn build_compat_group_record(events: &[AlertEventRecord]) -> Option<AlertGroupRe
         user: latest_event.user.clone(),
         token: latest_event.token.clone(),
         key: latest_event.key.clone(),
+        job: latest_event.job.clone(),
         request_kind: latest_event.request_kind.clone(),
         count: events.len() as i64,
         first_seen: earliest_event.occurred_at,
@@ -239,6 +249,7 @@ fn build_child_group_record(id: String, events: Vec<AlertEventRecord>) -> Option
         user: latest_event.user.clone(),
         token: latest_event.token.clone(),
         key: latest_event.key.clone(),
+        job: latest_event.job.clone(),
         request_kind: None,
         count: events.len() as i64,
         first_seen: earliest_event.occurred_at,
@@ -453,6 +464,7 @@ fn build_semantic_mother_groups(children: Vec<AlertGroupRecord>) -> Vec<AlertGro
                 user: latest_child.user.clone(),
                 token: latest_child.token.clone(),
                 key: latest_child.key.clone(),
+                job: latest_child.job.clone(),
                 request_kind: None,
                 count: event_count,
                 first_seen,
@@ -563,6 +575,31 @@ fn build_alert_entity_ref(id: Option<String>) -> Option<AlertEntityRef> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_alert_job_ref(
+    id: Option<i64>,
+    job_type: Option<String>,
+    trigger_source: Option<String>,
+    status: Option<String>,
+    attempt: Option<i64>,
+    message: Option<String>,
+    queued_at: Option<i64>,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+) -> Option<AlertJobRef> {
+    Some(AlertJobRef {
+        id: id?,
+        job_type: job_type?,
+        trigger_source: trigger_source.unwrap_or_else(|| "scheduler".to_string()),
+        status: status?,
+        attempt: attempt.unwrap_or(1),
+        message,
+        queued_at: queued_at.unwrap_or_default(),
+        started_at,
+        finished_at,
+    })
+}
+
 fn build_alert_request_kind(
     method: Option<&str>,
     path: Option<&str>,
@@ -599,6 +636,7 @@ fn alert_subject_tuple(
     user: Option<&AlertUserRef>,
     token: Option<&AlertEntityRef>,
     key: Option<&AlertEntityRef>,
+    job: Option<&AlertJobRef>,
 ) -> (String, String, String) {
     let user_subject = || {
         user.map(|user| {
@@ -630,18 +668,34 @@ fn alert_subject_tuple(
         })
     };
 
+    let job_subject = || {
+        job.map(|job| {
+            (
+                ALERT_SUBJECT_JOB.to_string(),
+                job.id.to_string(),
+                format!("{} #{}", job.job_type, job.id),
+            )
+        })
+    };
+
     let preferred_subject = match alert_type {
         ALERT_TYPE_UPSTREAM_RATE_LIMITED_429
         | ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432
-        | ALERT_TYPE_UPSTREAM_KEY_BLOCKED => key_subject()
+        | ALERT_TYPE_UPSTREAM_KEY_BLOCKED
+        | ALERT_TYPE_API_KEY_EXHAUSTED => key_subject()
             .or_else(user_subject)
             .or_else(token_subject),
         ALERT_TYPE_USER_REQUEST_RATE_LIMITED | ALERT_TYPE_USER_QUOTA_EXHAUSTED => user_subject()
             .or_else(token_subject)
             .or_else(key_subject),
+        ALERT_TYPE_JOB_FAILED => job_subject()
+            .or_else(key_subject)
+            .or_else(user_subject)
+            .or_else(token_subject),
         _ => user_subject()
             .or_else(token_subject)
-            .or_else(key_subject),
+            .or_else(key_subject)
+            .or_else(job_subject),
     };
 
     if let Some(subject) = preferred_subject {
@@ -655,17 +709,41 @@ fn alert_subject_tuple(
     )
 }
 
+#[derive(Clone, Copy)]
+struct AlertTitleSummaryContext<'a> {
+    subject_label: &'a str,
+    token: Option<&'a AlertEntityRef>,
+    key: Option<&'a AlertEntityRef>,
+    job: Option<&'a AlertJobRef>,
+    request_kind: Option<&'a TokenRequestKind>,
+    error_message: Option<&'a str>,
+    reason_summary: Option<&'a str>,
+}
+
 fn build_alert_title_and_summary(
     alert_type: &str,
-    subject_label: &str,
-    token: Option<&AlertEntityRef>,
-    key: Option<&AlertEntityRef>,
-    request_kind: Option<&TokenRequestKind>,
-    error_message: Option<&str>,
-    reason_summary: Option<&str>,
+    context: AlertTitleSummaryContext<'_>,
 ) -> (String, String) {
+    let AlertTitleSummaryContext {
+        subject_label,
+        token,
+        key,
+        job,
+        request_kind,
+        error_message,
+        reason_summary,
+    } = context;
     let token_label = token.map(|value| value.label.as_str()).unwrap_or("unknown");
     let key_label = key.map(|value| value.label.as_str()).unwrap_or("unknown");
+    let job_type = job.map(|value| value.job_type.as_str()).unwrap_or("job");
+    let job_status = job.map(|value| value.status.as_str()).unwrap_or("failed");
+    let job_attempt = job.map(|value| value.attempt).unwrap_or(1);
+    let job_message_suffix = job
+        .and_then(|value| value.message.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" Message: {value}."))
+        .unwrap_or_default();
     let request_kind_label = request_kind
         .map(|value| value.label.as_str())
         .unwrap_or("Unknown request");
@@ -693,6 +771,14 @@ fn build_alert_title_and_summary(
         ALERT_TYPE_UPSTREAM_KEY_BLOCKED => (
             format!("Upstream key {key_label} was blocked"),
             format!("Maintenance evidence marked key {key_label} as blocked.{reason_suffix}"),
+        ),
+        ALERT_TYPE_API_KEY_EXHAUSTED => (
+            format!("Upstream key {key_label} was exhausted"),
+            format!("System maintenance marked key {key_label} as exhausted because upstream quota was exhausted.{reason_suffix}"),
+        ),
+        ALERT_TYPE_JOB_FAILED => (
+            format!("{subject_label} failed"),
+            format!("{job_type} finished with status {job_status} on attempt {job_attempt}.{job_message_suffix}"),
         ),
         ALERT_TYPE_USER_REQUEST_RATE_LIMITED => (
             format!("{subject_label} hit the local request-rate limit"),
@@ -735,290 +821,34 @@ impl KeyStore {
             .backend_time
             .now_ts()
             .saturating_sub(clamped_window_hours.saturating_mul(3600));
-        let row = sqlx::query(
+        let filters = AlertEventFilters {
+            alert_type: None,
+            since: Some(since),
+            until: None,
+            user_id: None,
+            token_id: None,
+            key_id: None,
+            request_kinds: &[],
+        };
+        let mut query = QueryBuilder::new("");
+        Self::push_alert_events_cte(&mut query, filters);
+        query.push(
             r#"
             SELECT
                 COALESCE(COUNT(*), 0) AS row_count,
-                COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0) AS created_at_sum,
-                COALESCE(SUM(COALESCE(request_log_id, 0)), 0) AS request_log_id_sum
-            FROM auth_token_logs
-            WHERE created_at >= ?
-              AND (
-                    failure_kind = 'upstream_rate_limited_429'
-                 OR result_status = 'quota_exhausted'
-              )
+                COALESCE(MAX(occurred_at), 0) AS max_occurred_at,
+                COALESCE(SUM(occurred_at), 0) AS occurred_at_sum,
+                COALESCE(SUM(COALESCE(request_log_id, 0) + COALESCE(job_id, 0) + LENGTH(COALESCE(row_sort_id, ''))), 0) AS identity_sum
+            FROM alerts
             "#,
-        )
-        .bind(since)
-        .fetch_one(&self.pool)
-        .await?;
+        );
+        let row = query.build().fetch_one(&self.pool).await?;
         Ok([
             row.try_get("row_count")?,
-            row.try_get("max_created_at")?,
-            row.try_get("created_at_sum")?,
-            row.try_get("request_log_id_sum")?,
+            row.try_get("max_occurred_at")?,
+            row.try_get("occurred_at_sum")?,
+            row.try_get("identity_sum")?,
         ])
-    }
-
-    fn alert_subject_kind_sql(alias: &str) -> String {
-        format!(
-            "CASE \
-                WHEN {alias}.alert_type IN ('upstream_rate_limited_429', 'upstream_usage_limit_432', 'upstream_key_blocked') AND {alias}.key_id IS NOT NULL THEN 'key' \
-                WHEN {alias}.user_id IS NOT NULL THEN 'user' \
-                WHEN {alias}.token_id IS NOT NULL THEN 'token' \
-                WHEN {alias}.key_id IS NOT NULL THEN 'key' \
-                ELSE 'token' \
-            END"
-        )
-    }
-
-    fn alert_subject_id_sql(alias: &str) -> String {
-        format!(
-            "CASE \
-                WHEN {alias}.alert_type IN ('upstream_rate_limited_429', 'upstream_usage_limit_432', 'upstream_key_blocked') AND {alias}.key_id IS NOT NULL THEN {alias}.key_id \
-                WHEN {alias}.user_id IS NOT NULL THEN {alias}.user_id \
-                WHEN {alias}.token_id IS NOT NULL THEN {alias}.token_id \
-                WHEN {alias}.key_id IS NOT NULL THEN {alias}.key_id \
-                ELSE 'unknown' \
-            END"
-        )
-    }
-
-    fn push_alert_request_kind_filter(
-        query: &mut QueryBuilder<'_, Sqlite>,
-        request_kind_expr: &str,
-        request_kinds: &[String],
-    ) {
-        let normalized = normalize_alert_request_kind_filters(request_kinds);
-        if normalized.is_empty() {
-            return;
-        }
-        query.push(" AND ");
-        query.push(request_kind_expr);
-        query.push(" IN (");
-        {
-            let mut separated = query.separated(", ");
-            for request_kind in normalized {
-                separated.push_bind(request_kind);
-            }
-        }
-        query.push(")");
-    }
-
-    fn push_auth_alert_filters<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
-        filters: AlertEventFilters<'a>,
-        key_expr: &str,
-    ) {
-        if let Some(alert_type) = filters.alert_type {
-            match alert_type {
-                ALERT_TYPE_UPSTREAM_RATE_LIMITED_429 => {
-                    query.push(" AND atl.failure_kind = ").push_bind(alert_type);
-                }
-                ALERT_TYPE_UPSTREAM_USAGE_LIMIT_432 => {
-                    query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432",
-                    );
-                }
-                ALERT_TYPE_USER_REQUEST_RATE_LIMITED => {
-                    query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND atl.counts_business_quota = 0",
-                    );
-                }
-                ALERT_TYPE_USER_QUOTA_EXHAUSTED => {
-                    query.push(
-                        " AND atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code, 0) <> 432 AND atl.counts_business_quota <> 0",
-                    );
-                }
-                ALERT_TYPE_UPSTREAM_KEY_BLOCKED => {
-                    query.push(" AND 1 = 0");
-                }
-                _ => {
-                    query.push(" AND 1 = 0");
-                }
-            };
-        }
-        if let Some(since) = filters.since {
-            query.push(" AND atl.created_at >= ").push_bind(since);
-        }
-        if let Some(until) = filters.until {
-            query.push(" AND atl.created_at <= ").push_bind(until);
-        }
-        if let Some(user_id) = filters.user_id {
-            query.push(" AND u.id = ").push_bind(user_id);
-        }
-        if let Some(token_id) = filters.token_id {
-            query.push(" AND atl.token_id = ").push_bind(token_id);
-        }
-        if let Some(key_id) = filters.key_id {
-            query.push(" AND ").push(key_expr).push(" = ").push_bind(key_id);
-        }
-    }
-
-    fn push_maintenance_alert_filters<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
-        filters: AlertEventFilters<'a>,
-    ) {
-        if let Some(alert_type) = filters.alert_type
-            && alert_type != ALERT_TYPE_UPSTREAM_KEY_BLOCKED
-        {
-            query.push(" AND 1 = 0");
-        }
-        if let Some(since) = filters.since {
-            query.push(" AND m.created_at >= ").push_bind(since);
-        }
-        if let Some(until) = filters.until {
-            query.push(" AND m.created_at <= ").push_bind(until);
-        }
-        if let Some(user_id) = filters.user_id {
-            query.push(" AND u.id = ").push_bind(user_id);
-        }
-        if let Some(token_id) = filters.token_id {
-            query
-                .push(" AND COALESCE(m.auth_token_id, atl.token_id) = ")
-                .push_bind(token_id);
-        }
-        if let Some(key_id) = filters.key_id {
-            query.push(" AND m.key_id = ").push_bind(key_id);
-        }
-    }
-
-    fn push_alert_events_cte<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
-        filters: AlertEventFilters<'a>,
-    ) {
-        let effective_request_kind_sql = token_log_request_kind_key_sql(
-            "COALESCE(rl.path, atl.path)",
-            "COALESCE(atl.request_kind_key, rl.request_kind_key)",
-        );
-        let effective_request_kind_label_sql =
-            canonical_request_kind_label_sql(&effective_request_kind_sql);
-        let maintenance_request_kind_sql = token_log_request_kind_key_sql(
-            "COALESCE(atl.path, rl.path)",
-            "COALESCE(atl.request_kind_key, rl.request_kind_key)",
-        );
-        let maintenance_request_kind_label_sql =
-            canonical_request_kind_label_sql(&maintenance_request_kind_sql);
-
-        query.push("WITH alerts AS (");
-        query.push(" SELECT ");
-        query.push_bind(ALERT_SOURCE_AUTH_TOKEN_LOG);
-        query.push(format!(
-            r#" AS source_kind,
-                CAST(atl.id AS TEXT) AS source_id,
-                printf('atl:%020lld', atl.id) AS row_sort_id,
-                CASE
-                    WHEN atl.failure_kind = 'upstream_rate_limited_429' THEN 'upstream_rate_limited_429'
-                    WHEN atl.result_status = 'quota_exhausted' AND COALESCE(atl.http_status, rl.tavily_status_code) = 432 THEN 'upstream_usage_limit_432'
-                    WHEN atl.result_status = 'quota_exhausted' AND atl.counts_business_quota = 0 THEN 'user_request_rate_limited'
-                    WHEN atl.result_status = 'quota_exhausted' THEN 'user_quota_exhausted'
-                    ELSE ''
-                END AS alert_type,
-                atl.created_at AS occurred_at,
-                atl.token_id AS token_id,
-                COALESCE(atl.api_key_id, rl.api_key_id) AS key_id,
-                atl.request_log_id AS request_log_id,
-                COALESCE(NULLIF(TRIM(atl.method), ''), rl.method) AS method,
-                COALESCE(NULLIF(TRIM(atl.path), ''), rl.path) AS path,
-                COALESCE(atl.query, rl.query) AS query,
-                {effective_request_kind_sql} AS request_kind_key,
-                {effective_request_kind_label_sql} AS request_kind_label,
-                atl.request_kind_detail AS request_kind_detail,
-                atl.result_status AS result_status,
-                atl.failure_kind AS failure_kind,
-                atl.error_message AS error_message,
-                atl.counts_business_quota AS counts_business_quota,
-                u.id AS user_id,
-                u.display_name AS user_display_name,
-                u.username AS user_username,
-                NULL AS reason_code,
-                NULL AS reason_summary,
-                NULL AS reason_detail
-            FROM auth_token_logs atl
-            LEFT JOIN observability.request_logs rl
-              ON rl.id = atl.request_log_id
-             AND (
-                    atl.method IS NULL
-                 OR atl.method = ''
-                 OR atl.path IS NULL
-                 OR atl.path = ''
-                 OR atl.request_kind_key IS NULL
-                 OR atl.request_kind_key = ''
-                 OR atl.request_kind_label IS NULL
-                 OR atl.request_kind_label = ''
-                 OR atl.api_key_id IS NULL
-                 OR atl.query IS NULL
-                )
-            LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
-            LEFT JOIN users u ON u.id = b.user_id
-            WHERE (
-                atl.failure_kind = 'upstream_rate_limited_429'
-                OR atl.result_status = 'quota_exhausted'
-            )
-            "#
-        ));
-        Self::push_auth_alert_filters(
-            query,
-            filters,
-            "COALESCE(atl.api_key_id, rl.api_key_id)",
-        );
-
-        query.push(
-            r#"
-            UNION ALL
-            SELECT
-            "#,
-        );
-        query.push_bind(ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD);
-        query.push(format!(
-            r#" AS source_kind,
-                m.id AS source_id,
-                printf('maint:%s', m.id) AS row_sort_id,
-                'upstream_key_blocked' AS alert_type,
-                m.created_at AS occurred_at,
-                COALESCE(m.auth_token_id, atl.token_id) AS token_id,
-                m.key_id AS key_id,
-                COALESCE(m.request_log_id, atl.request_log_id) AS request_log_id,
-                COALESCE(NULLIF(TRIM(atl.method), ''), rl.method) AS method,
-                COALESCE(NULLIF(TRIM(atl.path), ''), rl.path) AS path,
-                COALESCE(atl.query, rl.query) AS query,
-                {maintenance_request_kind_sql} AS request_kind_key,
-                {maintenance_request_kind_label_sql} AS request_kind_label,
-                atl.request_kind_detail AS request_kind_detail,
-                atl.result_status AS result_status,
-                atl.failure_kind AS failure_kind,
-                atl.error_message AS error_message,
-                NULL AS counts_business_quota,
-                u.id AS user_id,
-                u.display_name AS user_display_name,
-                u.username AS user_username,
-                m.reason_code AS reason_code,
-                m.reason_summary AS reason_summary,
-                m.reason_detail AS reason_detail
-            FROM api_key_maintenance_records m
-            LEFT JOIN auth_token_logs atl ON atl.id = m.auth_token_log_id
-            LEFT JOIN observability.request_logs rl
-              ON rl.id = COALESCE(m.request_log_id, atl.request_log_id)
-             AND (
-                    atl.id IS NULL
-                 OR atl.method IS NULL
-                 OR atl.method = ''
-                 OR atl.path IS NULL
-                 OR atl.path = ''
-                 OR atl.request_kind_key IS NULL
-                 OR atl.request_kind_key = ''
-                 OR atl.request_kind_label IS NULL
-                 OR atl.request_kind_label = ''
-                 OR atl.query IS NULL
-                )
-            LEFT JOIN user_token_bindings b ON b.token_id = COALESCE(m.auth_token_id, atl.token_id)
-            LEFT JOIN users u ON u.id = b.user_id
-            WHERE COALESCE(m.reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
-            "#
-        ));
-        Self::push_maintenance_alert_filters(query, filters);
-        query.push(")");
     }
 
     fn summarize_alert_type_count_rows(rows: Vec<sqlx::sqlite::SqliteRow>) -> Vec<AlertTypeCount> {
@@ -1625,6 +1455,7 @@ impl KeyStore {
                     user: latest_event.user.clone(),
                     token: latest_event.token.clone(),
                     key: latest_event.key.clone(),
+                    job: latest_event.job.clone(),
                     request_kind: (group.grouping_kind == "compat")
                         .then(|| latest_event.request_kind.clone())
                         .flatten(),
@@ -1850,6 +1681,15 @@ impl KeyStore {
             reason_code: row.try_get("reason_code")?,
             reason_summary: row.try_get("reason_summary")?,
             reason_detail: row.try_get("reason_detail")?,
+            job_id: row.try_get("job_id")?,
+            job_type: row.try_get("job_type")?,
+            job_trigger_source: row.try_get("job_trigger_source")?,
+            job_status: row.try_get("job_status")?,
+            job_attempt: row.try_get("job_attempt")?,
+            job_message: row.try_get("job_message")?,
+            job_queued_at: row.try_get("job_queued_at")?,
+            job_started_at: row.try_get("job_started_at")?,
+            job_finished_at: row.try_get("job_finished_at")?,
         })
     }
 
@@ -1879,6 +1719,15 @@ impl KeyStore {
             reason_code,
             reason_summary,
             reason_detail,
+            job_id,
+            job_type,
+            job_trigger_source,
+            job_status,
+            job_attempt,
+            job_message,
+            job_queued_at,
+            job_started_at,
+            job_finished_at,
         } = row;
 
         let resolved_alert_type = if !alert_type.trim().is_empty() {
@@ -1898,6 +1747,17 @@ impl KeyStore {
         let user = build_alert_user_ref(user_id, user_display_name, user_username);
         let token = build_alert_entity_ref(token_id);
         let key = build_alert_entity_ref(key_id);
+        let job = build_alert_job_ref(
+            job_id,
+            job_type,
+            job_trigger_source,
+            job_status,
+            job_attempt,
+            job_message,
+            job_queued_at,
+            job_started_at,
+            job_finished_at,
+        );
         let request_kind = build_alert_request_kind(
             method.as_deref(),
             path.as_deref(),
@@ -1917,15 +1777,19 @@ impl KeyStore {
             user.as_ref(),
             token.as_ref(),
             key.as_ref(),
+            job.as_ref(),
         );
         let (title, summary) = build_alert_title_and_summary(
             resolved_alert_type.as_str(),
-            subject_label.as_str(),
-            token.as_ref(),
-            key.as_ref(),
-            request_kind.as_ref(),
-            error_message.as_deref(),
-            reason_summary.as_deref(),
+            AlertTitleSummaryContext {
+                subject_label: subject_label.as_str(),
+                token: token.as_ref(),
+                key: key.as_ref(),
+                job: job.as_ref(),
+                request_kind: request_kind.as_ref(),
+                error_message: error_message.as_deref(),
+                reason_summary: reason_summary.as_deref(),
+            },
         );
 
         let mut event = AlertEventRecord {
@@ -1940,6 +1804,7 @@ impl KeyStore {
             user,
             token,
             key,
+            job,
             request,
             request_kind,
             failure_kind,
@@ -2448,6 +2313,7 @@ mod alert_grouping_tests {
                 label: "tok_test".to_string(),
             }),
             key: None,
+            job: None,
             request: Some(AlertRequestRef {
                 id: occurred_at,
                 method: "POST".to_string(),
@@ -2489,12 +2355,17 @@ mod alert_grouping_tests {
 
         let (title, summary) = build_alert_title_and_summary(
             ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
-            "Alice Wang",
-            Some(&token),
-            None,
-            Some(&request_kind),
-            Some("user request rate limit exceeded on rolling 5m window (limit 25, used 25)"),
-            None,
+            AlertTitleSummaryContext {
+                subject_label: "Alice Wang",
+                token: Some(&token),
+                key: None,
+                job: None,
+                request_kind: Some(&request_kind),
+                error_message: Some(
+                    "user request rate limit exceeded on rolling 5m window (limit 25, used 25)",
+                ),
+                reason_summary: None,
+            },
         );
 
         assert_eq!(title, "Alice Wang hit the local request-rate limit");
@@ -2589,6 +2460,7 @@ mod alert_grouping_tests {
             Some(&user),
             Some(&token),
             Some(&key),
+            None,
         );
 
         assert_eq!(subject_kind, ALERT_SUBJECT_KEY);
@@ -2617,6 +2489,7 @@ mod alert_grouping_tests {
             Some(&user),
             Some(&token),
             Some(&key),
+            None,
         );
 
         assert_eq!(subject_kind, ALERT_SUBJECT_USER);

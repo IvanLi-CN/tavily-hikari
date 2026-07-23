@@ -1325,14 +1325,6 @@ use super::upstream_support_and_manual_jobs::*;
             snapshot_json.get("recentJobs").is_some(),
             "snapshot should expose recent jobs"
         );
-        assert!(
-            snapshot_json.get("disabledTokens").is_some(),
-            "snapshot should expose disabled tokens"
-        );
-        assert!(
-            snapshot_json.get("tokenCoverage").is_some(),
-            "snapshot should expose token coverage"
-        );
         assert_eq!(
             snapshot_json
                 .pointer("/trend/request")

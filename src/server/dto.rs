@@ -880,6 +880,36 @@ impl From<tavily_hikari::TokenRequestKind> for AlertRequestKindView {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AlertJobView {
+    id: i64,
+    job_type: String,
+    trigger_source: String,
+    status: String,
+    attempt: i64,
+    message: Option<String>,
+    queued_at: i64,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+}
+
+impl From<tavily_hikari::AlertJobRef> for AlertJobView {
+    fn from(value: tavily_hikari::AlertJobRef) -> Self {
+        Self {
+            id: value.id,
+            job_type: value.job_type,
+            trigger_source: value.trigger_source,
+            status: value.status,
+            attempt: value.attempt,
+            message: value.message,
+            queued_at: value.queued_at,
+            started_at: value.started_at,
+            finished_at: value.finished_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AlertEventView {
     id: String,
     #[serde(rename = "type")]
@@ -893,6 +923,7 @@ struct AlertEventView {
     user: Option<AlertUserView>,
     token: Option<AlertEntityRefView>,
     key: Option<AlertEntityRefView>,
+    job: Option<AlertJobView>,
     request: Option<AlertRequestRefView>,
     request_kind: Option<AlertRequestKindView>,
     failure_kind: Option<String>,
@@ -919,6 +950,7 @@ impl From<tavily_hikari::AlertEventRecord> for AlertEventView {
             user: value.user.map(AlertUserView::from),
             token: value.token.map(AlertEntityRefView::from),
             key: value.key.map(AlertEntityRefView::from),
+            job: value.job.map(AlertJobView::from),
             request: value.request.map(AlertRequestRefView::from),
             request_kind: value.request_kind.map(AlertRequestKindView::from),
             failure_kind: value.failure_kind,
@@ -967,6 +999,7 @@ struct AlertGroupView {
     user: Option<AlertUserView>,
     token: Option<AlertEntityRefView>,
     key: Option<AlertEntityRefView>,
+    job: Option<AlertJobView>,
     request_kind: Option<AlertRequestKindView>,
     count: i64,
     first_seen: i64,
@@ -995,6 +1028,7 @@ impl From<tavily_hikari::AlertGroupRecord> for AlertGroupView {
             user: value.user.map(AlertUserView::from),
             token: value.token.map(AlertEntityRefView::from),
             key: value.key.map(AlertEntityRefView::from),
+            job: value.job.map(AlertJobView::from),
             request_kind: value.request_kind.map(AlertRequestKindView::from),
             count: value.count,
             first_seen: value.first_seen,

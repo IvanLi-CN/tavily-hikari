@@ -1,9 +1,7 @@
 import { useId, useMemo } from 'react'
 
 import type {
-  ApiKeyStats,
   AlertGroup,
-  AuthToken,
   DashboardHourlyRequestWindow,
   DashboardMonthSeries,
   JobLogView,
@@ -13,7 +11,6 @@ import type {
 } from '../api'
 import RollingNumber from '../components/RollingNumber'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
-import type { AdminModuleId } from './routes'
 import { Line } from 'react-chartjs-2'
 import {
   CategoryScale,
@@ -117,21 +114,10 @@ export interface DashboardOverviewStrings {
   chartTypeMcpBillable: string
   chartTypeApiNonBillable: string
   chartTypeApiBillable: string
-  riskTitle: string
-  riskDescription: string
-  riskEmpty: string
   actionsTitle: string
   actionsDescription: string
   recentRequests: string
   recentJobs: string
-  openModule: string
-  openToken: string
-  openKey: string
-  disabledTokenRisk: string
-  exhaustedKeyRisk: string
-  failedJobRisk: string
-  tokenCoverageTruncated: string
-  tokenCoverageError: string
   recentAlertsTitle: string
   recentAlertsDescription: string
   recentAlertsOverviewTitle: string
@@ -155,7 +141,16 @@ export interface DashboardOverviewStrings {
   recentAlertsOpen: string
   recentAlertsOpenGroup: string
   recentAlertsOpenUser: string
-  recentAlertsTypeLabels: Record<'upstream_rate_limited_429' | 'upstream_usage_limit_432' | 'upstream_key_blocked' | 'user_request_rate_limited' | 'user_quota_exhausted', string>
+  recentAlertsTypeLabels: Record<
+    | 'upstream_rate_limited_429'
+    | 'upstream_usage_limit_432'
+    | 'upstream_key_blocked'
+    | 'user_request_rate_limited'
+    | 'user_quota_exhausted'
+    | 'api_key_exhausted'
+    | 'job_failed',
+    string
+  >
 }
 
 export type DashboardRecentAlertGroup = AlertGroup
@@ -172,18 +167,12 @@ interface DashboardOverviewProps {
   summaryWindows?: SummaryWindowsResponse | null
   hourlyRequestWindow: DashboardHourlyRequestWindow
   monthSeries?: DashboardMonthSeries | null
-  tokenCoverage: 'ok' | 'truncated' | 'error'
-  tokens: AuthToken[]
-  keys: ApiKeyStats[]
   logs: RequestLog[]
   jobs: JobLogView[]
   recentAlerts: RecentAlertsSummary
-  onOpenModule: (module: AdminModuleId) => void
   onOpenRecentAlerts: () => void
   onOpenRecentAlertGroup?: (group: DashboardRecentAlertGroup) => void
   onOpenUser?: (id: string) => void
-  onOpenToken: (id: string) => void
-  onOpenKey: (id: string) => void
   initialChartMode?: DashboardHourlyChartMode
   initialVisibleResultSeries?: ReadonlyArray<DashboardResultSeriesId>
   initialVisibleTypeSeries?: ReadonlyArray<DashboardTypeSeriesId>
@@ -469,6 +458,8 @@ function DashboardUsageBackdropChart({
 
 function alertSummaryTone(type: keyof DashboardOverviewStrings['recentAlertsTypeLabels']): StatusTone {
   switch (type) {
+    case 'api_key_exhausted':
+    case 'job_failed':
     case 'upstream_key_blocked':
     case 'user_quota_exhausted':
       return 'error'
@@ -560,18 +551,12 @@ export default function DashboardOverview({
   summaryWindows,
   hourlyRequestWindow,
   monthSeries,
-  tokenCoverage,
-  tokens,
-  keys,
   logs,
   jobs,
   recentAlerts,
-  onOpenModule,
   onOpenRecentAlerts,
   onOpenRecentAlertGroup,
   onOpenUser,
-  onOpenToken,
-  onOpenKey,
   initialChartMode,
   initialVisibleResultSeries,
   initialVisibleTypeSeries,
@@ -584,56 +569,6 @@ export default function DashboardOverview({
   const recentAlertsAlertHeaderId = `${recentAlertsTableId}-alert`
   const recentAlertsWindowHeaderId = `${recentAlertsTableId}-window`
   const recentAlertsReviewHeaderId = `${recentAlertsTableId}-review`
-  const disabledTokens = tokens.filter((item) => !item.enabled).slice(0, 5)
-  const exhaustedKeys = keys.filter((item) => item.status === 'exhausted').slice(0, 5)
-  const failingJobs = jobs
-    .filter((item) => {
-      const normalized = item.status.trim().toLowerCase()
-      return normalized === 'error' || normalized === 'failed'
-    })
-    .slice(0, 5)
-
-  const riskItems: Array<{ id: string; label: string; action?: () => void; actionLabel?: string }> = []
-  if (tokenCoverage === 'truncated') {
-    riskItems.push({
-      id: 'token-coverage-truncated',
-      label: strings.tokenCoverageTruncated,
-      action: () => onOpenModule('tokens'),
-      actionLabel: strings.openModule,
-    })
-  }
-  if (tokenCoverage === 'error') {
-    riskItems.push({
-      id: 'token-coverage-error',
-      label: strings.tokenCoverageError,
-      action: () => onOpenModule('tokens'),
-      actionLabel: strings.openModule,
-    })
-  }
-  for (const token of disabledTokens) {
-    riskItems.push({
-      id: `token-${token.id}`,
-      label: strings.disabledTokenRisk.replace('{id}', token.id),
-      action: () => onOpenToken(token.id),
-      actionLabel: strings.openToken,
-    })
-  }
-  for (const key of exhaustedKeys) {
-    riskItems.push({
-      id: `key-${key.id}`,
-      label: strings.exhaustedKeyRisk.replace('{id}', key.id),
-      action: () => onOpenKey(key.id),
-      actionLabel: strings.openKey,
-    })
-  }
-  for (const job of failingJobs) {
-    riskItems.push({
-      id: `job-${job.id}`,
-      label: strings.failedJobRisk.replace('{id}', String(job.id)).replace('{status}', job.status),
-      action: () => onOpenModule('jobs'),
-      actionLabel: strings.recentJobs,
-    })
-  }
 
   const openRecentAlertGroup = (group: DashboardRecentAlertGroup): void => {
     if (onOpenRecentAlertGroup) {
@@ -949,48 +884,9 @@ export default function DashboardOverview({
     monthSeriesValue,
   ])
   const monthComparisonNotice = monthBackdrop.hasVisibleComparison ? null : strings.monthComparisonEmpty
-  const alertGroupCount = overviewReady && recentAlerts.totalEvents > 0 ? 1 : 0
-  const priorityCount = riskItems.length + alertGroupCount
-  const focusMetric = todayTotalMetric ?? monthTotalMetric ?? statusMetrics[0] ?? null
 
   return (
     <div className="dashboard-overview-stack">
-      <section className="surface panel dashboard-priority-panel" aria-label={strings.riskTitle}>
-        <div className="dashboard-priority-copy">
-          <span className={`dashboard-priority-kicker${priorityCount > 0 ? ' dashboard-priority-kicker-warn' : ''}`}>
-            {priorityCount > 0 ? strings.riskTitle : strings.riskEmpty}
-          </span>
-          <div className="dashboard-priority-count" aria-label={`${strings.riskTitle}: ${overviewReady ? priorityCount : 0}`}>
-            {overviewReady
-              ? priorityCount > 0
-                ? String(priorityCount)
-                : '0'
-              : '—'}
-          </div>
-          <p className="panel-description">
-            {priorityCount > 0
-              ? `${strings.riskDescription} · ${strings.recentAlertsHits}: ${recentAlerts.groupedCount}`
-              : strings.currentStatusDescription}
-          </p>
-        </div>
-        <div className="dashboard-priority-strip">
-          {focusMetric ? (
-            <div className="dashboard-priority-metric">
-              <span>{focusMetric.label}</span>
-              <strong>{focusMetric.value}</strong>
-            </div>
-          ) : null}
-          <div className="dashboard-priority-actions">
-            <button type="button" className="btn btn-outline btn-sm" onClick={onOpenRecentAlerts}>
-              {strings.recentAlertsOpen}
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onOpenModule('tokens')}>
-              {strings.openModule}
-            </button>
-          </div>
-        </div>
-      </section>
-
       <section className="dashboard-summary-panel">
         {!overviewReady ? (
           <div className="surface panel dashboard-summary-fallback">
@@ -1109,33 +1005,6 @@ export default function DashboardOverview({
         chartPersistenceKey={chartPersistenceKey}
         chartLabelTimeZone={chartLabelTimeZone}
       />
-
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{strings.riskTitle}</h2>
-            <p className="panel-description">{strings.riskDescription}</p>
-          </div>
-        </div>
-        {!overviewReady ? (
-          <div className="empty-state alert">{strings.loading}</div>
-        ) : riskItems.length === 0 ? (
-          <div className="empty-state alert">{strings.riskEmpty}</div>
-        ) : (
-          <ul className="dashboard-risk-list">
-            {riskItems.map((item) => (
-              <li key={item.id}>
-                <span>{item.label}</span>
-                {item.action && (
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={item.action}>
-                    {item.actionLabel ?? strings.openModule}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
 
       <section className="surface panel">
         <div className="panel-header">

@@ -1082,6 +1082,8 @@ async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
         "all user tokens should mirror the user's primary key after the first bind"
     );
 
+    pool.close().await;
+    drop(pool);
     drop(proxy);
 
     let proxy_after_restart = TavilyProxy::with_endpoint(
@@ -1101,6 +1103,9 @@ async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
         .expect("second request succeeds");
     assert!(second.status.is_success());
 
+    let pool = open_sqlite_pool(&db_str, false, false)
+        .await
+        .expect("reopen sqlite pool");
     let api_key_ids: Vec<String> = sqlx::query_scalar(
         r#"SELECT api_key_id
            FROM request_logs

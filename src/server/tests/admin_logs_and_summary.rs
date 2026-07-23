@@ -1088,14 +1088,6 @@ use super::upstream_support_and_manual_jobs::*;
         assert!(body.get("recentLogs").is_some(), "recent logs should exist");
         assert!(body.get("recentJobs").is_some(), "recent jobs should exist");
         assert!(
-            body.get("disabledTokens").is_some(),
-            "disabled tokens should exist"
-        );
-        assert_eq!(
-            body.get("tokenCoverage").and_then(|value| value.as_str()),
-            Some("truncated")
-        );
-        assert!(
             body.get("keys").is_none(),
             "overview should not expose legacy keys alias"
         );
@@ -1178,13 +1170,6 @@ use super::upstream_support_and_manual_jobs::*;
                     .sum::<i64>()),
             Some(3)
         );
-        assert_eq!(
-            body.get("disabledTokens")
-                .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(5)
-        );
-
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -1261,17 +1246,6 @@ use super::upstream_support_and_manual_jobs::*;
                 .map(Vec::len),
             Some(0)
         );
-        assert_eq!(
-            body.get("disabledTokens")
-                .and_then(|value| value.as_array())
-                .map(Vec::len),
-            Some(0)
-        );
-        assert_eq!(
-            body.get("tokenCoverage").and_then(|value| value.as_str()),
-            Some("error")
-        );
-
         let _ = std::fs::remove_file(db_path);
     }
 

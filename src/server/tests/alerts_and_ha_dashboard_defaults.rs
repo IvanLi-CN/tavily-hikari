@@ -629,3 +629,169 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn alerts_and_dashboard_recent_alerts_include_api_key_exhausted_and_job_failed() {
+    let db_path = temp_db_path("alerts-dashboard-api-key-exhausted-job-failed");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-alerts-dashboard-api-key-exhausted-job-failed".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list api key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key exists")
+        .id;
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_maintenance_records (
+            id,
+            key_id,
+            source,
+            operation_code,
+            operation_summary,
+            reason_code,
+            reason_summary,
+            reason_detail,
+            request_log_id,
+            auth_token_log_id,
+            auth_token_id,
+            actor_user_id,
+            actor_display_name,
+            status_before,
+            status_after,
+            quarantine_before,
+            quarantine_after,
+            created_at
+        ) VALUES (
+            ?, ?, 'system', 'auto_mark_exhausted', '自动标记为 exhausted', 'quota_exhausted', '上游额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?
+        )
+        "#,
+    )
+    .bind("maint-api-key-exhausted-1")
+    .bind(&key_id)
+    .bind(now - 30)
+    .execute(&pool)
+    .await
+    .expect("insert api key exhausted alert");
+
+    sqlx::query(
+        r#"
+        INSERT INTO scheduled_jobs (
+            job_type, trigger_source, key_id, status, attempt, message, queued_at, started_at, finished_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("quota_sync")
+    .bind("manual")
+    .bind(&key_id)
+    .bind("failed")
+    .bind(2_i64)
+    .bind("quota sync failed after upstream timeout")
+    .bind(now - 25)
+    .bind(now - 24)
+    .bind(now - 20)
+    .execute(&pool)
+    .await
+    .expect("insert failed scheduled job");
+
+    let admin_password = "alerts-dashboard-api-key-exhausted-job-failed-password";
+    let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let login_resp = client
+        .post(format!("http://{}/api/admin/login", admin_addr))
+        .json(&serde_json::json!({ "password": admin_password }))
+        .send()
+        .await
+        .expect("admin login");
+    assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+    let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+        .expect("admin session cookie");
+
+    let events_resp = client
+        .get(format!("http://{}/api/alerts/events", admin_addr))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("alert events request");
+    assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+    let events_body: serde_json::Value = events_resp.json().await.expect("alert events json");
+    let event_types: Vec<String> = events_body
+        .get("items")
+        .and_then(|value| value.as_array())
+        .expect("events items")
+        .iter()
+        .filter_map(|item| item.get("type").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert!(event_types.contains(&"api_key_exhausted".to_string()));
+    assert!(event_types.contains(&"job_failed".to_string()));
+    assert_eq!(
+        events_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.iter().find(|item| item.get("type").and_then(|value| value.as_str()) == Some("job_failed")))
+            .and_then(|item| item.pointer("/job/id"))
+            .and_then(|value| value.as_i64()),
+        Some(1)
+    );
+
+    let groups_resp = client
+        .get(format!("http://{}/api/alerts/groups", admin_addr))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("alert groups request");
+    assert_eq!(groups_resp.status(), reqwest::StatusCode::OK);
+    let groups_body: serde_json::Value = groups_resp.json().await.expect("alert groups json");
+    let group_types: Vec<String> = groups_body
+        .get("items")
+        .and_then(|value| value.as_array())
+        .expect("group items")
+        .iter()
+        .filter_map(|item| item.get("type").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert!(group_types.contains(&"api_key_exhausted".to_string()));
+    assert!(group_types.contains(&"job_failed".to_string()));
+
+    let overview_resp = client
+        .get(format!("http://{}/api/dashboard/overview", admin_addr))
+        .header(reqwest::header::COOKIE, &admin_cookie)
+        .send()
+        .await
+        .expect("dashboard overview request");
+    assert_eq!(overview_resp.status(), reqwest::StatusCode::OK);
+    let overview_body: serde_json::Value =
+        overview_resp.json().await.expect("dashboard overview json");
+
+    let counts_by_type = overview_body
+        .pointer("/recentAlerts/countsByType")
+        .and_then(|value| value.as_array())
+        .expect("recent alerts counts by type");
+    let recent_alert_types: Vec<String> = counts_by_type
+        .iter()
+        .filter_map(|item| item.get("type").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert!(recent_alert_types.contains(&"api_key_exhausted".to_string()));
+    assert!(recent_alert_types.contains(&"job_failed".to_string()));
+
+    let _ = std::fs::remove_file(db_path);
+}

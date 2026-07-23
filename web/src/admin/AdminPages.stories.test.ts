@@ -276,6 +276,26 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).not.toContain('mcp_session_init_backoffs_gc')
   })
 
+  it('renders the alerts story with key exhaustion and job failure groups', () => {
+    const renderStory = adminPageStories.Alerts.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('API Key 耗尽')
+    expect(markup).toContain('任务失败')
+    expect(markup).toContain('key_002')
+    expect(markup).toContain('upstream_reconciliation #370730')
+    expect(markup).not.toContain('风险看板')
+    expect(markup).not.toContain('令牌风险')
+  })
+
   it('keeps the tokens story shell chrome available', () => {
     const renderStory = adminPageStories.Tokens.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()

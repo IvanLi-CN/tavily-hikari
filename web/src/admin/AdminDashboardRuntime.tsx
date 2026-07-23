@@ -223,7 +223,6 @@ import {
   type DashboardSnapshotEvent,
   type DashboardHourlyRequestWindow,
   type DashboardSiteStatusSnapshot,
-  type DashboardTokenCoverage,
   type DashboardTrendBuckets,
   type Profile,
   type RequestLog,
@@ -1796,7 +1795,6 @@ function AdminDashboard(): JSX.Element {
   const [dashboardMonthSeries, setDashboardMonthSeries] = useState<DashboardMonthSeries>(() => createEmptyDashboardMonthSeries())
   const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
-  const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([])
   const [keysTotal, setKeysTotal] = useState(0)
   const [keysPage, setKeysPage] = useState(getAdminKeysPageFromLocation)
   const [keysPerPage, setKeysPerPage] = useState(getAdminKeysPerPageFromLocation)
@@ -1806,8 +1804,6 @@ function AdminDashboard(): JSX.Element {
   const [keyStatusFacets, setKeyStatusFacets] = useState<Array<{ value: string; count: number }>>([])
   const [keyRegionFacets, setKeyRegionFacets] = useState<Array<{ value: string; count: number }>>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
-  const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
-  const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<DashboardTokenCoverage>('ok')
   const tokenPanelRef = useRef<HTMLElement | null>(null)
   const [tokenBulkPanelLeft, setTokenBulkPanelLeft] = useState('50%')
   const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendBuckets>(() => createEmptyDashboardTrend())
@@ -2829,11 +2825,8 @@ function AdminDashboard(): JSX.Element {
           setDashboardSummaryWindows(overview.summaryWindows)
           setDashboardMonthSeries(overview.monthSeries)
           setDashboardSiteStatusSnapshot(overview.siteStatus)
-          setDashboardTokens(overview.disabledTokens)
-          setDashboardTokenCoverage(overview.tokenCoverage)
           setDashboardTrend(overview.trend)
           setDashboardHourlyRequestWindow(overview.hourlyRequestWindow)
-          setDashboardKeys(overview.exhaustedKeys)
           setDashboardLogs(overview.recentLogs)
           setDashboardJobs(overview.recentJobs)
           setDashboardRecentAlerts(overview.recentAlerts)
@@ -2853,11 +2846,8 @@ function AdminDashboard(): JSX.Element {
         setDashboardSummaryWindows(null)
         setDashboardMonthSeries(createEmptyDashboardMonthSeries())
         setDashboardSiteStatusSnapshot(null)
-        setDashboardTokens([])
-        setDashboardTokenCoverage('error')
         setDashboardTrend(createEmptyDashboardTrend())
         setDashboardHourlyRequestWindow(createEmptyDashboardHourlyRequestWindow())
-        setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
         setDashboardRecentAlerts({
@@ -4639,11 +4629,8 @@ function AdminDashboard(): JSX.Element {
             setDashboardSummaryWindows(data.summaryWindows)
             setDashboardMonthSeries(data.monthSeries)
             setDashboardSiteStatusSnapshot(data.siteStatus)
-            setDashboardTokens(data.disabledTokens)
-            setDashboardTokenCoverage(data.tokenCoverage)
             setDashboardTrend(data.trend)
             setDashboardHourlyRequestWindow(data.hourlyRequestWindow)
-            setDashboardKeys(data.exhaustedKeys)
             setDashboardLogs(data.recentLogs)
             setDashboardJobs(data.recentJobs)
             setDashboardOverviewLoaded(true)
@@ -9205,6 +9192,10 @@ function AdminDashboard(): JSX.Element {
   }, [navigateToPath])
 
   const openDashboardRecentAlertGroup = useCallback((group: AlertGroup) => {
+    if (group.type === 'job_failed' || group.subjectKind === 'job') {
+      navigateToPath(modulePath('jobs'))
+      return
+    }
     const now = new Date()
     navigateToPath(alertsPath({
       view: 'groups',
@@ -10681,18 +10672,12 @@ function AdminDashboard(): JSX.Element {
           hourlyRequestWindow={dashboardHourlyRequestWindow}
           monthSeries={dashboardMonthSeries}
           chartPersistenceKey={DASHBOARD_HOURLY_CHART_PERSISTENCE_KEY}
-          tokenCoverage={dashboardTokenCoverage}
-          tokens={dashboardTokens}
-          keys={dashboardKeys}
           logs={dashboardLogs}
           jobs={dashboardJobs}
           recentAlerts={dashboardRecentAlerts}
-          onOpenModule={navigateModule}
           onOpenRecentAlerts={openDashboardRecentAlerts}
           onOpenRecentAlertGroup={openDashboardRecentAlertGroup}
           onOpenUser={(userId) => navigateUser(userId, { preserveUsersContext: true })}
-          onOpenToken={navigateToken}
-          onOpenKey={navigateKey}
         />
       )}
 

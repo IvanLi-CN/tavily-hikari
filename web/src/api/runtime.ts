@@ -102,8 +102,6 @@ export interface ForwardProxyDashboardSummaryResponse {
   totalNodes: number
 }
 
-export type DashboardTokenCoverage = 'ok' | 'truncated' | 'error'
-
 export interface DashboardTrendBuckets {
   request: number[]
   error: number[]
@@ -160,8 +158,6 @@ export interface DashboardOverviewResponse {
   exhaustedKeys: ApiKeyStats[]
   recentLogs: RequestLog[]
   recentJobs: JobLogView[]
-  disabledTokens: AuthToken[]
-  tokenCoverage: DashboardTokenCoverage
   recentAlerts: RecentAlertsSummary
 }
 
@@ -176,6 +172,8 @@ export type AlertType =
   | 'upstream_key_blocked'
   | 'user_request_rate_limited'
   | 'user_quota_exhausted'
+  | 'api_key_exhausted'
+  | 'job_failed'
 
 export interface AlertFacetOption {
   value: string
@@ -212,6 +210,18 @@ export interface AlertSourceRef {
   id: string
 }
 
+export interface AlertJobRef {
+  id: number
+  jobType: string
+  triggerSource: string
+  status: string
+  attempt: number
+  message: string | null
+  queuedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
 export type AlertSemanticWindowKind = 'request_rate' | 'rolling_hour' | 'day' | 'month'
 
 export interface AlertSemanticWindow {
@@ -228,12 +238,13 @@ export interface AlertEvent {
   title: string
   summary: string
   occurredAt: number
-  subjectKind: 'user' | 'token' | 'key'
+  subjectKind: 'user' | 'token' | 'key' | 'job'
   subjectId: string
   subjectLabel: string
   user: AlertUserRef | null
   token: AlertEntityRef | null
   key: AlertEntityRef | null
+  job?: AlertJobRef | null
   request: AlertRequestRef | null
   requestKind: AlertRequestKind | null
   failureKind: string | null
@@ -249,12 +260,13 @@ export interface AlertEvent {
 export interface AlertGroup {
   id: string
   type: AlertType
-  subjectKind: 'user' | 'token' | 'key'
+  subjectKind: 'user' | 'token' | 'key' | 'job'
   subjectId: string
   subjectLabel: string
   user: AlertUserRef | null
   token: AlertEntityRef | null
   key: AlertEntityRef | null
+  job?: AlertJobRef | null
   requestKind: AlertRequestKind | null
   count: number
   firstSeen: number
@@ -548,18 +560,36 @@ interface ServerAlertSourceRef {
   id: string
 }
 
+interface ServerAlertJobRef {
+  id: number
+  jobType?: string
+  job_type?: string
+  triggerSource?: string
+  trigger_source?: string
+  status: string
+  attempt: number
+  message?: string | null
+  queuedAt?: number
+  queued_at?: number
+  startedAt?: number | null
+  started_at?: number | null
+  finishedAt?: number | null
+  finished_at?: number | null
+}
+
 interface ServerAlertEvent {
   id: string
   type: AlertType
   title: string
   summary: string
   occurredAt: number
-  subjectKind: 'user' | 'token' | 'key'
+  subjectKind: 'user' | 'token' | 'key' | 'job'
   subjectId: string
   subjectLabel: string
   user?: ServerAlertUserRef | null
   token?: ServerAlertEntityRef | null
   key?: ServerAlertEntityRef | null
+  job?: ServerAlertJobRef | null
   request?: ServerAlertRequestRef | null
   requestKind?: ServerAlertRequestKind | null
   failureKind?: string | null
@@ -588,12 +618,13 @@ interface ServerAlertSemanticWindow {
 interface ServerAlertGroup {
   id: string
   type: AlertType
-  subjectKind: 'user' | 'token' | 'key'
+  subjectKind: 'user' | 'token' | 'key' | 'job'
   subjectId: string
   subjectLabel: string
   user?: ServerAlertUserRef | null
   token?: ServerAlertEntityRef | null
   key?: ServerAlertEntityRef | null
+  job?: ServerAlertJobRef | null
   requestKind?: ServerAlertRequestKind | null
   count: number
   firstSeen: number
@@ -835,6 +866,21 @@ function normalizeAlertSource(value: ServerAlertSourceRef): AlertSourceRef {
   }
 }
 
+function normalizeAlertJobRef(value?: ServerAlertJobRef | null): AlertJobRef | null {
+  if (!value) return null
+  return {
+    id: value.id,
+    jobType: value.jobType ?? value.job_type ?? 'job',
+    triggerSource: value.triggerSource ?? value.trigger_source ?? 'scheduler',
+    status: value.status,
+    attempt: value.attempt,
+    message: value.message ?? null,
+    queuedAt: value.queuedAt ?? value.queued_at ?? 0,
+    startedAt: value.startedAt ?? value.started_at ?? null,
+    finishedAt: value.finishedAt ?? value.finished_at ?? null,
+  }
+}
+
 function normalizeAlertSemanticWindow(value?: ServerAlertSemanticWindow | null): AlertSemanticWindow | null {
   if (!value) return null
   return {
@@ -859,6 +905,7 @@ function normalizeAlertEvent(value: ServerAlertEvent): AlertEvent {
     user: normalizeAlertUserRef(value.user),
     token: normalizeAlertEntityRef(value.token),
     key: normalizeAlertEntityRef(value.key),
+    job: normalizeAlertJobRef(value.job),
     request: normalizeAlertRequestRef(value.request),
     requestKind: normalizeAlertRequestKind(value.requestKind),
     failureKind: value.failureKind ?? null,
@@ -882,6 +929,7 @@ function normalizeAlertGroup(value: ServerAlertGroup): AlertGroup {
     user: normalizeAlertUserRef(value.user),
     token: normalizeAlertEntityRef(value.token),
     key: normalizeAlertEntityRef(value.key),
+    job: normalizeAlertJobRef(value.job),
     requestKind: normalizeAlertRequestKind(value.requestKind),
     count: value.count,
     firstSeen: value.firstSeen,
