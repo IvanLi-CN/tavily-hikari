@@ -29,6 +29,13 @@ Use this pattern when all of the following are true:
 6. Apply a signed adjustment (`+` extra charge, `-` refund) through a dedicated reconciliation
    ledger keyed by a unique settlement key.
 
+For compare-only operator views, do not hide the new value until every window settles. Expose a
+hybrid number instead:
+
+- `hybrid daily value = current local daily credits + confirmed shadow delta sum`
+- mark it `projected` until every same-day observed window reaches a terminal settlement state;
+- upgrade it to `confirmed` once all same-day windows are `shadow_settled` or `shadow_degraded`.
+
 ## Why period windows matter
 
 If the upstream counter is cumulative, the proxy must pick a window boundary that is:
@@ -66,6 +73,8 @@ The settlement worker must be safe to retry at any point:
   immediately spend the whole candidate budget on the same key again;
 - takeover by another HA node must reuse the same settlement key;
 - process restarts must resume from durable recorded usage tuples and settlement state.
+- candidate selection should prefer recently closed windows over ancient backlog so same-day UI
+  convergence does not stall behind old hot keys.
 
 The simplest durable contract is:
 
@@ -84,6 +93,9 @@ Tavily Hikari uses:
 - settle 10 minutes after a quiet window with no research;
 - settle 10 minutes after all research reaches terminal state;
 - fall back to one degraded settlement after 24 hours if terminal state never arrives.
+- prefer a two-lane candidate budget during backlog: `recent=12` for today+yesterday windows in
+  descending `period_end`, `backlog=8` for older windows in ascending `period_end`, with unused
+  budget refilled across lanes.
 
 ## Quota correction detail
 

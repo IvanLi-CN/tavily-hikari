@@ -1065,7 +1065,7 @@ function withAdminUserSummaryCanonical<
   T extends {
     quotaDailyUsed: number
     quotaShadowDailyUsed?: number | null
-    quotaShadowDailyAvailability?: 'confirmed' | 'unavailable' | null
+    quotaShadowDailyAvailability?: 'confirmed' | 'projected' | 'unavailable' | null
     quotaDailyLimit: number
     quotaMonthlyUsed: number
     quotaMonthlyLimit: number
@@ -1084,7 +1084,7 @@ function withAdminUserSummaryCanonical<
     dailyCreditsUsed: value.quotaDailyUsed,
     shadowDailyCreditsUsed: value.quotaShadowDailyUsed ?? null,
     shadowDailyAvailability:
-      value.quotaShadowDailyAvailability ?? (value.quotaShadowDailyUsed != null ? 'confirmed' : 'unavailable'),
+      value.quotaShadowDailyAvailability ?? (value.quotaShadowDailyUsed != null ? 'confirmed' : null),
     dailyCreditsLimit: value.quotaDailyLimit,
     monthlyCreditsUsed: value.quotaMonthlyUsed,
     monthlyCreditsLimit: value.quotaMonthlyLimit,
@@ -1313,6 +1313,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
     quotaShadowDailyUsed: 5_208,
+    quotaShadowDailyAvailability: 'projected',
     quotaDailyLimit: 25_500,
     quotaMonthlyUsed: 142_922,
     quotaMonthlyLimit: 5_000,
@@ -1343,6 +1344,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyLimit: 0,
     quotaDailyUsed: 10_009,
     quotaShadowDailyUsed: 10_009,
+    quotaShadowDailyAvailability: 'confirmed',
     quotaDailyLimit: 0,
     quotaMonthlyUsed: 231_008,
     quotaMonthlyLimit: 0,
@@ -1372,6 +1374,8 @@ const MOCK_USERS: AdminUserSummary[] = [
     quotaHourlyUsed: 0,
     quotaHourlyLimit: 500,
     quotaDailyUsed: 0,
+    quotaShadowDailyUsed: 0,
+    quotaShadowDailyAvailability: 'confirmed',
     quotaDailyLimit: 8_000,
     quotaMonthlyUsed: 0,
     quotaMonthlyLimit: 96_000,

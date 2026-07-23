@@ -6564,10 +6564,9 @@ function AdminDashboard(): JSX.Element {
   }
 
   const usersTotalPages = useMemo(() => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)), [usersTotal])
-  const showShadowDailyUsageColumn =
-    systemSettings?.upstreamPreciseReconciliationEnabled === false
-    || (systemSettings == null
-      && users.some((item) => item.shadowDailyAvailability != null || item.shadowDailyCreditsUsed != null))
+  const showShadowDailyUsageColumn = users.some(
+    (item) => item.shadowDailyAvailability != null || item.shadowDailyCreditsUsed != null,
+  )
   const unboundTokenUsageTotalPages = useMemo(
     () => Math.max(1, Math.ceil(unboundTokenUsageTotal / USERS_PER_PAGE)),
     [unboundTokenUsageTotal],

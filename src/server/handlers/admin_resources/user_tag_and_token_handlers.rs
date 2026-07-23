@@ -459,16 +459,27 @@ async fn list_users(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
-    let shadow_compare_enabled = !system_settings.upstream_precise_reconciliation_enabled;
-    let shadow_daily_usage = if page_user_ids.is_empty() || !shadow_compare_enabled {
+    let shadow_compare_active = if page_user_ids.is_empty() {
+        false
+    } else {
+        state
+            .proxy
+            .upstream_reconciliation_shadow_compare_active_with_settings(&system_settings)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user shadow compare state error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
+    let shadow_daily_projection = if page_user_ids.is_empty() {
         std::collections::HashMap::new()
     } else {
         state
             .proxy
-            .shadow_daily_reconciled_usage_for_accounts(&page_user_ids)
+            .shadow_daily_projection_for_accounts(&page_user_ids)
             .await
             .map_err(|err| {
-                eprintln!("list admin user shadow daily usage error: {err}");
+                eprintln!("list admin user shadow daily projection error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     };
@@ -486,14 +497,48 @@ async fn list_users(
             .get(&row.user.user_id)
             .copied()
             .unwrap_or_default();
-        let (shadow_daily_credits_used, shadow_daily_availability) = if shadow_compare_enabled {
-            match shadow_daily_usage.get(&row.user.user_id) {
-                Some(delta) => (
-                    Some(row.summary.daily_credits_used.saturating_add(*delta)),
-                    Some(AdminUserShadowDailyAvailability::Confirmed),
-                ),
-                None => (None, Some(AdminUserShadowDailyAvailability::Unavailable)),
-            }
+        let projection = shadow_daily_projection.get(&row.user.user_id);
+        let precise_cutover_configured = system_settings.upstream_project_id_mode
+            == tavily_hikari::UpstreamProjectIdMode::AccessToken
+            && system_settings.api_rebalance_enabled
+            && system_settings.rebalance_mcp_enabled
+            && system_settings.upstream_precise_reconciliation_enabled;
+        let has_pending_shadow_projection = projection.is_some_and(|value| {
+            value.shadow_observed_window_count > value.shadow_resolved_window_count
+        });
+        let has_persisted_shadow_projection = projection.is_some_and(|value| {
+            value.shadow_observed_window_count > 0
+                && value.shadow_observed_window_count == value.shadow_resolved_window_count
+        });
+        let show_hybrid_shadow_projection =
+            shadow_compare_active
+                || (precise_cutover_configured && has_pending_shadow_projection);
+        let show_shadow_projection =
+            show_hybrid_shadow_projection || has_persisted_shadow_projection;
+        let (shadow_daily_credits_used, shadow_daily_availability) = if show_shadow_projection {
+            let shadow_daily_credits_used = Some(if show_hybrid_shadow_projection {
+                row.summary.daily_credits_used.saturating_add(
+                    projection.map(|value| value.confirmed_delta_credits).unwrap_or_default(),
+                )
+            } else {
+                projection
+                    .map(|value| value.shadow_settled_credits_used)
+                    .unwrap_or_default()
+            });
+            let shadow_daily_availability = if show_hybrid_shadow_projection {
+                if projection.is_some_and(|value| {
+                    value.observed_window_count > 0
+                        && value.observed_window_count == value.resolved_window_count
+                }) || (projection.is_none() && row.summary.daily_credits_used == 0)
+                {
+                    Some(AdminUserShadowDailyAvailability::Confirmed)
+                } else {
+                    Some(AdminUserShadowDailyAvailability::Projected)
+                }
+            } else {
+                Some(AdminUserShadowDailyAvailability::Confirmed)
+            };
+            (shadow_daily_credits_used, shadow_daily_availability)
         } else {
             (None, None)
         };

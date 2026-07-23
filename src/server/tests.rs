@@ -33,6 +33,7 @@ mod tests {
     mod admin_token_owner_summary;
     mod admin_token_filters_and_maintenance;
     mod admin_users_and_tokens;
+    mod admin_users_shadow_daily_projection;
     mod alerts_and_ha;
     mod alerts_and_ha_dashboard_defaults;
     mod alerts_and_ha_event_exports;

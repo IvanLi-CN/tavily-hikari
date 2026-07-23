@@ -1014,6 +1014,25 @@ pub struct UpstreamReconciliationCandidate {
     pub degraded: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountShadowDailyProjection {
+    pub confirmed_delta_credits: i64,
+    pub observed_window_count: i64,
+    pub resolved_window_count: i64,
+    pub shadow_settled_credits_used: i64,
+    pub shadow_observed_window_count: i64,
+    pub shadow_resolved_window_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamReconciliationCandidateBatch {
+    pub candidates: Vec<UpstreamReconciliationCandidate>,
+    pub recent_lane_budget: i64,
+    pub backlog_lane_budget: i64,
+    pub recent_candidate_count: i64,
+    pub backlog_candidate_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamReconciliationAdjustment {

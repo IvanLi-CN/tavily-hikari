@@ -763,6 +763,7 @@ export const EN: TranslationShape = {
           open: 'Open usage view',
           back: 'Back to users',
           shadowComparisonValue: 'vs current {delta}',
+          shadowProjectedEstimate: 'Includes unreconciled estimate',
           shadowUnavailable: 'Unavailable',
           table: {
             user: 'User',

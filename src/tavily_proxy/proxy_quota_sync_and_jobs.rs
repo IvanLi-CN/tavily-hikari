@@ -1,4 +1,13 @@
 impl TavilyProxy {
+    pub async fn upstream_reconciliation_shadow_compare_active_with_settings(
+        &self,
+        settings: &SystemSettings,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .upstream_reconciliation_shadow_compare_active_with_settings(settings)
+            .await
+    }
+
     pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
         let now = self.backend_time.now_ts();
         let settings = self.key_store.get_system_settings().await?;
@@ -168,6 +177,17 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn shadow_daily_projection_for_accounts(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, AccountShadowDailyProjection>, ProxyError> {
+        let now = self.backend_time.now_utc().with_timezone(&Local);
+        let window = server_local_day_window_utc(now);
+        self.key_store
+            .shadow_daily_projection_for_accounts(user_ids, window.start, window.end)
+            .await
+    }
+
     pub async fn upstream_reconciliation_queue_counts(&self) -> Result<(i64, i64, i64), ProxyError> {
         self.key_store.upstream_reconciliation_queue_counts().await
     }
@@ -287,10 +307,15 @@ impl TavilyProxy {
             );
             return Ok(0);
         }
-        let candidates = self
+        let candidate_batch = self
             .key_store
             .next_upstream_reconciliation_candidates(20)
             .await?;
+        let recent_candidate_count = candidate_batch.recent_candidate_count;
+        let backlog_candidate_count = candidate_batch.backlog_candidate_count;
+        let recent_lane_budget = candidate_batch.recent_lane_budget;
+        let backlog_lane_budget = candidate_batch.backlog_lane_budget;
+        let candidates = candidate_batch.candidates;
         let candidate_count = candidates.len() as i64;
         tracing::info!(
             component = "reconciliation",
@@ -298,19 +323,26 @@ impl TavilyProxy {
             elapsed_ms = 0_u64,
             job_type = "upstream_reconciliation",
             candidate_count,
+            recent_lane_budget,
+            backlog_lane_budget,
+            candidate_recent_count = recent_candidate_count,
+            candidate_backlog_count = backlog_candidate_count,
             pending_research = pending_research_before,
             queued_settlements = queued_settlements_before,
             degraded_settlements = degraded_settlements_before,
         );
         let result = async {
             let mut settled = 0_i64;
+            let mut settled_recent = 0_i64;
+            let mut settled_backlog = 0_i64;
             let mut upstream_429_retry_windows = 0_i64;
             let mut local_usage_rate_limit_windows = 0_i64;
             let mut other_retry_windows = 0_i64;
             let mut key_backoff_window_count = 0_i64;
             let mut skipped_by_key_backoff = 0_i64;
             let mut cooling_keys = HashSet::<String>::new();
-            for candidate in candidates {
+            for (index, candidate) in candidates.into_iter().enumerate() {
+                let in_recent_lane = index < recent_candidate_count as usize;
                 let key_ids = self
                     .key_store
                     .reconciliation_key_ids(&candidate.token_id, &candidate.period_code)
@@ -437,10 +469,17 @@ impl TavilyProxy {
                 };
                 if did_settle {
                     settled += 1;
+                    if in_recent_lane {
+                        settled_recent += 1;
+                    } else {
+                        settled_backlog += 1;
+                    }
                 }
             }
-            Ok::<(i64, i64, i64, i64, i64, i64), ProxyError>((
+            Ok::<(i64, i64, i64, i64, i64, i64, i64, i64), ProxyError>((
                 settled,
+                settled_recent,
+                settled_backlog,
                 upstream_429_retry_windows,
                 local_usage_rate_limit_windows,
                 other_retry_windows,
@@ -457,6 +496,8 @@ impl TavilyProxy {
         match result {
             Ok((
                 settled,
+                settled_recent,
+                settled_backlog,
                 upstream_429_retry_windows,
                 local_usage_rate_limit_windows,
                 other_retry_windows,
@@ -470,6 +511,12 @@ impl TavilyProxy {
                     job_type = "upstream_reconciliation",
                     candidate_count,
                     settled_count = settled,
+                    recent_lane_budget,
+                    backlog_lane_budget,
+                    candidate_recent_count = recent_candidate_count,
+                    candidate_backlog_count = backlog_candidate_count,
+                    settled_recent_count = settled_recent,
+                    settled_backlog_count = settled_backlog,
                     pending_research = pending_research_after,
                     queued_settlements = queued_settlements_after,
                     degraded_settlements = degraded_settlements_after,
@@ -489,6 +536,12 @@ impl TavilyProxy {
                     job_type = "upstream_reconciliation",
                     candidate_count,
                     settled_count = 0_i64,
+                    recent_lane_budget,
+                    backlog_lane_budget,
+                    candidate_recent_count = recent_candidate_count,
+                    candidate_backlog_count = backlog_candidate_count,
+                    settled_recent_count = 0_i64,
+                    settled_backlog_count = 0_i64,
                     pending_research = pending_research_after,
                     queued_settlements = queued_settlements_after,
                     degraded_settlements = degraded_settlements_after,

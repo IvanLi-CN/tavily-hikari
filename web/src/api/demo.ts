@@ -878,7 +878,12 @@ function demoShadowDailyCreditsUsed(user: {
   quotaDailyUsed: number
   lastActivity: number | null
 }) {
-  if (user.lastActivity == null) return { shadowDailyCreditsUsed: null, shadowDailyAvailability: 'unavailable' as const }
+  if (user.lastActivity == null) {
+    return {
+      shadowDailyCreditsUsed: 0,
+      shadowDailyAvailability: 'confirmed' as const,
+    }
+  }
 
   const delta =
     user.userId === 'user-research'
@@ -890,7 +895,7 @@ function demoShadowDailyCreditsUsed(user: {
   const shadowUsed = Math.max(0, user.quotaDailyUsed + delta)
   return {
     shadowDailyCreditsUsed: shadowUsed,
-    shadowDailyAvailability: 'confirmed' as const,
+    shadowDailyAvailability: user.userId === 'user-ops' ? 'projected' as const : 'confirmed' as const,
   }
 }
 

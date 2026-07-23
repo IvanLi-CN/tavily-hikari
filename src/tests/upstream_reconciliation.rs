@@ -258,6 +258,78 @@ async fn shadow_usage_records_even_when_active_upstream_mcp_sessions_block_preci
 }
 
 #[tokio::test]
+async fn shadow_compare_activity_persists_cutover_epoch_when_meta_is_missing() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-shadow-compare-epoch"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save precise settings");
+
+    assert!(
+        proxy
+            .key_store
+            .get_meta_i64("upstream_reconciliation_ready_after_v1")
+            .await
+            .expect("load reconciliation epoch before compare check")
+            .unwrap_or(0)
+            <= 0
+    );
+
+    assert!(
+        proxy
+            .key_store
+            .upstream_reconciliation_shadow_compare_active_with_settings(&settings)
+            .await
+            .expect("compute compare-active state before epoch expires")
+    );
+    let persisted_epoch = proxy
+        .key_store
+        .get_meta_i64("upstream_reconciliation_ready_after_v1")
+        .await
+        .expect("load persisted reconciliation epoch after compare check")
+        .expect("persisted reconciliation epoch");
+    assert_eq!(persisted_epoch, business_period_for_timestamp(now).ends_at);
+
+    clock.set_now_ts(persisted_epoch + 1);
+    assert!(
+        !proxy
+            .key_store
+            .upstream_reconciliation_shadow_compare_active_with_settings(&settings)
+            .await
+            .expect("compute compare-active state after epoch expires")
+    );
+    assert_eq!(
+        proxy
+            .key_store
+            .get_meta_i64("upstream_reconciliation_ready_after_v1")
+            .await
+            .expect("load reconciliation epoch after expiry"),
+        Some(persisted_epoch)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn shadow_reconciliation_keeps_zero_delta_usage_and_updates_runtime_markers() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -555,6 +627,560 @@ async fn run_upstream_reconciliation_once_applies_key_scoped_backoff_for_429() {
     .await
     .expect("read cool settlement");
     assert_eq!(cool_status, "shadow_settled");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn run_upstream_reconciliation_once_prioritizes_recent_windows_over_old_backlog() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-recent-priority-hot",
+            "tvly-reconciliation-recent-priority-cool",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+
+    let hot_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-priority-hot")
+        .await
+        .expect("create hot upstream key");
+    let cool_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-priority-cool")
+        .await
+        .expect("create cool upstream key");
+    for index in 0..20 {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("token-backlog-{index:02}"))
+        .bind(&hot_key_id)
+        .bind("2026-07-13/S2")
+        .bind(format!("project-backlog-{index:02}"))
+        .bind(format!("account:user-backlog-{index:02}"))
+        .bind(local_ts(2026, 7, 13, 11, 0))
+        .bind(local_ts(2026, 7, 13, 22, 0))
+        .bind(local_ts(2026, 7, 13, 11, 15))
+        .bind(local_ts(2026, 7, 13, 21, 45))
+        .bind(local_ts(2026, 7, 13, 21, 45))
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert old backlog usage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-recent")
+    .bind(&cool_key_id)
+    .bind("2026-07-15/S1")
+    .bind("project-recent")
+    .bind("account:user-recent")
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert recent usage");
+
+    let hot_hits = Arc::new(AtomicUsize::new(0));
+    let cool_hits = Arc::new(AtomicUsize::new(0));
+    let app_hot_hits = Arc::clone(&hot_hits);
+    let app_cool_hits = Arc::clone(&cool_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move |headers: HeaderMap| {
+            let hot_hits = Arc::clone(&app_hot_hits);
+            let cool_hits = Arc::clone(&app_cool_hits);
+            async move {
+                let authorization = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                if authorization.contains("tvly-reconciliation-recent-priority-hot") {
+                    hot_hits.fetch_add(1, Ordering::SeqCst);
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("retry-after", "300")],
+                        Json(serde_json::json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
+                }
+                if authorization.contains("tvly-reconciliation-recent-priority-cool") {
+                    cool_hits.fetch_add(1, Ordering::SeqCst);
+                    return Json(serde_json::json!({
+                        "key": { "usage": 4 }
+                    }))
+                    .into_response();
+                }
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation usage upstream");
+    });
+
+    let settled = proxy
+        .run_upstream_reconciliation_once(&format!("http://{addr}"))
+        .await
+        .expect("run reconciliation once");
+    assert_eq!(settled, 1);
+    assert_eq!(hot_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(cool_hits.load(Ordering::SeqCst), 1);
+
+    let recent_status: String = sqlx::query_scalar(
+        r#"
+        SELECT status
+        FROM upstream_reconciliation_settlements
+        WHERE token_id = 'token-recent'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recent settlement");
+    assert_eq!(recent_status, "shadow_settled");
+
+    let backlog_rate_limited: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM upstream_reconciliation_settlements
+        WHERE token_id LIKE 'token-backlog-%'
+          AND status = 'rate_limited'
+          AND degraded_reason = 'upstream429'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count backlog settlements");
+    assert_eq!(backlog_rate_limited, 20);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn next_upstream_reconciliation_candidates_keep_recent_refill_ahead_of_backlog() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-recent-order-hot",
+            "tvly-reconciliation-recent-order-cool",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let hot_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-order-hot")
+        .await
+        .expect("create hot upstream key");
+    let cool_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-order-cool")
+        .await
+        .expect("create cool upstream key");
+
+    for index in 0..15 {
+        let period_start = now.saturating_sub(((index + 2) as i64) * 900);
+        let period_end = period_start + 300;
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("token-recent-order-{index:02}"))
+        .bind(&cool_key_id)
+        .bind(format!("2026-07-15/S1-{index:02}"))
+        .bind(format!("project-recent-order-{index:02}"))
+        .bind(format!("account:user-recent-order-{index:02}"))
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert recent usage");
+    }
+    for index in 0..2 {
+        let period_start = local_ts(2026, 7, 13, 11 + index, 0);
+        let period_end = period_start + 300;
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("token-backlog-order-{index:02}"))
+        .bind(&hot_key_id)
+        .bind(format!("2026-07-13/S2-{index:02}"))
+        .bind(format!("project-backlog-order-{index:02}"))
+        .bind(format!("account:user-backlog-order-{index:02}"))
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert backlog usage");
+    }
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(20)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.recent_lane_budget, 12);
+    assert_eq!(batch.backlog_lane_budget, 8);
+    assert_eq!(batch.recent_candidate_count, 15);
+    assert_eq!(batch.backlog_candidate_count, 2);
+    assert_eq!(batch.candidates.len(), 17);
+    assert!(
+        batch
+            .candidates
+            .iter()
+            .take(batch.recent_candidate_count as usize)
+            .all(|candidate| candidate.token_id.starts_with("token-recent-order-"))
+    );
+    assert!(
+        batch
+            .candidates
+            .iter()
+            .skip(batch.recent_candidate_count as usize)
+            .all(|candidate| candidate.token_id.starts_with("token-backlog-order-"))
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn next_upstream_reconciliation_candidates_treat_midnight_closing_s3_as_recent() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-recent-s3-boundary"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-s3-boundary")
+        .await
+        .expect("create upstream key");
+
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-recent-s3-boundary")
+    .bind(&key_id)
+    .bind("2026-07-13/S3")
+    .bind("project-recent-s3-boundary")
+    .bind("account:user-recent-s3-boundary")
+    .bind(local_ts(2026, 7, 13, 22, 0))
+    .bind(local_ts(2026, 7, 14, 0, 0))
+    .bind(local_ts(2026, 7, 13, 22, 5))
+    .bind(local_ts(2026, 7, 14, 0, 0))
+    .bind(local_ts(2026, 7, 14, 0, 0))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert midnight-closing s3 usage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-backlog-older")
+    .bind(&key_id)
+    .bind("2026-07-12/S2")
+    .bind("project-backlog-older")
+    .bind("account:user-backlog-older")
+    .bind(local_ts(2026, 7, 12, 11, 0))
+    .bind(local_ts(2026, 7, 12, 22, 0))
+    .bind(local_ts(2026, 7, 12, 11, 5))
+    .bind(local_ts(2026, 7, 12, 22, 0))
+    .bind(local_ts(2026, 7, 12, 22, 0))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert older backlog usage");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(20)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.recent_candidate_count, 1);
+    assert_eq!(batch.backlog_candidate_count, 1);
+    assert_eq!(batch.candidates[0].token_id, "token-recent-s3-boundary");
+    assert_eq!(batch.candidates[1].token_id, "token-backlog-older");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn next_upstream_reconciliation_candidates_skip_pending_recent_rows_before_limiting() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-recent-pending-queue"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-pending-queue")
+        .await
+        .expect("create upstream key");
+
+    for index in 0..12 {
+        let period_end = now.saturating_sub(((index + 1) as i64) * 600);
+        let period_start = period_end.saturating_sub(300);
+        let period_code = format!("2026-07-15/S2-pending-{index:02}");
+        let token_id = format!("token-recent-pending-{index:02}");
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(&token_id)
+        .bind(&key_id)
+        .bind(&period_code)
+        .bind(format!("project-recent-pending-{index:02}"))
+        .bind(format!("account:user-recent-pending-{index:02}"))
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert pending recent usage");
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_research (
+                request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+            "#,
+        )
+        .bind(format!("research-pending-{index:02}"))
+        .bind(&token_id)
+        .bind(&key_id)
+        .bind(&period_code)
+        .bind(period_end.saturating_sub(60))
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert pending research");
+    }
+
+    let eligible_period_start = local_ts(2026, 7, 14, 8, 0);
+    let eligible_period_end = eligible_period_start + 300;
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-recent-eligible")
+    .bind(&key_id)
+    .bind("2026-07-14/S1-eligible")
+    .bind("project-recent-eligible")
+    .bind("account:user-recent-eligible")
+    .bind(eligible_period_start)
+    .bind(eligible_period_end)
+    .bind(eligible_period_start)
+    .bind(eligible_period_end)
+    .bind(eligible_period_end)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert eligible recent usage");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(12)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.recent_lane_budget, 12);
+    assert_eq!(batch.backlog_lane_budget, 0);
+    assert_eq!(batch.recent_candidate_count, 1);
+    assert_eq!(batch.backlog_candidate_count, 0);
+    assert_eq!(batch.candidates.len(), 1);
+    assert_eq!(batch.candidates[0].token_id, "token-recent-eligible");
+    assert_eq!(batch.candidates[0].pending_research, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn next_upstream_reconciliation_candidates_interleave_recent_keys_before_limiting() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-recent-interleave-hot",
+            "tvly-reconciliation-recent-interleave-cool",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let hot_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-interleave-hot")
+        .await
+        .expect("create hot key");
+    let cool_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-recent-interleave-cool")
+        .await
+        .expect("create cool key");
+
+    for index in 0..20 {
+        let period_end = now.saturating_sub(((index + 1) as i64) * 600);
+        let period_start = period_end.saturating_sub(300);
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("token-recent-interleave-hot-{index:02}"))
+        .bind(&hot_key_id)
+        .bind(format!("2026-07-15/S2-hot-{index:02}"))
+        .bind(format!("project-recent-interleave-hot-{index:02}"))
+        .bind(format!("account:user-recent-interleave-hot-{index:02}"))
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert hot recent usage");
+    }
+    let cool_period_start = local_ts(2026, 7, 14, 8, 0);
+    let cool_period_end = cool_period_start + 300;
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-recent-interleave-cool")
+    .bind(&cool_key_id)
+    .bind("2026-07-14/S2-cool")
+    .bind("project-recent-interleave-cool")
+    .bind("account:user-recent-interleave-cool")
+    .bind(cool_period_start)
+    .bind(cool_period_end)
+    .bind(cool_period_start)
+    .bind(cool_period_end)
+    .bind(cool_period_end)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert cool recent usage");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(20)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.recent_candidate_count, 20);
+    assert_eq!(batch.backlog_candidate_count, 0);
+    assert_eq!(batch.candidates.len(), 20);
+    assert_eq!(
+        batch
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.token_id == "token-recent-interleave-cool")
+            .count(),
+        1
+    );
+    assert_eq!(
+        batch
+            .candidates
+            .iter()
+            .filter(|candidate| candidate
+                .token_id
+                .starts_with("token-recent-interleave-hot-"))
+            .count(),
+        19
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

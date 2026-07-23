@@ -132,12 +132,13 @@
 - Given UA 为空或非空，When Control MCP 新建连接，Then 分别省略 UA 或发送配置值；HTTP API 始终无 UA。
 - Given token secret 轮换、HA 节点切换或相同窗口重试，When 计算匿名 ID，Then 输出稳定一致；不同 token/窗口输出不同。
 - Given 遗留 `upstream_mcp` session 仍存在，但 `accessToken`、API Rebalance 与 MCP Rebalance 已启用，When 新请求进入当前窗口，Then shadow compare 持续产数且记录为 shadow settlement mode。
-- Given compare-only 用户列表或用户用量页，When shadow 结果已确认且 `delta=0`，Then `新方案 24h` 仍显示绝对值且不再折叠为空；When 当日 shadow 尚不可确认，Then 明确显示 unavailable 文案而不是静默横杠。
+- Given compare-only 用户列表或用户用量页，When 当日仍有未 terminal 的 shadow 窗口，Then `新方案 24h` 显示 `当前本地 24h + 已确认 shadow delta` 的混合值，并明确提示“含未对账估算”；When 当日相关窗口均已 terminal 且 `delta=0`，Then `新方案 24h` 仍显示绝对值且不再折叠为空。
 - Given precise 门禁未形成完整窗口，When 结算调度执行，Then 不产生 precise adjustment。
 - Given 多 Key、Research 等待、Retry-After、重启或 HA 接管，When 窗口结算，Then 最终只产生一条幂等 signed adjustment。
 - Given 退款或补扣，When 查询账户或未绑定 Token 的相关额度，Then 原业务窗口统计立即反映差额，S3 不增加次日额度。
 - Given 状态 API 与页面，When secret、官方 key 或 token 存在，Then 任何响应与 UI 都不显示完整敏感值。
 - Given reconciliation backlog 中存在 `rate_limited` 窗口，When 管理员查看系统状态页，Then 能区分上游 429、本地 usage 限流与其他重试，并能看到当前时段每个上游 Key 的绑定用户数与待查询 Project ID 数分布。
+- Given 近期窗口与旧 backlog 同时堆积，When reconciliation worker 选择候选窗口，Then 今日+昨日窗口优先进入 recent lane，且不会被老 backlog 长期饿死。
 - Given 同一上游 Key 的多个窗口同时到期且首次 `/usage` 查询收到 429 或本地 usage 限流，When reconciliation worker 执行，Then 该 Key 的到期窗口整体进入同一退避时间，本轮不再反复打同一个 Key，其他 Key 的候选仍可继续结算。
 - Given 管理员进入隐藏 session 管理页，When 使用状态/时间筛选并执行单条、批量或按筛选释放，Then 只有命中的活跃 `upstream_mcp` session 会被释放，已过期或已释放记录不会重复处理。
 
@@ -153,7 +154,7 @@
 ### Testing
 
 - Rust unit/integration: Header 白名单、派生稳定性、边界、eligibility、限速、Research、幂等与额度整合。
-- Rust unit/integration: compare-only `/api/users` confirmed/unavailable 三态、status 诊断时间戳、retry bucket / 当前时段 Key 活动字段、`upstream_reconciliation` enqueue reuse fast-path 与 key-scoped backoff。
+- Rust unit/integration: compare-only `/api/users` confirmed/projected/null 合同、status 诊断时间戳、retry bucket / 当前时段 Key 活动字段、recent/backlog 候选公平性、`upstream_reconciliation` enqueue reuse fast-path 与 key-scoped backoff。
 - Web: route、settings、status states、Storybook interaction。
 - Full: `cargo test`、`cargo clippy -- -D warnings`、`bun test`、`bun run build`、`bun run build-storybook`。
 
@@ -197,15 +198,15 @@ PR: include
 
 PR: include
 
-- desktop users list confirmed/unavailable comparison column
-- verifies: `/admin/users` keeps the `新方案 24h` absolute value visible even when confirmed shadow usage equals the current 24h value, still shows `较当前 ...` only for non-zero deltas, and marks unavailable rows explicitly instead of collapsing to `—`.
+- desktop users list confirmed/projected comparison column
+- verifies: `/admin/users` keeps the `新方案 24h` absolute value visible even when confirmed shadow usage equals the current 24h value, still shows `较当前 ...` only for non-zero deltas, and marks projected rows with “含未对账估算” instead of collapsing to `—`.
 
   ![Users list confirmed and unavailable comparison column](./assets/admin-users-compare-shadow-desktop.png)
 
 PR: include
 
-- desktop users usage confirmed/unavailable comparison column
-- verifies: `/admin/users/usage` mirrors the same confirmed-vs-unavailable contract, preserving the absolute compare-only value for equal confirmed rows and rendering unavailable rows as `Unavailable` instead of a silent dash.
+- desktop users usage confirmed/projected comparison column
+- verifies: `/admin/users/usage` mirrors the same confirmed-vs-projected contract, preserving the absolute compare-only value for equal confirmed rows and rendering projected rows with the explicit estimate hint instead of a silent dash.
 
   ![Users usage confirmed and unavailable comparison column](./assets/admin-users-usage-compare-shadow-desktop.png)
 
@@ -242,14 +243,14 @@ Owner-facing only.
 Owner-facing only.
 
 - desktop users list comparison column
-- verifies: when precise reconciliation stays disabled, `/admin/users` renders the dedicated `新方案 24h` comparison column next to the live 24h column, keeps equal-value confirmed rows visible, and marks unavailable rows explicitly.
+- verifies: when precise reconciliation stays disabled, `/admin/users` renders the dedicated `新方案 24h` comparison column next to the live 24h column, keeps equal-value confirmed rows visible, and marks projected rows with the explicit estimate hint.
 
   ![Users list comparison column](./assets/users-list-shadow-comparison-desktop.png)
 
 Owner-facing only.
 
 - desktop users usage comparison column
-- verifies: `/admin/users/usage` shows the same `新方案 24h` comparison column without collapsing the existing 5m / 1h / success-rate hierarchy, while preserving equal confirmed values and explicit unavailable states.
+- verifies: `/admin/users/usage` shows the same `新方案 24h` comparison column without collapsing the existing 5m / 1h / success-rate hierarchy, while preserving equal confirmed values and explicit projected states.
 
   ![Users usage comparison column](./assets/users-usage-shadow-comparison-desktop.png)
 
@@ -275,7 +276,7 @@ Owner-facing only.
 
 - 风险：上游 `/usage` 为累计接口，精准归属依赖每个 token/period 使用唯一匿名 project id。
 - 风险：SQLite 写竞争可能延迟结算；队列必须可恢复且不阻塞请求主路径。
-- 风险：compare-only 只对“已确认 shadow”显示绝对值；如果 reconciliation 长时间积压，owner-facing 页面仍会明确暴露 unavailable，而不是伪装成当前值。
+- 风险：compare-only 现在始终显示混合值；如果 reconciliation 长时间积压，owner-facing 页面会持续暴露 `projected/含未对账估算`，而不是伪装成 fully confirmed。
 - 假设：上游对缺失 `X-Project-ID` 与按该 Header 查询 `/usage` 均保持官方支持。
 
 ## 参考（References）

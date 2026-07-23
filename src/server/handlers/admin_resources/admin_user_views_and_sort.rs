@@ -116,7 +116,7 @@ struct AdminUserQuotaBreakdownView {
 #[serde(rename_all = "camelCase")]
 enum AdminUserShadowDailyAvailability {
     Confirmed,
-    Unavailable,
+    Projected,
 }
 
 #[derive(Debug, Serialize)]

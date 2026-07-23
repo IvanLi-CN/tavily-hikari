@@ -19,7 +19,7 @@ export function formatShadowDailyUsageComparison(args: {
 export function buildShadowDailyUsageStack(args: {
   actualUsed: number
   shadowUsed: number | null
-  shadowAvailability: 'confirmed' | 'unavailable' | null
+  shadowAvailability: 'confirmed' | 'projected' | 'unavailable' | null
   limit: number
   usersStrings: AdminTranslations['users']
   formatNumber: (value: number) => string
@@ -45,6 +45,22 @@ export function buildShadowDailyUsageStack(args: {
     }
   }
   if (shadowAvailability !== 'confirmed' || shadowUsed == null) {
+    if (shadowAvailability === 'projected' && shadowUsed != null) {
+      const shadowMetric = formatQuotaStackValue(shadowUsed, limit)
+      const comparison = formatShadowDailyUsageComparison({
+        actualUsed,
+        shadowUsed,
+        usersStrings,
+        formatNumber,
+      })
+      return {
+        primary: shadowMetric.primary,
+        primaryClassName: shadowMetric.primaryClassName ?? null,
+        secondary: comparison
+          ? `${comparison} · ${usersStrings.usage.shadowProjectedEstimate}`
+          : usersStrings.usage.shadowProjectedEstimate,
+      }
+    }
     return {
       primary: '—',
       secondary: null,

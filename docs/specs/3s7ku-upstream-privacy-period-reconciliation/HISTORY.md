@@ -11,6 +11,8 @@
 - 2026-07-16: 拆开 shadow compare 与 precise cutover 门禁；compare-only 不再等待遗留 `upstream_mcp` session 排空，系统状态主相位改为“仅对比”。
 - 2026-07-16: 新增隐藏路由 `/admin/system-settings/mcp-session-bindings` 及其 warning/stat 卡入口，用于查询与释放异常 `upstream_mcp` session 绑定记录。
 - 2026-07-20: compare-only 的 `新方案 24h` 改成 confirmed absolute value / unavailable 双态合同；equal-delta 不再折叠为空。
+- 2026-07-23: compare-only 的 `新方案 24h` 再调整为 hybrid 合同：已对账部分使用 shadow、未对账部分保留本地估算；`shadowDailyAvailability` 改为 `confirmed | projected | null`，compare-only 不再回空值。
+- 2026-07-23: reconciliation 候选调度新增 recent/backlog 双车道与 `12/8` 默认预算，优先收敛今日+昨日窗口，再回填旧 backlog。
 - 2026-07-20: reconciliation 补充 enqueue reuse / exhaustion 与 run started / completed 诊断信号，系统状态页新增最近运行、最近 shadow 调整、最近入队失败时间戳。
 - 2026-07-22: backlog 排障保持严格 degraded 语义，不把缺值伪装成旧值；`rate_limited` 拆分为上游 429、本地 usage 限流与其他重试，并对 hot upstream Key 应用 key-scoped backoff，系统状态页展示当前时段 per-key 活动图。
 

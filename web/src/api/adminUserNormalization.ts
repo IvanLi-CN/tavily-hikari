@@ -50,9 +50,11 @@ function readShadowDailyAvailability(
   value: RecordLike,
   camelKey: string,
   snakeKey = camelKey,
-): 'confirmed' | 'unavailable' | null {
+): 'confirmed' | 'projected' | 'unavailable' | null {
   const candidate = value[camelKey] ?? value[snakeKey]
-  return candidate === 'confirmed' || candidate === 'unavailable' ? candidate : null
+  return candidate === 'confirmed' || candidate === 'projected' || candidate === 'unavailable'
+    ? candidate
+    : null
 }
 
 function normalizeRequestRate(value: unknown, fallback: RequestRate): RequestRate {

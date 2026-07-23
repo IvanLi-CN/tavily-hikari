@@ -42,13 +42,15 @@ phase 当前为：
 `GET /api/users` 在 compare-only 模式下新增 shadow 对账语义字段：
 
 - `shadowDailyCreditsUsed: number | null`
-- `shadowDailyAvailability: "confirmed" | "unavailable" | null`
+- `shadowDailyAvailability: "confirmed" | "projected" | null`
 
 compare-only 时合同固定为：
 
-- `confirmed` 且 `delta != 0`：返回新方案 `24h` 绝对值，并允许 UI 展示相对当前的 secondary delta。
+- `projected`：返回混合值 `dailyCreditsUsed + confirmed shadow delta sum`；owner-facing UI 必须明确提示“含未对账估算”。
+- `confirmed` 且 `delta != 0`：返回同一混合值，并允许 UI 展示相对当前的 secondary delta。
 - `confirmed` 且 `delta == 0`：仍返回新方案 `24h` 绝对值，但 secondary delta 为空。
-- `unavailable`：`shadowDailyCreditsUsed = null`，owner-facing UI 必须明确显示 unavailable，而不是横杠或当前值。
+- compare-only 激活时后端不再主动返回 `unavailable`；旧值仅作为前端兼容解析保留。
+- 当天无本地计费且无 shadow usage 记录时，返回 `shadowDailyCreditsUsed = 0` 且 `shadowDailyAvailability = "confirmed"`。
 
 非 compare-only 路径可以返回 `shadowDailyAvailability = null`，前端不展示该列。
 

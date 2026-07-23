@@ -1798,12 +1798,13 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
         }
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_period
-               ON upstream_reconciliation_usage(period_end, token_id, period_code)"#,
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_period ON upstream_reconciliation_usage(period_end, token_id, period_code)").execute(&self.pool).await?;
+        for statement in [
+            "CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_subject_mode_period ON upstream_reconciliation_usage(billing_subject, settlement_mode, period_start, token_id, period_code)",
+            "CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_usage_window_mode ON upstream_reconciliation_usage(token_id, period_code, billing_subject, settlement_mode)",
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_research_period
                ON upstream_reconciliation_research(token_id, period_code, terminal_at)"#,

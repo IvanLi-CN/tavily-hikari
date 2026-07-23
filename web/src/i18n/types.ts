@@ -1093,6 +1093,7 @@ export interface AdminTranslationsShape {
         open: string
         back: string
         shadowComparisonValue: string
+        shadowProjectedEstimate: string
         shadowUnavailable: string
         table: {
           user: string

@@ -357,7 +357,7 @@
         "server::tests::admin_token_owner_summary::admin_",
         "server::tests::admin_users_and_tokens::account_",
         "server::tests::admin_users_and_tokens::admin_",
-        "server::tests::admin_users_and_tokens::list_",
+        "server::tests::admin_users_shadow_daily_projection::list_",
         "server::tests::dashboard_overview_snapshot::admin_",
         "server::tests::log_catalog_and_dashboard_sse::admin_",
         "server::tests::mcp_rebalance_and_follow_up::admin_",
