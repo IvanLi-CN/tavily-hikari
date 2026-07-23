@@ -492,8 +492,10 @@ async fn list_users(
             .copied()
             .unwrap_or_default();
         let projection = shadow_daily_projection.get(&row.user.user_id);
+        let has_persisted_shadow_projection =
+            projection.is_some_and(|value| value.has_shadow_projection_data);
         let show_shadow_projection =
-            shadow_compare_enabled && (shadow_projection_ready || projection.is_some());
+            shadow_compare_enabled && (shadow_projection_ready || has_persisted_shadow_projection);
         let (shadow_daily_credits_used, shadow_daily_availability) = if show_shadow_projection {
             let shadow_daily_credits_used = Some(
                 row.summary.daily_credits_used.saturating_add(

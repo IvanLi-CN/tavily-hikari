@@ -1157,6 +1157,7 @@ impl KeyStore {
                     confirmed_delta_credits,
                     observed_window_count: 0,
                     resolved_window_count: 0,
+                    has_shadow_projection_data: true,
                 },
             );
         }
@@ -1207,9 +1208,11 @@ impl KeyStore {
                     confirmed_delta_credits: 0,
                     observed_window_count: 0,
                     resolved_window_count: 0,
+                    has_shadow_projection_data: false,
                 });
             entry.observed_window_count += total_windows;
             entry.resolved_window_count += terminal_windows;
+            entry.has_shadow_projection_data = true;
         }
 
         let mut actual_window_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
@@ -1257,6 +1260,7 @@ impl KeyStore {
                     confirmed_delta_credits: 0,
                     observed_window_count: 0,
                     resolved_window_count: 0,
+                    has_shadow_projection_data: false,
                 });
             entry.observed_window_count += exact_windows;
             entry.resolved_window_count += exact_windows;
