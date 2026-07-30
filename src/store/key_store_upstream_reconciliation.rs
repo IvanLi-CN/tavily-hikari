@@ -174,6 +174,56 @@ impl KeyStore {
             .await
     }
 
+    pub(crate) async fn upstream_reconciliation_global_backoff_state(
+        &self,
+    ) -> Result<(i64, i64, i64), ProxyError> {
+        Ok((
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1)
+                .await?
+                .unwrap_or(0),
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1)
+                .await?
+                .unwrap_or(0),
+            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1)
+                .await?
+                .unwrap_or(0),
+        ))
+    }
+
+    pub(crate) async fn update_upstream_reconciliation_global_backoff(
+        &self,
+        pressure: bool,
+        now: i64,
+    ) -> Result<(i64, i64, i64), ProxyError> {
+        let (previous_streak, previous_level, _) =
+            self.upstream_reconciliation_global_backoff_state().await?;
+        let (streak, level, until) = if pressure {
+            let streak = previous_streak.saturating_add(1);
+            let level = if streak < 3 {
+                0
+            } else {
+                previous_level.saturating_add(1).clamp(1, 4)
+            };
+            let delay_secs = match level {
+                1 => 2 * 60,
+                2 => 5 * 60,
+                3 => 10 * 60,
+                4 => 30 * 60,
+                _ => 0,
+            };
+            (streak, level, now.saturating_add(delay_secs))
+        } else {
+            (0, 0, 0)
+        };
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1, streak)
+            .await?;
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1, level)
+            .await?;
+        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1, until)
+            .await?;
+        Ok((streak, level, until))
+    }
+
     pub(crate) async fn mark_upstream_reconciliation_enqueue_error_at(
         &self,
         timestamp: i64,

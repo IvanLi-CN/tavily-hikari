@@ -80,6 +80,7 @@ fn new_dashboard_overview_cache() -> Arc<Mutex<DashboardOverviewCacheState>> {
 }
 
 static DB_MAINTENANCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
+static ONLINE_HA_GC_LEASE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
 static MAINTENANCE_WORKER_WAKES: OnceLock<
@@ -150,9 +151,12 @@ async fn acquire_db_maintenance_write_gate() -> tokio::sync::RwLockWriteGuard<'s
     db_maintenance_gate().write().await
 }
 
-pub(crate) fn try_acquire_db_maintenance_write_gate(
-) -> Option<tokio::sync::RwLockWriteGuard<'static, ()>> {
-    db_maintenance_gate().try_write().ok()
+pub(crate) fn try_acquire_online_ha_gc_lease() -> Option<OwnedMutexGuard<()>> {
+    ONLINE_HA_GC_LEASE
+        .get_or_init(|| Arc::new(Mutex::new(())))
+        .clone()
+        .try_lock_owned()
+        .ok()
 }
 
 async fn acquire_db_job_execution_gate_for_state(
@@ -209,11 +213,13 @@ mod db_maintenance_gate_tests {
     }
 
     #[tokio::test]
-    async fn online_gc_write_gate_is_non_blocking_when_http_readers_are_present() {
+    async fn online_gc_lease_is_independent_from_http_readers() {
         let read_guard = super::acquire_db_maintenance_read_gate().await;
-        assert!(super::try_acquire_db_maintenance_write_gate().is_none());
+        assert!(super::try_acquire_online_ha_gc_lease().is_some());
         drop(read_guard);
-        assert!(super::try_acquire_db_maintenance_write_gate().is_some());
+        let lease = super::try_acquire_online_ha_gc_lease().expect("GC lease available");
+        assert!(super::try_acquire_online_ha_gc_lease().is_none());
+        drop(lease);
     }
 }
 

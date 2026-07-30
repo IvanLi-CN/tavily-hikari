@@ -89,3 +89,22 @@
 - HA perf events retain stable structured fields while avoiding false ACK lag: outbox stats only
   compute lag when a peer watermark is supplied, and the admin health path uses watermark plus
   indexed `EXISTS` checks instead of row counts.
+
+## Reconciliation pressure telemetry
+
+- Reconciliation persists a global pressure streak and backoff level. Three consecutive runs with
+  zero settlements and predominantly upstream 429 responses enter a 2/5/10/30 minute backoff;
+  per-key cooldown remains authoritative, while normal per-key backoff logs are DEBUG and the
+  state transition is summarized once at WARN. The administrative system-status surface exposes the
+  current pressure streak, level, and retry time.
+
+## Visual Evidence
+
+PR: include
+
+![System status global reconciliation backoff](./assets/system-status-global-reconciliation-backoff.png)
+
+- Storybook canvas: `Admin/Modules/SystemStatusModule/GlobalBackoff`
+- evidence_note: Mock-only system-status state showing the persisted global reconciliation backoff
+  after three pressure runs. Captured from the current uncommitted worktree based on
+  `d657e3593dc19c85224ff3731cf782a77046ccd9`; it must be recaptured after any UI or fixture change.

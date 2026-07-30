@@ -71,9 +71,10 @@
   events, while preserving schema compatibility for future `active_standby` cold start.
 - Added per-channel peer watermark storage keyed by `(peer_node_id, channel)` and a compatibility
   rebuild for old single-column `ha_peer_watermarks` schemas.
-- Added bounded `ha_outbox_gc` maintenance with scheduler/manual-job support. The online path only
-  deletes expired rows from `control` / `billing` / `runtime` outboxes within their own retention
-  windows, then runs `PRAGMA wal_checkpoint(PASSIVE)`; it never runs full `VACUUM`.
+- Added bounded `ha_outbox_gc` maintenance with scheduler/manual-job support. The online path owns
+  one persisted channel per slice, advances a durable round-robin cursor, and deletes only within
+  that channel's retention window. It never runs a WAL checkpoint or full `VACUUM`; the one-shot
+  CLI retains the larger bounded maintenance budget.
 - Added offline `ha_outbox_cleanup_once` and `scripts/ha-outbox-maintenance.sh` so large retained
   historical `ha_outbox` rows can be cleaned explicitly during a maintenance window before an
   optional `db_compaction_once`.
@@ -97,6 +98,9 @@
 - `ha_outbox_cleanup_once` now distinguishes immediate invalid-legacy cleanup from normal retention
   cleanup in its JSON/plain reports, so operators can prove whether the pass is shrinking a stale
   upgraded backlog or only trimming aged rows.
+- `ha_outbox_cleanup_once --dry-run` uses a read-only SQLite connection and reports index presence,
+  retention, oldest age, watermark, lowest peer ACK, and pending-cleanup state without repairing
+  triggers or deleting rows.
 - Shared-testbox validation against a full 101 snapshot confirmed the upgraded-database failure
   mode and the repair-first fix:
   - `ha_trigger_repair_once --ha-mode active_standby` dropped `30` legacy single-channel triggers

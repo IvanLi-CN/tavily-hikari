@@ -80,6 +80,14 @@ impl TavilyProxy {
             .key_store
             .upstream_reconciliation_runtime_markers()
             .await?;
+        let (
+            reconciliation_pressure_streak,
+            reconciliation_backoff_level,
+            reconciliation_backoff_until,
+        ) = self
+            .key_store
+            .upstream_reconciliation_global_backoff_state()
+            .await?;
         let next_epoch_at = if shadow_ready && settings.upstream_precise_reconciliation_enabled && sessions_ready {
             Some(if stored_epoch > 0 {
                 stored_epoch
@@ -141,6 +149,10 @@ impl TavilyProxy {
             last_reconciliation_enqueue_error_at,
             last_research_sweep_at,
             last_research_terminal_at,
+            reconciliation_pressure_streak,
+            reconciliation_backoff_level,
+            reconciliation_backoff_until: (reconciliation_backoff_until > now)
+                .then_some(reconciliation_backoff_until),
             retry_buckets,
             current_period_bound_users_by_key,
             current_period_pending_project_ids_by_key,
@@ -566,6 +578,24 @@ impl TavilyProxy {
             );
             return Ok(0);
         }
+        let now = self.backend_time.now_ts();
+        let (_, global_backoff_level, global_backoff_until) = self
+            .key_store
+            .upstream_reconciliation_global_backoff_state()
+            .await?;
+        if global_backoff_until > now {
+            self.key_store
+                .mark_upstream_reconciliation_run_completed_at(now)
+                .await?;
+            tracing::info!(
+                component = "reconciliation",
+                event = "global_backoff_active",
+                job_type = "upstream_reconciliation",
+                backoff_level = global_backoff_level,
+                backoff_until = global_backoff_until,
+            );
+            return Ok(0);
+        }
         let (
             research_polled_count,
             research_terminal_count,
@@ -702,7 +732,7 @@ impl TavilyProxy {
                         }
                         key_backoff_window_count += affected_window_count;
                         cooling_keys.insert(retry_key_id.clone());
-                        tracing::warn!(
+                        tracing::debug!(
                             component = "reconciliation",
                             event = "key_backoff_applied",
                             elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -796,6 +826,28 @@ impl TavilyProxy {
                     research_retry_count,
                     research_skipped_cooldown_count,
                 );
+                let pressure = settled == 0
+                    && upstream_429_retry_windows > 0
+                    && upstream_429_retry_windows.saturating_mul(2) >= candidate_count.max(1);
+                let (pressure_streak, backoff_level, backoff_until) = self
+                    .key_store
+                    .update_upstream_reconciliation_global_backoff(
+                        pressure,
+                        self.backend_time.now_ts(),
+                    )
+                    .await?;
+                if backoff_level > 0 {
+                    tracing::warn!(
+                        component = "reconciliation",
+                        event = "global_backoff_applied",
+                        job_type = "upstream_reconciliation",
+                        pressure_streak,
+                        backoff_level,
+                        backoff_until,
+                        rate_limited_429_count = upstream_429_retry_windows,
+                        candidate_count,
+                    );
+                }
                 Ok(settled)
             }
             Err(err) => {

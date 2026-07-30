@@ -382,18 +382,22 @@ async fn dequeue_next_scheduled_job(
     };
 
     let now = state.proxy.backend_time().now_ts();
-    let queue_wait_secs = now.saturating_sub(candidate.queued_at);
+    let queue_age_secs = now.saturating_sub(candidate.queued_at);
+    let scheduled_delay_secs = candidate.available_at.saturating_sub(candidate.queued_at);
+    let eligible_wait_secs = now.saturating_sub(candidate.available_at);
     tracing::debug!(
         component = "scheduler",
         event = "job_claim_attempt",
         job_id = candidate.id,
         job_type = %candidate.job_type,
         trigger_source = %candidate.trigger_source,
-        queue_wait_ms = queue_wait_secs.saturating_mul(1_000),
+        queue_age_ms = queue_age_secs.saturating_mul(1_000),
+        scheduled_delay_ms = scheduled_delay_secs.saturating_mul(1_000),
+        eligible_wait_ms = eligible_wait_secs.saturating_mul(1_000),
         effective_priority = candidate.effective_priority,
         available_at = candidate.available_at,
     );
-    if queue_wait_secs >= SCHEDULED_JOB_WAIT_WARN_SECS
+    if eligible_wait_secs >= SCHEDULED_JOB_WAIT_WARN_SECS
         && should_warn_scheduled_job_queue_wait(&candidate.job_type)
     {
         tracing::warn!(
@@ -401,7 +405,9 @@ async fn dequeue_next_scheduled_job(
             event = "job_queue_wait_threshold_exceeded",
             job_id = candidate.id,
             job_type = %candidate.job_type,
-            queue_wait_ms = queue_wait_secs.saturating_mul(1_000),
+            queue_age_ms = queue_age_secs.saturating_mul(1_000),
+            scheduled_delay_ms = scheduled_delay_secs.saturating_mul(1_000),
+            eligible_wait_ms = eligible_wait_secs.saturating_mul(1_000),
             effective_priority = candidate.effective_priority,
             available_at = candidate.available_at,
         );
@@ -1051,26 +1057,22 @@ async fn run_ha_outbox_gc_claimed_job(
     } = claimed_job;
     drop(_job_execution_gate);
 
-    let Some(_maintenance) = try_acquire_db_maintenance_write_gate() else {
+    let Some(_gc_lease) = try_acquire_online_ha_gc_lease() else {
         tracing::warn!(
             component = "ha_outbox_gc",
             event = "deferred",
             job_id,
-            defer_reason = "maintenance_write_gate_busy",
+            defer_reason = "gc_lease_busy",
             continuation_delay_secs = HA_OUTBOX_GC_CONTINUATION_DELAY_SECS,
         );
         return finish_ha_gc_with_continuation(
             &state,
             job_id,
-            "deferred=maintenance_write_gate_busy".to_string(),
+            "deferred=gc_lease_busy".to_string(),
         )
         .await;
     };
-    let result = state
-        .proxy
-        .gc_ha_outbox_online()
-        .await;
-    drop(_maintenance);
+    let result = state.proxy.gc_ha_outbox_online().await;
 
     match result {
         Ok(report) => {

@@ -483,3 +483,10 @@
   application's existing SQLite pool. The scheduler probes the maintenance write lease with
   `try_write`; writer contention becomes a durable 30-second continuation rather than a 10-second
   lock retry. The offline HA cleanup command keeps its larger CLI defaults.
+
+## Online HA cleanup isolation
+
+- Online HA outbox cleanup no longer contends on the global HTTP maintenance write gate. A dedicated
+  non-blocking GC lease serializes only GC slices, while scheduler diagnostics distinguish queue age,
+  scheduled delay, and eligible wait. A scheduled continuation therefore does not produce a false
+  queue-wait alert before its `available_at` time.

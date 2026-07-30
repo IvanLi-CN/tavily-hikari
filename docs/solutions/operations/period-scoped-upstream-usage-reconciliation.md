@@ -132,3 +132,12 @@ Operators need to know whether exact reconciliation is active or merely configur
 
 This is why Tavily Hikari ships a dedicated `System Status` admin page instead of hiding the state
 inside logs.
+
+## Global upstream pressure backoff
+
+When candidates exist but a run settles none and at least half of its attempts are upstream 429s,
+preserve the per-key cooldown records but also persist a run-level pressure streak. After three
+consecutive pressure runs, skip further candidate work for 2, 5, 10, then 30 minutes; successful
+settlement or a lower pressure ratio clears the state. Emit per-key cooldowns at DEBUG and reserve
+WARN for entering, escalating, or recovering the global state so diagnosis does not become the
+dominant write or log workload.

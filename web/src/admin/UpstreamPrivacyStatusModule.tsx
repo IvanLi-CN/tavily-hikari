@@ -223,6 +223,15 @@ export default function UpstreamPrivacyStatusModule({
       })
     }
 
+    if (status.reconciliationBackoffUntil != null) {
+      issues.push({
+        key: 'globalReconciliationBackoff',
+        title: language === 'zh' ? '对账全局退避' : 'Global reconciliation backoff',
+        detail: `${language === 'zh' ? '级别' : 'Level'} ${status.reconciliationBackoffLevel ?? 0} · ${formatOptionalTimestamp(status.reconciliationBackoffUntil, timestampFormatter, '-')}`,
+        tone: 'warning',
+      })
+    }
+
     if (status.degradedSettlements > 0) {
       issues.push({
         key: 'degradedSettlements',

@@ -7,7 +7,7 @@ import UpstreamPrivacyStatusModule from './UpstreamPrivacyStatusModule'
 import { translations } from '../i18n'
 
 describe('SystemStatusModule Storybook proofs', () => {
-  it('keeps the pending, blocked-session, compare, active, degraded, empty, error, and gallery stories available', () => {
+  it('keeps the pending, blocked-session, compare, active, degraded, backoff, empty, error, and gallery stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/Modules/SystemStatusModule',
     })
@@ -17,6 +17,7 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(systemStatusStories.CompareOnly).toMatchObject({})
     expect(systemStatusStories.Active).toMatchObject({})
     expect(systemStatusStories.Degraded).toMatchObject({})
+    expect(systemStatusStories.GlobalBackoff).toMatchObject({})
     expect(systemStatusStories.EmptyState).toMatchObject({})
     expect(systemStatusStories.ErrorState).toMatchObject({})
     expect(systemStatusStories.LoadingState).toMatchObject({})
@@ -56,5 +57,13 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(markup).toContain('其余 2 个 Key')
     expect(markup).toContain('其余 3 个 Key')
     expect(markup).toContain(translations.zh.admin.systemSettings.privacy.loadFailed)
+  })
+
+  it('renders global reconciliation backoff as an actionable state', () => {
+    const args = { ...meta.args, ...systemStatusStories.GlobalBackoff.args }
+    const markup = renderToStaticMarkup(createElement(UpstreamPrivacyStatusModule, args))
+
+    expect(markup).toContain('对账全局退避')
+    expect(markup).toContain('级别 1')
   })
 })

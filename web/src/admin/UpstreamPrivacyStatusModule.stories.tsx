@@ -48,6 +48,9 @@ const pendingStatus: UpstreamPrivacyStatus = {
   lastReconciliationEnqueueErrorAt: 1_783_957_900,
   lastResearchSweepAt: 1_783_958_320,
   lastResearchTerminalAt: 1_783_958_300,
+  reconciliationPressureStreak: 0,
+  reconciliationBackoffLevel: 0,
+  reconciliationBackoffUntil: null,
   retryBuckets: {
     upstream429: 3,
     localUsageRateLimit: 1,
@@ -292,6 +295,17 @@ export const CompareOnly: Story = {
 export const Degraded: Story = {
   args: {
     status: degradedStatus,
+  },
+}
+
+export const GlobalBackoff: Story = {
+  args: {
+    status: {
+      ...compareStatus,
+      reconciliationPressureStreak: 3,
+      reconciliationBackoffLevel: 1,
+      reconciliationBackoffUntil: 1_783_959_120,
+    },
   },
 }
 

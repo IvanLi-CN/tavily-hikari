@@ -24,7 +24,7 @@ fn online_ha_gc_has_a_tight_slice_without_changing_cli_defaults() {
 }
 
 #[tokio::test]
-async fn online_ha_gc_rotates_budget_across_channels() {
+async fn online_ha_gc_persists_one_channel_rotation_between_slices() {
     let db_path = temp_db_path("ha-outbox-online-gc-round-robin");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -76,22 +76,89 @@ async fn online_ha_gc_rotates_budget_across_channels() {
     tx.commit().await.expect("commit seed transaction");
     pool.close().await;
 
-    let report = proxy.gc_ha_outbox_online().await.expect("online gc");
+    let report = proxy.gc_ha_outbox_online().await.expect("control gc");
     assert_eq!(report.batches, 4);
-    assert_eq!(report.deleted_rows, 502);
-    assert_eq!(report.channels.len(), 3);
+    assert_eq!(report.deleted_rows, 1_000);
+    assert_eq!(report.channels.len(), 1);
     assert_eq!(report.channels[0].channel, HaSyncChannel::Control);
-    assert_eq!(report.channels[0].batches, 2);
-    assert_eq!(report.channels[0].deleted_rows, 500);
-    assert!(report.channels[0].has_more);
-    assert_eq!(report.channels[1].channel, HaSyncChannel::Billing);
-    assert_eq!(report.channels[1].batches, 1);
-    assert_eq!(report.channels[1].deleted_rows, 1);
-    assert!(!report.channels[1].has_more);
-    assert_eq!(report.channels[2].channel, HaSyncChannel::Runtime);
-    assert_eq!(report.channels[2].batches, 1);
-    assert_eq!(report.channels[2].deleted_rows, 1);
-    assert!(!report.channels[2].has_more);
+    assert_eq!(report.channels[0].batches, 4);
+    assert_eq!(report.channels[0].deleted_rows, 1_000);
+    assert!(!report.channels[0].has_more);
+    assert!(report.has_more);
+
+    let report = proxy.gc_ha_outbox_online().await.expect("billing gc");
+    assert_eq!(report.channels.len(), 1);
+    assert_eq!(report.channels[0].channel, HaSyncChannel::Billing);
+    assert_eq!(report.channels[0].deleted_rows, 1);
+    assert!(report.has_more);
+
+    let report = proxy.gc_ha_outbox_online().await.expect("runtime gc");
+    assert_eq!(report.channels.len(), 1);
+    assert_eq!(report.channels[0].channel, HaSyncChannel::Runtime);
+    assert_eq!(report.channels[0].deleted_rows, 1);
+    assert!(!report.has_more);
+    assert!(report.completed);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn online_ha_gc_scans_legacy_rows_by_persisted_sequence_cursor() {
+    let db_path = temp_db_path("ha-outbox-online-gc-legacy-cursor");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-online-gc-legacy-cursor".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+    for (resource, resource_id) in [
+        ("scheduled_jobs", "legacy-job-1"),
+        ("users", "valid-user"),
+        ("scheduled_jobs", "legacy-job-2"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO ha_outbox
+                (kind, resource, resource_id, op, payload_json, created_at, checksum)
+            VALUES ('state', ?, ?, 'upsert', '{}', ?, NULL)
+            "#,
+        )
+        .bind(resource)
+        .bind(resource_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert outbox row");
+    }
+    pool.close().await;
+
+    let report = proxy.gc_ha_outbox_online().await.expect("online gc");
+    let control = report.channels.first().expect("control report");
+    assert_eq!(control.channel, HaSyncChannel::Control);
+    assert_eq!(control.invalid_legacy_deleted_rows, 2);
+    assert_eq!(control.retention_deleted_rows, 0);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let remaining_resources: Vec<String> =
+        sqlx::query_scalar("SELECT resource FROM ha_outbox ORDER BY seq ASC")
+            .fetch_all(&pool)
+            .await
+            .expect("read remaining resources");
+    let cursor: i64 = sqlx::query_scalar(
+        "SELECT last_legacy_control_seq FROM ha_outbox_gc_state WHERE id = 'local'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read legacy cursor");
+    assert_eq!(remaining_resources, vec!["users"]);
+    assert_eq!(cursor, 0);
+    pool.close().await;
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
