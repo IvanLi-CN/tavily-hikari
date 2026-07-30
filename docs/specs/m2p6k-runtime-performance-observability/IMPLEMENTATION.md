@@ -106,5 +106,5 @@ PR: include
 
 - Storybook canvas: `Admin/Modules/SystemStatusModule/GlobalBackoff`
 - evidence_note: Mock-only system-status state showing the persisted global reconciliation backoff
-  after three pressure runs. Captured from the current uncommitted worktree based on
-  `d657e3593dc19c85224ff3731cf782a77046ccd9`; it must be recaptured after any UI or fixture change.
+  after three pressure runs. Bound to `525c07d305537a6c60cf176d28f8ec9788895424`; it must be
+  recaptured after any UI or fixture change.
