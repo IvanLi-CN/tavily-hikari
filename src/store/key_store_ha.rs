@@ -3063,7 +3063,16 @@ impl KeyStore {
             }
             query.execute(&mut **conn).await?;
         }
-        let reached_end = scanned_len < batch_size.max(1);
+        let reached_end = if scanned_len < batch_size.max(1) {
+            true
+        } else {
+            !sqlx::query_scalar::<_, bool>(&format!(
+                "SELECT EXISTS(SELECT 1 FROM {table} WHERE seq > ? LIMIT 1)"
+            ))
+            .bind(next_seq)
+            .fetch_one(&mut **conn)
+            .await?
+        };
         sqlx::query(&format!(
             "UPDATE ha_outbox_gc_state SET {cursor_column} = ? WHERE id = 'local'"
         ))
