@@ -680,6 +680,11 @@ pub fn format_ha_outbox_gc_report_message(report: &HaOutboxGcReport, passes: usi
     )
 }
 
+/// Resource names that the bounded outbox GC retains for a channel.
+pub fn ha_outbox_gc_allowed_resources(channel: HaSyncChannel) -> &'static [&'static str] {
+    crate::store::ha_outbox_gc_allowed_resources(channel)
+}
+
 pub async fn run_ha_outbox_gc_once(
     database_path: &str,
     options: HaOutboxGcOptions,

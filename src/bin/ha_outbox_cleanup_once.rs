@@ -8,7 +8,7 @@ use dotenvy::dotenv;
 use serde::Serialize;
 use sqlx::{ConnectOptions, SqlitePool, sqlite::SqliteConnectOptions};
 use tavily_hikari::{
-    HaOutboxGcChannelReport, HaOutboxGcOptions, HaOutboxGcReport,
+    HaOutboxGcChannelReport, HaOutboxGcOptions, HaOutboxGcReport, HaSyncChannel,
     format_ha_outbox_gc_report_message, run_ha_outbox_gc_once,
 };
 
@@ -86,26 +86,27 @@ async fn read_only_preflight(db_path: &str) -> Result<PreflightReport, Box<dyn s
     let pool = SqlitePool::connect_with(options).await?;
     let now = chrono::Utc::now().timestamp();
     let mut channels = Vec::with_capacity(3);
-    for (channel, table, index, retention_secs) in [
+    for (ha_channel, table, index, retention_secs) in [
         (
-            "control",
+            HaSyncChannel::Control,
             "ha_outbox",
             "idx_ha_outbox_created",
             72 * 60 * 60,
         ),
         (
-            "billing",
+            HaSyncChannel::Billing,
             "ha_billing_outbox",
             "idx_ha_billing_outbox_created",
             14 * 24 * 60 * 60,
         ),
         (
-            "runtime",
+            HaSyncChannel::Runtime,
             "ha_runtime_outbox",
             "idx_ha_runtime_outbox_created",
             14 * 24 * 60 * 60,
         ),
     ] {
+        let channel = ha_channel.as_str();
         let created_at_index_present: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?)",
         )
@@ -128,12 +129,19 @@ async fn read_only_preflight(db_path: &str) -> Result<PreflightReport, Box<dyn s
         .bind(channel)
         .fetch_optional(&pool)
         .await?;
-        let pending_cleanup: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {table} WHERE created_at < ? LIMIT 1)"
-        ))
-        .bind(now - retention_secs)
-        .fetch_one(&pool)
-        .await?;
+        let allowed_resources = tavily_hikari::ha_outbox_gc_allowed_resources(ha_channel);
+        let placeholders = std::iter::repeat_n("?", allowed_resources.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let pending_sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE created_at < ? OR resource NOT IN ({placeholders}) LIMIT 1)"
+        );
+        let mut pending_query =
+            sqlx::query_scalar::<_, bool>(&pending_sql).bind(now - retention_secs);
+        for resource in allowed_resources {
+            pending_query = pending_query.bind(*resource);
+        }
+        let pending_cleanup = pending_query.fetch_one(&pool).await?;
         channels.push(PreflightChannel {
             channel,
             retention_secs,
@@ -334,6 +342,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn read_only_preflight_reports_recent_invalid_legacy_rows_as_pending_cleanup() {
+        let directory = std::env::temp_dir().join(format!(
+            "tavily-hikari-ha-outbox-preflight-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&directory).expect("create preflight test directory");
+        let db_path = directory.join("test.db");
+        let db_string = db_path.to_string_lossy().to_string();
+        let options = SqliteConnectOptions::from_str(&format!("sqlite://{db_string}"))
+            .expect("parse sqlite path")
+            .create_if_missing(true)
+            .disable_statement_logging();
+        let pool = SqlitePool::connect_with(options)
+            .await
+            .expect("open test database");
+        for table in ["ha_outbox", "ha_billing_outbox", "ha_runtime_outbox"] {
+            sqlx::query(&format!(
+                "CREATE TABLE {table} (seq INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, resource TEXT NOT NULL)"
+            ))
+            .execute(&pool)
+            .await
+            .expect("create outbox table");
+        }
+        sqlx::query(
+            "CREATE TABLE ha_peer_watermarks (channel TEXT NOT NULL, acked_seq INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create peer watermarks table");
+        sqlx::query(
+            "INSERT INTO ha_outbox (seq, created_at, resource) VALUES (1, ?, 'scheduled_jobs')",
+        )
+        .bind(chrono::Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("insert recent invalid legacy event");
+        pool.close().await;
+
+        let report = read_only_preflight(&db_string)
+            .await
+            .expect("run read-only preflight");
+        let control = report
+            .channels
+            .iter()
+            .find(|channel| channel.channel == "control")
+            .expect("control preflight channel");
+        assert!(control.pending_cleanup);
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn cli_report_sums_invalid_and_retention_passes() {

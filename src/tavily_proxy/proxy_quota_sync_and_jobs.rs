@@ -826,9 +826,12 @@ impl TavilyProxy {
                     research_retry_count,
                     research_skipped_cooldown_count,
                 );
+                let attempted_candidate_count = candidate_count
+                    .saturating_sub(skipped_by_key_backoff)
+                    .max(1);
                 let pressure = settled == 0
                     && upstream_429_retry_windows > 0
-                    && upstream_429_retry_windows.saturating_mul(2) >= candidate_count.max(1);
+                    && upstream_429_retry_windows.saturating_mul(2) >= attempted_candidate_count;
                 let (pressure_streak, backoff_level, backoff_until) = self
                     .key_store
                     .update_upstream_reconciliation_global_backoff(
@@ -846,6 +849,7 @@ impl TavilyProxy {
                         backoff_until,
                         rate_limited_429_count = upstream_429_retry_windows,
                         candidate_count,
+                        attempted_candidate_count,
                     );
                 }
                 Ok(settled)

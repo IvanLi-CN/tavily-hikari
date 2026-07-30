@@ -2806,7 +2806,7 @@ impl KeyStore {
         batch_size: i64,
     ) -> Result<i64, ProxyError> {
         let table = quote_sqlite_identifier(ha_channel_event_table(channel));
-        let allowed_resources = ha_channel_allowed_resources(channel)
+        let allowed_resources = ha_outbox_gc_allowed_resources(channel)
             .iter()
             .map(|resource| quote_sqlite_string(resource))
             .collect::<Vec<_>>()
@@ -2857,7 +2857,7 @@ impl KeyStore {
         channel: HaSyncChannel,
     ) -> Result<bool, ProxyError> {
         let table = quote_sqlite_identifier(ha_channel_event_table(channel));
-        let allowed_resources = ha_channel_allowed_resources(channel)
+        let allowed_resources = ha_outbox_gc_allowed_resources(channel)
             .iter()
             .map(|resource| quote_sqlite_string(resource))
             .collect::<Vec<_>>()
@@ -3047,7 +3047,7 @@ impl KeyStore {
         .await?;
         let scanned_len = scanned.len() as i64;
         let next_seq = scanned.last().map(|(seq, _)| *seq).unwrap_or(last_seq);
-        let allowed_resources = ha_channel_allowed_resources(channel);
+        let allowed_resources = ha_outbox_gc_allowed_resources(channel);
         let invalid_seqs = scanned
             .iter()
             .filter_map(|(seq, resource)| (!allowed_resources.contains(&resource.as_str())).then_some(*seq))

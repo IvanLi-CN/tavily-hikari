@@ -242,7 +242,7 @@ fn ha_channel_outbox_trigger_prefixes(channel: HaSyncChannel) -> Vec<String> {
     prefixes
 }
 
-fn ha_channel_allowed_resources(channel: HaSyncChannel) -> &'static [&'static str] {
+pub(crate) fn ha_outbox_gc_allowed_resources(channel: HaSyncChannel) -> &'static [&'static str] {
     ha_baseline_tables(channel)
 }
 

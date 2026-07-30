@@ -683,6 +683,105 @@ async fn run_upstream_reconciliation_once_applies_key_scoped_backoff_for_429() {
 }
 
 #[tokio::test]
+async fn reconciliation_global_backoff_counts_only_attempted_candidates() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-shared-429"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save reconciliation settings");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-shared-429")
+        .await
+        .expect("create upstream key");
+    for candidate in 0..3 {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("shared-429-token-{candidate}"))
+        .bind(&key_id)
+        .bind("2026-07-15/S1")
+        .bind(format!("shared-429-project-{candidate}"))
+        .bind(format!("account:shared-429-{candidate}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert reconciliation candidate");
+    }
+
+    let upstream_hits = Arc::new(AtomicUsize::new(0));
+    let app_hits = Arc::clone(&upstream_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move || {
+            let app_hits = Arc::clone(&app_hits);
+            async move {
+                app_hits.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({ "error": "rate limited" })),
+                )
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation usage upstream");
+    });
+
+    for timestamp in [now, now + 301, now + 902] {
+        clock.set_now_ts(timestamp);
+        let settled = proxy
+            .run_upstream_reconciliation_once(&format!("http://{addr}"))
+            .await
+            .expect("run shared-key reconciliation");
+        assert_eq!(settled, 0);
+    }
+
+    assert_eq!(upstream_hits.load(Ordering::SeqCst), 3);
+    let (pressure_streak, backoff_level, backoff_until) = proxy
+        .key_store
+        .upstream_reconciliation_global_backoff_state()
+        .await
+        .expect("read global backoff state");
+    assert_eq!(pressure_streak, 3);
+    assert_eq!(backoff_level, 1);
+    assert_eq!(backoff_until, now + 902 + 120);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn run_upstream_reconciliation_once_prioritizes_recent_windows_over_old_backlog() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
