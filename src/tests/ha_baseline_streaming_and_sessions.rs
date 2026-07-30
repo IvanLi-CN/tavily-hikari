@@ -116,6 +116,82 @@ async fn write_ha_baseline_ndjson_closes_read_snapshot_before_reusing_connection
 }
 
 #[tokio::test]
+async fn ha_replicates_reconciliation_global_backoff_metadata() {
+    let db_path = temp_db_path("ha-reconciliation-global-backoff-meta");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-reconciliation-global-backoff-meta".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .key_store
+        .configure_ha_event_writes(HaMode::ActiveStandby)
+        .await
+        .expect("configure HA event writes");
+
+    for (key, value) in [
+        (META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1, 3),
+        (META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1, 1),
+        (
+            META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
+            1_752_000_120,
+        ),
+    ] {
+        proxy
+            .key_store
+            .set_meta_i64(key, value)
+            .await
+            .expect("persist reconciliation backoff metadata");
+    }
+
+    let replicated_event_payloads: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT payload_json
+        FROM ha_outbox
+        WHERE resource = 'meta'
+        ORDER BY seq ASC
+        "#,
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read replicated reconciliation backoff events");
+    assert_eq!(replicated_event_payloads.len(), 3);
+    for key in [
+        META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1,
+        META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1,
+        META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
+    ] {
+        assert!(
+            replicated_event_payloads
+                .iter()
+                .any(|payload| payload.contains(key)),
+            "incremental event should contain {key}"
+        );
+    }
+
+    let mut output = Vec::new();
+    proxy
+        .write_ha_baseline_ndjson(HaSyncChannel::Control, "writer-node", &mut output)
+        .await
+        .expect("write control baseline");
+    let baseline = String::from_utf8(output).expect("control baseline is utf8");
+    for key in [
+        META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1,
+        META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1,
+        META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
+    ] {
+        assert!(baseline.contains(key), "baseline should contain {key}");
+    }
+
+    let _ = std::fs::remove_file(db_path.clone());
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn runtime_baseline_upsert_preserves_existing_rows() {
     let db_path = temp_db_path("ha-runtime-baseline-upsert-preserves-existing");
     let db_str = db_path.to_string_lossy().to_string();
