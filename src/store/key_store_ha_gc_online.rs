@@ -28,7 +28,20 @@ impl KeyStore {
         &self,
         foreground_rps: i64,
     ) -> Result<HaOutboxGcReport, ProxyError> {
-        self.gc_ha_outbox_online_with_options(HaOutboxGcOptions::online(), foreground_rps)
+        self.gc_ha_outbox_online_with_foreground_pressure(foreground_rps, 0)
+            .await
+    }
+
+    pub(crate) async fn gc_ha_outbox_online_with_foreground_pressure(
+        &self,
+        foreground_rps: i64,
+        low_pressure_since_floor: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.gc_ha_outbox_online_with_options(
+            HaOutboxGcOptions::online(),
+            foreground_rps,
+            low_pressure_since_floor,
+        )
             .await
     }
 
@@ -101,6 +114,7 @@ impl KeyStore {
         &self,
         options: HaOutboxGcOptions,
         foreground_rps: i64,
+        low_pressure_since_floor: i64,
     ) -> Result<HaOutboxGcReport, ProxyError> {
         let started = Instant::now();
         let deadline = started + Duration::from_secs(options.max_runtime_secs.max(1));
@@ -124,7 +138,9 @@ impl KeyStore {
             .fetch_one(&mut **conn)
             .await?;
             let low_pressure_since = if foreground_rps <= crate::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
-                persisted_low_pressure_since.or(Some(state_now))
+                persisted_low_pressure_since
+                    .filter(|started| *started >= low_pressure_since_floor)
+                    .or(Some(state_now))
             } else {
                 None
             };

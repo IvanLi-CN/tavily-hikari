@@ -205,6 +205,42 @@ async fn online_ha_gc_enters_one_second_recovery_after_low_pressure_window() {
 }
 
 #[tokio::test]
+async fn online_ha_gc_burst_between_slices_resets_low_pressure_tenure() {
+    let db_path = temp_db_path("ha-outbox-gc-low-pressure-burst");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-low-pressure-burst".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let now = Utc::now().timestamp();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        "UPDATE ha_outbox_gc_state SET low_pressure_since = ?, pending_channel_mask = 1 WHERE id = 'local'",
+    )
+    .bind(now - HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS)
+    .execute(&pool)
+    .await
+    .expect("seed stale low-pressure window");
+    pool.close().await;
+
+    let report = proxy
+        .gc_ha_outbox_online_with_foreground_pressure(0, now)
+        .await
+        .expect("run post-burst GC slice");
+    let channel = report.channels.first().expect("control channel report");
+    assert_ne!(channel.debt_mode, "recovering");
+    assert_ne!(report.continuation_delay_secs, Some(1));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn deferred_ha_gc_sets_watchdog_debt_when_mask_is_clear() {
     let db_path = temp_db_path("ha-outbox-gc-deferred-watchdog-debt");
     let db_str = db_path.to_string_lossy().to_string();

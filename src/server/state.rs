@@ -89,12 +89,16 @@ const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
 
 struct ForegroundActivityMeter {
     buckets: [AtomicU64; FOREGROUND_ACTIVITY_BUCKETS],
+    started_slot: u64,
+    last_high_pressure_slot: AtomicU64,
 }
 
 impl ForegroundActivityMeter {
     fn new() -> Self {
         Self {
             buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            started_slot: foreground_activity_slot(),
+            last_high_pressure_slot: AtomicU64::new(0),
         }
     }
 
@@ -113,6 +117,9 @@ impl ForegroundActivityMeter {
                 .compare_exchange(current, next, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
                 .is_ok()
             {
+                if self.rps_at(slot) > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+                    self.last_high_pressure_slot.fetch_max(slot, AtomicOrdering::AcqRel);
+                }
                 return;
             }
         }
@@ -128,6 +135,17 @@ impl ForegroundActivityMeter {
                     .then_some(value & Self::COUNT_MASK)
             })
             .sum::<u64>()
+            .min(i64::MAX as u64) as i64
+    }
+
+    fn low_pressure_since_floor_at(&self, current_slot: u64) -> i64 {
+        let floor_slot = self
+            .started_slot
+            .max(self.last_high_pressure_slot.load(AtomicOrdering::Acquire))
+            .min(current_slot);
+        floor_slot
+            .saturating_mul(FOREGROUND_ACTIVITY_BUCKET_MS)
+            .saturating_div(1_000)
             .min(i64::MAX as u64) as i64
     }
 }
@@ -154,6 +172,11 @@ pub(crate) fn record_foreground_activity() {
 pub(crate) fn foreground_activity_rps() -> i64 {
     let current_slot = foreground_activity_slot();
     foreground_activity_meter().rps_at(current_slot)
+}
+
+pub(crate) fn foreground_activity_low_pressure_since_floor() -> i64 {
+    let current_slot = foreground_activity_slot();
+    foreground_activity_meter().low_pressure_since_floor_at(current_slot)
 }
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
@@ -273,7 +296,10 @@ fn db_maintenance_gated_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod db_maintenance_gate_tests {
-    use super::{FOREGROUND_ACTIVITY_BUCKETS, ForegroundActivityMeter, db_maintenance_gated_path};
+    use super::{
+        AtomicOrdering, FOREGROUND_ACTIVITY_BUCKETS, ForegroundActivityMeter,
+        db_maintenance_gated_path,
+    };
 
     #[test]
     fn maintenance_gate_only_covers_db_backed_routes() {
@@ -307,6 +333,18 @@ mod db_maintenance_gate_tests {
         }
 
         assert_eq!(meter.rps_at(slot + FOREGROUND_ACTIVITY_BUCKETS as u64), 3);
+    }
+
+    #[test]
+    fn foreground_activity_burst_resets_the_low_pressure_floor() {
+        let meter = ForegroundActivityMeter::new();
+        let slot = meter.started_slot.saturating_add(1);
+        for _ in 0..=tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+            meter.record_at(slot);
+        }
+
+        assert_eq!(meter.last_high_pressure_slot.load(AtomicOrdering::Acquire), slot);
+        assert_eq!(meter.low_pressure_since_floor_at(slot + 1), (slot / 10) as i64);
     }
 }
 

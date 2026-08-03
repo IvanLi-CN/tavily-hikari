@@ -1295,7 +1295,10 @@ async fn run_ha_outbox_gc_claimed_job(
     };
     let result = state
         .proxy
-        .gc_ha_outbox_online_with_foreground_rps(foreground_activity_rps())
+        .gc_ha_outbox_online_with_foreground_pressure(
+            foreground_activity_rps(),
+            foreground_activity_low_pressure_since_floor(),
+        )
         .await;
 
     match result {

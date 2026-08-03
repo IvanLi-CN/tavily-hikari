@@ -335,6 +335,16 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn gc_ha_outbox_online_with_foreground_pressure(
+        &self,
+        foreground_rps: i64,
+        low_pressure_since_floor: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.key_store
+            .gc_ha_outbox_online_with_foreground_pressure(foreground_rps, low_pressure_since_floor)
+            .await
+    }
+
     pub async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {
         self.key_store.ha_outbox_gc_watchdog_needed().await
     }
