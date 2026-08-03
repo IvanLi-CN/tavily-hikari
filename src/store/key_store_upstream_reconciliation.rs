@@ -708,16 +708,23 @@ impl KeyStore {
         let page_limit = limit.clamp(1, 32).saturating_mul(8);
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"
-            WITH candidate_rows AS (
+            WITH candidate_windows AS (
             SELECT
                 u.token_id,
-                u.period_code,
-                u.project_id,
-                u.billing_subject,
-                u.settlement_mode,
-                u.period_start,
-                u.period_end,
-                u.key_id
+                u.period_code AS period_code,
+                MIN(u.project_id) AS project_id,
+                MIN(u.billing_subject) AS billing_subject,
+                MIN(u.settlement_mode) AS settlement_mode,
+                MIN(u.period_start) AS period_start,
+                MAX(u.period_end) AS period_end,
+                MIN(u.key_id) AS scheduling_key_id,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM upstream_reconciliation_research r
+                    WHERE r.token_id = u.token_id
+                      AND r.period_code = u.period_code
+                      AND r.terminal_at IS NULL
+                ) THEN 1 ELSE 0 END AS pending_research
             FROM upstream_reconciliation_usage u
             LEFT JOIN upstream_reconciliation_settlements s
               ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
@@ -747,9 +754,9 @@ impl KeyStore {
                     .push_bind(before);
             }
         }
-        // Do not let windows blocked on fresh Research consume the bounded
-        // page. Otherwise a busy key can hide all eligible windows behind its
-        // raw usage rows indefinitely.
+        // First collapse raw usage rows into logical windows. Applying the
+        // bounded page before this GROUP BY lets one multi-key window consume
+        // the page and starve every later eligible window.
         query
             .push(" AND (u.period_end + 86400 <= ")
             .push_bind(now)
@@ -762,33 +769,33 @@ impl KeyStore {
                       AND r.terminal_at IS NULL
                 ))"#,
             )
+            .push(
+                r#"
+            GROUP BY u.token_id, u.period_code
+            ), candidate_page AS (
+            SELECT
+                token_id,
+                period_code,
+                project_id,
+                billing_subject,
+                settlement_mode,
+                period_start,
+                period_end,
+                pending_research,
+                scheduling_key_id
+            FROM candidate_windows
+            WHERE pending_research = 0
+               OR period_end + 86400 <= "#,
+            )
+            .push_bind(now)
             .push(if newest_first {
-                " ORDER BY u.period_end DESC, u.token_id ASC, u.period_code ASC LIMIT "
+                " ORDER BY period_end DESC, token_id ASC, period_code ASC LIMIT "
             } else {
-                " ORDER BY u.period_end ASC, u.token_id ASC, u.period_code ASC LIMIT "
+                " ORDER BY period_end ASC, token_id ASC, period_code ASC LIMIT "
             })
             .push_bind(page_limit)
             .push(
                 r#"
-            ), candidate_windows AS (
-            SELECT
-                u.token_id,
-                u.period_code AS period_code,
-                MIN(u.project_id) AS project_id,
-                MIN(u.billing_subject) AS billing_subject,
-                MIN(u.settlement_mode) AS settlement_mode,
-                MIN(u.period_start) AS period_start,
-                MAX(u.period_end) AS period_end,
-                MIN(u.key_id) AS scheduling_key_id,
-                CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM upstream_reconciliation_research r
-                    WHERE r.token_id = u.token_id
-                      AND r.period_code = u.period_code
-                      AND r.terminal_at IS NULL
-                ) THEN 1 ELSE 0 END AS pending_research
-            FROM candidate_rows u
-            GROUP BY u.token_id, u.period_code
             )"#,
             );
         if newest_first {
@@ -847,13 +854,7 @@ impl KeyStore {
                 period_end,
                 pending_research,
                 scheduling_key_id
-            FROM candidate_windows
-            WHERE pending_research = 0
-               OR period_end + 86400 <= "#,
-                )
-                .push_bind(now)
-                .push(
-                    r#"
+                FROM candidate_page
             ORDER BY period_end ASC
             LIMIT "#,
                 )

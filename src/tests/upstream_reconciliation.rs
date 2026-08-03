@@ -1371,6 +1371,92 @@ async fn next_upstream_reconciliation_candidates_interleave_recent_keys_before_l
 }
 
 #[tokio::test]
+async fn next_upstream_reconciliation_candidates_page_logical_windows_before_limiting() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-window-page"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let hot_period_start = now.saturating_sub(900);
+    let hot_period_end = hot_period_start + 300;
+    for index in 0..161 {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind("token-many-keys-one-window")
+        .bind(format!("key-many-keys-{index:03}"))
+        .bind("2026-07-15/S2-many-keys")
+        .bind("project-many-keys")
+        .bind("account:user-many-keys")
+        .bind(hot_period_start)
+        .bind(hot_period_end)
+        .bind(hot_period_start)
+        .bind(hot_period_end)
+        .bind(hot_period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert multi-key logical window");
+    }
+    let cool_period_start = now.saturating_sub(1_500);
+    let cool_period_end = cool_period_start + 300;
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("token-visible-after-window-page")
+    .bind("key-visible-after-window-page")
+    .bind("2026-07-15/S2-visible")
+    .bind("project-visible-after-window-page")
+    .bind("account:user-visible-after-window-page")
+    .bind(cool_period_start)
+    .bind(cool_period_end)
+    .bind(cool_period_start)
+    .bind(cool_period_end)
+    .bind(cool_period_end)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert visible logical window");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(2)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.candidates.len(), 2);
+    assert!(
+        batch
+            .candidates
+            .iter()
+            .any(|candidate| candidate.token_id == "token-many-keys-one-window")
+    );
+    assert!(
+        batch
+            .candidates
+            .iter()
+            .any(|candidate| candidate.token_id == "token-visible-after-window-page")
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

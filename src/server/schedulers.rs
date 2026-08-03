@@ -74,6 +74,20 @@ static REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED_JOB_QUEUE_WAIT_WARN_WINDOWS: OnceLock<StdMutex<HashMap<String, Instant>>> =
     OnceLock::new();
 
+fn ha_gc_continuation_delay_secs(report_delay_secs: Option<i64>, foreground_rps: i64) -> i64 {
+    let report_delay_secs =
+        report_delay_secs.unwrap_or(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS);
+    if report_delay_secs == HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS {
+        // Legacy-only scans make no retention progress. Keep their deliberate
+        // five-minute yield even when foreground traffic arrives.
+        report_delay_secs
+    } else if foreground_rps > HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+        HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS
+    } else {
+        report_delay_secs
+    }
+}
+
 fn should_warn_scheduled_job_queue_wait(job_type: &str) -> bool {
     let now = Instant::now();
     let windows = SCHEDULED_JOB_QUEUE_WAIT_WARN_WINDOWS.get_or_init(|| StdMutex::new(HashMap::new()));
@@ -1317,15 +1331,10 @@ async fn run_ha_outbox_gc_claimed_job(
                 // A request may arrive while the one-second slice is running.
                 // Finish that slice, but do not immediately start another one.
                 let foreground_rps_after_slice = foreground_activity_rps();
-                let continuation_delay_secs = if foreground_rps_after_slice
-                    > HA_OUTBOX_GC_LOW_PRESSURE_RPS
-                {
-                    HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS
-                } else {
-                    report
-                        .continuation_delay_secs
-                        .unwrap_or(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS)
-                };
+                let continuation_delay_secs = ha_gc_continuation_delay_secs(
+                    report.continuation_delay_secs,
+                    foreground_rps_after_slice,
+                );
                 tracing::debug!(
                     component = "ha_outbox_gc",
                     event = "deferred",

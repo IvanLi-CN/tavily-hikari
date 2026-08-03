@@ -2,6 +2,21 @@ use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 use super::*;
 
+#[test]
+fn ha_gc_keeps_legacy_scan_yield_under_foreground_load() {
+    assert_eq!(
+        ha_gc_continuation_delay_secs(
+            Some(HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS),
+            HA_OUTBOX_GC_LOW_PRESSURE_RPS + 1,
+        ),
+        HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS,
+    );
+    assert_eq!(
+        ha_gc_continuation_delay_secs(Some(1), HA_OUTBOX_GC_LOW_PRESSURE_RPS + 1),
+        HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
+    );
+}
+
 #[tokio::test]
 async fn ha_channel_outbox_stats_reports_indexed_span_age_and_ack_lag() {
     let db_path = temp_db_path("ha-outbox-stats");
