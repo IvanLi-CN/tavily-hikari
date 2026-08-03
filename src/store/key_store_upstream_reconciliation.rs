@@ -801,7 +801,32 @@ impl KeyStore {
             .push(
                 r#"
             GROUP BY u.token_id, u.period_code
-            ), candidate_page AS (
+            ), ranked_candidate_windows AS (
+            SELECT
+                token_id,
+                period_code,
+                project_id,
+                billing_subject,
+                settlement_mode,
+                period_start,
+                period_end,
+                pending_research,
+                scheduling_key_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY scheduling_key_id
+                    ORDER BY period_end "#,
+            )
+            .push(if newest_first { "DESC" } else { "ASC" })
+            .push(
+                r#", token_id ASC, period_code ASC
+                ) AS key_slot
+            FROM candidate_windows
+            WHERE pending_research = 0
+               OR period_end + 86400 <= "#,
+            )
+            .push_bind(now)
+            .push(if newest_first {
+                r#"), candidate_page AS (
             SELECT
                 token_id,
                 period_code,
@@ -812,15 +837,22 @@ impl KeyStore {
                 period_end,
                 pending_research,
                 scheduling_key_id
-            FROM candidate_windows
-            WHERE pending_research = 0
-               OR period_end + 86400 <= "#,
-            )
-            .push_bind(now)
-            .push(if newest_first {
-                " ORDER BY period_end DESC, token_id ASC, period_code ASC LIMIT "
+            FROM ranked_candidate_windows
+            ORDER BY key_slot ASC, period_end DESC, token_id ASC, period_code ASC LIMIT "#
             } else {
-                " ORDER BY period_end ASC, token_id ASC, period_code ASC LIMIT "
+                r#"), candidate_page AS (
+            SELECT
+                token_id,
+                period_code,
+                project_id,
+                billing_subject,
+                settlement_mode,
+                period_start,
+                period_end,
+                pending_research,
+                scheduling_key_id
+            FROM ranked_candidate_windows
+            ORDER BY key_slot ASC, period_end ASC, token_id ASC, period_code ASC LIMIT "#
             })
             .push_bind(page_limit)
             .push(

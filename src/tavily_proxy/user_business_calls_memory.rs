@@ -14,11 +14,11 @@ impl MemoryUserBusinessCalls1hBackend {
             retention_secs,
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
+        state.backfill_live_buckets = Some(HashMap::new());
         drop(state);
         let mut backfill = self.backfill.lock().await;
         *backfill = Some(MemoryUserBusinessCalls1hBackfill {
             state: MemoryUserBusinessCalls1hState::default(),
-            live_buckets: HashMap::new(),
             upper_bound_request_log_id,
         });
     }
@@ -63,6 +63,7 @@ impl MemoryUserBusinessCalls1hBackend {
         let mut state = self.state.lock().await;
         let mut backfill = self.backfill.lock().await;
         let Some(mut backfill) = backfill.take() else {
+            state.backfill_live_buckets = None;
             return;
         };
         // Merge requests that arrived while the staged snapshot was being
@@ -78,7 +79,8 @@ impl MemoryUserBusinessCalls1hBackend {
                 }
             }
         }
-        for (user_id, buckets) in &backfill.live_buckets {
+        let live_buckets = state.backfill_live_buckets.take().unwrap_or_default();
+        for (user_id, buckets) in &live_buckets {
             let target = backfill.state.buckets.entry(user_id.clone()).or_default();
             for (bucket_start, counts) in buckets {
                 target.entry(*bucket_start).or_default().add(counts);
@@ -96,6 +98,9 @@ impl MemoryUserBusinessCalls1hBackend {
     }
 
     pub(super) async fn abort_backfill(&self) {
+        let mut state = self.state.lock().await;
+        state.backfill_live_buckets = None;
+        drop(state);
         let mut backfill = self.backfill.lock().await;
         backfill.take();
     }
@@ -128,45 +133,25 @@ impl MemoryUserBusinessCalls1hBackend {
             retention_secs,
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
-        let event_created_at = event.created_at;
-        let aggregate_into_bucket = event_created_at
+        let aggregate_into_bucket = event.created_at
             <= now_ts.saturating_sub(UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS);
-        let event_outcome = event.outcome;
         if aggregate_into_bucket {
-            Self::aggregate_event(&mut state, user_id, event.created_at, event.outcome);
+            Self::aggregate_event_and_track_live(
+                &mut state,
+                user_id,
+                event.created_at,
+                event.outcome,
+            );
         } else {
             let queue = state.entries.entry(user_id.to_string()).or_default();
             Self::insert_event_sorted(queue, event);
         }
-        if let Some(queue) = state.entries.get_mut(user_id) {
-            Self::prune_queue(
-                queue,
-                now_ts,
-                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-            );
-        }
+        Self::age_queue_into_buckets(&mut state, user_id, now_ts);
         if let Some(buckets) = state.buckets.get_mut(user_id) {
             Self::prune_buckets(buckets, now_ts, retention_secs);
         }
-        if state.entries.get(user_id).is_some_and(VecDeque::is_empty) {
-            state.entries.remove(user_id);
-        }
         if state.buckets.get(user_id).is_some_and(BTreeMap::is_empty) {
             state.buckets.remove(user_id);
-        }
-        if aggregate_into_bucket {
-            let mut backfill = self.backfill.lock().await;
-            if let Some(backfill) = backfill.as_mut() {
-                let bucket_start =
-                    event_created_at - event_created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
-                backfill
-                    .live_buckets
-                    .entry(user_id.to_string())
-                    .or_default()
-                    .entry(bucket_start)
-                    .or_default()
-                    .record(event_outcome);
-            }
         }
     }
 
@@ -185,26 +170,14 @@ impl MemoryUserBusinessCalls1hBackend {
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
         let mut out = HashMap::with_capacity(user_ids.len());
-        let mut empty_keys = Vec::new();
         for user_id in user_ids {
-            let counts = if let Some(queue) = state.entries.get_mut(user_id) {
-                Self::prune_queue(
-                    queue,
-                    now_ts,
-                    UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-                );
-                let counts = Self::rolling_counts(queue, now_ts, rolling_window_secs);
-                if queue.is_empty() {
-                    empty_keys.push(user_id.clone());
-                }
-                counts
-            } else {
-                UserBusinessCallCounts::default()
-            };
+            Self::age_queue_into_buckets(&mut state, user_id, now_ts);
+            let counts = state
+                .entries
+                .get(user_id)
+                .map(|queue| Self::rolling_counts(queue, now_ts, rolling_window_secs))
+                .unwrap_or_default();
             out.insert(user_id.clone(), counts);
-        }
-        for key in empty_keys {
-            state.entries.remove(&key);
         }
         out
     }
@@ -300,7 +273,12 @@ impl MemoryUserBusinessCalls1hBackend {
         )
         .unwrap_or(reservation.created_at);
         if created_at <= now_ts.saturating_sub(UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS) {
-            Self::aggregate_event(&mut state, &reservation.user_id, created_at, outcome);
+            Self::aggregate_event_and_track_live(
+                &mut state,
+                &reservation.user_id,
+                created_at,
+                outcome,
+            );
         } else {
             let queue = state
                 .entries
@@ -314,19 +292,8 @@ impl MemoryUserBusinessCalls1hBackend {
                     outcome,
                 },
             );
-            Self::prune_queue(
-                queue,
-                now_ts,
-                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-            );
         }
-        if state
-            .entries
-            .get(&reservation.user_id)
-            .is_some_and(VecDeque::is_empty)
-        {
-            state.entries.remove(&reservation.user_id);
-        }
+        Self::age_queue_into_buckets(&mut state, &reservation.user_id, now_ts);
     }
 
     pub(super) async fn release_reservation(
@@ -359,17 +326,11 @@ impl MemoryUserBusinessCalls1hBackend {
             retention_secs,
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
+        Self::age_queue_into_buckets(&mut state, user_id, now_ts);
         let raw_events = state
             .entries
-            .get_mut(user_id)
-            .map(|queue| {
-                Self::prune_queue(
-                    queue,
-                    now_ts,
-                    UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-                );
-                queue.iter().cloned().collect()
-            })
+            .get(user_id)
+            .map(|queue| queue.iter().cloned().collect())
             .unwrap_or_default();
         let buckets = state.buckets.get(user_id).cloned().unwrap_or_default();
         UserBusinessCallSeriesData {
@@ -391,23 +352,13 @@ impl MemoryUserBusinessCalls1hBackend {
             retention_secs,
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
-        let mut empty_keys = Vec::new();
+        Self::age_all_queues_into_buckets(&mut state, now_ts);
         let mut out = HashMap::with_capacity(state.entries.len());
-        for (user_id, queue) in &mut state.entries {
-            Self::prune_queue(
-                queue,
-                now_ts,
-                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-            );
+        for (user_id, queue) in &state.entries {
             let counts = Self::rolling_counts(queue, now_ts, rolling_window_secs);
-            if queue.is_empty() {
-                empty_keys.push(user_id.clone());
-            } else if counts.total_count() > 0 {
+            if counts.total_count() > 0 {
                 out.insert(user_id.clone(), counts);
             }
-        }
-        for key in empty_keys {
-            state.entries.remove(&key);
         }
         out
     }
@@ -421,14 +372,7 @@ impl MemoryUserBusinessCalls1hBackend {
         if now_ts < state.next_gc_at {
             return;
         }
-        state.entries.retain(|_, queue| {
-            Self::prune_queue(
-                queue,
-                now_ts,
-                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-            );
-            !queue.is_empty()
-        });
+        Self::age_all_queues_into_buckets(state, now_ts);
         state.buckets.retain(|_, buckets| {
             Self::prune_buckets(buckets, now_ts, retention_secs);
             !buckets.is_empty()
@@ -444,13 +388,56 @@ impl MemoryUserBusinessCalls1hBackend {
         );
     }
 
-    fn prune_queue(queue: &mut VecDeque<UserBusinessCallEvent>, now_ts: i64, retention_secs: i64) {
-        let expires_at = now_ts - retention_secs;
-        while queue
-            .front()
-            .is_some_and(|event| event.created_at <= expires_at)
-        {
-            queue.pop_front();
+    fn age_all_queues_into_buckets(state: &mut MemoryUserBusinessCalls1hState, now_ts: i64) {
+        let user_ids = state.entries.keys().cloned().collect::<Vec<_>>();
+        for user_id in user_ids {
+            Self::age_queue_into_buckets(state, &user_id, now_ts);
+        }
+    }
+
+    fn age_queue_into_buckets(
+        state: &mut MemoryUserBusinessCalls1hState,
+        user_id: &str,
+        now_ts: i64,
+    ) {
+        let expires_at = now_ts.saturating_sub(UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS);
+        let aged_events = state
+            .entries
+            .get_mut(user_id)
+            .map(|queue| {
+                let mut aged_events = Vec::new();
+                while queue
+                    .front()
+                    .is_some_and(|event| event.created_at <= expires_at)
+                {
+                    aged_events.push(queue.pop_front().expect("front was checked"));
+                }
+                aged_events
+            })
+            .unwrap_or_default();
+        for event in aged_events {
+            Self::aggregate_event_and_track_live(state, user_id, event.created_at, event.outcome);
+        }
+        if state.entries.get(user_id).is_some_and(VecDeque::is_empty) {
+            state.entries.remove(user_id);
+        }
+    }
+
+    fn aggregate_event_and_track_live(
+        state: &mut MemoryUserBusinessCalls1hState,
+        user_id: &str,
+        created_at: i64,
+        outcome: UserBusinessCallOutcome,
+    ) {
+        Self::aggregate_event(state, user_id, created_at, outcome);
+        if let Some(live_buckets) = state.backfill_live_buckets.as_mut() {
+            let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+            live_buckets
+                .entry(user_id.to_string())
+                .or_default()
+                .entry(bucket_start)
+                .or_default()
+                .record(outcome);
         }
     }
 
@@ -543,22 +530,12 @@ impl MemoryUserBusinessCalls1hBackend {
         _retention_secs: i64,
         _reservation_ttl_secs: i64,
     ) -> UserBusinessCallEnforcementCounts {
-        let (completed, remove_entry) = if let Some(queue) = state.entries.get_mut(user_id) {
-            Self::prune_queue(
-                queue,
-                now_ts,
-                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
-            );
-            (
-                Self::rolling_counts(queue, now_ts, rolling_window_secs),
-                queue.is_empty(),
-            )
-        } else {
-            (UserBusinessCallCounts::default(), false)
-        };
-        if remove_entry {
-            state.entries.remove(user_id);
-        }
+        Self::age_queue_into_buckets(state, user_id, now_ts);
+        let completed = state
+            .entries
+            .get(user_id)
+            .map(|queue| Self::rolling_counts(queue, now_ts, rolling_window_secs))
+            .unwrap_or_default();
 
         let (reservation_count, remove_reservation) =
             if let Some(queue) = state.reservations.get_mut(user_id) {
@@ -634,6 +611,36 @@ mod memory_window_regression_tests {
             raw_events <= 90,
             "only the recent one-hour window may remain event-granular; got {raw_events} raw events"
         );
+    }
+
+    #[tokio::test]
+    async fn aging_live_events_into_buckets_preserves_usage_series() {
+        let backend = MemoryUserBusinessCalls1hBackend::default();
+        let now = 1_750_000_000;
+        backend
+            .record_event(
+                "live-user",
+                UserBusinessCallEvent {
+                    request_log_id: Some(1),
+                    created_at: now - 1,
+                    outcome: UserBusinessCallOutcome::Success,
+                },
+                now,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+        let later = now + UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS + 60;
+
+        let series = backend
+            .series_data_for_user(
+                "live-user",
+                later,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+
+        assert!(series.raw_events.is_empty());
+        assert_eq!(series.count_between(now - 600, later).success_count, 1);
     }
 
     #[test]

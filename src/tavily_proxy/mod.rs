@@ -76,6 +76,7 @@ struct MemoryRequestRateLimitState {
 struct MemoryUserBusinessCalls1hState {
     entries: HashMap<String, VecDeque<UserBusinessCallEvent>>,
     buckets: HashMap<String, BTreeMap<i64, UserBusinessCallCounts>>,
+    backfill_live_buckets: Option<HashMap<String, BTreeMap<i64, UserBusinessCallCounts>>>,
     reservations: HashMap<String, VecDeque<UserBusinessCallReservationEntry>>,
     next_gc_at: i64,
     next_reservation_id: u64,
@@ -84,7 +85,6 @@ struct MemoryUserBusinessCalls1hState {
 #[derive(Clone, Debug)]
 struct MemoryUserBusinessCalls1hBackfill {
     state: MemoryUserBusinessCalls1hState,
-    live_buckets: HashMap<String, BTreeMap<i64, UserBusinessCallCounts>>,
     upper_bound_request_log_id: i64,
 }
 

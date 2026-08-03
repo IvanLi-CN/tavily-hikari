@@ -1291,7 +1291,10 @@ async fn next_upstream_reconciliation_candidates_interleave_recent_keys_before_l
         .await
         .expect("create cool key");
 
-    for index in 0..20 {
+    // The bounded candidate page is 96 rows for this lane. More hot-key rows
+    // than that must not hide the older cool-key candidate before per-key
+    // ranking has a chance to interleave it.
+    for index in 0..100 {
         let period_end = now.saturating_sub(((index + 1) as i64) * 600);
         let period_start = period_end.saturating_sub(300);
         sqlx::query(
