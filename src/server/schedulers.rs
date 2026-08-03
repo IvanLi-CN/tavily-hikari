@@ -8,12 +8,13 @@ use tavily_hikari::{
     format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
     HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
     HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS,
+    HA_OUTBOX_GC_LOW_PRESSURE_RPS,
     linuxdo_credit_recharge_system_refund_retry_delay_secs,
     linuxdo_credit_refund_params as shared_linuxdo_credit_refund_params,
     linuxdo_credit_refund_url as shared_linuxdo_credit_refund_url,
 };
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use tokio::time::Instant;
 fn random_delay_secs(max_inclusive: u64) -> u64 {
     use rand::Rng;
@@ -159,19 +160,11 @@ async fn enqueue_scheduled_job_logged(
                 Some(context.as_str()),
             );
             if job_type == "upstream_reconciliation" && !result.created {
-                let (pending_research, queued_settlements, degraded_settlements) = state
-                    .proxy
-                    .upstream_reconciliation_queue_counts()
-                    .await
-                    .unwrap_or((0, 0, 0));
-                tracing::info!(
+                tracing::debug!(
                     component = "reconciliation",
                     event = "enqueue_reused",
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     job_type,
-                    pending_research,
-                    queued_settlements,
-                    degraded_settlements,
                     reused_status = %result.status,
                     trigger_source = %result.trigger_source,
                 );
@@ -192,7 +185,7 @@ async fn enqueue_scheduled_job_logged(
                     .mark_upstream_reconciliation_enqueue_error_at(now)
                     .await
                 {
-                    tracing::warn!(
+                    tracing::debug!(
                         component = "reconciliation",
                         event = "enqueue_error_meta_failed",
                         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -200,19 +193,11 @@ async fn enqueue_scheduled_job_logged(
                         err = %meta_err,
                     );
                 }
-                let (pending_research, queued_settlements, degraded_settlements) = state
-                    .proxy
-                    .upstream_reconciliation_queue_counts()
-                    .await
-                    .unwrap_or((0, 0, 0));
                 tracing::warn!(
                     component = "reconciliation",
                     event = "enqueue_exhausted",
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     job_type,
-                    pending_research,
-                    queued_settlements,
-                    degraded_settlements,
                     err = %err,
                 );
             }
@@ -461,9 +446,11 @@ async fn run_queued_scheduled_job(state: Arc<AppState>, job: JobLog) {
         claimed_job,
     )
     .await;
+    // HA GC persists its continuation together with job completion. The stale
+    // reaper is the sole recovery path when that transaction cannot commit;
+    // enqueueing again here creates an unbounded retry loop.
     let continuation_delay = match job_type.as_str() {
         "request_logs_gc" if !completed => Some(REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS),
-        "ha_outbox_gc" if !completed => Some(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS),
         _ => None,
     };
     if let Some(continuation_delay) = continuation_delay {
@@ -678,7 +665,11 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("maintenance-worker: dequeue error: {err}");
+                    tracing::error!(
+                        component = "scheduler",
+                        event = "maintenance_dequeue_failed",
+                        err = %err,
+                    );
                     state.proxy.backend_time().sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -724,7 +715,12 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 {
                     Ok(list) => list,
                     Err(err) => {
-                        eprintln!("quota-sync: list pending error: {err}");
+                        tracing::warn!(
+                            component = "quota_sync",
+                            event = "list_pending_failed",
+                            scope = "cold",
+                            err = %err,
+                        );
                         vec![]
                     }
                 }
@@ -770,7 +766,12 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 {
                     Ok(list) => list,
                     Err(err) => {
-                        eprintln!("quota-sync-hot: list pending error: {err}");
+                        tracing::warn!(
+                            component = "quota_sync",
+                            event = "list_pending_failed",
+                            scope = "hot",
+                            err = %err,
+                        );
                         vec![]
                     }
                 }
@@ -1195,6 +1196,16 @@ async fn finish_ha_gc_with_continuation(
                 available_at,
             );
         }
+        Err(err) if err.is_stale_claim() => {
+            tracing::debug!(
+                component = "ha_outbox_gc",
+                event = "stale_claim_ignored",
+                job_id,
+                claim_generation,
+                "stale GC claim cannot finish or enqueue a continuation"
+            );
+            return true;
+        }
         Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
             tracing::debug!(
                 component = "ha_outbox_gc",
@@ -1268,15 +1279,53 @@ async fn run_ha_outbox_gc_claimed_job(
         )
         .await;
     };
-    let result = state.proxy.gc_ha_outbox_online().await;
+    let result = state
+        .proxy
+        .gc_ha_outbox_online_with_foreground_rps(foreground_activity_rps())
+        .await;
 
     match result {
         Ok(report) => {
+            if let Some(channel) = report.channels.first()
+                && let Some(transition) = channel.slo_state_transition.as_deref()
+            {
+                match transition {
+                    "breached" => tracing::warn!(
+                        component = "ha_outbox_gc",
+                        event = "slo_breached",
+                        job_id,
+                        channel = channel.channel.as_str(),
+                        oldest_deletable_age_secs = channel.oldest_deletable_age_secs,
+                        deleted_rows_per_minute = channel.deleted_rows_per_minute,
+                        recovery_deadline_at = channel.recovery_deadline_at,
+                        "HA outbox GC recovery SLO breached"
+                    ),
+                    "recovered" => tracing::info!(
+                        component = "ha_outbox_gc",
+                        event = "slo_recovered",
+                        job_id,
+                        channel = channel.channel.as_str(),
+                        oldest_deletable_age_secs = channel.oldest_deletable_age_secs,
+                        deleted_rows_per_minute = channel.deleted_rows_per_minute,
+                        "HA outbox GC recovery SLO recovered"
+                    ),
+                    _ => {}
+                }
+            }
             let needs_continuation = report.has_more || !report.completed;
             if needs_continuation {
-                let continuation_delay_secs = report
-                    .continuation_delay_secs
-                    .unwrap_or(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS);
+                // A request may arrive while the one-second slice is running.
+                // Finish that slice, but do not immediately start another one.
+                let foreground_rps_after_slice = foreground_activity_rps();
+                let continuation_delay_secs = if foreground_rps_after_slice
+                    > HA_OUTBOX_GC_LOW_PRESSURE_RPS
+                {
+                    HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS
+                } else {
+                    report
+                        .continuation_delay_secs
+                        .unwrap_or(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS)
+                };
                 tracing::debug!(
                     component = "ha_outbox_gc",
                     event = "deferred",
@@ -1297,6 +1346,7 @@ async fn run_ha_outbox_gc_claimed_job(
                     active_elapsed_ms = report.active_elapsed_ms as u64,
                     max_batch_elapsed_ms = report.max_batch_elapsed_ms as u64,
                     elapsed_ms = report.elapsed_ms as u64,
+                    foreground_rps_after_slice,
                     continuation_delay_secs,
                 );
                 return finish_ha_gc_with_continuation(
@@ -1396,9 +1446,11 @@ async fn record_linuxdo_user_sync_failure_in_db_window(
         )
         .await
     {
-        eprintln!(
-            "linuxdo-user-sync: record failure metadata error for {}: {}",
-            provider_user_id, mark_err
+        tracing::warn!(
+            component = "linuxdo_user_sync",
+            event = "record_failure_metadata_failed",
+            provider_user_id,
+            err = %mark_err,
         );
     }
 }
@@ -1679,9 +1731,12 @@ async fn run_linuxdo_user_status_sync_claimed_job(
                 )
                 .await
             {
-                eprintln!(
-                    "linuxdo-user-sync: record success metadata error for {} (user_id={}): {}",
-                    record.provider_user_id, record.user_id, err
+                tracing::warn!(
+                    component = "linuxdo_user_sync",
+                    event = "record_success_metadata_failed",
+                    provider_user_id = %record.provider_user_id,
+                    user_id = record.user_id,
+                    err = %err,
                 );
             }
         }
@@ -1838,7 +1893,11 @@ fn spawn_linuxdo_credit_recharge_lifecycle_scheduler(
                 {
                     Ok(due) => due,
                     Err(err) => {
-                        eprintln!("linuxdo-credit-recharge-lifecycle: due check error: {err}");
+                        tracing::warn!(
+                            component = "linuxdo_credit_recharge",
+                            event = "lifecycle_due_check_failed",
+                            err = %err,
+                        );
                         false
                     }
                 }
@@ -2501,7 +2560,7 @@ async fn run_manual_claimed_job(
                 }
                 Ok(Err(err)) => finish(state, "error", err.to_string()).await,
                 Err(_) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         component = "reconciliation",
                         event = "run_budget_exhausted",
                         budget_ms = 20_000_u64,
@@ -2656,7 +2715,11 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
             let stats = match state.proxy.sqlite_db_stats().await {
                 Ok(stats) => stats,
                 Err(err) => {
-                    eprintln!("db-compaction: stats error: {err}");
+                    tracing::warn!(
+                        component = "db_compaction",
+                        event = "stats_read_failed",
+                        err = %err,
+                    );
                     continue;
                 }
             };
@@ -2673,7 +2736,11 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
             )
             .await
             {
-                eprintln!("db-compaction: enqueue job error: {err}");
+                tracing::warn!(
+                    component = "db_compaction",
+                    event = "enqueue_failed",
+                    err = %err,
+                );
                 continue;
             }
             next_allowed_at = state.proxy.backend_time().deadline_after(Duration::from_secs(
@@ -2739,7 +2806,11 @@ fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
                 if state.ha.status().await.allows_basic_business
                     && let Err(err) = state.proxy.maybe_run_forward_proxy_maintenance().await
                 {
-                    eprintln!("forward-proxy-maintenance: {err}");
+                    tracing::warn!(
+                        component = "forward_proxy_maintenance",
+                        event = "maintenance_failed",
+                        err = %err,
+                    );
                 }
             }
             state.proxy.backend_time().sleep(Duration::from_secs(30)).await;

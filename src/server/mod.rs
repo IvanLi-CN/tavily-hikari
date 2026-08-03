@@ -4,7 +4,10 @@ use std::{
     io::Read,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path as FsPath, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
 };
 
 use argon2::{

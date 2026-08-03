@@ -1,5 +1,11 @@
 # History
 
+## 2026-08-02
+
+- Extended the administrator HA channel contract with low-pressure recovery mode, observed deletion
+  rate, foreground request rate, recovery deadline, and SLO state. The panel now renders those fields
+  for all three channels.
+
 ## Decision
 
 The project originally considered a master/slave split with multiple serving slaves and centralized token quota dispatch. The accepted direction is core-business dual-active plus control-plane single-write: EdgeOne origin-group routing can keep both business nodes serving, but only one node at a time owns control-plane writes and high-risk mutations.

@@ -489,17 +489,21 @@ impl TavilyProxy {
         let key_store_started = Instant::now();
         let key_store = KeyStore::new_with_time(database_path, backend_time.clone()).await?;
         key_store.configure_ha_event_writes(ha_mode).await?;
-        eprintln!(
-            "forward-proxy startup: sqlite initialized in {}ms",
-            key_store_started.elapsed().as_millis()
+        tracing::debug!(
+            component = "forward_proxy",
+            event = "startup_sqlite_initialized",
+            elapsed_ms = key_store_started.elapsed().as_millis() as u64,
+            "forward-proxy startup initialized sqlite"
         );
         if !sanitized.is_empty() {
             let sync_keys_started = Instant::now();
             key_store.sync_keys(&sanitized).await?;
-            eprintln!(
-                "forward-proxy startup: synced {} api keys in {}ms",
-                sanitized.len(),
-                sync_keys_started.elapsed().as_millis()
+            tracing::debug!(
+                component = "forward_proxy",
+                event = "startup_api_keys_synced",
+                key_count = sanitized.len(),
+                elapsed_ms = sync_keys_started.elapsed().as_millis() as u64,
+                "forward-proxy startup synchronized api keys"
             );
         }
         let forward_proxy_load_started = Instant::now();
@@ -527,9 +531,11 @@ impl TavilyProxy {
                 .cloned()
                 .collect::<std::collections::HashSet<_>>(),
         );
-        eprintln!(
-            "forward-proxy startup: loaded settings/runtime in {}ms",
-            forward_proxy_load_started.elapsed().as_millis()
+        tracing::debug!(
+            component = "forward_proxy",
+            event = "startup_settings_loaded",
+            elapsed_ms = forward_proxy_load_started.elapsed().as_millis() as u64,
+            "forward-proxy startup loaded settings and runtime"
         );
         let forward_proxy = Arc::new(Mutex::new(forward_proxy_manager));
         let key_store = Arc::new(key_store);

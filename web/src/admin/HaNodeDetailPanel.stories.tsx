@@ -22,9 +22,9 @@ const detail: HaNodeDetail = {
     roleHint: 'standby_candidate',
     plannedCutoverEligible: true,
     channelHealth: [
-      { channel: 'control', ackedSeq: 812, highWatermark: 812, ackLag: 0, cursorState: 'healthy', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 640, lastProgressAt: 1_700_000_010, lastDeferReason: null, nextRetryAt: null, batchSize: 250 },
-      { channel: 'billing', ackedSeq: 490, highWatermark: 512, ackLag: 22, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'draining', oldestAgeSecs: 93_200, lastProgressAt: 1_700_000_016, lastDeferReason: null, nextRetryAt: 1_700_000_050, batchSize: 125 },
-      { channel: 'runtime', ackedSeq: null, highWatermark: 900, ackLag: null, cursorState: 'expired_backlog', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: true, gcState: 'deferred', oldestAgeSecs: 192_000, lastProgressAt: 1_699_999_800, lastDeferReason: 'foreground_activity', nextRetryAt: 1_700_000_050, batchSize: 62 },
+      { channel: 'control', ackedSeq: 812, highWatermark: 812, ackLag: 0, cursorState: 'healthy', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 640, lastProgressAt: 1_700_000_010, lastDeferReason: null, nextRetryAt: null, batchSize: 250, gcDebtMode: 'normal', gcObservedAt: 1_700_000_020, gcDeletedRowsPerMinute: 0, gcRecoveryDeadlineAt: null, gcSloState: 'clear', gcForegroundRps: 2 },
+      { channel: 'billing', ackedSeq: 490, highWatermark: 512, ackLag: 22, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'draining', oldestAgeSecs: 93_200, lastProgressAt: 1_700_000_016, lastDeferReason: null, nextRetryAt: 1_700_000_050, batchSize: 125, gcDebtMode: 'recovering', gcObservedAt: 1_700_000_020, gcDeletedRowsPerMinute: 132, gcRecoveryDeadlineAt: 1_700_086_420, gcSloState: 'on_track', gcForegroundRps: 1 },
+      { channel: 'runtime', ackedSeq: null, highWatermark: 900, ackLag: null, cursorState: 'expired_backlog', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: true, gcState: 'deferred', oldestAgeSecs: 192_000, lastProgressAt: 1_699_999_800, lastDeferReason: 'foreground_activity', nextRetryAt: 1_700_000_050, batchSize: 62, gcDebtMode: 'foreground_pressure', gcObservedAt: 1_700_000_020, gcDeletedRowsPerMinute: 8, gcRecoveryDeadlineAt: null, gcSloState: 'breached', gcForegroundRps: 18 },
     ],
   },
   timeline: {
@@ -106,6 +106,52 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
+
+export const Recovering: Story = {
+  args: {
+    detail: {
+      ...detail,
+      node: {
+        ...detail.node,
+        channelHealth: detail.node.channelHealth?.map((health) => health.channel === 'billing'
+          ? { ...health, gcDebtMode: 'recovering', gcState: 'draining', gcSloState: 'on_track', gcForegroundRps: 1 }
+          : health),
+      },
+    },
+  },
+}
+
+export const Deferred: Story = {
+  args: {
+    detail: {
+      ...detail,
+      node: {
+        ...detail.node,
+        channelHealth: detail.node.channelHealth?.map((health) => health.channel === 'runtime'
+          ? { ...health, gcDebtMode: 'foreground_pressure', gcState: 'deferred', lastDeferReason: 'foreground_activity', gcForegroundRps: 18 }
+          : health),
+      },
+    },
+  },
+}
+
+export const Unknown: Story = {
+  args: {
+    detail: {
+      ...detail,
+      node: {
+        ...detail.node,
+        channelHealth: detail.node.channelHealth?.map((health) => ({
+          ...health,
+          gcDebtMode: 'unknown',
+          gcObservedAt: null,
+          gcSloState: 'unknown',
+          gcRecoveryDeadlineAt: null,
+        })),
+      },
+    },
+  },
+}
 
 export const BaselineRequired: Story = {
   args: {

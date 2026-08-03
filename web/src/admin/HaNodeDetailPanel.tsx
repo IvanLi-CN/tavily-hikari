@@ -38,6 +38,10 @@ function formatLag(value: number | null, language: 'en' | 'zh'): string {
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
 }
 
+function numberFormat(value: number, language: 'en' | 'zh'): string {
+  return new Intl.NumberFormat(localeFor(language), { maximumFractionDigits: 1 }).format(value)
+}
+
 function channelLabel(channel: string, language: 'en' | 'zh'): string {
   if (language === 'zh') {
     return channel === 'control' ? 'Control' : channel === 'billing' ? 'Billing' : 'Runtime'
@@ -61,6 +65,17 @@ function gcStateLabel(state: string, language: 'en' | 'zh'): string {
   const labels: Record<string, [string, string]> = {
     idle: ['空闲', 'Idle'], draining: ['清理中', 'Draining'], deferred: ['已让步', 'Deferred'],
     stalled: ['停滞', 'Stalled'], unknown: ['未知', 'Unknown'],
+  }
+  return labels[state]?.[language === 'zh' ? 0 : 1] ?? state
+}
+
+function gcSloLabel(state: string, language: 'en' | 'zh'): string {
+  const labels: Record<string, [string, string]> = {
+    clear: ['已清除', 'Clear'],
+    on_track: ['按 SLO 推进', 'On track'],
+    breached: ['已超 SLO', 'SLO breached'],
+    not_applicable: ['不适用', 'N/A'],
+    unknown: ['未知', 'Unknown'],
   }
   return labels[state]?.[language === 'zh' ? 0 : 1] ?? state
 }
@@ -283,6 +298,12 @@ export default function HaNodeDetailPanel({
                     <div><dt>{language === 'zh' ? '最近进展' : 'Last progress'}</dt><dd>{formatTimestamp(health.lastProgressAt, language)}</dd></div>
                     <div><dt>{language === 'zh' ? '让步原因' : 'Defer reason'}</dt><dd>{health.lastDeferReason ?? '—'}</dd></div>
                     <div><dt>{language === 'zh' ? '下次重试' : 'Next retry'}</dt><dd>{formatTimestamp(health.nextRetryAt, language)}</dd></div>
+                    <div><dt>{language === 'zh' ? '债务模式' : 'Debt mode'}</dt><dd>{health.gcDebtMode || '—'}</dd></div>
+                    <div><dt>{language === 'zh' ? '删除速率' : 'Delete rate'}</dt><dd>{numberFormat(health.gcDeletedRowsPerMinute, language)} / min</dd></div>
+                    <div><dt>{language === 'zh' ? '前台 RPS' : 'Foreground RPS'}</dt><dd>{numberFormat(health.gcForegroundRps, language)}</dd></div>
+                    <div><dt>{language === 'zh' ? 'GC SLO' : 'GC SLO'}</dt><dd>{gcSloLabel(health.gcSloState, language)}</dd></div>
+                    <div><dt>{language === 'zh' ? '恢复截止' : 'Recovery deadline'}</dt><dd>{formatTimestamp(health.gcRecoveryDeadlineAt, language)}</dd></div>
+                    <div><dt>{language === 'zh' ? '观测时间' : 'Observed at'}</dt><dd>{formatTimestamp(health.gcObservedAt, language)}</dd></div>
                   </dl>
                 </div>
               ))}

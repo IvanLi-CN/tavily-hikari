@@ -4,7 +4,7 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-04-06
-- Last: 2026-07-07
+- Last: 2026-08-02
 
 ## 背景
 
@@ -214,10 +214,10 @@
 ## Visual Evidence
 
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构；默认流量趋势绝对柱状图展示滚动 25 个小时槽，最后当前未满小时槽使用灰底与竖向虚线标识。
-  PR: include
+  PR: none
   ![管理仪表盘总览轻量快照验收图](./assets/dashboard-overview-performance-proof.png)
 - source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `element`; story_id_or_title: `Admin/Components/DashboardOverview/RecentAlertsBusinessHourWindow`; state: `recent alerts 60m badge`; evidence_note: 验证 Recent alerts 分组卡片在最新事件属于 rolling `60m` business-call cap 时，徽标优先显示真实 `60m window`，不再沿用旧的 `5m window` 分组元数据；该证据绑定本次 dashboard 文案修复实现。
-  PR: include
+  PR: none
   ![管理仪表盘近期告警 60m 文案修复图](./assets/dashboard-recent-alerts-60m-window.png)
 
 ## Change log
@@ -242,3 +242,5 @@
 - 2026-06-29: 修正流量趋势图默认小时窗为滚动 24 小时，确保图表前段不再固定落在自然日今日起点。
 - 2026-07-17: 修正 recent alerts 分组徽标的窗口文案优先级；当最新事件属于 rolling `60m` business-call cap 时，dashboard 现在会显示真实 `60m window`，而不是沿用旧的 `5m` 分组元数据。
 - 2026-07-07: 修正默认流量趋势绝对柱状图窗口为 24 个完整小时加当前未满小时，共 25 个小时槽，并用灰底与竖向虚线标识当前未满小时。
+- 2026-08-02: 确认本轮不扩大 dashboard 重建范围；现有 10 秒最短刷新与 60 秒无变化 freshness probe
+  保持不变，旧 dashboard 截图不作为本轮 PR 视觉证据。

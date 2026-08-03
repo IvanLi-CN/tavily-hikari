@@ -672,9 +672,10 @@ impl KeyStore {
             .execute(&mut *conn)
             .await?;
             if updated.rows_affected() == 0 {
-                return Err(ProxyError::Other(format!(
-                    "scheduled job {job_id} was not running"
-                )));
+                return Err(ProxyError::StaleClaim {
+                    job_id,
+                    claim_generation,
+                });
             }
 
             if job_type == "ha_outbox_gc"
@@ -1289,9 +1290,10 @@ impl KeyStore {
             .await
             {
                 Ok(updated) if updated.rows_affected() == 0 => {
-                    return Err(ProxyError::Other(format!(
-                        "scheduled job {job_id} claim generation {claim_generation} is stale"
-                    )));
+                    return Err(ProxyError::StaleClaim {
+                        job_id,
+                        claim_generation,
+                    });
                 }
                 Ok(_) => return Ok(()),
                 Err(err) => {

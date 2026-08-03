@@ -45,6 +45,25 @@ pub struct DailyReconciliationKeyProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ReconciliationObservation {
+    pub observed_at: Option<i64>,
+    pub coverage: String,
+    pub queue_estimate: Option<i64>,
+    pub has_eligible: bool,
+    pub oldest_candidate_age_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationLocalBackoff {
+    pub pressure_streak: i64,
+    pub level: i64,
+    pub available_at: Option<i64>,
+    pub last_recovered_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct UpstreamPrivacyStatus {
     pub phase: String,
     pub configured_project_id_mode: UpstreamProjectIdMode,
@@ -62,7 +81,9 @@ pub struct UpstreamPrivacyStatus {
     pub current_period_code: String,
     pub current_period_ends_at: i64,
     pub next_epoch_at: Option<i64>,
-    pub pending_research: i64,
+    /// A bounded queue estimate. `None` means this status snapshot has not
+    /// observed a bounded estimate and must not be rendered as zero.
+    pub pending_research: Option<i64>,
     pub queued_settlements: i64,
     pub degraded_settlements: i64,
     pub last_reconciliation_run_at: Option<i64>,
@@ -78,6 +99,8 @@ pub struct UpstreamPrivacyStatus {
     pub reconciliation_last_settled: i64,
     pub reconciliation_last_upstream_429: i64,
     pub reconciliation_last_budget_exhausted: bool,
+    pub reconciliation_observation: ReconciliationObservation,
+    pub reconciliation_local_backoff: ReconciliationLocalBackoff,
     pub retry_buckets: UpstreamReconciliationRetryBuckets,
     pub current_period_bound_users_by_key: Vec<UpstreamKeyActivityPoint>,
     pub current_period_pending_project_ids_by_key: Vec<UpstreamKeyActivityPoint>,

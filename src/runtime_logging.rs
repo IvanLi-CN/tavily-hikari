@@ -105,14 +105,14 @@ pub struct RuntimeMemorySnapshot {
 #[derive(Debug)]
 pub struct RuntimePerfScope {
     started_at: Instant,
-    memory: RuntimeMemorySnapshot,
+    memory: OnceLock<RuntimeMemorySnapshot>,
 }
 
 impl RuntimePerfScope {
     pub fn start() -> Self {
         Self {
             started_at: Instant::now(),
-            memory: capture_runtime_memory_snapshot(),
+            memory: OnceLock::new(),
         }
     }
 
@@ -121,7 +121,11 @@ impl RuntimePerfScope {
     }
 
     pub fn memory(&self) -> RuntimeMemorySnapshot {
-        self.memory
+        *self.memory.get_or_init(capture_runtime_memory_snapshot)
+    }
+
+    pub fn memory_loaded(&self) -> bool {
+        self.memory.get().is_some()
     }
 }
 
@@ -655,5 +659,13 @@ mod tests {
         assert!(payload.get("elapsed_ms").is_some());
         assert!(payload.get("memory_current_bytes").is_some());
         assert!(payload.get("process_rss_bytes").is_some());
+    }
+
+    #[test]
+    fn runtime_perf_scope_does_not_probe_memory_until_a_log_needs_it() {
+        let perf = RuntimePerfScope::start();
+        assert!(!perf.memory_loaded());
+        let _ = perf.memory();
+        assert!(perf.memory_loaded());
     }
 }

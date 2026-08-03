@@ -4,6 +4,9 @@
 
 ## Decision Trace
 
+- 2026-08-02: 候选选择改为有界索引分页；管理员状态采用 observation unknown/null 合同；全局本地
+  429 压力按 `2/5/10/30` 分钟持久化退避，并与 delayed representative job 复用。
+
 - 2026-07-31: reconciliation 纳入 remote-I/O slot 与 20 秒总预算；全局 429 退避和 delayed
   representative job 作为同一持久化生命周期恢复。
 

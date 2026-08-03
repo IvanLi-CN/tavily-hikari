@@ -53,7 +53,13 @@ impl TavilyProxy {
                         Some("component=request-stats-coalescer"),
                         &err,
                     );
-                    eprintln!("request stats persist warning: {err}");
+                    tracing::debug!(
+                        component = "request_stats",
+                        event = "persist_retry",
+                        elapsed_ms = flush_started.elapsed().as_millis() as u64,
+                        err = %err,
+                        "request stats persist deferred after structured database error"
+                    );
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 } else {
                     log_slow_db_operation(
@@ -195,7 +201,12 @@ impl TavilyProxy {
                         )
                         .await
                     {
-                        eprintln!("HA sync watermark persist warning: {err}");
+                        tracing::warn!(
+                            component = "ha",
+                            event = "sync_watermark_persist_failed",
+                            channel = %name,
+                            err = %err,
+                        );
                     }
                 }
 
@@ -215,7 +226,12 @@ impl TavilyProxy {
                             flushed_node_state = Some(pending);
                         }
                         Err(err) => {
-                            eprintln!("HA node state persist warning: {err}");
+                            tracing::warn!(
+                                component = "ha",
+                                event = "node_state_persist_failed",
+                                node_id = %pending.node_id,
+                                err = %err,
+                            );
                         }
                     }
                 }
@@ -308,6 +324,15 @@ impl TavilyProxy {
 
     pub async fn gc_ha_outbox_online(&self) -> Result<HaOutboxGcReport, ProxyError> {
         self.key_store.gc_ha_outbox_online().await
+    }
+
+    pub async fn gc_ha_outbox_online_with_foreground_rps(
+        &self,
+        foreground_rps: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.key_store
+            .gc_ha_outbox_online_with_foreground_rps(foreground_rps)
+            .await
     }
 
     pub async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {

@@ -4,7 +4,7 @@
 
 - Status: active
 - Created: 2026-06-23
-- Last: 2026-06-26
+- Last: 2026-08-02
 
 ## 背景
 
@@ -21,12 +21,16 @@
 
 - 默认 runtime logs 直接暴露关键性能链路的稳定结构化事件，无需临时改代码或打开 debug dump。
 - 所有与 `256MiB` 稳定运行合同相关的关键路径都能在日志中看到内存头寸、作用域、耗时和结果。
-- PR1 只补观测合同与验证基建，不改既有行为语义；PR2 再基于这些事件收口 bounded-memory 实现。
+- 业务调用缓存只在最近一小时保留逐事件数据，前 1–25 小时使用五分钟桶聚合；backfill 使用
+  500 行分页和 generation/tail 合并。分页期间必须保留 last-good 快照，只有完整构建成功后才原子交换；
+  混合负载下以进程组 RSS P95 `<=256MiB` 作为 SLO 观测目标。
+- `/proc` 与 cgroup footprint 只在五分钟采样窗口、慢请求、错误或状态跃迁时读取；不设置
+  `memory.max`，也不将 file cache/swap 误判为堆泄漏。
 
 ## Non-goals
 
 - 不新增 Prometheus/OTel/owner-facing metrics 页面。
-- 不在 PR1 改变 HA、dashboard、request logs、forward-proxy startup 的业务 contract。
+- 不改变 HA、dashboard、request logs、forward-proxy startup 的公开业务 contract。
 - 不把秘密、header/body 明文或全量 SQL debug 输出进默认日志。
 
 ## Runtime Logging Contract
@@ -43,6 +47,8 @@
 - 内存字段同时报告 cgroup `anon/file/swap` 与进程 `RssAnon/RssFile/VmSwap`，避免把文件页缓存
   误诊为堆泄漏。
 - 事务污染、stale claim recovery、连续零进展、预算耗尽和全局退避只在进入、升级或恢复时告警。
+- HA GC 低压恢复、SLO deadline、最老可删事件年龄与真实删除率必须可从管理员状态和聚合日志
+  还原；sequence span 仅作趋势估算，不作为库存或 ETA。
 
 - 继续使用默认 `RUNTIME_LOG_FORMAT=json` + `stderr` 输出，保留 `text` fallback。
 - 新增的性能事件必须使用现有 `tracing` 结构化字段，至少包含：
@@ -112,8 +118,7 @@
 
 ## Notes
 
-- 这张 spec 是 PR1/PR2 共用的程序级合同真相源。
-- PR2 需要在此基础上把 low-memory 自动退化与 `256MiB` 稳定运行验收写成最终真相。
+- 这张 spec 是 runtime 诊断、低内存和恢复模式的程序级合同真相源。
 - 高频 `low_memory_protection_decision` 与 HA export/sync 信息应按状态跃迁或轻量采样输出，默认日志不再依赖密集重复 INFO 来做定位。
 - HA peer-less export and baseline samples report `ack_lag=null`; normal summaries stay sampled per
   channel, while heavy outbox and memory snapshots remain reserved for slow, error, or threshold

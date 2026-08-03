@@ -676,6 +676,7 @@ async fn tavily_http_research_result(
                 | ProxyError::LastAdminLoginMethod
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
+                | ProxyError::StaleClaim { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
 
@@ -1280,6 +1281,7 @@ async fn proxy_tavily_http_endpoint(
                     ProxyError::Database(_)
                     | ProxyError::InvalidEndpoint { .. }
                     | ProxyError::LastAdminLoginMethod
+                    | ProxyError::StaleClaim { .. }
                     | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 };
 
@@ -1550,6 +1552,7 @@ async fn proxy_tavily_http_endpoint(
                 | ProxyError::LastAdminLoginMethod
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
+                | ProxyError::StaleClaim { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
 

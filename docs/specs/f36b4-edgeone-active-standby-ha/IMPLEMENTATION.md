@@ -139,6 +139,14 @@
 
 ## Frontend
 
+## 2026-08-02 self-healing GC status
+
+- `HaChannelHealth` and `HaNodeDetailPanel` now display per-channel debt mode, observed timestamp,
+  oldest deletable age, deletion rate, foreground RPS, SLO state, recovery deadline, adaptive batch,
+  and defer/next-retry context for control, billing, and runtime.
+- The Storybook fixtures cover normal, recovering, foreground-pressure, deferred, baseline-required,
+  and stalled channel states without changing the public HA status contract.
+
 - Added API bindings for HA status, promote, and finalize.
 - Added shared `HaStatusBanner` with admin and user presentation modes.
 - Added admin HA service node panel with active-standby status details, including node inventory, role, origin, health, EdgeOne domain/current/expected origin, EdgeOne API configuration, sync timestamps, basic traffic/full write gates, recovery status, message, and row-level promote/finalize actions.

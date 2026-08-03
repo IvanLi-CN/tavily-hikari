@@ -627,6 +627,30 @@ pub const HA_OUTBOX_GC_ACTIVE_BUDGET_MS: u128 = 50;
 pub const HA_OUTBOX_GC_FAST_CONTINUATION_DELAY_SECS: i64 = 5;
 pub const HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS: i64 = 30;
 pub const HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
+pub const HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS: i64 = 1;
+pub const HA_OUTBOX_GC_LOW_PRESSURE_RPS: i64 = 5;
+pub const HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS: i64 = 30 * 60;
+pub const HA_OUTBOX_GC_RECOVERY_SLO_SECS: i64 = 24 * 60 * 60;
+
+pub fn ha_outbox_gc_continuation_delay_secs_for_pressure(
+    has_more: bool,
+    slowest_batch_elapsed_ms: u128,
+    recovery_mode: bool,
+    foreground_rps: i64,
+) -> Option<i64> {
+    if !has_more {
+        return None;
+    }
+    if recovery_mode && foreground_rps <= HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+        return Some(HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS);
+    }
+    if foreground_rps > HA_OUTBOX_GC_LOW_PRESSURE_RPS
+        || slowest_batch_elapsed_ms > HA_OUTBOX_GC_ACTIVE_BUDGET_MS
+    {
+        return Some(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS);
+    }
+    Some(HA_OUTBOX_GC_FAST_CONTINUATION_DELAY_SECS)
+}
 
 /// Chooses the next online continuation without counting outbox rows. A fast
 /// productive slice may catch up quickly, while any individual database-work
@@ -677,6 +701,15 @@ pub struct HaOutboxGcChannelReport {
     pub deleted_rows: i64,
     pub batches: i64,
     pub has_more: bool,
+    pub debt_mode: String,
+    pub oldest_deletable_age_secs: Option<i64>,
+    pub deleted_rows_per_minute: f64,
+    pub recovery_deadline_at: Option<i64>,
+    pub slo_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slo_state_transition: Option<String>,
+    pub foreground_rps: i64,
+    pub observed_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1320,6 +1353,8 @@ const META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1: &str =
     "upstream_reconciliation_backoff_level_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1: &str =
     "upstream_reconciliation_backoff_until_v1";
+const META_KEY_UPSTREAM_RECONCILIATION_LAST_RECOVERED_AT_V1: &str =
+    "upstream_reconciliation_last_recovered_at_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1: &str =
     "upstream_reconciliation_last_duration_ms_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1: &str =

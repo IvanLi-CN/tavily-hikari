@@ -502,6 +502,23 @@
 
 ## Transaction and claim lifecycle
 
+## 2026-08-02 self-healing and bounded-memory implementation
+
+- Online HA GC uses a process-local lease and the application SQLite pool, records foreground
+  activity in a lock-free one-second meter, and never waits for the HTTP maintenance read gate.
+  Retention work is one-channel round-robin with adaptive `25..250` batches, a one-second slice, and
+  one-second recovery continuations only after the persisted low-pressure window is satisfied.
+- `scheduled_jobs.claim_generation` fences stale finish/error/continuation writes. HA continuation
+  enqueue is atomic with finish; failed persistence is left for stale reaper recovery instead of an
+  unbounded retry task.
+- Reconciliation candidate selection is an indexed bounded page, and the persisted local pressure
+  state applies `2/5/10/30` minute backoff with the maximum upstream `Retry-After`.
+- Business-call usage keeps only the last hour as events, stores older history in five-minute buckets,
+  and backfills in 500-row pages while preserving a request-log tail captured at the start.
+- Normal GC/reconciliation phases and per-key 429 diagnostics are DEBUG. INFO is aggregated at a
+  one-minute window, while state transitions, stale recovery, budget exhaustion, and SLO breaches
+  remain immediately visible.
+
 - Raw immediate transactions use an owning guard that commits or rolls back explicitly and detaches
   the physical connection if cancellation drops an open transaction.
 - Scheduled jobs increment `claim_generation` when claimed. All scheduler completion paths and

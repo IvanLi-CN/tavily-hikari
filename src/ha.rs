@@ -552,6 +552,18 @@ pub struct HaChannelHealthView {
     pub next_retry_at: Option<i64>,
     #[serde(default)]
     pub batch_size: i64,
+    #[serde(default)]
+    pub gc_debt_mode: String,
+    #[serde(default)]
+    pub gc_observed_at: Option<i64>,
+    #[serde(default)]
+    pub gc_deleted_rows_per_minute: f64,
+    #[serde(default)]
+    pub gc_recovery_deadline_at: Option<i64>,
+    #[serde(default)]
+    pub gc_slo_state: String,
+    #[serde(default)]
+    pub gc_foreground_rps: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -97,6 +97,97 @@ async fn ha_outbox_gc_watchdog_only_reports_persisted_channel_debt() {
 }
 
 #[tokio::test]
+async fn online_gc_report_exposes_recovery_debt_and_slo_state() {
+    let db_path = temp_db_path("ha-outbox-gc-recovery-state");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-recovery-state".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let report = proxy.gc_ha_outbox_online().await.expect("online GC report");
+    let value = serde_json::to_value(report.channels.first().expect("channel report"))
+        .expect("serialize channel report");
+    assert!(
+        value.get("debtMode").is_some(),
+        "GC debt mode is diagnostic state"
+    );
+    assert!(
+        value.get("oldestDeletableAgeSecs").is_some(),
+        "GC must expose the age of the oldest deletable event"
+    );
+    assert!(
+        value.get("deletedRowsPerMinute").is_some(),
+        "GC must expose an observed deletion rate"
+    );
+    assert!(
+        value.get("sloState").is_some(),
+        "GC must expose its SLO state"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn online_ha_gc_enters_one_second_recovery_after_low_pressure_window() {
+    let db_path = temp_db_path("ha-outbox-gc-low-pressure-recovery");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-low-pressure-recovery".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let now = Utc::now().timestamp();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    for index in 0..1_250 {
+        sqlx::query(
+            r#"
+            INSERT INTO ha_outbox
+                (kind, resource, resource_id, op, payload_json, created_at, checksum)
+            VALUES ('state', 'users', ?, 'upsert', '{}', ?, NULL)
+            "#,
+        )
+        .bind(format!("low-pressure-recovery-{index}"))
+        .bind(now - (15 * SECS_PER_DAY))
+        .execute(&pool)
+        .await
+        .expect("insert expired control event");
+    }
+    sqlx::query(
+        "UPDATE ha_outbox_gc_state SET low_pressure_since = ?, pending_channel_mask = 1 WHERE id = 'local'",
+    )
+    .bind(now - HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS)
+    .execute(&pool)
+    .await
+    .expect("seed low-pressure window");
+    pool.close().await;
+
+    let report = proxy
+        .gc_ha_outbox_online_with_foreground_rps(0)
+        .await
+        .expect("run low-pressure recovery slice");
+    let channel = report.channels.first().expect("control channel report");
+    assert_eq!(channel.debt_mode, "recovering");
+    assert!(channel.recovery_deadline_at.is_some());
+    assert_eq!(channel.slo_state, "breached");
+    assert_eq!(channel.slo_state_transition.as_deref(), Some("breached"));
+    assert_eq!(report.continuation_delay_secs, Some(1));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn deferred_ha_gc_sets_watchdog_debt_when_mask_is_clear() {
     let db_path = temp_db_path("ha-outbox-gc-deferred-watchdog-debt");
     let db_str = db_path.to_string_lossy().to_string();
@@ -463,7 +554,10 @@ async fn online_ha_gc_scans_legacy_rows_by_persisted_sequence_cursor() {
     .await
     .expect("read legacy cursor");
     assert_eq!(remaining_resources, vec!["users"]);
-    assert_eq!(cursor, 0);
+    assert_eq!(
+        cursor, 3,
+        "legacy cursor remains at the scanned high-water mark"
+    );
     pool.close().await;
 
     let _ = std::fs::remove_file(&db_path);

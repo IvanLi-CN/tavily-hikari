@@ -28,10 +28,15 @@
 - `/api/users` compare-only 项新增 observed/standard-settled/degraded period count，用户列表和用量页在 hybrid 值旁展示标准对账覆盖及降级数。
 - reconciliation 运行于 remote-I/O slot，并受 20 秒总预算约束；全局 429 压力状态与 delayed
   representative job 持久化，避免持续限流时每分钟空转并占用本地维护队列。
+- 候选页先以 period/settlement 索引限制扫描，再做有界 hydrate 与 Research `EXISTS` 判断；执行
+  前后不再运行精确队列聚合。系统状态读取 bounded observation，未首次观测时保留 unknown/null
+  语义。
+- 本地全局压力连续三轮触发 `2/5/10/30` 分钟退避，`Retry-After` 取更晚值；延迟代表任务与
+  状态在同一持久化生命周期内复用，真实尝试或成功后恢复。
 
 ## Remaining Gaps
 
-- 待补最终视觉证据与 owner-facing 截图归档。
+- 待补当前最终 SHA 的视觉证据与 owner-facing 截图归档。
 
 ## Related Changes
 

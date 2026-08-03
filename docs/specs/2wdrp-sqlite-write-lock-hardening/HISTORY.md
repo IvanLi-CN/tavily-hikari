@@ -1,5 +1,14 @@
 # History
 
+## 2026-08-02
+
+- Added low-pressure HA GC recovery with persisted debt/SLO state, foreground-aware continuation
+  delays, stale-claim fencing, and stale-reaper-only continuation recovery.
+- Replaced reconciliation pre/post full aggregates with bounded indexed candidate pages and persisted
+  local 429 pressure backoff.
+- Reduced business-call memory residency by retaining one hour of events, five-minute historical
+  buckets, and paged backfill with tail merge.
+
 ## 2026-05-07
 
 - Created after production showed transient SQLite `database is locked` errors across token billing,

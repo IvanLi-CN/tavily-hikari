@@ -1,5 +1,10 @@
 # Admin Dashboard Overview History
 
+## 2026-08-02
+
+- Kept the existing ten-second rebuild budget and sixty-second unchanged probe; dashboard visual
+  assets are excluded from this round's PR evidence because the dashboard UI is unchanged.
+
 ## 2026-07-31
 
 - Bounded expensive freshness probes and rebuilds to a 10-second minimum interval and added the

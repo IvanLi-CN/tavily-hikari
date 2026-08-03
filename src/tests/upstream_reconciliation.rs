@@ -81,6 +81,41 @@ async fn reconciliation_waits_for_a_complete_eligible_period() {
 }
 
 #[tokio::test]
+async fn reconciliation_status_reports_observation_and_unknown_estimates() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_752_500_000);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-observation"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    let value = serde_json::to_value(
+        proxy
+            .upstream_privacy_status()
+            .await
+            .expect("read privacy status"),
+    )
+    .expect("serialize privacy status");
+    assert!(
+        value.get("reconciliationObservation").is_some(),
+        "admin status must identify when queue data was observed"
+    );
+    assert!(
+        value.get("reconciliationLocalBackoff").is_some(),
+        "admin status must expose local backoff independently from remote 429 state"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn signed_reconciliation_adjustment_is_idempotent_and_restores_quota() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -1538,7 +1573,7 @@ async fn daily_reconciliation_progress_includes_actual_mode_windows() {
 }
 
 #[tokio::test]
-async fn queue_counts_include_due_unsettled_usage_windows() {
+async fn reconciliation_observation_reports_due_window_without_queue_count() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 7, 15, 12, 0);
@@ -1613,14 +1648,55 @@ async fn queue_counts_include_due_unsettled_usage_windows() {
     .await
     .expect("insert pending research");
 
-    let (pending_research, queued, degraded) = proxy
+    let observation = proxy
         .key_store
-        .upstream_reconciliation_queue_counts()
+        .upstream_reconciliation_observation()
         .await
-        .expect("read queue counts");
-    assert_eq!(pending_research, 1);
-    assert_eq!(queued, 1);
-    assert_eq!(degraded, 0);
+        .expect("read bounded reconciliation observation");
+    assert_eq!(observation.coverage, "unknown");
+    assert!(observation.queue_estimate.is_none());
+    assert!(observation.has_eligible);
+    assert!(
+        observation
+            .oldest_candidate_age_secs
+            .is_some_and(|age| age >= 900)
+    );
+
+    for suffix in ["second", "third"] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                period_start, period_end, request_count, first_used_at, last_used_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            "#,
+        )
+        .bind(format!("token-{suffix}"))
+        .bind(format!("key-{suffix}"))
+        .bind("2026-07-15/S1")
+        .bind(format!("project-{suffix}"))
+        .bind(format!("token:token-{suffix}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert additional queued usage");
+    }
+    proxy
+        .key_store
+        .mark_upstream_reconciliation_run_completed_at(now)
+        .await
+        .expect("mark reconciliation observation ready");
+    let observed = proxy
+        .key_store
+        .upstream_reconciliation_observation()
+        .await
+        .expect("read observed bounded queue estimate");
+    assert_eq!(observed.coverage, "bounded");
+    assert_eq!(observed.queue_estimate, Some(3));
 
     let _ = std::fs::remove_file(db_path);
 }

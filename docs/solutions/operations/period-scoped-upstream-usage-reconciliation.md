@@ -147,3 +147,12 @@ new upstream request, verify that enough budget remains for the request deadline
 the entire worker alone still permits the last request to consume the full remainder. Persist the
 pressure transition and the single delayed representative job atomically so restarts neither lose
 backoff nor enqueue minute-by-minute no-op work.
+
+Candidate pressure must be measured without a full queue aggregate: use an indexed recent/backlog
+page, an exact `hasEligible` existence check, and the oldest candidate age. The observation contract
+uses nullable, explicitly bounded estimates so an unobserved queue is not reported as zero and a
+multi-item queue is not collapsed into a boolean. Keep historical degraded visibility as a separate
+indexed existence probe instead of deriving it from a current-day metric. After three rounds with no
+remote attempt and exhausted local budget, persist the global `2/5/10/30` minute backoff and honor a
+later Retry-After; a real remote attempt or successful settlement clears it. Keep normal per-key
+429 logs at DEBUG and reserve state-transition logs for enter, escalation, and recovery.

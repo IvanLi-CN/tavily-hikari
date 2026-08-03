@@ -213,6 +213,21 @@ reads:
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
 
+## Bounded reconciliation and memory observations
+
+- Candidate selection for reconciliation should fetch an indexed, bounded page before grouping or
+  hydrating Research state. Keep the 12/8 recent/backlog fairness contract, but never run a global
+  queue aggregate before the first remote attempt.
+- Expose a bounded `ReconciliationObservation`: `hasEligible` and oldest-candidate age are precise
+  for the bounded probe, while `queueEstimate=null` and `coverage=unknown` are required before the
+  first observation. Never render an unknown queue as zero.
+- When three rounds have candidates but no remote attempt and local budget exhaustion, persist one
+  representative delayed job and back off for `2/5/10/30` minutes, using the maximum Retry-After.
+  This protects the SQLite worker from a one-minute no-op loop without hiding real progress.
+- For in-memory owner-facing usage windows, retain only the last hour as events and aggregate older
+  1–25 hour history into five-minute buckets. Backfill with 500-row pages and merge the captured live
+  tail so a lock-held full-history copy is never required.
+
 ## References
 
 - `src/store/key_store_request_logs_and_dashboard.rs`

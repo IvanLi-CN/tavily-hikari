@@ -2,8 +2,8 @@
 
 ## 当前状态
 
-- 状态：部分完成（PR1 已落地，PR2 待实现）
-- 最近更新：2026-06-26
+- 状态：实现完成（待最终验证）
+- 最近更新：2026-08-02
 
 ## 已落地实现
 
@@ -52,6 +52,10 @@
 - request logs / token logs 的 perf 完成事件默认走 `INFO` 级别，避免把正常诊断事件误打成
   `WARN`。
 - 新增日志单测，直接断言 perf 事件包含稳定字段、phase/outbox 字段与内存预算字段，并确认 `INFO` 级输出可解析。
+- `RuntimePerfScope` 延迟到真正输出日志时才读取 footprint；INFO 采样五分钟复用快照，slow/error
+  立即采集。cgroup anon/file/swap 与进程 RssAnon/RssFile/VmSwap 分开输出。
+- 在线 HA GC、对账和调度恢复现已由结构化状态跃迁日志覆盖；普通切片、phase、逐 key 429 与
+  enqueue reuse 不再逐次输出 INFO/WARN。
 
 ## 已完成验证
 
@@ -70,12 +74,7 @@
 
 ## 剩余缺口
 
-- PR2 仍需把 HA baseline/events export/import 与 standby sync 的 bounded-memory 行为彻底收口；
-  PR1 只补可观测性，没有改变这些路径的资源使用合同。
-- PR2 仍需把真正的 low-memory 自动退化逻辑接到 owner-facing 重读路径上，并把
-  `256MiB` 进程组合同做成可验收 harness。
-- 目前 `low_memory_protection_decision` 事件只记录当前 verdict，不代表已经具备真正的
-  `503 low_memory_protection` 保护行为。
+- 需要在当前最终 SHA 运行全量验证，并补齐管理员 HA/对账 Storybook 的新视觉证据。
 - HA outbox 观测现已覆盖在线 self-healing 的累计与最慢 cleanup micro-batch SQL 耗时、续片延迟、累计删除、高水位增量与
   ingress-minus-delete 估算；后置状态 probe 不参与批次耗时。它们不能替代精确库存统计，但可低成本确认过期债务是否持续前移。
 - Deferred-continuation diagnostics share one durable transaction with the selected channel's

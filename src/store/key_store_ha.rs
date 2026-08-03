@@ -1,6 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
-type HaGcChannelStateRow = (Option<i64>, i64, Option<String>, Option<i64>, i64, i64);
+type HaGcChannelStateRow = (
+    Option<i64>,
+    i64,
+    Option<String>,
+    Option<i64>,
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    f64,
+    Option<i64>,
+    String,
+    i64,
+);
 
 fn record_ha_outbox_gc_batch_timing(
     active_elapsed_ms: &mut u128,
@@ -391,7 +404,9 @@ impl KeyStore {
         let gc_state_row: Option<HaGcChannelStateRow> =
             sqlx::query_as(
                 r#"SELECT last_progress_at, last_deleted_rows, last_defer_reason,
-                          next_retry_at, batch_size, consecutive_no_progress
+                          next_retry_at, batch_size, consecutive_no_progress,
+                          debt_mode, last_observed_at, deleted_rows_per_minute,
+                          recovery_deadline_at, slo_state, foreground_rps
                    FROM ha_outbox_gc_channel_state WHERE channel = ?"#,
             )
             .bind(channel.as_str())
@@ -404,7 +419,26 @@ impl KeyStore {
             next_retry_at,
             batch_size,
             consecutive_no_progress,
-        ) = gc_state_row.unwrap_or((None, 0, None, None, 250, 0));
+            gc_debt_mode,
+            gc_observed_at,
+            gc_deleted_rows_per_minute,
+            gc_recovery_deadline_at,
+            gc_slo_state,
+            gc_foreground_rps,
+        ) = gc_state_row.unwrap_or((
+            None,
+            0,
+            None,
+            None,
+            250,
+            0,
+            "unknown".to_string(),
+            None,
+            0.0,
+            None,
+            "unknown".to_string(),
+            0,
+        ));
         let now = self.backend_time.now_ts();
         let gc_state = if consecutive_no_progress >= 3 {
             "stalled"
@@ -440,6 +474,12 @@ impl KeyStore {
             last_defer_reason,
             next_retry_at,
             batch_size,
+            gc_debt_mode,
+            gc_observed_at,
+            gc_deleted_rows_per_minute,
+            gc_recovery_deadline_at,
+            gc_slo_state,
+            gc_foreground_rps,
         })
     }
 
@@ -1114,24 +1154,22 @@ impl KeyStore {
         let table = quote_sqlite_identifier(ha_channel_event_table(channel));
         let sql = format!(
             r#"
-            SELECT COUNT(*) FROM (
-                SELECT seq
-                  FROM {table}
-                 WHERE seq > ?
-                   AND created_at >= ?
-                   AND resource IN ({allowed_resources})
-                 ORDER BY seq ASC
-                 LIMIT ?
-            )
+            SELECT seq
+              FROM {table}
+             WHERE seq > ?
+               AND created_at >= ?
+               AND resource IN ({allowed_resources})
+             ORDER BY seq ASC
+             LIMIT ?
             "#
         );
-        let count: i64 = sqlx::query_scalar(&sql)
+        let rows = sqlx::query(&sql)
             .bind(after_seq.max(0))
             .bind(threshold)
             .bind(limit.clamp(1, 1000))
-            .fetch_one(&mut **conn)
+            .fetch_all(&mut **conn)
             .await?;
-        Ok(count.max(0) as usize)
+        Ok(rows.len())
     }
 
 
@@ -3016,6 +3054,14 @@ impl KeyStore {
             .await?;
             let has_more_invalid = self.ha_invalid_legacy_events_exist(channel).await?;
             let has_more = has_more_invalid || has_more_retention;
+            let oldest_created_at: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT MIN(created_at) FROM {} WHERE created_at < ?",
+                quote_sqlite_identifier(ha_channel_event_table(channel))
+            ))
+            .bind(threshold)
+            .fetch_one(&self.pool)
+            .await?;
+            let observed_at = self.backend_time.now_ts();
             deleted_rows += channel_deleted_rows;
             batches += channel_batches;
             channels.push(HaOutboxGcChannelReport {
@@ -3027,6 +3073,19 @@ impl KeyStore {
                 deleted_rows: channel_deleted_rows,
                 batches: channel_batches,
                 has_more,
+                debt_mode: "offline".to_string(),
+                oldest_deletable_age_secs: oldest_created_at
+                    .map(|created_at| observed_at.saturating_sub(created_at).max(0)),
+                deleted_rows_per_minute: if started.elapsed().as_secs() > 0 {
+                    channel_deleted_rows as f64 * 60.0 / started.elapsed().as_secs() as f64
+                } else {
+                    0.0
+                },
+            recovery_deadline_at: None,
+            slo_state: "not_applicable".to_string(),
+            slo_state_transition: None,
+            foreground_rps: 0,
+                observed_at,
             });
         }
 
@@ -3133,10 +3192,13 @@ impl KeyStore {
             .fetch_one(&mut *conn)
             .await?
         };
+        // Keep the range cursor at the last scanned primary key even at the
+        // end of the table. Resetting it to zero makes every online slice
+        // rescan the entire outbox and defeats the bounded legacy pass.
         sqlx::query(&format!(
             "UPDATE ha_outbox_gc_state SET {cursor_column} = ? WHERE id = 'local'"
         ))
-        .bind(if reached_end { 0 } else { next_seq })
+        .bind(next_seq)
         .execute(&mut *conn)
         .await?;
         if let Some(max_deleted_seq) = invalid_seqs.iter().copied().max() {

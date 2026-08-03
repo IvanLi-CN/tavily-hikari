@@ -7,7 +7,7 @@ import UpstreamPrivacyStatusModule from './UpstreamPrivacyStatusModule'
 import { translations } from '../i18n'
 
 describe('SystemStatusModule Storybook proofs', () => {
-  it('keeps the pending, blocked-session, compare, active, degraded, backoff, budget, empty, error, and gallery stories available', () => {
+  it('keeps the pending, blocked-session, compare, active, degraded, backoff, unknown, budget, empty, error, and gallery stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/Modules/SystemStatusModule',
     })
@@ -18,6 +18,7 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(systemStatusStories.Active).toMatchObject({})
     expect(systemStatusStories.Degraded).toMatchObject({})
     expect(systemStatusStories.GlobalBackoff).toMatchObject({})
+    expect(systemStatusStories.UnknownObservation).toMatchObject({})
     expect(systemStatusStories.BudgetExhausted).toMatchObject({})
     expect(systemStatusStories.EmptyState).toMatchObject({})
     expect(systemStatusStories.ErrorState).toMatchObject({})

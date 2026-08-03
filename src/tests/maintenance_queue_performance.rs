@@ -309,6 +309,57 @@ async fn stale_claim_generation_cannot_finish_reclaimed_job() {
 }
 
 #[tokio::test]
+async fn stale_claim_cannot_be_misreported_as_a_non_running_job_when_requeueing() {
+    let db_path = temp_db_path("scheduled-job-stale-requeue");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let queued = proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "auto", None, 1)
+        .await
+        .expect("enqueue HA GC");
+    let first = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim first generation")
+        .expect("first claim exists");
+    sqlx::query(
+        "UPDATE scheduled_jobs SET status = 'queued', started_at = NULL, available_at = 0, claim_generation = claim_generation + 1 WHERE id = ?",
+    )
+    .bind(queued.job_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate stale recovery");
+    let _second = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim second generation")
+        .expect("second claim exists");
+    let err = proxy
+        .scheduled_job_finish_and_enqueue_auto_at(
+            queued.job_id,
+            first.claim_generation,
+            "ha_outbox_gc",
+            None,
+            1,
+            Some("deferred=has_more"),
+            Utc::now().timestamp() + 30,
+        )
+        .await
+        .expect_err("stale continuation must be rejected");
+    assert!(
+        !err.to_string().contains("was not running"),
+        "stale claims need a distinct internal outcome so the scheduler does not retry them"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn stale_reaper_recovers_ha_gc_once_with_delay() {
     let db_path = temp_db_path("scheduled-job-stale-reaper");
     let db_str = db_path.to_string_lossy().to_string();

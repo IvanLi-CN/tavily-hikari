@@ -2160,8 +2160,16 @@ pub enum ProxyError {
     },
     #[error("cannot remove the final admin login method")]
     LastAdminLoginMethod,
+    #[error("scheduled job {job_id} claim generation {claim_generation} is stale")]
+    StaleClaim { job_id: i64, claim_generation: i64 },
     #[error("other error: {0}")]
     Other(String),
+}
+
+impl ProxyError {
+    pub fn is_stale_claim(&self) -> bool {
+        matches!(self, Self::StaleClaim { .. })
+    }
 }
 
 pub async fn audit_business_quota_ledger(

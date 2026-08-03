@@ -411,6 +411,20 @@ month-tail public metrics scan.
   Suppressed retry-shadow rows contribute no dashboard aggregates, so requiring a dashboard seal
   for a suppressed-only day can permanently stop raw-log GC without improving recoverability.
 
+## Self-healing recovery notes
+
+- For online HA debt recovery, sample `/api` and `/mcp` arrivals with lock-free counters rather than
+  taking the global request read gate. Enter a persisted recovery mode only after 30 minutes at or
+  below `5` requests per second; use a one-second continuation while the slice is productive, and
+  return to 30 seconds on foreground pressure, busy writers, or slow batches. Keep one channel per
+  slice and persist the round-robin cursor, oldest deletable age, deletion rate, recovery deadline,
+  and SLO state.
+- Fence every scheduled-job completion and continuation with a monotonically increasing claim
+  generation. A stale claim is a benign internal outcome; the stale reaper, not a retry loop, owns
+  recovery after atomic finish-plus-continuation persistence fails.
+- Keep online request-log and HA cleanup bounded; historical backlog rate must be proven by oldest
+  deletable age and measured deletion rate, not by a sequence-span estimate or an unbounded count.
+
 ## References
 
 - `src/store/mod.rs`

@@ -79,6 +79,21 @@ export interface DailyReconciliationKeyProgress {
   cooldownReason: string | null
 }
 
+export interface ReconciliationObservation {
+  observedAt: number | null
+  coverage: 'bounded' | 'unknown' | string
+  queueEstimate: number | null
+  hasEligible: boolean
+  oldestCandidateAgeSecs: number | null
+}
+
+export interface ReconciliationLocalBackoff {
+  pressureStreak: number
+  level: number
+  availableAt: number | null
+  lastRecoveredAt: number | null
+}
+
 export interface UpstreamPrivacyStatus {
   phase: 'configured' | 'draining' | 'pending' | 'compare' | 'active' | 'degraded'
   configuredProjectIdMode: UpstreamProjectIdMode
@@ -96,7 +111,7 @@ export interface UpstreamPrivacyStatus {
   currentPeriodCode: string
   currentPeriodEndsAt: number
   nextEpochAt: number | null
-  pendingResearch: number
+  pendingResearch: number | null
   queuedSettlements: number
   degradedSettlements: number
   lastReconciliationRunAt: number | null
@@ -112,6 +127,8 @@ export interface UpstreamPrivacyStatus {
   reconciliationLastSettled?: number
   reconciliationLastUpstream429?: number
   reconciliationLastBudgetExhausted?: boolean
+  reconciliationObservation: ReconciliationObservation
+  reconciliationLocalBackoff: ReconciliationLocalBackoff
   retryBuckets: UpstreamReconciliationRetryBuckets
   currentPeriodBoundUsersByKey: UpstreamKeyActivityPoint[]
   currentPeriodPendingProjectIdsByKey: UpstreamKeyActivityPoint[]

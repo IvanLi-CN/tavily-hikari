@@ -84,6 +84,70 @@ fn new_dashboard_overview_cache() -> Arc<Mutex<DashboardOverviewCacheState>> {
 
 static DB_MAINTENANCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
 static ONLINE_HA_GC_LEASE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
+const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
+
+struct ForegroundActivityMeter {
+    epochs: [AtomicU64; FOREGROUND_ACTIVITY_BUCKETS],
+    counts: [AtomicU64; FOREGROUND_ACTIVITY_BUCKETS],
+}
+
+impl ForegroundActivityMeter {
+    fn new() -> Self {
+        Self {
+            epochs: std::array::from_fn(|_| AtomicU64::new(0)),
+            counts: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+}
+
+static FOREGROUND_ACTIVITY: OnceLock<ForegroundActivityMeter> = OnceLock::new();
+
+fn foreground_activity_meter() -> &'static ForegroundActivityMeter {
+    FOREGROUND_ACTIVITY.get_or_init(ForegroundActivityMeter::new)
+}
+
+fn foreground_activity_slot() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .saturating_div(FOREGROUND_ACTIVITY_BUCKET_MS as u128) as u64
+}
+
+pub(crate) fn record_foreground_activity() {
+    let slot = foreground_activity_slot();
+    let index = (slot as usize) % FOREGROUND_ACTIVITY_BUCKETS;
+    let meter = foreground_activity_meter();
+    let epoch = &meter.epochs[index];
+    let previous = epoch.load(AtomicOrdering::Acquire);
+    if previous != slot
+        && epoch
+            .compare_exchange(
+                previous,
+                slot,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_ok()
+    {
+        meter.counts[index].store(0, AtomicOrdering::Release);
+    }
+    meter.counts[index].fetch_add(1, AtomicOrdering::Relaxed);
+}
+
+pub(crate) fn foreground_activity_rps() -> i64 {
+    let current_slot = foreground_activity_slot();
+    let meter = foreground_activity_meter();
+    let total = (0..FOREGROUND_ACTIVITY_BUCKETS)
+        .filter_map(|index| {
+            let epoch = meter.epochs[index].load(AtomicOrdering::Acquire);
+            (current_slot >= epoch && current_slot.saturating_sub(epoch) < FOREGROUND_ACTIVITY_BUCKETS as u64)
+                .then(|| meter.counts[index].load(AtomicOrdering::Relaxed))
+        })
+        .sum::<u64>();
+    total.min(i64::MAX as u64) as i64
+}
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
 static MAINTENANCE_WORKER_WAKES: OnceLock<
@@ -187,6 +251,7 @@ async fn db_maintenance_http_gate(
         return next.run(req).await;
     }
 
+    record_foreground_activity();
     let _guard = acquire_db_maintenance_read_gate().await;
     next.run(req).await
 }

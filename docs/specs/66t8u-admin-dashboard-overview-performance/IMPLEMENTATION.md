@@ -17,6 +17,9 @@
   2-second SSE loop reuses the in-memory generation and shared singleflight last-good snapshot.
 - Alert candidate indexing is installed by an idempotent post-ready maintenance job rather than the
   startup schema path.
+- The existing dashboard contract remains a bounded 10-second rebuild budget with a 60-second
+  unchanged freshness probe. This round changes HA/reconciliation status surfaces only and does not
+  reuse older dashboard screenshots as PR evidence.
 
 ## Notes
 

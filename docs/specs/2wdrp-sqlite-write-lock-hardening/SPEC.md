@@ -254,6 +254,23 @@ source when a usable persisted runtime already exists.
   claim after 60 seconds. Recovery increments the generation and applies the existing 30-second
   delay, making repeated reaper passes idempotent.
 
+- Online HA cleanup enters recovery mode only after a persisted 30-minute window at or below `5`
+  foreground requests per second. Recovery uses a one-second continuation while the current slice
+  remains within its one-second wall-clock and 50ms active-SQL targets; foreground pressure, busy
+  writers, or slow work returns to a 30-second continuation. Every slice processes one channel and
+  persists the round-robin cursor, oldest deletable age, deletion rate, debt mode, recovery deadline,
+  and SLO state.
+- An expired scheduled-job claim returns an internal stale-claim result. It cannot finish, enqueue a
+  continuation, or mutate a newer claim with the same job id. HA continuation persistence is part of
+  the finish transaction; the stale reaper is the only recovery path when that transaction cannot
+  commit.
+- Reconciliation candidate selection is bounded by indexed pages before hydration. Three consecutive
+  rounds with eligible candidates but no remote attempt and exhausted local budget enter a persisted
+  `2/5/10/30` minute local backoff, extended by `Retry-After`, with one delayed representative job.
+- The business-call cache keeps raw events for one hour and five-minute aggregates for the remaining
+  1–25 hour window. Startup backfill reads 500-row pages and merges a captured request-log tail, so
+  it never materializes the complete history or copies live events while holding the cache lock.
+
 - Under a competing SQLite writer, acquiring a quota subject lock eventually succeeds after the
   writer releases within the existing wait budget.
 - Under a competing SQLite writer that outlives SQLite's builtin busy timeout but releases before

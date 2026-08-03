@@ -1,3 +1,15 @@
+type HaOutboxGcChannelStateRow = (
+    i64,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    f64,
+    String,
+);
+
 impl KeyStore {
     pub(crate) async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {
         let pending_channel_mask: Option<i64> = sqlx::query_scalar(
@@ -9,7 +21,14 @@ impl KeyStore {
     }
 
     pub(crate) async fn gc_ha_outbox_online(&self) -> Result<HaOutboxGcReport, ProxyError> {
-        self.gc_ha_outbox_online_with_options(HaOutboxGcOptions::online())
+        self.gc_ha_outbox_online_with_foreground_rps(0).await
+    }
+
+    pub(crate) async fn gc_ha_outbox_online_with_foreground_rps(
+        &self,
+        foreground_rps: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.gc_ha_outbox_online_with_options(HaOutboxGcOptions::online(), foreground_rps)
             .await
     }
 
@@ -81,6 +100,7 @@ impl KeyStore {
     async fn gc_ha_outbox_online_with_options(
         &self,
         options: HaOutboxGcOptions,
+        foreground_rps: i64,
     ) -> Result<HaOutboxGcReport, ProxyError> {
         let started = Instant::now();
         let deadline = started + Duration::from_secs(options.max_runtime_secs.max(1));
@@ -96,6 +116,37 @@ impl KeyStore {
             sqlx::query("PRAGMA busy_timeout = 100")
                 .execute(&mut **conn)
                 .await?;
+            let state_now = self.backend_time.now_ts();
+            let (persisted_low_pressure_since, _persisted_recovery_mode, persisted_recovery_deadline):
+                (Option<i64>, i64, Option<i64>) = sqlx::query_as(
+                "SELECT low_pressure_since, recovery_mode, recovery_deadline_at FROM ha_outbox_gc_state WHERE id = 'local'",
+            )
+            .fetch_one(&mut **conn)
+            .await?;
+            let low_pressure_since = if foreground_rps <= crate::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+                persisted_low_pressure_since.or(Some(state_now))
+            } else {
+                None
+            };
+            let recovery_mode = foreground_rps <= crate::HA_OUTBOX_GC_LOW_PRESSURE_RPS
+                && low_pressure_since
+                    .is_some_and(|started| state_now.saturating_sub(started) >= crate::HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS);
+            let recovery_deadline_at = if recovery_mode {
+                persisted_recovery_deadline
+                    .or_else(|| Some(state_now.saturating_add(crate::HA_OUTBOX_GC_RECOVERY_SLO_SECS)))
+            } else {
+                None
+            };
+            sqlx::query(
+                "UPDATE ha_outbox_gc_state SET low_pressure_since = ?, recovery_mode = ?, recovery_deadline_at = ?, last_foreground_rps = ?, updated_at = ? WHERE id = 'local'",
+            )
+            .bind(low_pressure_since)
+            .bind(i64::from(recovery_mode))
+            .bind(recovery_deadline_at)
+            .bind(foreground_rps)
+            .bind(state_now)
+            .execute(&mut **conn)
+            .await?;
             let maximum_batch_size = options.batch_size.clamp(
                 crate::HA_OUTBOX_GC_MIN_BATCH_SIZE,
                 crate::HA_OUTBOX_GC_MAX_ONLINE_BATCH_SIZE,
@@ -115,9 +166,12 @@ impl KeyStore {
                 Self::ha_outbox_gc_channel_from_name(&next_channel),
                 pending_channel_mask,
             );
-            let (persisted_batch_size, last_observed_at, last_high_watermark):
-                (i64, Option<i64>, i64) = sqlx::query_as(
-                r#"SELECT batch_size, last_observed_at, last_high_watermark
+            let (persisted_batch_size, last_attempt_at, last_observed_at, last_high_watermark,
+                _total_deleted_rows, _persisted_debt_mode, _persisted_oldest_age_secs,
+                persisted_deleted_rows_per_minute, persisted_slo_state): HaOutboxGcChannelStateRow = sqlx::query_as(
+                r#"SELECT batch_size, last_attempt_at, last_observed_at, last_high_watermark,
+                          total_deleted_rows, debt_mode, oldest_deletable_age_secs,
+                          deleted_rows_per_minute, slo_state
                    FROM ha_outbox_gc_channel_state WHERE channel = ?"#,
             )
             .bind(channel.as_str())
@@ -257,6 +311,13 @@ impl KeyStore {
             .fetch_one(&mut **conn)
             .await?;
             let channel_has_more = legacy_has_more || has_more_retention;
+            let oldest_deletable_created_at: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT MIN(created_at) FROM {} WHERE created_at < ? AND resource IN ({allowed_resources})",
+                quote_sqlite_identifier(ha_channel_event_table(channel)),
+            ))
+            .bind(threshold)
+            .fetch_one(&mut **conn)
+            .await?;
             let high_watermark = Self::ha_channel_high_watermark_on_conn(conn, channel).await?;
             let channel_mask = Self::ha_outbox_gc_channel_mask(channel);
             let next_pending_channel_mask = if channel_has_more {
@@ -280,7 +341,12 @@ impl KeyStore {
             let completed = next_pending_channel_mask == 0;
             let now = self.backend_time.now_ts();
             let channel_continuation_delay_secs = if has_more_retention {
-                crate::ha_outbox_gc_continuation_delay_secs(true, max_batch_elapsed_ms)
+                crate::ha_outbox_gc_continuation_delay_secs_for_pressure(
+                    true,
+                    max_batch_elapsed_ms,
+                    recovery_mode,
+                    foreground_rps,
+                )
             } else if legacy_has_more {
                 Some(crate::HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS)
             } else {
@@ -291,7 +357,12 @@ impl KeyStore {
             } else if let Some(delay) = channel_continuation_delay_secs {
                 Some(delay)
             } else {
-                crate::ha_outbox_gc_continuation_delay_secs(true, max_batch_elapsed_ms)
+                crate::ha_outbox_gc_continuation_delay_secs_for_pressure(
+                    true,
+                    max_batch_elapsed_ms,
+                    recovery_mode,
+                    foreground_rps,
+                )
             };
             let defer_reason = channel_continuation_delay_secs.map(|delay| {
                 if delay == crate::HA_OUTBOX_GC_FAST_CONTINUATION_DELAY_SECS {
@@ -314,6 +385,42 @@ impl KeyStore {
                 maximum_batch_size,
                 max_batch_elapsed_ms,
             );
+            let oldest_deletable_age_secs = oldest_deletable_created_at
+                .map(|created_at| now.saturating_sub(created_at).max(0));
+            let elapsed_since_last_attempt_secs = last_attempt_at
+                .map(|attempted_at| now.saturating_sub(attempted_at).max(1));
+            let observed_deleted_rows_per_minute = elapsed_since_last_attempt_secs
+                .map(|elapsed| deleted_rows.saturating_mul(60) as f64 / elapsed as f64)
+                .unwrap_or(persisted_deleted_rows_per_minute);
+            let debt_mode = if recovery_mode {
+                "recovering"
+            } else if foreground_rps > crate::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+                "foreground_pressure"
+            } else if channel_has_more {
+                "draining"
+            } else {
+                "normal"
+            };
+            let slo_state = if recovery_mode {
+                match oldest_deletable_age_secs {
+                    Some(age) if age > retention_secs.saturating_add(60 * 60) => "breached",
+                    Some(_) => "on_track",
+                    None => "clear",
+                }
+            } else if persisted_slo_state == "breached" && recovery_deadline_at.is_some() {
+                "breached"
+            } else {
+                "unknown"
+            };
+            let slo_state_transition = if persisted_slo_state != slo_state {
+                match (persisted_slo_state.as_str(), slo_state) {
+                    (_, "breached") => Some("breached".to_string()),
+                    ("breached", "on_track" | "clear") => Some("recovered".to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             sqlx::query(
                 r#"UPDATE ha_outbox_gc_channel_state
                    SET last_attempt_at = ?,
@@ -330,7 +437,13 @@ impl KeyStore {
                        last_high_watermark = ?,
                        last_ingress_seq_delta = ?,
                        last_net_rows_delta_estimate = ?,
-                       last_continuation_delay_secs = ?
+                       last_continuation_delay_secs = ?,
+                       debt_mode = ?,
+                       oldest_deletable_age_secs = ?,
+                       deleted_rows_per_minute = ?,
+                       recovery_deadline_at = ?,
+                       slo_state = ?,
+                       foreground_rps = ?
                    WHERE channel = ?"#,
             )
             .bind(now)
@@ -349,6 +462,12 @@ impl KeyStore {
             .bind(ingress_seq_delta)
             .bind(net_rows_delta_estimate)
             .bind(channel_continuation_delay_secs)
+            .bind(debt_mode)
+            .bind(oldest_deletable_age_secs)
+            .bind(observed_deleted_rows_per_minute)
+            .bind(recovery_deadline_at)
+            .bind(slo_state)
+            .bind(foreground_rps)
             .bind(channel.as_str())
             .execute(&mut **conn)
             .await?;
@@ -368,6 +487,14 @@ impl KeyStore {
                     deleted_rows,
                     batches,
                     has_more: channel_has_more,
+                    debt_mode: debt_mode.to_string(),
+                    oldest_deletable_age_secs,
+                    deleted_rows_per_minute: observed_deleted_rows_per_minute,
+                    recovery_deadline_at,
+                    slo_state: slo_state.to_string(),
+                    slo_state_transition,
+                    foreground_rps,
+                    observed_at: now,
                 }],
                 wal_checkpoint_busy: false,
                 wal_checkpoint_log_frames: 0,

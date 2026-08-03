@@ -58,6 +58,15 @@ function formatOptionalTimestamp(
   return value == null ? emptyLabel : formatter.format(new Date(value * 1000))
 }
 
+function formatAge(value: number | null, language: Language): string {
+  if (value == null) return language === 'zh' ? '未知' : 'Unknown'
+  if (value < 60) return language === 'zh' ? `${value} 秒` : `${value}s`
+  const minutes = Math.floor(value / 60)
+  if (minutes < 60) return language === 'zh' ? `${minutes} 分` : `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return language === 'zh' ? `${hours} 小时` : `${hours}h`
+}
+
 interface StatusIssue {
   key: string
   title: string
@@ -205,7 +214,7 @@ export default function UpstreamPrivacyStatusModule({
       })
     })
 
-    if (status.pendingResearch > 0) {
+    if (status.pendingResearch != null && status.pendingResearch > 0) {
       issues.push({
         key: 'pendingResearch',
         title: strings.issuePendingResearch,
@@ -252,7 +261,7 @@ export default function UpstreamPrivacyStatusModule({
             ...(status.activeUpstreamMcpSessions > 0
               ? [{ label: sessionBindingSummaryLabel, value: numberFormatter.format(status.activeUpstreamMcpSessions) }]
               : []),
-            ...(status.pendingResearch > 0
+            ...(status.pendingResearch != null && status.pendingResearch > 0
               ? [{ label: strings.counterPendingResearch, value: numberFormatter.format(status.pendingResearch) }]
               : []),
             ...(status.queuedSettlements > 0
@@ -494,7 +503,10 @@ export default function UpstreamPrivacyStatusModule({
               </div>
               <div className="upstream-privacy-counters">
                 <PrivacyStat label={sessionBindingSummaryLabel} value={numberFormatter.format(status.activeUpstreamMcpSessions)} />
-                <PrivacyStat label={strings.counterPendingResearch} value={numberFormatter.format(status.pendingResearch)} />
+                <PrivacyStat
+                  label={strings.counterPendingResearch}
+                  value={status.pendingResearch == null ? strings.statusMissing : numberFormatter.format(status.pendingResearch)}
+                />
                 <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
                 <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
                 <PrivacyStat
@@ -512,6 +524,22 @@ export default function UpstreamPrivacyStatusModule({
                 <PrivacyStat
                   label={language === 'zh' ? '预算状态' : 'Budget status'}
                   value={status.reconciliationLastBudgetExhausted ? (language === 'zh' ? '已耗尽' : 'Exhausted') : (language === 'zh' ? '正常' : 'Within budget')}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? '候选观测覆盖' : 'Candidate observation'}
+                  value={status.reconciliationObservation.coverage === 'unknown'
+                    ? (language === 'zh' ? '未知' : 'Unknown')
+                    : `${status.reconciliationObservation.hasEligible ? (language === 'zh' ? '有候选' : 'Eligible') : (language === 'zh' ? '无候选' : 'None')} · ${formatAge(status.reconciliationObservation.oldestCandidateAgeSecs, language)}`}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? '本地退避' : 'Local backoff'}
+                  value={status.reconciliationLocalBackoff.level > 0
+                    ? `${language === 'zh' ? '级别' : 'Level'} ${status.reconciliationLocalBackoff.level} · ${language === 'zh' ? '压力轮' : 'streak'} ${status.reconciliationLocalBackoff.pressureStreak}`
+                    : (language === 'zh' ? '无' : 'None')}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? '下次本地尝试' : 'Next local attempt'}
+                  value={formatOptionalTimestamp(status.reconciliationLocalBackoff.availableAt, timestampFormatter, strings.statusMissing)}
                 />
                 <PrivacyStat
                   label={diagnosticsLabels.lastShadowAdjustment}
