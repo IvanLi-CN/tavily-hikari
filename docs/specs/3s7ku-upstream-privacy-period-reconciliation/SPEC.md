@@ -188,20 +188,20 @@
 ## Visual Evidence
 
 PR: include
-![Reconciliation local backoff desktop](./assets/current/reconciliation-global-backoff-desktop.png)
+![Reconciliation unknown observation](./assets/current/reconciliation-observation-unknown.png)
 
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
-- story_id_or_title: `Admin/Modules/SystemStatusModule/GlobalBackoff`
-- scenario: `2afe2f36` local reconciliation backoff
+- story_id_or_title: `Admin/Modules/SystemStatusModule/UnknownObservation`
+- scenario: `771c4a6f` unknown reconciliation observation
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from `2afe2f36`. The state gallery exposes bounded
-  observation coverage, an eligible candidate, local backoff level 1, pressure round 3, and the
-  next local attempt without per-key warning noise.
+- evidence_note: Captured from `771c4a6f`. The state presents a nullable settlement queue as
+  `unconfigured` and candidate coverage as `unknown`; it never fabricates zero from a missing
+  observation.
 - submission_gate: `approved`
 
 ## Related PRs
