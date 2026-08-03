@@ -191,34 +191,17 @@ PR: include
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
 - story_id_or_title: `Admin/HaNodeDetailPanel/Recovering`
-- scenario: `2afe2f36` recovery state with all three channels
+- scenario: `36386e7a` recovery state with all three channels
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from `2afe2f36` after the GC recovery fields were added.
+- evidence_note: Captured from `36386e7a` after the recovery and reconciliation changes were
+  finalized.
   The panel shows ACK/high-watermark/lag, retention, GC state, oldest age, adaptive batch,
   progress, defer reason, retry time, debt mode, delete rate, foreground RPS, SLO, deadline,
   and observed time for control, billing, and runtime.
-- submission_gate: `approved`
-
-PR: include
-![HA channel GC recovery mobile](./assets/current/ha-channel-gc-recovering-mobile.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- story_id_or_title: `Admin/HaNodeDetailPanel/Mobile`
-- scenario: `2afe2f36` recovery state at narrow viewport
-- requested_viewport: `393x852`
-- viewport_strategy: `browser-resize-fallback`
-- viewport_fallback_reason: the direct iframe was used because the Storybook viewport parameter was
-  not applied by the current docs route
-- capture_scope: `browser-viewport`
-- margin_policy: `trim_only`
-- evidence_surface: `page`
-- evidence_note: The mobile rendering keeps all three channel health sections readable without
-  hiding ACK or GC recovery diagnostics.
 - submission_gate: `approved`
 
 ## Acceptance
