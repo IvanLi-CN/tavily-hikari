@@ -332,6 +332,7 @@ export const UnknownObservation: Story = {
   args: {
     status: {
       ...activeStatus,
+      queuedSettlements: null,
       reconciliationObservation: {
         observedAt: null,
         coverage: 'unknown',
