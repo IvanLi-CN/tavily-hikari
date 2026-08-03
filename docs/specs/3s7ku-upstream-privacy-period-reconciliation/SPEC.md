@@ -193,13 +193,13 @@ PR: include
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
 - story_id_or_title: `Admin/Modules/SystemStatusModule/UnknownObservation`
-- scenario: `771c4a6f` unknown reconciliation observation
+- scenario: `d88925bb` unknown reconciliation observation
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from `771c4a6f`. The state presents a nullable settlement queue as
+- evidence_note: Captured from `d88925bb`. The state presents a nullable settlement queue as
   `unconfigured` and candidate coverage as `unknown`; it never fabricates zero from a missing
   observation.
 - submission_gate: `approved`

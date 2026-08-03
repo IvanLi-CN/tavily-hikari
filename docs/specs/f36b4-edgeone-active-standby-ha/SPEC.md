@@ -191,13 +191,13 @@ PR: include
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
 - story_id_or_title: `Admin/HaNodeDetailPanel/Recovering`
-- scenario: `36386e7a` recovery state with all three channels
+- scenario: `d88925bb` recovery state with all three channels
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from `36386e7a` after the recovery and reconciliation changes were
+- evidence_note: Captured from `d88925bb` after the recovery and reconciliation changes were
   finalized.
   The panel shows ACK/high-watermark/lag, retention, GC state, oldest age, adaptive batch,
   progress, defer reason, retry time, debt mode, delete rate, foreground RPS, SLO, deadline,
