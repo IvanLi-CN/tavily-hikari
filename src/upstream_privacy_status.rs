@@ -88,6 +88,8 @@ pub struct UpstreamPrivacyStatus {
     /// observed a bounded estimate and must not be rendered as zero.
     pub queued_settlements: Option<i64>,
     pub degraded_settlements: i64,
+    /// `true` when the bounded degraded settlement observation has more rows.
+    pub degraded_settlements_capped: bool,
     pub last_reconciliation_run_at: Option<i64>,
     pub last_shadow_adjustment_at: Option<i64>,
     pub last_reconciliation_enqueue_error_at: Option<i64>,

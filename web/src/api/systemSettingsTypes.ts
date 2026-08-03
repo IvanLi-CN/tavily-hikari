@@ -114,6 +114,7 @@ export interface UpstreamPrivacyStatus {
   pendingResearch: number | null
   queuedSettlements: number | null
   degradedSettlements: number
+  degradedSettlementsCapped: boolean
   lastReconciliationRunAt: number | null
   lastShadowAdjustmentAt: number | null
   lastReconciliationEnqueueErrorAt: number | null

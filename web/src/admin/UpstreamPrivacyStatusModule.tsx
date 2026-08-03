@@ -245,7 +245,7 @@ export default function UpstreamPrivacyStatusModule({
       issues.push({
         key: 'degradedSettlements',
         title: strings.issueDegradedSettlements,
-        detail: numberFormatter.format(status.degradedSettlements),
+        detail: `${numberFormatter.format(status.degradedSettlements)}${status.degradedSettlementsCapped ? '+' : ''}`,
         tone: 'error',
       })
     }
@@ -268,7 +268,7 @@ export default function UpstreamPrivacyStatusModule({
               ? [{ label: strings.counterQueuedSettlements, value: numberFormatter.format(status.queuedSettlements) }]
               : []),
             ...(status.degradedSettlements > 0
-              ? [{ label: strings.counterDegradedSettlements, value: numberFormatter.format(status.degradedSettlements) }]
+              ? [{ label: strings.counterDegradedSettlements, value: `${numberFormatter.format(status.degradedSettlements)}${status.degradedSettlementsCapped ? '+' : ''}` }]
               : []),
           ],
     [numberFormatter, sessionBindingSummaryLabel, status, strings],
@@ -511,7 +511,7 @@ export default function UpstreamPrivacyStatusModule({
                   label={strings.counterQueuedSettlements}
                   value={status.queuedSettlements == null ? strings.statusMissing : numberFormatter.format(status.queuedSettlements)}
                 />
-                <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
+                <PrivacyStat label={strings.counterDegradedSettlements} value={`${numberFormatter.format(status.degradedSettlements)}${status.degradedSettlementsCapped ? '+' : ''}`} />
                 <PrivacyStat
                   label={diagnosticsLabels.lastRun}
                   value={formatOptionalTimestamp(status.lastReconciliationRunAt, timestampFormatter, strings.statusMissing)}

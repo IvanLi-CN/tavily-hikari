@@ -1748,6 +1748,35 @@ async fn reconciliation_observation_reports_due_window_without_queue_count() {
             .is_some_and(|age| age >= 900)
     );
 
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_settlements (
+            settlement_key, token_id, period_code, project_id, billing_subject,
+            period_start, period_end, status, next_attempt_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rate_limited', ?, ?, ?)
+        "#,
+    )
+    .bind("v1:token-queued:2026-07-15/S1")
+    .bind("token-queued")
+    .bind("2026-07-15/S1")
+    .bind("project-queued")
+    .bind("token:token-queued")
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now + 300)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("delay queued settlement");
+    let delayed_observation = proxy
+        .key_store
+        .upstream_reconciliation_observation()
+        .await
+        .expect("read delayed reconciliation observation");
+    assert!(!delayed_observation.has_eligible);
+    assert!(delayed_observation.oldest_candidate_age_secs.is_none());
+
     for suffix in ["second", "third"] {
         sqlx::query(
             r#"
@@ -1782,7 +1811,7 @@ async fn reconciliation_observation_reports_due_window_without_queue_count() {
         .await
         .expect("read observed bounded queue estimate");
     assert_eq!(observed.coverage, "bounded");
-    assert_eq!(observed.queue_estimate, Some(3));
+    assert_eq!(observed.queue_estimate, Some(2));
 
     let _ = std::fs::remove_file(db_path);
 }

@@ -75,6 +75,12 @@ type DemoHaState = {
         lastDeferReason: string | null
         nextRetryAt: number | null
         batchSize: number | null
+        gcDebtMode: string
+        gcObservedAt: number | null
+        gcDeletedRowsPerMinute: number
+        gcRecoveryDeadlineAt: number | null
+        gcSloState: string
+        gcForegroundRps: number
       }>
     }>
     plannedCutoverEligible: boolean
@@ -152,9 +158,9 @@ export function createDemoHaStatus(nowSeconds: (offset?: number) => number): Dem
         roleHint: 'standby_candidate',
         plannedCutoverEligible: true,
         channelHealth: [
-          { channel: 'control', ackedSeq: 812, highWatermark: 812, ackLag: 0, cursorState: 'healthy', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 640, lastProgressAt: nowSeconds(-30), lastDeferReason: null, nextRetryAt: null, batchSize: 250 },
-          { channel: 'billing', ackedSeq: 490, highWatermark: 512, ackLag: 22, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'draining', oldestAgeSecs: 93_200, lastProgressAt: nowSeconds(-4), lastDeferReason: null, nextRetryAt: nowSeconds(30), batchSize: 125 },
-          { channel: 'runtime', ackedSeq: null, highWatermark: 900, ackLag: null, cursorState: 'expired_backlog', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: true, gcState: 'deferred', oldestAgeSecs: 192_000, lastProgressAt: nowSeconds(-220), lastDeferReason: 'foreground_activity', nextRetryAt: nowSeconds(30), batchSize: 62 },
+          { channel: 'control', ackedSeq: 812, highWatermark: 812, ackLag: 0, cursorState: 'healthy', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 640, lastProgressAt: nowSeconds(-30), lastDeferReason: null, nextRetryAt: null, batchSize: 250, gcDebtMode: 'normal', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 0, gcRecoveryDeadlineAt: null, gcSloState: 'clear', gcForegroundRps: 2 },
+          { channel: 'billing', ackedSeq: 490, highWatermark: 512, ackLag: 22, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'draining', oldestAgeSecs: 93_200, lastProgressAt: nowSeconds(-4), lastDeferReason: null, nextRetryAt: nowSeconds(30), batchSize: 125, gcDebtMode: 'recovering', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 132, gcRecoveryDeadlineAt: nowSeconds(86_400), gcSloState: 'on_track', gcForegroundRps: 1 },
+          { channel: 'runtime', ackedSeq: null, highWatermark: 900, ackLag: null, cursorState: 'expired_backlog', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: true, gcState: 'deferred', oldestAgeSecs: 192_000, lastProgressAt: nowSeconds(-220), lastDeferReason: 'foreground_activity', nextRetryAt: nowSeconds(30), batchSize: 62, gcDebtMode: 'foreground_pressure', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 8, gcRecoveryDeadlineAt: null, gcSloState: 'breached', gcForegroundRps: 18 },
         ],
       },
       {
@@ -173,9 +179,9 @@ export function createDemoHaStatus(nowSeconds: (offset?: number) => number): Dem
         roleHint: 'observer',
         plannedCutoverEligible: false,
         channelHealth: [
-          { channel: 'control', ackedSeq: 810, highWatermark: 812, ackLag: 2, cursorState: 'catching_up', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 720, lastProgressAt: nowSeconds(-40), lastDeferReason: null, nextRetryAt: null, batchSize: 250 },
-          { channel: 'billing', ackedSeq: null, highWatermark: 512, ackLag: null, cursorState: 'baseline_required', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'deferred', oldestAgeSecs: 99_000, lastProgressAt: nowSeconds(-400), lastDeferReason: 'sqlite_busy', nextRetryAt: nowSeconds(30), batchSize: 62 },
-          { channel: 'runtime', ackedSeq: 875, highWatermark: 900, ackLag: 25, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'stalled', oldestAgeSecs: 210_000, lastProgressAt: nowSeconds(-900), lastDeferReason: 'consecutive_no_progress', nextRetryAt: nowSeconds(30), batchSize: 25 },
+          { channel: 'control', ackedSeq: 810, highWatermark: 812, ackLag: 2, cursorState: 'catching_up', retentionSecs: 72 * 60 * 60, expiredBacklog: false, gcState: 'idle', oldestAgeSecs: 720, lastProgressAt: nowSeconds(-40), lastDeferReason: null, nextRetryAt: null, batchSize: 250, gcDebtMode: 'normal', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 0, gcRecoveryDeadlineAt: null, gcSloState: 'clear', gcForegroundRps: 2 },
+          { channel: 'billing', ackedSeq: null, highWatermark: 512, ackLag: null, cursorState: 'baseline_required', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'deferred', oldestAgeSecs: 99_000, lastProgressAt: nowSeconds(-400), lastDeferReason: 'sqlite_busy', nextRetryAt: nowSeconds(30), batchSize: 62, gcDebtMode: 'deferred', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 0, gcRecoveryDeadlineAt: null, gcSloState: 'unknown', gcForegroundRps: 0 },
+          { channel: 'runtime', ackedSeq: 875, highWatermark: 900, ackLag: 25, cursorState: 'catching_up', retentionSecs: 14 * 24 * 60 * 60, expiredBacklog: false, gcState: 'stalled', oldestAgeSecs: 210_000, lastProgressAt: nowSeconds(-900), lastDeferReason: 'consecutive_no_progress', nextRetryAt: nowSeconds(30), batchSize: 25, gcDebtMode: 'recovering', gcObservedAt: nowSeconds(-3), gcDeletedRowsPerMinute: 2, gcRecoveryDeadlineAt: nowSeconds(86_400), gcSloState: 'breached', gcForegroundRps: 1 },
         ],
       },
       {

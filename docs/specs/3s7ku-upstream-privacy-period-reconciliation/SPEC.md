@@ -99,6 +99,8 @@
   退避才产生状态跃迁日志。
 - 管理员状态同时返回 `reconciliationObservation` 与 `reconciliationLocalBackoff`；未观测时
   coverage 为 `unknown`，`queueEstimate=null`，页面显示“未知”而不是“0”。
+- 历史 degraded 相位由独立索引化 `EXISTS` 决定；管理员 `degradedSettlements` 为最多 64 条的
+  有界观测，超过时以 `degradedSettlementsCapped=true` 和 `64+` 明示，不伪装成精确总数。
 
 - 请求入口固定 period code；实际上游后记录所用 token、key、匿名 project id、业务 credits 与 Research 终态。
 - 每个 token/period 汇总实际使用过的 key；以该匿名 project id 调用每把 key 的 `/usage`，只采用 `key.usage` 并跨 key 求和。

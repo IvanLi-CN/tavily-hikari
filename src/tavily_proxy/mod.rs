@@ -1740,6 +1740,9 @@ impl UserBusinessCallCounts {
 impl UserBusinessCallSeriesData {
     fn count_between(&self, start: i64, end: i64) -> UserBusinessCallCounts {
         let mut counts = UserBusinessCallCounts::default();
+        // The exact one-hour tail in `raw_events` covers partially overlapping
+        // edge buckets. Aggregated five-minute buckets are only safe to add
+        // when wholly contained, otherwise they would include pre-window data.
         for (bucket_start, bucket_counts) in self.buckets.range(start..end) {
             let bucket_end = bucket_start.saturating_add(SECS_PER_FIVE_MINUTES);
             if *bucket_start >= start && bucket_end <= end {

@@ -190,7 +190,10 @@ impl KeyStore {
                 LEFT JOIN upstream_reconciliation_settlements s
                   ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
                 WHERE u.period_end + 600 <= ?
-                  AND (s.settlement_key IS NULL OR s.status IN ('pending', 'waiting', 'rate_limited'))
+                  AND (s.settlement_key IS NULL OR (
+                      s.status IN ('pending', 'waiting', 'rate_limited')
+                      AND COALESCE(s.next_attempt_at, 0) <= ?
+                  ))
                   AND (
                       u.period_end + 86400 <= ?
                       OR NOT EXISTS (
@@ -207,6 +210,7 @@ impl KeyStore {
         )
         .bind(now)
         .bind(now)
+        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         let oldest_period_end: Option<i64> = sqlx::query_scalar(
@@ -216,7 +220,10 @@ impl KeyStore {
             LEFT JOIN upstream_reconciliation_settlements s
               ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
             WHERE u.period_end + 600 <= ?
-              AND (s.settlement_key IS NULL OR s.status IN ('pending', 'waiting', 'rate_limited'))
+              AND (s.settlement_key IS NULL OR (
+                  s.status IN ('pending', 'waiting', 'rate_limited')
+                  AND COALESCE(s.next_attempt_at, 0) <= ?
+              ))
               AND (
                   u.period_end + 86400 <= ?
                   OR NOT EXISTS (
@@ -233,6 +240,7 @@ impl KeyStore {
         )
         .bind(now)
         .bind(now)
+        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
         let queue_estimate = if observed_at.is_some() {
@@ -246,7 +254,10 @@ impl KeyStore {
                         LEFT JOIN upstream_reconciliation_settlements s
                           ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
                         WHERE u.period_end + 600 <= ?
-                          AND (s.settlement_key IS NULL OR s.status IN ('pending', 'waiting', 'rate_limited'))
+                          AND (s.settlement_key IS NULL OR (
+                              s.status IN ('pending', 'waiting', 'rate_limited')
+                              AND COALESCE(s.next_attempt_at, 0) <= ?
+                          ))
                           AND (
                               u.period_end + 86400 <= ?
                               OR NOT EXISTS (
@@ -263,6 +274,7 @@ impl KeyStore {
                     "#,
                     RECONCILIATION_QUEUE_ESTIMATE_LIMIT
                 ))
+                .bind(now)
                 .bind(now)
                 .bind(now)
                 .fetch_one(&self.pool)
@@ -287,14 +299,31 @@ impl KeyStore {
 
     pub(crate) async fn upstream_reconciliation_degraded_estimate(
         &self,
-    ) -> Result<i64, ProxyError> {
-        sqlx::query_scalar(&format!(
+    ) -> Result<(i64, bool), ProxyError> {
+        let limit = RECONCILIATION_QUEUE_ESTIMATE_LIMIT.saturating_add(1);
+        let observed: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM (\
              SELECT 1 FROM upstream_reconciliation_settlements \
              WHERE status IN ('degraded', 'shadow_degraded') \
-             LIMIT {RECONCILIATION_QUEUE_ESTIMATE_LIMIT}\
+             LIMIT {limit}\
              )"
         ))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::Database)?;
+        Ok((
+            observed.min(RECONCILIATION_QUEUE_ESTIMATE_LIMIT),
+            observed > RECONCILIATION_QUEUE_ESTIMATE_LIMIT,
+        ))
+    }
+
+    pub(crate) async fn upstream_reconciliation_degraded_exists(
+        &self,
+    ) -> Result<bool, ProxyError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM upstream_reconciliation_settlements \
+             WHERE status IN ('degraded', 'shadow_degraded') LIMIT 1)",
+        )
         .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
@@ -817,13 +846,7 @@ impl KeyStore {
                         PARTITION BY scheduling_key_id
                         ORDER BY period_end DESC
                     ) AS key_slot
-                FROM candidate_windows
-                WHERE pending_research = 0
-                   OR period_end + 86400 <= "#,
-                )
-                .push_bind(now)
-                .push(
-                    r#"
+                FROM candidate_page
             )
             SELECT
                 token_id,

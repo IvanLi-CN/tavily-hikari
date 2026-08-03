@@ -96,9 +96,13 @@ impl TavilyProxy {
             .await?;
         let pending_research = Some(daily_reconciliation_progress.research_pending);
         let queued_settlements = reconciliation_observation.queue_estimate;
-        let degraded_settlements = self
+        let (degraded_settlements, degraded_settlements_capped) = self
             .key_store
             .upstream_reconciliation_degraded_estimate()
+            .await?;
+        let has_degraded_settlements = self
+            .key_store
+            .upstream_reconciliation_degraded_exists()
             .await?;
         let (
             last_reconciliation_run_at,
@@ -141,7 +145,7 @@ impl TavilyProxy {
         } else {
             None
         };
-        let phase = if degraded_settlements > 0 {
+        let phase = if has_degraded_settlements {
             "degraded"
         } else if !shadow_ready {
             "configured"
@@ -188,6 +192,7 @@ impl TavilyProxy {
             pending_research,
             queued_settlements,
             degraded_settlements,
+            degraded_settlements_capped,
             last_reconciliation_run_at,
             last_shadow_adjustment_at,
             last_reconciliation_enqueue_error_at,

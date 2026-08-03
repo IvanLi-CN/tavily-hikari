@@ -1613,6 +1613,7 @@ describe('admin user tag api helpers', () => {
             pendingResearch: 1,
             queuedSettlements: 2,
             degradedSettlements: 0,
+            degradedSettlementsCapped: false,
             lastReconciliationRunAt: 1_783_958_250,
             lastShadowAdjustmentAt: 1_783_958_100,
             lastReconciliationEnqueueErrorAt: 1_783_957_900,

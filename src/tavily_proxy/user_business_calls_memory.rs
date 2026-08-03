@@ -636,6 +636,26 @@ mod memory_window_regression_tests {
         );
     }
 
+    #[test]
+    fn series_counts_partial_edge_buckets_from_the_exact_tail() {
+        let mut bucket_counts = UserBusinessCallCounts::default();
+        bucket_counts.record(UserBusinessCallOutcome::Failure);
+        let mut buckets = BTreeMap::new();
+        buckets.insert(300, bucket_counts);
+        let series = UserBusinessCallSeriesData {
+            raw_events: vec![UserBusinessCallEvent {
+                request_log_id: Some(1),
+                created_at: 250,
+                outcome: UserBusinessCallOutcome::Success,
+            }],
+            buckets,
+        };
+
+        let counts = series.count_between(150, 600);
+        assert_eq!(counts.success_count, 1);
+        assert_eq!(counts.failure_count, 1);
+    }
+
     #[tokio::test]
     async fn aborted_staged_backfill_preserves_serving_snapshot() {
         let backend = MemoryUserBusinessCalls1hBackend::default();
