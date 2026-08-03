@@ -304,6 +304,7 @@
         "tests::ha_outbox_and_compaction::ha_events_cursor_",
         "tests::ha_outbox_and_compaction::ha_peer_health_",
         "tests::ha_outbox_and_compaction::online_ha_gc_",
+        "tests::ha_outbox_and_compaction::online_gc_",
         "tests::ha_outbox_and_compaction::db_",
         "tests::account_quota_and_billing::monthly_",
         "tests::usage_series_and_backfills::monthly_",
@@ -313,6 +314,7 @@
         "tests::maintenance_queue_performance::",
         "tests::observability_and_lifecycle::published_",
         "tests::upstream_reconciliation::",
+        "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
         "upstream_privacy::tests::"
       ]
     },
