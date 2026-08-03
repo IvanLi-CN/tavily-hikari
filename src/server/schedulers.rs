@@ -1338,22 +1338,21 @@ async fn run_ha_outbox_gc_claimed_job(
                     report.continuation_delay_secs,
                     foreground_rps_after_slice,
                 );
+                let defer_reason = if foreground_rps_after_slice > HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+                    "foreground_pressure"
+                } else if continuation_delay_secs == HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS {
+                    "legacy_scan"
+                } else if continuation_delay_secs < HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS {
+                    "fast_progress"
+                } else {
+                    "slice_budget_exhausted"
+                };
                 tracing::debug!(
                     component = "ha_outbox_gc",
                     event = "deferred",
                     job_id,
                     claim_generation,
-                    defer_reason = if continuation_delay_secs
-                        == HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS
-                    {
-                        "legacy_scan"
-                    } else if continuation_delay_secs
-                        < HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS
-                    {
-                        "fast_progress"
-                    } else {
-                        "slice_budget_exhausted"
-                    },
+                    defer_reason,
                     deleted_rows = report.deleted_rows,
                     active_elapsed_ms = report.active_elapsed_ms as u64,
                     max_batch_elapsed_ms = report.max_batch_elapsed_ms as u64,
@@ -1365,7 +1364,10 @@ async fn run_ha_outbox_gc_claimed_job(
                     &state,
                     job_id,
                     claim_generation,
-                    format_ha_outbox_gc_report_message(&report, 1),
+                    format!(
+                        "deferred={defer_reason} {}",
+                        format_ha_outbox_gc_report_message(&report, 1)
+                    ),
                     continuation_delay_secs,
                 )
                 .await;

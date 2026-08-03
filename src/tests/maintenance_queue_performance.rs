@@ -63,7 +63,7 @@ async fn ha_gc_continuation_finishes_job_and_requeues_atomically() {
             "ha_outbox_gc",
             None,
             1,
-            Some("deferred=has_more"),
+            Some("deferred=foreground_pressure"),
             available_at,
         )
         .await
@@ -86,13 +86,30 @@ async fn ha_gc_continuation_finishes_job_and_requeues_atomically() {
         .expect("continuation exists");
     assert_eq!(queued.status, "queued");
     assert_eq!(queued.trigger_source, "auto");
-    let queued_available_at: i64 =
-        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+    let (queued_at, queued_available_at): (i64, i64) =
+        sqlx::query_as("SELECT queued_at, available_at FROM scheduled_jobs WHERE id = ?")
             .bind(continuation.job_id)
             .fetch_one(&proxy.key_store.pool)
             .await
             .expect("read continuation availability");
     assert_eq!(queued_available_at, available_at);
+    let (next_retry_at, last_defer_reason, last_continuation_delay_secs): (
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+    ) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason, last_continuation_delay_secs \
+         FROM ha_outbox_gc_channel_state WHERE channel = 'control'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read persisted GC continuation diagnostics");
+    assert_eq!(next_retry_at, Some(available_at));
+    assert_eq!(last_defer_reason.as_deref(), Some("foreground_pressure"));
+    assert_eq!(
+        last_continuation_delay_secs,
+        Some(queued_available_at.saturating_sub(queued_at))
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
