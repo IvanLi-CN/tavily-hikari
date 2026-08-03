@@ -187,42 +187,22 @@
 
 ## Visual Evidence
 
-PR: pending-owner-approval
-
+PR: include
 ![Reconciliation local backoff desktop](./assets/current/reconciliation-global-backoff-desktop.png)
 
-- source_type: `storybook_docs`
+- source_type: `storybook_canvas`
 - target_program: `mock-only`
-- docs_entry_or_title: `Admin/Modules/SystemStatusModule / Docs`
 - story_id_or_title: `Admin/Modules/SystemStatusModule/GlobalBackoff`
-- scenario: current-SHA local reconciliation backoff
+- scenario: `2afe2f36` local reconciliation backoff
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from the current worktree SHA. The state gallery exposes bounded
+- evidence_note: Captured from `2afe2f36`. The state gallery exposes bounded
   observation coverage, an eligible candidate, local backoff level 1, pressure round 3, and the
   next local attempt without per-key warning noise.
-- submission_gate: `pending-owner-approval`
-
-![Reconciliation local backoff mobile](./assets/current/reconciliation-global-backoff-mobile.png)
-
-- source_type: `storybook_docs`
-- target_program: `mock-only`
-- docs_entry_or_title: `Admin/Modules/SystemStatusModule / Docs`
-- story_id_or_title: `Admin/Modules/SystemStatusModule/GlobalBackoff`
-- scenario: current-SHA local reconciliation backoff at narrow viewport
-- requested_viewport: `393x852`
-- viewport_strategy: `browser-resize-fallback`
-- viewport_fallback_reason: direct iframe viewport was required because the Storybook viewport
-  parameter was not applied by the current docs route
-- capture_scope: `browser-viewport`
-- margin_policy: `trim_only`
-- evidence_surface: `page`
-- evidence_note: The narrow layout keeps the observation, backoff, next-attempt, and aggregate
-  retry diagnostics visible in a single scrollable state.
-- submission_gate: `pending-owner-approval`
+- submission_gate: `approved`
 
 ## Related PRs
 

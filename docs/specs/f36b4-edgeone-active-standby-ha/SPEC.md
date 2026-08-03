@@ -185,33 +185,31 @@ the next retry to 30 seconds; no channel may be hidden by a clean-state exact co
 
 ## Visual Evidence
 
-PR: pending-owner-approval
-
+PR: include
 ![HA channel GC recovery desktop](./assets/current/ha-channel-gc-recovering-desktop.png)
 
-- source_type: `storybook_docs`
+- source_type: `storybook_canvas`
 - target_program: `mock-only`
-- docs_entry_or_title: `Admin/HaNodeDetailPanel / Docs`
 - story_id_or_title: `Admin/HaNodeDetailPanel/Recovering`
-- scenario: current-SHA recovery state with all three channels
+- scenario: `2afe2f36` recovery state with all three channels
 - requested_viewport: `desktop default`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from the current worktree SHA after the GC recovery fields were added.
+- evidence_note: Captured from `2afe2f36` after the GC recovery fields were added.
   The panel shows ACK/high-watermark/lag, retention, GC state, oldest age, adaptive batch,
   progress, defer reason, retry time, debt mode, delete rate, foreground RPS, SLO, deadline,
   and observed time for control, billing, and runtime.
-- submission_gate: `pending-owner-approval`
+- submission_gate: `approved`
 
+PR: include
 ![HA channel GC recovery mobile](./assets/current/ha-channel-gc-recovering-mobile.png)
 
-- source_type: `storybook_docs`
+- source_type: `storybook_canvas`
 - target_program: `mock-only`
-- docs_entry_or_title: `Admin/HaNodeDetailPanel / Docs`
 - story_id_or_title: `Admin/HaNodeDetailPanel/Mobile`
-- scenario: current-SHA recovery state at narrow viewport
+- scenario: `2afe2f36` recovery state at narrow viewport
 - requested_viewport: `393x852`
 - viewport_strategy: `browser-resize-fallback`
 - viewport_fallback_reason: the direct iframe was used because the Storybook viewport parameter was
@@ -221,7 +219,7 @@ PR: pending-owner-approval
 - evidence_surface: `page`
 - evidence_note: The mobile rendering keeps all three channel health sections readable without
   hiding ACK or GC recovery diagnostics.
-- submission_gate: `pending-owner-approval`
+- submission_gate: `approved`
 
 ## Acceptance
 
