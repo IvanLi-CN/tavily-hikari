@@ -1180,7 +1180,7 @@ async fn next_upstream_reconciliation_candidates_skip_pending_recent_rows_before
         .await
         .expect("create upstream key");
 
-    for index in 0..12 {
+    for index in 0..128 {
         let period_end = now.saturating_sub(((index + 1) as i64) * 600);
         let period_start = period_end.saturating_sub(300);
         let period_code = format!("2026-07-15/S2-pending-{index:02}");

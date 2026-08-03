@@ -84,6 +84,7 @@ struct MemoryUserBusinessCalls1hState {
 #[derive(Clone, Debug)]
 struct MemoryUserBusinessCalls1hBackfill {
     state: MemoryUserBusinessCalls1hState,
+    live_buckets: HashMap<String, BTreeMap<i64, UserBusinessCallCounts>>,
     upper_bound_request_log_id: i64,
 }
 

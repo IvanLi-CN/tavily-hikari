@@ -641,13 +641,13 @@ pub fn ha_outbox_gc_continuation_delay_secs_for_pressure(
     if !has_more {
         return None;
     }
-    if recovery_mode && foreground_rps <= HA_OUTBOX_GC_LOW_PRESSURE_RPS {
-        return Some(HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS);
-    }
     if foreground_rps > HA_OUTBOX_GC_LOW_PRESSURE_RPS
         || slowest_batch_elapsed_ms > HA_OUTBOX_GC_ACTIVE_BUDGET_MS
     {
         return Some(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS);
+    }
+    if recovery_mode {
+        return Some(HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS);
     }
     Some(HA_OUTBOX_GC_FAST_CONTINUATION_DELAY_SECS)
 }

@@ -18,6 +18,7 @@ impl MemoryUserBusinessCalls1hBackend {
         let mut backfill = self.backfill.lock().await;
         *backfill = Some(MemoryUserBusinessCalls1hBackfill {
             state: MemoryUserBusinessCalls1hState::default(),
+            live_buckets: HashMap::new(),
             upper_bound_request_log_id,
         });
     }
@@ -77,6 +78,12 @@ impl MemoryUserBusinessCalls1hBackend {
                 }
             }
         }
+        for (user_id, buckets) in &backfill.live_buckets {
+            let target = backfill.state.buckets.entry(user_id.clone()).or_default();
+            for (bucket_start, counts) in buckets {
+                target.entry(*bucket_start).or_default().add(counts);
+            }
+        }
         Self::maybe_gc(
             &mut backfill.state,
             now_ts,
@@ -121,8 +128,11 @@ impl MemoryUserBusinessCalls1hBackend {
             retention_secs,
             UserBusinessCalls1hWindow::RESERVATION_TTL_SECS,
         );
-        if event.created_at <= now_ts.saturating_sub(UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS)
-        {
+        let event_created_at = event.created_at;
+        let aggregate_into_bucket = event_created_at
+            <= now_ts.saturating_sub(UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS);
+        let event_outcome = event.outcome;
+        if aggregate_into_bucket {
             Self::aggregate_event(&mut state, user_id, event.created_at, event.outcome);
         } else {
             let queue = state.entries.entry(user_id.to_string()).or_default();
@@ -143,6 +153,20 @@ impl MemoryUserBusinessCalls1hBackend {
         }
         if state.buckets.get(user_id).is_some_and(BTreeMap::is_empty) {
             state.buckets.remove(user_id);
+        }
+        if aggregate_into_bucket {
+            let mut backfill = self.backfill.lock().await;
+            if let Some(backfill) = backfill.as_mut() {
+                let bucket_start =
+                    event_created_at - event_created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+                backfill
+                    .live_buckets
+                    .entry(user_id.to_string())
+                    .or_default()
+                    .entry(bucket_start)
+                    .or_default()
+                    .record(event_outcome);
+            }
         }
     }
 
@@ -651,5 +675,42 @@ mod memory_window_regression_tests {
             Some(1)
         );
         assert!(!state.entries.contains_key("staged-user"));
+    }
+
+    #[tokio::test]
+    async fn backfill_preserves_live_bucketed_events() {
+        let backend = MemoryUserBusinessCalls1hBackend::default();
+        let now = 1_750_000_000;
+        backend
+            .begin_backfill(100, now, UserBusinessCalls1hWindow::RETENTION_SECS)
+            .await;
+        backend
+            .record_event(
+                "live-user",
+                UserBusinessCallEvent {
+                    request_log_id: Some(101),
+                    created_at: now - UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS - 1,
+                    outcome: UserBusinessCallOutcome::Success,
+                },
+                now,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+        backend
+            .finish_backfill(now, UserBusinessCalls1hWindow::RETENTION_SECS)
+            .await;
+
+        let state = backend.state.lock().await;
+        let total = state
+            .buckets
+            .get("live-user")
+            .into_iter()
+            .flat_map(|buckets| buckets.values())
+            .map(UserBusinessCallCounts::total_count)
+            .sum::<i64>();
+        assert_eq!(
+            total, 1,
+            "the backfill swap must retain live bucketed events"
+        );
     }
 }

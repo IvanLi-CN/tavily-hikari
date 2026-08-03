@@ -82,10 +82,6 @@ impl TavilyProxy {
             .key_store
             .upstream_reconciliation_observation()
             .await?;
-        let pending_research = reconciliation_observation.queue_estimate;
-        let queued_settlements = reconciliation_observation
-            .queue_estimate
-            .unwrap_or_else(|| i64::from(reconciliation_observation.has_eligible));
         let retry_buckets = self
             .key_store
             .upstream_reconciliation_retry_buckets()
@@ -98,15 +94,12 @@ impl TavilyProxy {
             .key_store
             .daily_reconciliation_progress()
             .await?;
-        let has_degraded_settlement = self
+        let pending_research = Some(daily_reconciliation_progress.research_pending);
+        let queued_settlements = reconciliation_observation.queue_estimate;
+        let degraded_settlements = self
             .key_store
-            .upstream_reconciliation_degraded_exists()
+            .upstream_reconciliation_degraded_estimate()
             .await?;
-        // Reuse the already-bounded current-day coverage result instead of
-        // restoring the old global degraded-settlement COUNT(*) query. The
-        // separate existence probe keeps historical degraded state visible in
-        // the phase without turning the status path into a full count query.
-        let degraded_settlements = daily_reconciliation_progress.degraded_periods;
         let (
             last_reconciliation_run_at,
             last_shadow_adjustment_at,
@@ -148,7 +141,7 @@ impl TavilyProxy {
         } else {
             None
         };
-        let phase = if has_degraded_settlement {
+        let phase = if degraded_settlements > 0 {
             "degraded"
         } else if !shadow_ready {
             "configured"

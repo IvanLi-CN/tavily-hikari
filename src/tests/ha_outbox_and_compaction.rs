@@ -49,6 +49,23 @@ fn online_ha_gc_adapts_only_when_one_micro_batch_exceeds_its_budget() {
     );
 }
 
+#[test]
+fn online_ha_gc_slow_recovery_yields_before_the_one_second_fast_path() {
+    assert_eq!(
+        ha_outbox_gc_continuation_delay_secs_for_pressure(
+            true,
+            HA_OUTBOX_GC_ACTIVE_BUDGET_MS + 1,
+            true,
+            0,
+        ),
+        Some(HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS)
+    );
+    assert_eq!(
+        ha_outbox_gc_continuation_delay_secs_for_pressure(true, 1, true, 0),
+        Some(HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS)
+    );
+}
+
 #[tokio::test]
 async fn ha_outbox_gc_watchdog_only_reports_persisted_channel_debt() {
     let db_path = temp_db_path("ha-outbox-gc-watchdog-debt");

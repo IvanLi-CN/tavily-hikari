@@ -223,7 +223,7 @@ export default function UpstreamPrivacyStatusModule({
       })
     }
 
-    if (status.queuedSettlements > 0) {
+    if (status.queuedSettlements != null && status.queuedSettlements > 0) {
       issues.push({
         key: 'queuedSettlements',
         title: strings.issueQueuedSettlements,
@@ -264,7 +264,7 @@ export default function UpstreamPrivacyStatusModule({
             ...(status.pendingResearch != null && status.pendingResearch > 0
               ? [{ label: strings.counterPendingResearch, value: numberFormatter.format(status.pendingResearch) }]
               : []),
-            ...(status.queuedSettlements > 0
+            ...(status.queuedSettlements != null && status.queuedSettlements > 0
               ? [{ label: strings.counterQueuedSettlements, value: numberFormatter.format(status.queuedSettlements) }]
               : []),
             ...(status.degradedSettlements > 0
@@ -507,7 +507,10 @@ export default function UpstreamPrivacyStatusModule({
                   label={strings.counterPendingResearch}
                   value={status.pendingResearch == null ? strings.statusMissing : numberFormatter.format(status.pendingResearch)}
                 />
-                <PrivacyStat label={strings.counterQueuedSettlements} value={numberFormatter.format(status.queuedSettlements)} />
+                <PrivacyStat
+                  label={strings.counterQueuedSettlements}
+                  value={status.queuedSettlements == null ? strings.statusMissing : numberFormatter.format(status.queuedSettlements)}
+                />
                 <PrivacyStat label={strings.counterDegradedSettlements} value={numberFormatter.format(status.degradedSettlements)} />
                 <PrivacyStat
                   label={diagnosticsLabels.lastRun}

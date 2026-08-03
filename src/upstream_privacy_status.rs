@@ -81,10 +81,12 @@ pub struct UpstreamPrivacyStatus {
     pub current_period_code: String,
     pub current_period_ends_at: i64,
     pub next_epoch_at: Option<i64>,
+    /// Current-day pending Research. It remains distinct from the bounded
+    /// settlement queue observation below.
+    pub pending_research: Option<i64>,
     /// A bounded queue estimate. `None` means this status snapshot has not
     /// observed a bounded estimate and must not be rendered as zero.
-    pub pending_research: Option<i64>,
-    pub queued_settlements: i64,
+    pub queued_settlements: Option<i64>,
     pub degraded_settlements: i64,
     pub last_reconciliation_run_at: Option<i64>,
     pub last_shadow_adjustment_at: Option<i64>,

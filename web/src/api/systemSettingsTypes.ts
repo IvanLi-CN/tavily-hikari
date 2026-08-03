@@ -112,7 +112,7 @@ export interface UpstreamPrivacyStatus {
   currentPeriodEndsAt: number
   nextEpochAt: number | null
   pendingResearch: number | null
-  queuedSettlements: number
+  queuedSettlements: number | null
   degradedSettlements: number
   lastReconciliationRunAt: number | null
   lastShadowAdjustmentAt: number | null

@@ -285,12 +285,16 @@ impl KeyStore {
         })
     }
 
-    pub(crate) async fn upstream_reconciliation_degraded_exists(
+    pub(crate) async fn upstream_reconciliation_degraded_estimate(
         &self,
-    ) -> Result<bool, ProxyError> {
-        sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM upstream_reconciliation_settlements WHERE status IN ('degraded', 'shadow_degraded') LIMIT 1)",
-        )
+    ) -> Result<i64, ProxyError> {
+        sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM (\
+             SELECT 1 FROM upstream_reconciliation_settlements \
+             WHERE status IN ('degraded', 'shadow_degraded') \
+             LIMIT {RECONCILIATION_QUEUE_ESTIMATE_LIMIT}\
+             )"
+        ))
         .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
@@ -743,10 +747,21 @@ impl KeyStore {
                     .push_bind(before);
             }
         }
-        // The period index narrows the work before any grouping or correlated
-        // research check. A small multiplier preserves fairness when several
-        // keys share one billing period without allowing an unbounded scan.
+        // Do not let windows blocked on fresh Research consume the bounded
+        // page. Otherwise a busy key can hide all eligible windows behind its
+        // raw usage rows indefinitely.
         query
+            .push(" AND (u.period_end + 86400 <= ")
+            .push_bind(now)
+            .push(
+                r#" OR NOT EXISTS (
+                    SELECT 1
+                    FROM upstream_reconciliation_research r
+                    WHERE r.token_id = u.token_id
+                      AND r.period_code = u.period_code
+                      AND r.terminal_at IS NULL
+                ))"#,
+            )
             .push(if newest_first {
                 " ORDER BY u.period_end DESC, u.token_id ASC, u.period_code ASC LIMIT "
             } else {
