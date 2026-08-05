@@ -51,7 +51,7 @@ async fn dual_active_peer_sync_does_not_mark_success_when_no_peer_is_reached() {
         .build()
         .expect("client");
 
-    let err = run_ha_peer_sync_once(&state, &client, "test-token")
+    let err = run_ha_peer_sync_once(&state, &client, &client, "test-token")
         .await
         .expect_err("peer sync should fail when no peer can be reached");
     assert!(

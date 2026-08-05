@@ -1,6 +1,5 @@
-use futures_util::stream;
-
 const HA_CAPABILITIES_HEADER: &str = "x-tavily-ha-capabilities";
+const HA_PEER_ERROR_BODY_MAX_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,10 +247,9 @@ fn peer_view_from_status(
     status: &tavily_hikari::HaStatusView,
     last_seen_at: i64,
     now_ts: i64,
+    channel_health: &[tavily_hikari::HaChannelHealthView],
 ) -> tavily_hikari::HaPeerNodeView {
-    let stale = latest_probe_timestamp(status)
-        .map(|value| now_ts.saturating_sub(value) > HA_PEER_STALE_SECS)
-        .unwrap_or(true);
+    let stale = now_ts.saturating_sub(last_seen_at) > HA_PEER_STALE_SECS;
     let planned_cutover_eligible = config.role_hint == tavily_hikari::HaPeerRoleHint::StandbyCandidate
         && !stale
         && local_planned_cutover_eligible(status, now_ts);
@@ -273,12 +271,7 @@ fn peer_view_from_status(
         stale,
         role_hint: config.role_hint,
         planned_cutover_eligible,
-        channel_health: status
-            .peer_nodes
-            .iter()
-            .find(|node| node.node_id == status.node_id)
-            .map(|node| node.channel_health.clone())
-            .unwrap_or_default(),
+        channel_health: channel_health.to_vec(),
     }
 }
 
@@ -305,12 +298,97 @@ fn peer_view_from_error(
     }
 }
 
+fn peer_view_from_observation(
+    config: &tavily_hikari::HaPeerNodeConfig,
+    observation: &tavily_hikari::HaPeerObservation,
+    now_ts: i64,
+) -> tavily_hikari::HaPeerNodeView {
+    match observation.status.as_ref() {
+        Some(status) => {
+            let last_good_observed_at = observation
+                .last_good_observed_at
+                .unwrap_or(observation.observed_at);
+            let mut view = peer_view_from_status(
+                config,
+                status,
+                last_good_observed_at,
+                now_ts,
+                &observation.channel_health,
+            );
+            if let Some(error) = &observation.error {
+                view.message = Some(format!("last-good peer observation is stale: {error}"));
+                view.stale = true;
+                view.planned_cutover_eligible = false;
+            }
+            view
+        }
+        None => peer_view_from_error(
+            config,
+            observation
+                .error
+                .clone()
+                .unwrap_or_else(|| "peer observation is unavailable".to_string()),
+        ),
+    }
+}
+
+fn peer_channel_retention_secs(channel: tavily_hikari::HaSyncChannel) -> i64 {
+    match channel {
+        tavily_hikari::HaSyncChannel::Control => 72 * 60 * 60,
+        tavily_hikari::HaSyncChannel::Billing | tavily_hikari::HaSyncChannel::Runtime => {
+            14 * 24 * 60 * 60
+        }
+    }
+}
+
+fn unknown_peer_channel_health(
+    channel: tavily_hikari::HaSyncChannel,
+) -> tavily_hikari::HaChannelHealthView {
+    tavily_hikari::HaChannelHealthView {
+        channel,
+        acked_seq: None,
+        high_watermark: 0,
+        ack_lag: None,
+        cursor_state: "unknown".to_string(),
+        retention_secs: peer_channel_retention_secs(channel),
+        expired_backlog: false,
+        gc_state: "unknown".to_string(),
+        oldest_age_secs: None,
+        last_progress_at: None,
+        last_defer_reason: None,
+        next_retry_at: None,
+        batch_size: 250,
+        gc_debt_mode: "unknown".to_string(),
+        gc_observed_at: None,
+        gc_deleted_rows_per_minute: 0.0,
+        gc_recovery_deadline_at: None,
+        gc_slo_state: "unknown".to_string(),
+        gc_foreground_rps: 0,
+    }
+}
+
 async fn fetch_internal_ha_status(
     client: &Client,
     peer: &tavily_hikari::HaPeerNodeConfig,
     internal_token: &str,
     local_node_id: &str,
 ) -> Result<tavily_hikari::HaStatusView, String> {
+    fetch_internal_ha_status_with_metadata(client, peer, internal_token, local_node_id)
+        .await
+        .map(|probe| probe.status)
+}
+
+struct HaPeerStatusProbe {
+    status: tavily_hikari::HaStatusView,
+    capabilities: Option<String>,
+}
+
+async fn fetch_internal_ha_status_with_metadata(
+    client: &Client,
+    peer: &tavily_hikari::HaPeerNodeConfig,
+    internal_token: &str,
+    local_node_id: &str,
+) -> Result<HaPeerStatusProbe, String> {
     let response = client
         .get(format!("{}/api/internal/ha/status", peer.admin_base_url))
         .query(&[
@@ -321,18 +399,53 @@ async fn fetch_internal_ha_status(
         .send()
         .await
         .map_err(|err| format!("peer {} unreachable: {err}", peer.node_id))?;
+    let capabilities = response
+        .headers()
+        .get(HA_CAPABILITIES_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     if !response.status().is_success() {
         let status = response.status();
-        let detail = response.text().await.unwrap_or_default();
+        let detail = read_bounded_response_detail(response).await;
         return Err(format!(
             "peer {} returned {} for internal HA status: {}",
             peer.node_id, status, detail
         ));
     }
-    response
+    let status = response
         .json::<tavily_hikari::HaStatusView>()
         .await
-        .map_err(|err| format!("peer {} returned invalid HA status: {err}", peer.node_id))
+        .map_err(|err| format!("peer {} returned invalid HA status: {err}", peer.node_id))?;
+    Ok(HaPeerStatusProbe {
+        status,
+        capabilities,
+    })
+}
+
+async fn read_bounded_response_detail(response: reqwest::Response) -> String {
+    let mut body = response.bytes_stream();
+    let mut detail = Vec::with_capacity(HA_PEER_ERROR_BODY_MAX_BYTES);
+    let mut truncated = false;
+    while let Some(chunk) = body.next().await {
+        let Ok(chunk) = chunk else {
+            break;
+        };
+        let remaining = HA_PEER_ERROR_BODY_MAX_BYTES.saturating_sub(detail.len());
+        if chunk.len() > remaining {
+            detail.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        detail.extend_from_slice(&chunk);
+        if detail.len() == HA_PEER_ERROR_BODY_MAX_BYTES {
+            break;
+        }
+    }
+    let mut detail = String::from_utf8_lossy(&detail).into_owned();
+    if truncated {
+        detail.push_str("... [truncated]");
+    }
+    detail
 }
 
 async fn fetch_internal_ha_status_for_planned_transition(
@@ -341,36 +454,12 @@ async fn fetch_internal_ha_status_for_planned_transition(
     internal_token: &str,
     local_node_id: &str,
 ) -> Result<tavily_hikari::HaStatusView, String> {
-    let response = client
-        .get(format!("{}/api/internal/ha/status", peer.admin_base_url))
-        .query(&[
-            ("refreshAuthority", "true"),
-            ("peerNodeId", local_node_id),
-        ])
-        .header("x-ha-internal-token", internal_token)
-        .send()
-        .await
-        .map_err(|err| format!("peer {} unreachable: {err}", peer.node_id))?;
-    let capability = response
-        .headers()
-        .get(HA_CAPABILITIES_HEADER)
-        .and_then(|value| value.to_str().ok());
+    let probe = fetch_internal_ha_status_with_metadata(client, peer, internal_token, local_node_id).await?;
     tavily_hikari::require_writable_tenure_capability([(
         peer.node_id.as_str(),
-        capability,
+        probe.capabilities.as_deref(),
     )])?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "peer {} returned {} for internal HA status: {}",
-            peer.node_id, status, detail
-        ));
-    }
-    response
-        .json::<tavily_hikari::HaStatusView>()
-        .await
-        .map_err(|err| format!("peer {} returned invalid HA status: {err}", peer.node_id))
+    Ok(probe.status)
 }
 
 async fn require_configured_peer_writable_tenure_capabilities(
@@ -522,52 +611,41 @@ async fn attach_internal_source_channel_health(
 async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatusView {
     let now_ts = state.proxy.backend_time().now_ts();
     let mut status = build_internal_ha_status(state).await;
-    if let Some(internal_token) = state.ha.internal_token() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-        let peers: Vec<_> = state
-            .ha
-            .peer_nodes()
-            .into_iter()
-            .filter(|peer| peer.node_id != status.node_id)
-            .collect();
-        let local_node_id = status.node_id.clone();
-        status.peer_nodes = stream::iter(peers)
-            .map(|peer| {
-                let client = client.clone();
-                let internal_token = internal_token.to_string();
-                let local_node_id = local_node_id.clone();
-                async move {
-                    let last_seen_at = now_ts;
-                    match fetch_internal_ha_status(&client, &peer, &internal_token, &local_node_id).await {
-                        Ok(peer_status) => peer_view_from_status(&peer, &peer_status, last_seen_at, now_ts),
-                        Err(err) => peer_view_from_error(&peer, err),
-                    }
-                }
-            })
-            .buffer_unordered(8)
-            .collect()
-            .await;
-    } else {
-        status.peer_nodes = state
-            .ha
-            .peer_nodes()
-            .into_iter()
-            .filter(|peer| peer.node_id != status.node_id)
-            .map(|peer| peer_view_from_error(&peer, "HA_INTERNAL_TOKEN is required for peer probing".to_string()))
-            .collect();
+    let observations = state.ha.peer_observation_store().snapshot().await;
+    status.peer_nodes = state
+        .ha
+        .peer_nodes()
+        .into_iter()
+        .filter(|peer| peer.node_id != status.node_id)
+        .map(|peer| {
+            observations
+                .get(&peer.node_id)
+                .map(|observation| peer_view_from_observation(&peer, observation, now_ts))
+                .unwrap_or_else(|| {
+                    peer_view_from_error(
+                        &peer,
+                        "peer observation is unavailable; background probe has not completed"
+                            .to_string(),
+                    )
+                })
+        })
+        .collect();
+    if status
+        .peer_nodes
+        .iter()
+        .any(|peer| peer.role.is_none() || peer.stale)
+    {
+        status.degraded = true;
     }
     for peer in &mut status.peer_nodes {
         let mut health = Vec::with_capacity(3);
-        let peer_probe_succeeded = peer.role.is_some() && peer.last_seen_at.is_some();
+        let peer_has_last_good = peer.role.is_some() && peer.last_seen_at.is_some();
         for channel in [
             tavily_hikari::HaSyncChannel::Control,
             tavily_hikari::HaSyncChannel::Billing,
             tavily_hikari::HaSyncChannel::Runtime,
         ] {
-            let value = if !peer_probe_succeeded {
+            let value = if !peer_has_last_good {
                 Some(tavily_hikari::HaChannelHealthView {
                     channel,
                     acked_seq: None,
@@ -593,6 +671,14 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
                     gc_slo_state: "unknown".to_string(),
                     gc_foreground_rps: 0,
                 })
+            } else if peer.stale {
+                Some(
+                    peer.channel_health
+                        .iter()
+                        .find(|health| health.channel == channel)
+                        .cloned()
+                        .unwrap_or_else(|| unknown_peer_channel_health(channel)),
+                )
             } else if status.role == tavily_hikari::HaNodeRole::Standby {
                 let source_health = peer
                     .channel_health
@@ -678,7 +764,13 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
                     gc_foreground_rps: source_health.as_ref().map(|health| health.gc_foreground_rps).unwrap_or(0),
                 })
             } else {
-                state.proxy.ha_peer_channel_health(channel, &peer.node_id).await.ok()
+                Some(
+                    peer.channel_health
+                        .iter()
+                        .find(|health| health.channel == channel)
+                        .cloned()
+                        .unwrap_or_else(|| unknown_peer_channel_health(channel)),
+                )
             };
             if let Some(value) = value {
                 health.push(value);
