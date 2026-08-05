@@ -977,7 +977,7 @@ fn spawn_ha_peer_sync_task(state: Arc<AppState>) {
     };
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = build_ha_peer_probe_client();
         loop {
             let status = state.ha.status().await;
             if ha_peer_sync_should_run(&status) {
