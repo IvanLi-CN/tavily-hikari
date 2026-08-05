@@ -4,7 +4,8 @@
 
 ## Current Status
 
-- Implementation: Ticket #485 SqliteRuntime seam 已完成，等待 child PR integration CI
+- Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
+  child PR integration
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -15,7 +16,7 @@
 
 1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate（child
    #484 已实现，待合入 integration branch）
-2. SqliteRuntime seam
+2. SqliteRuntime seam（child #485 已合入 integration branch）
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
 5. HaPeerObservationStore
