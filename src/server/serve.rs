@@ -580,6 +580,10 @@ pub async fn serve(
     axum::serve(
         listener,
         router
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                writable_business_cancellation_gate,
+            ))
             .layer(axum::middleware::from_fn(db_maintenance_http_gate))
             .with_state(state)
             .into_make_service_with_connect_info::<SocketAddr>(),
@@ -1641,13 +1645,13 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
     if !state.ha.allows_full_writes().await {
         return false;
     }
-    if background_tasks_disabled_via_env() {
+    let background_tasks_disabled = background_tasks_disabled_via_env();
+    if background_tasks_disabled {
         tracing::info!(
             component = "startup",
             event = "background_tasks_disabled_via_env",
             "background tasks disabled via TAVILY_DISABLE_BACKGROUND_TASKS"
         );
-        return false;
     }
     if authority.phase != tavily_hikari::WritableAuthorityPhase::Writable {
         authority = match state
@@ -1673,7 +1677,11 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
     let runtime_state = state.clone();
     supervisor
         .promote(authority.epoch, move |revision| async move {
-            let tasks = spawn_business_background_tasks(runtime_state);
+            let tasks = if background_tasks_disabled {
+                Vec::new()
+            } else {
+                spawn_business_background_tasks(runtime_state)
+            };
             revision.cancellation_token().cancelled().await;
             for task in &tasks {
                 task.abort();

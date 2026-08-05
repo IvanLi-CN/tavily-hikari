@@ -86,6 +86,15 @@ impl WritableTenureSupervisor {
         self.state.lock().await.authority
     }
 
+    pub async fn current_revision(&self) -> Option<WritableRevision> {
+        self.state
+            .lock()
+            .await
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.revision.clone())
+    }
+
     pub async fn restore_persisted(&self, authority: WritableAuthorityState) -> Result<(), String> {
         let mut state = self.state.lock().await;
         if state.runtime.is_some() {

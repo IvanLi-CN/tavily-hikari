@@ -286,6 +286,38 @@ async fn db_maintenance_http_gate(
     next.run(req).await
 }
 
+async fn writable_business_cancellation_gate(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    if !(path == "/mcp" || path.starts_with("/mcp/") || path.starts_with("/api/tavily/")) {
+        return next.run(req).await;
+    }
+    let Some(revision) = state.ha.writable_tenure_supervisor().current_revision().await else {
+        return next.run(req).await;
+    };
+    let cancellation = revision.cancellation_token();
+    tokio::select! {
+        response = next.run(req) => response,
+        _ = cancellation.cancelled() => {
+            let status = state.ha.status().await;
+            let payload = json!({
+                "error": "ha_role_not_serving",
+                "message": "writable authority was demoted while the request was in flight",
+                "role": status.role,
+                "path": path,
+            });
+            Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from(payload.to_string()))
+                .unwrap_or_else(|_| Response::builder().status(503).body(Body::empty()).unwrap())
+        }
+    }
+}
+
 fn db_maintenance_gated_path(path: &str) -> bool {
     path == "/mcp"
         || path.starts_with("/mcp/")
