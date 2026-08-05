@@ -1627,6 +1627,25 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         }
     };
     if authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        let authority = match state
+            .proxy
+            .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+            .await
+        {
+            Ok(authority) => authority,
+            Err(err) => {
+                tracing::warn!(
+                    component = "ha",
+                    event = "writable_authority_demotion_resume_failed",
+                    err = %err,
+                    "persisted writable demotion remains fail closed and will retry"
+                );
+                return false;
+            }
+        };
+        if supervisor.finish_demotion(authority.epoch).await.is_err() {
+            return false;
+        }
         return false;
     }
     if authority.phase != tavily_hikari::WritableAuthorityPhase::Writable {
@@ -1672,11 +1691,12 @@ async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError
     if supervisor.state().await.phase == tavily_hikari::WritableAuthorityPhase::Standby {
         return Ok(());
     }
+    supervisor.begin_demotion().await;
     state
         .proxy
         .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
         .await?;
-    supervisor.begin_demotion().await;
+    supervisor.quiesce_demotion().await;
     let authority = state
         .proxy
         .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)

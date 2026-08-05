@@ -134,14 +134,16 @@ impl WritableTenureSupervisor {
     }
 
     pub async fn begin_demotion(&self) -> WritableAuthorityState {
-        let runtime = {
-            let mut state = self.state.lock().await;
-            if let Some(runtime) = &state.runtime {
-                runtime.revision.cancellation.cancel();
-            }
-            state.authority.phase = WritableAuthorityPhase::Demoting;
-            state.runtime.take()
-        };
+        let mut state = self.state.lock().await;
+        if let Some(runtime) = &state.runtime {
+            runtime.revision.cancellation.cancel();
+        }
+        state.authority.phase = WritableAuthorityPhase::Demoting;
+        state.authority
+    }
+
+    pub async fn quiesce_demotion(&self) {
+        let runtime = self.state.lock().await.runtime.take();
         if let Some(mut runtime) = runtime
             && tokio::time::timeout(
                 std::time::Duration::from_millis(250),
@@ -152,7 +154,6 @@ impl WritableTenureSupervisor {
         {
             runtime.tasks.abort_all();
         }
-        self.state.lock().await.authority
     }
 
     pub async fn finish_demotion(&self, persisted_epoch: i64) -> Result<(), String> {
@@ -219,6 +220,7 @@ mod tests {
             .expect("promotion");
 
         supervisor.begin_demotion().await;
+        supervisor.quiesce_demotion().await;
         assert_eq!(stopped.load(Ordering::SeqCst), 1);
         tokio::time::timeout(
             Duration::from_millis(250),
