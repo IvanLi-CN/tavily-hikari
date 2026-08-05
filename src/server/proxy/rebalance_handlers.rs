@@ -556,9 +556,10 @@ async fn mcp_subpath_reject_handler(
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
-    if let Err(response) = ensure_ha_allows_basic_business(&state, &path).await {
-        return Ok(response);
-    }
+    let _writable_admission = match ensure_ha_allows_basic_business(&state, &path).await {
+        Ok(admission) => admission,
+        Err(response) => return Ok(response),
+    };
     let (query, query_token) = extract_token_from_query(parts.uri.query());
     let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await
     {

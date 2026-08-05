@@ -70,6 +70,67 @@ async fn ha_standby_blocks_external_tavily_and_mcp_business_routes() {
 }
 
 #[tokio::test]
+async fn dual_active_standby_with_persisted_epoch_keeps_basic_business_enabled() {
+    let db_path = temp_db_path("ha-dual-active-standby-business-gate");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-dual-active-standby-business-gate".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+        .await
+        .expect("persist standby authority epoch");
+    let ha = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-follower".to_string(),
+        database_path: Some(db_str.clone()),
+        core_dual_active: true,
+        source_kind: Some(tavily_hikari::HaSourceKind::OriginGroup),
+        source_origin_group_id: Some("og-core".to_string()),
+        ..tavily_hikari::HaConfig::default()
+    });
+    ha.apply_dual_active_leader(Some("node-leader".to_string()))
+        .await
+        .expect("apply remote leader");
+    ha.mark_sync_success().await;
+    let authority = proxy
+        .get_writable_authority_state()
+        .await
+        .expect("load standby authority");
+    ha.restore_writable_authority(authority)
+        .await
+        .expect("restore standby authority");
+    let status = ha.status().await;
+    assert!(status.allows_basic_business, "unexpected HA status: {status:?}");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha,
+        dev_open_admin: true,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    assert!(
+        ensure_ha_allows_basic_business(&state, "/api/tavily/search")
+            .await
+            .is_ok()
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_provisional_allows_basic_tavily_and_mcp_entrypoints() {
     let db_path = temp_db_path("ha-provisional-business-gate");
     let db_str = db_path.to_string_lossy().to_string();

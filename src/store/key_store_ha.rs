@@ -1410,6 +1410,22 @@ impl KeyStore {
 
 }
 
+fn writable_authority_phase_str(phase: WritableAuthorityPhase) -> &'static str {
+    match phase {
+        WritableAuthorityPhase::Standby => "standby",
+        WritableAuthorityPhase::Writable => "writable",
+        WritableAuthorityPhase::Demoting => "demoting",
+    }
+}
+
+fn parse_writable_authority_phase(value: &str) -> WritableAuthorityPhase {
+    match value {
+        "writable" => WritableAuthorityPhase::Writable,
+        "demoting" => WritableAuthorityPhase::Demoting,
+        _ => WritableAuthorityPhase::Standby,
+    }
+}
+
 async fn insert_ha_outbox_suppression_on_conn(
     conn: &mut SqliteConnection,
 ) -> Result<(), ProxyError> {

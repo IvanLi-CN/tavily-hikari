@@ -572,7 +572,30 @@ pub async fn serve(
     // refresh, and pull-sync keep working even while business traffic is fenced.
     spawn_ha_edgeone_authority_task(state.clone());
     spawn_ha_control_plane_gc_task(state.clone());
-    spawn_background_tasks_for_current_role(state.clone()).await;
+    let runtime_started = spawn_background_tasks_for_current_role(state.clone()).await;
+    let startup_ha_status = if startup_ha_status.allows_full_writes && !runtime_started {
+        let recovery = state
+            .ha
+            .enter_recovery(
+                "writable authority promotion failed during startup; fail-closed recovery required"
+                    .to_string(),
+            )
+            .await;
+        state
+            .proxy
+            .persist_ha_node_state(
+                &recovery.node_id,
+                recovery.role,
+                recovery.edgeone_origin.as_deref(),
+                recovery.ha_source_effective.as_ref(),
+                recovery.message.as_deref(),
+            )
+            .await?;
+        state.proxy.flush_ha_state_writes().await?;
+        recovery
+    } else {
+        startup_ha_status
+    };
     let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), &startup_ha_status);
 
     let shutdown_proxy = state.proxy.clone();
@@ -580,6 +603,10 @@ pub async fn serve(
     axum::serve(
         listener,
         router
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                writable_business_cancellation_gate,
+            ))
             .layer(axum::middleware::from_fn(db_maintenance_http_gate))
             .with_state(state)
             .into_make_service_with_connect_info::<SocketAddr>(),
@@ -692,6 +719,26 @@ async fn initialize_ha_startup_state(
     proxy: &TavilyProxy,
     ha: &tavily_hikari::HaRuntime,
 ) -> tavily_hikari::HaStatusView {
+    let persisted_authority = proxy
+        .get_writable_authority_state()
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                component = "ha",
+                event = "writable_authority_lookup_failed",
+                err = %err,
+                "HA writable authority lookup warning"
+            );
+            tavily_hikari::WritableAuthorityState::standby(0)
+        });
+    if let Err(err) = ha.restore_writable_authority(persisted_authority).await {
+        tracing::warn!(
+            component = "ha",
+            event = "writable_authority_restore_failed",
+            err = %err,
+            "HA writable authority restore warning"
+        );
+    }
     let previous_ha_role = proxy.get_persisted_ha_node_role().await.unwrap_or_else(|err| {
         tracing::warn!(
             component = "ha",
@@ -721,7 +768,15 @@ async fn initialize_ha_startup_state(
         );
     }
     // Startup role evaluation must compare against the restored node-local HA source settings.
-    let startup_ha_status = reconcile_ha_startup_role(proxy, ha, previous_ha_role).await;
+    let mut startup_ha_status = reconcile_ha_startup_role(proxy, ha, previous_ha_role).await;
+    if persisted_authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        startup_ha_status = ha
+            .enter_recovery(
+                "writable authority demotion was interrupted; fail-closed recovery required"
+                    .to_string(),
+            )
+            .await;
+    }
     if let Err(err) = async {
         proxy
             .persist_ha_node_state(
@@ -1528,29 +1583,36 @@ async fn run_ha_sync_once_for_peer(
     Ok(())
 }
 
-fn spawn_business_background_tasks(state: Arc<AppState>) {
-    spawn_maintenance_worker(state.clone());
-    spawn_scheduled_job_stale_reaper(state.clone());
-    spawn_quota_sync_scheduler(state.clone());
-    spawn_token_usage_rollup_scheduler(state.clone());
-    spawn_upstream_reconciliation_scheduler(state.clone());
-    spawn_auth_token_logs_gc_scheduler(state.clone());
-    spawn_ha_outbox_gc_scheduler(state.clone());
-    spawn_mcp_sessions_gc_scheduler(state.clone());
-    spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
-    spawn_request_logs_gc_scheduler(state.clone());
-    spawn_request_logs_body_gc_index_ensure_scheduler(state.clone());
-    spawn_dashboard_rollup_integrity_scheduler(state.clone());
-    spawn_auth_token_logs_alert_index_ensure_scheduler(state.clone());
+fn spawn_business_background_tasks(
+    state: Arc<AppState>,
+) -> Vec<tokio_util::task::AbortOnDropHandle<()>> {
+    let mut tasks = vec![
+        spawn_maintenance_worker(state.clone()),
+        spawn_scheduled_job_stale_reaper(state.clone()),
+        spawn_token_usage_rollup_scheduler(state.clone()),
+        spawn_upstream_reconciliation_scheduler(state.clone()),
+        spawn_auth_token_logs_gc_scheduler(state.clone()),
+        spawn_ha_outbox_gc_scheduler(state.clone()),
+        spawn_mcp_sessions_gc_scheduler(state.clone()),
+        spawn_mcp_session_init_backoffs_gc_scheduler(state.clone()),
+        spawn_request_logs_gc_scheduler(state.clone()),
+        spawn_request_logs_body_gc_index_ensure_scheduler(state.clone()),
+        spawn_dashboard_rollup_integrity_scheduler(state.clone()),
+        spawn_auth_token_logs_alert_index_ensure_scheduler(state.clone()),
+    ];
+    tasks.extend(spawn_quota_sync_scheduler(state.clone()));
     if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
-        spawn_linuxdo_user_status_sync_scheduler(state.clone());
+        tasks.push(spawn_linuxdo_user_status_sync_scheduler(state.clone()));
     }
-    spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
-    let _linuxdo_credit_recharge_lifecycle_scheduler =
-        spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone());
-    let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
-    spawn_forward_proxy_maintenance_scheduler(state.clone());
-    spawn_db_compaction_scheduler(state);
+    tasks.push(spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone()));
+    tasks.push(spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone()));
+    tasks.push(spawn_forward_proxy_geo_refresh_scheduler(state.clone()));
+    tasks.push(spawn_forward_proxy_maintenance_scheduler(state.clone()));
+    tasks.push(spawn_db_compaction_scheduler(state));
+    tasks
+        .into_iter()
+        .map(tokio_util::task::AbortOnDropHandle::new)
+        .collect()
 }
 
 fn background_tasks_disabled_via_env() -> bool {
@@ -1566,19 +1628,116 @@ fn background_tasks_disabled_via_env() -> bool {
 }
 
 async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
+    let supervisor = state.ha.writable_tenure_supervisor();
+    let _lifecycle = supervisor.lifecycle_guard().await;
+    let mut authority = match state.proxy.get_writable_authority_state().await {
+        Ok(authority) => authority,
+        Err(err) => {
+            tracing::warn!(
+                component = "ha",
+                event = "writable_authority_lookup_failed",
+                err = %err,
+                "background runtime cannot start without writable authority"
+            );
+            return false;
+        }
+    };
+    if authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        let _business_admission = state.ha.acquire_writable_demotion_admission().await;
+        let authority = match state
+            .proxy
+            .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+            .await
+        {
+            Ok(authority) => authority,
+            Err(err) => {
+                tracing::warn!(
+                    component = "ha",
+                    event = "writable_authority_demotion_resume_failed",
+                    err = %err,
+                    "persisted writable demotion remains fail closed and will retry"
+                );
+                return false;
+            }
+        };
+        if supervisor.finish_demotion(authority.epoch).await.is_err() {
+            return false;
+        }
+        return false;
+    }
     if !state.ha.allows_full_writes().await {
         return false;
     }
-    if background_tasks_disabled_via_env() {
+    let background_tasks_disabled = background_tasks_disabled_via_env();
+    if background_tasks_disabled {
         tracing::info!(
             component = "startup",
             event = "background_tasks_disabled_via_env",
             "background tasks disabled via TAVILY_DISABLE_BACKGROUND_TASKS"
         );
-        return false;
     }
-    spawn_business_background_tasks(state);
-    true
+    if authority.phase != tavily_hikari::WritableAuthorityPhase::Writable {
+        authority = match state
+            .proxy
+            .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Writable)
+            .await
+        {
+            Ok(authority) => authority,
+            Err(err) => {
+                tracing::warn!(
+                    component = "ha",
+                    event = "writable_authority_promotion_failed",
+                    err = %err,
+                    "background runtime cannot start without persisted writable authority"
+                );
+                return false;
+            }
+        };
+        if state.ha.restore_writable_authority(authority).await.is_err() {
+            return false;
+        }
+    }
+    let runtime_state = state.clone();
+    supervisor
+        .promote(authority.epoch, move |revision| async move {
+            let tasks = if background_tasks_disabled {
+                Vec::new()
+            } else {
+                spawn_business_background_tasks(runtime_state)
+            };
+            revision.cancellation_token().cancelled().await;
+            for task in &tasks {
+                task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+        .is_ok()
+}
+
+async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError> {
+    let supervisor = state.ha.writable_tenure_supervisor();
+    let _lifecycle = supervisor.lifecycle_guard().await;
+    if supervisor.state().await.phase == tavily_hikari::WritableAuthorityPhase::Standby {
+        return Ok(());
+    }
+    supervisor.begin_demotion().await;
+    let _business_admission = state.ha.acquire_writable_demotion_admission().await;
+    state
+        .proxy
+        .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
+        .await?;
+    supervisor.quiesce_demotion().await;
+    let authority = state
+        .proxy
+        .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+        .await?;
+    supervisor
+        .finish_demotion(authority.epoch)
+        .await
+        .map_err(ProxyError::Other)
 }
 
 fn spawn_post_ready_serving_tasks_for_status(
@@ -1820,6 +1979,14 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                         status = state.ha.status().await;
                     }
                     if !status.allows_full_writes {
+                        if let Err(err) = demote_writable_runtime(&state).await {
+                            tracing::warn!(
+                                component = "ha",
+                                event = "writable_authority_demotion_failed",
+                                err = %err,
+                                "HA writable authority remains fail closed while demotion retries"
+                            );
+                        }
                         state
                             .proxy
                             .reset_post_ready_serving_tasks_for_writable_tenure();
@@ -1835,6 +2002,7 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                             "forward-proxy authority runtime role sync failed"
                         );
                     } else {
+                        let _ = spawn_background_tasks_for_current_role(state.clone()).await;
                         let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), &status);
                     }
                     let node_id = status.node_id.clone();

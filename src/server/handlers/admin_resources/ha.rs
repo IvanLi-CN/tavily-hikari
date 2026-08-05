@@ -1,5 +1,7 @@
 use futures_util::stream;
 
+const HA_CAPABILITIES_HEADER: &str = "x-tavily-ha-capabilities";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HaPromoteRequest {
@@ -333,6 +335,79 @@ async fn fetch_internal_ha_status(
         .map_err(|err| format!("peer {} returned invalid HA status: {err}", peer.node_id))
 }
 
+async fn fetch_internal_ha_status_for_planned_transition(
+    client: &Client,
+    peer: &tavily_hikari::HaPeerNodeConfig,
+    internal_token: &str,
+    local_node_id: &str,
+) -> Result<tavily_hikari::HaStatusView, String> {
+    let response = client
+        .get(format!("{}/api/internal/ha/status", peer.admin_base_url))
+        .query(&[
+            ("refreshAuthority", "true"),
+            ("peerNodeId", local_node_id),
+        ])
+        .header("x-ha-internal-token", internal_token)
+        .send()
+        .await
+        .map_err(|err| format!("peer {} unreachable: {err}", peer.node_id))?;
+    let capability = response
+        .headers()
+        .get(HA_CAPABILITIES_HEADER)
+        .and_then(|value| value.to_str().ok());
+    tavily_hikari::require_writable_tenure_capability([(
+        peer.node_id.as_str(),
+        capability,
+    )])?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "peer {} returned {} for internal HA status: {}",
+            peer.node_id, status, detail
+        ));
+    }
+    response
+        .json::<tavily_hikari::HaStatusView>()
+        .await
+        .map_err(|err| format!("peer {} returned invalid HA status: {err}", peer.node_id))
+}
+
+async fn require_configured_peer_writable_tenure_capabilities(
+    state: &Arc<AppState>,
+) -> Result<(), (StatusCode, String)> {
+    let peers = state
+        .ha
+        .peer_nodes()
+        .into_iter()
+        .filter(|peer| peer.node_id != state.ha.node_id())
+        .collect::<Vec<_>>();
+    if peers.is_empty() {
+        return Ok(());
+    }
+    let internal_token = state.ha.internal_token().ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            "planned HA transition requires HA_INTERNAL_TOKEN for capability probes".to_string(),
+        )
+    })?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| Client::new());
+    for peer in peers {
+        fetch_internal_ha_status_for_planned_transition(
+            &client,
+            &peer,
+            &internal_token,
+            state.ha.node_id(),
+        )
+        .await
+        .map_err(|err| (StatusCode::CONFLICT, err))?;
+    }
+    Ok(())
+}
+
 async fn post_internal_ha_leader_update(
     client: &Client,
     peer: &tavily_hikari::HaPeerNodeConfig,
@@ -618,7 +693,21 @@ async fn persist_ha_status_snapshot(
     state: &Arc<AppState>,
     status: &tavily_hikari::HaStatusView,
 ) -> Result<(), (StatusCode, String)> {
+    let mut recovery_status = None;
+    let promotion_error = if status.allows_full_writes
+        && !spawn_background_tasks_for_current_role(state.clone()).await
+    {
+        let message = "writable authority promotion failed; node entered fail-closed recovery";
+        recovery_status = Some(state.ha.enter_recovery(message.to_string()).await);
+        Some(message.to_string())
+    } else {
+        None
+    };
+    let status = recovery_status.as_ref().unwrap_or(status);
     if !status.allows_full_writes {
+        demote_writable_runtime(state)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
         state
             .proxy
             .reset_post_ready_serving_tasks_for_writable_tenure();
@@ -643,6 +732,9 @@ async fn persist_ha_status_snapshot(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), status);
+    if let Some(error) = promotion_error {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, error));
+    }
     Ok(())
 }
 
@@ -1154,7 +1246,7 @@ async fn get_internal_ha_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<InternalHaStatusQuery>,
-) -> Result<Json<tavily_hikari::HaStatusView>, (StatusCode, String)> {
+) -> Result<([(&'static str, &'static str); 1], Json<tavily_hikari::HaStatusView>), (StatusCode, String)> {
     if !is_ha_internal_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
@@ -1165,11 +1257,11 @@ async fn get_internal_ha_status(
             .await
             .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
         attach_internal_source_channel_health(&state, &mut status, query.peer_node_id.as_deref()).await;
-        return Ok(Json(status));
+        return Ok(([(HA_CAPABILITIES_HEADER, tavily_hikari::WRITABLE_TENURE_CAPABILITY)], Json(status)));
     }
     let mut status = build_internal_ha_status(&state).await;
     attach_internal_source_channel_health(&state, &mut status, query.peer_node_id.as_deref()).await;
-    Ok(Json(status))
+    Ok(([(HA_CAPABILITIES_HEADER, tavily_hikari::WRITABLE_TENURE_CAPABILITY)], Json(status)))
 }
 
 async fn get_internal_ha_mcp_session(
@@ -1228,6 +1320,12 @@ async fn post_admin_ha_promote(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    let capability_bypasses = if payload.force.unwrap_or(false) {
+        vec!["explicit emergency takeover bypassed writable tenure capability gate".to_string()]
+    } else {
+        require_configured_peer_writable_tenure_capabilities(&state).await?;
+        Vec::new()
+    };
     if state.ha.dual_active_enabled() {
         if !payload.force.unwrap_or(false) {
             return Err((
@@ -1323,6 +1421,7 @@ async fn post_admin_ha_promote(
                     "toRole": status.role,
                     "dualActive": true,
                     "force": true,
+                    "capabilityBypasses": capability_bypasses,
                 })),
             },
         )
@@ -1373,6 +1472,7 @@ async fn post_admin_ha_promote(
                 "fromOrigin": operation.from_origin,
                 "toOrigin": operation.to_origin,
                 "role": status.role,
+                "capabilityBypasses": capability_bypasses,
             })),
         },
     )
@@ -1388,6 +1488,7 @@ async fn post_admin_ha_finalize(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    require_configured_peer_writable_tenure_capabilities(&state).await?;
     if state.ha.dual_active_enabled() {
         return Err((
             StatusCode::CONFLICT,
@@ -1428,6 +1529,11 @@ async fn post_internal_ha_finalize(
     if !is_ha_internal_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    let caller_capability = headers
+        .get(HA_CAPABILITIES_HEADER)
+        .and_then(|value| value.to_str().ok());
+    tavily_hikari::require_writable_tenure_capability([("caller", caller_capability)])
+        .map_err(|err| (StatusCode::CONFLICT, err))?;
     if state.ha.dual_active_enabled() {
         return Err((
             StatusCode::CONFLICT,
@@ -1708,6 +1814,7 @@ async fn post_admin_ha_planned_cutover(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    require_configured_peer_writable_tenure_capabilities(&state).await?;
     if state.ha.dual_active_enabled() {
         let operation_id = format!("dual-active-{}", state.proxy.backend_time().now_ts());
         let local_before = build_internal_ha_status(&state).await;
@@ -1754,7 +1861,7 @@ async fn post_admin_ha_planned_cutover(
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| Client::new());
-        let peer_before = fetch_internal_ha_status(&client, &peer, &internal_token, &local_node_id)
+        let peer_before = fetch_internal_ha_status_for_planned_transition(&client, &peer, &internal_token, &local_node_id)
             .await
             .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
         let peer_last_probe = latest_probe_timestamp(&peer_before).ok_or_else(|| {
@@ -1974,7 +2081,7 @@ async fn post_admin_ha_planned_cutover(
         peer.node_id,
         state.proxy.backend_time().now_ts()
     );
-    let peer_before = fetch_internal_ha_status(&client, &peer, &internal_token, &local_before.node_id)
+    let peer_before = fetch_internal_ha_status_for_planned_transition(&client, &peer, &internal_token, &local_before.node_id)
         .await
         .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
     let peer_last_probe = latest_probe_timestamp(&peer_before).ok_or_else(|| {
@@ -2101,6 +2208,14 @@ async fn post_admin_ha_planned_cutover(
     record_edgeone_audit_entries(&state, &operation_id, &audit_entries).await?;
     let ingress_already_switched_detail =
         format!("EdgeOne ingress already switched to {}; complete recovery reconciliation on both nodes before retrying.", peer.node_id);
+    demote_writable_runtime(&state).await.map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "local writable tenure demotion failed after ingress moved: {err}. {ingress_already_switched_detail}"
+            ),
+        )
+    })?;
     let deadline = Instant::now() + Duration::from_secs(HA_PLANNED_CUTOVER_POLL_TIMEOUT_SECS);
     let peer_after = loop {
         let current = fetch_internal_ha_status(&client, &peer, &internal_token, &local_before.node_id)
@@ -2148,6 +2263,7 @@ async fn post_admin_ha_planned_cutover(
     let finalize_response = client
         .post(format!("{}/api/internal/ha/finalize", peer.admin_base_url))
         .header("x-ha-internal-token", &internal_token)
+        .header(HA_CAPABILITIES_HEADER, tavily_hikari::WRITABLE_TENURE_CAPABILITY)
         .json(&InternalHaFinalizeRequest {
             operation_id: Some(operation_id.clone()),
         })

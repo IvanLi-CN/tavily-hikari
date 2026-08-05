@@ -4,7 +4,8 @@
 
 ## Current Status
 
-- Implementation: Ticket #485 SqliteRuntime seam 已完成，等待 child PR integration CI
+- Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
+  child PR integration
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -13,8 +14,9 @@
 
 实现拆为 12 个 risk-gated child Ticket，按依赖波次进入 integration branch：
 
-1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate
-2. SqliteRuntime seam
+1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate（child
+   #484 已实现，待合入 integration branch）
+2. SqliteRuntime seam（child #485 已合入 integration branch）
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
 5. HaPeerObservationStore
@@ -28,7 +30,13 @@
 
 ## Remaining Gaps
 
-- 所有 12 个 Ticket 尚未开始实现。
+- Ticket #484 已建立 revision-owned cancellation、单 runtime promotion、持久 `demoting`
+  恢复、单调 authority epoch fence，以及不改变 HA JSON response shape 的内部 capability header；
+  legacy scheduler handles 和并发 remote-I/O jobs 已由 tenure runtime 持有并随 demotion 取消；外部业务
+  request 在 tenure admission 内完成，demotion 排空已进入的 request 后才推进 epoch，authority SQLite
+  写入的 pool 与 busy 等待总预算保持在 250ms 内。
+- 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
+  authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
 - aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
 
 ## Related Changes
@@ -38,6 +46,7 @@
 - `KeyStore` constructors create one `SqliteRuntime` from the existing pools and expose only
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
+- Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 
 ## References
 

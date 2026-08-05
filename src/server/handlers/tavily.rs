@@ -383,9 +383,10 @@ async fn tavily_http_research_result(
     let (parts, _body) = req.into_parts();
     let method = parts.method.clone();
     let path = format!("/api/tavily/research/{request_id}");
-    if let Err(response) = ensure_ha_allows_basic_business(&state, &path).await {
-        return Ok(response);
-    }
+    let _writable_admission = match ensure_ha_allows_basic_business(&state, &path).await {
+        Ok(admission) => admission,
+        Err(response) => return Ok(response),
+    };
     let remote_addr = parts
         .extensions
         .get::<ConnectInfo<SocketAddr>>()
@@ -703,9 +704,10 @@ async fn proxy_tavily_http_endpoint(
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
-    if let Err(response) = ensure_ha_allows_basic_business(&state, &path).await {
-        return Ok(response);
-    }
+    let _writable_admission = match ensure_ha_allows_basic_business(&state, &path).await {
+        Ok(admission) => admission,
+        Err(response) => return Ok(response),
+    };
     let remote_addr = remote_addr.or_else(|| {
         parts
             .extensions

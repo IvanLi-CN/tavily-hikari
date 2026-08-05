@@ -2333,7 +2333,7 @@ async fn ha_finalize_is_rejected_in_dual_active_mode() {
 }
 
 #[tokio::test]
-async fn dual_active_promote_rejects_non_force_and_reachable_full_writer_peer() {
+async fn dual_active_promote_gates_planned_but_preserves_legacy_force_split_brain_check() {
     let peer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind peer listener");
@@ -2380,7 +2380,7 @@ async fn dual_active_promote_rejects_non_force_and_reachable_full_writer_peer() 
                     "message": null,
                     "peerNodes": [],
                     "plannedCutoverEligible": false
-                }))
+                    }))
             }),
         );
         axum::serve(peer_listener, app.into_make_service())
@@ -2433,7 +2433,7 @@ async fn dual_active_promote_rejects_non_force_and_reachable_full_writer_peer() 
     assert_eq!(non_force.status(), reqwest::StatusCode::CONFLICT);
     let non_force_body = non_force.text().await.expect("non-force body");
     assert!(
-        non_force_body.contains("requires force=true"),
+        non_force_body.contains("writable_tenure_v1"),
         "unexpected non-force promote body: {non_force_body}"
     );
 
@@ -2476,7 +2476,9 @@ async fn dual_active_planned_cutover_keeps_local_full_master_when_peer_update_fa
             .route(
                 "/api/internal/ha/status",
                 get(move || async move {
-                    Json(json!({
+                    ([
+                        ("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY),
+                    ], Json(json!({
                         "mode": "active_standby",
                         "nodeId": "node-b",
                         "nodePublicOrigin": "node-b-public:443",
@@ -2513,7 +2515,7 @@ async fn dual_active_planned_cutover_keeps_local_full_master_when_peer_update_fa
                         "message": "peer ready",
                         "peerNodes": [],
                         "plannedCutoverEligible": true
-                    }))
+                    })))
                 }),
             )
             .route(
@@ -2630,7 +2632,9 @@ async fn dual_active_planned_cutover_fences_local_writer_before_peer_promotion()
             .route(
                 "/api/internal/ha/status",
                 get(move || async move {
-                    Json(json!({
+                    ([
+                        ("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY),
+                    ], Json(json!({
                         "mode": "active_standby",
                         "nodeId": "node-b",
                         "nodePublicOrigin": "node-b-public:443",
@@ -2667,7 +2671,7 @@ async fn dual_active_planned_cutover_fences_local_writer_before_peer_promotion()
                         "message": "peer ready",
                         "peerNodes": [],
                         "plannedCutoverEligible": true
-                    }))
+                    })))
                 }),
             )
             .route(
@@ -2696,7 +2700,9 @@ async fn dual_active_planned_cutover_fences_local_writer_before_peer_promotion()
                             status["allowsFullWrites"].as_bool().unwrap_or(true),
                             std::sync::atomic::Ordering::SeqCst,
                         );
-                        Json(json!({
+                        ([
+                            ("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY),
+                        ], Json(json!({
                             "mode": "active_standby",
                             "nodeId": "node-b",
                             "nodePublicOrigin": "node-b-public:443",
@@ -2733,7 +2739,7 @@ async fn dual_active_planned_cutover_fences_local_writer_before_peer_promotion()
                             "message": "peer promoted",
                             "peerNodes": [],
                             "plannedCutoverEligible": true
-                        }))
+                        })))
                     }
                 }),
             );
@@ -2846,7 +2852,9 @@ async fn dual_active_planned_cutover_keeps_local_fenced_when_peer_response_is_am
                     async move {
                         let promoted = peer_promoted_for_status
                             .load(std::sync::atomic::Ordering::SeqCst);
-                        Json(json!({
+                        ([
+                            ("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY),
+                        ], Json(json!({
                             "mode": "active_standby",
                             "nodeId": "node-b",
                             "nodePublicOrigin": "node-b-public:443",
@@ -2883,7 +2891,7 @@ async fn dual_active_planned_cutover_keeps_local_fenced_when_peer_response_is_am
                             "message": if promoted { "peer promoted" } else { "peer ready" },
                             "peerNodes": [],
                             "plannedCutoverEligible": true
-                        }))
+                        })))
                     }
                 }),
             )
