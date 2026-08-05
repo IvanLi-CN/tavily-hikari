@@ -1664,11 +1664,11 @@ async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError
     if supervisor.state().await.phase == tavily_hikari::WritableAuthorityPhase::Standby {
         return Ok(());
     }
-    supervisor.begin_demotion().await;
     state
         .proxy
         .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
         .await?;
+    supervisor.begin_demotion().await;
     let authority = state
         .proxy
         .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
