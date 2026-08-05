@@ -693,9 +693,18 @@ async fn persist_ha_status_snapshot(
     state: &Arc<AppState>,
     status: &tavily_hikari::HaStatusView,
 ) -> Result<(), (StatusCode, String)> {
-    if status.allows_full_writes {
-        let _ = spawn_background_tasks_for_current_role(state.clone()).await;
+    let mut recovery_status = None;
+    let promotion_error = if status.allows_full_writes
+        && !spawn_background_tasks_for_current_role(state.clone()).await
+    {
+        let message = "writable authority promotion failed; node entered fail-closed recovery";
+        recovery_status = Some(state.ha.enter_recovery(message.to_string()).await);
+        Some(message.to_string())
     } else {
+        None
+    };
+    let status = recovery_status.as_ref().unwrap_or(status);
+    if !status.allows_full_writes {
         demote_writable_runtime(state)
             .await
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
@@ -723,6 +732,9 @@ async fn persist_ha_status_snapshot(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), status);
+    if let Some(error) = promotion_error {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, error));
+    }
     Ok(())
 }
 

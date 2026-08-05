@@ -389,7 +389,9 @@ async fn ensure_ha_allows_basic_business(
     let authority = state.ha.writable_tenure_supervisor().state().await;
     if status.allows_basic_business
         && (authority.phase == tavily_hikari::WritableAuthorityPhase::Writable
-            || authority.epoch == 0)
+            || authority.epoch == 0
+            || (state.ha.dual_active_enabled()
+                && authority.phase == tavily_hikari::WritableAuthorityPhase::Standby))
     {
         return Ok(admission);
     }

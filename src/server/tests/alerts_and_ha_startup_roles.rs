@@ -347,7 +347,7 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
         linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
         linuxdo_credit: LinuxDoCreditOptions::disabled(),
         ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
-            mode: tavily_hikari::HaMode::ActiveStandby,
+            mode: tavily_hikari::HaMode::Single,
             node_id: "node-post-ready-rebuild".to_string(),
             database_path: Some(db_str.clone()),
             ..tavily_hikari::HaConfig::default()
@@ -358,7 +358,7 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
         dashboard_overview_cache: new_dashboard_overview_cache(),
     });
     let status = tavily_hikari::HaStatusView {
-        mode: tavily_hikari::HaMode::ActiveStandby,
+        mode: tavily_hikari::HaMode::Single,
         node_id: "node-post-ready-rebuild".to_string(),
         node_public_origin: None,
         role: tavily_hikari::HaNodeRole::FullMaster,
