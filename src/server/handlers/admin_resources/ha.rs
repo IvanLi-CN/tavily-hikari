@@ -639,13 +639,13 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
     }
     for peer in &mut status.peer_nodes {
         let mut health = Vec::with_capacity(3);
-        let peer_probe_succeeded = peer.role.is_some() && peer.last_seen_at.is_some() && !peer.stale;
+        let peer_has_last_good = peer.role.is_some() && peer.last_seen_at.is_some();
         for channel in [
             tavily_hikari::HaSyncChannel::Control,
             tavily_hikari::HaSyncChannel::Billing,
             tavily_hikari::HaSyncChannel::Runtime,
         ] {
-            let value = if !peer_probe_succeeded {
+            let value = if !peer_has_last_good {
                 Some(tavily_hikari::HaChannelHealthView {
                     channel,
                     acked_seq: None,
@@ -671,6 +671,14 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
                     gc_slo_state: "unknown".to_string(),
                     gc_foreground_rps: 0,
                 })
+            } else if peer.stale {
+                Some(
+                    peer.channel_health
+                        .iter()
+                        .find(|health| health.channel == channel)
+                        .cloned()
+                        .unwrap_or_else(|| unknown_peer_channel_health(channel)),
+                )
             } else if status.role == tavily_hikari::HaNodeRole::Standby {
                 let source_health = peer
                     .channel_health

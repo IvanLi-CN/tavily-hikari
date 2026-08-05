@@ -672,11 +672,13 @@ async fn admin_ha_status_surfaces_peer_source_config_target() {
     peer_status.last_sync_at = Some(1_700_000_001);
     peer_status.sync_lag_seconds = Some(1);
     peer_status.message = Some("peer ready".to_string());
-    ha.peer_observation_store()
+    let observation_store = ha.peer_observation_store();
+    let observation_time = proxy.backend_time().now_ts();
+    observation_store
         .record(
             "node-peer",
             tavily_hikari::HaPeerObservation::success(
-                Utc::now().timestamp(),
+                observation_time,
                 peer_status,
                 None,
             ),
@@ -699,6 +701,52 @@ async fn admin_ha_status_surfaces_peer_source_config_target() {
         "a reachable older peer without optional channel telemetry must not appear unavailable"
     );
     assert_eq!(observed_peer_node_id.lock().await.as_deref(), None);
+
+    let mut cached = observation_store
+        .get("node-peer")
+        .await
+        .expect("cached peer observation");
+    cached.channel_health.push(tavily_hikari::HaChannelHealthView {
+        channel: tavily_hikari::HaSyncChannel::Control,
+        acked_seq: Some(7),
+        high_watermark: 7,
+        ack_lag: Some(0),
+        cursor_state: "healthy".to_string(),
+        retention_secs: 72 * 60 * 60,
+        expired_backlog: false,
+        gc_state: "idle".to_string(),
+        oldest_age_secs: Some(0),
+        last_progress_at: Some(observation_time),
+        last_defer_reason: None,
+        next_retry_at: None,
+        batch_size: 250,
+        gc_debt_mode: "normal".to_string(),
+        gc_observed_at: Some(observation_time),
+        gc_deleted_rows_per_minute: 0.0,
+        gc_recovery_deadline_at: None,
+        gc_slo_state: "healthy".to_string(),
+        gc_foreground_rps: 0,
+    });
+    observation_store.record("node-peer", cached).await;
+    observation_store
+        .record_failure(
+            "node-peer",
+            observation_time + 1,
+            "peer probe failed after last-good observation",
+        )
+        .await;
+    let response = Client::new()
+        .get(format!("http://{addr}/api/admin/ha/status"))
+        .send()
+        .await
+        .expect("stale ha status response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("stale ha status body");
+    assert_eq!(body["peerNodes"][0]["stale"], true);
+    assert!(body["peerNodes"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("last-good peer observation is stale")));
+    assert_eq!(body["peerNodes"][0]["channelHealth"][0]["cursorState"], "healthy");
 
     let _ = std::fs::remove_file(db_path);
 }
