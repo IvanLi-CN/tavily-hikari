@@ -168,12 +168,13 @@ rule-providers:
             .await
             .expect("ensure schema");
 
+        let sqlite_runtime = crate::store::SqliteRuntime::new(pool.clone(), pool.clone(), 1);
         let key_store = crate::store::KeyStore {
             database_path: db_path.to_string_lossy().into_owned(),
             observability_database_path: None,
             _observability_lock: None,
-            pool: pool.clone(),
-            read_flush_pool: pool.clone(),
+            pool: sqlite_runtime.compatibility_primary_pool(),
+            read_flush_pool: sqlite_runtime.compatibility_read_flush_pool(),
             backend_time: crate::BackendTime::system(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             account_quota_resolution_cache: tokio::sync::RwLock::new(
@@ -185,7 +186,8 @@ rule-providers:
                 std::collections::HashMap::new(),
             ),
             request_stats_coalescer: crate::store::RequestStatsCoalescer::default(),
-            admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),
+            admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
+            sqlite_runtime,
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             #[cfg(test)]
