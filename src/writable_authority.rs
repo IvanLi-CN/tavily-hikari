@@ -137,17 +137,27 @@ impl WritableTenureSupervisor {
     }
 
     pub async fn finish_demotion(&self, persisted_epoch: i64) -> Result<(), String> {
-        let mut state = self.state.lock().await;
-        if state.authority.phase != WritableAuthorityPhase::Demoting {
-            return Err("authority is not demoting".to_string());
-        }
-        if persisted_epoch <= state.authority.epoch {
-            return Err("demotion must persist a newer authority epoch".to_string());
-        }
-        if let Some(mut runtime) = state.runtime.take() {
+        let runtime = {
+            let mut state = self.state.lock().await;
+            if state.authority.phase != WritableAuthorityPhase::Demoting {
+                return Err("authority is not demoting".to_string());
+            }
+            if persisted_epoch <= state.authority.epoch {
+                return Err("demotion must persist a newer authority epoch".to_string());
+            }
+            state.authority = WritableAuthorityState::standby(persisted_epoch);
+            state.runtime.take()
+        };
+        if let Some(mut runtime) = runtime
+            && tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                runtime.tasks.join_next(),
+            )
+            .await
+            .is_err()
+        {
             runtime.tasks.abort_all();
         }
-        state.authority = WritableAuthorityState::standby(persisted_epoch);
         Ok(())
     }
 }

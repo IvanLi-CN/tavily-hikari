@@ -2343,7 +2343,9 @@ async fn dual_active_promote_rejects_non_force_and_reachable_full_writer_peer() 
         let app = Router::new().route(
             "/api/internal/ha/status",
             get(move || async move {
-                Json(json!({
+                (
+                    [("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY)],
+                    Json(json!({
                     "mode": "active_standby",
                     "nodeId": "node-b",
                     "nodePublicOrigin": "node-b-public:443",
@@ -2380,7 +2382,8 @@ async fn dual_active_promote_rejects_non_force_and_reachable_full_writer_peer() 
                     "message": null,
                     "peerNodes": [],
                     "plannedCutoverEligible": false
-                }))
+                    })),
+                )
             }),
         );
         axum::serve(peer_listener, app.into_make_service())

@@ -1556,29 +1556,31 @@ async fn run_ha_sync_once_for_peer(
     Ok(())
 }
 
-fn spawn_business_background_tasks(state: Arc<AppState>) {
-    spawn_maintenance_worker(state.clone());
-    spawn_scheduled_job_stale_reaper(state.clone());
-    spawn_quota_sync_scheduler(state.clone());
-    spawn_token_usage_rollup_scheduler(state.clone());
-    spawn_upstream_reconciliation_scheduler(state.clone());
-    spawn_auth_token_logs_gc_scheduler(state.clone());
-    spawn_ha_outbox_gc_scheduler(state.clone());
-    spawn_mcp_sessions_gc_scheduler(state.clone());
-    spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
-    spawn_request_logs_gc_scheduler(state.clone());
-    spawn_request_logs_body_gc_index_ensure_scheduler(state.clone());
-    spawn_dashboard_rollup_integrity_scheduler(state.clone());
-    spawn_auth_token_logs_alert_index_ensure_scheduler(state.clone());
+fn spawn_business_background_tasks(state: Arc<AppState>) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut tasks = vec![
+        spawn_maintenance_worker(state.clone()),
+        spawn_scheduled_job_stale_reaper(state.clone()),
+        spawn_token_usage_rollup_scheduler(state.clone()),
+        spawn_upstream_reconciliation_scheduler(state.clone()),
+        spawn_auth_token_logs_gc_scheduler(state.clone()),
+        spawn_ha_outbox_gc_scheduler(state.clone()),
+        spawn_mcp_sessions_gc_scheduler(state.clone()),
+        spawn_mcp_session_init_backoffs_gc_scheduler(state.clone()),
+        spawn_request_logs_gc_scheduler(state.clone()),
+        spawn_request_logs_body_gc_index_ensure_scheduler(state.clone()),
+        spawn_dashboard_rollup_integrity_scheduler(state.clone()),
+        spawn_auth_token_logs_alert_index_ensure_scheduler(state.clone()),
+    ];
+    tasks.extend(spawn_quota_sync_scheduler(state.clone()));
     if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
-        spawn_linuxdo_user_status_sync_scheduler(state.clone());
+        tasks.push(spawn_linuxdo_user_status_sync_scheduler(state.clone()));
     }
-    spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone());
-    let _linuxdo_credit_recharge_lifecycle_scheduler =
-        spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone());
-    let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
-    spawn_forward_proxy_maintenance_scheduler(state.clone());
-    spawn_db_compaction_scheduler(state);
+    tasks.push(spawn_linuxdo_user_tag_binding_refresh_scheduler(state.clone()));
+    tasks.push(spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone()));
+    tasks.push(spawn_forward_proxy_geo_refresh_scheduler(state.clone()));
+    tasks.push(spawn_forward_proxy_maintenance_scheduler(state.clone()));
+    tasks.push(spawn_db_compaction_scheduler(state));
+    tasks
 }
 
 fn background_tasks_disabled_via_env() -> bool {
@@ -1646,8 +1648,11 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         .ha
         .writable_tenure_supervisor()
         .promote(authority.epoch, move |revision| async move {
-            spawn_business_background_tasks(runtime_state);
+            let tasks = spawn_business_background_tasks(runtime_state);
             revision.cancellation_token().cancelled().await;
+            for task in tasks {
+                task.abort();
+            }
         })
         .await
         .is_ok()

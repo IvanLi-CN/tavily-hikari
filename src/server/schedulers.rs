@@ -501,7 +501,7 @@ async fn run_queued_scheduled_job(state: Arc<AppState>, job: JobLog) {
     }
 }
 
-fn spawn_dashboard_rollup_integrity_scheduler(state: Arc<AppState>) {
+fn spawn_dashboard_rollup_integrity_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             // The unique-active-job constraint turns this into a cheap liveness
@@ -522,7 +522,7 @@ fn spawn_dashboard_rollup_integrity_scheduler(state: Arc<AppState>) {
                 ))
                 .await;
         }
-    });
+    })
 }
 
 async fn finish_dashboard_rollup_integrity_and_enqueue(
@@ -645,16 +645,17 @@ async fn run_dashboard_rollup_integrity_claimed_job(
     .await
 }
 
-fn spawn_maintenance_worker(state: Arc<AppState>) {
+fn spawn_maintenance_worker(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let wake = maintenance_worker_wake_for_state(state.as_ref());
+        let mut remote_jobs = tokio::task::JoinSet::new();
         loop {
             match dequeue_next_scheduled_job(state.as_ref()).await {
                 Ok(Some((job, remote_io_permit))) => {
                     if let Some(remote_io_permit) = remote_io_permit {
                         let run_state = state.clone();
                         let run_wake = wake.clone();
-                        tokio::spawn(async move {
+                        remote_jobs.spawn(async move {
                             let _remote_io_permit = remote_io_permit;
                             run_queued_scheduled_job(run_state, job).await;
                             run_wake.notify_one();
@@ -688,10 +689,10 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
                 }
             }
         }
-    });
+    })
 }
 
-fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) {
+fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             state.proxy.backend_time().sleep(Duration::from_secs(30)).await;
@@ -713,12 +714,14 @@ fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) {
                 ),
             }
         }
-    });
+    })
 }
 
-fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
+fn spawn_quota_sync_scheduler(
+    state: Arc<AppState>,
+) -> [tokio::task::JoinHandle<()>; 2] {
     let cold_state = state.clone();
-    tokio::spawn(async move {
+    let cold = tokio::spawn(async move {
         loop {
             let keys = {
                 let _maintenance = acquire_db_maintenance_read_gate().await;
@@ -769,7 +772,7 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
     });
 
     let hot_state = state;
-    tokio::spawn(async move {
+    let hot = tokio::spawn(async move {
         loop {
             let keys = {
                 let _maintenance = acquire_db_maintenance_read_gate().await;
@@ -818,9 +821,10 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 .await;
         }
     });
+    [cold, hot]
 }
 
-fn spawn_token_usage_rollup_scheduler(state: Arc<AppState>) {
+fn spawn_token_usage_rollup_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let Some(_) = enqueue_scheduled_job_logged(
@@ -839,10 +843,10 @@ fn spawn_token_usage_rollup_scheduler(state: Arc<AppState>) {
             // Run rollup every 5 minutes to keep charts reasonably fresh
             state.proxy.backend_time().sleep(Duration::from_secs(300)).await;
         }
-    });
+    })
 }
 
-fn spawn_upstream_reconciliation_scheduler(state: Arc<AppState>) {
+fn spawn_upstream_reconciliation_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let _ = enqueue_scheduled_job_logged(
@@ -855,10 +859,10 @@ fn spawn_upstream_reconciliation_scheduler(state: Arc<AppState>) {
             .await;
             state.proxy.backend_time().sleep(Duration::from_secs(60)).await;
         }
-    });
+    })
 }
 
-fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
+fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let Some(_) = enqueue_scheduled_job_logged(
@@ -877,10 +881,10 @@ fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
             // Run GC once per hour; retention window is enforced inside the proxy.
             state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
-    });
+    })
 }
 
-fn spawn_ha_outbox_gc_scheduler(state: Arc<AppState>) {
+fn spawn_ha_outbox_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut next_baseline_at = state.proxy.backend_time().now_ts();
         loop {
@@ -926,10 +930,10 @@ fn spawn_ha_outbox_gc_scheduler(state: Arc<AppState>) {
                 .sleep(Duration::from_secs(HA_OUTBOX_GC_RECHECK_SECS))
                 .await;
         }
-    });
+    })
 }
 
-fn spawn_mcp_sessions_gc_scheduler(state: Arc<AppState>) {
+fn spawn_mcp_sessions_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let Some(_) = enqueue_scheduled_job_logged(
@@ -947,10 +951,10 @@ fn spawn_mcp_sessions_gc_scheduler(state: Arc<AppState>) {
 
             state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
-    });
+    })
 }
 
-fn spawn_mcp_session_init_backoffs_gc_scheduler(state: Arc<AppState>) {
+fn spawn_mcp_session_init_backoffs_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let Some(_) = enqueue_scheduled_job_logged(
@@ -968,10 +972,10 @@ fn spawn_mcp_session_init_backoffs_gc_scheduler(state: Arc<AppState>) {
 
             state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
         }
-    });
+    })
 }
 
-fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
+fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Schedule: daily at configured local time.
         loop {
@@ -991,10 +995,10 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
             )
             .await;
         }
-    });
+    })
 }
 
-fn spawn_request_logs_body_gc_index_ensure_scheduler(state: Arc<AppState>) {
+fn spawn_request_logs_body_gc_index_ensure_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let _ = enqueue_scheduled_job_logged(
             state.as_ref(),
@@ -1004,10 +1008,10 @@ fn spawn_request_logs_body_gc_index_ensure_scheduler(state: Arc<AppState>) {
             "request-logs-body-gc-index",
         )
         .await;
-    });
+    })
 }
 
-fn spawn_auth_token_logs_alert_index_ensure_scheduler(state: Arc<AppState>) {
+fn spawn_auth_token_logs_alert_index_ensure_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let _ = enqueue_scheduled_job_logged(
             state.as_ref(),
@@ -1017,7 +1021,7 @@ fn spawn_auth_token_logs_alert_index_ensure_scheduler(state: Arc<AppState>) {
             "auth-token-logs-alert-index",
         )
         .await;
-    });
+    })
 }
 
 async fn run_request_logs_gc_catchup_claimed_job(
@@ -1820,7 +1824,7 @@ async fn run_linuxdo_user_status_sync_claimed_job(
     final_status == "success"
 }
 
-fn spawn_linuxdo_user_status_sync_scheduler(state: Arc<AppState>) {
+fn spawn_linuxdo_user_status_sync_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let (hour, minute) = state.linuxdo_oauth.user_sync_time();
@@ -1838,7 +1842,7 @@ fn spawn_linuxdo_user_status_sync_scheduler(state: Arc<AppState>) {
             )
             .await;
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -1892,7 +1896,7 @@ async fn run_linuxdo_user_tag_binding_refresh_job_with_source(
     }
 }
 
-fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) {
+fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let wait_secs = {
@@ -1935,7 +1939,7 @@ fn spawn_linuxdo_user_tag_binding_refresh_scheduler(state: Arc<AppState>) {
                 .sleep(Duration::from_secs(sleep_secs))
                 .await;
         }
-    });
+    })
 }
 
 fn spawn_linuxdo_credit_recharge_lifecycle_scheduler(
@@ -2761,7 +2765,7 @@ async fn run_db_compaction_claimed_job(
     finish_db_compaction_claimed_job(state, job_id, claim_generation).await
 }
 
-fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
+fn spawn_db_compaction_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut next_allowed_at = state.proxy.backend_time().instant_now();
         loop {
@@ -2806,7 +2810,7 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
                 DB_COMPACTION_COOLDOWN_SECS,
             ));
         }
-    });
+    })
 }
 
 fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
@@ -2857,7 +2861,7 @@ fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::tas
     })
 }
 
-fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
+fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             {
@@ -2874,5 +2878,5 @@ fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
             }
             state.proxy.backend_time().sleep(Duration::from_secs(30)).await;
         }
-    });
+    })
 }

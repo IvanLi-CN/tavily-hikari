@@ -13,6 +13,9 @@
 - `writable_tenure_v1` 通过内部 HA response header 扩展，避免改变 public/admin JSON；planned
   transition 要求全员能力，新旧混跑期间因此 fail closed，force emergency 路径继续使用既有防脑裂
   检查与审计。
+- writable tenure 持有 legacy scheduler handles 与 worker 内并发 remote-I/O task；demotion 的
+  revision cancellation 因而能够在 epoch 推进前终止旧 runtime，而后续 Ticket 再将该适配层封装为
+  独立 `MaintenanceRuntime`。
 
 ## Key Reasons / Replacements
 
