@@ -607,6 +607,7 @@ pub struct HaStatusView {
 #[derive(Clone, Debug)]
 pub struct HaPeerObservation {
     pub observed_at: i64,
+    pub last_good_observed_at: Option<i64>,
     pub status: Option<HaStatusView>,
     pub error: Option<String>,
     pub capabilities: Option<String>,
@@ -623,6 +624,7 @@ impl HaPeerObservation {
             .unwrap_or_default();
         Self {
             observed_at,
+            last_good_observed_at: Some(observed_at),
             status: Some(status),
             error: None,
             capabilities,
@@ -633,6 +635,7 @@ impl HaPeerObservation {
     pub fn failure(observed_at: i64, error: impl Into<String>) -> Self {
         Self {
             observed_at,
+            last_good_observed_at: None,
             status: None,
             error: Some(error.into()),
             capabilities: None,
@@ -656,6 +659,25 @@ impl HaPeerObservationStore {
             .write()
             .await
             .insert(node_id.into(), observation);
+    }
+
+    pub async fn record_failure(
+        &self,
+        node_id: impl Into<String>,
+        observed_at: i64,
+        error: impl Into<String>,
+    ) {
+        let node_id = node_id.into();
+        let error = error.into();
+        let mut observations = self.observations.write().await;
+        if let Some(observation) = observations.get_mut(&node_id)
+            && observation.status.is_some()
+        {
+            observation.observed_at = observed_at;
+            observation.error = Some(error);
+            return;
+        }
+        observations.insert(node_id, HaPeerObservation::failure(observed_at, error));
     }
 
     pub async fn get(&self, node_id: &str) -> Option<HaPeerObservation> {
@@ -2039,16 +2061,19 @@ mod tests {
         assert_eq!(success.channel_health[0].cursor_state, "healthy");
 
         store
-            .record(
-                "peer-a",
-                HaPeerObservation::failure(101, "peer unavailable"),
-            )
+            .record_failure("peer-a", 101, "peer unavailable")
             .await;
         let failure = store.get("peer-a").await.expect("failure observation");
         assert_eq!(failure.observed_at, 101);
-        assert!(failure.status.is_none());
+        assert_eq!(failure.last_good_observed_at, Some(100));
+        assert!(failure.status.is_some());
         assert_eq!(failure.error.as_deref(), Some("peer unavailable"));
-        assert!(failure.channel_health.is_empty());
+        assert_eq!(
+            failure.capabilities.as_deref(),
+            Some(WRITABLE_TENURE_CAPABILITY)
+        );
+        assert_eq!(failure.channel_health.len(), 1);
+        assert_eq!(failure.channel_health[0].cursor_state, "healthy");
     }
 
     #[tokio::test]

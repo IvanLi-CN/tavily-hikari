@@ -839,12 +839,10 @@ async fn observe_ha_peer_statuses_once(
     let Some(internal_token) = internal_token else {
         for peer in peers {
             store
-                .record(
+                .record_failure(
                     peer.node_id,
-                    tavily_hikari::HaPeerObservation::failure(
-                        state.proxy.backend_time().now_ts(),
-                        "HA_INTERNAL_TOKEN is required for peer observation",
-                    ),
+                    state.proxy.backend_time().now_ts(),
+                    "HA_INTERNAL_TOKEN is required for peer observation",
                 )
                 .await;
         }
@@ -875,7 +873,12 @@ async fn observe_ha_peer_statuses_once(
                 probe.status,
                 probe.capabilities,
             ),
-            Err(err) => tavily_hikari::HaPeerObservation::failure(observed_at, err),
+            Err(err) => {
+                store
+                    .record_failure(peer.node_id, observed_at, err)
+                    .await;
+                continue;
+            }
         };
         store.record(peer.node_id, observation).await;
     }
@@ -1424,12 +1427,10 @@ async fn run_ha_peer_sync_once(
                 state
                     .ha
                     .peer_observation_store()
-                    .record(
+                    .record_failure(
                         peer.node_id.clone(),
-                        tavily_hikari::HaPeerObservation::failure(
-                            state.proxy.backend_time().now_ts(),
-                            err.clone(),
-                        ),
+                        state.proxy.backend_time().now_ts(),
+                        err.clone(),
                     )
                     .await;
                 tracing::warn!(

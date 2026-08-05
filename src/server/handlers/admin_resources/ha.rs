@@ -247,6 +247,7 @@ fn peer_view_from_status(
     status: &tavily_hikari::HaStatusView,
     last_seen_at: i64,
     now_ts: i64,
+    channel_health: &[tavily_hikari::HaChannelHealthView],
 ) -> tavily_hikari::HaPeerNodeView {
     let stale = now_ts.saturating_sub(last_seen_at) > HA_PEER_STALE_SECS;
     let planned_cutover_eligible = config.role_hint == tavily_hikari::HaPeerRoleHint::StandbyCandidate
@@ -270,12 +271,7 @@ fn peer_view_from_status(
         stale,
         role_hint: config.role_hint,
         planned_cutover_eligible,
-        channel_health: status
-            .peer_nodes
-            .iter()
-            .find(|node| node.node_id == status.node_id)
-            .map(|node| node.channel_health.clone())
-            .unwrap_or_default(),
+        channel_health: channel_health.to_vec(),
     }
 }
 
@@ -308,18 +304,31 @@ fn peer_view_from_observation(
     now_ts: i64,
 ) -> tavily_hikari::HaPeerNodeView {
     match observation.status.as_ref() {
-        Some(status) => peer_view_from_status(config, status, observation.observed_at, now_ts),
-        None => {
-            let mut view = peer_view_from_error(
+        Some(status) => {
+            let last_good_observed_at = observation
+                .last_good_observed_at
+                .unwrap_or(observation.observed_at);
+            let mut view = peer_view_from_status(
                 config,
-                observation
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "peer observation is unavailable".to_string()),
+                status,
+                last_good_observed_at,
+                now_ts,
+                &observation.channel_health,
             );
-            view.last_seen_at = Some(observation.observed_at);
+            if let Some(error) = &observation.error {
+                view.message = Some(format!("last-good peer observation is stale: {error}"));
+                view.stale = true;
+                view.planned_cutover_eligible = false;
+            }
             view
         }
+        None => peer_view_from_error(
+            config,
+            observation
+                .error
+                .clone()
+                .unwrap_or_else(|| "peer observation is unavailable".to_string()),
+        ),
     }
 }
 
@@ -621,9 +630,16 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
                 })
         })
         .collect();
+    if status
+        .peer_nodes
+        .iter()
+        .any(|peer| peer.role.is_none() || peer.stale)
+    {
+        status.degraded = true;
+    }
     for peer in &mut status.peer_nodes {
         let mut health = Vec::with_capacity(3);
-        let peer_probe_succeeded = peer.role.is_some() && peer.last_seen_at.is_some();
+        let peer_probe_succeeded = peer.role.is_some() && peer.last_seen_at.is_some() && !peer.stale;
         for channel in [
             tavily_hikari::HaSyncChannel::Control,
             tavily_hikari::HaSyncChannel::Billing,
