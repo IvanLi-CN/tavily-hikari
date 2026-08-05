@@ -1735,6 +1735,10 @@ async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError
     let maintenance = state.ha.maintenance_runtime().await;
     supervisor.quiesce_demotion().await;
     maintenance.abort_remote_tasks().await;
+    state
+        .proxy
+        .requeue_running_scheduled_jobs_for_demotion()
+        .await?;
     let authority = state
         .proxy
         .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)

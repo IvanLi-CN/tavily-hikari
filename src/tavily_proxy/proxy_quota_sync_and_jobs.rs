@@ -2218,6 +2218,12 @@ impl TavilyProxy {
         self.key_store.abandon_running_scheduled_jobs().await
     }
 
+    pub async fn requeue_running_scheduled_jobs_for_demotion(&self) -> Result<u64, ProxyError> {
+        self.key_store
+            .requeue_running_scheduled_jobs_for_demotion()
+            .await
+    }
+
     pub async fn abandon_active_scheduled_jobs(&self) -> Result<u64, ProxyError> {
         self.key_store.abandon_active_scheduled_jobs().await
     }

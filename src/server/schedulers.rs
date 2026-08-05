@@ -21,27 +21,21 @@ fn random_delay_secs(max_inclusive: u64) -> u64 {
     let mut rng = rand::thread_rng();
     rng.gen_range(0..=max_inclusive)
 }
-
 fn twenty_four_hours_secs() -> i64 {
     24 * 60 * 60
 }
-
 fn two_hours_secs() -> i64 {
     2 * 60 * 60
 }
-
 fn fifteen_minutes_secs() -> i64 {
     15 * 60
 }
-
 fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
     60
 }
-
 fn linuxdo_credit_recharge_lifecycle_recheck_secs() -> i64 {
     30
 }
-
 fn scheduled_request_logs_gc_options() -> RequestLogsGcOptions {
     RequestLogsGcOptions {
         batch_size: 100,
@@ -573,6 +567,9 @@ async fn run_queued_scheduled_job(
         claim_generation: job.claim_generation,
         _job_execution_gate: None,
     };
+    if job_type == "ha_outbox_gc" {
+        return run_ha_outbox_gc_claimed_job(state, claimed_job).await;
+    }
     let completed = run_manual_claimed_job(
         state.clone(),
         job_type.clone(),
@@ -1349,7 +1346,7 @@ async fn finish_ha_gc_with_continuation(
     claim_generation: i64,
     message: String,
     continuation_delay_secs: i64,
-) -> bool {
+) -> ScheduledJobCompletion {
     let available_at = state
         .proxy
         .backend_time()
@@ -1378,6 +1375,7 @@ async fn finish_ha_gc_with_continuation(
                 continuation_delay_secs,
                 available_at,
             );
+            ScheduledJobCompletion::Deferred
         }
         Err(err) if err.is_stale_claim() => {
             tracing::debug!(
@@ -1387,7 +1385,7 @@ async fn finish_ha_gc_with_continuation(
                 claim_generation,
                 "stale GC claim cannot finish or enqueue a continuation"
             );
-            return true;
+            ScheduledJobCompletion::Deferred
         }
         Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
             tracing::debug!(
@@ -1399,7 +1397,7 @@ async fn finish_ha_gc_with_continuation(
                 err = %err,
                 "HA outbox GC continuation hit a transient SQLite conflict; stale reaper will recover it"
             );
-            return false;
+            ScheduledJobCompletion::Deferred
         }
         Err(err) => {
             tracing::error!(
@@ -1426,17 +1424,18 @@ async fn finish_ha_gc_with_continuation(
                     err = %finish_err,
                     "HA outbox GC deferred job remains eligible for the outer continuation retry"
                 );
+                ScheduledJobCompletion::Deferred
+            } else {
+                ScheduledJobCompletion::Failed
             }
-            return false;
         }
     }
-    true
 }
 
 async fn run_ha_outbox_gc_claimed_job(
     state: Arc<AppState>,
     claimed_job: ClaimedScheduledJob,
-) -> bool {
+) -> ScheduledJobCompletion {
     let ClaimedScheduledJob {
         job_id,
         claim_generation,
@@ -1619,6 +1618,7 @@ async fn run_ha_outbox_gc_claimed_job(
                     .await;
                 }
             }
+            ScheduledJobCompletion::Completed
         }
         Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
             tracing::debug!(
@@ -1640,13 +1640,16 @@ async fn run_ha_outbox_gc_claimed_job(
         }
         Err(err) => {
             let message = err.to_string();
-            let _ = state
+            match state
                 .proxy
                 .scheduled_job_finish_claimed(job_id, claim_generation, "error", Some(&message))
-                .await;
+                .await
+            {
+                Ok(()) => ScheduledJobCompletion::Failed,
+                Err(_) => ScheduledJobCompletion::Deferred,
+            }
         }
     }
-    true
 }
 
 async fn record_linuxdo_user_sync_failure(
@@ -2617,9 +2620,6 @@ async fn run_manual_claimed_job(
     key_id: Option<String>,
     mut claimed_job: ClaimedScheduledJob,
 ) -> bool {
-    if job_type == "ha_outbox_gc" {
-        return run_ha_outbox_gc_claimed_job(state, claimed_job).await;
-    }
     if job_type == "request_logs_gc" {
         return run_request_logs_gc_catchup_claimed_job(state, claimed_job).await;
     }
