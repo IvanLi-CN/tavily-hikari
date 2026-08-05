@@ -572,7 +572,30 @@ pub async fn serve(
     // refresh, and pull-sync keep working even while business traffic is fenced.
     spawn_ha_edgeone_authority_task(state.clone());
     spawn_ha_control_plane_gc_task(state.clone());
-    spawn_background_tasks_for_current_role(state.clone()).await;
+    let runtime_started = spawn_background_tasks_for_current_role(state.clone()).await;
+    let startup_ha_status = if startup_ha_status.allows_full_writes && !runtime_started {
+        let recovery = state
+            .ha
+            .enter_recovery(
+                "writable authority promotion failed during startup; fail-closed recovery required"
+                    .to_string(),
+            )
+            .await;
+        state
+            .proxy
+            .persist_ha_node_state(
+                &recovery.node_id,
+                recovery.role,
+                recovery.edgeone_origin.as_deref(),
+                recovery.ha_source_effective.as_ref(),
+                recovery.message.as_deref(),
+            )
+            .await?;
+        state.proxy.flush_ha_state_writes().await?;
+        recovery
+    } else {
+        startup_ha_status
+    };
     let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), &startup_ha_status);
 
     let shutdown_proxy = state.proxy.clone();
