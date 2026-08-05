@@ -90,6 +90,7 @@
         "runtime_logging::tests::",
         "store::admin_passkey_store_tests::",
         "store::alert_grouping_tests::",
+        "store::sqlite_runtime::tests::",
         "store::tests::",
         "tavily_proxy::tests::",
         "tests::request_kind_and_core::parse_",
