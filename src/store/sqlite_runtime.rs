@@ -151,13 +151,16 @@ mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
-    use tempfile::NamedTempFile;
+    use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
-    async fn test_runtime() -> (SqliteRuntime, sqlx::SqlitePool) {
-        let file = NamedTempFile::new().expect("sqlite temp file");
-        let path = file.path().to_string_lossy().into_owned();
-        std::mem::forget(file);
+    async fn test_runtime() -> (SqliteRuntime, sqlx::SqlitePool, TempDir) {
+        let temp_dir = TempDir::new().expect("sqlite temp directory");
+        let path = temp_dir
+            .path()
+            .join("runtime.db")
+            .to_string_lossy()
+            .into_owned();
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
             .expect("sqlite options")
             .create_if_missing(true)
@@ -173,7 +176,7 @@ mod tests {
             .await
             .expect("lock pool");
         let runtime = SqliteRuntime::new(primary.clone(), primary, 1);
-        (runtime, lock_pool)
+        (runtime, lock_pool, temp_dir)
     }
 
     #[test]
@@ -186,7 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_read_returns_typed_outcome() {
-        let (runtime, _lock_pool) = test_runtime().await;
+        let (runtime, _lock_pool, _temp_dir) = test_runtime().await;
         let cancelled = CancellationToken::new();
         cancelled.cancel();
 
@@ -200,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn busy_immediate_write_is_deferred_within_operation_budget() {
-        let (runtime, lock_pool) = test_runtime().await;
+        let (runtime, lock_pool, _temp_dir) = test_runtime().await;
         let mut lock = lock_pool.acquire().await.expect("lock connection");
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *lock)
