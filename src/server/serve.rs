@@ -892,7 +892,10 @@ fn spawn_ha_peer_observation_task(state: Arc<AppState>) {
     }
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("HA peer observation client configuration is valid");
         loop {
             let internal_token = state.ha.internal_token();
             observe_ha_peer_statuses_once(&state, &client, internal_token.as_deref()).await;
@@ -973,15 +976,17 @@ fn spawn_ha_peer_sync_task(state: Arc<AppState>) {
         let client = reqwest::Client::new();
         loop {
             let status = state.ha.status().await;
-            if ha_peer_sync_should_run(&status)
-                && let Err(err) = run_ha_peer_sync_once(&state, &client, &internal_token).await
-            {
-                tracing::warn!(
-                    component = "ha",
-                    event = "peer_sync_failed",
-                    err = %err,
-                    "HA peer sync failed"
-                );
+            if ha_peer_sync_should_run(&status) {
+                if let Err(err) = run_ha_peer_sync_once(&state, &client, &internal_token).await {
+                    tracing::warn!(
+                        component = "ha",
+                        event = "peer_sync_failed",
+                        err = %err,
+                        "HA peer sync failed"
+                    );
+                }
+            } else {
+                observe_ha_peer_statuses_once(&state, &client, Some(&internal_token)).await;
             }
             state.proxy.backend_time().sleep(interval).await;
         }
@@ -2240,6 +2245,7 @@ const DEFAULT_LOG_LIMIT: usize = 200;
 mod serve_tests {
     use super::*;
     use tavily_hikari::DEFAULT_UPSTREAM;
+    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn ha_control_apply_refreshes_in_memory_admin_password_state() {
@@ -2486,5 +2492,100 @@ mod serve_tests {
         let result = post_admin_passkey_authentication_start(State(state)).await;
 
         assert_eq!(result.expect_err("no passkey credentials yet"), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn ha_peer_observation_probe_populates_cache_for_admin_reads() {
+        let peer_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peer_hits_for_route = peer_hits.clone();
+        let peer_status = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+            mode: tavily_hikari::HaMode::ActiveStandby,
+            node_id: "node-peer".to_string(),
+            ..tavily_hikari::HaConfig::default()
+        })
+        .status()
+        .await;
+        let peer_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind peer listener");
+        let peer_addr = peer_listener.local_addr().expect("peer addr");
+        let peer_app = Router::new().route(
+            "/api/internal/ha/status",
+            get(move || {
+                let peer_hits = peer_hits_for_route.clone();
+                let peer_status = peer_status.clone();
+                async move {
+                    peer_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (
+                        [("x-tavily-ha-capabilities", tavily_hikari::WRITABLE_TENURE_CAPABILITY)],
+                        Json(peer_status),
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(peer_listener, peer_app.into_make_service())
+                .await
+                .expect("serve peer status");
+        });
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let db_path = temp_dir.path().join("ha-peer-observation-probe.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            admin_passkey: AdminPasskeyOptions::disabled(),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            linuxdo_credit: LinuxDoCreditOptions::disabled(),
+            ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+                mode: tavily_hikari::HaMode::ActiveStandby,
+                node_id: "node-active".to_string(),
+                database_path: Some(db_str),
+                internal_token: Some("peer-token".to_string()),
+                peer_nodes: vec![tavily_hikari::HaPeerNodeConfig {
+                    node_id: "node-peer".to_string(),
+                    admin_base_url: format!("http://{peer_addr}"),
+                    public_origin: "peer-public-origin:443".to_string(),
+                    role_hint: tavily_hikari::HaPeerRoleHint::StandbyCandidate,
+                }],
+                ..tavily_hikari::HaConfig::default()
+            }),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            dashboard_overview_cache: new_dashboard_overview_cache(),
+        });
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("probe client");
+
+        observe_ha_peer_statuses_once(&state, &client, Some("peer-token")).await;
+
+        let observation = state
+            .ha
+            .peer_observation_store()
+            .get("node-peer")
+            .await
+            .expect("peer observation");
+        assert_eq!(observation.capabilities.as_deref(), Some(tavily_hikari::WRITABLE_TENURE_CAPABILITY));
+        assert_eq!(
+            observation
+                .status
+                .as_ref()
+                .map(|status| status.node_id.as_str()),
+            Some("node-peer")
+        );
+        let admin_status = build_admin_ha_status(&state).await;
+        assert_eq!(admin_status.peer_nodes[0].node_id, "node-peer");
+        assert_eq!(admin_status.peer_nodes[0].role, Some(tavily_hikari::HaNodeRole::Standby));
+        assert_eq!(peer_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
