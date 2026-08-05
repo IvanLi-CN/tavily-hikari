@@ -1195,6 +1195,26 @@ impl KeyStore {
         self.abandon_active_scheduled_jobs().await
     }
 
+    pub(crate) async fn requeue_running_scheduled_jobs_for_demotion(
+        &self,
+    ) -> Result<u64, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let result = sqlx::query(
+            r#"UPDATE scheduled_jobs
+               SET status = 'queued',
+                   started_at = NULL,
+                   finished_at = NULL,
+                   available_at = ?,
+                   claim_generation = claim_generation + 1,
+                   message = 'deferred=writable_demotion'
+               WHERE status = 'running' AND finished_at IS NULL"#,
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub(crate) async fn recover_stale_scheduled_jobs(&self) -> Result<u64, ProxyError> {
         let now = self.backend_time.now_ts();
         let result = sqlx::query(

@@ -377,6 +377,79 @@ async fn stale_claim_cannot_be_misreported_as_a_non_running_job_when_requeueing(
 }
 
 #[tokio::test]
+async fn writable_demotion_requeues_running_jobs_and_fences_old_claims() {
+    let db_path = temp_db_path("scheduled-job-demotion-requeue");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let first = proxy
+        .scheduled_job_enqueue("token_usage_rollup", "scheduler", None, 1)
+        .await
+        .expect("enqueue first job");
+    let second = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .expect("enqueue second job");
+    let first_claim = proxy
+        .scheduled_job_mark_running(first.job_id)
+        .await
+        .expect("claim first job")
+        .expect("first claim exists");
+    let second_claim = proxy
+        .scheduled_job_mark_running(second.job_id)
+        .await
+        .expect("claim second job")
+        .expect("second claim exists");
+
+    assert_eq!(
+        proxy
+            .requeue_running_scheduled_jobs_for_demotion()
+            .await
+            .expect("requeue running jobs"),
+        2
+    );
+    for (job_id, claim_generation) in [
+        (first.job_id, first_claim.claim_generation),
+        (second.job_id, second_claim.claim_generation),
+    ] {
+        let recovered = proxy
+            .scheduled_job_by_id(job_id)
+            .await
+            .expect("read requeued job")
+            .expect("requeued job exists");
+        assert_eq!(recovered.status, "queued");
+        assert!(recovered.started_at.is_none());
+        assert!(recovered.finished_at.is_none());
+        assert!(recovered.claim_generation > claim_generation);
+        assert!(
+            proxy
+                .scheduled_job_finish_claimed(
+                    job_id,
+                    claim_generation,
+                    "success",
+                    Some("stale demoted claim"),
+                )
+                .await
+                .is_err(),
+            "demotion must fence the old claim"
+        );
+    }
+    assert_eq!(
+        proxy
+            .requeue_running_scheduled_jobs_for_demotion()
+            .await
+            .expect("repeat demotion cleanup"),
+        0
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn stale_reaper_recovers_ha_gc_once_with_delay() {
     let db_path = temp_db_path("scheduled-job-stale-reaper");
     let db_str = db_path.to_string_lossy().to_string();
