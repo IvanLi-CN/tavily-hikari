@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
-use crate::{BackendTime, WritableAuthorityState, WritableTenureSupervisor};
+use crate::{BackendTime, MaintenanceRuntime, WritableAuthorityState, WritableTenureSupervisor};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -696,6 +696,7 @@ pub struct HaRuntime {
     backend_time: BackendTime,
     writable_authority: WritableTenureSupervisor,
     writable_business_admission: Arc<RwLock<()>>,
+    maintenance: MaintenanceRuntime,
 }
 
 impl HaRuntime {
@@ -728,6 +729,7 @@ impl HaRuntime {
                 0,
             )),
             writable_business_admission: Arc::new(RwLock::new(())),
+            maintenance: MaintenanceRuntime::new(),
         }
     }
 
@@ -752,6 +754,10 @@ impl HaRuntime {
 
     pub fn writable_tenure_supervisor(&self) -> WritableTenureSupervisor {
         self.writable_authority.clone()
+    }
+
+    pub fn maintenance_runtime(&self) -> MaintenanceRuntime {
+        self.maintenance.clone()
     }
 
     pub async fn refresh_startup_role(&self) -> Result<(), String> {

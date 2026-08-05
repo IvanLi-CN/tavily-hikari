@@ -7,6 +7,7 @@ mod backend_time;
 mod forward_proxy;
 mod ha;
 mod linuxdo_credit_recharge;
+mod maintenance_runtime;
 mod models;
 mod store;
 mod tavily_proxy;
@@ -44,6 +45,7 @@ pub use forward_proxy::{
 };
 pub use ha::*;
 pub use linuxdo_credit_recharge::*;
+pub use maintenance_runtime::*;
 pub use models::*;
 pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,

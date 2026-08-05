@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tokio::task::JoinSet;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub const WRITABLE_TENURE_CAPABILITY: &str = "writable_tenure_v1";
@@ -53,7 +53,7 @@ impl WritableRevision {
 
 struct ActiveRuntime {
     revision: WritableRevision,
-    tasks: JoinSet<()>,
+    task: JoinHandle<()>,
 }
 
 struct SupervisorState {
@@ -129,15 +129,14 @@ impl WritableTenureSupervisor {
             epoch,
             cancellation: CancellationToken::new(),
         };
-        let mut tasks = JoinSet::new();
-        tasks.spawn(start(revision.clone()));
+        let task = tokio::spawn(start(revision.clone()));
         state.authority = WritableAuthorityState {
             epoch,
             phase: WritableAuthorityPhase::Writable,
         };
         state.runtime = Some(ActiveRuntime {
             revision: revision.clone(),
-            tasks,
+            task,
         });
         Ok(revision)
     }
@@ -154,15 +153,12 @@ impl WritableTenureSupervisor {
     pub async fn quiesce_demotion(&self) {
         let runtime = self.state.lock().await.runtime.take();
         if let Some(mut runtime) = runtime
-            && tokio::time::timeout(
-                std::time::Duration::from_millis(250),
-                runtime.tasks.join_next(),
-            )
-            .await
-            .is_err()
+            && tokio::time::timeout(std::time::Duration::from_millis(250), &mut runtime.task)
+                .await
+                .is_err()
         {
-            runtime.tasks.abort_all();
-            while runtime.tasks.join_next().await.is_some() {}
+            runtime.task.abort();
+            let _ = runtime.task.await;
         }
     }
 

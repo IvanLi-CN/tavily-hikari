@@ -114,6 +114,66 @@ struct ClaimedScheduledJob {
     _job_execution_gate: Option<OwnedMutexGuard<()>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScheduledJobCompletion {
+    Completed,
+    Deferred,
+    Failed,
+}
+
+#[derive(Clone)]
+struct LegacySchedulerAdapter {
+    runtime: tavily_hikari::MaintenanceRuntime,
+}
+
+impl LegacySchedulerAdapter {
+    fn for_state(state: &AppState) -> Self {
+        Self {
+            runtime: state.ha.maintenance_runtime(),
+        }
+    }
+
+    fn notify_worker(&self) {
+        self.runtime.wake().notify_one();
+    }
+
+    fn try_acquire_remote_io_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.runtime.try_acquire_remote_io_slot()
+    }
+
+    fn try_acquire_maintenance_lease(&self) -> Option<OwnedMutexGuard<()>> {
+        self.runtime.try_acquire_maintenance_lease()
+    }
+
+    async fn spawn_remote_task<F>(&self, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.runtime.spawn_remote_task(task).await;
+    }
+
+    async fn reap_remote_tasks(&self) {
+        self.runtime.reap_remote_tasks().await;
+    }
+
+    async fn abort_remote_tasks(&self) {
+        self.runtime.abort_remote_tasks().await;
+    }
+
+    fn completion_for(
+        job_type: &str,
+        completed: bool,
+    ) -> ScheduledJobCompletion {
+        if completed {
+            ScheduledJobCompletion::Completed
+        } else if matches!(job_type, "ha_outbox_gc" | "request_logs_gc") {
+            ScheduledJobCompletion::Deferred
+        } else {
+            ScheduledJobCompletion::Failed
+        }
+    }
+}
+
 async fn enqueue_scheduled_job_result(
     state: &AppState,
     job_type: &str,
@@ -124,7 +184,7 @@ async fn enqueue_scheduled_job_result(
         .proxy
         .scheduled_job_enqueue(job_type, trigger_source, key_id, 1)
         .await?;
-    maintenance_worker_wake_for_state(state).notify_one();
+    LegacySchedulerAdapter::for_state(state).notify_worker();
     Ok(result)
 }
 
@@ -150,7 +210,7 @@ async fn enqueue_scheduled_job_at(
         .proxy
         .scheduled_job_enqueue_at(job_type, trigger_source, key_id, 1, available_at)
         .await?;
-    maintenance_worker_wake_for_state(state).notify_one();
+    LegacySchedulerAdapter::for_state(state).notify_worker();
     Ok(result.job_id)
 }
 
@@ -378,6 +438,23 @@ fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
     assert!(scheduled_job_uses_db_execution_gate("ha_outbox_gc"));
 }
 
+#[cfg(test)]
+#[test]
+fn legacy_scheduler_adapter_exposes_typed_completion() {
+    assert_eq!(
+        LegacySchedulerAdapter::completion_for("token_usage_rollup", true),
+        ScheduledJobCompletion::Completed
+    );
+    assert_eq!(
+        LegacySchedulerAdapter::completion_for("ha_outbox_gc", false),
+        ScheduledJobCompletion::Deferred
+    );
+    assert_eq!(
+        LegacySchedulerAdapter::completion_for("token_usage_rollup", false),
+        ScheduledJobCompletion::Failed
+    );
+}
+
 async fn dequeue_next_scheduled_job(
     state: &AppState,
 ) -> Result<Option<(JobLog, Option<tokio::sync::OwnedSemaphorePermit>)>, ProxyError> {
@@ -390,7 +467,9 @@ async fn dequeue_next_scheduled_job(
     let mut remote_io_permit = None;
     for candidate in candidates {
         if scheduled_job_uses_remote_io(&candidate.job_type) {
-            if let Some(permit) = try_acquire_maintenance_remote_io_slot_for_state(state) {
+            if let Some(permit) = LegacySchedulerAdapter::for_state(state)
+                .try_acquire_remote_io_slot()
+            {
                 remote_io_permit = Some(permit);
                 selected = Some(candidate);
                 break;
@@ -444,7 +523,10 @@ async fn dequeue_next_scheduled_job(
     }
 }
 
-async fn run_queued_scheduled_job(state: Arc<AppState>, job: JobLog) {
+async fn run_queued_scheduled_job(
+    state: Arc<AppState>,
+    job: JobLog,
+) -> ScheduledJobCompletion {
     let job_type = job.job_type.clone();
     let key_id = job.key_id.clone();
     let trigger_source = job.trigger_source.clone();
@@ -499,6 +581,7 @@ async fn run_queued_scheduled_job(state: Arc<AppState>, job: JobLog) {
             ),
         }
     }
+    LegacySchedulerAdapter::completion_for(&job_type, completed)
 }
 
 fn spawn_dashboard_rollup_integrity_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
@@ -645,24 +728,46 @@ async fn run_dashboard_rollup_integrity_claimed_job(
     .await
 }
 
+#[cfg(test)]
 fn spawn_maintenance_worker(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+    spawn_maintenance_worker_with_cancellation(
+        state,
+        tokio_util::sync::CancellationToken::new(),
+    )
+}
+
+fn spawn_maintenance_worker_with_cancellation(
+    state: Arc<AppState>,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let wake = maintenance_worker_wake_for_state(state.as_ref());
-        let mut remote_jobs = tokio::task::JoinSet::new();
-        loop {
-            while remote_jobs.try_join_next().is_some() {}
-            match dequeue_next_scheduled_job(state.as_ref()).await {
+        let adapter = LegacySchedulerAdapter::for_state(state.as_ref());
+        let wake = state.ha.maintenance_runtime().wake();
+        'worker: loop {
+            adapter.reap_remote_tasks().await;
+            let next_job = tokio::select! {
+                _ = cancellation.cancelled() => break 'worker,
+                result = dequeue_next_scheduled_job(state.as_ref()) => result,
+            };
+            match next_job {
                 Ok(Some((job, remote_io_permit))) => {
                     if let Some(remote_io_permit) = remote_io_permit {
                         let run_state = state.clone();
                         let run_wake = wake.clone();
-                        remote_jobs.spawn(async move {
+                        let run_cancellation = cancellation.clone();
+                        adapter.spawn_remote_task(async move {
                             let _remote_io_permit = remote_io_permit;
-                            run_queued_scheduled_job(run_state, job).await;
+                            tokio::select! {
+                                _ = run_cancellation.cancelled() => {}
+                                _ = run_queued_scheduled_job(run_state, job) => {}
+                            }
                             run_wake.notify_one();
-                        });
+                        }).await;
                     } else {
-                        run_queued_scheduled_job(state.clone(), job).await;
+                        tokio::select! {
+                            _ = cancellation.cancelled() => break 'worker,
+                            _ = run_queued_scheduled_job(state.clone(), job) => {}
+                        }
                     }
                 }
                 Ok(None) => {
@@ -676,6 +781,7 @@ fn spawn_maintenance_worker(state: Arc<AppState>) -> tokio::task::JoinHandle<()>
                         .map(|available_at| available_at.saturating_sub(now).max(1) as u64)
                         .unwrap_or(60 * 60);
                     tokio::select! {
+                        _ = cancellation.cancelled() => break 'worker,
                         _ = wake.notified() => {}
                         _ = state.proxy.backend_time().sleep(Duration::from_secs(delay_secs)) => {}
                     }
@@ -686,10 +792,14 @@ fn spawn_maintenance_worker(state: Arc<AppState>) -> tokio::task::JoinHandle<()>
                         event = "maintenance_dequeue_failed",
                         err = %err,
                     );
-                    state.proxy.backend_time().sleep(Duration::from_secs(1)).await;
+                    tokio::select! {
+                        _ = cancellation.cancelled() => break 'worker,
+                        _ = state.proxy.backend_time().sleep(Duration::from_secs(1)) => {}
+                    }
                 }
             }
         }
+        adapter.abort_remote_tasks().await;
     })
 }
 
@@ -706,7 +816,7 @@ fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) -> tokio::task::JoinHa
                         recovered,
                         continuation_delay_secs = 30_i64,
                     );
-                    maintenance_worker_wake_for_state(state.as_ref()).notify_one();
+                    LegacySchedulerAdapter::for_state(state.as_ref()).notify_worker();
                 }
                 Err(err) => tracing::error!(
                     component = "scheduler",
@@ -1280,7 +1390,9 @@ async fn run_ha_outbox_gc_claimed_job(
     } = claimed_job;
     drop(_job_execution_gate);
 
-    let Some(_gc_lease) = try_acquire_online_ha_gc_lease() else {
+    let Some(_gc_lease) = LegacySchedulerAdapter::for_state(state.as_ref())
+        .try_acquire_maintenance_lease()
+    else {
         tracing::debug!(
             component = "ha_outbox_gc",
             event = "deferred",

@@ -83,7 +83,6 @@ fn new_dashboard_overview_cache() -> Arc<Mutex<DashboardOverviewCacheState>> {
 }
 
 static DB_MAINTENANCE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
-static ONLINE_HA_GC_LEASE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
 
@@ -180,12 +179,6 @@ pub(crate) fn foreground_activity_low_pressure_since_floor() -> i64 {
 }
 static DB_JOB_EXECUTION_GATES: OnceLock<std::sync::Mutex<HashMap<usize, std::sync::Weak<Mutex<()>>>>> =
     OnceLock::new();
-static MAINTENANCE_WORKER_WAKES: OnceLock<
-    std::sync::Mutex<HashMap<usize, std::sync::Weak<tokio::sync::Notify>>>,
-> = OnceLock::new();
-static MAINTENANCE_REMOTE_IO_SLOTS: OnceLock<
-    std::sync::Mutex<HashMap<usize, std::sync::Weak<Semaphore>>>,
-> = OnceLock::new();
 
 fn db_maintenance_gate() -> &'static RwLock<()> {
     DB_MAINTENANCE_GATE.get_or_init(|| RwLock::new(()))
@@ -203,41 +196,8 @@ fn db_job_execution_gate_for_state(state: &AppState) -> Arc<Mutex<()>> {
     gate
 }
 
-fn maintenance_worker_wake_for_state(state: &AppState) -> Arc<tokio::sync::Notify> {
-    let key = state as *const AppState as usize;
-    let wakes = MAINTENANCE_WORKER_WAKES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut wakes = wakes.lock().expect("maintenance worker wake map lock");
-    if let Some(wake) = wakes.get(&key).and_then(std::sync::Weak::upgrade) {
-        return wake;
-    }
-    let wake = Arc::new(tokio::sync::Notify::new());
-    wakes.insert(key, Arc::downgrade(&wake));
-    wake
-}
-
-fn maintenance_remote_io_slot_for_state(state: &AppState) -> Arc<Semaphore> {
-    let key = state as *const AppState as usize;
-    let slots =
-        MAINTENANCE_REMOTE_IO_SLOTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut slots = slots.lock().expect("maintenance remote I/O slot map lock");
-    if let Some(slot) = slots.get(&key).and_then(std::sync::Weak::upgrade) {
-        return slot;
-    }
-    let slot = Arc::new(Semaphore::new(1));
-    slots.insert(key, Arc::downgrade(&slot));
-    slot
-}
-
 fn dashboard_overview_cache_for_state(state: &AppState) -> Arc<Mutex<DashboardOverviewCacheState>> {
     state.dashboard_overview_cache.clone()
-}
-
-fn try_acquire_maintenance_remote_io_slot_for_state(
-    state: &AppState,
-) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    maintenance_remote_io_slot_for_state(state)
-        .try_acquire_owned()
-        .ok()
 }
 
 async fn acquire_db_maintenance_read_gate() -> tokio::sync::RwLockReadGuard<'static, ()> {
@@ -246,14 +206,6 @@ async fn acquire_db_maintenance_read_gate() -> tokio::sync::RwLockReadGuard<'sta
 
 async fn acquire_db_maintenance_write_gate() -> tokio::sync::RwLockWriteGuard<'static, ()> {
     db_maintenance_gate().write().await
-}
-
-pub(crate) fn try_acquire_online_ha_gc_lease() -> Option<OwnedMutexGuard<()>> {
-    ONLINE_HA_GC_LEASE
-        .get_or_init(|| Arc::new(Mutex::new(())))
-        .clone()
-        .try_lock_owned()
-        .ok()
 }
 
 async fn acquire_db_job_execution_gate_for_state(
@@ -347,11 +299,14 @@ mod db_maintenance_gate_tests {
 
     #[tokio::test]
     async fn online_gc_lease_is_independent_from_http_readers() {
+        let runtime = tavily_hikari::MaintenanceRuntime::new();
         let read_guard = super::acquire_db_maintenance_read_gate().await;
-        assert!(super::try_acquire_online_ha_gc_lease().is_some());
+        assert!(runtime.try_acquire_maintenance_lease().is_some());
         drop(read_guard);
-        let lease = super::try_acquire_online_ha_gc_lease().expect("GC lease available");
-        assert!(super::try_acquire_online_ha_gc_lease().is_none());
+        let lease = runtime
+            .try_acquire_maintenance_lease()
+            .expect("GC lease available");
+        assert!(runtime.try_acquire_maintenance_lease().is_none());
         drop(lease);
     }
 

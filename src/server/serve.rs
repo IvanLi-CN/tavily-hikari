@@ -1585,9 +1585,10 @@ async fn run_ha_sync_once_for_peer(
 
 fn spawn_business_background_tasks(
     state: Arc<AppState>,
-) -> Vec<tokio_util::task::AbortOnDropHandle<()>> {
+    cancellation: tokio_util::sync::CancellationToken,
+) -> Vec<tokio::task::JoinHandle<()>> {
     let mut tasks = vec![
-        spawn_maintenance_worker(state.clone()),
+        spawn_maintenance_worker_with_cancellation(state.clone(), cancellation),
         spawn_scheduled_job_stale_reaper(state.clone()),
         spawn_token_usage_rollup_scheduler(state.clone()),
         spawn_upstream_reconciliation_scheduler(state.clone()),
@@ -1610,9 +1611,6 @@ fn spawn_business_background_tasks(
     tasks.push(spawn_forward_proxy_maintenance_scheduler(state.clone()));
     tasks.push(spawn_db_compaction_scheduler(state));
     tasks
-        .into_iter()
-        .map(tokio_util::task::AbortOnDropHandle::new)
-        .collect()
 }
 
 fn background_tasks_disabled_via_env() -> bool {
@@ -1698,20 +1696,21 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         }
     }
     let runtime_state = state.clone();
+    let maintenance = state.ha.maintenance_runtime();
     supervisor
         .promote(authority.epoch, move |revision| async move {
+            let cancellation = revision.cancellation_token();
             let tasks = if background_tasks_disabled {
                 Vec::new()
             } else {
-                spawn_business_background_tasks(runtime_state)
+                spawn_business_background_tasks(runtime_state, cancellation.clone())
             };
-            revision.cancellation_token().cancelled().await;
-            for task in &tasks {
-                task.abort();
-            }
-            for task in tasks {
-                let _ = task.await;
-            }
+            let completion = maintenance.supervise(cancellation, tasks).await;
+            tracing::debug!(
+                component = "ha",
+                event = "maintenance_runtime_completed",
+                ?completion,
+            );
         })
         .await
         .is_ok()
