@@ -1692,6 +1692,7 @@ async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError
         return Ok(());
     }
     supervisor.begin_demotion().await;
+    let _business_admission = state.ha.acquire_writable_demotion_admission().await;
     state
         .proxy
         .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)

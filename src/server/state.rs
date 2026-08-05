@@ -351,10 +351,11 @@ mod db_maintenance_gate_tests {
 async fn ensure_ha_allows_basic_business(
     state: &Arc<AppState>,
     path: &str,
-) -> Result<(), Response<Body>> {
+) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Response<Body>> {
+    let admission = state.ha.acquire_writable_business_admission().await;
     let status = state.ha.status().await;
     if status.allows_basic_business {
-        return Ok(());
+        return Ok(admission);
     }
 
     let payload = json!({

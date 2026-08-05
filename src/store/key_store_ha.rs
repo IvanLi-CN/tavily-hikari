@@ -26,6 +26,21 @@ fn record_ha_outbox_gc_batch_timing(
 }
 
 impl KeyStore {
+    async fn acquire_authority_write_connection(
+        &self,
+    ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, ProxyError> {
+        // Leave headroom for both pool admission and SQLite's writer wait so
+        // the complete authority write stays inside the 250 ms contract.
+        const AUTHORITY_WRITE_STEP_BUDGET: Duration = Duration::from_millis(100);
+        let mut conn = tokio::time::timeout(AUTHORITY_WRITE_STEP_BUDGET, self.pool.acquire())
+            .await
+            .map_err(|_| ProxyError::Database(sqlx::Error::PoolTimedOut))??;
+        sqlx::query("PRAGMA busy_timeout = 100")
+            .execute(&mut *conn)
+            .await?;
+        Ok(conn)
+    }
+
     pub(crate) async fn with_writable_authority<T, F>(
         &self,
         expected_epoch: i64,
@@ -83,6 +98,7 @@ impl KeyStore {
         phase: WritableAuthorityPhase,
     ) -> Result<WritableAuthorityState, ProxyError> {
         let phase = writable_authority_phase_str(phase);
+        let mut conn = self.acquire_authority_write_connection().await?;
         sqlx::query(
             r#"
             INSERT INTO ha_node_state (id, node_id, role, updated_at, authority_epoch, authority_phase)
@@ -93,7 +109,7 @@ impl KeyStore {
         )
         .bind(self.backend_time.now_ts())
         .bind(phase)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
         self.get_writable_authority_state().await
     }
@@ -102,7 +118,8 @@ impl KeyStore {
         &self,
         next_phase: WritableAuthorityPhase,
     ) -> Result<WritableAuthorityState, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let conn = self.acquire_authority_write_connection().await?;
+        let mut tx = ImmediateSqliteTransaction::begin(conn).await?;
         sqlx::query(
             r#"
             INSERT INTO ha_node_state (id, node_id, role, updated_at, authority_epoch, authority_phase)

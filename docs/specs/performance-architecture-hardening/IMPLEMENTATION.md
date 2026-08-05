@@ -31,9 +31,11 @@
 
 - Ticket #484 已建立 revision-owned cancellation、单 runtime promotion、持久 `demoting`
   恢复、单调 authority epoch fence，以及不改变 HA JSON response shape 的内部 capability header；
-  legacy scheduler handles 和并发 remote-I/O jobs 已由 tenure runtime 持有并随 demotion 取消。
-- 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、业务写事务全面接入 authority epoch
-  guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
+  legacy scheduler handles 和并发 remote-I/O jobs 已由 tenure runtime 持有并随 demotion 取消；外部业务
+  request 在 tenure admission 内完成，demotion 排空已进入的 request 后才推进 epoch，authority SQLite
+  写入的 pool 与 busy 等待总预算保持在 250ms 内。
+- 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
+  authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
 - aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
 
 ## Related Changes

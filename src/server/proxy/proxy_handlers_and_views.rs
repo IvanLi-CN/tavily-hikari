@@ -11,9 +11,10 @@ async fn proxy_handler(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect_info| connect_info.0);
 
-    if let Err(response) = ensure_ha_allows_basic_business(&state, &path).await {
-        return Ok(response);
-    }
+    let _writable_admission = match ensure_ha_allows_basic_business(&state, &path).await {
+        Ok(admission) => admission,
+        Err(response) => return Ok(response),
+    };
 
     if method == Method::GET && accepts_event_stream(&parts.headers) {
         let response = Response::builder()

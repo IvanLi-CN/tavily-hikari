@@ -16,6 +16,9 @@
 - writable tenure 持有 legacy scheduler handles 与 worker 内并发 remote-I/O task；demotion 的
   revision cancellation 因而能够在 epoch 推进前终止旧 runtime，而后续 Ticket 再将该适配层封装为
   独立 `MaintenanceRuntime`。
+- 外部业务 request 在 writable tenure admission 内运行；demotion 取得独占 admission、排空已进入的
+  request 后再推进 SQLite epoch。authority 写使用独立短等待预算，writer contention 不会继承主 pool
+  的 5 秒 busy timeout。
 
 ## Key Reasons / Replacements
 

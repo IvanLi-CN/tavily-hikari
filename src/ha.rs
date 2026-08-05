@@ -6,7 +6,7 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::{BackendTime, WritableAuthorityState, WritableTenureSupervisor};
 
@@ -695,6 +695,7 @@ pub struct HaRuntime {
     edgeone: EdgeOneClient,
     backend_time: BackendTime,
     writable_authority: WritableTenureSupervisor,
+    writable_business_admission: Arc<RwLock<()>>,
 }
 
 impl HaRuntime {
@@ -726,7 +727,16 @@ impl HaRuntime {
             writable_authority: WritableTenureSupervisor::restore(WritableAuthorityState::standby(
                 0,
             )),
+            writable_business_admission: Arc::new(RwLock::new(())),
         }
+    }
+
+    pub async fn acquire_writable_business_admission(&self) -> OwnedRwLockReadGuard<()> {
+        self.writable_business_admission.clone().read_owned().await
+    }
+
+    pub async fn acquire_writable_demotion_admission(&self) -> OwnedRwLockWriteGuard<()> {
+        self.writable_business_admission.clone().write_owned().await
     }
 
     pub async fn restore_writable_authority(
