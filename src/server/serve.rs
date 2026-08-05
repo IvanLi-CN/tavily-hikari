@@ -692,6 +692,26 @@ async fn initialize_ha_startup_state(
     proxy: &TavilyProxy,
     ha: &tavily_hikari::HaRuntime,
 ) -> tavily_hikari::HaStatusView {
+    let persisted_authority = proxy
+        .get_writable_authority_state()
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                component = "ha",
+                event = "writable_authority_lookup_failed",
+                err = %err,
+                "HA writable authority lookup warning"
+            );
+            tavily_hikari::WritableAuthorityState::standby(0)
+        });
+    if let Err(err) = ha.restore_writable_authority(persisted_authority).await {
+        tracing::warn!(
+            component = "ha",
+            event = "writable_authority_restore_failed",
+            err = %err,
+            "HA writable authority restore warning"
+        );
+    }
     let previous_ha_role = proxy.get_persisted_ha_node_role().await.unwrap_or_else(|err| {
         tracing::warn!(
             component = "ha",
@@ -721,7 +741,15 @@ async fn initialize_ha_startup_state(
         );
     }
     // Startup role evaluation must compare against the restored node-local HA source settings.
-    let startup_ha_status = reconcile_ha_startup_role(proxy, ha, previous_ha_role).await;
+    let mut startup_ha_status = reconcile_ha_startup_role(proxy, ha, previous_ha_role).await;
+    if persisted_authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        startup_ha_status = ha
+            .enter_recovery(
+                "writable authority demotion was interrupted; fail-closed recovery required"
+                    .to_string(),
+            )
+            .await;
+    }
     if let Err(err) = async {
         proxy
             .persist_ha_node_state(
@@ -1577,8 +1605,72 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         );
         return false;
     }
-    spawn_business_background_tasks(state);
-    true
+    let mut authority = match state.proxy.get_writable_authority_state().await {
+        Ok(authority) => authority,
+        Err(err) => {
+            tracing::warn!(
+                component = "ha",
+                event = "writable_authority_lookup_failed",
+                err = %err,
+                "background runtime cannot start without writable authority"
+            );
+            return false;
+        }
+    };
+    if authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        return false;
+    }
+    if authority.phase != tavily_hikari::WritableAuthorityPhase::Writable {
+        authority = match state
+            .proxy
+            .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Writable)
+            .await
+        {
+            Ok(authority) => authority,
+            Err(err) => {
+                tracing::warn!(
+                    component = "ha",
+                    event = "writable_authority_promotion_failed",
+                    err = %err,
+                    "background runtime cannot start without persisted writable authority"
+                );
+                return false;
+            }
+        };
+        if state.ha.restore_writable_authority(authority).await.is_err() {
+            return false;
+        }
+    }
+    let runtime_state = state.clone();
+    state
+        .ha
+        .writable_tenure_supervisor()
+        .promote(authority.epoch, move |revision| async move {
+            spawn_business_background_tasks(runtime_state);
+            revision.cancellation_token().cancelled().await;
+        })
+        .await
+        .is_ok()
+}
+
+async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError> {
+    let supervisor = state.ha.writable_tenure_supervisor();
+    if supervisor.state().await.phase == tavily_hikari::WritableAuthorityPhase::Standby {
+        return Ok(());
+    }
+    supervisor.begin_demotion().await;
+    state
+        .proxy
+        .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
+        .await?;
+    let authority = state
+        .proxy
+        .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+        .await?;
+    supervisor
+        .finish_demotion(authority.epoch)
+        .await
+        .map_err(ProxyError::Other)
 }
 
 fn spawn_post_ready_serving_tasks_for_status(
@@ -1820,6 +1912,14 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                         status = state.ha.status().await;
                     }
                     if !status.allows_full_writes {
+                        if let Err(err) = demote_writable_runtime(&state).await {
+                            tracing::warn!(
+                                component = "ha",
+                                event = "writable_authority_demotion_failed",
+                                err = %err,
+                                "HA writable authority remains fail closed while demotion retries"
+                            );
+                        }
                         state
                             .proxy
                             .reset_post_ready_serving_tasks_for_writable_tenure();
@@ -1835,6 +1935,7 @@ fn spawn_ha_edgeone_authority_task(state: Arc<AppState>) {
                             "forward-proxy authority runtime role sync failed"
                         );
                     } else {
+                        let _ = spawn_background_tasks_for_current_role(state.clone()).await;
                         let _ = spawn_post_ready_serving_tasks_for_status(state.clone(), &status);
                     }
                     let node_id = status.node_id.clone();

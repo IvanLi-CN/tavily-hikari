@@ -13,7 +13,8 @@
 
 实现拆为 12 个 risk-gated child Ticket，按依赖波次进入 integration branch：
 
-1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate
+1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate（child
+   #484 已实现，待合入 integration branch）
 2. SqliteRuntime seam
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
@@ -28,7 +29,10 @@
 
 ## Remaining Gaps
 
-- 所有 12 个 Ticket 尚未开始实现。
+- Ticket #484 已建立 revision-owned cancellation、单 runtime promotion、持久 `demoting`
+  恢复、单调 authority epoch fence，以及不改变 HA JSON response shape 的内部 capability header。
+- 现有 maintenance workers 迁入 `MaintenanceRuntime`、业务写事务全面接入 authority epoch guard，
+  以及其余 runtime ownership 收敛由后续 Ticket 完成。
 - aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
 
 ## Related Changes
@@ -38,6 +42,7 @@
 - `KeyStore` constructors create one `SqliteRuntime` from the existing pools and expose only
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
+- Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 
 ## References
 

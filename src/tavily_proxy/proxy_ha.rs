@@ -277,6 +277,45 @@ impl TavilyProxy {
         self.key_store.get_persisted_ha_node_role().await
     }
 
+    pub async fn get_writable_authority_state(
+        &self,
+    ) -> Result<WritableAuthorityState, ProxyError> {
+        self.key_store.get_writable_authority_state().await
+    }
+
+    pub async fn persist_writable_authority_phase(
+        &self,
+        phase: WritableAuthorityPhase,
+    ) -> Result<WritableAuthorityState, ProxyError> {
+        self.key_store.persist_writable_authority_phase(phase).await
+    }
+
+    pub async fn advance_writable_authority_epoch(
+        &self,
+        next_phase: WritableAuthorityPhase,
+    ) -> Result<WritableAuthorityState, ProxyError> {
+        self.key_store.advance_writable_authority_epoch(next_phase).await
+    }
+
+    pub async fn authority_epoch_is_current(&self, expected: i64) -> Result<bool, ProxyError> {
+        self.key_store.authority_epoch_is_current(expected).await
+    }
+
+    pub async fn with_writable_authority<T, F>(
+        &self,
+        expected_epoch: i64,
+        operation: F,
+    ) -> Result<T, ProxyError>
+    where
+        F: for<'tx> FnOnce(
+            &'tx mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        ) -> futures_util::future::BoxFuture<'tx, Result<T, ProxyError>>,
+    {
+        self.key_store
+            .with_writable_authority(expected_epoch, operation)
+            .await
+    }
+
     pub async fn persist_ha_sync_watermark(
         &self,
         name: &str,

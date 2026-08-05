@@ -8,6 +8,11 @@
 - 保留单体 + SQLite，以 runtime ownership、durable work 和 read model 收敛热路径。
 - 使用 expand-contract 保持滚动升级兼容，混跑期禁止 HA 角色切换。
 - child task 固定模型与 reasoning effort，恢复和 PR 修复不得擅自换档。
+- writable authority 以单调 SQLite epoch 和 `standby|writable|demoting` phase 持久化；demotion
+  先取消 revision token，再提交新 epoch，重启遇到 `demoting` 时保持 fail closed。
+- `writable_tenure_v1` 通过内部 HA response header 扩展，避免改变 public/admin JSON；planned
+  transition 要求全员能力，新旧混跑期间因此 fail closed，force emergency 路径继续使用既有防脑裂
+  检查与审计。
 
 ## Key Reasons / Replacements
 

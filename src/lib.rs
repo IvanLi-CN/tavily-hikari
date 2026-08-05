@@ -15,6 +15,7 @@ mod tests;
 mod upstream_privacy;
 mod upstream_privacy_status;
 pub mod web_assets;
+mod writable_authority;
 
 pub use admin_mcp_session_bindings::*;
 pub use admin_token_filters::*;
@@ -56,6 +57,7 @@ pub use store::{
 pub use tavily_proxy::*;
 pub use upstream_privacy::*;
 pub use upstream_privacy_status::*;
+pub use writable_authority::*;
 
 use std::{
     cell::Cell,

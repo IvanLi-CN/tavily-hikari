@@ -2694,7 +2694,9 @@ impl KeyStore {
                 ha_direct_origin_port INTEGER,
                 ha_origin_group_id TEXT,
                 message TEXT,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                authority_epoch INTEGER NOT NULL DEFAULT 0,
+                authority_phase TEXT NOT NULL DEFAULT 'standby'
             )
             "#,
         )
@@ -2704,6 +2706,20 @@ impl KeyStore {
             sqlx::query("ALTER TABLE ha_node_state ADD COLUMN message TEXT")
                 .execute(&self.pool)
                 .await?;
+        }
+        if !self.table_column_exists("ha_node_state", "authority_epoch").await? {
+            sqlx::query(
+                "ALTER TABLE ha_node_state ADD COLUMN authority_epoch INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !self.table_column_exists("ha_node_state", "authority_phase").await? {
+            sqlx::query(
+                "ALTER TABLE ha_node_state ADD COLUMN authority_phase TEXT NOT NULL DEFAULT 'standby'",
+            )
+            .execute(&self.pool)
+            .await?;
         }
         for (column, ddl) in [
             ("ha_source_kind", "ALTER TABLE ha_node_state ADD COLUMN ha_source_kind TEXT"),

@@ -2,6 +2,65 @@ use super::*;
 use super::core_support_and_parsing::*;
 
 #[tokio::test]
+async fn writable_authority_epoch_persists_and_fences_old_revisions() {
+    let db_path = temp_db_path("writable-authority-epoch");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-writable-authority-epoch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let promoted = proxy
+        .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Writable)
+        .await
+        .expect("promote epoch");
+    assert!(proxy.authority_epoch_is_current(promoted.epoch).await.expect("fence"));
+    proxy
+        .with_writable_authority(promoted.epoch, |tx| {
+            Box::pin(async move {
+                sqlx::query("UPDATE ha_node_state SET message = 'guarded write' WHERE id = 'local'")
+                    .execute(&mut **tx)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .expect("current revision commits");
+
+    proxy
+        .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
+        .await
+        .expect("persist demoting before epoch write");
+    let demoted = proxy
+        .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
+        .await
+        .expect("advance demotion epoch");
+    assert!(demoted.epoch > promoted.epoch);
+    assert!(!proxy.authority_epoch_is_current(promoted.epoch).await.expect("old fence"));
+    let stale_error = proxy
+        .with_writable_authority(promoted.epoch, |_tx| Box::pin(async { Ok(()) }))
+        .await
+        .expect_err("old revision must not commit");
+    assert!(stale_error.to_string().contains("stale writable authority epoch"));
+
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-writable-authority-epoch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy reopened");
+    assert_eq!(reopened.get_writable_authority_state().await.expect("restored"), demoted);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn redundant_ha_node_state_flush_is_skipped_after_same_state_persists() {
     let db_path = temp_db_path("ha-node-state-dedup");
     let db_str = db_path.to_string_lossy().to_string();
