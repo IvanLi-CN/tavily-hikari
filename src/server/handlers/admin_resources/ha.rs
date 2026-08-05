@@ -1,4 +1,5 @@
 const HA_CAPABILITIES_HEADER: &str = "x-tavily-ha-capabilities";
+const HA_PEER_ERROR_BODY_MAX_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,7 +397,7 @@ async fn fetch_internal_ha_status_with_metadata(
         .map(str::to_string);
     if !response.status().is_success() {
         let status = response.status();
-        let detail = response.text().await.unwrap_or_default();
+        let detail = read_bounded_response_detail(response).await;
         return Err(format!(
             "peer {} returned {} for internal HA status: {}",
             peer.node_id, status, detail
@@ -410,6 +411,32 @@ async fn fetch_internal_ha_status_with_metadata(
         status,
         capabilities,
     })
+}
+
+async fn read_bounded_response_detail(response: reqwest::Response) -> String {
+    let mut body = response.bytes_stream();
+    let mut detail = Vec::with_capacity(HA_PEER_ERROR_BODY_MAX_BYTES);
+    let mut truncated = false;
+    while let Some(chunk) = body.next().await {
+        let Ok(chunk) = chunk else {
+            break;
+        };
+        let remaining = HA_PEER_ERROR_BODY_MAX_BYTES.saturating_sub(detail.len());
+        if chunk.len() > remaining {
+            detail.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        detail.extend_from_slice(&chunk);
+        if detail.len() == HA_PEER_ERROR_BODY_MAX_BYTES {
+            break;
+        }
+    }
+    let mut detail = String::from_utf8_lossy(&detail).into_owned();
+    if truncated {
+        detail.push_str("... [truncated]");
+    }
+    detail
 }
 
 async fn fetch_internal_ha_status_for_planned_transition(

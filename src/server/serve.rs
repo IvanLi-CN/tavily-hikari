@@ -892,16 +892,20 @@ fn spawn_ha_peer_observation_task(state: Arc<AppState>) {
     }
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("HA peer observation client configuration is valid");
+        let client = build_ha_peer_probe_client();
         loop {
             let internal_token = state.ha.internal_token();
             observe_ha_peer_statuses_once(&state, &client, internal_token.as_deref()).await;
             state.proxy.backend_time().sleep(interval).await;
         }
     });
+}
+
+fn build_ha_peer_probe_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("HA peer probe client configuration is valid")
 }
 
 fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
@@ -925,7 +929,7 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
     };
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = build_ha_peer_probe_client();
         loop {
             if state.ha.role().await == tavily_hikari::HaNodeRole::Standby
                 && let Err(err) =
