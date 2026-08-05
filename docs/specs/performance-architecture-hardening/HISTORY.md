@@ -11,6 +11,10 @@
 
 ## Key Reasons / Replacements
 
+- Ticket #485 establishes the first storage ownership seam: `SqliteRuntime` owns canonical pool
+  handles, admission, and the 250ms bounded operation contract while legacy `KeyStore` callers use
+  explicit compatibility adapters during rollout.
+
 - 反复局部优化未能稳定消除性能回归，因为生命周期、存储和读取边界仍由浅层 facade 共享。
 - durable per-channel work 替代单一 HA GC representative，避免一个 channel 的延迟阻塞全部排债。
 - durable projections 与共享 snapshots 替代请求线程上的重复聚合和 flush-on-read。

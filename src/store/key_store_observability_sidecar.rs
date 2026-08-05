@@ -1235,12 +1235,17 @@ impl KeyStore {
             SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
         )
         .await?;
+        let sqlite_runtime = SqliteRuntime::new(
+            pool,
+            read_flush_pool,
+            ADMIN_HEAVY_READ_CONCURRENCY,
+        );
         let store = Self {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: None,
-            pool,
-            read_flush_pool,
+            pool: sqlite_runtime.compatibility_primary_pool(),
+            read_flush_pool: sqlite_runtime.compatibility_read_flush_pool(),
             backend_time: BackendTime::system(),
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
@@ -1248,7 +1253,8 @@ impl KeyStore {
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             request_stats_coalescer: RequestStatsCoalescer::default(),
-            admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
+            admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
+            sqlite_runtime,
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
             #[cfg(debug_assertions)]

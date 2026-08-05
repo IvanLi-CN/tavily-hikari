@@ -16,6 +16,8 @@ use tracing::{error, info, warn};
 
 mod immediate_transaction;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
+pub(crate) mod sqlite_runtime;
+pub(crate) use sqlite_runtime::SqliteRuntime;
 
 pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
@@ -2502,6 +2504,8 @@ pub(crate) struct KeyStore {
     pub(crate) database_path: String,
     pub(crate) observability_database_path: Option<String>,
     pub(crate) _observability_lock: Option<File>,
+    #[allow(dead_code)]
+    pub(crate) sqlite_runtime: SqliteRuntime,
     pub(crate) pool: SqlitePool,
     pub(crate) read_flush_pool: SqlitePool,
     pub(crate) backend_time: BackendTime,
@@ -2512,7 +2516,7 @@ pub(crate) struct KeyStore {
     pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
     pub(crate) request_stats_coalescer: RequestStatsCoalescer,
-    pub(crate) admin_heavy_read_semaphore: Semaphore,
+    pub(crate) admin_heavy_read_semaphore: Arc<Semaphore>,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
     #[cfg(debug_assertions)]

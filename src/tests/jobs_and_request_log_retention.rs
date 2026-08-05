@@ -14,12 +14,14 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         .connect_with(options)
         .await
         .expect("busy-test pool");
+    let sqlite_runtime =
+        SqliteRuntime::new(pool.clone(), pool.clone(), ADMIN_HEAVY_READ_CONCURRENCY);
     let store = KeyStore {
         database_path: db_path.to_string_lossy().into_owned(),
         observability_database_path: None,
         _observability_lock: None,
-        pool: pool.clone(),
-        read_flush_pool: pool,
+        pool: sqlite_runtime.compatibility_primary_pool(),
+        read_flush_pool: sqlite_runtime.compatibility_read_flush_pool(),
         backend_time: BackendTime::system(),
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: RwLock::new(std::collections::HashMap::new()),
@@ -27,7 +29,8 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         request_log_retention_cache: RwLock::new(None),
         user_debug_info_shared_cache: RwLock::new(std::collections::HashMap::new()),
         request_stats_coalescer: RequestStatsCoalescer::default(),
-        admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
+        admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
+        sqlite_runtime,
         #[cfg(test)]
         forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),
         #[cfg(test)]

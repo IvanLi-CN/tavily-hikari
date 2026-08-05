@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 未开始
+- Implementation: Ticket #485 SqliteRuntime seam 已完成，等待 child PR integration CI
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -33,7 +33,11 @@
 
 ## Related Changes
 
-- None
+- `src/store/sqlite_runtime.rs` adds typed read, immediate-write, and admission operations with a
+  bounded 250ms operation budget and cancellation/busy outcomes.
+- `KeyStore` constructors create one `SqliteRuntime` from the existing pools and expose only
+  compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
+  PRAGMAs, and transaction SQL remain unchanged.
 
 ## References
 
