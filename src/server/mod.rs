@@ -84,7 +84,7 @@ use tavily_hikari::{
 use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 use tokio_util::io::{ReaderStream, StreamReader};
 include!("state.rs");
 include!("schedulers.rs");

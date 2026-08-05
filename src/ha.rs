@@ -6,9 +6,9 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
-use crate::{BackendTime, WritableAuthorityState, WritableTenureSupervisor};
+use crate::{BackendTime, MaintenanceRuntime, WritableAuthorityState, WritableTenureSupervisor};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -696,6 +696,7 @@ pub struct HaRuntime {
     backend_time: BackendTime,
     writable_authority: WritableTenureSupervisor,
     writable_business_admission: Arc<RwLock<()>>,
+    maintenance: Arc<Mutex<MaintenanceRuntime>>,
 }
 
 impl HaRuntime {
@@ -728,6 +729,7 @@ impl HaRuntime {
                 0,
             )),
             writable_business_admission: Arc::new(RwLock::new(())),
+            maintenance: Arc::new(Mutex::new(MaintenanceRuntime::new())),
         }
     }
 
@@ -752,6 +754,16 @@ impl HaRuntime {
 
     pub fn writable_tenure_supervisor(&self) -> WritableTenureSupervisor {
         self.writable_authority.clone()
+    }
+
+    pub async fn maintenance_runtime(&self) -> MaintenanceRuntime {
+        self.maintenance.lock().await.clone()
+    }
+
+    pub async fn start_maintenance_runtime(&self) -> MaintenanceRuntime {
+        let runtime = MaintenanceRuntime::new();
+        *self.maintenance.lock().await = runtime.clone();
+        runtime
     }
 
     pub async fn refresh_startup_role(&self) -> Result<(), String> {
@@ -1899,6 +1911,19 @@ mod tests {
         assert_eq!(status.role, HaNodeRole::FullMaster);
         assert!(status.allows_basic_business);
         assert!(status.allows_full_writes);
+    }
+
+    #[tokio::test]
+    async fn maintenance_runtime_replacement_is_tenure_scoped() {
+        let runtime = HaRuntime::new(HaConfig::default());
+        let first = runtime.maintenance_runtime().await;
+        let _first_slot = first
+            .try_acquire_remote_io_slot()
+            .expect("first tenure remote-I/O slot");
+
+        let second = runtime.start_maintenance_runtime().await;
+        assert!(second.try_acquire_remote_io_slot().is_some());
+        assert!(first.try_acquire_remote_io_slot().is_none());
     }
 
     #[tokio::test]
