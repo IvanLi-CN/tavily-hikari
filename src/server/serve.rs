@@ -1642,6 +1642,19 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
     };
     if authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
         let _business_admission = state.ha.acquire_writable_demotion_admission().await;
+        if let Err(err) = state
+            .proxy
+            .requeue_running_scheduled_jobs_for_demotion()
+            .await
+        {
+            tracing::warn!(
+                component = "ha",
+                event = "writable_authority_demotion_resume_requeue_failed",
+                err = %err,
+                "persisted writable demotion remains fail closed until running claims are requeued"
+            );
+            return false;
+        }
         let authority = match state
             .proxy
             .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)

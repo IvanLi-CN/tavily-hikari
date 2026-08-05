@@ -69,6 +69,78 @@ async fn standby_server_startup_does_not_spawn_business_scheduled_jobs() {
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
 
+#[tokio::test]
+async fn demoting_startup_requeues_running_scheduled_jobs_before_standby() {
+    let db_path = temp_db_path("ha-demoting-startup-requeues-jobs");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-demoting-startup-requeues-jobs".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let job = proxy
+        .scheduled_job_enqueue("token_usage_rollup", "scheduler", None, 1)
+        .await
+        .expect("enqueue scheduled job");
+    let claim = proxy
+        .scheduled_job_mark_running(job.job_id)
+        .await
+        .expect("claim scheduled job")
+        .expect("scheduled job claim exists");
+    proxy
+        .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
+        .await
+        .expect("persist demoting authority");
+
+    let state = Arc::new(AppState {
+        proxy: proxy.clone(),
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+            mode: tavily_hikari::HaMode::ActiveStandby,
+            node_id: "node-demoting-startup-requeues-jobs".to_string(),
+            database_path: Some(db_str.clone()),
+            sync_source_url: Some("http://127.0.0.1:59999".to_string()),
+            internal_token: Some("ha-test-token".to_string()),
+            sync_interval_secs: 5,
+            ..tavily_hikari::HaConfig::default()
+        }),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    assert!(!spawn_background_tasks_for_current_role(state).await);
+    let recovered = proxy
+        .scheduled_job_by_id(job.job_id)
+        .await
+        .expect("read recovered scheduled job")
+        .expect("recovered scheduled job exists");
+    assert_eq!(recovered.status, "queued");
+    assert!(recovered.claim_generation > claim.claim_generation);
+    assert!(proxy
+        .scheduled_job_finish_claimed(
+            job.job_id,
+            claim.claim_generation,
+            "success",
+            Some("stale demoted claim"),
+        )
+        .await
+        .is_err());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
 #[test]
 fn dual_active_peer_sync_runs_for_fenced_standby_until_leader_is_seeded() {
     let status = tavily_hikari::HaStatusView {
