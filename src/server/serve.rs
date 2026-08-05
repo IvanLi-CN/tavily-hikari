@@ -1556,7 +1556,9 @@ async fn run_ha_sync_once_for_peer(
     Ok(())
 }
 
-fn spawn_business_background_tasks(state: Arc<AppState>) -> Vec<tokio::task::JoinHandle<()>> {
+fn spawn_business_background_tasks(
+    state: Arc<AppState>,
+) -> Vec<tokio_util::task::AbortOnDropHandle<()>> {
     let mut tasks = vec![
         spawn_maintenance_worker(state.clone()),
         spawn_scheduled_job_stale_reaper(state.clone()),
@@ -1581,6 +1583,9 @@ fn spawn_business_background_tasks(state: Arc<AppState>) -> Vec<tokio::task::Joi
     tasks.push(spawn_forward_proxy_maintenance_scheduler(state.clone()));
     tasks.push(spawn_db_compaction_scheduler(state));
     tasks
+        .into_iter()
+        .map(tokio_util::task::AbortOnDropHandle::new)
+        .collect()
 }
 
 fn background_tasks_disabled_via_env() -> bool {
@@ -1650,8 +1655,11 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         .promote(authority.epoch, move |revision| async move {
             let tasks = spawn_business_background_tasks(runtime_state);
             revision.cancellation_token().cancelled().await;
-            for task in tasks {
+            for task in &tasks {
                 task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
             }
         })
         .await

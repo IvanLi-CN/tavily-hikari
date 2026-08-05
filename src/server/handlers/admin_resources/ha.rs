@@ -1875,6 +1875,7 @@ async fn post_admin_ha_planned_cutover(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
+    require_configured_peer_writable_tenure_capabilities(&state).await?;
     if state.ha.dual_active_enabled() {
         let operation_id = format!("dual-active-{}", state.proxy.backend_time().now_ts());
         let local_before = build_internal_ha_status(&state).await;

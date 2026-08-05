@@ -29,7 +29,7 @@ rand = { version = "0.8", features = ["std", "std_rng"] }
 async-stream = "0.3"
 async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 futures-util = "0.3"
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 rust-mcp-schema = "0.7.5"
 argon2 = { version = "0.5", features = ["std"] }
 libc = "0.2"
