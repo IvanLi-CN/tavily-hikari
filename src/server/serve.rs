@@ -929,7 +929,7 @@ fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
     };
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = build_ha_peer_probe_client();
+        let client = reqwest::Client::new();
         loop {
             if state.ha.role().await == tavily_hikari::HaNodeRole::Standby
                 && let Err(err) =
@@ -977,11 +977,19 @@ fn spawn_ha_peer_sync_task(state: Arc<AppState>) {
     };
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
     tokio::spawn(async move {
-        let client = build_ha_peer_probe_client();
+        let client = reqwest::Client::new();
+        let probe_client = build_ha_peer_probe_client();
         loop {
             let status = state.ha.status().await;
             if ha_peer_sync_should_run(&status) {
-                if let Err(err) = run_ha_peer_sync_once(&state, &client, &internal_token).await {
+                if let Err(err) = run_ha_peer_sync_once(
+                    &state,
+                    &client,
+                    &probe_client,
+                    &internal_token,
+                )
+                .await
+                {
                     tracing::warn!(
                         component = "ha",
                         event = "peer_sync_failed",
@@ -990,7 +998,7 @@ fn spawn_ha_peer_sync_task(state: Arc<AppState>) {
                     );
                 }
             } else {
-                observe_ha_peer_statuses_once(&state, &client, Some(&internal_token)).await;
+                observe_ha_peer_statuses_once(&state, &probe_client, Some(&internal_token)).await;
             }
             state.proxy.backend_time().sleep(interval).await;
         }
@@ -1368,6 +1376,7 @@ async fn run_ha_standby_sync_once(
 async fn run_ha_peer_sync_once(
     state: &Arc<AppState>,
     client: &reqwest::Client,
+    probe_client: &reqwest::Client,
     internal_token: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let status = state.ha.status().await;
@@ -1384,7 +1393,14 @@ async fn run_ha_peer_sync_once(
         return Err("HA peer sync has no configured peers".into());
     }
     for peer in peer_configs {
-        match fetch_internal_ha_status_with_metadata(client, &peer, internal_token, &local_node_id).await {
+        match fetch_internal_ha_status_with_metadata(
+            probe_client,
+            &peer,
+            internal_token,
+            &local_node_id,
+        )
+        .await
+        {
             Ok(probe) => {
                 state
                     .ha
