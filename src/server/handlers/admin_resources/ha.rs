@@ -408,65 +408,6 @@ async fn require_configured_peer_writable_tenure_capabilities(
     Ok(())
 }
 
-async fn require_emergency_takeover_capabilities(
-    state: &Arc<AppState>,
-) -> Result<Vec<String>, (StatusCode, String)> {
-    let status = state.ha.status().await;
-    let peers = state
-        .ha
-        .peer_nodes()
-        .into_iter()
-        .filter(|peer| peer.node_id != status.node_id)
-        .collect::<Vec<_>>();
-    if peers.is_empty() {
-        return Ok(Vec::new());
-    }
-    let internal_token = state.ha.internal_token().ok_or_else(|| {
-        (
-            StatusCode::CONFLICT,
-            "emergency takeover requires HA_INTERNAL_TOKEN to verify peers".to_string(),
-        )
-    })?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap_or_else(|_| Client::new());
-    let mut bypasses = Vec::new();
-    for peer in peers {
-        match fetch_internal_ha_status_for_planned_transition(
-            &client,
-            &peer,
-            &internal_token,
-            &status.node_id,
-        )
-        .await
-        {
-            Ok(_) => {}
-            Err(err)
-                if err.contains("unreachable:")
-                    && (!state.ha.dual_active_enabled()
-                        || status.full_master_node_id.as_deref() == Some(peer.node_id.as_str())) =>
-            {
-                bypasses.push(format!(
-                    "peer {} capability probe unreachable: {err}",
-                    peer.node_id
-                ));
-                tracing::warn!(
-                    component = "ha",
-                    event = "emergency_takeover_peer_probe_failed",
-                    peer_node_id = peer.node_id,
-                    active = status.full_master_node_id.as_deref()
-                        == Some(peer.node_id.as_str()),
-                    err = %err,
-                    "emergency takeover could not probe peer"
-                );
-            }
-            Err(err) => return Err((StatusCode::CONFLICT, err)),
-        }
-    }
-    Ok(bypasses)
-}
-
 async fn post_internal_ha_leader_update(
     client: &Client,
     peer: &tavily_hikari::HaPeerNodeConfig,
@@ -1368,7 +1309,7 @@ async fn post_admin_ha_promote(
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let capability_bypasses = if payload.force.unwrap_or(false) {
-        require_emergency_takeover_capabilities(&state).await?
+        vec!["explicit emergency takeover bypassed writable tenure capability gate".to_string()]
     } else {
         require_configured_peer_writable_tenure_capabilities(&state).await?;
         Vec::new()
@@ -1402,14 +1343,7 @@ async fn post_admin_ha_promote(
                 .unwrap_or_else(|_| Client::new());
             let mut peers_to_update = Vec::new();
             for peer in peers {
-                match fetch_internal_ha_status_for_planned_transition(
-                    &client,
-                    &peer,
-                    &internal_token,
-                    &node_id,
-                )
-                .await
-                {
+                match fetch_internal_ha_status(&client, &peer, &internal_token, &node_id).await {
                     Ok(peer_status) => {
                         if peer_status.allows_full_writes
                             || peer_status.full_master_node_id.as_deref()
@@ -1425,23 +1359,15 @@ async fn post_admin_ha_promote(
                         }
                         peers_to_update.push(peer);
                     }
-                    Err(err)
-                        if err.contains("unreachable:")
-                            && before.full_master_node_id.as_deref()
-                                == Some(peer.node_id.as_str()) =>
-                    {
+                    Err(err) => {
                         tracing::warn!(
                             component = "ha",
                             event = "dual_active_force_promote_peer_probe_failed",
                             peer_node_id = peer.node_id,
                             err = %err,
-                            "HA dual-active emergency takeover bypassed capability for the unreachable active"
+                            "HA dual-active force promote could not probe peer"
                         );
                     }
-                    Err(err) if err.contains("unreachable:") => {
-                        return Err((StatusCode::CONFLICT, err));
-                    }
-                    Err(err) => return Err((StatusCode::CONFLICT, err)),
                 }
             }
             for peer in peers_to_update {
