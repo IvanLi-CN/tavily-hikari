@@ -410,7 +410,7 @@ async fn require_configured_peer_writable_tenure_capabilities(
 
 async fn require_emergency_takeover_capabilities(
     state: &Arc<AppState>,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<Vec<String>, (StatusCode, String)> {
     let status = state.ha.status().await;
     let peers = state
         .ha
@@ -419,7 +419,7 @@ async fn require_emergency_takeover_capabilities(
         .filter(|peer| peer.node_id != status.node_id)
         .collect::<Vec<_>>();
     if peers.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let internal_token = state.ha.internal_token().ok_or_else(|| {
         (
@@ -431,6 +431,7 @@ async fn require_emergency_takeover_capabilities(
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap_or_else(|_| Client::new());
+    let mut bypasses = Vec::new();
     for peer in peers {
         match fetch_internal_ha_status_for_planned_transition(
             &client,
@@ -442,6 +443,10 @@ async fn require_emergency_takeover_capabilities(
         {
             Ok(_) => {}
             Err(err) if err.contains("unreachable:") => {
+                bypasses.push(format!(
+                    "peer {} capability probe unreachable: {err}",
+                    peer.node_id
+                ));
                 tracing::warn!(
                     component = "ha",
                     event = "emergency_takeover_peer_probe_failed",
@@ -455,7 +460,7 @@ async fn require_emergency_takeover_capabilities(
             Err(err) => return Err((StatusCode::CONFLICT, err)),
         }
     }
-    Ok(())
+    Ok(bypasses)
 }
 
 async fn post_internal_ha_leader_update(
@@ -1358,11 +1363,12 @@ async fn post_admin_ha_promote(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
-    if payload.force.unwrap_or(false) {
-        require_emergency_takeover_capabilities(&state).await?;
+    let capability_bypasses = if payload.force.unwrap_or(false) {
+        require_emergency_takeover_capabilities(&state).await?
     } else {
         require_configured_peer_writable_tenure_capabilities(&state).await?;
-    }
+        Vec::new()
+    };
     if state.ha.dual_active_enabled() {
         if !payload.force.unwrap_or(false) {
             return Err((
@@ -1479,6 +1485,7 @@ async fn post_admin_ha_promote(
                     "toRole": status.role,
                     "dualActive": true,
                     "force": true,
+                    "capabilityBypasses": capability_bypasses,
                 })),
             },
         )
@@ -1529,6 +1536,7 @@ async fn post_admin_ha_promote(
                 "fromOrigin": operation.from_origin,
                 "toOrigin": operation.to_origin,
                 "role": status.role,
+                "capabilityBypasses": capability_bypasses,
             })),
         },
     )

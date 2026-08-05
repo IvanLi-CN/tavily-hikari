@@ -128,24 +128,12 @@ impl WritableTenureSupervisor {
     }
 
     pub async fn begin_demotion(&self) -> WritableAuthorityState {
-        let mut state = self.state.lock().await;
-        if let Some(runtime) = &state.runtime {
-            runtime.revision.cancellation.cancel();
-        }
-        state.authority.phase = WritableAuthorityPhase::Demoting;
-        state.authority
-    }
-
-    pub async fn finish_demotion(&self, persisted_epoch: i64) -> Result<(), String> {
         let runtime = {
             let mut state = self.state.lock().await;
-            if state.authority.phase != WritableAuthorityPhase::Demoting {
-                return Err("authority is not demoting".to_string());
+            if let Some(runtime) = &state.runtime {
+                runtime.revision.cancellation.cancel();
             }
-            if persisted_epoch <= state.authority.epoch {
-                return Err("demotion must persist a newer authority epoch".to_string());
-            }
-            state.authority = WritableAuthorityState::standby(persisted_epoch);
+            state.authority.phase = WritableAuthorityPhase::Demoting;
             state.runtime.take()
         };
         if let Some(mut runtime) = runtime
@@ -158,6 +146,18 @@ impl WritableTenureSupervisor {
         {
             runtime.tasks.abort_all();
         }
+        self.state.lock().await.authority
+    }
+
+    pub async fn finish_demotion(&self, persisted_epoch: i64) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if state.authority.phase != WritableAuthorityPhase::Demoting {
+            return Err("authority is not demoting".to_string());
+        }
+        if persisted_epoch <= state.authority.epoch {
+            return Err("demotion must persist a newer authority epoch".to_string());
+        }
+        state.authority = WritableAuthorityState::standby(persisted_epoch);
         Ok(())
     }
 }
@@ -202,14 +202,18 @@ mod tests {
     #[tokio::test]
     async fn demotion_cancels_old_revision_before_epoch_advances() {
         let supervisor = WritableTenureSupervisor::restore(WritableAuthorityState::standby(10));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let runtime_stopped = stopped.clone();
         let revision = supervisor
-            .promote(11, |revision| async move {
+            .promote(11, move |revision| async move {
                 revision.cancellation_token().cancelled().await;
+                runtime_stopped.store(1, Ordering::SeqCst);
             })
             .await
             .expect("promotion");
 
         supervisor.begin_demotion().await;
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
         tokio::time::timeout(
             Duration::from_millis(250),
             revision.cancellation_token().cancelled(),
