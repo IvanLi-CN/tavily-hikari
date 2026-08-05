@@ -87,6 +87,7 @@
         "analysis::tests::",
         "ha::tests::",
         "writable_authority::tests::",
+        "maintenance_runtime::tests::",
         "models::client_ip_tests::",
         "runtime_logging::tests::",
         "store::admin_passkey_store_tests::",
@@ -503,6 +504,7 @@
         "server::tests::alerts_and_ha_startup_roles::post_ready_",
         "server::tests::alerts_and_ha_startup_roles::persist_",
         "server::tests::alerts_and_ha_startup_roles::startup_",
+        "server::tests::alerts_and_ha_startup_roles::demoting_",
         "server::tests::alerts_and_ha_startup_roles::standby_",
         "server::tests::alerts_and_ha_startup_roles::dual_active_",
         "server::tests::alerts_and_ha_event_exports::ha_",
@@ -523,7 +525,8 @@
         "server::tests::log_catalog_and_dashboard_sse::key_",
         "server::tests::research_result_and_mcp_subpath::db_",
         "server::tests::mcp_rebalance_and_follow_up::observed_",
-        "server::tests::system_settings_and_forward_proxy::proxy_"
+        "server::tests::system_settings_and_forward_proxy::proxy_",
+        "server::legacy_scheduler_adapter_exposes_typed_completion"
       ]
     },
     {
