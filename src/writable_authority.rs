@@ -64,6 +64,7 @@ struct SupervisorState {
 #[derive(Clone)]
 pub struct WritableTenureSupervisor {
     state: Arc<Mutex<SupervisorState>>,
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl WritableTenureSupervisor {
@@ -73,7 +74,12 @@ impl WritableTenureSupervisor {
                 authority,
                 runtime: None,
             })),
+            lifecycle: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub async fn lifecycle_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lifecycle.clone().lock_owned().await
     }
 
     pub async fn state(&self) -> WritableAuthorityState {

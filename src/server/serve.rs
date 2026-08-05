@@ -1596,6 +1596,8 @@ fn background_tasks_disabled_via_env() -> bool {
 }
 
 async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
+    let supervisor = state.ha.writable_tenure_supervisor();
+    let _lifecycle = supervisor.lifecycle_guard().await;
     if !state.ha.allows_full_writes().await {
         return false;
     }
@@ -1644,9 +1646,7 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         }
     }
     let runtime_state = state.clone();
-    state
-        .ha
-        .writable_tenure_supervisor()
+    supervisor
         .promote(authority.epoch, move |revision| async move {
             let tasks = spawn_business_background_tasks(runtime_state);
             revision.cancellation_token().cancelled().await;
@@ -1660,6 +1660,7 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
 
 async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError> {
     let supervisor = state.ha.writable_tenure_supervisor();
+    let _lifecycle = supervisor.lifecycle_guard().await;
     if supervisor.state().await.phase == tavily_hikari::WritableAuthorityPhase::Standby {
         return Ok(());
     }
