@@ -1616,6 +1616,7 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         }
     };
     if authority.phase == tavily_hikari::WritableAuthorityPhase::Demoting {
+        let _business_admission = state.ha.acquire_writable_demotion_admission().await;
         let authority = match state
             .proxy
             .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)

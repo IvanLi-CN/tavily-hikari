@@ -153,6 +153,7 @@ impl WritableTenureSupervisor {
             .is_err()
         {
             runtime.tasks.abort_all();
+            while runtime.tasks.join_next().await.is_some() {}
         }
     }
 
