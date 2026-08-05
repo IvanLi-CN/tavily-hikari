@@ -1603,17 +1603,6 @@ fn background_tasks_disabled_via_env() -> bool {
 async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
     let supervisor = state.ha.writable_tenure_supervisor();
     let _lifecycle = supervisor.lifecycle_guard().await;
-    if !state.ha.allows_full_writes().await {
-        return false;
-    }
-    if background_tasks_disabled_via_env() {
-        tracing::info!(
-            component = "startup",
-            event = "background_tasks_disabled_via_env",
-            "background tasks disabled via TAVILY_DISABLE_BACKGROUND_TASKS"
-        );
-        return false;
-    }
     let mut authority = match state.proxy.get_writable_authority_state().await {
         Ok(authority) => authority,
         Err(err) => {
@@ -1646,6 +1635,17 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         if supervisor.finish_demotion(authority.epoch).await.is_err() {
             return false;
         }
+        return false;
+    }
+    if !state.ha.allows_full_writes().await {
+        return false;
+    }
+    if background_tasks_disabled_via_env() {
+        tracing::info!(
+            component = "startup",
+            event = "background_tasks_disabled_via_env",
+            "background tasks disabled via TAVILY_DISABLE_BACKGROUND_TASKS"
+        );
         return false;
     }
     if authority.phase != tavily_hikari::WritableAuthorityPhase::Writable {
