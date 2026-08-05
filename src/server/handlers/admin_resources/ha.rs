@@ -442,10 +442,7 @@ async fn require_emergency_takeover_capabilities(
         .await
         {
             Ok(_) => {}
-            Err(err)
-                if err.contains("unreachable:")
-                    && status.full_master_node_id.as_deref() == Some(peer.node_id.as_str()) =>
-            {
+            Err(err) if err.contains("unreachable:") => {
                 bypasses.push(format!(
                     "peer {} capability probe unreachable: {err}",
                     peer.node_id
@@ -1438,7 +1435,13 @@ async fn post_admin_ha_promote(
                         );
                     }
                     Err(err) if err.contains("unreachable:") => {
-                        return Err((StatusCode::CONFLICT, err));
+                        tracing::warn!(
+                            component = "ha",
+                            event = "dual_active_force_promote_peer_probe_failed",
+                            peer_node_id = peer.node_id,
+                            err = %err,
+                            "HA dual-active force promote retained the existing unreachable-peer safety behavior"
+                        );
                     }
                     Err(err) => return Err((StatusCode::CONFLICT, err)),
                 }
