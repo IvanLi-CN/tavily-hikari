@@ -26,6 +26,18 @@ fn record_ha_outbox_gc_batch_timing(
 }
 
 impl KeyStore {
+    async fn restore_authority_write_connection(
+        mut conn: sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(&format!(
+            "PRAGMA busy_timeout = {}",
+            SQLITE_BUSY_TIMEOUT_DEFAULT.as_millis()
+        ))
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     async fn acquire_authority_write_connection(
         &self,
     ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, ProxyError> {
@@ -99,7 +111,7 @@ impl KeyStore {
     ) -> Result<WritableAuthorityState, ProxyError> {
         let phase = writable_authority_phase_str(phase);
         let mut conn = self.acquire_authority_write_connection().await?;
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             INSERT INTO ha_node_state (id, node_id, role, updated_at, authority_epoch, authority_phase)
             VALUES ('local', 'unknown', 'standby', ?, 0, ?)
@@ -110,7 +122,9 @@ impl KeyStore {
         .bind(self.backend_time.now_ts())
         .bind(phase)
         .execute(&mut *conn)
-        .await?;
+        .await;
+        Self::restore_authority_write_connection(conn).await?;
+        result?;
         self.get_writable_authority_state().await
     }
 
@@ -138,7 +152,8 @@ impl KeyStore {
         )
         .fetch_one(&mut *tx)
         .await?;
-        tx.commit().await?;
+        let conn = tx.commit_connection().await?;
+        Self::restore_authority_write_connection(conn).await?;
         Ok(WritableAuthorityState {
             epoch,
             phase: parse_writable_authority_phase(&phase),

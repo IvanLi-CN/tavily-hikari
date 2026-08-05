@@ -444,7 +444,8 @@ async fn require_emergency_takeover_capabilities(
             Ok(_) => {}
             Err(err)
                 if err.contains("unreachable:")
-                    && status.full_master_node_id.as_deref() == Some(peer.node_id.as_str()) =>
+                    && (!state.ha.dual_active_enabled()
+                        || status.full_master_node_id.as_deref() == Some(peer.node_id.as_str())) =>
             {
                 bypasses.push(format!(
                     "peer {} capability probe unreachable: {err}",
