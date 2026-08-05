@@ -1696,7 +1696,11 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         }
     }
     let runtime_state = state.clone();
-    let maintenance = state.ha.maintenance_runtime();
+    let maintenance = if supervisor.current_revision().await.is_none() {
+        state.ha.start_maintenance_runtime().await
+    } else {
+        state.ha.maintenance_runtime().await
+    };
     supervisor
         .promote(authority.epoch, move |revision| async move {
             let cancellation = revision.cancellation_token();
@@ -1728,7 +1732,9 @@ async fn demote_writable_runtime(state: &Arc<AppState>) -> Result<(), ProxyError
         .proxy
         .persist_writable_authority_phase(tavily_hikari::WritableAuthorityPhase::Demoting)
         .await?;
+    let maintenance = state.ha.maintenance_runtime().await;
     supervisor.quiesce_demotion().await;
+    maintenance.abort_remote_tasks().await;
     let authority = state
         .proxy
         .advance_writable_authority_epoch(tavily_hikari::WritableAuthorityPhase::Standby)
