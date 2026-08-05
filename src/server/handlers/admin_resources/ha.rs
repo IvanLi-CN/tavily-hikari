@@ -2269,6 +2269,14 @@ async fn post_admin_ha_planned_cutover(
     record_edgeone_audit_entries(&state, &operation_id, &audit_entries).await?;
     let ingress_already_switched_detail =
         format!("EdgeOne ingress already switched to {}; complete recovery reconciliation on both nodes before retrying.", peer.node_id);
+    demote_writable_runtime(&state).await.map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "local writable tenure demotion failed after ingress moved: {err}. {ingress_already_switched_detail}"
+            ),
+        )
+    })?;
     let deadline = Instant::now() + Duration::from_secs(HA_PLANNED_CUTOVER_POLL_TIMEOUT_SECS);
     let peer_after = loop {
         let current = fetch_internal_ha_status(&client, &peer, &internal_token, &local_before.node_id)
