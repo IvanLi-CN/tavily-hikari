@@ -646,6 +646,42 @@ async fn admin_ha_status_surfaces_peer_source_config_target() {
         }],
         ..tavily_hikari::HaConfig::default()
     });
+    let peer_runtime = tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig {
+        mode: tavily_hikari::HaMode::ActiveStandby,
+        node_id: "node-peer".to_string(),
+        ..tavily_hikari::HaConfig::default()
+    });
+    let mut peer_status = peer_runtime.status().await;
+    peer_status.role = tavily_hikari::HaNodeRole::Standby;
+    peer_status.allows_basic_business = false;
+    peer_status.allows_full_writes = false;
+    peer_status.node_public_origin = Some("peer-public-origin:443".to_string());
+    peer_status.edgeone_domain = Some("api.example.com".to_string());
+    peer_status.edgeone_origin = Some("edgeone-live-route:443".to_string());
+    peer_status.edgeone_current_target = Some("edgeone-live-route:443".to_string());
+    peer_status.edgeone_current_source_kind = Some(tavily_hikari::HaSourceKind::Direct);
+    peer_status.ha_source_effective = Some(tavily_hikari::HaSourceSettingsView {
+        source_kind: tavily_hikari::HaSourceKind::Direct,
+        direct_origin_scheme: Some(tavily_hikari::OriginScheme::Https),
+        direct_origin_host: Some("peer-source-config".to_string()),
+        direct_origin_port: Some(53844),
+        origin_group_id: None,
+        target: Some("peer-source-config:53844".to_string()),
+    });
+    peer_status.last_edgeone_check_at = Some(1_700_000_000);
+    peer_status.last_sync_at = Some(1_700_000_001);
+    peer_status.sync_lag_seconds = Some(1);
+    peer_status.message = Some("peer ready".to_string());
+    ha.peer_observation_store()
+        .record(
+            "node-peer",
+            tavily_hikari::HaPeerObservation::success(
+                Utc::now().timestamp(),
+                peer_status,
+                None,
+            ),
+        )
+        .await;
     let addr = spawn_ha_admin_server(proxy, ha, true).await;
 
     let response = Client::new()
@@ -662,10 +698,7 @@ async fn admin_ha_status_surfaces_peer_source_config_target() {
         "unknown",
         "a reachable older peer without optional channel telemetry must not appear unavailable"
     );
-    assert_eq!(
-        observed_peer_node_id.lock().await.as_deref(),
-        Some("node-active")
-    );
+    assert_eq!(observed_peer_node_id.lock().await.as_deref(), None);
 
     let _ = std::fs::remove_file(db_path);
 }

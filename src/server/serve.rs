@@ -820,11 +820,93 @@ async fn sync_forward_proxy_runtime_for_status(
     .map_err(|err| ProxyError::Other(format!("forward-proxy runtime role sync join failed: {err}")))?
 }
 
+async fn observe_ha_peer_statuses_once(
+    state: &Arc<AppState>,
+    client: &reqwest::Client,
+    internal_token: Option<&str>,
+) {
+    let local_node_id = state.ha.node_id();
+    let peers = state
+        .ha
+        .peer_nodes()
+        .into_iter()
+        .filter(|peer| peer.node_id != local_node_id)
+        .collect::<Vec<_>>();
+    if peers.is_empty() {
+        return;
+    }
+    let store = state.ha.peer_observation_store();
+    let Some(internal_token) = internal_token else {
+        for peer in peers {
+            store
+                .record(
+                    peer.node_id,
+                    tavily_hikari::HaPeerObservation::failure(
+                        state.proxy.backend_time().now_ts(),
+                        "HA_INTERNAL_TOKEN is required for peer observation",
+                    ),
+                )
+                .await;
+        }
+        return;
+    };
+    let probes = futures_stream::iter(peers.into_iter().map(|peer| {
+        let client = client.clone();
+        let internal_token = internal_token.to_string();
+        async move {
+            let result = fetch_internal_ha_status_with_metadata(
+                &client,
+                &peer,
+                &internal_token,
+                local_node_id,
+            )
+            .await;
+            (peer, result)
+        }
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await;
+    for (peer, result) in probes {
+        let observed_at = state.proxy.backend_time().now_ts();
+        let observation = match result {
+            Ok(probe) => tavily_hikari::HaPeerObservation::success(
+                observed_at,
+                probe.status,
+                probe.capabilities,
+            ),
+            Err(err) => tavily_hikari::HaPeerObservation::failure(observed_at, err),
+        };
+        store.record(peer.node_id, observation).await;
+    }
+}
+
+fn spawn_ha_peer_observation_task(state: Arc<AppState>) {
+    if !state
+        .ha
+        .peer_nodes()
+        .into_iter()
+        .any(|peer| peer.node_id != state.ha.node_id())
+    {
+        return;
+    }
+    let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            let internal_token = state.ha.internal_token();
+            observe_ha_peer_statuses_once(&state, &client, internal_token.as_deref()).await;
+            state.proxy.backend_time().sleep(interval).await;
+        }
+    });
+}
+
 fn spawn_ha_standby_sync_task(state: Arc<AppState>) {
     if state.ha.dual_active_enabled() {
         spawn_ha_peer_sync_task(state);
         return;
     }
+    spawn_ha_peer_observation_task(state.clone());
     let Some(source_url) = state.ha.sync_source_url() else {
         return;
     };
@@ -883,6 +965,7 @@ fn spawn_ha_peer_sync_task(state: Arc<AppState>) {
             reason = "missing_internal_token",
             "HA peer sync disabled because HA_INTERNAL_TOKEN is required in dual-active mode"
         );
+        spawn_ha_peer_observation_task(state);
         return;
     };
     let interval = std::time::Duration::from_secs(state.ha.sync_interval_secs().max(1));
@@ -1292,14 +1375,38 @@ async fn run_ha_peer_sync_once(
         return Err("HA peer sync has no configured peers".into());
     }
     for peer in peer_configs {
-        match fetch_internal_ha_status(client, &peer, internal_token, &local_node_id).await {
-            Ok(peer_status) => {
+        match fetch_internal_ha_status_with_metadata(client, &peer, internal_token, &local_node_id).await {
+            Ok(probe) => {
+                state
+                    .ha
+                    .peer_observation_store()
+                    .record(
+                        peer.node_id.clone(),
+                        tavily_hikari::HaPeerObservation::success(
+                            state.proxy.backend_time().now_ts(),
+                            probe.status.clone(),
+                            probe.capabilities,
+                        ),
+                    )
+                    .await;
+                let peer_status = probe.status;
                 if peer_status.allows_full_writes && control_source_node_id.is_none() {
                     control_source_node_id = Some(peer.node_id.clone());
                 }
                 peer_views.push((peer, peer_status));
             }
             Err(err) => {
+                state
+                    .ha
+                    .peer_observation_store()
+                    .record(
+                        peer.node_id.clone(),
+                        tavily_hikari::HaPeerObservation::failure(
+                            state.proxy.backend_time().now_ts(),
+                            err.clone(),
+                        ),
+                    )
+                    .await;
                 tracing::warn!(
                     component = "ha",
                     event = "peer_status_discovery_failed",

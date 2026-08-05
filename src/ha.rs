@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf};
 
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use ring::hmac;
@@ -604,6 +604,69 @@ pub struct HaStatusView {
     pub planned_cutover_eligible: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct HaPeerObservation {
+    pub observed_at: i64,
+    pub status: Option<HaStatusView>,
+    pub error: Option<String>,
+    pub capabilities: Option<String>,
+    pub channel_health: Vec<HaChannelHealthView>,
+}
+
+impl HaPeerObservation {
+    pub fn success(observed_at: i64, status: HaStatusView, capabilities: Option<String>) -> Self {
+        let channel_health = status
+            .peer_nodes
+            .iter()
+            .find(|peer| peer.node_id == status.node_id)
+            .map(|peer| peer.channel_health.clone())
+            .unwrap_or_default();
+        Self {
+            observed_at,
+            status: Some(status),
+            error: None,
+            capabilities,
+            channel_health,
+        }
+    }
+
+    pub fn failure(observed_at: i64, error: impl Into<String>) -> Self {
+        Self {
+            observed_at,
+            status: None,
+            error: Some(error.into()),
+            capabilities: None,
+            channel_health: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct HaPeerObservationStore {
+    observations: Arc<RwLock<HashMap<String, HaPeerObservation>>>,
+}
+
+impl HaPeerObservationStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn record(&self, node_id: impl Into<String>, observation: HaPeerObservation) {
+        self.observations
+            .write()
+            .await
+            .insert(node_id.into(), observation);
+    }
+
+    pub async fn get(&self, node_id: &str) -> Option<HaPeerObservation> {
+        self.observations.read().await.get(node_id).cloned()
+    }
+
+    pub async fn snapshot(&self) -> HashMap<String, HaPeerObservation> {
+        self.observations.read().await.clone()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaControlPlaneEventView {
@@ -696,6 +759,7 @@ pub struct HaRuntime {
     backend_time: BackendTime,
     writable_authority: WritableTenureSupervisor,
     writable_business_admission: Arc<RwLock<()>>,
+    peer_observation_store: HaPeerObservationStore,
 }
 
 impl HaRuntime {
@@ -728,7 +792,12 @@ impl HaRuntime {
                 0,
             )),
             writable_business_admission: Arc::new(RwLock::new(())),
+            peer_observation_store: HaPeerObservationStore::new(),
         }
+    }
+
+    pub fn peer_observation_store(&self) -> HaPeerObservationStore {
+        self.peer_observation_store.clone()
     }
 
     pub async fn acquire_writable_business_admission(&self) -> OwnedRwLockReadGuard<()> {
@@ -1890,7 +1959,85 @@ impl HaConfig {
 
 #[cfg(test)]
 mod tests {
+    use crate::WRITABLE_TENURE_CAPABILITY;
+
     use super::*;
+
+    #[tokio::test]
+    async fn peer_observation_store_keeps_success_and_failure_states_explicit() {
+        let store = HaPeerObservationStore::new();
+        let runtime = HaRuntime::new(HaConfig::default());
+        let mut status = runtime.status().await;
+        status.peer_nodes.push(HaPeerNodeView {
+            node_id: status.node_id.clone(),
+            public_origin: None,
+            source_config_target: None,
+            role: Some(status.role),
+            allows_basic_business: status.allows_basic_business,
+            allows_full_writes: status.allows_full_writes,
+            last_sync_at: status.last_sync_at,
+            sync_lag_seconds: status.sync_lag_seconds,
+            recovery_status: status.recovery_status.clone(),
+            message: status.message.clone(),
+            last_seen_at: Some(100),
+            stale: false,
+            role_hint: HaPeerRoleHint::Observer,
+            planned_cutover_eligible: false,
+            channel_health: vec![HaChannelHealthView {
+                channel: HaSyncChannel::Control,
+                acked_seq: Some(7),
+                high_watermark: 7,
+                ack_lag: Some(0),
+                cursor_state: "healthy".to_string(),
+                retention_secs: 72 * 60 * 60,
+                expired_backlog: false,
+                gc_state: "idle".to_string(),
+                oldest_age_secs: Some(0),
+                last_progress_at: Some(100),
+                last_defer_reason: None,
+                next_retry_at: None,
+                batch_size: 250,
+                gc_debt_mode: "normal".to_string(),
+                gc_observed_at: Some(100),
+                gc_deleted_rows_per_minute: 0.0,
+                gc_recovery_deadline_at: None,
+                gc_slo_state: "healthy".to_string(),
+                gc_foreground_rps: 0,
+            }],
+        });
+        store
+            .record(
+                "peer-a",
+                HaPeerObservation::success(
+                    100,
+                    status,
+                    Some(WRITABLE_TENURE_CAPABILITY.to_string()),
+                ),
+            )
+            .await;
+
+        let success = store.get("peer-a").await.expect("success observation");
+        assert_eq!(success.observed_at, 100);
+        assert!(success.status.is_some());
+        assert_eq!(
+            success.capabilities.as_deref(),
+            Some(WRITABLE_TENURE_CAPABILITY)
+        );
+        assert_eq!(success.channel_health.len(), 1);
+        assert_eq!(success.channel_health[0].cursor_state, "healthy");
+
+        store
+            .record(
+                "peer-a",
+                HaPeerObservation::failure(101, "peer unavailable"),
+            )
+            .await;
+        let failure = store.get("peer-a").await.expect("failure observation");
+        assert_eq!(failure.observed_at, 101);
+        assert!(failure.status.is_none());
+        assert_eq!(failure.error.as_deref(), Some("peer unavailable"));
+        assert!(failure.channel_health.is_empty());
+    }
 
     #[tokio::test]
     async fn single_mode_starts_full_master() {
