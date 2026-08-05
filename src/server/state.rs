@@ -354,7 +354,11 @@ async fn ensure_ha_allows_basic_business(
 ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Response<Body>> {
     let admission = state.ha.acquire_writable_business_admission().await;
     let status = state.ha.status().await;
-    if status.allows_basic_business {
+    let authority = state.ha.writable_tenure_supervisor().state().await;
+    if status.allows_basic_business
+        && (authority.phase == tavily_hikari::WritableAuthorityPhase::Writable
+            || authority.epoch == 0)
+    {
         return Ok(admission);
     }
 

@@ -650,6 +650,7 @@ fn spawn_maintenance_worker(state: Arc<AppState>) -> tokio::task::JoinHandle<()>
         let wake = maintenance_worker_wake_for_state(state.as_ref());
         let mut remote_jobs = tokio::task::JoinSet::new();
         loop {
+            while remote_jobs.try_join_next().is_some() {}
             match dequeue_next_scheduled_job(state.as_ref()).await {
                 Ok(Some((job, remote_io_permit))) => {
                     if let Some(remote_io_permit) = remote_io_permit {
