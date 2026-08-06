@@ -926,6 +926,13 @@ async fn reset_dashboard_overview_build_count(state: &Arc<AppState>) {
 }
 
 #[cfg(test)]
+async fn reset_dashboard_overview_build_count_only(state: &Arc<AppState>) {
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let mut cache = cache_handle.lock().await;
+    cache.build_count = 0;
+}
+
+#[cfg(test)]
 async fn dashboard_overview_build_count(state: &Arc<AppState>) -> usize {
     let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
     let cache = cache_handle.lock().await;

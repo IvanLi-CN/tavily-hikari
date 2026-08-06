@@ -568,7 +568,7 @@ async fn dashboard_snapshot_event_uses_rebuilt_freshness_after_pending_rollups()
         "emitted snapshot freshness should reflect the rebuilt post-flush state, not the stale pre-rebuild probe",
     );
 
-    reset_dashboard_overview_build_count(&state).await;
+    reset_dashboard_overview_build_count_only(&state).await;
     let cached = load_dashboard_overview_snapshot(&state)
         .await
         .expect("cached overview snapshot after flush-backed rebuild");
