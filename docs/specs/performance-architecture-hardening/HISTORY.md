@@ -31,13 +31,16 @@
 - durable projections 与共享 snapshots 替代请求线程上的重复聚合和 flush-on-read。
 - 窄 runtime 接口和 architecture checker 替代依赖约定，防止 raw pool/coalescer 再次泄漏。
 - reconciliation work projection 以 `token_id + period_code` 持久化逻辑结算窗口；recent/backlog
-  各自保存公平 cursor，candidate page 在 representative ranking 前做有界 overfetch，并通过
-  `SqliteRuntime` 的 bounded immediate claim 保持 12/8 配额与首个远端尝试预算。
+  各自保存稳定的 per-key fair cursor，candidate page 通过有界 fair rank page 保持 12/8 配额，
+  并通过 `SqliteRuntime` 的 bounded immediate claim 保持首个远端尝试预算。
 - work reservation、retry、settlement 和 billing adjustment 在同一 SQLite 写事务中以 reservation
-  fence 排序；失效 worker 只能放弃结果，不能覆盖新 reservation 或重复改变账务真值。窗口内完整
-  key hydration 仍来自选中窗口的 usage rows，`scheduling_key_id` 只承担公平代表调度。
-- usage projection 会 enqueue 唯一 reconciliation representative job；启动恢复 stale job 并唤醒
-  maintenance runtime，使新窗口不必等待 scheduler tick 才进入处理。
+  fence 排序；失效 worker 只能放弃结果，不能覆盖新 reservation 或重复改变账务真值。窗口内
+  hydration 按 32-key page 持久化游标和累计 upstream usage，最后一页完成后才结算，
+  `scheduling_key_id` 只承担公平代表调度。
+- usage projection 会 enqueue 唯一 reconciliation representative job；启动恢复 stale job、持续
+  推进 legacy backfill，并由 HTTP/MCP 两条入口唤醒 maintenance runtime，使新窗口不必等待
+  scheduler tick 才进入处理。work/cursor 是可由 replicated usage 重建的本地投影，不加入旧 HA
+  节点的严格事件白名单。
 
 ## References
 

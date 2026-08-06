@@ -276,6 +276,78 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn upstream_reconciliation_continuation_due(
+        &self,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .upstream_reconciliation_continuation_due()
+            .await
+    }
+
+    pub async fn finish_upstream_reconciliation_job(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        settled: i64,
+    ) -> bool {
+        let now = self.backend_time.now_ts();
+        match self.upstream_reconciliation_backoff_until().await {
+            Ok(available_at) if available_at > now => self
+                .scheduled_job_finish_and_enqueue_auto_at(
+                    job_id,
+                    claim_generation,
+                    "upstream_reconciliation",
+                    None,
+                    1,
+                    Some(&format!("settled={settled} backoff_until={available_at}")),
+                    available_at,
+                )
+                .await
+                .is_ok(),
+            Ok(_) => match self.upstream_reconciliation_continuation_due().await {
+                Ok(true) => self
+                    .scheduled_job_finish_and_enqueue_auto_at(
+                        job_id,
+                        claim_generation,
+                        "upstream_reconciliation",
+                        None,
+                        1,
+                        Some(&format!("settled={settled} continuation=true")),
+                        now,
+                    )
+                    .await
+                    .is_ok(),
+                Ok(false) => self
+                    .scheduled_job_finish_claimed(
+                        job_id,
+                        claim_generation,
+                        "success",
+                        Some(&format!("settled={settled}")),
+                    )
+                    .await
+                    .is_ok(),
+                Err(err) => self
+                    .scheduled_job_finish_claimed(
+                        job_id,
+                        claim_generation,
+                        "error",
+                        Some(&err.to_string()),
+                    )
+                    .await
+                    .is_ok(),
+            },
+            Err(err) => self
+                .scheduled_job_finish_claimed(
+                    job_id,
+                    claim_generation,
+                    "error",
+                    Some(&err.to_string()),
+                )
+                .await
+                .is_ok(),
+        }
+    }
+
     pub async fn mark_upstream_reconciliation_research_terminal(
         &self,
         request_id: &str,
@@ -938,11 +1010,7 @@ impl TavilyProxy {
         let backlog_lane_budget = candidate_batch.backlog_lane_budget;
         let candidates = candidate_batch.candidates;
         let candidate_count = candidates.len() as i64;
-        let candidate_keys = candidates
-            .iter()
-            .map(|candidate| (candidate.token_id.clone(), candidate.period_code.clone()))
-            .collect::<Vec<_>>();
-        let key_ids_by_candidate = if preparation_budget_exhausted {
+        let key_pages_by_candidate = if preparation_budget_exhausted {
             std::collections::HashMap::new()
         } else {
             let remaining = candidate_hydration_deadline
@@ -953,7 +1021,7 @@ impl TavilyProxy {
             } else {
                 match tokio::time::timeout(
                     remaining,
-                    self.key_store.reconciliation_key_ids_batch(&candidate_keys),
+                    self.key_store.reconciliation_key_pages(&candidates),
                 )
                 .await
                 {
@@ -965,9 +1033,9 @@ impl TavilyProxy {
                 }
             }
         };
-        let all_key_ids = key_ids_by_candidate
+        let all_key_ids = key_pages_by_candidate
             .values()
-            .flat_map(|key_ids| key_ids.iter().cloned())
+            .flat_map(|page| page.key_ids.iter().cloned())
             .collect::<std::collections::HashSet<_>>();
         let active_key_cooldowns = if preparation_budget_exhausted {
             std::collections::HashMap::new()
@@ -1046,20 +1114,43 @@ impl TavilyProxy {
                     break;
                 }
                 let in_recent_lane = index < recent_candidate_count as usize;
-                let key_ids = key_ids_by_candidate
+                let Some(key_page) = key_pages_by_candidate
                     .get(&(candidate.token_id.clone(), candidate.period_code.clone()))
                     .cloned()
-                    .unwrap_or_default();
-                if key_ids.is_empty() {
+                else {
                     self.key_store
                         .release_reconciliation_reservation(
                             &candidate,
                             self.backend_time
                                 .now_ts()
                                 .saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS),
-                            Some("missing_representative_key"),
+                            Some("missing_hydration_page"),
                         )
                         .await?;
+                    continue;
+                };
+                let key_ids = key_page.key_ids;
+                let hydration_has_more = key_page.has_more;
+                if key_ids.is_empty() {
+                    let advanced = self
+                        .key_store
+                        .advance_upstream_reconciliation_hydration(
+                            &candidate,
+                            None,
+                            0,
+                            false,
+                        )
+                        .await?;
+                    if !advanced {
+                        continue;
+                    }
+                    let mut hydrated_candidate = candidate.clone();
+                    hydrated_candidate.hydration_complete = true;
+                    observed_candidates.push((
+                        hydrated_candidate,
+                        candidate.upstream_usage_total,
+                        in_recent_lane,
+                    ));
                     continue;
                 }
                 if key_ids.iter().any(|key_id| cooling_keys.contains(key_id)) {
@@ -1117,7 +1208,7 @@ impl TavilyProxy {
                 let mut retry_reason = None;
                 let mut retry_key_id = None;
                 let mut candidate_attempted = false;
-                for key_id in key_ids {
+                for key_id in &key_ids {
                     // The two-second limit applies only to local candidate
                     // preparation. Once a remote request has started, allow
                     // the bounded request timeout to finish and use the
@@ -1144,7 +1235,7 @@ impl TavilyProxy {
                     }
                     let reservation_result = tokio::time::timeout(
                         reservation_budget,
-                        self.key_store.reserve_upstream_usage_attempt(&key_id),
+                        self.key_store.reserve_upstream_usage_attempt(key_id),
                     )
                     .await;
                     let reservation = match reservation_result {
@@ -1174,7 +1265,7 @@ impl TavilyProxy {
                     let usage_result = tokio::time::timeout(
                         remaining.max(Duration::from_millis(1)),
                         self.fetch_upstream_project_usage(
-                            &key_id,
+                            key_id,
                             usage_base,
                             &candidate.project_id,
                         ),
@@ -1197,7 +1288,7 @@ impl TavilyProxy {
                 if budget_exhausted {
                     break;
                 }
-                    if let (Some(retry_reason), Some(retry_key_id)) = (retry_reason, retry_key_id) {
+                if let (Some(retry_reason), Some(retry_key_id)) = (retry_reason, retry_key_id) {
                         let reason_kind =
                             classify_reconciliation_retry_reason(Some(retry_reason.as_str()));
                         if reason_kind == RECONCILIATION_RETRY_REASON_UPSTREAM_429
@@ -1284,7 +1375,32 @@ impl TavilyProxy {
                         );
                         continue;
                 }
-                observed_candidates.push((candidate, upstream_usage, in_recent_lane));
+                let last_key_id = key_ids.last().map(String::as_str);
+                let advanced = self
+                    .key_store
+                    .advance_upstream_reconciliation_hydration(
+                        &candidate,
+                        last_key_id,
+                        upstream_usage,
+                        hydration_has_more,
+                    )
+                    .await?;
+                if !advanced {
+                    continue;
+                }
+                if hydration_has_more {
+                    continue;
+                }
+                let mut hydrated_candidate = candidate;
+                hydrated_candidate.upstream_usage_total = hydrated_candidate
+                    .upstream_usage_total
+                    .saturating_add(upstream_usage);
+                hydrated_candidate.hydration_complete = true;
+                observed_candidates.push((
+                    hydrated_candidate.clone(),
+                    hydrated_candidate.upstream_usage_total,
+                    in_recent_lane,
+                ));
             }
 
             // Billing can become charged while the remote request is in flight. Re-read

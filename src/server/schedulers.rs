@@ -2769,26 +2769,10 @@ async fn run_manual_claimed_job(
             )
             .await
             {
-                Ok(Ok(settled)) => {
-                    let now = state.proxy.backend_time().now_ts();
-                    match state.proxy.upstream_reconciliation_backoff_until().await {
-                        Ok(available_at) if available_at > now => state
-                            .proxy
-                            .scheduled_job_finish_and_enqueue_auto_at(
-                                job_id,
-                                claim_generation,
-                                "upstream_reconciliation",
-                                None,
-                                1,
-                                Some(&format!("settled={settled} backoff_until={available_at}")),
-                                available_at,
-                            )
-                            .await
-                            .is_ok(),
-                        Ok(_) => finish(state, "success", format!("settled={settled}")).await,
-                        Err(err) => finish(state, "error", err.to_string()).await,
-                    }
-                }
+                Ok(Ok(settled)) => state
+                    .proxy
+                    .finish_upstream_reconciliation_job(job_id, claim_generation, settled)
+                    .await,
                 Ok(Err(err)) => finish(state, "error", err.to_string()).await,
                 Err(_) => {
                     tracing::debug!(

@@ -49,8 +49,9 @@
   PRAGMAs, and transaction SQL remain unchanged.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 - Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
-  recent/backlog cursors, atomic reservations, representative scheduling, and reservation-fenced
-  settlement transitions.
+  recent/backlog cursors, stable per-key fair ranks, atomic reservations, bounded paged hydration,
+  restartable legacy backfill, representative scheduling, and reservation-fenced settlement
+  transitions.
 
 ## References
 

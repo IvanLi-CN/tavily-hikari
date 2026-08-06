@@ -14,6 +14,7 @@ const RECONCILIATION_BACKLOG_LANE_BUDGET: i64 = 8;
 const RECONCILIATION_QUEUE_ESTIMATE_LIMIT: i64 = 64;
 const RECONCILIATION_WORK_RESERVATION_TTL_SECS: i64 = 30;
 const RECONCILIATION_WORK_PAGE_MULTIPLIER: i64 = 8;
+const RECONCILIATION_HYDRATION_PAGE_SIZE: i64 = 32;
 
 #[derive(Clone, Copy)]
 enum ReconciliationCandidateScope {
@@ -31,14 +32,26 @@ type UpstreamReconciliationCandidateRow = (
     i64,
     i64,
     String,
+    i64,
     Option<String>,
+    Option<String>,
+    i64,
+    i64,
 );
 
 #[derive(Clone, Debug)]
 struct ReconciliationCursor {
+    fair_rank: i64,
+    scheduling_key_id: String,
     period_end: i64,
     token_id: String,
     period_code: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReconciliationKeyPage {
+    pub key_ids: Vec<String>,
+    pub has_more: bool,
 }
 
 fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
@@ -630,6 +643,7 @@ impl KeyStore {
     pub(crate) async fn ensure_upstream_reconciliation_representative_job(
         &self,
     ) -> Result<(), ProxyError> {
+        let _ = self.backfill_upstream_reconciliation_work_page().await?;
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -666,6 +680,27 @@ impl KeyStore {
                 .await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn upstream_reconciliation_continuation_due(
+        &self,
+    ) -> Result<bool, ProxyError> {
+        self.backfill_upstream_reconciliation_work_page().await?;
+        let now = self.backend_time.now_ts();
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM upstream_reconciliation_work
+                WHERE status IN ('ready', 'retry')
+                  AND next_attempt_at <= ?
+                  AND hydration_cursor_key_id IS NOT NULL
+            )
+            "#,
+        )
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     async fn load_or_initialize_upstream_reconciliation_ready_after(
@@ -832,8 +867,12 @@ impl KeyStore {
                     period_start,
                     period_end,
                     pending_research,
-                    _scheduling_key_id,
+                    scheduling_key_id,
+                    fair_rank,
                     reservation_id,
+                    hydration_cursor_key_id,
+                    upstream_usage_total,
+                    hydration_complete,
                 )| {
                     let degraded = pending_research > 0
                         && now >= period_end.saturating_add(86_400);
@@ -851,6 +890,11 @@ impl KeyStore {
                         pending_research,
                         degraded,
                         reservation_id,
+                        scheduling_key_id,
+                        fair_rank,
+                        hydration_cursor_key_id,
+                        upstream_usage_total,
+                        hydration_complete: hydration_complete != 0,
                     })
                 },
             )
@@ -862,9 +906,10 @@ impl KeyStore {
         conn: &mut SqliteConnection,
         lane: &str,
     ) -> Result<Option<ReconciliationCursor>, ProxyError> {
-        sqlx::query_as::<_, (i64, String, String)>(
+        sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(
             r#"
-            SELECT period_end, token_id, period_code
+            SELECT fair_rank, scheduling_key_id, period_end, token_id, period_code,
+                   updated_at
             FROM upstream_reconciliation_cursors
             WHERE lane = ?
             "#,
@@ -873,10 +918,14 @@ impl KeyStore {
         .fetch_optional(&mut *conn)
         .await
         .map(|row| {
-            row.map(|(period_end, token_id, period_code)| ReconciliationCursor {
+            row.map(|(fair_rank, scheduling_key_id, period_end, token_id, period_code, _updated_at)| {
+                ReconciliationCursor {
+                    fair_rank,
+                    scheduling_key_id,
                 period_end,
                 token_id,
                 period_code,
+                }
             })
         })
         .map_err(ProxyError::from)
@@ -906,7 +955,11 @@ impl KeyStore {
                     w.period_start,
                     w.period_end,
                     w.scheduling_key_id,
+                    w.fair_rank,
                     w.reservation_id,
+                    w.hydration_cursor_key_id,
+                    w.upstream_usage_total,
+                    w.hydration_complete,
                     CASE WHEN EXISTS (
                         SELECT 1
                         FROM upstream_reconciliation_research r
@@ -945,37 +998,28 @@ impl KeyStore {
             }
         }
         if let Some(cursor) = cursor {
-            query.push(" AND (");
+            query.push(" AND (w.fair_rank, w.scheduling_key_id, ");
             if newest_first {
-                query
-                    .push("w.period_end < ")
-                    .push_bind(cursor.period_end)
-                    .push(" OR (w.period_end = ")
-                    .push_bind(cursor.period_end)
-                    .push(" AND (w.token_id > ")
-                    .push_bind(&cursor.token_id)
-                    .push(" OR (w.token_id = ")
-                    .push_bind(&cursor.token_id)
-                    .push(" AND w.period_code > ")
-                    .push_bind(&cursor.period_code)
-                    .push("))")
-                    .push(")");
+                query.push("-w.period_end");
             } else {
-                query
-                    .push("w.period_end > ")
-                    .push_bind(cursor.period_end)
-                    .push(" OR (w.period_end = ")
-                    .push_bind(cursor.period_end)
-                    .push(" AND (w.token_id > ")
-                    .push_bind(&cursor.token_id)
-                    .push(" OR (w.token_id = ")
-                    .push_bind(&cursor.token_id)
-                    .push(" AND w.period_code > ")
-                    .push_bind(&cursor.period_code)
-                    .push("))")
-                    .push(")");
+                query.push("w.period_end");
             }
-            query.push(")");
+            query
+                .push(", w.token_id, w.period_code) > (")
+                .push_bind(cursor.fair_rank)
+                .push(", ")
+                .push_bind(&cursor.scheduling_key_id)
+                .push(", ")
+                .push_bind(if newest_first {
+                    cursor.period_end.saturating_neg()
+                } else {
+                    cursor.period_end
+                })
+                .push(", ")
+                .push_bind(&cursor.token_id)
+                .push(", ")
+                .push_bind(&cursor.period_code)
+                .push(")");
         }
         query
             .push(
@@ -993,8 +1037,8 @@ impl KeyStore {
                         AND r.terminal_at IS NULL
                     )
                   )
-            ), candidate_page AS (
-                SELECT
+            )
+            SELECT
                     token_id,
                     period_code,
                     project_id,
@@ -1004,56 +1048,19 @@ impl KeyStore {
                     period_end,
                     pending_research,
                     scheduling_key_id,
+                    fair_rank,
                     reservation_id
+                    , hydration_cursor_key_id,
+                    upstream_usage_total,
+                    hydration_complete
                 FROM eligible_work
-                ORDER BY period_end "#,
+                ORDER BY fair_rank ASC, scheduling_key_id ASC, period_end "#,
             )
             .push(if newest_first { "DESC" } else { "ASC" })
             .push(
                 r#", token_id ASC, period_code ASC
                 LIMIT "#,
             )
-            .push_bind(page_limit)
-            .push(
-                r#"
-            ), ranked_work AS (
-                SELECT
-                    token_id,
-                    period_code,
-                    project_id,
-                    billing_subject,
-                    settlement_mode,
-                    period_start,
-                    period_end,
-                    pending_research,
-                    scheduling_key_id,
-                    reservation_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY scheduling_key_id
-                        ORDER BY period_end "#,
-            )
-            .push(if newest_first { "DESC" } else { "ASC" })
-            .push(
-                r#", token_id ASC, period_code ASC
-                    ) AS key_slot
-                FROM candidate_page
-            )
-            SELECT
-                token_id,
-                period_code,
-                project_id,
-                billing_subject,
-                settlement_mode,
-                period_start,
-                period_end,
-                pending_research,
-                scheduling_key_id,
-                reservation_id
-            FROM ranked_work
-            ORDER BY key_slot ASC, period_end "#,
-            )
-            .push(if newest_first { "DESC" } else { "ASC" })
-            .push(", token_id ASC, period_code ASC LIMIT ")
             .push_bind(page_limit);
         let rows = query
             .build_query_as::<UpstreamReconciliationCandidateRow>()
@@ -1119,9 +1126,11 @@ impl KeyStore {
         sqlx::query(
             r#"
             INSERT INTO upstream_reconciliation_cursors (
-                lane, period_end, token_id, period_code, updated_at
-            ) VALUES (?, ?, ?, ?, ?)
+                lane, fair_rank, scheduling_key_id, period_end, token_id, period_code, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(lane) DO UPDATE SET
+                fair_rank = excluded.fair_rank,
+                scheduling_key_id = excluded.scheduling_key_id,
                 period_end = excluded.period_end,
                 token_id = excluded.token_id,
                 period_code = excluded.period_code,
@@ -1129,6 +1138,8 @@ impl KeyStore {
             "#,
         )
         .bind(lane)
+        .bind(candidate.fair_rank)
+        .bind(&candidate.scheduling_key_id)
         .bind(candidate.period_end)
         .bind(&candidate.token_id)
         .bind(&candidate.period_code)
@@ -1317,6 +1328,7 @@ impl KeyStore {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn reconciliation_key_ids_batch(
         &self,
         candidates: &[(String, String)],
@@ -1324,33 +1336,127 @@ impl KeyStore {
         if candidates.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT token_id, period_code, key_id FROM upstream_reconciliation_usage WHERE ",
-        );
-        for (index, (token_id, period_code)) in candidates.iter().enumerate() {
-            if index > 0 {
-                query.push(" OR ");
-            }
+        let candidates = candidates
+            .iter()
+            .map(|(token_id, period_code)| UpstreamReconciliationCandidate {
+                token_id: token_id.clone(),
+                period_code: period_code.clone(),
+                project_id: String::new(),
+                billing_subject: String::new(),
+                settlement_mode: String::new(),
+                period_start: 0,
+                period_end: 0,
+                pending_research: 0,
+                degraded: false,
+                reservation_id: None,
+                scheduling_key_id: String::new(),
+                fair_rank: 0,
+                hydration_cursor_key_id: None,
+                upstream_usage_total: 0,
+                hydration_complete: false,
+            })
+            .collect::<Vec<_>>();
+        Ok(self
+            .reconciliation_key_pages(&candidates)
+            .await?
+            .into_iter()
+            .map(|(key, page)| (key, page.key_ids))
+            .collect())
+    }
+
+    pub(crate) async fn reconciliation_key_pages(
+        &self,
+        candidates: &[UpstreamReconciliationCandidate],
+    ) -> Result<
+        std::collections::HashMap<(String, String), ReconciliationKeyPage>,
+        ProxyError,
+    > {
+        let mut pages = std::collections::HashMap::new();
+        for candidate in candidates {
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "SELECT key_id FROM upstream_reconciliation_usage WHERE token_id = ",
+            );
             query
-                .push("(token_id = ")
-                .push_bind(token_id)
+                .push_bind(&candidate.token_id)
                 .push(" AND period_code = ")
-                .push_bind(period_code)
-                .push(")");
+                .push_bind(&candidate.period_code);
+            if let Some(cursor) = candidate.hydration_cursor_key_id.as_deref() {
+                query.push(" AND key_id > ").push_bind(cursor);
+            }
+            let rows = query
+                .push(" ORDER BY key_id ASC LIMIT ")
+                .push_bind(RECONCILIATION_HYDRATION_PAGE_SIZE + 1)
+                .build_query_as::<(String,)>()
+                .fetch_all(&self.pool)
+                .await?;
+            let has_more = rows.len() as i64 > RECONCILIATION_HYDRATION_PAGE_SIZE;
+            let key_ids = rows
+                .into_iter()
+                .take(RECONCILIATION_HYDRATION_PAGE_SIZE as usize)
+                .map(|(key_id,)| key_id)
+                .collect();
+            pages.insert(
+                (candidate.token_id.clone(), candidate.period_code.clone()),
+                ReconciliationKeyPage { key_ids, has_more },
+            );
         }
-        query.push(" ORDER BY token_id ASC, period_code ASC, key_id ASC");
-        let rows = query
-            .build_query_as::<(String, String, String)>()
-            .fetch_all(&self.pool)
-            .await?;
-        let mut grouped = std::collections::HashMap::new();
-        for (token_id, period_code, key_id) in rows {
-            grouped
-                .entry((token_id, period_code))
-                .or_insert_with(Vec::new)
-                .push(key_id);
+        Ok(pages)
+    }
+
+    pub(crate) async fn advance_upstream_reconciliation_hydration(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        last_key_id: Option<&str>,
+        page_usage: i64,
+        has_more: bool,
+    ) -> Result<bool, ProxyError> {
+        let mut tx = match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => tx,
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                return Err(ProxyError::Other(format!(
+                    "upstream reconciliation hydration deferred: {reason:?}"
+                )));
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => return Err(err),
+        };
+        let now = self.backend_time.now_ts();
+        let updated = sqlx::query(
+            r#"
+            UPDATE upstream_reconciliation_work
+            SET hydration_cursor_key_id = COALESCE(?, hydration_cursor_key_id),
+                upstream_usage_total = upstream_usage_total + ?,
+                hydration_complete = ?,
+                status = CASE WHEN ? THEN 'ready' ELSE 'reserved' END,
+                reservation_id = CASE WHEN ? THEN NULL ELSE reservation_id END,
+                reservation_expires_at = CASE WHEN ? THEN NULL ELSE reservation_expires_at END,
+                updated_at = ?
+            WHERE work_key = ?
+              AND status = 'reserved'
+              AND reservation_id = ?
+            "#,
+        )
+        .bind(last_key_id)
+        .bind(page_usage)
+        .bind(!has_more)
+        .bind(has_more)
+        .bind(has_more)
+        .bind(has_more)
+        .bind(now)
+        .bind(format!("v1:{}:{}", candidate.token_id, candidate.period_code))
+        .bind(candidate.reservation_id.as_deref())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            let _ = tx.rollback().await;
+            return Ok(false);
         }
-        Ok(grouped)
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub(crate) async fn reconciliation_local_billed_credits_batch(
@@ -1506,7 +1612,19 @@ impl KeyStore {
         next_attempt_at: i64,
         reason: Option<&str>,
     ) -> Result<bool, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => tx,
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                return Err(ProxyError::Other(format!(
+                    "upstream reconciliation reservation release deferred: {reason:?}"
+                )));
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => return Err(err),
+        };
         let released = self
             .transition_reconciliation_work(
                 &mut tx,

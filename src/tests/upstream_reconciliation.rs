@@ -153,6 +153,11 @@ async fn signed_reconciliation_adjustment_is_idempotent_and_restores_quota() {
         pending_research: 0,
         degraded: false,
         reservation_id: None,
+        scheduling_key_id: String::new(),
+        fair_rank: 0,
+        hydration_cursor_key_id: None,
+        upstream_usage_total: 0,
+        hydration_complete: false,
     };
     assert!(
         proxy
@@ -391,6 +396,11 @@ async fn shadow_reconciliation_keeps_zero_delta_usage_and_updates_runtime_marker
         pending_research: 0,
         degraded: false,
         reservation_id: None,
+        scheduling_key_id: String::new(),
+        fair_rank: 0,
+        hydration_cursor_key_id: None,
+        upstream_usage_total: 0,
+        hydration_complete: false,
     };
     assert!(
         proxy
@@ -1873,6 +1883,193 @@ async fn reconciliation_candidate_query_plan_uses_work_projection_and_hydrates_s
 }
 
 #[tokio::test]
+async fn reconciliation_hydration_page_is_bounded_and_preserves_accumulated_usage() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-hydration-page"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    for index in 0..33 {
+        let key_id = format!("hydration-key-{index:02}");
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                settlement_mode, period_start, period_end, request_count,
+                first_used_at, last_used_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, ?, ?, ?)",
+        )
+        .bind("hydration-token")
+        .bind(key_id)
+        .bind("2026-07-15/S2-hydration")
+        .bind("hydration-project")
+        .bind("account:hydration")
+        .bind(now - 1_200)
+        .bind(now - 900)
+        .bind(now - 1_200)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .unwrap();
+    }
+
+    let first = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .next()
+        .unwrap();
+    let first_page = proxy
+        .key_store
+        .reconciliation_key_pages(std::slice::from_ref(&first))
+        .await
+        .unwrap()
+        .remove(&(first.token_id.clone(), first.period_code.clone()))
+        .unwrap();
+    assert_eq!(first_page.key_ids.len(), 32);
+    assert!(first_page.has_more);
+    assert!(
+        proxy
+            .key_store
+            .advance_upstream_reconciliation_hydration(
+                &first,
+                first_page.key_ids.last().map(String::as_str),
+                32,
+                true,
+            )
+            .await
+            .unwrap()
+    );
+
+    let second = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(second.upstream_usage_total, 32);
+    let second_page = proxy
+        .key_store
+        .reconciliation_key_pages(std::slice::from_ref(&second))
+        .await
+        .unwrap()
+        .remove(&(second.token_id.clone(), second.period_code.clone()))
+        .unwrap();
+    assert_eq!(second_page.key_ids.len(), 1);
+    assert!(!second_page.has_more);
+    assert!(
+        proxy
+            .key_store
+            .advance_upstream_reconciliation_hydration(
+                &second,
+                second_page.key_ids.last().map(String::as_str),
+                1,
+                false,
+            )
+            .await
+            .unwrap()
+    );
+
+    let state: (i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT upstream_usage_total, hydration_complete, hydration_cursor_key_id
+         FROM upstream_reconciliation_work
+         WHERE work_key = 'v1:hydration-token:2026-07-15/S2-hydration'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(state.0, 33);
+    assert_eq!(state.1, 1);
+    assert_eq!(state.2.as_deref(), Some("hydration-key-32"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_legacy_backfill_advances_persisted_pages() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-backfill"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    for index in 0..257 {
+        let period_end = now - 10_000 + index;
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                settlement_mode, period_start, period_end, request_count,
+                first_used_at, last_used_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, ?, ?, ?)",
+        )
+        .bind(format!("backfill-token-{index:03}"))
+        .bind("backfill-key")
+        .bind(format!("2026-07-15/S2-backfill-{index:03}"))
+        .bind("backfill-project")
+        .bind("account:backfill")
+        .bind(period_end - 300)
+        .bind(period_end)
+        .bind(period_end - 300)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("DELETE FROM upstream_reconciliation_work")
+        .execute(&proxy.key_store.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        proxy
+            .key_store
+            .backfill_upstream_reconciliation_work_page()
+            .await
+            .unwrap(),
+        256
+    );
+    assert_eq!(
+        proxy
+            .key_store
+            .backfill_upstream_reconciliation_work_page()
+            .await
+            .unwrap(),
+        1
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_reconciliation_work")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 257);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_candidate_claim_defers_within_sqlite_budget_when_writer_is_busy() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -1948,6 +2145,11 @@ async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
         pending_research: 0,
         degraded: false,
         reservation_id: None,
+        scheduling_key_id: String::new(),
+        fair_rank: 0,
+        hydration_cursor_key_id: None,
+        upstream_usage_total: 0,
+        hydration_complete: false,
     };
     assert!(
         proxy

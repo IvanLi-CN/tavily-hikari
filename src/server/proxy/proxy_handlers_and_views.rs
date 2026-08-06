@@ -1603,7 +1603,7 @@ async fn proxy_handler(
                             (api_key_id, billing_subject.as_deref())
                     {
                         let research_request_id = extract_research_request_id(&resp.body);
-                        if let Err(err) = state
+                        match state
                             .proxy
                             .record_upstream_reconciliation_usage(
                                 tid,
@@ -1613,7 +1613,13 @@ async fn proxy_handler(
                             )
                             .await
                         {
-                            eprintln!("record MCP reconciliation usage failed: {err}");
+                            Ok(Some(_)) => {
+                                state.ha.maintenance_runtime().await.wake().notify_one();
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                eprintln!("record MCP reconciliation usage failed: {err}");
+                            }
                         }
                     }
 
