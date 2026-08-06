@@ -294,6 +294,16 @@ async fn shadow_usage_records_even_when_active_upstream_mcp_sessions_block_preci
     assert_eq!(row.0, period.code);
     assert_eq!(row.1, "shadow");
     assert!(!row.2.is_empty(), "project_id should still be derived");
+    let job: (String, String) = sqlx::query_as(
+        "SELECT status, trigger_source
+         FROM scheduled_jobs
+         WHERE job_type = 'upstream_reconciliation'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("record usage should enqueue representative job");
+    assert_eq!(job, ("queued".to_string(), "request".to_string()));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1606,6 +1616,14 @@ async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_res
         .reservation_id
         .as_deref()
         .expect("candidate should carry a durable reservation");
+    assert_eq!(
+        proxy
+            .key_store
+            .upstream_reconciliation_continuation_at()
+            .await
+            .unwrap(),
+        Some(1_700_000_030)
+    );
 
     let (status, stored_reservation): (String, Option<String>) = sqlx::query_as(
         "SELECT status, reservation_id
@@ -1633,7 +1651,7 @@ async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_res
          SET reservation_expires_at = ?, updated_at = ?
          WHERE work_key = ?",
     )
-    .bind(1_699_999_999_i64)
+    .bind(1_700_000_030_i64)
     .bind(1_700_000_000_i64)
     .bind(format!("v1:{token_id}:{period_code}"))
     .execute(&proxy.key_store.pool)
@@ -1663,6 +1681,7 @@ async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_res
     )
     .await
     .unwrap();
+    restarted.abandon_active_scheduled_jobs().await.unwrap();
     let recovered = restarted
         .key_store
         .next_upstream_reconciliation_candidates(1)
@@ -1685,6 +1704,23 @@ async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_res
     .unwrap();
     assert_eq!(recovered_job_status, "queued");
 
+    let mut unfenced_candidate = recovered.candidates[0].clone();
+    unfenced_candidate.reservation_id = None;
+    assert!(
+        !restarted
+            .key_store
+            .settle_upstream_reconciliation(&unfenced_candidate, 7, 0)
+            .await
+            .unwrap()
+    );
+    let recovered_status: String =
+        sqlx::query_scalar("SELECT status FROM upstream_reconciliation_work WHERE work_key = ?")
+            .bind(format!("v1:{token_id}:{period_code}"))
+            .fetch_one(&restarted.key_store.pool)
+            .await
+            .unwrap();
+    assert_eq!(recovered_status, "reserved");
+
     assert!(
         !restarted
             .key_store
@@ -1701,6 +1737,109 @@ async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_res
     .await
     .unwrap();
     assert_eq!(stale_adjustment_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aborted_reconciliation_recovery_finishes_job_and_requeues_continuation() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_700_000_000_i64;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-aborted-reconciliation"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            settlement_mode, period_start, period_end, request_count,
+            first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, ?, ?, ?)",
+    )
+    .bind("aborted-reconciliation-token")
+    .bind("aborted-reconciliation-key")
+    .bind("2023-11-aborted")
+    .bind("aborted-reconciliation-project")
+    .bind("account:aborted-reconciliation")
+    .bind(now - 3_600)
+    .bind(now - 900)
+    .bind(now - 3_600)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+
+    let candidate = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(candidate.reservation_id.is_some());
+    let job_id = proxy
+        .scheduled_job_claim("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        proxy
+            .recover_upstream_reconciliation_after_aborted_run(
+                job_id,
+                1,
+                "success",
+                "settled=unknown budget_exhausted=true".to_string(),
+                "test_aborted_recovery_failed",
+            )
+            .await
+    );
+
+    let current_job: (String, Option<String>) =
+        sqlx::query_as("SELECT status, message FROM scheduled_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .unwrap();
+    assert_eq!(current_job.0, "success");
+    assert_eq!(
+        current_job.1.as_deref(),
+        Some("settled=unknown budget_exhausted=true")
+    );
+
+    let work: (String, Option<String>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT status, reservation_id, reservation_expires_at, next_attempt_at
+         FROM upstream_reconciliation_work
+         WHERE work_key = 'v1:aborted-reconciliation-token:2023-11-aborted'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(work.0, "retry");
+    assert_eq!(work.1, None);
+    assert_eq!(work.2, None);
+    assert_eq!(work.3, Some(now + 60));
+
+    let queued: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT COUNT(*), MIN(available_at)
+         FROM scheduled_jobs
+         WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, (1, Some(now + 60)));
 
     let _ = std::fs::remove_file(db_path);
 }

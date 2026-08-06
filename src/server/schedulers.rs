@@ -2773,7 +2773,15 @@ async fn run_manual_claimed_job(
                     .proxy
                     .finish_upstream_reconciliation_job(job_id, claim_generation, settled)
                     .await,
-                Ok(Err(err)) => finish(state, "error", err.to_string()).await,
+                Ok(Err(err)) => state.proxy
+                    .recover_upstream_reconciliation_after_aborted_run(
+                        job_id,
+                        claim_generation,
+                        "error",
+                        err.to_string(),
+                        "aborted_run_reservation_recovery_failed",
+                    )
+                    .await,
                 Err(_) => {
                     tracing::debug!(
                         component = "reconciliation",
@@ -2792,7 +2800,14 @@ async fn run_manual_claimed_job(
                             err = %err,
                         );
                     }
-                    finish(state, "success", "settled=unknown budget_exhausted=true".to_string())
+                    state.proxy
+                        .recover_upstream_reconciliation_after_aborted_run(
+                            job_id,
+                            claim_generation,
+                            "success",
+                            "settled=unknown budget_exhausted=true".to_string(),
+                            "budget_run_reservation_recovery_failed",
+                        )
                         .await
                 }
             }

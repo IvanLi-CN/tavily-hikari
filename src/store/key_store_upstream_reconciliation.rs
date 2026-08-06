@@ -81,6 +81,56 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
 }
 
 impl KeyStore {
+    async fn begin_upstream_reconciliation_transaction(
+        &self,
+        operation: &str,
+    ) -> Result<ImmediateSqliteTransaction, ProxyError> {
+        match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => Ok(tx),
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                Err(ProxyError::Other(format!(
+                    "upstream reconciliation {operation} deferred: {reason:?}"
+                )))
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => Err(err),
+        }
+    }
+
+    async fn enqueue_upstream_reconciliation_job_on_conn(
+        &self,
+        conn: &mut SqliteConnection,
+        trigger_source: &str,
+        available_at: i64,
+    ) -> Result<(), ProxyError> {
+        let queued_at = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            INSERT INTO scheduled_jobs (
+                job_type, trigger_source, key_id, status, attempt,
+                queued_at, available_at, started_at, finished_at
+            )
+            SELECT 'upstream_reconciliation', ?, NULL, 'queued', 1, ?, ?, NULL, NULL
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM scheduled_jobs
+                WHERE job_type = 'upstream_reconciliation'
+                  AND key_id IS NULL
+                  AND status IN ('queued', 'running')
+            )
+            "#,
+        )
+        .bind(trigger_source)
+        .bind(queued_at)
+        .bind(available_at)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn api_key_transient_backoff_state(
         &self,
         key_id: &str,
@@ -581,7 +631,9 @@ impl KeyStore {
         let project_id = self
             .derive_upstream_project_id(token_id, &period.code)
             .await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("usage recording")
+            .await?;
         sqlx::query(
             r#"
             INSERT INTO upstream_reconciliation_usage (
@@ -626,17 +678,9 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
         }
+        self.enqueue_upstream_reconciliation_job_on_conn(&mut tx, "request", now)
+            .await?;
         tx.commit().await?;
-        if let Err(err) = self
-            .scheduled_job_enqueue("upstream_reconciliation", "request", None, 1)
-            .await
-        {
-            tracing::warn!(
-                component = "reconciliation",
-                event = "representative_job_enqueue_failed",
-                error = %err,
-            );
-        }
         Ok(Some(period))
     }
 
@@ -675,32 +719,68 @@ impl KeyStore {
         )
         .fetch_one(&self.pool)
         .await?;
-        if has_work != 0 {
+        let has_unprojected_usage = self.has_unprojected_upstream_reconciliation_usage().await?;
+        if has_work != 0 || has_unprojected_usage {
             self.scheduled_job_enqueue("upstream_reconciliation", "startup", None, 1)
                 .await?;
         }
         Ok(())
     }
 
-    pub(crate) async fn upstream_reconciliation_continuation_due(
-        &self,
-    ) -> Result<bool, ProxyError> {
-        self.backfill_upstream_reconciliation_work_page().await?;
-        let now = self.backend_time.now_ts();
+    async fn has_unprojected_upstream_reconciliation_usage(&self) -> Result<bool, ProxyError> {
         Ok(sqlx::query_scalar(
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM upstream_reconciliation_work
-                WHERE status IN ('ready', 'retry')
-                  AND next_attempt_at <= ?
-                  AND hydration_cursor_key_id IS NOT NULL
+                FROM upstream_reconciliation_usage u
+                LEFT JOIN upstream_reconciliation_work w
+                  ON w.work_key = 'v1:' || u.token_id || ':' || u.period_code
+                WHERE w.work_key IS NULL
             )
             "#,
         )
-        .bind(now)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    pub(crate) async fn upstream_reconciliation_continuation_at(
+        &self,
+    ) -> Result<Option<i64>, ProxyError> {
+        let backfilled = self.backfill_upstream_reconciliation_work_page().await?;
+        let now = self.backend_time.now_ts();
+        if backfilled > 0 {
+            return Ok(Some(now));
+        }
+        if self.has_unprojected_upstream_reconciliation_usage().await? {
+            return Ok(Some(
+                now.saturating_add(RECONCILIATION_BACKFILL_RETRY_DELAY_SECS),
+            ));
+        }
+
+        let next_ready_at: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT MIN(next_attempt_at)
+            FROM upstream_reconciliation_work
+            WHERE status IN ('ready', 'retry')
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let next_reservation_expiry: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT MIN(reservation_expires_at)
+            FROM upstream_reconciliation_work
+            WHERE status = 'reserved'
+              AND reservation_expires_at IS NOT NULL
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok([next_ready_at, next_reservation_expiry]
+            .into_iter()
+            .flatten()
+            .map(|timestamp| timestamp.max(now))
+            .min())
     }
 
     async fn load_or_initialize_upstream_reconciliation_ready_after(
@@ -1511,42 +1591,65 @@ impl KeyStore {
     pub(crate) async fn reserve_upstream_usage_attempt(
         &self,
         key_id: &str,
-    ) -> Result<Result<(), i64>, ProxyError> {
+    ) -> crate::store::sqlite_runtime::SqliteOperationOutcome<Result<(), i64>> {
         let now = self.backend_time.now_ts();
         let threshold = now - 600;
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM upstream_usage_rate_attempts WHERE attempted_at <= ?")
-            .bind(threshold)
-            .execute(&mut *tx)
-            .await?;
-        let attempts: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM upstream_usage_rate_attempts WHERE key_id = ? AND attempted_at > ?",
-        )
-        .bind(key_id)
-        .bind(threshold)
-        .fetch_one(&mut *tx)
-        .await?;
-        if attempts >= 10 {
-            let oldest: i64 = sqlx::query_scalar(
-                "SELECT MIN(attempted_at) FROM upstream_usage_rate_attempts WHERE key_id = ? AND attempted_at > ?",
+        let mut tx = match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => tx,
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                return crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason);
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => {
+                return crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err);
+            }
+        };
+        let result = async {
+            sqlx::query("DELETE FROM upstream_usage_rate_attempts WHERE attempted_at <= ?")
+                .bind(threshold)
+                .execute(&mut *tx)
+                .await?;
+            let attempts: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM upstream_usage_rate_attempts WHERE key_id = ? AND attempted_at > ?",
             )
             .bind(key_id)
             .bind(threshold)
             .fetch_one(&mut *tx)
             .await?;
-            tx.commit().await?;
-            return Ok(Err(oldest.saturating_add(600)));
+            if attempts >= 10 {
+                let oldest: i64 = sqlx::query_scalar(
+                    "SELECT MIN(attempted_at) FROM upstream_usage_rate_attempts WHERE key_id = ? AND attempted_at > ?",
+                )
+                .bind(key_id)
+                .bind(threshold)
+                .fetch_one(&mut *tx)
+                .await?;
+                return Ok::<Result<(), i64>, ProxyError>(Err(oldest.saturating_add(600)));
+            }
+            sqlx::query(
+                "INSERT INTO upstream_usage_rate_attempts (id, key_id, attempted_at) VALUES (?, ?, ?)",
+            )
+            .bind(nanoid!(18))
+            .bind(key_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            Ok(Ok(()))
         }
-        sqlx::query(
-            "INSERT INTO upstream_usage_rate_attempts (id, key_id, attempted_at) VALUES (?, ?, ?)",
-        )
-        .bind(nanoid!(18))
-        .bind(key_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(Ok(()))
+        .await;
+        match result {
+            Ok(value) => match tx.commit().await {
+                Ok(()) => crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(value),
+                Err(err) => crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err),
+            },
+            Err(err) => {
+                let _ = tx.rollback().await;
+                crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err)
+            }
+        }
     }
 
     async fn transition_reconciliation_work(
@@ -1593,6 +1696,8 @@ impl KeyStore {
                     last_error_kind = ?,
                     updated_at = ?
                 WHERE work_key = ?
+                  AND status IN ('ready', 'retry')
+                  AND reservation_id IS NULL
                 "#,
             )
             .bind(status)
@@ -1604,6 +1709,20 @@ impl KeyStore {
             .await?
         };
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn reconciliation_work_exists(
+        &self,
+        conn: &mut SqliteConnection,
+        candidate: &UpstreamReconciliationCandidate,
+    ) -> Result<bool, ProxyError> {
+        let work_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM upstream_reconciliation_work WHERE work_key = ?)",
+        )
+        .bind(work_key)
+        .fetch_one(&mut *conn)
+        .await?)
     }
 
     pub(crate) async fn release_reconciliation_reservation(
@@ -1638,6 +1757,157 @@ impl KeyStore {
         Ok(released)
     }
 
+    pub(crate) async fn release_upstream_reconciliation_reservations(
+        &self,
+        candidates: &[UpstreamReconciliationCandidate],
+        next_attempt_at: i64,
+        reason: &str,
+    ) -> Result<i64, ProxyError> {
+        let reservation_ids = candidates
+            .iter()
+            .filter_map(|candidate| candidate.reservation_id.as_deref())
+            .collect::<Vec<_>>();
+        if reservation_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("reservation recovery")
+            .await?;
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "UPDATE upstream_reconciliation_work SET status = 'retry', next_attempt_at = ?, reservation_id = NULL, reservation_expires_at = NULL, last_error_kind = ?, updated_at = ? WHERE status = 'reserved' AND reservation_id IN (",
+        );
+        query.push_bind(next_attempt_at).push_bind(reason).push_bind(self.backend_time.now_ts());
+        for (index, reservation_id) in reservation_ids.iter().enumerate() {
+            if index > 0 {
+                query.push(", ");
+            }
+            query.push_bind(*reservation_id);
+        }
+        query.push(")");
+        let released = query
+            .build()
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as i64;
+        tx.commit().await?;
+        Ok(released)
+    }
+
+    async fn recover_upstream_reconciliation_reservations_on_conn(
+        &self,
+        conn: &mut SqliteConnection,
+        next_attempt_at: i64,
+        reason: &str,
+    ) -> Result<i64, ProxyError> {
+        let now = self.backend_time.now_ts();
+        Ok(sqlx::query(
+            r#"
+            UPDATE upstream_reconciliation_work
+            SET status = 'retry',
+                next_attempt_at = MAX(next_attempt_at, ?),
+                reservation_id = NULL,
+                reservation_expires_at = NULL,
+                last_error_kind = ?,
+                updated_at = ?
+            WHERE status = 'reserved'
+            "#,
+        )
+        .bind(next_attempt_at)
+        .bind(reason)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected() as i64)
+    }
+
+    pub(crate) async fn recover_upstream_reconciliation_reservations(
+        &self,
+        next_attempt_at: i64,
+        reason: &str,
+        trigger_source: &str,
+    ) -> Result<i64, ProxyError> {
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("process recovery")
+            .await?;
+        let recovered = self
+            .recover_upstream_reconciliation_reservations_on_conn(
+                &mut tx,
+                next_attempt_at,
+                reason,
+            )
+            .await?;
+        if recovered > 0 {
+            self.enqueue_upstream_reconciliation_job_on_conn(&mut tx, trigger_source, next_attempt_at)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(recovered)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn recover_upstream_reconciliation_reservations_and_finish_job(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        status: &str,
+        message: &str,
+        next_attempt_at: i64,
+        reason: &str,
+        trigger_source: &str,
+    ) -> Result<i64, ProxyError> {
+        let finished_at = self.backend_time.now_ts();
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("aborted run recovery")
+            .await?;
+        let result = async {
+            let recovered = self
+                .recover_upstream_reconciliation_reservations_on_conn(
+                    &mut tx,
+                    next_attempt_at,
+                    reason,
+                )
+                .await?;
+            let updated = sqlx::query(
+                r#"UPDATE scheduled_jobs
+                   SET status = ?, message = ?, finished_at = ?
+                   WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
+            )
+            .bind(status)
+            .bind(message)
+            .bind(finished_at)
+            .bind(job_id)
+            .bind(claim_generation)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() == 0 {
+                return Err(ProxyError::StaleClaim {
+                    job_id,
+                    claim_generation,
+                });
+            }
+            if recovered > 0 {
+                self.enqueue_upstream_reconciliation_job_on_conn(
+                    &mut tx,
+                    trigger_source,
+                    next_attempt_at,
+                )
+                .await?;
+            }
+            Ok::<i64, ProxyError>(recovered)
+        }
+        .await;
+        match result {
+            Ok(recovered) => {
+                tx.commit().await?;
+                Ok(recovered)
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+                Err(err)
+            }
+        }
+    }
+
     pub(crate) async fn mark_reconciliation_retry(
         &self,
         candidate: &UpstreamReconciliationCandidate,
@@ -1648,7 +1918,9 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let normalized_reason = reason.map(|value| classify_reconciliation_retry_reason(Some(value)));
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("retry marking")
+            .await?;
         let transitioned = self
             .transition_reconciliation_work(
                 &mut tx,
@@ -1658,7 +1930,10 @@ impl KeyStore {
                 normalized_reason,
             )
             .await?;
-        if candidate.reservation_id.is_some() && !transitioned {
+        if !transitioned
+            && (candidate.reservation_id.is_some()
+                || self.reconciliation_work_exists(&mut tx, candidate).await?)
+        {
             tx.rollback().await?;
             return Ok(());
         }
@@ -1714,7 +1989,9 @@ impl KeyStore {
             .unwrap_or_else(Utc::now);
         let day_bucket = start_of_local_day_utc_ts(attributed_utc.with_timezone(&Local));
         let month_start = start_of_month(attributed_utc).timestamp();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("actual settlement")
+            .await?;
         let transitioned = self
             .transition_reconciliation_work(
                 &mut tx,
@@ -1724,7 +2001,10 @@ impl KeyStore {
                 None,
             )
             .await?;
-        if candidate.reservation_id.is_some() && !transitioned {
+        if !transitioned
+            && (candidate.reservation_id.is_some()
+                || self.reconciliation_work_exists(&mut tx, candidate).await?)
+        {
             tx.rollback().await?;
             return Ok(false);
         }
@@ -1869,7 +2149,9 @@ impl KeyStore {
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let delta = upstream_usage.saturating_sub(local_billed_credits);
         let attributed_at = candidate.period_end.saturating_sub(60);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .begin_upstream_reconciliation_transaction("shadow settlement")
+            .await?;
         let transitioned = self
             .transition_reconciliation_work(
                 &mut tx,
@@ -1879,7 +2161,10 @@ impl KeyStore {
                 None,
             )
             .await?;
-        if candidate.reservation_id.is_some() && !transitioned {
+        if !transitioned
+            && (candidate.reservation_id.is_some()
+                || self.reconciliation_work_exists(&mut tx, candidate).await?)
+        {
             tx.rollback().await?;
             return Ok(false);
         }

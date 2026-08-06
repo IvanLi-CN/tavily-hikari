@@ -276,11 +276,11 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn upstream_reconciliation_continuation_due(
+    pub async fn upstream_reconciliation_continuation_at(
         &self,
-    ) -> Result<bool, ProxyError> {
+    ) -> Result<Option<i64>, ProxyError> {
         self.key_store
-            .upstream_reconciliation_continuation_due()
+            .upstream_reconciliation_continuation_at()
             .await
     }
 
@@ -304,20 +304,22 @@ impl TavilyProxy {
                 )
                 .await
                 .is_ok(),
-            Ok(_) => match self.upstream_reconciliation_continuation_due().await {
-                Ok(true) => self
+            Ok(_) => match self.upstream_reconciliation_continuation_at().await {
+                Ok(Some(available_at)) => self
                     .scheduled_job_finish_and_enqueue_auto_at(
                         job_id,
                         claim_generation,
                         "upstream_reconciliation",
                         None,
                         1,
-                        Some(&format!("settled={settled} continuation=true")),
-                        now,
+                        Some(&format!(
+                            "settled={settled} continuation_at={available_at}"
+                        )),
+                        available_at,
                     )
                     .await
                     .is_ok(),
-                Ok(false) => self
+                Ok(None) => self
                     .scheduled_job_finish_claimed(
                         job_id,
                         claim_generation,
@@ -1239,7 +1241,16 @@ impl TavilyProxy {
                     )
                     .await;
                     let reservation = match reservation_result {
-                        Ok(result) => result?,
+                        Ok(crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(
+                            result,
+                        )) => result,
+                        Ok(crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(_)) => {
+                            budget_exhausted = true;
+                            break;
+                        }
+                        Ok(crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err)) => {
+                            return Err(err);
+                        }
                         Err(_) => {
                             budget_exhausted = true;
                             break;
@@ -1505,6 +1516,28 @@ impl TavilyProxy {
             ))
         }
         .await;
+        if !candidates.is_empty() {
+            let recovery_at = self
+                .backend_time
+                .now_ts()
+                .saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS);
+            if let Err(err) = await_reconciliation_post_process(
+                post_process_deadline,
+                self.key_store.release_upstream_reconciliation_reservations(
+                    &candidates,
+                    recovery_at,
+                    "run_budget_or_abort",
+                ),
+            )
+            .await
+            {
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = "reservation_recovery_failed",
+                    error = %err,
+                );
+            }
+        }
         let main_budget_exhausted = result.as_ref().map(|value| value.9).unwrap_or(true);
         let main_request_start_cutoff_reached = result.as_ref().map(|value| value.10).unwrap_or(false);
         let pre_main_research_happened = pre_main_research_ran;
@@ -1731,6 +1764,56 @@ impl TavilyProxy {
                     err = %err,
                 );
                 Err(err)
+            }
+        }
+    }
+
+    pub async fn recover_upstream_reconciliation_after_aborted_run(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        status: &str,
+        message: String,
+        failure_event: &'static str,
+    ) -> bool {
+        let now = self.backend_time.now_ts();
+        match self
+            .key_store
+            .recover_upstream_reconciliation_reservations_and_finish_job(
+                job_id,
+                claim_generation,
+                status,
+                &message,
+                now.saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS),
+                "aborted_run_recovery",
+                "aborted_run",
+            )
+            .await
+        {
+            Ok(recovered) => {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "aborted_run_recovered",
+                    recovered,
+                );
+                status == "success"
+            }
+            Err(err) => {
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = failure_event,
+                    err = %err,
+                );
+                self.key_store
+                    .scheduled_job_finish_claimed(
+                        job_id,
+                        claim_generation,
+                        status,
+                        Some(&message),
+                    )
+                    .await
+                    .is_ok()
+                    && status == "success"
             }
         }
     }

@@ -1127,37 +1127,49 @@ impl KeyStore {
                 r#"
                 UPDATE scheduled_jobs
                 SET status = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN 'queued'
+                        WHEN status = 'running'
+                            AND (job_type = 'ha_outbox_gc' OR job_type = 'upstream_reconciliation')
+                            THEN 'queued'
                         ELSE 'abandoned'
                     END,
                     message = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc'
+                        WHEN status = 'running'
+                            AND (job_type = 'ha_outbox_gc' OR job_type = 'upstream_reconciliation')
                             THEN COALESCE(message, 'deferred=process_restart')
                         ELSE COALESCE(message, 'abandoned after process restart')
                     END,
                     started_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND (job_type = 'ha_outbox_gc' OR job_type = 'upstream_reconciliation')
+                            THEN NULL
                         ELSE started_at
                     END,
                     finished_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND (job_type = 'ha_outbox_gc' OR job_type = 'upstream_reconciliation')
+                            THEN NULL
                         ELSE ?
                     END,
                     available_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN MAX(available_at, ?)
+                        WHEN status = 'running'
+                            AND (job_type = 'ha_outbox_gc' OR job_type = 'upstream_reconciliation')
+                            THEN MAX(available_at, ?)
                         ELSE available_at
                     END
                 WHERE (
                         status = 'running'
                         OR (
                             status = 'queued'
-                            -- These are durable GC catch-up contracts. Their available_at
+                    -- These are durable catch-up contracts. Their available_at
                             -- guards still prevent an early claim after restart.
                             AND NOT (
-                                trigger_source = 'auto'
-                                AND (
-                                    job_type = 'request_logs_gc'
-                                    OR job_type = 'ha_outbox_gc'
+                                job_type = 'upstream_reconciliation'
+                                OR (
+                                    trigger_source = 'auto'
+                                    AND (
+                                        job_type = 'request_logs_gc'
+                                        OR job_type = 'ha_outbox_gc'
+                                    )
                                 )
                             )
                         )
@@ -1170,7 +1182,15 @@ impl KeyStore {
             .execute(&self.pool)
             .await
             {
-                Ok(result) => return Ok(result.rows_affected()),
+                Ok(result) => {
+                    self.recover_upstream_reconciliation_reservations(
+                        now,
+                        "process_restart",
+                        "process_restart",
+                    )
+                    .await?;
+                    return Ok(result.rows_affected());
+                }
                 Err(err) => {
                     let err = ProxyError::Database(err);
                     if sleep_before_sqlite_transient_write_retry(

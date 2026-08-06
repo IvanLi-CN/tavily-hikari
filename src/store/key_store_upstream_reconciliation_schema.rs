@@ -1,3 +1,7 @@
+const RECONCILIATION_BACKFILL_PAGE_SIZE: i64 = 256;
+const RECONCILIATION_BACKFILL_SCAN_LIMIT: i64 = RECONCILIATION_BACKFILL_PAGE_SIZE * 8;
+const RECONCILIATION_BACKFILL_RETRY_DELAY_SECS: i64 = 1;
+
 impl KeyStore {
     async fn ensure_upstream_reconciliation_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
@@ -369,6 +373,22 @@ impl KeyStore {
     pub(crate) async fn backfill_upstream_reconciliation_work_page(
         &self,
     ) -> Result<i64, ProxyError> {
+        let mut tx = match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => tx,
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "legacy_backfill_deferred",
+                    reason = ?reason,
+                );
+                return Ok(0);
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => return Err(err),
+        };
         let cursor = sqlx::query_as::<_, (i64, String, String)>(
             r#"
             SELECT period_end, token_id, period_code
@@ -376,36 +396,23 @@ impl KeyStore {
             WHERE lane = 'backfill'
             "#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"
-            SELECT
-                u.token_id,
-                u.period_code,
-                MIN(u.project_id) AS project_id,
-                MIN(u.billing_subject) AS billing_subject,
-                MIN(u.settlement_mode) AS settlement_mode,
-                MIN(u.key_id) AS scheduling_key_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY MIN(u.key_id)
-                    ORDER BY MAX(u.period_end) ASC, u.token_id ASC, u.period_code ASC
-                ) AS fair_rank,
-                MIN(u.period_start) AS period_start,
-                MAX(u.period_end) AS period_end,
-                MIN(u.updated_at) AS created_at,
-                MAX(u.updated_at) AS updated_at
-            FROM upstream_reconciliation_usage u
-            LEFT JOIN upstream_reconciliation_work w
-              ON w.work_key = 'v1:' || u.token_id || ':' || u.period_code
-            WHERE w.work_key IS NULL
+            WITH bounded_window_rows AS (
+                SELECT u.token_id, u.period_code, u.period_end
+                FROM upstream_reconciliation_usage u
+                LEFT JOIN upstream_reconciliation_work w
+                  ON w.work_key = 'v1:' || u.token_id || ':' || u.period_code
+                WHERE w.work_key IS NULL
             "#,
         );
         if let Some((period_end, token_id, period_code)) = cursor.as_ref() {
             query
-                .push(" GROUP BY u.token_id, u.period_code HAVING (MAX(u.period_end) > ")
+                .push(" AND (u.period_end > ")
                 .push_bind(*period_end)
-                .push(" OR (MAX(u.period_end) = ")
+                .push(" OR (u.period_end = ")
                 .push_bind(*period_end)
                 .push(" AND (u.token_id > ")
                 .push_bind(token_id)
@@ -414,12 +421,57 @@ impl KeyStore {
                 .push(" AND u.period_code > ")
                 .push_bind(period_code)
                 .push("))))");
-        } else {
-            query.push(" GROUP BY u.token_id, u.period_code");
         }
-        let rows = query
-            .push(" ORDER BY MAX(u.period_end) ASC, u.token_id ASC, u.period_code ASC LIMIT ")
-            .push_bind(256_i64)
+        let query = query
+            .push(" ORDER BY u.period_end ASC, u.token_id ASC, u.period_code ASC, u.key_id ASC LIMIT ")
+            .push_bind(RECONCILIATION_BACKFILL_SCAN_LIMIT)
+            .push(
+                r#"
+            ),
+            selected_windows AS (
+                SELECT token_id, period_code, MIN(period_end) AS cursor_period_end
+                FROM bounded_window_rows
+                GROUP BY token_id, period_code
+                ORDER BY cursor_period_end ASC, token_id ASC, period_code ASC
+                LIMIT
+            "#,
+            )
+            .push_bind(RECONCILIATION_BACKFILL_PAGE_SIZE)
+            .push(
+                r#"
+            ),
+            grouped AS (
+                SELECT
+                    u.token_id,
+                    u.period_code,
+                    MIN(u.project_id) AS project_id,
+                    MIN(u.billing_subject) AS billing_subject,
+                    MIN(u.settlement_mode) AS settlement_mode,
+                    MIN(u.key_id) AS scheduling_key_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY MIN(u.key_id)
+                        ORDER BY MAX(u.period_end) ASC, u.token_id ASC, u.period_code ASC
+                    ) AS fair_rank,
+                    MIN(u.period_start) AS period_start,
+                    MAX(u.period_end) AS period_end,
+                    MIN(u.updated_at) AS created_at,
+                    MAX(u.updated_at) AS updated_at,
+                    MIN(selected.cursor_period_end) AS cursor_period_end
+                FROM upstream_reconciliation_usage u
+                JOIN selected_windows selected
+                  ON selected.token_id = u.token_id
+                 AND selected.period_code = u.period_code
+                GROUP BY u.token_id, u.period_code
+            )
+            SELECT token_id, period_code, project_id, billing_subject, settlement_mode,
+                   scheduling_key_id, fair_rank, period_start, period_end, created_at, updated_at,
+                   cursor_period_end
+            FROM grouped
+            ORDER BY cursor_period_end ASC, token_id ASC, period_code ASC
+            LIMIT
+            "#,
+            )
+            .push_bind(RECONCILIATION_BACKFILL_PAGE_SIZE)
             .build_query_as::<(
                 String,
                 String,
@@ -432,10 +484,13 @@ impl KeyStore {
                 i64,
                 i64,
                 i64,
-            )>()
-            .fetch_all(&self.pool)
+                i64,
+            )>();
+        let rows = query
+            .fetch_all(&mut *tx)
             .await?;
         let Some(last) = rows.last() else {
+            tx.commit().await?;
             return Ok(0);
         };
         let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
@@ -487,7 +542,7 @@ impl KeyStore {
             "#,
             )
             .build()
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         sqlx::query(
             r#"
@@ -501,12 +556,26 @@ impl KeyStore {
                 updated_at = excluded.updated_at
             "#,
         )
-        .bind(last.8)
+        .bind(last.11)
         .bind(&last.0)
         .bind(&last.1)
         .bind(last.10)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        let scheduled_jobs_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_jobs')",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if scheduled_jobs_exists {
+            self.enqueue_upstream_reconciliation_job_on_conn(
+                &mut tx,
+                "backfill",
+                self.backend_time.now_ts(),
+            )
+            .await?;
+        }
+        tx.commit().await?;
         Ok(rows.len() as i64)
     }
 }
