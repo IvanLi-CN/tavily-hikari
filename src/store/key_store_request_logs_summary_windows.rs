@@ -1,3 +1,52 @@
+const DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS: i64 = RequestStatsPipeline::BACKFILL_PAGE_ROWS;
+
+fn dashboard_quota_sample_page_sql(has_cursor: bool) -> String {
+    let cursor_filter = if has_cursor {
+        "WHERE key_id > ? OR (key_id = ? AND (captured_at > ? OR (captured_at = ? AND id > ?)))"
+    } else {
+        ""
+    };
+    format!(
+        r#"
+        WITH window_rows AS (
+            SELECT id, key_id, quota_remaining, captured_at
+            FROM api_key_quota_sync_samples
+            WHERE captured_at >= ?
+              AND captured_at < ?
+        ),
+        sampled_keys AS (
+            SELECT DISTINCT key_id FROM window_rows
+        ),
+        baseline_rows AS (
+            SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
+            FROM api_key_quota_sync_samples s
+            INNER JOIN (
+                SELECT key_id, MAX(captured_at) AS captured_at
+                FROM api_key_quota_sync_samples
+                WHERE captured_at < ?
+                  AND key_id IN (SELECT key_id FROM sampled_keys)
+                GROUP BY key_id
+            ) latest
+                ON latest.key_id = s.key_id
+               AND latest.captured_at = s.captured_at
+        ),
+        ordered_samples AS (
+            SELECT id, key_id, quota_remaining, captured_at
+            FROM window_rows
+            UNION ALL
+            SELECT id, key_id, quota_remaining, captured_at
+            FROM baseline_rows
+        )
+        SELECT id, key_id, quota_remaining, captured_at
+        FROM ordered_samples
+        {cursor_filter}
+        ORDER BY key_id ASC, captured_at ASC, id ASC
+        LIMIT ?
+        "#,
+        cursor_filter = cursor_filter,
+    )
+}
+
 impl KeyStore {
     pub(crate) async fn fetch_dashboard_quota_charge_token(
         &self,
@@ -54,45 +103,6 @@ impl KeyStore {
         let hot_stale_before = now_ts.saturating_sub(15 * 60);
         let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
 
-        let sample_rows = request_stats_primary_fetch_all!(
-            self.request_stats_pipeline,
-            sqlx::query(
-                r#"
-                WITH window_rows AS (
-                    SELECT id, key_id, quota_remaining, captured_at
-                    FROM api_key_quota_sync_samples
-                    WHERE captured_at >= ?
-                      AND captured_at < ?
-                ),
-                sampled_keys AS (
-                    SELECT DISTINCT key_id FROM window_rows
-                ),
-                baseline_rows AS (
-                    SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                    FROM api_key_quota_sync_samples s
-                    INNER JOIN (
-                        SELECT key_id, MAX(captured_at) AS captured_at
-                        FROM api_key_quota_sync_samples
-                        WHERE captured_at < ?
-                          AND key_id IN (SELECT key_id FROM sampled_keys)
-                        GROUP BY key_id
-                    ) latest
-                        ON latest.key_id = s.key_id
-                       AND latest.captured_at = s.captured_at
-                )
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM window_rows
-                UNION ALL
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM baseline_rows
-                ORDER BY key_id ASC, captured_at ASC, id ASC
-                "#,
-            )
-            .bind(sample_window_start)
-            .bind(today_end)
-            .bind(sample_window_start)
-        )?;
-
         let stale_key_count = self
             .fetch_dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
             .await?;
@@ -105,57 +115,90 @@ impl KeyStore {
         let mut month_sampled_keys = std::collections::HashSet::new();
         let mut current_key: Option<String> = None;
         let mut previous_sample: Option<QuotaSyncSampleRow> = None;
+        let mut cursor: Option<(String, i64, i64)> = None;
 
-        for row in sample_rows {
-            let key_id: String = row.try_get("key_id")?;
-            if current_key.as_deref() != Some(key_id.as_str()) {
-                current_key = Some(key_id.clone());
-                previous_sample = None;
+        loop {
+            let query_sql = dashboard_quota_sample_page_sql(cursor.is_some());
+            let mut query = sqlx::query(&query_sql)
+                .bind(sample_window_start)
+                .bind(today_end)
+                .bind(sample_window_start);
+            if let Some((key_id, captured_at, id)) = cursor.as_ref() {
+                query = query
+                    .bind(key_id)
+                    .bind(key_id)
+                    .bind(captured_at)
+                    .bind(captured_at)
+                    .bind(id);
             }
-
-            let sample = QuotaSyncSampleRow {
-                quota_remaining: row.try_get("quota_remaining")?,
-                captured_at: row.try_get("captured_at")?,
+            let sample_rows = request_stats_primary_fetch_all!(
+                self.request_stats_pipeline,
+                query.bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
+            )?;
+            if sample_rows.is_empty() {
+                break;
+            }
+            let next_cursor = {
+                let row = sample_rows.last().expect("non-empty quota sample page");
+                (
+                    row.try_get::<String, _>("key_id")?,
+                    row.try_get::<i64, _>("captured_at")?,
+                    row.try_get::<i64, _>("id")?,
+                )
             };
-            let delta = previous_sample
-                .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
-                .unwrap_or(0);
 
-            if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
-                month_charge.upstream_actual_credits += delta;
-                month_sampled_keys.insert(key_id.clone());
-                if month_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    month_charge.latest_sync_at = Some(sample.captured_at);
+            for row in sample_rows {
+                let key_id: String = row.try_get("key_id")?;
+                if current_key.as_deref() != Some(key_id.as_str()) {
+                    current_key = Some(key_id.clone());
+                    previous_sample = None;
                 }
-            }
-            if sample.captured_at >= today_start && sample.captured_at < today_end {
-                today_charge.upstream_actual_credits += delta;
-                today_sampled_keys.insert(key_id.clone());
-                if today_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    today_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
-            if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
-                yesterday_charge.upstream_actual_credits += delta;
-                yesterday_sampled_keys.insert(key_id.clone());
-                if yesterday_charge
-                    .latest_sync_at
-                    .map(|latest| sample.captured_at > latest)
-                    .unwrap_or(true)
-                {
-                    yesterday_charge.latest_sync_at = Some(sample.captured_at);
-                }
-            }
 
-            previous_sample = Some(sample);
+                let sample = QuotaSyncSampleRow {
+                    quota_remaining: row.try_get("quota_remaining")?,
+                    captured_at: row.try_get("captured_at")?,
+                };
+                let delta = previous_sample
+                    .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
+                    .unwrap_or(0);
+
+                if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
+                    month_charge.upstream_actual_credits += delta;
+                    month_sampled_keys.insert(key_id.clone());
+                    if month_charge
+                        .latest_sync_at
+                        .map(|latest| sample.captured_at > latest)
+                        .unwrap_or(true)
+                    {
+                        month_charge.latest_sync_at = Some(sample.captured_at);
+                    }
+                }
+                if sample.captured_at >= today_start && sample.captured_at < today_end {
+                    today_charge.upstream_actual_credits += delta;
+                    today_sampled_keys.insert(key_id.clone());
+                    if today_charge
+                        .latest_sync_at
+                        .map(|latest| sample.captured_at > latest)
+                        .unwrap_or(true)
+                    {
+                        today_charge.latest_sync_at = Some(sample.captured_at);
+                    }
+                }
+                if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
+                    yesterday_charge.upstream_actual_credits += delta;
+                    yesterday_sampled_keys.insert(key_id.clone());
+                    if yesterday_charge
+                        .latest_sync_at
+                        .map(|latest| sample.captured_at > latest)
+                        .unwrap_or(true)
+                    {
+                        yesterday_charge.latest_sync_at = Some(sample.captured_at);
+                    }
+                }
+
+                previous_sample = Some(sample);
+            }
+            cursor = Some(next_cursor);
         }
 
         today_charge.sampled_key_count = today_sampled_keys.len() as i64;
@@ -692,67 +735,62 @@ impl KeyStore {
         .fetch_all(&mut ***tx)
         .await?;
 
-        let sample_rows = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                INNER JOIN (
-                    SELECT key_id, MAX(captured_at) AS captured_at
-                    FROM api_key_quota_sync_samples
-                    WHERE captured_at < ?
-                      AND key_id IN (SELECT key_id FROM sampled_keys)
-                    GROUP BY key_id
-                ) latest
-                    ON latest.key_id = s.key_id
-                   AND latest.captured_at = s.captured_at
-            )
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM window_rows
-            UNION ALL
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM baseline_rows
-            ORDER BY key_id ASC, captured_at ASC, id ASC
-            "#,
-        )
-        .bind(series_start)
-        .bind(series_end_exclusive)
-        .bind(series_start)
-        .fetch_all(&mut ***tx)
-        .await?;
-
         let mut upstream_actual_by_bucket = std::collections::HashMap::<i64, i64>::new();
         let mut current_key: Option<String> = None;
         let mut previous_remaining: Option<i64> = None;
-        for row in sample_rows {
-            let key_id: String = row.try_get("key_id")?;
-            if current_key.as_deref() != Some(key_id.as_str()) {
-                current_key = Some(key_id);
-                previous_remaining = None;
+        let mut cursor: Option<(String, i64, i64)> = None;
+        loop {
+            let query_sql = dashboard_quota_sample_page_sql(cursor.is_some());
+            let mut query = sqlx::query(&query_sql)
+                .bind(series_start)
+                .bind(series_end_exclusive)
+                .bind(series_start);
+            if let Some((key_id, captured_at, id)) = cursor.as_ref() {
+                query = query
+                    .bind(key_id)
+                    .bind(key_id)
+                    .bind(captured_at)
+                    .bind(captured_at)
+                    .bind(id);
             }
+            let sample_rows = query
+                .bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
+                .fetch_all(&mut ***tx)
+                .await?;
+            if sample_rows.is_empty() {
+                break;
+            }
+            let next_cursor = {
+                let row = sample_rows.last().expect("non-empty quota sample page");
+                (
+                    row.try_get::<String, _>("key_id")?,
+                    row.try_get::<i64, _>("captured_at")?,
+                    row.try_get::<i64, _>("id")?,
+                )
+            };
 
-            let quota_remaining: i64 = row.try_get("quota_remaining")?;
-            let captured_at: i64 = row.try_get("captured_at")?;
-            if captured_at >= series_start
-                && captured_at < series_end_exclusive
-                && let Some(previous) = previous_remaining
-            {
-                let bucket_start = ((captured_at - bucket_alignment_offset) / bucket_seconds)
-                    * bucket_seconds
-                    + bucket_alignment_offset;
-                *upstream_actual_by_bucket.entry(bucket_start).or_default() +=
-                    (previous - quota_remaining).max(0);
+            for row in sample_rows {
+                let key_id: String = row.try_get("key_id")?;
+                if current_key.as_deref() != Some(key_id.as_str()) {
+                    current_key = Some(key_id);
+                    previous_remaining = None;
+                }
+
+                let quota_remaining: i64 = row.try_get("quota_remaining")?;
+                let captured_at: i64 = row.try_get("captured_at")?;
+                if captured_at >= series_start
+                    && captured_at < series_end_exclusive
+                    && let Some(previous) = previous_remaining
+                {
+                    let bucket_start = ((captured_at - bucket_alignment_offset) / bucket_seconds)
+                        * bucket_seconds
+                        + bucket_alignment_offset;
+                    *upstream_actual_by_bucket.entry(bucket_start).or_default() +=
+                        (previous - quota_remaining).max(0);
+                }
+                previous_remaining = Some(quota_remaining);
             }
-            previous_remaining = Some(quota_remaining);
+            cursor = Some(next_cursor);
         }
 
         let buckets = rows

@@ -37,8 +37,12 @@
   写入的 pool 与 busy 等待总预算保持在 250ms 内。
 - 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
   authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
-- aggregate 验证、30 分钟 RSS 基准及 rollout 文档尚待完成；child #487 已提供 request-stats
-  architecture checker 和逐页 RSS telemetry，但它们不替代 aggregate 生产形状基准。
+- child #487 的 aggregate 生产形状 RSS 基准已完成（基准二进制 commit
+  167b10dce69586c2badd4f5330a7c0bf93316045）：Linux x86_64 release binary，1,000,002
+  条 workload 前 request logs，5 rps（HTTP API 60% / MCP 20% / admin 20%），20 条 SSE，
+  5 分钟 warmup 后采样 30 分钟，共 360 个 5 秒 RSS 样本；RSS P50 为 220,480 KiB，
+  P95 为 254,276 KiB，最大值为 258,020 KiB，低于 256 MiB 门槛。上游为本地
+  mock_tavily，完整状态与 workload 证据记录在 Issue #487 handover 中。
 
 ## Related Changes
 

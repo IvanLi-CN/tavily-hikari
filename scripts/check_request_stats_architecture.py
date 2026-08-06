@@ -9,6 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 HOT_PATHS = (
     ROOT / "src/store/key_store_dashboard_rollup_integrity.rs",
+    ROOT / "src/store/key_store_dashboard_month_series.rs",
     ROOT / "src/store/key_store_request_logs_summary_windows.rs",
     ROOT / "src/store/key_store_request_stats_flush_and_public_metrics.rs",
 )

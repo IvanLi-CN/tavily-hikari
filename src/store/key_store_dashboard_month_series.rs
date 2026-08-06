@@ -1,6 +1,6 @@
 impl KeyStore {
     async fn dashboard_month_series_has_retained_data_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         range_start: i64,
         range_end: i64,
     ) -> Result<bool, ProxyError> {
@@ -53,7 +53,7 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(range_start)
         .bind(range_end)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         Ok(retained != 0)
@@ -97,7 +97,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_month_lifecycle_daily_counts_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         range_start: i64,
         range_end: i64,
     ) -> Result<
@@ -136,7 +136,7 @@ impl KeyStore {
         )
         .bind(range_start)
         .bind(range_end)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
 
         let new_quarantines_created_at = sqlx::query_scalar::<_, i64>(
@@ -149,7 +149,7 @@ impl KeyStore {
         )
         .bind(range_start)
         .bind(range_end)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
 
         let upstream_exhausted_first_created_at = sqlx::query_scalar::<_, i64>(
@@ -169,7 +169,7 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(range_start)
         .bind(range_end)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
 
         Ok((
@@ -180,7 +180,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_month_series_points_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         range_start: i64,
         range_end: i64,
         now_cutoff: i64,
@@ -269,7 +269,7 @@ impl KeyStore {
         &self,
         summary_windows: &SummaryWindows,
     ) -> Result<DashboardMonthSeries, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
 
         let current = Self::fetch_dashboard_month_series_points_tx(
             &mut tx,
