@@ -12,12 +12,30 @@ type HaOutboxGcChannelStateRow = (
 
 impl KeyStore {
     pub(crate) async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {
+        let now = self.backend_time.now_ts();
         let pending_channel_mask: Option<i64> = sqlx::query_scalar(
             "SELECT pending_channel_mask FROM ha_outbox_gc_state WHERE id = 'local'",
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(pending_channel_mask.is_none_or(|mask| mask & 7 != 0))
+        let work_due: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                   FROM ha_outbox_gc_work
+                   WHERE last_outcome <> 'pending'
+                     AND eligible_at <= ?
+                     AND (
+                         claim_started_at IS NULL
+                         OR claim_expires_at IS NULL
+                         OR claim_expires_at <= ?
+                     )
+               )"#,
+        )
+        .bind(now)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(pending_channel_mask.is_none_or(|mask| mask & 7 != 0) || work_due)
     }
 
     pub(crate) async fn gc_ha_outbox_online(&self) -> Result<HaOutboxGcReport, ProxyError> {
@@ -41,8 +59,24 @@ impl KeyStore {
             HaOutboxGcOptions::online(),
             foreground_rps,
             low_pressure_since_floor,
+            None,
         )
-            .await
+        .await
+    }
+
+    pub(crate) async fn gc_ha_outbox_online_for_channel_with_foreground_pressure(
+        &self,
+        channel: HaSyncChannel,
+        foreground_rps: i64,
+        low_pressure_since_floor: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.gc_ha_outbox_online_with_options(
+            HaOutboxGcOptions::online(),
+            foreground_rps,
+            low_pressure_since_floor,
+            Some(channel),
+        )
+        .await
     }
 
     pub(crate) async fn record_ha_outbox_gc_deferred(
@@ -115,6 +149,7 @@ impl KeyStore {
         options: HaOutboxGcOptions,
         foreground_rps: i64,
         low_pressure_since_floor: i64,
+        requested_channel: Option<HaSyncChannel>,
     ) -> Result<HaOutboxGcReport, ProxyError> {
         let started = Instant::now();
         let deadline = started + Duration::from_secs(options.max_runtime_secs.max(1));
@@ -168,20 +203,28 @@ impl KeyStore {
                 crate::HA_OUTBOX_GC_MAX_ONLINE_BATCH_SIZE,
             );
             let max_batches = options.max_batches.max(1);
-            let (next_channel, pending_channel_mask): (String, i64) = sqlx::query_as(
-                "SELECT next_channel, pending_channel_mask FROM ha_outbox_gc_state WHERE id = 'local'",
-            )
-            .fetch_one(&mut **conn)
-            .await?;
-            let pending_channel_mask = if pending_channel_mask == 0 {
-                7
+            let (channel, pending_channel_mask) = if let Some(channel) = requested_channel {
+                (channel, Self::ha_outbox_gc_channel_mask(channel))
             } else {
-                pending_channel_mask & 7
+                let (next_channel, persisted_pending_channel_mask): (String, i64) =
+                    sqlx::query_as(
+                        "SELECT next_channel, pending_channel_mask FROM ha_outbox_gc_state WHERE id = 'local'",
+                    )
+                    .fetch_one(&mut **conn)
+                    .await?;
+                let pending_channel_mask = if persisted_pending_channel_mask == 0 {
+                    7
+                } else {
+                    persisted_pending_channel_mask & 7
+                };
+                (
+                    Self::select_ha_outbox_gc_channel(
+                        Self::ha_outbox_gc_channel_from_name(&next_channel),
+                        pending_channel_mask,
+                    ),
+                    pending_channel_mask,
+                )
             };
-            let channel = Self::select_ha_outbox_gc_channel(
-                Self::ha_outbox_gc_channel_from_name(&next_channel),
-                pending_channel_mask,
-            );
             let (persisted_batch_size, last_attempt_at, last_observed_at, last_high_watermark,
                 _total_deleted_rows, _persisted_debt_mode, _persisted_oldest_age_secs,
                 persisted_deleted_rows_per_minute, persisted_slo_state): HaOutboxGcChannelStateRow = sqlx::query_as(
@@ -335,26 +378,30 @@ impl KeyStore {
             .fetch_one(&mut **conn)
             .await?;
             let high_watermark = Self::ha_channel_high_watermark_on_conn(conn, channel).await?;
-            let channel_mask = Self::ha_outbox_gc_channel_mask(channel);
-            let next_pending_channel_mask = if channel_has_more {
-                pending_channel_mask | channel_mask
+            let completed = if requested_channel.is_some() {
+                !channel_has_more
             } else {
-                pending_channel_mask & !channel_mask
+                let channel_mask = Self::ha_outbox_gc_channel_mask(channel);
+                let next_pending_channel_mask = if channel_has_more {
+                    pending_channel_mask | channel_mask
+                } else {
+                    pending_channel_mask & !channel_mask
+                };
+                let next_channel = Self::next_ha_outbox_gc_channel(channel);
+                sqlx::query(
+                    r#"
+                    UPDATE ha_outbox_gc_state
+                       SET next_channel = ?, pending_channel_mask = ?, updated_at = ?
+                     WHERE id = 'local'
+                    "#,
+                )
+                .bind(next_channel.as_str())
+                .bind(next_pending_channel_mask)
+                .bind(self.backend_time.now_ts())
+                .execute(&mut **conn)
+                .await?;
+                next_pending_channel_mask == 0
             };
-            let next_channel = Self::next_ha_outbox_gc_channel(channel);
-            sqlx::query(
-                r#"
-                UPDATE ha_outbox_gc_state
-                   SET next_channel = ?, pending_channel_mask = ?, updated_at = ?
-                 WHERE id = 'local'
-                "#,
-            )
-            .bind(next_channel.as_str())
-            .bind(next_pending_channel_mask)
-            .bind(self.backend_time.now_ts())
-            .execute(&mut **conn)
-            .await?;
-            let completed = next_pending_channel_mask == 0;
             let now = self.backend_time.now_ts();
             let channel_continuation_delay_secs = if has_more_retention {
                 crate::ha_outbox_gc_continuation_delay_secs_for_pressure(

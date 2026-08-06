@@ -19,6 +19,11 @@
 - 外部业务 request 在 writable tenure admission 内运行；demotion 取得独占 admission、排空已进入的
   request 后再推进 SQLite epoch。authority 写使用独立短等待预算，writer contention 不会继承主 pool
   的 5 秒 busy timeout。
+- per-channel HA GC 使用独立 durable eligibility 与 generation lease；完成事务同时更新 typed
+  outcome、adaptive channel state、scheduled job 与 continuation，避免 control 延迟阻塞 billing 或
+  runtime，并让旧 claim 在接管后无法覆盖新状态。
+- HA outbox UPDATE trigger 以 wire JSON 比较 old/new payload；只有有效变化写入一条兼容事件，保持
+  旧 reader、retention、ACK 与 `410 -> baseline` 语义不变。
 
 ## Key Reasons / Replacements
 
