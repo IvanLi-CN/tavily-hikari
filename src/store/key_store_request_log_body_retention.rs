@@ -348,9 +348,11 @@ impl KeyStore {
                 )
             });
         let source_mutation = self
-            .request_stats_coalescer
+            .request_stats_pipeline
             .begin_dashboard_rollup_source_mutation(created_at);
-        let request_log_id: i64 = sqlx::query_scalar(
+        let request_log_id: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
             r#"
             INSERT INTO observability.request_logs (
                 api_key_id,
@@ -449,9 +451,8 @@ impl KeyStore {
         .bind(client_ip_trusted)
         .bind(ip_headers_json)
         .bind(created_at)
-        .fetch_one(&self.pool)
-        .await?;
-        self.request_stats_coalescer
+        )?;
+        self.request_stats_pipeline
             .enqueue_request_log_rollups(RequestLogRollupInput {
                 api_key_id: entry.key_id,
                 auth_token_id: entry.auth_token_id.unwrap_or_default(),

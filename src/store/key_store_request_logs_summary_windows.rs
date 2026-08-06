@@ -9,22 +9,23 @@ impl KeyStore {
             .fetch_latest_dashboard_quota_sync_sample_at()
             .await?
             .unwrap_or_default();
-        let row = sqlx::query(
-            r#"
-            SELECT
-                COALESCE(COUNT(*), 0) AS sample_count,
-                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
-                COALESCE(SUM(quota_remaining), 0) AS quota_remaining_sum,
-                COALESCE(COUNT(DISTINCT key_id), 0) AS sampled_key_count
-            FROM api_key_quota_sync_samples
-            WHERE captured_at >= ?
-              AND captured_at < ?
-            "#,
-        )
-        .bind(month_quota_charge_start)
-        .bind(today_end)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(COUNT(*), 0) AS sample_count,
+                    COALESCE(SUM(captured_at), 0) AS captured_at_sum,
+                    COALESCE(SUM(quota_remaining), 0) AS quota_remaining_sum,
+                    COALESCE(COUNT(DISTINCT key_id), 0) AS sampled_key_count
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+                "#,
+            )
+            .bind(month_quota_charge_start)
+            .bind(today_end)
+        )?;
         Ok([
             latest_sync_at,
             row.try_get("sample_count")?,
@@ -53,43 +54,44 @@ impl KeyStore {
         let hot_stale_before = now_ts.saturating_sub(15 * 60);
         let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
 
-        let sample_rows = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                INNER JOIN (
-                    SELECT key_id, MAX(captured_at) AS captured_at
+        let sample_rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                WITH window_rows AS (
+                    SELECT id, key_id, quota_remaining, captured_at
                     FROM api_key_quota_sync_samples
-                    WHERE captured_at < ?
-                      AND key_id IN (SELECT key_id FROM sampled_keys)
-                    GROUP BY key_id
-                ) latest
-                    ON latest.key_id = s.key_id
-                   AND latest.captured_at = s.captured_at
+                    WHERE captured_at >= ?
+                      AND captured_at < ?
+                ),
+                sampled_keys AS (
+                    SELECT DISTINCT key_id FROM window_rows
+                ),
+                baseline_rows AS (
+                    SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
+                    FROM api_key_quota_sync_samples s
+                    INNER JOIN (
+                        SELECT key_id, MAX(captured_at) AS captured_at
+                        FROM api_key_quota_sync_samples
+                        WHERE captured_at < ?
+                          AND key_id IN (SELECT key_id FROM sampled_keys)
+                        GROUP BY key_id
+                    ) latest
+                        ON latest.key_id = s.key_id
+                       AND latest.captured_at = s.captured_at
+                )
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM window_rows
+                UNION ALL
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM baseline_rows
+                ORDER BY key_id ASC, captured_at ASC, id ASC
+                "#,
             )
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM window_rows
-            UNION ALL
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM baseline_rows
-            ORDER BY key_id ASC, captured_at ASC, id ASC
-            "#,
-        )
-        .bind(sample_window_start)
-        .bind(today_end)
-        .bind(sample_window_start)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(sample_window_start)
+            .bind(today_end)
+            .bind(sample_window_start)
+        )?;
 
         let stale_key_count = self
             .fetch_dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
@@ -189,7 +191,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush_tx(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
         let row = sqlx::query(
@@ -219,7 +221,7 @@ impl KeyStore {
             "#,
         )
         .bind(range_start)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
         Ok([
             row.try_get("bucket_count")?,
@@ -248,7 +250,7 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let signature =
             Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start)
                 .await?;
@@ -259,12 +261,12 @@ impl KeyStore {
     pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
+        request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
+            )
         )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ProxyError::Database)
     }
 
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature(
@@ -280,19 +282,20 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 3], ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                COALESCE(COUNT(*), 0) AS key_count,
-                COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0) AS created_at_sum
-            FROM api_keys
-            WHERE created_at >= ?
-            "#,
-        )
-        .bind(range_start)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(COUNT(*), 0) AS key_count,
+                    COALESCE(MAX(created_at), 0) AS max_created_at,
+                    COALESCE(SUM(created_at), 0) AS created_at_sum
+                FROM api_keys
+                WHERE created_at >= ?
+                "#,
+            )
+            .bind(range_start)
+        )?;
         Ok([
             row.try_get("key_count")?,
             row.try_get("max_created_at")?,
@@ -304,19 +307,20 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 3], ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                COALESCE(COUNT(*), 0) AS quarantine_count,
-                COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0) AS created_at_sum
-            FROM api_key_quarantines
-            WHERE created_at >= ?
-            "#,
-        )
-        .bind(range_start)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(COUNT(*), 0) AS quarantine_count,
+                    COALESCE(MAX(created_at), 0) AS max_created_at,
+                    COALESCE(SUM(created_at), 0) AS created_at_sum
+                FROM api_key_quarantines
+                WHERE created_at >= ?
+                "#,
+            )
+            .bind(range_start)
+        )?;
         Ok([
             row.try_get("quarantine_count")?,
             row.try_get("max_created_at")?,
@@ -329,27 +333,28 @@ impl KeyStore {
         range_start: i64,
         range_end: i64,
     ) -> Result<[i64; 3], ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                COALESCE(COUNT(*), 0) AS exhausted_count,
-                COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0) AS created_at_sum
-            FROM api_key_maintenance_records
-            WHERE source = ?
-              AND operation_code = ?
-              AND reason_code = ?
-              AND created_at >= ?
-              AND created_at < ?
-            "#,
-        )
-        .bind(MAINTENANCE_SOURCE_SYSTEM)
-        .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(COUNT(*), 0) AS exhausted_count,
+                    COALESCE(MAX(created_at), 0) AS max_created_at,
+                    COALESCE(SUM(created_at), 0) AS created_at_sum
+                FROM api_key_maintenance_records
+                WHERE source = ?
+                  AND operation_code = ?
+                  AND reason_code = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+                "#,
+            )
+            .bind(MAINTENANCE_SOURCE_SYSTEM)
+            .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(range_start)
+            .bind(range_end)
+        )?;
         Ok([
             row.try_get("exhausted_count")?,
             row.try_get("max_created_at")?,
@@ -365,50 +370,51 @@ impl KeyStore {
         if window_end <= window_start {
             return Ok([0, 0, 0, 0]);
         }
-        let row = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                INNER JOIN (
-                    SELECT key_id, MAX(captured_at) AS captured_at
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                WITH window_rows AS (
+                    SELECT id, key_id, quota_remaining, captured_at
                     FROM api_key_quota_sync_samples
-                    WHERE captured_at < ?
-                      AND key_id IN (SELECT key_id FROM sampled_keys)
-                    GROUP BY key_id
-                ) latest
-                    ON latest.key_id = s.key_id
-                   AND latest.captured_at = s.captured_at
-            ),
-            signature_rows AS (
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM window_rows
-                UNION ALL
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM baseline_rows
+                    WHERE captured_at >= ?
+                      AND captured_at < ?
+                ),
+                sampled_keys AS (
+                    SELECT DISTINCT key_id FROM window_rows
+                ),
+                baseline_rows AS (
+                    SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
+                    FROM api_key_quota_sync_samples s
+                    INNER JOIN (
+                        SELECT key_id, MAX(captured_at) AS captured_at
+                        FROM api_key_quota_sync_samples
+                        WHERE captured_at < ?
+                          AND key_id IN (SELECT key_id FROM sampled_keys)
+                        GROUP BY key_id
+                    ) latest
+                        ON latest.key_id = s.key_id
+                       AND latest.captured_at = s.captured_at
+                ),
+                signature_rows AS (
+                    SELECT id, key_id, quota_remaining, captured_at
+                    FROM window_rows
+                    UNION ALL
+                    SELECT id, key_id, quota_remaining, captured_at
+                    FROM baseline_rows
+                )
+                SELECT
+                    COALESCE(COUNT(*), 0) AS sample_count,
+                    COALESCE(MAX(captured_at), 0) AS max_captured_at,
+                    COALESCE(SUM(captured_at), 0) AS captured_at_sum,
+                    COALESCE(SUM(quota_remaining), 0) AS remaining_sum
+                FROM signature_rows
+                "#,
             )
-            SELECT
-                COALESCE(COUNT(*), 0) AS sample_count,
-                COALESCE(MAX(captured_at), 0) AS max_captured_at,
-                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
-                COALESCE(SUM(quota_remaining), 0) AS remaining_sum
-            FROM signature_rows
-            "#,
-        )
-        .bind(window_start)
-        .bind(window_end)
-        .bind(window_start)
-        .fetch_one(&self.pool)
-        .await?;
+            .bind(window_start)
+            .bind(window_end)
+            .bind(window_start)
+        )?;
         Ok([
             row.try_get("sample_count")?,
             row.try_get("max_captured_at")?,
@@ -423,38 +429,38 @@ impl KeyStore {
         hot_stale_before: i64,
         cold_stale_before: i64,
     ) -> Result<i64, ProxyError> {
-        sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(COUNT(*), 0)
-            FROM api_keys
-            WHERE deleted_at IS NULL
-              AND status <> ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_quarantines aq
-                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
-              )
-              AND CASE
-                  WHEN last_used_at >= ? THEN (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+        request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                r#"
+                SELECT COALESCE(COUNT(*), 0)
+                FROM api_keys
+                WHERE deleted_at IS NULL
+                  AND status <> ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines aq
+                      WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
                   )
-                  ELSE (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-                  )
-              END
-            "#,
+                  AND CASE
+                      WHEN last_used_at >= ? THEN (
+                          quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                      )
+                      ELSE (
+                          quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                      )
+                  END
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .bind(hot_active_since)
+            .bind(hot_stale_before)
+            .bind(cold_stale_before)
         )
-        .bind(STATUS_EXHAUSTED)
-        .bind(hot_active_since)
-        .bind(hot_stale_before)
-        .bind(cold_stale_before)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ProxyError::from)
     }
 
     async fn fetch_summary_windows_tx(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
         let SummaryWindowBounds {
@@ -470,28 +476,28 @@ impl KeyStore {
             previous_month_end,
         } = bounds;
         let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut *tx,
+            tx,
             SECS_PER_MINUTE,
             today_start,
             Some(today_end),
         )
         .await?;
         let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
-            &mut *tx,
+            tx,
             SECS_PER_MINUTE,
             yesterday_start,
             Some(yesterday_end),
         )
         .await?;
         let month_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut *tx,
+            tx,
             month_start,
             today_start,
             today_end,
         )
         .await?;
         let month_charge_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
-            &mut *tx,
+            tx,
             month_quota_charge_start,
             today_start,
             today_end,
@@ -523,7 +529,7 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(yesterday_start.min(month_start))
         .bind(today_end)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         let month_lifecycle_row = sqlx::query(
@@ -543,7 +549,7 @@ impl KeyStore {
         )
         .bind(month_start)
         .bind(month_start)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         Ok(SummaryWindows {
@@ -589,14 +595,14 @@ impl KeyStore {
     ) -> Result<SummaryWindows, ProxyError> {
         self.best_effort_flush_request_stats_writes_for_read("summary_windows")
             .await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
         tx.commit().await?;
         Ok(windows)
     }
 
     async fn fetch_dashboard_hourly_request_window_tx(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         current_bucket_start: i64,
         bucket_seconds: i64,
         visible_buckets: i64,
@@ -683,7 +689,7 @@ impl KeyStore {
         .bind(SECS_PER_MINUTE)
         .bind(series_start)
         .bind(series_end_exclusive)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
 
         let sample_rows = sqlx::query(
@@ -721,7 +727,7 @@ impl KeyStore {
         .bind(series_start)
         .bind(series_end_exclusive)
         .bind(series_start)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
 
         let mut upstream_actual_by_bucket = std::collections::HashMap::<i64, i64>::new();
@@ -814,7 +820,7 @@ impl KeyStore {
         .bind(series_start)
         .bind(series_start)
         .bind(series_end_exclusive)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut ***tx)
         .await?;
         let mut unverified_bucket_starts = Vec::new();
         for bucket_start in (series_start..series_end_exclusive).step_by(bucket_seconds as usize) {
@@ -845,7 +851,7 @@ impl KeyStore {
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
         self.best_effort_flush_request_stats_writes_for_read("dashboard_hourly_request_window")
             .await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let window = Self::fetch_dashboard_hourly_request_window_tx(
             &mut tx,
             current_bucket_start,
@@ -879,8 +885,8 @@ impl KeyStore {
         self.best_effort_flush_request_stats_writes_for_read("dashboard_overview_snapshot")
             .await?;
         let pending_dashboard_rollup_signature =
-            self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
-        let mut tx = self.pool.begin().await?;
+            self.request_stats_pipeline.pending_dashboard_freshness_signature().await;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let summary_windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
         #[cfg(debug_assertions)]
         self.wait_for_dashboard_overview_read_pause_if_installed().await;
@@ -928,25 +934,26 @@ impl KeyStore {
             .await?
             .success_count;
         let scan_floor = month_since.min(day_start);
-        let row = sqlx::query(
-            r#"
-            SELECT
-              COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS daily_success
-            FROM observability.request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
-            "#,
-        )
-        .bind(month_since)
-        .bind(OUTCOME_SUCCESS)
-        .bind(day_start)
-        .bind(day_end)
-        .bind(OUTCOME_SUCCESS)
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(scan_floor)
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT
+                  COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS monthly_success,
+                  COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS daily_success
+                FROM observability.request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+                "#,
+            )
+            .bind(month_since)
+            .bind(OUTCOME_SUCCESS)
+            .bind(day_start)
+            .bind(day_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(scan_floor)
+        )?;
 
         Ok(SuccessBreakdown {
             monthly_success: bucket_month_success + row.try_get::<i64, _>("monthly_success")?,

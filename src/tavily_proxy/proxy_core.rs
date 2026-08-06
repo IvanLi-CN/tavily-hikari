@@ -609,7 +609,7 @@ impl TavilyProxy {
         };
         proxy.user_business_calls_1h_window.backfill_recent().await?;
         proxy.spawn_ha_state_coalescer();
-        proxy.spawn_request_stats_coalescer();
+        proxy.spawn_request_stats_pipeline();
         info!(
             component = "forward_proxy",
             event = "startup_runtime_graph_deferred",

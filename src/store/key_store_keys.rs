@@ -1628,13 +1628,14 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Option<String>, ProxyError> {
-        let row = sqlx::query_as::<_, (String,)>(
-            r#"SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1"#,
-        )
-        .bind(token_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let user_id = row.map(|(id,)| id);
+        let row = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(r#"SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1"#)
+                .bind(token_id)
+        )?;
+        let user_id = row
+            .map(|row| row.try_get("user_id"))
+            .transpose()?;
         self.cache_token_binding(token_id, user_id.as_deref()).await;
         Ok(user_id)
     }

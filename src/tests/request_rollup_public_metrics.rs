@@ -299,7 +299,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
 
     let store = proxy.key_store.clone();
     let pause = store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .install_post_flush_pause()
         .await;
     let flush_handle = tokio::spawn(async move { store.flush_request_stats_writes().await });
@@ -311,7 +311,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_oldest_created_at()
             .await,
         None
@@ -325,7 +325,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_oldest_created_at()
             .await,
         Some(second_created_at)
@@ -333,7 +333,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_newest_created_at()
             .await,
         Some(second_created_at)
@@ -359,7 +359,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_oldest_created_at()
             .await,
         None
@@ -415,13 +415,11 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let is_inflight = {
-                let state = proxy.key_store.request_stats_coalescer.state.lock().await;
-                state.flushing
-                    && state.oldest_pending_created_at.is_none()
-                    && state.flushing_oldest_created_at == Some(created_at)
-                    && state.flushing_newest_created_at == Some(created_at)
-            };
+            let is_inflight = proxy
+                .key_store
+                .request_stats_pipeline
+                .is_flushing_only_created_at(created_at)
+                .await;
             if is_inflight {
                 break;
             }
@@ -537,13 +535,11 @@ async fn admin_summary_returns_promptly_while_full_budget_flush_is_inflight() {
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let is_inflight = {
-                let state = proxy.key_store.request_stats_coalescer.state.lock().await;
-                state.flushing
-                    && state.oldest_pending_created_at.is_none()
-                    && state.flushing_oldest_created_at == Some(created_at)
-                    && state.flushing_newest_created_at == Some(created_at)
-            };
+            let is_inflight = proxy
+                .key_store
+                .request_stats_pipeline
+                .is_flushing_only_created_at(created_at)
+                .await;
             if is_inflight {
                 break;
             }
@@ -604,7 +600,7 @@ async fn admin_summary_falls_back_when_successful_flush_exceeds_read_budget() {
 
     let pause = proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .install_post_flush_pause()
         .await;
     let proxy_for_summary = proxy.clone();
@@ -682,7 +678,7 @@ async fn admin_read_budget_expiry_after_drain_keeps_background_flush_progressing
         Duration::from_secs(1),
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .wait_until_not_flushing(),
     )
     .await
@@ -695,18 +691,19 @@ async fn admin_read_budget_expiry_after_drain_keeps_background_flush_progressing
     assert_eq!(summary_after.total_requests, 1);
     assert_eq!(summary_after.success_count, 1);
 
-    let state = proxy.key_store.request_stats_coalescer.state.lock().await;
     assert!(
-        !state.flushing,
-        "background flush should not leave the coalescer stuck in flushing=true"
+        !proxy.key_store.request_stats_pipeline.is_flushing().await,
+        "background flush should not leave the pipeline stuck in flushing=true"
     );
-    assert!(state.pending_dashboard_rollups.is_empty());
-    assert!(state.pending_api_key_usage.is_empty());
-    assert!(state.pending_auth_token_activity.is_empty());
-    assert!(state.pending_account_request_rollups.is_empty());
-    assert!(state.pending_request_log_catalog.is_empty());
+    assert!(
+        !proxy
+            .key_store
+            .request_stats_pipeline
+            .snapshot()
+            .await
+            .has_pending_work
+    );
 
-    drop(state);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
@@ -736,7 +733,7 @@ async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
 
     let pause = proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .install_post_flush_pause()
         .await;
     let store = proxy.key_store.clone();
@@ -779,7 +776,7 @@ async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_oldest_created_at()
             .await,
         None
@@ -787,7 +784,7 @@ async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
     assert_eq!(
         proxy
             .key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_newest_created_at()
             .await,
         None

@@ -185,7 +185,10 @@ rule-providers:
             user_debug_info_shared_cache: tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             ),
-            request_stats_coalescer: crate::store::RequestStatsCoalescer::default(),
+            request_stats_pipeline: crate::store::RequestStatsPipeline::new(
+                sqlite_runtime.clone(),
+                crate::BackendTime::system(),
+            ),
             admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
             sqlite_runtime,
             #[cfg(test)]

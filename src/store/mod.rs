@@ -17,7 +17,9 @@ use tracing::{error, info, warn};
 mod immediate_transaction;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 pub(crate) mod sqlite_runtime;
-pub(crate) use sqlite_runtime::SqliteRuntime;
+pub(crate) use sqlite_runtime::{
+    SqliteRequestStatsConnection, SqliteRequestStatsTransaction, SqliteRuntime,
+};
 
 pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
@@ -252,6 +254,33 @@ pub fn emit_perf_log(
     scope: PerfLogScope<'_>,
 ) {
     let memory = perf_log_memory_snapshot(level);
+    emit_perf_log_with_memory(level, component, event, elapsed, scope, memory);
+}
+
+pub(crate) fn emit_perf_sample_log(
+    component: &'static str,
+    event: &'static str,
+    elapsed: Duration,
+    scope: PerfLogScope<'_>,
+) {
+    emit_perf_log_with_memory(
+        DbLogStatus::Info,
+        component,
+        event,
+        elapsed,
+        scope,
+        capture_runtime_memory_snapshot(),
+    );
+}
+
+fn emit_perf_log_with_memory(
+    level: DbLogStatus,
+    component: &'static str,
+    event: &'static str,
+    elapsed: Duration,
+    scope: PerfLogScope<'_>,
+    memory: RuntimeMemorySnapshot,
+) {
     let log = |f: &dyn Fn()| f();
     match level {
         DbLogStatus::Info => log(&|| {
@@ -2446,16 +2475,6 @@ impl AuthTokenActivityDelta {
         );
     }
 
-    pub(crate) fn add(&mut self, other: Self) {
-        self.total_requests_delta += other.total_requests_delta;
-        if let Some(last_used_at) = other.last_used_at {
-            self.last_used_at = Some(
-                self.last_used_at
-                    .map_or(last_used_at, |current| current.max(last_used_at)),
-            );
-        }
-    }
-
     pub(crate) fn is_zero(&self) -> bool {
         self.total_requests_delta == 0 && self.last_used_at.is_none()
     }
@@ -2466,14 +2485,6 @@ pub(crate) struct AccountUsageRollupDelta {
     pub(crate) request_count: i64,
     pub(crate) primary_success: i64,
     pub(crate) secondary_success: i64,
-}
-
-impl AccountUsageRollupDelta {
-    pub(crate) fn add(&mut self, other: Self) {
-        self.request_count += other.request_count;
-        self.primary_success += other.primary_success;
-        self.secondary_success += other.secondary_success;
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -2497,7 +2508,7 @@ pub(crate) struct RequestLogCatalogRollupKey {
     pub(crate) operational_class: String,
 }
 
-include!("key_store_request_stats_coalescer.rs");
+include!("key_store_request_stats_pipeline.rs");
 
 #[derive(Debug)]
 pub(crate) struct KeyStore {
@@ -2507,6 +2518,7 @@ pub(crate) struct KeyStore {
     #[allow(dead_code)]
     pub(crate) sqlite_runtime: SqliteRuntime,
     pub(crate) pool: SqlitePool,
+    #[allow(dead_code)]
     pub(crate) read_flush_pool: SqlitePool,
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
@@ -2515,21 +2527,21 @@ pub(crate) struct KeyStore {
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
     pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
-    pub(crate) request_stats_coalescer: RequestStatsCoalescer,
+    pub(crate) request_stats_pipeline: RequestStatsPipeline,
     pub(crate) admin_heavy_read_semaphore: Arc<Semaphore>,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
-    pub(crate) dashboard_overview_read_pause: Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
+    pub(crate) dashboard_overview_read_pause: Arc<Mutex<Option<RequestStatsPipelinePause>>>,
     // Lightweight failpoint registry used by integration tests to simulate a lost quota
     // subject lease after precheck but before settlement.
     pub(crate) forced_quota_subject_lock_loss_subjects: std::sync::Mutex<HashSet<String>>,
 }
 
 #[cfg(any(test, debug_assertions))]
-fn new_request_stats_test_pause() -> RequestStatsPostFlushPause {
-    RequestStatsPostFlushPause {
+fn new_request_stats_test_pause() -> RequestStatsPipelinePause {
+    RequestStatsPipelinePause {
         arrived: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
         released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2538,7 +2550,7 @@ fn new_request_stats_test_pause() -> RequestStatsPostFlushPause {
 
 #[cfg(any(test, debug_assertions))]
 async fn wait_for_request_stats_test_pause_if_installed(
-    slot: &Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
+    slot: &Arc<Mutex<Option<RequestStatsPipelinePause>>>,
 ) {
     if let Some(pause) = slot.lock().await.take() {
         pause.arrived.notify_waiters();
@@ -2551,7 +2563,7 @@ async fn wait_for_request_stats_test_pause_if_installed(
 impl KeyStore {
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
-    pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPostFlushPause {
+    pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPipelinePause {
         let pause = new_request_stats_test_pause();
         let mut slot = self.dashboard_overview_read_pause.lock().await;
         *slot = Some(pause.clone());

@@ -38,10 +38,50 @@ impl DerefMut for SqliteReadConnection {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SqliteRequestStatsConnection(sqlx::pool::PoolConnection<Sqlite>);
+
+impl Deref for SqliteRequestStatsConnection {
+    type Target = sqlx::SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl DerefMut for SqliteRequestStatsConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SqliteRequestStatsTransaction<'c>(sqlx::Transaction<'c, Sqlite>);
+
+impl<'c> SqliteRequestStatsTransaction<'c> {
+    pub(crate) async fn commit(self) -> Result<(), sqlx::Error> {
+        self.0.commit().await
+    }
+}
+
+impl<'c> Deref for SqliteRequestStatsTransaction<'c> {
+    type Target = sqlx::Transaction<'c, Sqlite>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'c> DerefMut for SqliteRequestStatsTransaction<'c> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) type SqliteAdmission = OwnedSemaphorePermit;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SqliteRuntime {
     primary_pool: SqlitePool,
     read_flush_pool: SqlitePool,
@@ -143,6 +183,104 @@ impl SqliteRuntime {
 
     pub(crate) fn compatibility_admission(&self) -> Arc<Semaphore> {
         Arc::clone(&self.admission)
+    }
+
+    pub(crate) async fn fetch_request_stats_one<'q>(
+        &self,
+        query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<sqlx::sqlite::SqliteRow, ProxyError> {
+        query
+            .fetch_one(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_request_stats_scalar_one<'q, O>(
+        &self,
+        query: sqlx::query::QueryScalar<'q, Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<O, ProxyError>
+    where
+        O: Send + Unpin + 'q,
+        (O,): Send + Unpin + for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>,
+    {
+        query
+            .fetch_one(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_request_stats_optional<'q>(
+        &self,
+        query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<Option<sqlx::sqlite::SqliteRow>, ProxyError> {
+        query
+            .fetch_optional(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_request_stats_scalar_optional<'q, O>(
+        &self,
+        query: sqlx::query::QueryScalar<'q, Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<Option<O>, ProxyError>
+    where
+        O: Send + Unpin + 'q,
+        (O,): Send + Unpin + for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>,
+    {
+        query
+            .fetch_optional(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_request_stats_all<'q>(
+        &self,
+        query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<Vec<sqlx::sqlite::SqliteRow>, ProxyError> {
+        query
+            .fetch_all(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn execute_request_stats<'q>(
+        &self,
+        query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> Result<sqlx::sqlite::SqliteQueryResult, ProxyError> {
+        query
+            .execute(&self.primary_pool)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn begin_primary_transaction(
+        &self,
+    ) -> Result<SqliteRequestStatsTransaction<'_>, ProxyError> {
+        self.primary_pool
+            .begin()
+            .await
+            .map(SqliteRequestStatsTransaction)
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn begin_read_flush_transaction(
+        &self,
+    ) -> Result<SqliteRequestStatsTransaction<'_>, ProxyError> {
+        self.read_flush_pool
+            .begin()
+            .await
+            .map(SqliteRequestStatsTransaction)
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn acquire_primary_connection(
+        &self,
+    ) -> Result<SqliteRequestStatsConnection, ProxyError> {
+        self.primary_pool
+            .acquire()
+            .await
+            .map(SqliteRequestStatsConnection)
+            .map_err(ProxyError::Database)
     }
 }
 

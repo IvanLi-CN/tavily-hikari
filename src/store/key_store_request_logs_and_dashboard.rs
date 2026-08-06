@@ -2497,7 +2497,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary_without_flush_tx(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
     ) -> Result<ProxySummary, ProxyError> {
         let totals_row = sqlx::query(
             r#"
@@ -2510,7 +2510,7 @@ impl KeyStore {
             WHERE bucket_secs = 86400
             "#,
         )
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         let key_counts_row = sqlx::query(
@@ -2537,13 +2537,13 @@ impl KeyStore {
         .bind(STATUS_ACTIVE)
         .bind(STATUS_EXHAUSTED)
         .bind(STATUS_ACTIVE)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         let last_activity = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT MAX(last_used_at) FROM api_keys WHERE deleted_at IS NULL",
         )
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?
         .and_then(normalize_timestamp);
 
@@ -2559,7 +2559,7 @@ impl KeyStore {
               AND aq.key_id IS NULL
             "#,
         )
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await?;
 
         Ok(ProxySummary {
@@ -2578,7 +2578,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
         tx.commit().await?;
         Ok(summary)
@@ -2594,19 +2594,19 @@ impl KeyStore {
         &self,
         since: i64,
     ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, Option<i64>>(
+        request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT MIN(created_at)
             FROM observability.request_logs
             WHERE visibility = ?
               AND created_at >= ?
             "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(since)
         )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(since)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ProxyError::Database)
     }
 
     #[cfg(test)]
@@ -2753,7 +2753,7 @@ impl KeyStore {
 
 
     async fn fetch_dashboard_rollup_success_count_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         bucket_secs: i64,
         bucket_start_at_least: i64,
         bucket_start_before: i64,
@@ -2774,13 +2774,13 @@ impl KeyStore {
         .bind(bucket_secs)
         .bind(bucket_start_at_least)
         .bind(bucket_start_before)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await
         .map_err(ProxyError::Database)
     }
 
     async fn fetch_dashboard_rollup_success_count_for_range_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         start: i64,
         end: i64,
     ) -> Result<i64, ProxyError> {
@@ -2837,7 +2837,7 @@ impl KeyStore {
     }
 
     async fn fetch_visible_request_log_success_count_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         start: i64,
         end: i64,
     ) -> Result<i64, ProxyError> {
@@ -2858,7 +2858,7 @@ impl KeyStore {
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(start)
         .bind(end)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut ***tx)
         .await
         .map_err(ProxyError::Database)
     }
@@ -2878,7 +2878,7 @@ impl KeyStore {
         let historical_month_success = self
             .fetch_utc_month_gap_success_count(month_start, month_request_log_floor, now)
             .await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let (retained_partial_minute_success, dashboard_month_start) =
             match month_request_log_floor {
                 Some(floor) if floor > month_start => {
@@ -2919,7 +2919,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_rollup_month_metrics_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteRequestStatsTransaction<'_>,
         month_start: i64,
         today_start: i64,
         today_end: i64,

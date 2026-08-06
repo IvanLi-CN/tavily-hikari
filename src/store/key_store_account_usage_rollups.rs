@@ -324,7 +324,9 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: i64,
     ) -> Result<HashMap<i64, i64>, ProxyError> {
-        let rows = sqlx::query_as::<_, (i64, i64)>(
+        let rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             SELECT bucket_start, value
             FROM account_usage_rollup_buckets
@@ -335,16 +337,17 @@ impl KeyStore {
               AND bucket_start < ?
             ORDER BY bucket_start ASC
             "#,
-        )
-        .bind(user_id)
-        .bind(metric_kind.as_str())
-        .bind(bucket_kind.as_str())
-        .bind(bucket_start_at_least)
-        .bind(bucket_start_before)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(user_id)
+            .bind(metric_kind.as_str())
+            .bind(bucket_kind.as_str())
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+        )?;
 
-        Ok(rows.into_iter().collect())
+        rows.into_iter()
+            .map(|row| Ok((row.try_get("bucket_start")?, row.try_get("value")?)))
+            .collect()
     }
 
     pub(crate) async fn delete_old_account_usage_rollup_buckets(

@@ -149,7 +149,9 @@ impl KeyStore {
             return Ok(Vec::new());
         }
 
-        let rows = sqlx::query_as::<_, (String, i64)>(
+        let rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             SELECT request_user_id AS user_id, COUNT(DISTINCT client_ip) AS total
             FROM request_logs INDEXED BY idx_request_logs_user_ip_time
@@ -162,14 +164,16 @@ impl KeyStore {
             GROUP BY request_user_id
             HAVING total > 0
             "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(start_at)
-        .bind(end_at)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(start_at)
+            .bind(end_at)
+        )?;
 
-        let totals = rows.into_iter().collect::<HashMap<_, _>>();
+        let mut totals = HashMap::with_capacity(rows.len());
+        for row in rows {
+            totals.insert(row.try_get("user_id")?, row.try_get("total")?);
+        }
         let mut ranking_rows = self.fetch_user_ranking_identities(&totals).await?;
         ranking_rows.sort_by(|left, right| {
             right
@@ -196,7 +200,9 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
-        let rows = sqlx::query_as::<_, (String, i64)>(
+        let rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             SELECT user_id, COALESCE(SUM(value), 0) AS total
             FROM account_usage_rollup_buckets
@@ -207,15 +213,18 @@ impl KeyStore {
             GROUP BY user_id
             HAVING total > 0
             "#,
-        )
-        .bind(metric_kind.as_str())
-        .bind(bucket_kind.as_str())
-        .bind(bucket_start_at_least)
-        .bind(bucket_start_before)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(metric_kind.as_str())
+            .bind(bucket_kind.as_str())
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+        )?;
 
-        Ok(rows.into_iter().collect())
+        let mut totals = HashMap::with_capacity(rows.len());
+        for row in rows {
+            totals.insert(row.try_get("user_id")?, row.try_get("total")?);
+        }
+        Ok(totals)
     }
 
     async fn apply_user_ranking_partial_range(
@@ -246,7 +255,9 @@ impl KeyStore {
 
         match metric_kind {
             AccountUsageRollupMetricKind::PrimarySuccess => {
-                let rows = sqlx::query_as::<_, (String, i64)>(&format!(
+                let rows = request_stats_primary_fetch_all!(
+                    self.request_stats_pipeline,
+                    sqlx::query(&format!(
                     r#"
                     SELECT
                         COALESCE(
@@ -276,19 +287,22 @@ impl KeyStore {
                     GROUP BY user_id
                     HAVING total > 0
                     "#,
-                ))
-                .bind(start_at)
-                .bind(end_at)
-                .bind(OUTCOME_SUCCESS)
-                .fetch_all(&self.pool)
-                .await?;
+                    ))
+                    .bind(start_at)
+                    .bind(end_at)
+                    .bind(OUTCOME_SUCCESS)
+                )?;
 
-                for (user_id, value) in rows {
+                for row in rows {
+                    let user_id: String = row.try_get("user_id")?;
+                    let value: i64 = row.try_get("total")?;
                     *totals.entry(user_id).or_default() += value;
                 }
             }
             AccountUsageRollupMetricKind::SecondarySuccess => {
-                let rows = sqlx::query_as::<_, (String, i64)>(&format!(
+                let rows = request_stats_primary_fetch_all!(
+                    self.request_stats_pipeline,
+                    sqlx::query(&format!(
                     r#"
                     SELECT
                         COALESCE(
@@ -318,19 +332,22 @@ impl KeyStore {
                     GROUP BY user_id
                     HAVING total > 0
                     "#,
-                ))
-                .bind(start_at)
-                .bind(end_at)
-                .bind(OUTCOME_SUCCESS)
-                .fetch_all(&self.pool)
-                .await?;
+                    ))
+                    .bind(start_at)
+                    .bind(end_at)
+                    .bind(OUTCOME_SUCCESS)
+                )?;
 
-                for (user_id, value) in rows {
+                for row in rows {
+                    let user_id: String = row.try_get("user_id")?;
+                    let value: i64 = row.try_get("total")?;
                     *totals.entry(user_id).or_default() += value;
                 }
             }
             AccountUsageRollupMetricKind::BusinessCredits => {
-                let rows = sqlx::query_as::<_, (String, i64)>(
+                let rows = request_stats_primary_fetch_all!(
+                    self.request_stats_pipeline,
+                    sqlx::query(
                     r#"
                     WITH charged_rows AS (
                         SELECT
@@ -362,17 +379,18 @@ impl KeyStore {
                     GROUP BY user_id
                     HAVING total > 0
                     "#,
-                )
-                .bind(BILLING_STATE_CHARGED)
-                .bind(start_at)
-                .bind(end_at)
-                .bind(BILLING_STATE_CHARGED)
-                .bind(start_at)
-                .bind(end_at)
-                .fetch_all(&self.pool)
-                .await?;
+                    )
+                    .bind(BILLING_STATE_CHARGED)
+                    .bind(start_at)
+                    .bind(end_at)
+                    .bind(BILLING_STATE_CHARGED)
+                    .bind(start_at)
+                    .bind(end_at)
+                )?;
 
-                for (user_id, value) in rows {
+                for row in rows {
+                    let user_id: String = row.try_get("user_id")?;
+                    let value: i64 = row.try_get("total")?;
                     *totals.entry(user_id).or_default() += value;
                 }
             }
@@ -402,7 +420,7 @@ impl KeyStore {
         }
         separated.push_unseparated(")");
 
-        let rows = builder.build().fetch_all(&self.pool).await?;
+        let rows = request_stats_primary_fetch_all!(self.request_stats_pipeline, builder.build())?;
         let mut by_id: HashMap<String, UserRankingIdentity> = HashMap::new();
         for row in rows {
             let user_id: String = row.try_get("id")?;

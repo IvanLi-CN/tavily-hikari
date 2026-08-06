@@ -6,7 +6,7 @@ impl KeyStore {
         day_end: i64,
     ) -> Result<(), ProxyError> {
         let Some((oldest_pending_created_at, newest_pending_created_at)) = self
-            .request_stats_coalescer
+            .request_stats_pipeline
             .freshness_created_at_bounds()
             .await
         else {

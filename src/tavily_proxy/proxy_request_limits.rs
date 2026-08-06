@@ -178,21 +178,19 @@ impl TavilyProxy {
         loop {
             let waiter = {
                 let mut cache = self.user_rankings_cache.lock().await;
+                let request_stats_snapshot = self.key_store.request_stats_pipeline.try_snapshot();
                 if let Some(cached) = cache.cached.as_ref()
                     && self
                         .backend_time
                         .instant_now()
                         .saturating_duration_since(cached.generated_at)
                         < USER_RANKINGS_CACHE_TTL
-                    && !self
-                        .key_store
-                        .request_stats_coalescer
-                        .try_has_pending_or_flushing_work()
-                    && self
-                        .key_store
-                        .request_stats_coalescer
-                        .try_request_stats_version()
-                        == Some(cached.request_stats_version)
+                    && request_stats_snapshot
+                        .map(|snapshot| {
+                            !snapshot.has_pending_work
+                                && snapshot.version == cached.request_stats_version
+                        })
+                        .unwrap_or(false)
                 {
                     return Ok((cached.value.clone(), RequestStatsReadFreshness::Fresh));
                 }
@@ -213,8 +211,9 @@ impl TavilyProxy {
             let generated_at = self.backend_time.now_ts();
             let request_stats_version = self
                 .key_store
-                .request_stats_coalescer
-                .try_request_stats_version();
+                .request_stats_pipeline
+                .try_snapshot()
+                .map(|snapshot| snapshot.version);
             let snapshot = self
                 .key_store
                 .fetch_user_rankings_snapshot_with_freshness(
@@ -272,37 +271,14 @@ impl TavilyProxy {
         created_at: i64,
         result_status: &str,
     ) {
-        let mut state = self.key_store.request_stats_coalescer.state.lock().await;
-        let entry = state
-            .pending_account_request_rollups
-            .entry(AccountRequestRollupKey {
-                user_id: user_id.to_string(),
-                five_minute_bucket_start: created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES),
-                day_bucket_start: local_day_bucket_start_utc_ts(created_at),
-            })
-            .or_default();
-        entry.request_count += 1;
-        if result_status == OUTCOME_SUCCESS {
-            entry.primary_success += 1;
-        }
-        RequestStatsCoalescer::bump_request_stats_version(&mut state);
-        state.oldest_pending_created_at = Some(
-            state
-                .oldest_pending_created_at
-                .map(|current| current.min(created_at))
-                .unwrap_or(created_at),
-        );
-        state.newest_pending_created_at = Some(
-            state
-                .newest_pending_created_at
-                .map(|current| current.max(created_at))
-                .unwrap_or(created_at),
-        );
-        if RequestStatsCoalescer::pending_key_count(&state) > 0 && state.flush_deadline.is_none() {
-            state.flush_deadline = Some(Instant::now() + RequestStatsCoalescer::FLUSH_INTERVAL);
-        }
-        drop(state);
-        self.key_store.request_stats_coalescer.wake.notify_one();
+        self.key_store
+            .request_stats_pipeline
+            .enqueue_account_request_rollup(
+                user_id,
+                created_at,
+                i64::from(result_status == OUTCOME_SUCCESS),
+            )
+            .await;
     }
 
     pub async fn analysis_pressure_snapshot(&self) -> Result<AnalysisPressureSnapshot, ProxyError> {
@@ -1264,7 +1240,7 @@ impl TavilyProxy {
     #[doc(hidden)]
     pub async fn wait_until_request_stats_flush_finishes_for_test(&self) {
         self.key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .wait_until_not_flushing()
             .await;
     }
@@ -1302,7 +1278,7 @@ impl TavilyProxy {
 
     pub async fn pending_dashboard_rollup_freshness_signature(&self) -> [i64; 10] {
         self.key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .pending_dashboard_freshness_signature()
             .await
     }
@@ -1337,7 +1313,7 @@ impl TavilyProxy {
             }
         }
         self.key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .enqueue_request_log_rollups(crate::store::RequestLogRollupInput {
                 api_key_id,
                 auth_token_id: "test-auth-token",
@@ -1353,7 +1329,7 @@ impl TavilyProxy {
     #[doc(hidden)]
     pub async fn debug_enqueue_dashboard_credit_rollups(&self, created_at: i64, credits: i64) {
         self.key_store
-            .request_stats_coalescer
+            .request_stats_pipeline
             .enqueue_dashboard_credit_rollups(created_at, credits)
             .await;
     }

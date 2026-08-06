@@ -2512,11 +2512,11 @@ async fn oauth_login_state_payload_carries_bind_token_id() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_waits_for_window_before_background_flush() {
-    let db_path = temp_db_path("request-stats-coalescer-windowed-flush");
+async fn request_stats_pipeline_waits_for_window_before_background_flush() {
+    let db_path = temp_db_path("request-stats-pipeline-windowed-flush");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-request-stats-coalescer-window".to_string()],
+        vec!["tvly-request-stats-pipeline-window".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -2558,7 +2558,7 @@ async fn request_stats_coalescer_waits_for_window_before_background_flush() {
         "background worker should not flush request stats before the coalescing window elapses"
     );
 
-    tokio::time::sleep(RequestStatsCoalescer::FLUSH_INTERVAL + Duration::from_millis(150)).await;
+    tokio::time::sleep(RequestStatsPipeline::FLUSH_INTERVAL + Duration::from_millis(150)).await;
 
     let stored_total: Option<i64> = sqlx::query_scalar(
         r#"

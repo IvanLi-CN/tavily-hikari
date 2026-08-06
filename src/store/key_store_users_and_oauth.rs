@@ -1295,7 +1295,9 @@ impl KeyStore {
             .or(self.resolve_request_rollup_user_id(token_id, None).await?);
         let request_log_created_at = diagnostic_metadata.created_at;
         let upstream_operation_for_business = diagnostic_metadata.upstream_operation.clone();
-        sqlx::query(
+        request_stats_primary_execute!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status,
@@ -1338,9 +1340,8 @@ impl KeyStore {
         .bind(request_log_id)
         .bind(created_at)
         .bind(request_user_id.as_deref())
-        .execute(&self.pool)
-        .await?;
-        self.request_stats_coalescer
+        )?;
+        self.request_stats_pipeline
             .enqueue_auth_token_activity(token_id, request_user_id.as_deref(), created_at)
             .await;
         Ok(build_user_business_call_event_write(
@@ -1523,7 +1524,7 @@ impl KeyStore {
                 }
             }
         };
-        self.request_stats_coalescer
+        self.request_stats_pipeline
             .enqueue_auth_token_activity(token_id, request_user_id.as_deref(), created_at)
             .await;
         Ok((
@@ -1567,7 +1568,7 @@ impl KeyStore {
         request_user_id: Option<&str>,
         diagnostic_metadata: &RequestLogDiagnosticMetadata,
     ) -> Result<i64, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
         let log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -1643,7 +1644,7 @@ impl KeyStore {
         .bind(request_log_id)
         .bind(created_at)
         .bind(request_user_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
 
         sqlx::query(
@@ -1694,7 +1695,7 @@ impl KeyStore {
         .bind(created_at)
         .bind(created_at)
         .bind(error_message)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(log_id)
@@ -1708,50 +1709,31 @@ impl KeyStore {
             return Ok(RequestLogDiagnosticMetadata::default());
         };
 
-        let row = sqlx::query_as::<_, (
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )>(
+        let Some(row) = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
             FROM request_logs
             WHERE id = ?
             LIMIT 1
             "#,
-        )
-        .bind(request_log_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row
-            .map(
-                |(
-                    created_at,
-                    request_user_id,
-                    gateway_mode,
-                    experiment_variant,
-                    proxy_session_id,
-                    routing_subject_hash,
-                    upstream_operation,
-                    fallback_reason,
-                )| RequestLogDiagnosticMetadata {
-                    created_at,
-                    request_user_id,
-                    gateway_mode,
-                    experiment_variant,
-                    proxy_session_id,
-                    routing_subject_hash,
-                    upstream_operation,
-                    fallback_reason,
-                },
             )
-            .unwrap_or_default())
+            .bind(request_log_id)
+        )? else {
+            return Ok(RequestLogDiagnosticMetadata::default());
+        };
+
+        Ok(RequestLogDiagnosticMetadata {
+            created_at: row.try_get("created_at")?,
+            request_user_id: row.try_get("request_user_id")?,
+            gateway_mode: row.try_get("gateway_mode")?,
+            experiment_variant: row.try_get("experiment_variant")?,
+            proxy_session_id: row.try_get("proxy_session_id")?,
+            routing_subject_hash: row.try_get("routing_subject_hash")?,
+            upstream_operation: row.try_get("upstream_operation")?,
+            fallback_reason: row.try_get("fallback_reason")?,
+        })
     }
 
     async fn resolve_token_log_request_kind(
@@ -1763,33 +1745,34 @@ impl KeyStore {
             return Ok(fallback.clone());
         };
 
-        let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        let Some(row) = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
             r#"
             SELECT request_kind_key, request_kind_label, request_kind_detail
             FROM request_logs
             WHERE id = ?
             LIMIT 1
             "#,
-        )
-        .bind(request_log_id)
-        .fetch_optional(&self.pool)
-        .await?;
+            )
+            .bind(request_log_id)
+        )? else {
+            return Ok(fallback.clone());
+        };
 
-        Ok(row
-            .map(|(key, label, detail)| {
-                key.as_deref()
-                    .and_then(|stored_key| {
-                        token_request_kind_from_canonical_key(stored_key, detail.clone())
-                    })
-                    .unwrap_or_else(|| {
-                        TokenRequestKind::new(
-                            key.unwrap_or_else(|| fallback.key.clone()),
-                            label.unwrap_or_else(|| fallback.label.clone()),
-                            detail.or_else(|| fallback.detail.clone()),
-                        )
-                    })
-            })
-            .unwrap_or_else(|| fallback.clone()))
+        let key: Option<String> = row.try_get("request_kind_key")?;
+        let label: Option<String> = row.try_get("request_kind_label")?;
+        let detail: Option<String> = row.try_get("request_kind_detail")?;
+        Ok(key
+            .as_deref()
+            .and_then(|stored_key| token_request_kind_from_canonical_key(stored_key, detail.clone()))
+            .unwrap_or_else(|| {
+                TokenRequestKind::new(
+                    key.unwrap_or_else(|| fallback.key.clone()),
+                    label.unwrap_or_else(|| fallback.label.clone()),
+                    detail.or_else(|| fallback.detail.clone()),
+                )
+            }))
     }
 
     pub(crate) async fn list_pending_billing_log_ids(
@@ -2076,7 +2059,7 @@ impl KeyStore {
 
         let source_mutation = if let Some(request_log_id) = request_log_id {
             let source_mutation = self
-                .request_stats_coalescer
+                .request_stats_pipeline
                 .begin_dashboard_rollup_source_mutation(charge_ts);
             sqlx::query(
                 r#"
@@ -2337,7 +2320,7 @@ impl KeyStore {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.request_stats_coalescer
+        self.request_stats_pipeline
             .enqueue_dashboard_credit_rollups_for_request_log(charge_ts, credits, request_log_id)
             .await;
         if let Some(source_mutation) = source_mutation {

@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - prd/performance-architecture-hardening
   workflow_dispatch:
 
 concurrency:
@@ -126,6 +127,9 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Request stats architecture check
+        run: python3 scripts/check_request_stats_architecture.py
 
       - name: Cargo check
         run: cargo check --locked --all-targets --all-features

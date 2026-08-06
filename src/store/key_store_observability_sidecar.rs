@@ -1252,7 +1252,10 @@ impl KeyStore {
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
-            request_stats_coalescer: RequestStatsCoalescer::default(),
+            request_stats_pipeline: RequestStatsPipeline::new(
+                sqlite_runtime.clone(),
+                BackendTime::system(),
+            ),
             admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
             sqlite_runtime,
             #[cfg(test)]

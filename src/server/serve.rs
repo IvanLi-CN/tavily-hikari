@@ -618,14 +618,14 @@ pub async fn serve(
     .await?;
     if let Err(err) = post_shutdown_state
         .proxy
-        .shutdown_request_stats_coalescer(Duration::from_secs(20))
+        .shutdown_request_stats_pipeline(Duration::from_secs(20))
         .await
     {
         tracing::warn!(
             component = "shutdown",
             event = "request_stats_drain_timeout",
             err = %err,
-            "request stats coalescer did not drain before shutdown grace period"
+            "request stats pipeline did not drain before shutdown grace period"
         );
     }
     tracing::info!(

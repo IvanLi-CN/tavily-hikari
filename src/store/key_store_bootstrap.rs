@@ -675,13 +675,16 @@ impl KeyStore {
             _observability_lock: Some(observability_lock),
             pool: sqlite_runtime.compatibility_primary_pool(),
             read_flush_pool: sqlite_runtime.compatibility_read_flush_pool(),
-            backend_time,
+            backend_time: backend_time.clone(),
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
-            request_stats_coalescer: RequestStatsCoalescer::default(),
+            request_stats_pipeline: RequestStatsPipeline::new(
+                sqlite_runtime.clone(),
+                backend_time.clone(),
+            ),
             admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
             sqlite_runtime,
             #[cfg(test)]
@@ -760,13 +763,16 @@ impl KeyStore {
             _observability_lock: Some(observability_lock),
             pool: sqlite_runtime.compatibility_primary_pool(),
             read_flush_pool: sqlite_runtime.compatibility_read_flush_pool(),
-            backend_time,
+            backend_time: backend_time.clone(),
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
-            request_stats_coalescer: RequestStatsCoalescer::default(),
+            request_stats_pipeline: RequestStatsPipeline::new(
+                sqlite_runtime.clone(),
+                backend_time.clone(),
+            ),
             admin_heavy_read_semaphore: sqlite_runtime.compatibility_admission(),
             sqlite_runtime,
             #[cfg(test)]
@@ -1050,6 +1056,23 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS observability.idx_dashboard_request_rollup_buckets_scope_time
                ON dashboard_request_rollup_buckets(bucket_secs, bucket_start DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS request_stats_flush_batches (
+                batch_id TEXT PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_stats_flush_batches_applied_at
+               ON request_stats_flush_batches(applied_at)"#,
         )
         .execute(&self.pool)
         .await?;

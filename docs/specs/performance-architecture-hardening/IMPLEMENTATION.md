@@ -18,7 +18,7 @@
    #484 已实现，待合入 integration branch）
 2. SqliteRuntime seam（child #485 已合入 integration branch）
 3. MaintenanceRuntime legacy adapter
-4. RequestStatsPipeline
+4. RequestStatsPipeline（child #487）
 5. HaPeerObservationStore
 6. per-channel HA GC 与 no-op outbox suppression
 7. reconciliation work projection
@@ -37,7 +37,8 @@
   写入的 pool 与 busy 等待总预算保持在 250ms 内。
 - 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
   authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
-- aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
+- aggregate 验证、30 分钟 RSS 基准及 rollout 文档尚待完成；child #487 已提供 request-stats
+  architecture checker 和逐页 RSS telemetry，但它们不替代 aggregate 生产形状基准。
 
 ## Related Changes
 
@@ -46,6 +47,11 @@
 - `KeyStore` constructors create one `SqliteRuntime` from the existing pools and expose only
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
+- Ticket #487: `RequestStatsPipeline` owns bounded pending rollups, snapshot metadata, paged
+  dashboard backfill access, and typed request-stats storage operations; `scripts/check_request_stats_architecture.py`
+  enforces the hot-path boundary and stable `(created_at, id)` pagination contract. Flush batches retain
+  durable ids across retries and use an in-transaction marker to prevent additive replay after ambiguous
+  commit outcomes.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 
 ## References

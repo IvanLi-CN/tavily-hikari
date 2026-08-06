@@ -494,11 +494,11 @@ async fn legacy_single_db_request_logs_migrate_to_observability_sidecar() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_summary_and_key_metrics_on_read() {
-    let db_path = temp_db_path("request-stats-coalescer-summary-flush");
+async fn request_stats_pipeline_flushes_summary_and_key_metrics_on_read() {
+    let db_path = temp_db_path("request-stats-pipeline-summary-flush");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-request-stats-coalescer-summary".to_string()],
+        vec!["tvly-request-stats-pipeline-summary".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -638,8 +638,8 @@ async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_b
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
-    let db_path = temp_db_path("request-stats-coalescer-token-activity-flush");
+async fn request_stats_pipeline_flushes_auth_token_activity_on_read() {
+    let db_path = temp_db_path("request-stats-pipeline-token-activity-flush");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
@@ -652,7 +652,7 @@ async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
 
     proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .enqueue_auth_token_activity(&token.id, None, created_at)
         .await;
 

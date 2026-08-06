@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Instant as StdInstant;
 
 const DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS: i64 = SECS_PER_FIVE_MINUTES;
-const DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS: i64 = 500;
+const DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS: i64 = RequestStatsPipeline::BACKFILL_PAGE_ROWS;
 const DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET: Duration = Duration::from_millis(150);
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(100);
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN: Duration = Duration::from_millis(250);
@@ -68,55 +68,58 @@ impl KeyStore {
     pub(crate) async fn reset_dashboard_rollup_integrity_pending_work_on_startup(
         &self,
     ) -> Result<(), ProxyError> {
-        let source_fence_id: i64 =
+        let source_fence_id: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
             sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
-                .fetch_one(&self.pool)
-                .await?;
-        let now = self.backend_time.now_ts();
+        )?;
+        let now = self.request_stats_pipeline.backend_time().now_ts();
         let empty_counts = serde_json::to_string(&BTreeMap::<i64, DashboardRequestRollupCounts>::new())
             .map_err(|err| ProxyError::Other(format!("serialize reset integrity work item: {err}")))?;
-        sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_work_items
-            SET source_fence = ?, source_version = 0, cursor_created_at = NULL, cursor_id = NULL,
-                counts_json = ?, status = 'pending', updated_at = ?
-            WHERE status = 'pending'
-            "#,
-        )
-        .bind(source_fence_id)
-        .bind(empty_counts)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        request_stats_primary_execute!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                UPDATE dashboard_rollup_integrity_work_items
+                SET source_fence = ?, source_version = 0, cursor_created_at = NULL, cursor_id = NULL,
+                    counts_json = ?, status = 'pending', updated_at = ?
+                WHERE status = 'pending'
+                "#,
+            )
+            .bind(source_fence_id)
+            .bind(empty_counts)
+            .bind(now)
+        )?;
         Ok(())
     }
 
     pub(crate) async fn dashboard_rollup_integrity_status(
         &self,
     ) -> Result<DashboardRollupIntegrityStatus, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let state = sqlx::query(
-            r#"
-            SELECT last_verified_at, stalled_since, next_attempt_at, hot_cursor, hot_fence, history_cursor
-            FROM dashboard_rollup_integrity_state
-            WHERE id = 1
-            "#,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        let unverified_bucket_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM (
-                SELECT range_start FROM dashboard_rollup_integrity_gaps
-                UNION
-                SELECT range_start FROM dashboard_rollup_integrity_work_items WHERE status = 'pending'
-                UNION
-                SELECT bucket_start FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending'
+        let now = self.request_stats_pipeline.backend_time().now_ts();
+        let state = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT last_verified_at, stalled_since, next_attempt_at, hot_cursor, hot_fence, history_cursor
+                FROM dashboard_rollup_integrity_state
+                WHERE id = 1
+                "#,
             )
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        )?;
+        let unverified_bucket_count: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*) FROM (
+                    SELECT range_start FROM dashboard_rollup_integrity_gaps
+                    UNION
+                    SELECT range_start FROM dashboard_rollup_integrity_work_items WHERE status = 'pending'
+                    UNION
+                    SELECT bucket_start FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending'
+                )
+                "#,
+            )
+        )?;
         let DashboardRollupIntegrityStateRow {
             last_verified_at,
             stalled_since,
@@ -137,12 +140,11 @@ impl KeyStore {
             })
             .transpose()?
             .unwrap_or_default();
-        let oldest_visible_log: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM request_logs WHERE visibility = ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_one(&self.pool)
-        .await?;
+        let oldest_visible_log: Option<i64> = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar("SELECT MIN(created_at) FROM request_logs WHERE visibility = ?")
+                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        )?;
         let hot_backlog_bucket_count = hot_cursor
             .zip(hot_fence)
             .map(|(cursor, fence)| {
@@ -186,7 +188,7 @@ impl KeyStore {
     pub(crate) async fn run_dashboard_rollup_integrity_slice(
         &self,
     ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
-        let now = self.backend_time.now_ts();
+        let now = self.request_stats_pipeline.backend_time().now_ts();
         self.ensure_dashboard_rollup_integrity_state(now).await?;
         if let Some(item) = self.load_dashboard_rollup_integrity_work_item().await? {
             return self.process_dashboard_rollup_integrity_work_item(item, now).await;
@@ -241,17 +243,18 @@ impl KeyStore {
     async fn load_dashboard_rollup_integrity_work_item(
         &self,
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT range_start, range_end, source_fence, source_version, cursor_created_at, cursor_id, counts_json
-            FROM dashboard_rollup_integrity_work_items
-            WHERE status = 'pending'
-            ORDER BY updated_at ASC, range_start ASC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT range_start, range_end, source_fence, source_version, cursor_created_at, cursor_id, counts_json
+                FROM dashboard_rollup_integrity_work_items
+                WHERE status = 'pending'
+                ORDER BY updated_at ASC, range_start ASC
+                LIMIT 1
+                "#,
+            )
+        )?;
         row.map(|row| {
             let counts_json: String = row.try_get("counts_json")?;
             let counts = serde_json::from_str(&counts_json).map_err(|err| {
@@ -275,15 +278,16 @@ impl KeyStore {
         &self,
         now: i64,
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor,
-                   last_history_attempt_at, last_day_reaudit_attempt_at
-            FROM dashboard_rollup_integrity_state WHERE id = 1
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor,
+                       last_history_attempt_at, last_day_reaudit_attempt_at
+                FROM dashboard_rollup_integrity_state WHERE id = 1
+                "#,
+            )
+        )?;
         let hot_cursor: i64 = row.try_get("hot_cursor")?;
         let hot_fence: i64 = row.try_get("hot_fence")?;
         let hot_reaudit_cursor: Option<i64> = row.try_get("hot_reaudit_cursor")?;
@@ -291,24 +295,24 @@ impl KeyStore {
         let last_history_attempt_at: Option<i64> = row.try_get("last_history_attempt_at")?;
         let last_day_reaudit_attempt_at: Option<i64> =
             row.try_get("last_day_reaudit_attempt_at")?;
-        let sealed_day_reaudit = sqlx::query(
-            r#"
-            SELECT bucket_start, bucket_end, cursor
-            FROM dashboard_rollup_integrity_day_reaudits
-            WHERE status = 'pending'
-            ORDER BY updated_at ASC, bucket_start ASC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let sealed_day_reaudit = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT bucket_start, bucket_end, cursor
+                FROM dashboard_rollup_integrity_day_reaudits
+                WHERE status = 'pending'
+                ORDER BY updated_at ASC, bucket_start ASC
+                LIMIT 1
+                "#,
+            )
+        )?;
         let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
-        let oldest: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM request_logs WHERE visibility = ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_one(&self.pool)
-        .await?;
+        let oldest: Option<i64> = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar("SELECT MIN(created_at) FROM request_logs WHERE visibility = ?")
+                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        )?;
         let history_due = last_history_attempt_at
             .map(|attempted| now.saturating_sub(attempted) >= 60)
             .unwrap_or(true);
@@ -380,12 +384,12 @@ impl KeyStore {
         }
         // A task only aggregates rows that existed before it was created. Late writes
         // with an old created_at are checked by the next rolling hot pass.
-        let source_fence_id: i64 =
+        let source_fence_id: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
             sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
-                .fetch_one(&self.pool)
-                .await?;
+        )?;
         let source_version = self
-            .request_stats_coalescer
+            .request_stats_pipeline
             .dashboard_rollup_source_version(range_start)
             .await;
         let item = DashboardRollupIntegrityWorkItem::empty(
@@ -481,32 +485,35 @@ impl KeyStore {
             .dashboard_rollup_integrity_work_delay(item.range_start)
             .await?;
         let read_started = StdInstant::now();
-        let rows = sqlx::query(
-            r#"
-            SELECT id, created_at, result_status, failure_kind, request_kind_key, request_body,
-                   path, business_credits, counts_business_quota
-            FROM request_logs
-            WHERE visibility = ?
-              AND created_at >= ? AND created_at < ? AND id <= ?
-              AND (
-                  ? IS NULL OR created_at > ? OR (created_at = ? AND id > ?)
-              )
-            ORDER BY created_at ASC, id ASC
-            LIMIT ?
-            "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(item.range_start)
-        .bind(item.range_end)
-        .bind(item.source_fence_id)
-        .bind(item.cursor_created_at)
-        .bind(item.cursor_created_at)
-        .bind(item.cursor_created_at)
-        .bind(item.cursor_id)
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in &rows {
+        let rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT id, created_at, result_status, failure_kind, request_kind_key, request_body,
+                       path, business_credits, counts_business_quota
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ? AND created_at < ? AND id <= ?
+                  AND (
+                      ? IS NULL OR created_at > ? OR (created_at = ? AND id > ?)
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(item.range_start)
+            .bind(item.range_end)
+            .bind(item.source_fence_id)
+            .bind(item.cursor_created_at)
+            .bind(item.cursor_created_at)
+            .bind(item.cursor_created_at)
+            .bind(item.cursor_id)
+            .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
+        )?;
+        let mut row_count = 0_i64;
+        let mut last_cursor = None;
+        for row in rows {
             let created_at: i64 = row.try_get("created_at")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
             let path: String = row.try_get("path")?;
@@ -539,13 +546,26 @@ impl KeyStore {
                     counts_business_quota,
                 ),
             );
+            last_cursor = Some((created_at, row.try_get("id")?));
+            row_count += 1;
         }
-        let last_row = rows.last();
-        if let Some(last_row) = last_row {
-            item.cursor_created_at = Some(last_row.try_get("created_at")?);
-            item.cursor_id = Some(last_row.try_get("id")?);
+        if let Some((created_at, id)) = last_cursor {
+            item.cursor_created_at = Some(created_at);
+            item.cursor_id = Some(id);
         }
-        if rows.len() as i64 >= DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS
+        emit_perf_sample_log(
+            "request_stats",
+            "dashboard_backfill_page",
+            read_started.elapsed(),
+            PerfLogScope {
+                scope: Some("dashboard_rollup_integrity"),
+                phase: Some("request_log_page"),
+                page_size: Some(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS),
+                row_count: Some(row_count as usize),
+                ..Default::default()
+            },
+        );
+        if row_count >= DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS
             || read_started.elapsed() >= DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET
         {
             self.persist_dashboard_rollup_integrity_work_item(&item, now).await?;
@@ -577,7 +597,7 @@ impl KeyStore {
             });
         }
 
-        self.request_stats_coalescer
+        self.request_stats_pipeline
             .begin_dashboard_rollup_repair(item.range_start, item.range_end, item.source_fence_id)
             .await;
         let source_changed_after_barrier = match self
@@ -586,14 +606,14 @@ impl KeyStore {
         {
             Ok(changed) => changed,
             Err(err) => {
-                self.request_stats_coalescer
+                self.request_stats_pipeline
                     .finish_dashboard_rollup_repair(item.range_start, false)
                     .await;
                 return Err(err);
             }
         };
         if source_changed_after_barrier {
-            self.request_stats_coalescer
+            self.request_stats_pipeline
                 .finish_dashboard_rollup_repair(item.range_start, false)
                 .await;
             self.restart_dashboard_rollup_integrity_work_item(&item, now)
@@ -609,7 +629,7 @@ impl KeyStore {
         {
             Ok(actual) => actual,
             Err(err) => {
-                self.request_stats_coalescer
+                self.request_stats_pipeline
                     .finish_dashboard_rollup_repair(item.range_start, false)
                     .await;
                 return Err(err);
@@ -627,7 +647,7 @@ impl KeyStore {
         }
         if mismatch {
             if let Err(err) = self.record_dashboard_rollup_integrity_gap(&item, now).await {
-                self.request_stats_coalescer
+                self.request_stats_pipeline
                     .finish_dashboard_rollup_repair(item.range_start, false)
                     .await;
                 return Err(err);
@@ -635,7 +655,7 @@ impl KeyStore {
             slow_repair_write = match self.replace_dashboard_rollup_minutes(&item, now).await {
                 Ok(slow) => slow,
                 Err(err) => {
-                    self.request_stats_coalescer
+                    self.request_stats_pipeline
                         .finish_dashboard_rollup_repair(item.range_start, false)
                         .await;
                     return Err(err);
@@ -648,14 +668,14 @@ impl KeyStore {
         {
             Ok(changed) => changed,
             Err(err) => {
-                self.request_stats_coalescer
+                self.request_stats_pipeline
                     .finish_dashboard_rollup_repair(item.range_start, false)
                     .await;
                 return Err(err);
             }
         };
         let has_post_fence_changes = self
-            .request_stats_coalescer
+            .request_stats_pipeline
             .finish_dashboard_rollup_repair(item.range_start, true)
             .await;
         if source_changed || has_post_fence_changes {
@@ -702,20 +722,21 @@ impl KeyStore {
         &self,
         item: &DashboardRollupIntegrityWorkItem,
     ) -> Result<bool, ProxyError> {
-        let latest_source_id: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(MAX(id), 0) FROM request_logs
-            WHERE visibility = ? AND created_at >= ? AND created_at < ?
-            "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(item.range_start)
-        .bind(item.range_end)
-        .fetch_one(&self.pool)
-        .await?;
+        let latest_source_id: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                r#"
+                SELECT COALESCE(MAX(id), 0) FROM request_logs
+                WHERE visibility = ? AND created_at >= ? AND created_at < ?
+                "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(item.range_start)
+            .bind(item.range_end)
+        )?;
         Ok(latest_source_id > item.source_fence_id
             || !self
-                .request_stats_coalescer
+                .request_stats_pipeline
                 .dashboard_rollup_source_version_is_stable(item.range_start, item.source_version)
                 .await)
     }
@@ -725,11 +746,12 @@ impl KeyStore {
         item: &DashboardRollupIntegrityWorkItem,
         now: i64,
     ) -> Result<(), ProxyError> {
-        let source_fence_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
-            .fetch_one(&self.pool)
-            .await?;
+        let source_fence_id: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
+        )?;
         let source_version = self
-            .request_stats_coalescer
+            .request_stats_pipeline
             .dashboard_rollup_source_version(item.range_start)
             .await;
         let counts_json = serde_json::to_string(&BTreeMap::<i64, DashboardRequestRollupCounts>::new())
@@ -762,11 +784,12 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<i64, ProxyError> {
-        let hot_fence: i64 = sqlx::query_scalar(
-            "SELECT hot_fence FROM dashboard_rollup_integrity_state WHERE id = 1",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let hot_fence: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                "SELECT hot_fence FROM dashboard_rollup_integrity_state WHERE id = 1",
+            )
+        )?;
         Ok(if range_start >= hot_fence.saturating_sub(DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS) {
             15
         } else {
@@ -808,21 +831,22 @@ impl KeyStore {
         range_start: i64,
         range_end: i64,
     ) -> Result<BTreeMap<i64, DashboardRequestRollupCounts>, ProxyError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT bucket_start, total_requests, success_count, error_count, quota_exhausted_count,
-                   valuable_success_count, valuable_failure_count, valuable_failure_429_count,
-                   other_success_count, other_failure_count, unknown_count, mcp_non_billable,
-                   mcp_billable, api_non_billable, api_billable, local_estimated_credits
-            FROM dashboard_request_rollup_buckets
-            WHERE bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
-            "#,
-        )
-        .bind(SECS_PER_MINUTE)
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = request_stats_primary_fetch_all!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT bucket_start, total_requests, success_count, error_count, quota_exhausted_count,
+                       valuable_success_count, valuable_failure_count, valuable_failure_429_count,
+                       other_success_count, other_failure_count, unknown_count, mcp_non_billable,
+                       mcp_billable, api_non_billable, api_billable, local_estimated_credits
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
+                "#,
+            )
+            .bind(SECS_PER_MINUTE)
+            .bind(range_start)
+            .bind(range_end)
+        )?;
         rows.into_iter()
             .map(|row| Ok((row.try_get("bucket_start")?, Self::dashboard_rollup_counts_from_row(&row)?)))
             .collect::<Result<_, sqlx::Error>>()
@@ -987,10 +1011,10 @@ impl KeyStore {
 
     async fn begin_dashboard_rollup_integrity_short_write(
         &self,
-    ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, ProxyError> {
+    ) -> Result<SqliteRequestStatsConnection, ProxyError> {
         let mut conn = tokio::time::timeout(
             DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN,
-            self.pool.acquire(),
+            self.request_stats_pipeline.acquire_primary_connection(),
         )
         .await
         .map_err(|_| ProxyError::Other("dashboard integrity write pool acquisition timed out".into()))??;
@@ -1009,7 +1033,7 @@ impl KeyStore {
 
     async fn finish_dashboard_rollup_integrity_short_write(
         &self,
-        conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+        conn: &mut SqliteRequestStatsConnection,
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
         let result = match write_result {
@@ -1055,26 +1079,26 @@ impl KeyStore {
         if day_end > latest_closed {
             return Ok(());
         }
-        let already_sealed: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .fetch_optional(&self.pool)
-        .await?;
+        let already_sealed: Option<i64> = request_stats_primary_fetch_scalar_optional!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar("SELECT 1 FROM dashboard_rollup_daily_seals WHERE bucket_start = ?")
+                .bind(day_start)
+        )?;
         if already_sealed.is_some() {
             return Ok(());
         }
-        let completed_buckets: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)
-            FROM dashboard_rollup_integrity_work_items
-            WHERE range_start >= ? AND range_start < ? AND status = 'done'
-            "#,
-        )
-        .bind(day_start)
-        .bind(day_end)
-        .fetch_one(&self.pool)
-        .await?;
+        let completed_buckets: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM dashboard_rollup_integrity_work_items
+                WHERE range_start >= ? AND range_start < ? AND status = 'done'
+                "#,
+            )
+            .bind(day_start)
+            .bind(day_end)
+        )?;
         let expected_buckets = day_end
             .saturating_sub(day_start)
             .div_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
@@ -1089,12 +1113,11 @@ impl KeyStore {
         day_start: i64,
         now: i64,
     ) -> Result<(), ProxyError> {
-        let sealed: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .fetch_optional(&self.pool)
-        .await?;
+        let sealed: Option<i64> = request_stats_primary_fetch_scalar_optional!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar("SELECT 1 FROM dashboard_rollup_daily_seals WHERE bucket_start = ?")
+                .bind(day_start)
+        )?;
         if sealed.is_some() {
             // Preserve the last fully verified recovery baseline until every
             // slice in the retained source day has been reaudited.
@@ -1140,12 +1163,13 @@ impl KeyStore {
         day_start: i64,
         now: i64,
     ) -> Result<bool, ProxyError> {
-        let reauditing = sqlx::query(
-            "SELECT bucket_end, cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending' LIMIT 1",
-        )
-        .bind(day_start)
-        .fetch_optional(&self.pool)
-        .await?;
+        let reauditing = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                "SELECT bucket_end, cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending' LIMIT 1",
+            )
+            .bind(day_start)
+        )?;
         let Some(reauditing) = reauditing else {
             return Ok(false);
         };
@@ -1154,16 +1178,17 @@ impl KeyStore {
         if cursor < day_end {
             return Ok(false);
         }
-        let pending_slices: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM dashboard_rollup_integrity_work_items
-            WHERE status = 'pending' AND range_start >= ? AND range_start < ?
-            "#,
-        )
-        .bind(day_start)
-        .bind(day_end)
-        .fetch_one(&self.pool)
-        .await?;
+        let pending_slices: i64 = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*) FROM dashboard_rollup_integrity_work_items
+                WHERE status = 'pending' AND range_start >= ? AND range_start < ?
+                "#,
+            )
+            .bind(day_start)
+            .bind(day_end)
+        )?;
         if pending_slices > 0 {
             return Ok(false);
         }
@@ -1232,21 +1257,23 @@ impl KeyStore {
     }
 
     async fn verify_next_dashboard_rollup_daily_seal(&self, now: i64) -> Result<(), ProxyError> {
-        let cursor: Option<i64> = sqlx::query_scalar(
-            "SELECT seal_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let row = sqlx::query(
-            r#"
-            SELECT bucket_start, counts_json FROM dashboard_rollup_daily_seals
-            WHERE bucket_start > COALESCE(?, -9223372036854775808)
-            ORDER BY bucket_start ASC LIMIT 1
-            "#,
-        )
-        .bind(cursor)
-        .fetch_optional(&self.pool)
-        .await?;
+        let cursor: Option<i64> = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                "SELECT seal_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
+            )
+        )?;
+        let row = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT bucket_start, counts_json FROM dashboard_rollup_daily_seals
+                WHERE bucket_start > COALESCE(?, -9223372036854775808)
+                ORDER BY bucket_start ASC LIMIT 1
+                "#,
+            )
+            .bind(cursor)
+        )?;
         let Some(row) = row else {
             let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
             let write_result = sqlx::query("UPDATE dashboard_rollup_integrity_state SET seal_cursor = NULL, updated_at = ? WHERE id = 1")
@@ -1273,14 +1300,15 @@ impl KeyStore {
         let daily_actual = self
             .load_dashboard_rollup_bucket(day_start, SECS_PER_DAY)
             .await?;
-        let retained_source_exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ? LIMIT 1",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(day_start)
-        .bind(next_local_day_start_utc_ts(day_start))
-        .fetch_optional(&self.pool)
-        .await?;
+        let retained_source_exists: Option<i64> = request_stats_primary_fetch_scalar_optional!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                "SELECT 1 FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ? LIMIT 1",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(next_local_day_start_utc_ts(day_start))
+        )?;
         let should_restore_daily = minute_actual == expected && daily_actual != expected;
         let should_restore_expired_day = retained_source_exists.is_none() && minute_actual != expected;
         if retained_source_exists.is_some() && minute_actual != expected {
@@ -1325,11 +1353,12 @@ impl KeyStore {
         &self,
         now: i64,
     ) -> Result<bool, ProxyError> {
-        let row = sqlx::query(
-            "SELECT hot_cursor, hot_fence, last_seal_attempt_at FROM dashboard_rollup_integrity_state WHERE id = 1",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_one!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                "SELECT hot_cursor, hot_fence, last_seal_attempt_at FROM dashboard_rollup_integrity_state WHERE id = 1",
+            )
+        )?;
         let hot_cursor: i64 = row.try_get("hot_cursor")?;
         let hot_fence: i64 = row.try_get("hot_fence")?;
         let last_attempt: Option<i64> = row.try_get("last_seal_attempt_at")?;
@@ -1362,20 +1391,21 @@ impl KeyStore {
         bucket_start: i64,
         bucket_secs: i64,
     ) -> Result<DashboardRequestRollupCounts, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT total_requests, success_count, error_count, quota_exhausted_count,
-                   valuable_success_count, valuable_failure_count, valuable_failure_429_count,
-                   other_success_count, other_failure_count, unknown_count, mcp_non_billable,
-                   mcp_billable, api_non_billable, api_billable, local_estimated_credits
-            FROM dashboard_request_rollup_buckets
-            WHERE bucket_start = ? AND bucket_secs = ?
-            "#,
-        )
-        .bind(bucket_start)
-        .bind(bucket_secs)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = request_stats_primary_fetch_optional!(
+            self.request_stats_pipeline,
+            sqlx::query(
+                r#"
+                SELECT total_requests, success_count, error_count, quota_exhausted_count,
+                       valuable_success_count, valuable_failure_count, valuable_failure_429_count,
+                       other_success_count, other_failure_count, unknown_count, mcp_non_billable,
+                       mcp_billable, api_non_billable, api_billable, local_estimated_credits
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_start = ? AND bucket_secs = ?
+                "#,
+            )
+            .bind(bucket_start)
+            .bind(bucket_secs)
+        )?;
         row.map(|row| Self::dashboard_rollup_counts_from_row(&row))
             .transpose()
             .map(|counts| counts.unwrap_or_default())
@@ -1413,7 +1443,7 @@ impl KeyStore {
         err: &ProxyError,
         next_attempt_at: i64,
     ) -> Result<(), ProxyError> {
-        let now = self.backend_time.now_ts();
+        let now = self.request_stats_pipeline.backend_time().now_ts();
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
         let write_result = sqlx::query(
             r#"
@@ -1440,13 +1470,14 @@ impl KeyStore {
         &self,
         threshold: i64,
     ) -> Result<Option<i64>, ProxyError> {
-        let oldest: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(threshold)
-        .fetch_one(&self.pool)
-        .await?;
+        let oldest: Option<i64> = request_stats_primary_fetch_scalar_one!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(threshold)
+        )?;
         let Some(oldest) = oldest else {
             return Ok(Some(threshold));
         };
@@ -1455,12 +1486,13 @@ impl KeyStore {
         if day_end > threshold {
             return Ok(None);
         }
-        let sealed: Option<String> = sqlx::query_scalar(
-            "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .fetch_optional(&self.pool)
-        .await?;
+        let sealed: Option<String> = request_stats_primary_fetch_scalar_optional!(
+            self.request_stats_pipeline,
+            sqlx::query_scalar(
+                "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+        )?;
         let Some(counts_json) = sealed else {
             return Ok(None);
         };

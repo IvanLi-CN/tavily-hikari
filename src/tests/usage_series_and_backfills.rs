@@ -22,6 +22,38 @@ fn find_non_aligned_local_day_start_utc_ts() -> Option<i64> {
 }
 
 #[tokio::test]
+async fn request_stats_pipeline_publishes_bounded_pending_snapshot() {
+    let pipeline = RequestStatsPipeline::default();
+    let created_at = 1_700_000_000;
+    let before = pipeline.snapshot().await;
+    assert_eq!(before.version, 0);
+    assert!(!before.has_pending_work);
+
+    pipeline
+        .enqueue_request_log_rollups(RequestLogRollupInput {
+            api_key_id: None,
+            auth_token_id: "snapshot-auth-token",
+            request_user_id: None,
+            request_log_id: Some(1),
+            created_at,
+            dashboard_counts: DashboardRequestRollupCounts {
+                total_requests: 1,
+                success_count: 1,
+                valuable_success_count: 1,
+                ..DashboardRequestRollupCounts::default()
+            },
+            request_log_catalog_key: None,
+        })
+        .await;
+
+    let pending = pipeline.snapshot().await;
+    assert_eq!(pending.version, before.version + 1);
+    assert!(pending.has_pending_work);
+    assert_eq!(pending.oldest_pending_created_at, Some(created_at));
+    assert_eq!(pending.newest_pending_created_at, Some(created_at));
+}
+
+#[tokio::test]
 async fn system_settings_safe_defaults_disable_rollouts() {
     let db_path = temp_db_path("system-settings-api-rebalance-defaults");
     let db_str = db_path.to_string_lossy().to_string();
@@ -43,8 +75,8 @@ async fn system_settings_safe_defaults_disable_rollouts() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
-    let db_path = temp_db_path("request-stats-coalescer-rate5m-flush");
+async fn request_stats_pipeline_flushes_rate5m_series_on_read() {
+    let db_path = temp_db_path("request-stats-pipeline-rate5m-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -84,7 +116,7 @@ async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
 
     proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .enqueue_auth_token_activity(
             "rate5m-flush-token",
             Some(&user.user_id),
@@ -107,8 +139,8 @@ async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_uses_event_day_bucket_for_account_rollups() {
-    let db_path = temp_db_path("request-stats-coalescer-event-day-bucket");
+async fn request_stats_pipeline_uses_event_day_bucket_for_account_rollups() {
+    let db_path = temp_db_path("request-stats-pipeline-event-day-bucket");
     let db_str = db_path.to_string_lossy().to_string();
 
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -138,7 +170,7 @@ async fn request_stats_coalescer_uses_event_day_bucket_for_account_rollups() {
 
     proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .enqueue_auth_token_activity(&user.user_id, Some(&user.user_id), event_created_at)
         .await;
 
@@ -180,8 +212,8 @@ async fn request_stats_coalescer_uses_event_day_bucket_for_account_rollups() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flush_preserves_secondary_success_rate5m_rollups() {
-    let db_path = temp_db_path("request-stats-coalescer-secondary-success-rate5m");
+async fn request_stats_pipeline_flush_preserves_secondary_success_rate5m_rollups() {
+    let db_path = temp_db_path("request-stats-pipeline-secondary-success-rate5m");
     let db_str = db_path.to_string_lossy().to_string();
 
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)

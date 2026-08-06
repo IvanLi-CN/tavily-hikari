@@ -1,111 +1,36 @@
 impl TavilyProxy {
-    fn spawn_request_stats_coalescer(&self) {
-        let store = self.key_store.clone();
-        let coalescer = self.key_store.request_stats_coalescer.clone();
+    fn spawn_request_stats_pipeline(&self) {
+        let pipeline = self.key_store.request_stats_pipeline.clone();
         tokio::spawn(async move {
-            {
-                let mut state = coalescer.state.lock().await;
-                state.worker_stopped = false;
-            }
-            loop {
-                let (should_flush_now, wait_duration) = {
-                    let state = coalescer.state.lock().await;
-                    let pending_key_count = RequestStatsCoalescer::pending_key_count(&state);
-                    let should_flush_now = (state.shutdown && state.dashboard_rollup_repairs.is_empty())
-                        || pending_key_count >= RequestStatsCoalescer::MAX_PENDING_KEYS
-                        || state
-                            .flush_deadline
-                            .map(|deadline| Instant::now() >= deadline)
-                            .unwrap_or(false);
-                    let wait_duration = state
-                        .flush_deadline
-                        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
-                        .unwrap_or(RequestStatsCoalescer::FLUSH_INTERVAL);
-                    (should_flush_now, wait_duration)
-                };
-                if !should_flush_now {
-                    tokio::select! {
-                        _ = coalescer.wake.notified() => {}
-                        _ = tokio::time::sleep(wait_duration) => {}
-                    }
-                    continue;
-                }
-
-                let shutdown_after_flush = {
-                    let state = coalescer.state.lock().await;
-                    if state.pending_dashboard_rollups.is_empty()
-                        && state.pending_api_key_usage.is_empty()
-                        && state.pending_auth_token_activity.is_empty()
-                        && state.pending_account_request_rollups.is_empty()
-                        && state.pending_request_log_catalog.is_empty()
-                        && !state.shutdown
-                    {
-                        continue;
-                    }
-                    state.shutdown && state.dashboard_rollup_repairs.is_empty()
-                };
-
-                let flush_started = Instant::now();
-                if let Err(err) = store.flush_request_stats_writes().await {
-                    log_db_operation_error(
-                        "request stats persist",
-                        flush_started.elapsed(),
-                        Some("component=request-stats-coalescer"),
-                        &err,
-                    );
-                    tracing::debug!(
-                        component = "request_stats",
-                        event = "persist_retry",
-                        elapsed_ms = flush_started.elapsed().as_millis() as u64,
-                        err = %err,
-                        "request stats persist deferred after structured database error"
-                    );
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                } else {
-                    log_slow_db_operation(
-                        "request stats persist",
-                        flush_started.elapsed(),
-                        Some("component=request-stats-coalescer"),
-                    );
-                }
-
-                {
-                    let mut state = coalescer.state.lock().await;
-                    if shutdown_after_flush
-                        && state.pending_dashboard_rollups.is_empty()
-                        && state.pending_api_key_usage.is_empty()
-                        && state.pending_auth_token_activity.is_empty()
-                        && state.pending_account_request_rollups.is_empty()
-                        && state.pending_request_log_catalog.is_empty()
-                        && state.dashboard_rollup_repairs.is_empty()
-                    {
-                        state.worker_stopped = true;
-                        coalescer.flushed.notify_waiters();
-                        break;
-                    }
-                }
-            }
+            pipeline.run_worker().await;
         });
     }
 
     pub async fn nudge_request_stats_flush(&self) {
-        self.key_store.request_stats_coalescer.nudge_flush().await;
+        self.key_store.request_stats_pipeline.nudge_flush().await;
+    }
+
+    pub async fn shutdown_request_stats_pipeline(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), ProxyError> {
+        let pipeline = self.key_store.request_stats_pipeline.clone();
+        pipeline.begin_shutdown().await;
+        tokio::time::timeout(timeout, pipeline.wait_until_worker_stopped())
+            .await
+            .map_err(|_| {
+                ProxyError::Other(format!(
+                    "request stats pipeline did not drain within {}ms",
+                    timeout.as_millis()
+                ))
+            })
     }
 
     pub async fn shutdown_request_stats_coalescer(
         &self,
         timeout: Duration,
     ) -> Result<(), ProxyError> {
-        let coalescer = self.key_store.request_stats_coalescer.clone();
-        coalescer.begin_shutdown().await;
-        tokio::time::timeout(timeout, coalescer.wait_until_worker_stopped())
-            .await
-            .map_err(|_| {
-                ProxyError::Other(format!(
-                    "request stats coalescer did not drain within {}ms",
-                    timeout.as_millis()
-                ))
-            })
+        self.shutdown_request_stats_pipeline(timeout).await
     }
 
     pub async fn run_dashboard_rollup_integrity_slice(

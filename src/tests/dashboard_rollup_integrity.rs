@@ -14,9 +14,9 @@ async fn request_stats_shutdown_drains_pending_rollups() {
         .enqueue_request_stats_rollup_for_test(None, created_at, OUTCOME_SUCCESS)
         .await;
     proxy
-        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .shutdown_request_stats_pipeline(Duration::from_secs(2))
         .await
-        .expect("drain request stats coalescer");
+        .expect("drain request stats pipeline");
 
     let persisted: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = 60",
@@ -29,7 +29,7 @@ async fn request_stats_shutdown_drains_pending_rollups() {
 
 #[tokio::test]
 async fn repair_barrier_discards_fenced_rollups_and_requeues_newer_changes() {
-    let coalescer = RequestStatsCoalescer::default();
+    let pipeline = RequestStatsPipeline::default();
     let created_at = Utc::now().timestamp() - SECS_PER_FIVE_MINUTES;
     let range_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
     let range_end = range_start + SECS_PER_FIVE_MINUTES;
@@ -41,10 +41,10 @@ async fn repair_barrier_discards_fenced_rollups_and_requeues_newer_changes() {
         ..DashboardRequestRollupCounts::default()
     };
 
-    coalescer
+    pipeline
         .begin_dashboard_rollup_repair(range_start, range_end, 10)
         .await;
-    coalescer
+    pipeline
         .enqueue_request_log_rollups(crate::store::RequestLogRollupInput {
             api_key_id: None,
             auth_token_id: "test-auth-token",
@@ -56,24 +56,19 @@ async fn repair_barrier_discards_fenced_rollups_and_requeues_newer_changes() {
         })
         .await;
     assert!(
-        !coalescer
+        !pipeline
             .finish_dashboard_rollup_repair(range_start, true)
             .await
     );
     assert!(
-        coalescer
-            .state
-            .lock()
-            .await
-            .pending_dashboard_rollups
-            .is_empty(),
+        pipeline.pending_dashboard_rollups_are_empty().await,
         "the source replacement already includes a fenced request"
     );
 
-    coalescer
+    pipeline
         .begin_dashboard_rollup_repair(range_start, range_end, 10)
         .await;
-    coalescer
+    pipeline
         .enqueue_request_log_rollups(crate::store::RequestLogRollupInput {
             api_key_id: None,
             auth_token_id: "test-auth-token",
@@ -85,18 +80,11 @@ async fn repair_barrier_discards_fenced_rollups_and_requeues_newer_changes() {
         })
         .await;
     assert!(
-        coalescer
+        pipeline
             .finish_dashboard_rollup_repair(range_start, true)
             .await
     );
-    let pending_total: i64 = coalescer
-        .state
-        .lock()
-        .await
-        .pending_dashboard_rollups
-        .values()
-        .map(|value| value.total_requests)
-        .sum();
+    let pending_total = pipeline.pending_dashboard_total().await;
     assert_eq!(pending_total, 2, "minute and day deltas must both requeue");
 }
 
@@ -256,7 +244,7 @@ async fn integrity_resets_persisted_checkpoint_after_restart() {
     .await
     .expect("settle source credits during the hard-stop gap");
     proxy
-        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .shutdown_request_stats_pipeline(Duration::from_secs(2))
         .await
         .expect("stop initial proxy worker");
     drop(proxy);
@@ -301,7 +289,7 @@ async fn integrity_ignores_an_inflight_source_mutation_in_another_slice() {
 
     let unrelated_mutation = proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .begin_dashboard_rollup_source_mutation(range_end);
     let result = proxy
         .run_dashboard_rollup_integrity_slice()
@@ -346,7 +334,7 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
 
     let mutation = proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .begin_dashboard_rollup_source_mutation(range_start);
     sqlx::query("UPDATE request_logs SET business_credits = 9 WHERE id = ?")
         .bind(source_fence)
@@ -588,7 +576,7 @@ async fn integrity_restarts_when_an_existing_source_row_changes_during_a_slice()
 
     let source_mutation = proxy
         .key_store
-        .request_stats_coalescer
+        .request_stats_pipeline
         .begin_dashboard_rollup_source_mutation(range_start);
     sqlx::query(
         "UPDATE request_logs SET business_credits = 9 WHERE created_at >= ? AND created_at < ?",
@@ -656,15 +644,15 @@ async fn request_stats_shutdown_waits_for_an_active_repair_barrier() {
     let now = proxy.backend_time().now_ts();
     let range_start = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
     let range_end = range_start + SECS_PER_FIVE_MINUTES;
-    let coalescer = proxy.key_store.request_stats_coalescer.clone();
-    coalescer
+    let pipeline = proxy.key_store.request_stats_pipeline.clone();
+    pipeline
         .begin_dashboard_rollup_repair(range_start, range_end, 0)
         .await;
 
     let shutdown_proxy = proxy.clone();
     let shutdown = tokio::spawn(async move {
         shutdown_proxy
-            .shutdown_request_stats_coalescer(Duration::from_secs(2))
+            .shutdown_request_stats_pipeline(Duration::from_secs(2))
             .await
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -673,7 +661,7 @@ async fn request_stats_shutdown_waits_for_an_active_repair_barrier() {
         "the worker must not stop while a repair holds deferred deltas"
     );
 
-    coalescer
+    pipeline
         .finish_dashboard_rollup_repair(range_start, false)
         .await;
     shutdown

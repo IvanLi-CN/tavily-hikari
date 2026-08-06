@@ -28,7 +28,7 @@ impl KeyStore {
                 counts.unknown_count = 1;
             }
         }
-        self.request_stats_coalescer
+        self.request_stats_pipeline
             .enqueue_request_log_rollups(RequestLogRollupInput {
                 api_key_id,
                 auth_token_id: "test-auth-token",
@@ -47,25 +47,12 @@ impl KeyStore {
         created_at: i64,
         outcome: &str,
     ) {
-        let mut state = self.request_stats_coalescer.state.lock().await;
-        let entry = state
-            .pending_account_request_rollups
-            .entry(AccountRequestRollupKey {
-                user_id: user_id.to_string(),
-                five_minute_bucket_start: created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES),
-                day_bucket_start: local_day_bucket_start_utc_ts(created_at),
-            })
-            .or_default();
-        entry.request_count += 1;
-        match outcome {
-            OUTCOME_SUCCESS => entry.primary_success += 1,
-            OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => {}
-            _ => {}
-        }
-        RequestStatsCoalescer::bump_request_stats_version(&mut state);
-        RequestStatsCoalescer::note_pending_created_at(&mut state, created_at);
-        RequestStatsCoalescer::mark_flush_deadline_if_pending(&mut state);
-        drop(state);
-        self.request_stats_coalescer.wake.notify_one();
+        self.request_stats_pipeline
+            .enqueue_account_request_rollup(
+                user_id,
+                created_at,
+                i64::from(outcome == OUTCOME_SUCCESS),
+            )
+            .await;
     }
 }
