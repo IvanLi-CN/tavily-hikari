@@ -41,6 +41,9 @@
   推进 legacy backfill，并由 HTTP/MCP 两条入口唤醒 maintenance runtime，使新窗口不必等待
   scheduler tick 才进入处理。work/cursor 是可由 replicated usage 重建的本地投影，不加入旧 HA
   节点的严格事件白名单。
+- aborted or budget-exhausted runs must not leave reservations stranded behind a running job; recovery
+  therefore clears reservations, fences the claimed job, and enqueues its continuation in one bounded
+  transaction.
 
 ## References
 

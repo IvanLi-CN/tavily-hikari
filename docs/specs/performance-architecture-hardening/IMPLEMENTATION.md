@@ -52,6 +52,9 @@
   recent/backlog cursors, stable per-key fair ranks, atomic reservations, bounded paged hydration,
   restartable legacy backfill, representative scheduling, and reservation-fenced settlement
   transitions.
+- Aborted and budget-exhausted runs recover reservations and finish their claimed representative in
+  one bounded transaction before scheduling the next continuation, so restart recovery cannot leave
+  eligible work waiting for an unrelated scheduler tick.
 
 ## References
 
