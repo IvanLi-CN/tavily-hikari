@@ -38,7 +38,8 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
-        self.ensure_ha_outbox_gc_channel_state().await
+        self.ensure_ha_outbox_gc_channel_state().await?;
+        self.ensure_ha_outbox_gc_work_schema().await
     }
 
     async fn ensure_ha_outbox_gc_channel_state(&self) -> Result<(), ProxyError> {

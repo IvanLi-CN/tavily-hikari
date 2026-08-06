@@ -28,6 +28,7 @@ mod dashboard_hourly_credits;
 mod dashboard_month_series;
 mod dashboard_rollup_integrity;
 mod ha_baseline_streaming_and_sessions;
+mod ha_gc_work;
 mod ha_outbox_and_compaction;
 mod jobs_and_request_log_retention;
 mod linuxdo_credit_recharge;

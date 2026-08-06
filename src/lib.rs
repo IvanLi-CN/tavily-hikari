@@ -797,6 +797,71 @@ pub struct HaOutboxGcChannelReport {
     pub observed_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HaOutboxGcWorkClaim {
+    pub channel: HaSyncChannel,
+    pub claim_generation: i64,
+    pub batch_size: i64,
+    pub eligible_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HaOutboxGcWorkClaimResult {
+    Claimed(HaOutboxGcWorkClaim),
+    NotEligible {
+        eligible_at: i64,
+    },
+    AlreadyClaimed {
+        claim_generation: i64,
+        claim_expires_at: i64,
+    },
+    Busy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HaOutboxGcWorkDueResult {
+    Refreshed,
+    Busy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HaOutboxGcWorkDueChannelsResult {
+    Ready(Vec<HaSyncChannel>),
+    Busy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HaOutboxGcWorkOutcome {
+    Pending,
+    Running,
+    Completed,
+    Deferred,
+    Busy,
+    Failed,
+    Stale,
+}
+
+impl HaOutboxGcWorkOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Deferred => "deferred",
+            Self::Busy => "busy",
+            Self::Failed => "failed",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HaOutboxGcWorkFinishResult {
+    Finished(HaOutboxGcWorkOutcome),
+    Stale,
+    Busy,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaOutboxGcReport {
