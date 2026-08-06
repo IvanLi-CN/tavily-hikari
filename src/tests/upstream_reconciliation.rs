@@ -152,6 +152,7 @@ async fn signed_reconciliation_adjustment_is_idempotent_and_restores_quota() {
         period_end: now + 60,
         pending_research: 0,
         degraded: false,
+        reservation_id: None,
     };
     assert!(
         proxy
@@ -389,6 +390,7 @@ async fn shadow_reconciliation_keeps_zero_delta_usage_and_updates_runtime_marker
         period_end: now,
         pending_research: 0,
         degraded: false,
+        reservation_id: None,
     };
     assert!(
         proxy
@@ -1543,6 +1545,366 @@ async fn next_upstream_reconciliation_candidates_page_logical_windows_before_lim
 }
 
 #[tokio::test]
+async fn reconciliation_work_projection_persists_cursor_and_recovers_expired_reservation() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_000);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-work-projection"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    let token_id = "projection-token";
+    let key_id = "projection-key";
+    let period_code = "2023-11";
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            settlement_mode, period_start, period_end, request_count,
+            first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(token_id)
+    .bind(key_id)
+    .bind(period_code)
+    .bind("projection-project")
+    .bind("token:projection-token")
+    .bind("actual")
+    .bind(1_699_900_000_i64)
+    .bind(1_699_999_000_i64)
+    .bind(1_i64)
+    .bind(1_699_999_000_i64)
+    .bind(1_699_999_000_i64)
+    .bind(1_699_999_000_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+
+    let first = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap();
+    assert_eq!(first.candidates.len(), 1);
+    let first_candidate = first.candidates[0].clone();
+    let first_reservation_id = first_candidate
+        .reservation_id
+        .as_deref()
+        .expect("candidate should carry a durable reservation");
+
+    let (status, stored_reservation): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, reservation_id
+         FROM upstream_reconciliation_work
+         WHERE work_key = ?",
+    )
+    .bind(format!("v1:{token_id}:{period_code}"))
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "reserved");
+    assert_eq!(stored_reservation.as_deref(), Some(first_reservation_id));
+
+    let cursor_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_cursors
+         WHERE lane = 'recent'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(cursor_count, 1);
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_work
+         SET reservation_expires_at = ?, updated_at = ?
+         WHERE work_key = ?",
+    )
+    .bind(1_699_999_999_i64)
+    .bind(1_700_000_000_i64)
+    .bind(format!("v1:{token_id}:{period_code}"))
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO scheduled_jobs (
+            job_type, trigger_source, key_id, status, attempt, queued_at,
+            available_at, claim_generation, started_at, finished_at
+        ) VALUES ('upstream_reconciliation', 'scheduler', NULL, 'running', 1, ?, ?, 0, ?, NULL)",
+    )
+    .bind(1_699_999_800_i64)
+    .bind(1_699_999_800_i64)
+    .bind(1_699_999_800_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    drop(proxy);
+
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_000);
+    let restarted = TavilyProxy::with_options_and_time(
+        vec!["tvly-work-projection"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+    let recovered = restarted
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap();
+
+    assert_eq!(recovered.candidates.len(), 1);
+    assert_eq!(recovered.candidates[0].token_id, token_id);
+    assert_ne!(
+        recovered.candidates[0].reservation_id.as_deref(),
+        Some(first_reservation_id)
+    );
+    let recovered_job_status: String = sqlx::query_scalar(
+        "SELECT status FROM scheduled_jobs
+         WHERE job_type = 'upstream_reconciliation'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&restarted.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(recovered_job_status, "queued");
+
+    assert!(
+        !restarted
+            .key_store
+            .settle_upstream_reconciliation(&first_candidate, 7, 0)
+            .await
+            .unwrap()
+    );
+    let stale_adjustment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM billing_reconciliation_adjustments
+         WHERE settlement_key = ?",
+    )
+    .bind(format!("v1:{token_id}:{period_code}"))
+    .fetch_one(&restarted.key_store.pool)
+    .await
+    .unwrap();
+    assert_eq!(stale_adjustment_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_cursor_skips_deferred_work_until_retry_is_due() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-work-cursor"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    for (index, period_end) in [now - 900, now - 1_500].into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                settlement_mode, period_start, period_end, request_count,
+                first_used_at, last_used_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+        )
+        .bind(format!("cursor-token-{index}"))
+        .bind("cursor-key")
+        .bind(format!("2026-07-15/S2-cursor-{index}"))
+        .bind("cursor-project")
+        .bind("account:cursor-user")
+        .bind("shadow")
+        .bind(period_end - 300)
+        .bind(period_end)
+        .bind(period_end - 300)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .unwrap();
+    }
+
+    let first = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .next()
+        .unwrap();
+    proxy
+        .key_store
+        .mark_reconciliation_retry(&first, "waiting", now + 60, None)
+        .await
+        .unwrap();
+
+    let second = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap()
+        .candidates
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_ne!(second.token_id, first.token_id);
+    assert_eq!(second.token_id, "cursor-token-1");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_candidate_query_plan_uses_work_projection_and_hydrates_selected_windows() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-work-query-plan"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            settlement_mode, period_start, period_end, request_count,
+            first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+    )
+    .bind("query-plan-token")
+    .bind("query-plan-key-2")
+    .bind("2026-07-15/S2-query-plan")
+    .bind("query-plan-project")
+    .bind("account:query-plan-user")
+    .bind("shadow")
+    .bind(now - 1_200)
+    .bind(now - 900)
+    .bind(now - 1_200)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            settlement_mode, period_start, period_end, request_count,
+            first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+    )
+    .bind("query-plan-token")
+    .bind("query-plan-key")
+    .bind("2026-07-15/S2-query-plan")
+    .bind("query-plan-project")
+    .bind("account:query-plan-user")
+    .bind("shadow")
+    .bind(now - 1_200)
+    .bind(now - 900)
+    .bind(now - 1_200)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .unwrap();
+
+    let plan_rows = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        "EXPLAIN QUERY PLAN
+         SELECT work_key
+         FROM upstream_reconciliation_work
+         WHERE status IN ('ready', 'retry') AND next_attempt_at <= 1700000000
+         ORDER BY period_end DESC, token_id ASC, period_code ASC
+         LIMIT 16",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .unwrap();
+    let plan = plan_rows
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plan.contains("upstream_reconciliation_work"), "{plan}");
+    assert!(!plan.contains("upstream_reconciliation_usage"), "{plan}");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .unwrap();
+    assert_eq!(batch.candidates[0].token_id, "query-plan-token");
+    let hydrated = proxy
+        .key_store
+        .reconciliation_key_ids_batch(&[(
+            "query-plan-token".to_string(),
+            "2026-07-15/S2-query-plan".to_string(),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(
+        hydrated.get(&(
+            "query-plan-token".to_string(),
+            "2026-07-15/S2-query-plan".to_string(),
+        )),
+        Some(&vec![
+            "query-plan-key".to_string(),
+            "query-plan-key-2".to_string(),
+        ])
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_candidate_claim_defers_within_sqlite_budget_when_writer_is_busy() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_000);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-work-budget"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .unwrap();
+
+    let mut lock = proxy.key_store.pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let started_at = std::time::Instant::now();
+    let result = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await;
+    assert!(result.is_err());
+    assert!(started_at.elapsed() < std::time::Duration::from_millis(750));
+    sqlx::query("ROLLBACK").execute(&mut *lock).await.unwrap();
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -1585,6 +1947,7 @@ async fn s3_next_day_settlement_does_not_restore_current_hour_quota() {
         period_end: local_ts(2026, 7, 15, 0, 0),
         pending_research: 0,
         degraded: false,
+        reservation_id: None,
     };
     assert!(
         proxy

@@ -5,7 +5,8 @@
 ## Current Status
 
 - Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
-  child PR integration
+  child PR integration；Ticket #490 reconciliation work projection 已在 child branch 实现，等待
+  wave-gated integration
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -21,7 +22,7 @@
 4. RequestStatsPipeline
 5. HaPeerObservationStore
 6. per-channel HA GC 与 no-op outbox suppression
-7. reconciliation work projection
+7. reconciliation work projection（Ticket #490 已实现，等待 wave-gated integration）
 8. AlertProjection expand/shadow
 9. ReconciliationEngine cutover
 10. 全部告警读取切换
@@ -47,6 +48,9 @@
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
+- Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
+  recent/backlog cursors, atomic reservations, representative scheduling, and reservation-fenced
+  settlement transitions.
 
 ## References
 

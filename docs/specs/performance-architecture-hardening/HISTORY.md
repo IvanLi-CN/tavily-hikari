@@ -30,6 +30,14 @@
 - durable per-channel work 替代单一 HA GC representative，避免一个 channel 的延迟阻塞全部排债。
 - durable projections 与共享 snapshots 替代请求线程上的重复聚合和 flush-on-read。
 - 窄 runtime 接口和 architecture checker 替代依赖约定，防止 raw pool/coalescer 再次泄漏。
+- reconciliation work projection 以 `token_id + period_code` 持久化逻辑结算窗口；recent/backlog
+  各自保存公平 cursor，candidate page 在 representative ranking 前做有界 overfetch，并通过
+  `SqliteRuntime` 的 bounded immediate claim 保持 12/8 配额与首个远端尝试预算。
+- work reservation、retry、settlement 和 billing adjustment 在同一 SQLite 写事务中以 reservation
+  fence 排序；失效 worker 只能放弃结果，不能覆盖新 reservation 或重复改变账务真值。窗口内完整
+  key hydration 仍来自选中窗口的 usage rows，`scheduling_key_id` 只承担公平代表调度。
+- usage projection 会 enqueue 唯一 reconciliation representative job；启动恢复 stale job 并唤醒
+  maintenance runtime，使新窗口不必等待 scheduler tick 才进入处理。
 
 ## References
 

@@ -2566,6 +2566,7 @@ impl KeyStore {
 }
 
 include!("key_store_bootstrap.rs");
+include!("key_store_upstream_reconciliation_schema.rs");
 include!("key_store_bootstrap_legacy.rs");
 include!("key_store_ha_schema.rs");
 include!("key_store_quota_schema_semantic_migration.rs");

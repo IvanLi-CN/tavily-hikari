@@ -12,7 +12,10 @@ pub(crate) const RECONCILIATION_RETRY_REASON_OTHER: &str = "other";
 const RECONCILIATION_RECENT_LANE_BUDGET: i64 = 12;
 const RECONCILIATION_BACKLOG_LANE_BUDGET: i64 = 8;
 const RECONCILIATION_QUEUE_ESTIMATE_LIMIT: i64 = 64;
+const RECONCILIATION_WORK_RESERVATION_TTL_SECS: i64 = 30;
+const RECONCILIATION_WORK_PAGE_MULTIPLIER: i64 = 8;
 
+#[derive(Clone, Copy)]
 enum ReconciliationCandidateScope {
     Recent { start: i64, end: i64 },
     Backlog { before: i64 },
@@ -28,7 +31,15 @@ type UpstreamReconciliationCandidateRow = (
     i64,
     i64,
     String,
+    Option<String>,
 );
+
+#[derive(Clone, Debug)]
+struct ReconciliationCursor {
+    period_end: i64,
+    token_id: String,
+    period_code: String,
+}
 
 fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
     settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
@@ -603,7 +614,58 @@ impl KeyStore {
             .await?;
         }
         tx.commit().await?;
+        if let Err(err) = self
+            .scheduled_job_enqueue("upstream_reconciliation", "request", None, 1)
+            .await
+        {
+            tracing::warn!(
+                component = "reconciliation",
+                event = "representative_job_enqueue_failed",
+                error = %err,
+            );
+        }
         Ok(Some(period))
+    }
+
+    pub(crate) async fn ensure_upstream_reconciliation_representative_job(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            UPDATE scheduled_jobs
+            SET status = 'queued',
+                started_at = NULL,
+                finished_at = NULL,
+                available_at = ?,
+                claim_generation = claim_generation + 1,
+                message = 'deferred=stale_reconciliation_recovery'
+            WHERE job_type = 'upstream_reconciliation'
+              AND status = 'running'
+              AND started_at IS NOT NULL
+              AND started_at <= ?
+            "#,
+        )
+        .bind(now)
+        .bind(now.saturating_sub(60))
+        .execute(&self.pool)
+        .await?;
+        let has_work: i64 = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM upstream_reconciliation_work
+                WHERE status IN ('ready', 'retry', 'reserved')
+            )
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if has_work != 0 {
+            self.scheduled_job_enqueue("upstream_reconciliation", "startup", None, 1)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn load_or_initialize_upstream_reconciliation_ready_after(
@@ -771,6 +833,7 @@ impl KeyStore {
                     period_end,
                     pending_research,
                     _scheduling_key_id,
+                    reservation_id,
                 )| {
                     let degraded = pending_research > 0
                         && now >= period_end.saturating_add(86_400);
@@ -787,149 +850,150 @@ impl KeyStore {
                         period_end,
                         pending_research,
                         degraded,
+                        reservation_id,
                     })
                 },
             )
             .collect()
     }
 
-    async fn query_upstream_reconciliation_candidates(
+    async fn load_reconciliation_cursor(
         &self,
+        conn: &mut SqliteConnection,
+        lane: &str,
+    ) -> Result<Option<ReconciliationCursor>, ProxyError> {
+        sqlx::query_as::<_, (i64, String, String)>(
+            r#"
+            SELECT period_end, token_id, period_code
+            FROM upstream_reconciliation_cursors
+            WHERE lane = ?
+            "#,
+        )
+        .bind(lane)
+        .fetch_optional(&mut *conn)
+        .await
+        .map(|row| {
+            row.map(|(period_end, token_id, period_code)| ReconciliationCursor {
+                period_end,
+                token_id,
+                period_code,
+            })
+        })
+        .map_err(ProxyError::from)
+    }
+
+    async fn query_upstream_reconciliation_candidates_on_conn(
+        &self,
+        conn: &mut SqliteConnection,
         now: i64,
         limit: i64,
         newest_first: bool,
         scope: ReconciliationCandidateScope,
+        cursor: Option<&ReconciliationCursor>,
     ) -> Result<Vec<UpstreamReconciliationCandidate>, ProxyError> {
-        let page_limit = limit.clamp(1, 32).saturating_mul(8);
+        let page_limit = limit
+            .clamp(1, 32)
+            .saturating_mul(RECONCILIATION_WORK_PAGE_MULTIPLIER);
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"
-            WITH candidate_windows AS (
-            SELECT
-                u.token_id,
-                u.period_code AS period_code,
-                MIN(u.project_id) AS project_id,
-                MIN(u.billing_subject) AS billing_subject,
-                MIN(u.settlement_mode) AS settlement_mode,
-                MIN(u.period_start) AS period_start,
-                MAX(u.period_end) AS period_end,
-                MIN(u.key_id) AS scheduling_key_id,
-                CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM upstream_reconciliation_research r
-                    WHERE r.token_id = u.token_id
-                      AND r.period_code = u.period_code
-                      AND r.terminal_at IS NULL
-                ) THEN 1 ELSE 0 END AS pending_research
-            FROM upstream_reconciliation_usage u
-            LEFT JOIN upstream_reconciliation_settlements s
-              ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
-            WHERE u.period_end + 600 <= "#,
+            WITH eligible_work AS (
+                SELECT
+                    w.token_id,
+                    w.period_code,
+                    w.project_id,
+                    w.billing_subject,
+                    w.settlement_mode,
+                    w.period_start,
+                    w.period_end,
+                    w.scheduling_key_id,
+                    w.reservation_id,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM upstream_reconciliation_research r
+                        WHERE r.token_id = w.token_id
+                          AND r.period_code = w.period_code
+                          AND r.terminal_at IS NULL
+                    ) THEN 1 ELSE 0 END AS pending_research
+                FROM upstream_reconciliation_work w
+                LEFT JOIN upstream_reconciliation_settlements s
+                  ON s.settlement_key = w.work_key
+                WHERE w.status IN ('ready', 'retry')
+                  AND w.reservation_id IS NULL
+                  AND w.next_attempt_at <= "#,
         );
-        query
-            .push_bind(now)
-            .push(
-                r#"
-              AND (s.settlement_key IS NULL OR (
-                    s.status IN ('pending', 'waiting', 'rate_limited')
-                    AND COALESCE(s.next_attempt_at, 0) <= "#,
-            )
-            .push_bind(now)
-            .push(" ))");
+        query.push_bind(now).push(
+            r#"
+                  AND w.period_end + 600 <= "#,
+        );
+        query.push_bind(now).push(
+            r#"
+                  AND (s.settlement_key IS NULL OR (
+                        s.status IN ('pending', 'waiting', 'rate_limited')
+                        AND COALESCE(s.next_attempt_at, 0) <= "#,
+        );
+        query.push_bind(now).push(" ))");
         match scope {
             ReconciliationCandidateScope::Recent { start, end } => {
                 query
-                    .push(" AND u.period_end >= ")
+                    .push(" AND w.period_end >= ")
                     .push_bind(start)
-                    .push(" AND u.period_end < ")
+                    .push(" AND w.period_end < ")
                     .push_bind(end);
             }
             ReconciliationCandidateScope::Backlog { before } => {
-                query
-                    .push(" AND u.period_end < ")
-                    .push_bind(before);
+                query.push(" AND w.period_end < ").push_bind(before);
             }
         }
-        // First collapse raw usage rows into logical windows. Applying the
-        // bounded page before this GROUP BY lets one multi-key window consume
-        // the page and starve every later eligible window.
+        if let Some(cursor) = cursor {
+            query.push(" AND (");
+            if newest_first {
+                query
+                    .push("w.period_end < ")
+                    .push_bind(cursor.period_end)
+                    .push(" OR (w.period_end = ")
+                    .push_bind(cursor.period_end)
+                    .push(" AND (w.token_id > ")
+                    .push_bind(&cursor.token_id)
+                    .push(" OR (w.token_id = ")
+                    .push_bind(&cursor.token_id)
+                    .push(" AND w.period_code > ")
+                    .push_bind(&cursor.period_code)
+                    .push("))")
+                    .push(")");
+            } else {
+                query
+                    .push("w.period_end > ")
+                    .push_bind(cursor.period_end)
+                    .push(" OR (w.period_end = ")
+                    .push_bind(cursor.period_end)
+                    .push(" AND (w.token_id > ")
+                    .push_bind(&cursor.token_id)
+                    .push(" OR (w.token_id = ")
+                    .push_bind(&cursor.token_id)
+                    .push(" AND w.period_code > ")
+                    .push_bind(&cursor.period_code)
+                    .push("))")
+                    .push(")");
+            }
+            query.push(")");
+        }
         query
-            .push(" AND (u.period_end + 86400 <= ")
+            .push(
+                r#"
+                  AND (
+                        w.period_end + 86400 <= "#,
+            )
             .push_bind(now)
             .push(
                 r#" OR NOT EXISTS (
-                    SELECT 1
-                    FROM upstream_reconciliation_research r
-                    WHERE r.token_id = u.token_id
-                      AND r.period_code = u.period_code
-                      AND r.terminal_at IS NULL
-                ))"#,
-            )
-            .push(
-                r#"
-            GROUP BY u.token_id, u.period_code
-            ), ranked_candidate_windows AS (
-            SELECT
-                token_id,
-                period_code,
-                project_id,
-                billing_subject,
-                settlement_mode,
-                period_start,
-                period_end,
-                pending_research,
-                scheduling_key_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY scheduling_key_id
-                    ORDER BY period_end "#,
-            )
-            .push(if newest_first { "DESC" } else { "ASC" })
-            .push(
-                r#", token_id ASC, period_code ASC
-                ) AS key_slot
-            FROM candidate_windows
-            WHERE pending_research = 0
-               OR period_end + 86400 <= "#,
-            )
-            .push_bind(now)
-            .push(if newest_first {
-                r#"), candidate_page AS (
-            SELECT
-                token_id,
-                period_code,
-                project_id,
-                billing_subject,
-                settlement_mode,
-                period_start,
-                period_end,
-                pending_research,
-                scheduling_key_id
-            FROM ranked_candidate_windows
-            ORDER BY key_slot ASC, period_end DESC, token_id ASC, period_code ASC LIMIT "#
-            } else {
-                r#"), candidate_page AS (
-            SELECT
-                token_id,
-                period_code,
-                project_id,
-                billing_subject,
-                settlement_mode,
-                period_start,
-                period_end,
-                pending_research,
-                scheduling_key_id
-            FROM ranked_candidate_windows
-            ORDER BY key_slot ASC, period_end ASC, token_id ASC, period_code ASC LIMIT "#
-            })
-            .push_bind(page_limit)
-            .push(
-                r#"
-            )"#,
-            );
-        if newest_first {
-            query
-                .push(
-                    r#",
-            ranked_recent_candidates AS (
+                        SELECT 1
+                        FROM upstream_reconciliation_research r
+                        WHERE r.token_id = w.token_id
+                          AND r.period_code = w.period_code
+                        AND r.terminal_at IS NULL
+                    )
+                  )
+            ), candidate_page AS (
                 SELECT
                     token_id,
                     period_code,
@@ -940,9 +1004,37 @@ impl KeyStore {
                     period_end,
                     pending_research,
                     scheduling_key_id,
+                    reservation_id
+                FROM eligible_work
+                ORDER BY period_end "#,
+            )
+            .push(if newest_first { "DESC" } else { "ASC" })
+            .push(
+                r#", token_id ASC, period_code ASC
+                LIMIT "#,
+            )
+            .push_bind(page_limit)
+            .push(
+                r#"
+            ), ranked_work AS (
+                SELECT
+                    token_id,
+                    period_code,
+                    project_id,
+                    billing_subject,
+                    settlement_mode,
+                    period_start,
+                    period_end,
+                    pending_research,
+                    scheduling_key_id,
+                    reservation_id,
                     ROW_NUMBER() OVER (
                         PARTITION BY scheduling_key_id
-                        ORDER BY period_end DESC
+                        ORDER BY period_end "#,
+            )
+            .push(if newest_first { "DESC" } else { "ASC" })
+            .push(
+                r#", token_id ASC, period_code ASC
                     ) AS key_slot
                 FROM candidate_page
             )
@@ -955,115 +1047,274 @@ impl KeyStore {
                 period_start,
                 period_end,
                 pending_research,
-                scheduling_key_id
-            FROM ranked_recent_candidates
-            ORDER BY key_slot ASC, period_end DESC
-            LIMIT "#,
-                )
-                .push_bind(limit.max(1));
-        } else {
-            query
-                .push(
-                    r#"
-            SELECT
-                token_id,
-                period_code,
-                project_id,
-                billing_subject,
-                settlement_mode,
-                period_start,
-                period_end,
-                pending_research,
-                scheduling_key_id
-                FROM candidate_page
-            ORDER BY period_end ASC
-            LIMIT "#,
-                )
-                .push_bind(limit.max(1));
-        }
+                scheduling_key_id,
+                reservation_id
+            FROM ranked_work
+            ORDER BY key_slot ASC, period_end "#,
+            )
+            .push(if newest_first { "DESC" } else { "ASC" })
+            .push(", token_id ASC, period_code ASC LIMIT ")
+            .push_bind(page_limit);
         let rows = query
             .build_query_as::<UpstreamReconciliationCandidateRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?;
         Ok(self.build_upstream_reconciliation_candidates(rows, now))
+    }
+
+    async fn query_reconciliation_lane_on_conn(
+        &self,
+        conn: &mut SqliteConnection,
+        now: i64,
+        limit: i64,
+        newest_first: bool,
+        scope: ReconciliationCandidateScope,
+        lane: &str,
+    ) -> Result<Vec<UpstreamReconciliationCandidate>, ProxyError> {
+        let cursor = self.load_reconciliation_cursor(conn, lane).await?;
+        let mut candidates = self
+            .query_upstream_reconciliation_candidates_on_conn(
+                conn,
+                now,
+                limit,
+                newest_first,
+                scope,
+                cursor.as_ref(),
+            )
+            .await?;
+        if candidates.len() < limit as usize {
+            let wrapped = self
+                .query_upstream_reconciliation_candidates_on_conn(
+                    conn,
+                    now,
+                    limit,
+                    newest_first,
+                    scope,
+                    None,
+                )
+                .await?;
+            for candidate in wrapped {
+                if candidates.iter().any(|current| {
+                    current.token_id == candidate.token_id
+                        && current.period_code == candidate.period_code
+                }) {
+                    continue;
+                }
+                candidates.push(candidate);
+                if candidates.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    async fn persist_reconciliation_cursor(
+        &self,
+        conn: &mut SqliteConnection,
+        lane: &str,
+        candidate: &UpstreamReconciliationCandidate,
+        now: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_cursors (
+                lane, period_end, token_id, period_code, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(lane) DO UPDATE SET
+                period_end = excluded.period_end,
+                token_id = excluded.token_id,
+                period_code = excluded.period_code,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(lane)
+        .bind(candidate.period_end)
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn next_upstream_reconciliation_candidates(
         &self,
         limit: i64,
     ) -> Result<UpstreamReconciliationCandidateBatch, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let total_limit = limit.max(1);
-        let day_window = server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
-        let recent_start = day_window.start.saturating_sub(SECS_PER_DAY);
-        let recent_end = day_window.end;
-        let recent_lane_budget = total_limit.min(RECONCILIATION_RECENT_LANE_BUDGET);
-        let backlog_lane_budget =
-            total_limit.saturating_sub(recent_lane_budget).min(RECONCILIATION_BACKLOG_LANE_BUDGET);
-        let recent_candidates = self
-            .query_upstream_reconciliation_candidates(
-                now,
-                total_limit,
-                true,
-                ReconciliationCandidateScope::Recent {
-                    start: recent_start,
-                    end: recent_end,
-                },
+        let mut tx = match self
+            .sqlite_runtime
+            .begin_immediate(&tokio_util::sync::CancellationToken::new())
+            .await
+        {
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Completed(tx) => tx,
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Deferred(reason) => {
+                return Err(ProxyError::Other(format!(
+                    "upstream reconciliation candidate claim deferred: {reason:?}"
+                )));
+            }
+            crate::store::sqlite_runtime::SqliteOperationOutcome::Failed(err) => return Err(err),
+        };
+        let result = async {
+            let now = self.backend_time.now_ts();
+            let total_limit = limit.max(1);
+            sqlx::query(
+                r#"
+                UPDATE upstream_reconciliation_work
+                SET status = CASE WHEN next_attempt_at > ? THEN 'retry' ELSE 'ready' END,
+                    reservation_id = NULL,
+                    reservation_expires_at = NULL,
+                    updated_at = ?
+                WHERE status = 'reserved'
+                  AND reservation_expires_at IS NOT NULL
+                  AND reservation_expires_at <= ?
+                "#,
             )
-            .await?;
-        let backlog_candidates = self
-            .query_upstream_reconciliation_candidates(
-                now,
-                total_limit,
-                false,
-                ReconciliationCandidateScope::Backlog {
-                    before: recent_start,
-                },
-            )
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
             .await?;
 
-        let mut recent_candidate_count =
-            std::cmp::min(recent_candidates.len() as i64, recent_lane_budget);
-        let mut backlog_candidate_count = std::cmp::min(
-            backlog_candidates.len() as i64,
-            std::cmp::min(
+            let day_window =
+                server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
+            let recent_start = day_window.start.saturating_sub(SECS_PER_DAY);
+            let recent_end = day_window.end;
+            let recent_lane_budget = total_limit.min(RECONCILIATION_RECENT_LANE_BUDGET);
+            let backlog_lane_budget = total_limit
+                .saturating_sub(recent_lane_budget)
+                .min(RECONCILIATION_BACKLOG_LANE_BUDGET);
+            let recent_candidates = self
+                .query_reconciliation_lane_on_conn(
+                    &mut tx,
+                    now,
+                    total_limit,
+                    true,
+                    ReconciliationCandidateScope::Recent {
+                        start: recent_start,
+                        end: recent_end,
+                    },
+                    "recent",
+                )
+                .await?;
+            let backlog_candidates = self
+                .query_reconciliation_lane_on_conn(
+                    &mut tx,
+                    now,
+                    total_limit,
+                    false,
+                    ReconciliationCandidateScope::Backlog {
+                        before: recent_start,
+                    },
+                    "backlog",
+                )
+                .await?;
+
+            let mut recent_count = (recent_candidates.len() as i64).min(recent_lane_budget);
+            let mut backlog_count = (backlog_candidates.len() as i64).min(std::cmp::min(
                 backlog_lane_budget,
-                total_limit.saturating_sub(recent_candidate_count),
-            ),
-        );
-        let mut remaining_capacity =
-            total_limit.saturating_sub(recent_candidate_count + backlog_candidate_count);
-        let extra_recent_available =
-            (recent_candidates.len() as i64).saturating_sub(recent_candidate_count);
-        let extra_recent = std::cmp::min(extra_recent_available, remaining_capacity);
-        recent_candidate_count += extra_recent;
-        remaining_capacity = remaining_capacity.saturating_sub(extra_recent);
-        let extra_backlog_available =
-            (backlog_candidates.len() as i64).saturating_sub(backlog_candidate_count);
-        let extra_backlog = std::cmp::min(extra_backlog_available, remaining_capacity);
-        backlog_candidate_count += extra_backlog;
+                total_limit.saturating_sub(recent_count),
+            ));
+            let mut remaining_capacity =
+                total_limit.saturating_sub(recent_count + backlog_count);
+            let extra_recent = std::cmp::min(
+                (recent_candidates.len() as i64).saturating_sub(recent_count),
+                remaining_capacity,
+            );
+            recent_count += extra_recent;
+            remaining_capacity = remaining_capacity.saturating_sub(extra_recent);
+            let extra_backlog = std::cmp::min(
+                (backlog_candidates.len() as i64).saturating_sub(backlog_count),
+                remaining_capacity,
+            );
+            backlog_count += extra_backlog;
 
-        let mut candidates =
-            Vec::with_capacity((recent_candidate_count + backlog_candidate_count) as usize);
-        candidates.extend(
-            recent_candidates
-                .iter()
-                .take(recent_candidate_count as usize)
-                .cloned(),
-        );
-        candidates.extend(
-            backlog_candidates
-                .iter()
-                .take(backlog_candidate_count as usize)
-                .cloned(),
-        );
-        Ok(UpstreamReconciliationCandidateBatch {
-            candidates,
-            recent_lane_budget,
-            backlog_lane_budget,
-            recent_candidate_count,
-            backlog_candidate_count,
-        })
+            let mut selected = Vec::with_capacity((recent_count + backlog_count) as usize);
+            selected.extend(
+                recent_candidates
+                    .iter()
+                    .take(recent_count as usize)
+                    .cloned()
+                    .map(|candidate| (candidate, true)),
+            );
+            selected.extend(
+                backlog_candidates
+                    .iter()
+                    .take(backlog_count as usize)
+                    .cloned()
+                    .map(|candidate| (candidate, false)),
+            );
+
+            let reservation_expires_at = now.saturating_add(RECONCILIATION_WORK_RESERVATION_TTL_SECS);
+            let mut claimed = Vec::with_capacity(selected.len());
+            let mut last_recent = None;
+            let mut last_backlog = None;
+            for (mut candidate, in_recent_lane) in selected {
+                let reservation_id = nanoid!(18);
+                let work_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
+                let updated = sqlx::query(
+                    r#"
+                    UPDATE upstream_reconciliation_work
+                    SET status = 'reserved',
+                        reservation_id = ?,
+                        reservation_expires_at = ?,
+                        attempt_count = attempt_count + 1,
+                        updated_at = ?
+                    WHERE work_key = ?
+                      AND status IN ('ready', 'retry')
+                      AND reservation_id IS NULL
+                      AND next_attempt_at <= ?
+                    "#,
+                )
+                .bind(&reservation_id)
+                .bind(reservation_expires_at)
+                .bind(now)
+                .bind(work_key)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                if updated == 0 {
+                    continue;
+                }
+                candidate.reservation_id = Some(reservation_id);
+                if in_recent_lane {
+                    last_recent = Some(candidate.clone());
+                } else {
+                    last_backlog = Some(candidate.clone());
+                }
+                claimed.push((candidate, in_recent_lane));
+            }
+            if let Some(candidate) = last_recent.as_ref() {
+                self.persist_reconciliation_cursor(&mut tx, "recent", candidate, now)
+                    .await?;
+            }
+            if let Some(candidate) = last_backlog.as_ref() {
+                self.persist_reconciliation_cursor(&mut tx, "backlog", candidate, now)
+                    .await?;
+            }
+
+            let recent_candidate_count = claimed.iter().filter(|(_, recent)| *recent).count() as i64;
+            let backlog_candidate_count = claimed.len() as i64 - recent_candidate_count;
+            Ok::<UpstreamReconciliationCandidateBatch, ProxyError>(UpstreamReconciliationCandidateBatch {
+                candidates: claimed.into_iter().map(|(candidate, _)| candidate).collect(),
+                recent_lane_budget,
+                backlog_lane_budget,
+                recent_candidate_count,
+                backlog_candidate_count,
+            })
+        }
+        .await;
+        match result {
+            Ok(batch) => {
+                tx.commit().await?;
+                Ok(batch)
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+                Err(err)
+            }
+        }
     }
 
     pub(crate) async fn reconciliation_key_ids_batch(
@@ -1192,6 +1443,83 @@ impl KeyStore {
         Ok(Ok(()))
     }
 
+    async fn transition_reconciliation_work(
+        &self,
+        conn: &mut SqliteConnection,
+        candidate: &UpstreamReconciliationCandidate,
+        status: &str,
+        next_attempt_at: Option<i64>,
+        error_kind: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let work_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
+        let result = if let Some(reservation_id) = candidate.reservation_id.as_deref() {
+            sqlx::query(
+                r#"
+                UPDATE upstream_reconciliation_work
+                SET status = ?,
+                    next_attempt_at = COALESCE(?, next_attempt_at),
+                    reservation_id = NULL,
+                    reservation_expires_at = NULL,
+                    last_error_kind = ?,
+                    updated_at = ?
+                WHERE work_key = ?
+                  AND status = 'reserved'
+                  AND reservation_id = ?
+                "#,
+            )
+            .bind(status)
+            .bind(next_attempt_at)
+            .bind(error_kind)
+            .bind(now)
+            .bind(&work_key)
+            .bind(reservation_id)
+            .execute(&mut *conn)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE upstream_reconciliation_work
+                SET status = ?,
+                    next_attempt_at = COALESCE(?, next_attempt_at),
+                    reservation_id = NULL,
+                    reservation_expires_at = NULL,
+                    last_error_kind = ?,
+                    updated_at = ?
+                WHERE work_key = ?
+                "#,
+            )
+            .bind(status)
+            .bind(next_attempt_at)
+            .bind(error_kind)
+            .bind(now)
+            .bind(&work_key)
+            .execute(&mut *conn)
+            .await?
+        };
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn release_reconciliation_reservation(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        next_attempt_at: i64,
+        reason: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let released = self
+            .transition_reconciliation_work(
+                &mut tx,
+                candidate,
+                "retry",
+                Some(next_attempt_at),
+                reason,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(released)
+    }
+
     pub(crate) async fn mark_reconciliation_retry(
         &self,
         candidate: &UpstreamReconciliationCandidate,
@@ -1202,6 +1530,20 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let normalized_reason = reason.map(|value| classify_reconciliation_retry_reason(Some(value)));
+        let mut tx = self.pool.begin().await?;
+        let transitioned = self
+            .transition_reconciliation_work(
+                &mut tx,
+                candidate,
+                "retry",
+                Some(next_attempt_at),
+                normalized_reason,
+            )
+            .await?;
+        if candidate.reservation_id.is_some() && !transitioned {
+            tx.rollback().await?;
+            return Ok(());
+        }
         sqlx::query(
             r#"
             INSERT INTO upstream_reconciliation_settlements (
@@ -1229,8 +1571,9 @@ impl KeyStore {
         .bind(next_attempt_at)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1254,6 +1597,19 @@ impl KeyStore {
         let day_bucket = start_of_local_day_utc_ts(attributed_utc.with_timezone(&Local));
         let month_start = start_of_month(attributed_utc).timestamp();
         let mut tx = self.pool.begin().await?;
+        let transitioned = self
+            .transition_reconciliation_work(
+                &mut tx,
+                candidate,
+                "settled",
+                None,
+                None,
+            )
+            .await?;
+        if candidate.reservation_id.is_some() && !transitioned {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         let inserted = sqlx::query(
             r#"
             INSERT OR IGNORE INTO billing_reconciliation_adjustments (
@@ -1396,6 +1752,19 @@ impl KeyStore {
         let delta = upstream_usage.saturating_sub(local_billed_credits);
         let attributed_at = candidate.period_end.saturating_sub(60);
         let mut tx = self.pool.begin().await?;
+        let transitioned = self
+            .transition_reconciliation_work(
+                &mut tx,
+                candidate,
+                "settled",
+                None,
+                None,
+            )
+            .await?;
+        if candidate.reservation_id.is_some() && !transitioned {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         let inserted = sqlx::query(
             r#"
             INSERT OR IGNORE INTO billing_reconciliation_shadow_adjustments (

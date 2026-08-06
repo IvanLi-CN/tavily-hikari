@@ -46,6 +46,7 @@ impl TavilyProxy {
     const RECONCILIATION_POST_PROCESS_HEADROOM_SECS: u64 = 2;
     const RECONCILIATION_RETRY_BOOKKEEPING_HEADROOM_SECS: u64 = 2;
     const RECONCILIATION_OUTER_TIMEOUT_MARGIN_SECS: u64 = 1;
+    const RECONCILIATION_RETRY_DELAY_SECS: i64 = 60;
     const RESEARCH_SWEEP_LIMIT: usize = 20;
     const RESEARCH_SWEEP_PER_KEY_LIMIT: usize = 4;
 
@@ -1049,7 +1050,36 @@ impl TavilyProxy {
                     .get(&(candidate.token_id.clone(), candidate.period_code.clone()))
                     .cloned()
                     .unwrap_or_default();
+                if key_ids.is_empty() {
+                    self.key_store
+                        .release_reconciliation_reservation(
+                            &candidate,
+                            self.backend_time
+                                .now_ts()
+                                .saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS),
+                            Some("missing_representative_key"),
+                        )
+                        .await?;
+                    continue;
+                }
                 if key_ids.iter().any(|key_id| cooling_keys.contains(key_id)) {
+                    let retry_at = key_ids
+                        .iter()
+                        .filter_map(|key_id| active_key_cooldowns.get(key_id))
+                        .map(|state| state.cooldown_until)
+                        .max()
+                        .unwrap_or_else(|| {
+                            self.backend_time
+                                .now_ts()
+                                .saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS)
+                        });
+                    self.key_store
+                        .release_reconciliation_reservation(
+                            &candidate,
+                            retry_at,
+                            Some("representative_key_cooldown"),
+                        )
+                        .await?;
                     skipped_by_key_backoff += 1;
                     continue;
                 }
@@ -1062,6 +1092,23 @@ impl TavilyProxy {
                     }
                 }
                 if key_in_cooldown {
+                    let retry_at = key_ids
+                        .iter()
+                        .filter_map(|key_id| active_key_cooldowns.get(key_id))
+                        .map(|state| state.cooldown_until)
+                        .max()
+                        .unwrap_or_else(|| {
+                            self.backend_time
+                                .now_ts()
+                                .saturating_add(Self::RECONCILIATION_RETRY_DELAY_SECS)
+                        });
+                    self.key_store
+                        .release_reconciliation_reservation(
+                            &candidate,
+                            retry_at,
+                            Some("representative_key_cooldown"),
+                        )
+                        .await?;
                     skipped_by_key_backoff += 1;
                     continue;
                 }
