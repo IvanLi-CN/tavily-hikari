@@ -1101,17 +1101,35 @@ impl KeyStore {
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
         let result = match write_result {
-            Ok(()) => SqliteRequestStatsConnection::run_bounded_operation(
-                conn.operation_budget(),
-                async {
-                    sqlx::query("COMMIT")
-                        .execute(&mut **conn)
-                        .await
-                        .map(|_| ())
-                        .map_err(Into::into)
-                },
-            )
-            .await,
+            Ok(()) => {
+                let commit_result = SqliteRequestStatsConnection::run_bounded_operation(
+                    conn.operation_budget(),
+                    async {
+                        sqlx::query("COMMIT")
+                            .execute(&mut **conn)
+                            .await
+                            .map(|_| ())
+                            .map_err(Into::into)
+                    },
+                )
+                .await;
+                if let Err(err) = commit_result {
+                    let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                        conn.operation_budget(),
+                        async {
+                            sqlx::query("ROLLBACK")
+                                .execute(&mut **conn)
+                                .await
+                                .map(|_| ())
+                                .map_err(Into::into)
+                        },
+                    )
+                    .await;
+                    Err(err)
+                } else {
+                    Ok(())
+                }
+            }
             Err(err) => {
                 let _ = SqliteRequestStatsConnection::run_bounded_operation(
                     conn.operation_budget(),
