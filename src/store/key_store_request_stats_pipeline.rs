@@ -186,7 +186,10 @@ impl RequestStatsPipeline {
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> Result<sqlx::sqlite::SqliteRow, ProxyError> {
-        self.sqlite_runtime.fetch_request_stats_one(query).await
+        self.sqlite_runtime
+            .fetch_request_stats_one(query)
+            .await
+            .into_result()
     }
 
     async fn fetch_request_stats_scalar_one<'q, O>(
@@ -200,13 +203,17 @@ impl RequestStatsPipeline {
         self.sqlite_runtime
             .fetch_request_stats_scalar_one(query)
             .await
+            .into_result()
     }
 
     async fn fetch_request_stats_optional<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> Result<Option<sqlx::sqlite::SqliteRow>, ProxyError> {
-        self.sqlite_runtime.fetch_request_stats_optional(query).await
+        self.sqlite_runtime
+            .fetch_request_stats_optional(query)
+            .await
+            .into_result()
     }
 
     async fn fetch_request_stats_scalar_optional<'q, O>(
@@ -220,38 +227,54 @@ impl RequestStatsPipeline {
         self.sqlite_runtime
             .fetch_request_stats_scalar_optional(query)
             .await
+            .into_result()
     }
 
     async fn fetch_request_stats_all<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> Result<Vec<sqlx::sqlite::SqliteRow>, ProxyError> {
-        self.sqlite_runtime.fetch_request_stats_all(query).await
+        self.sqlite_runtime
+            .fetch_request_stats_all(query)
+            .await
+            .into_result()
     }
 
     async fn execute_request_stats<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> Result<sqlx::sqlite::SqliteQueryResult, ProxyError> {
-        self.sqlite_runtime.execute_request_stats(query).await
+        self.sqlite_runtime
+            .execute_request_stats(query)
+            .await
+            .into_result()
     }
 
     pub(crate) async fn begin_primary_transaction(
         &self,
     ) -> Result<SqliteRequestStatsTransaction<'_>, ProxyError> {
-        self.sqlite_runtime.begin_primary_transaction().await
+        self.sqlite_runtime
+            .begin_primary_transaction()
+            .await
+            .into_result()
     }
 
     pub(crate) async fn begin_read_flush_transaction(
         &self,
     ) -> Result<SqliteRequestStatsTransaction<'_>, ProxyError> {
-        self.sqlite_runtime.begin_read_flush_transaction().await
+        self.sqlite_runtime
+            .begin_read_flush_transaction()
+            .await
+            .into_result()
     }
 
     pub(crate) async fn acquire_primary_connection(
         &self,
     ) -> Result<SqliteRequestStatsConnection, ProxyError> {
-        self.sqlite_runtime.acquire_primary_connection().await
+        self.sqlite_runtime
+            .acquire_primary_connection()
+            .await
+            .into_result()
     }
 
     pub(crate) fn backend_time(&self) -> &BackendTime {

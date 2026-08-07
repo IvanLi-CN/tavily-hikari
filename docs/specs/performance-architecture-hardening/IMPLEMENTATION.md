@@ -39,12 +39,15 @@
   写入的 pool 与 busy 等待总预算保持在 250ms 内。
 - 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
   authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
-- child #487 的 aggregate 生产形状 RSS 基准已完成（基准二进制 commit
-  167b10dce69586c2badd4f5330a7c0bf93316045）：Linux x86_64 release binary，1,000,002
-  条 workload 前 request logs，5 rps（HTTP API 60% / MCP 20% / admin 20%），20 条 SSE，
-  5 分钟 warmup 后采样 30 分钟，共 360 个 5 秒 RSS 样本；RSS P50 为 220,480 KiB，
-  P95 为 254,276 KiB，最大值为 258,020 KiB，低于 256 MiB 门槛。上游为本地
-  mock_tavily，完整状态与 workload 证据记录在 Issue #487 handover 中。
+- child #487 handover 保留了基准二进制 commit
+  167b10dce69586c2badd4f5330a7c0bf93316045 的生产形状 RSS 证据：Linux x86_64 release
+  binary，1,000,002 条 workload 前 request logs，5 rps（HTTP API 60% / MCP 20% / admin
+  20%），20 条 SSE，5 分钟 warmup 后采样 30 分钟，共 360 个 5 秒 RSS 样本；RSS P50
+  为 220,480 KiB，P95 为 254,276 KiB，最大值为 258,020 KiB，低于 256 MiB 门槛。上游为
+  本地 mock_tavily，完整状态与 workload 证据记录在 Issue #487 handover 中。该历史 child
+  证据不宣称满足 aggregate RSS fixture 中的 HA channel rows、CPU/内存环境、seed 和采样序列
+  字段；原共享 testbox run 已不存在，本次 merge convergence 按约束未重建或重跑它，aggregate
+  benchmark 仍由 wave-level gate 负责。
 - Ticket #489 已为 control、billing、runtime 建立独立 durable GC work、claim generation、eligibility、
   adaptive continuation 与 typed outcome；channel scheduled job 完成和 continuation 在同一 SQLite
   writer transaction 内提交，并为 wire-identical UPDATE 抑制 HA outbox 事件。
@@ -57,10 +60,13 @@
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
 - Ticket #487: `RequestStatsPipeline` owns bounded pending rollups, snapshot metadata, paged
-  dashboard backfill access, and typed request-stats storage operations; `scripts/check_request_stats_architecture.py`
-  enforces the hot-path boundary and stable `(created_at, id)` pagination contract. Flush batches retain
-  durable ids across retries and use an in-transaction marker to prevent additive replay after ambiguous
-  commit outcomes.
+  dashboard backfill access, and runtime-bounded typed request-stats storage operations;
+  compatibility adapters translate deferred outcomes to the existing caller error contract.
+  `scripts/check_request_stats_architecture.py` enforces the hot-path boundary and stable
+  `(created_at, id)` pagination contract. Flush batches retain durable ids across retries and use an
+  in-transaction marker to prevent additive replay after ambiguous commit outcomes. Quota charge
+  cursor pages run inside one runtime-owned read transaction, so concurrent inserts cannot change the
+  snapshot between pages.
 - Quota sample pagination regression coverage is isolated in `src/tests/request_rollup_quota_paging.rs`;
   it uses a local stub upstream and the `BackendTime` seam so the 500-row cursor boundary remains
   deterministic without production calls.

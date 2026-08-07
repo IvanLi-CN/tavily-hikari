@@ -116,6 +116,7 @@ impl KeyStore {
         let mut current_key: Option<String> = None;
         let mut previous_sample: Option<QuotaSyncSampleRow> = None;
         let mut cursor: Option<(String, i64, i64)> = None;
+        let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
 
         loop {
             let query_sql = dashboard_quota_sample_page_sql(cursor.is_some());
@@ -131,10 +132,11 @@ impl KeyStore {
                     .bind(captured_at)
                     .bind(id);
             }
-            let sample_rows = request_stats_primary_fetch_all!(
-                self.request_stats_pipeline,
-                query.bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
-            )?;
+            let sample_rows = query
+                .bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(ProxyError::Database)?;
             if sample_rows.is_empty() {
                 break;
             }
@@ -200,6 +202,8 @@ impl KeyStore {
             }
             cursor = Some(next_cursor);
         }
+
+        tx.commit().await.map_err(ProxyError::Database)?;
 
         today_charge.sampled_key_count = today_sampled_keys.len() as i64;
         today_charge.stale_key_count = stale_key_count;
