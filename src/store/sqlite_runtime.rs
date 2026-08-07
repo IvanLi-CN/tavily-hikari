@@ -86,11 +86,10 @@ pub(crate) struct SqliteRequestStatsTransaction<'c> {
 }
 
 impl<'c> SqliteRequestStatsTransaction<'c> {
-    pub(crate) async fn commit(self) -> Result<(), sqlx::Error> {
-        match tokio::time::timeout(self.operation_budget, self.transaction.commit()).await {
-            Ok(result) => result,
-            Err(_) => Err(sqlx::Error::PoolTimedOut),
-        }
+    pub(crate) async fn commit(self) -> Result<(), ProxyError> {
+        run_bounded_request_stats_operation(self.operation_budget, self.transaction.commit())
+            .await
+            .into_result()
     }
 
     pub(crate) fn operation_budget(&self) -> Duration {

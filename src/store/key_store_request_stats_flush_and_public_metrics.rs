@@ -327,7 +327,7 @@ impl RequestStatsPipeline {
             Ok::<(), ProxyError>(())
         })
         .await?;
-        tx.commit().await.map_err(ProxyError::Database)
+        tx.commit().await
     }
 
     async fn flush_request_stats_writes_once(

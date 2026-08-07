@@ -209,7 +209,7 @@ impl KeyStore {
         })
         .await?;
 
-        tx.commit().await.map_err(ProxyError::Database)?;
+        tx.commit().await?;
 
         today_charge.sampled_key_count = today_sampled_keys.len() as i64;
         today_charge.stale_key_count = stale_key_count;
