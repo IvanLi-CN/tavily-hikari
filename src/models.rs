@@ -1014,6 +1014,18 @@ pub struct UpstreamReconciliationCandidate {
     pub period_end: i64,
     pub pending_research: i64,
     pub degraded: bool,
+    #[serde(skip)]
+    pub reservation_id: Option<String>,
+    #[serde(skip)]
+    pub scheduling_key_id: String,
+    #[serde(skip)]
+    pub fair_rank: i64,
+    #[serde(skip)]
+    pub hydration_cursor_key_id: Option<String>,
+    #[serde(skip)]
+    pub upstream_usage_total: i64,
+    #[serde(skip)]
+    pub hydration_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

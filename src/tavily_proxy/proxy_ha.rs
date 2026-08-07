@@ -1,4 +1,128 @@
 impl TavilyProxy {
+    pub async fn claim_ha_outbox_gc_work(
+        &self,
+        channel: HaSyncChannel,
+    ) -> Result<HaOutboxGcWorkClaimResult, ProxyError> {
+        self.key_store.claim_ha_outbox_gc_work(channel).await
+    }
+
+    pub async fn ha_outbox_gc_work_due_channels(
+        &self,
+    ) -> Result<HaOutboxGcWorkDueChannelsResult, ProxyError> {
+        self.key_store.ha_outbox_gc_work_due_channels().await
+    }
+
+    pub async fn make_ha_outbox_gc_work_due(
+        &self,
+    ) -> Result<HaOutboxGcWorkDueResult, ProxyError> {
+        self.key_store.make_ha_outbox_gc_work_due().await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_ha_outbox_gc_work_and_enqueue(
+        &self,
+        scheduled_job_id: i64,
+        scheduled_claim_generation: i64,
+        claim: HaOutboxGcWorkClaim,
+        outcome: HaOutboxGcWorkOutcome,
+        eligible_at: i64,
+        status: &str,
+        message: Option<&str>,
+        continuation_job_type: Option<&str>,
+        continuation_available_at: Option<i64>,
+        deleted_rows: i64,
+    ) -> Result<
+        (
+            HaOutboxGcWorkFinishResult,
+            Option<ScheduledJobEnqueueResult>,
+        ),
+        ProxyError,
+    > {
+        self.key_store
+            .finish_ha_outbox_gc_work_and_enqueue(
+                scheduled_job_id,
+                scheduled_claim_generation,
+                claim,
+                outcome,
+                eligible_at,
+                status,
+                message,
+                continuation_job_type,
+                continuation_available_at,
+                deleted_rows,
+            )
+            .await
+    }
+
+    pub async fn finish_ha_outbox_gc_work(
+        &self,
+        claim: HaOutboxGcWorkClaim,
+        outcome: HaOutboxGcWorkOutcome,
+        eligible_at: i64,
+    ) -> Result<HaOutboxGcWorkFinishResult, ProxyError> {
+        self.key_store
+            .finish_ha_outbox_gc_work(claim, outcome, eligible_at)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn defer_ha_outbox_gc_job_and_enqueue(
+        &self,
+        scheduled_job_id: i64,
+        scheduled_claim_generation: i64,
+        channel: HaSyncChannel,
+        outcome: HaOutboxGcWorkOutcome,
+        eligible_at: i64,
+        message: &str,
+        continuation_available_at: i64,
+    ) -> Result<
+        (
+            HaOutboxGcWorkFinishResult,
+            Option<ScheduledJobEnqueueResult>,
+        ),
+        ProxyError,
+    > {
+        self.key_store
+            .defer_ha_outbox_gc_job_and_enqueue(
+                scheduled_job_id,
+                scheduled_claim_generation,
+                channel,
+                outcome,
+                eligible_at,
+                message,
+                continuation_available_at,
+            )
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn defer_ha_outbox_gc_claim_and_enqueue(
+        &self,
+        scheduled_job_id: i64,
+        scheduled_claim_generation: i64,
+        claim: HaOutboxGcWorkClaim,
+        eligible_at: i64,
+        message: &str,
+        continuation_available_at: i64,
+    ) -> Result<
+        (
+            HaOutboxGcWorkFinishResult,
+            Option<ScheduledJobEnqueueResult>,
+        ),
+        ProxyError,
+    > {
+        self.key_store
+            .defer_ha_outbox_gc_claim_and_enqueue(
+                scheduled_job_id,
+                scheduled_claim_generation,
+                claim,
+                eligible_at,
+                message,
+                continuation_available_at,
+            )
+            .await
+    }
+
     fn spawn_request_stats_pipeline(&self) {
         let pipeline = self.key_store.request_stats_pipeline.clone();
         tokio::spawn(async move {
@@ -306,6 +430,21 @@ impl TavilyProxy {
     ) -> Result<HaOutboxGcReport, ProxyError> {
         self.key_store
             .gc_ha_outbox_online_with_foreground_pressure(foreground_rps, low_pressure_since_floor)
+            .await
+    }
+
+    pub async fn gc_ha_outbox_online_for_channel_with_foreground_pressure(
+        &self,
+        channel: HaSyncChannel,
+        foreground_rps: i64,
+        low_pressure_since_floor: i64,
+    ) -> Result<HaOutboxGcReport, ProxyError> {
+        self.key_store
+            .gc_ha_outbox_online_for_channel_with_foreground_pressure(
+                channel,
+                foreground_rps,
+                low_pressure_since_floor,
+            )
             .await
     }
 

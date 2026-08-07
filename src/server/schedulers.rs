@@ -6,6 +6,9 @@ use tavily_hikari::{
     LinuxDoCreditRefundExternalSuccessMarker as SharedLinuxDoCreditRefundExternalSuccessMarker,
     decode_linuxdo_credit_refund_external_success_marker,
     format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
+    HaOutboxGcWorkClaim, HaOutboxGcWorkClaimResult, HaOutboxGcWorkDueChannelsResult,
+    HaOutboxGcWorkDueResult,
+    HaOutboxGcWorkFinishResult, HaOutboxGcWorkOutcome, HaSyncChannel,
     HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
     HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS,
     HA_OUTBOX_GC_LOW_PRESSURE_RPS,
@@ -53,7 +56,11 @@ const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
 const HA_OUTBOX_GC_RECHECK_SECS: u64 = 5 * 60;
+const HA_OUTBOX_GC_BUSY_RECHECK_SECS: u64 = 30;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
+const HA_OUTBOX_GC_CONTROL_JOB_TYPE: &str = "ha_outbox_gc/control";
+const HA_OUTBOX_GC_BILLING_JOB_TYPE: &str = "ha_outbox_gc/billing";
+const HA_OUTBOX_GC_RUNTIME_JOB_TYPE: &str = "ha_outbox_gc/runtime";
 const REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE: &str = "request_logs_body_gc_index_ensure";
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -67,6 +74,23 @@ const SCHEDULED_JOB_WAIT_WARN_SAMPLE_SECS: u64 = 5 * 60;
 static REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED_JOB_QUEUE_WAIT_WARN_WINDOWS: OnceLock<StdMutex<HashMap<String, Instant>>> =
     OnceLock::new();
+
+fn ha_outbox_gc_job_type(channel: HaSyncChannel) -> &'static str {
+    match channel {
+        HaSyncChannel::Control => HA_OUTBOX_GC_CONTROL_JOB_TYPE,
+        HaSyncChannel::Billing => HA_OUTBOX_GC_BILLING_JOB_TYPE,
+        HaSyncChannel::Runtime => HA_OUTBOX_GC_RUNTIME_JOB_TYPE,
+    }
+}
+
+fn ha_outbox_gc_channel_for_job_type(job_type: &str) -> Option<HaSyncChannel> {
+    match job_type {
+        HA_OUTBOX_GC_CONTROL_JOB_TYPE => Some(HaSyncChannel::Control),
+        HA_OUTBOX_GC_BILLING_JOB_TYPE => Some(HaSyncChannel::Billing),
+        HA_OUTBOX_GC_RUNTIME_JOB_TYPE => Some(HaSyncChannel::Runtime),
+        _ => None,
+    }
+}
 
 fn ha_gc_continuation_delay_secs(report_delay_secs: Option<i64>, foreground_rps: i64) -> i64 {
     let report_delay_secs =
@@ -134,9 +158,6 @@ impl LegacySchedulerAdapter {
     }
     fn try_acquire_remote_io_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.runtime.try_acquire_remote_io_slot()
-    }
-    fn try_acquire_maintenance_lease(&self) -> Option<OwnedMutexGuard<()>> {
-        self.runtime.try_acquire_maintenance_lease()
     }
     async fn spawn_remote_task<F>(&self, task: F)
     where
@@ -437,7 +458,7 @@ fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
 }
 
 fn scheduled_job_uses_db_execution_gate(job_type: &str) -> bool {
-    job_type != "upstream_reconciliation"
+    job_type != "upstream_reconciliation" && ha_outbox_gc_channel_for_job_type(job_type).is_none()
 }
 
 #[cfg(test)]
@@ -448,6 +469,9 @@ fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
         "upstream_reconciliation"
     ));
     assert!(scheduled_job_uses_db_execution_gate("ha_outbox_gc"));
+    assert!(!scheduled_job_uses_db_execution_gate(
+        HA_OUTBOX_GC_CONTROL_JOB_TYPE
+    ));
 }
 
 #[cfg(test)]
@@ -567,6 +591,9 @@ async fn run_queued_scheduled_job(
         claim_generation: job.claim_generation,
         _job_execution_gate: None,
     };
+    if let Some(channel) = ha_outbox_gc_channel_for_job_type(&job_type) {
+        return run_ha_outbox_gc_channel_claimed_job(state, claimed_job, channel).await;
+    }
     if job_type == "ha_outbox_gc" {
         return run_ha_outbox_gc_claimed_job(state, claimed_job).await;
     }
@@ -787,7 +814,31 @@ fn spawn_maintenance_worker_with_cancellation(
             };
             match next_job {
                 Ok(Some((job, remote_io_permit))) => {
-                    if let Some(remote_io_permit) = remote_io_permit {
+                    if let Some(channel) = ha_outbox_gc_channel_for_job_type(&job.job_type) {
+                        let run_state = state.clone();
+                        let run_wake = wake.clone();
+                        let run_cancellation = cancellation.clone();
+                        let run_adapter = adapter.clone();
+                        let job_id = job.id;
+                        let job_type = job.job_type.clone();
+                        let claimed_job = ClaimedScheduledJob {
+                            job_id: job.id,
+                            claim_generation: job.claim_generation,
+                            _job_execution_gate: None,
+                        };
+                        adapter
+                            .spawn_remote_task(async move {
+                                tokio::select! {
+                                    biased;
+                                    _ = run_cancellation.cancelled() => {}
+                                    completion = run_ha_outbox_gc_channel_claimed_job(run_state, claimed_job, channel) => {
+                                        run_adapter.record_completion(job_id, &job_type, completion);
+                                    }
+                                }
+                                run_wake.notify_one();
+                            })
+                            .await;
+                    } else if let Some(remote_io_permit) = remote_io_permit {
                         let run_state = state.clone();
                         let run_wake = wake.clone();
                         let run_cancellation = cancellation.clone();
@@ -1052,44 +1103,94 @@ fn spawn_ha_outbox_gc_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle
         loop {
             let now = state.proxy.backend_time().now_ts();
             let baseline_due = now >= next_baseline_at;
-            let watchdog_needed = if baseline_due {
-                false
-            } else {
-                match state.proxy.ha_outbox_gc_watchdog_needed().await {
-                    Ok(needed) => needed,
+            let baseline_refreshed = if baseline_due {
+                match state.proxy.make_ha_outbox_gc_work_due().await {
+                    Ok(HaOutboxGcWorkDueResult::Refreshed) => true,
+                    Ok(HaOutboxGcWorkDueResult::Busy) => {
+                        tracing::debug!(
+                            component = "ha_outbox_gc",
+                            event = "baseline_eligibility_deferred",
+                            defer_reason = "sqlite_busy",
+                            "HA outbox GC baseline could not refresh durable channel eligibility"
+                        );
+                        false
+                    }
                     Err(err) => {
                         tracing::debug!(
                             component = "ha_outbox_gc",
-                            event = "watchdog_state_unavailable",
+                            event = "baseline_eligibility_deferred",
                             err = %err,
-                            "HA outbox GC watchdog could not read durable debt state"
+                            "HA outbox GC baseline could not refresh durable channel eligibility"
                         );
                         false
                     }
                 }
+            } else {
+                false
             };
 
-            if baseline_due || watchdog_needed {
-                let enqueued = enqueue_scheduled_job_logged(
+            let mut work_state_busy = false;
+            let channels = if baseline_due && baseline_refreshed {
+                vec![
+                    HaSyncChannel::Control,
+                    HaSyncChannel::Billing,
+                    HaSyncChannel::Runtime,
+                ]
+            } else {
+                match state.proxy.ha_outbox_gc_work_due_channels().await {
+                    Ok(HaOutboxGcWorkDueChannelsResult::Ready(channels)) => channels,
+                    Ok(HaOutboxGcWorkDueChannelsResult::Busy) => {
+                        work_state_busy = true;
+                        tracing::debug!(
+                            component = "ha_outbox_gc",
+                            event = "work_state_deferred",
+                            defer_reason = "sqlite_busy",
+                            "HA outbox GC scheduler could not read durable channel work"
+                        );
+                        Vec::new()
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            component = "ha_outbox_gc",
+                            event = "work_state_unavailable",
+                            err = %err,
+                            "HA outbox GC scheduler could not read durable channel work"
+                        );
+                        Vec::new()
+                    }
+                }
+            };
+
+            let mut enqueued_any = false;
+            for channel in channels {
+                if enqueue_scheduled_job_logged(
                     state.as_ref(),
-                    "ha_outbox_gc",
+                    ha_outbox_gc_job_type(channel),
                     None,
                     TRIGGER_SOURCE_SCHEDULER,
                     "ha-outbox-gc",
                 )
-                .await;
-                if baseline_due && enqueued.is_some() {
-                    next_baseline_at = now.saturating_add(HA_OUTBOX_GC_BASELINE_SECS);
+                .await
+                .is_some()
+                {
+                    enqueued_any = true;
                 }
+            }
+            if baseline_due && baseline_refreshed && enqueued_any {
+                next_baseline_at = now.saturating_add(HA_OUTBOX_GC_BASELINE_SECS);
             }
 
             // The hourly baseline discovers newly expired records. Between sweeps,
-            // this only restores a lost continuation when durable GC state still
-            // reports channel debt.
+            // each channel's durable eligibility independently restores its own
+            // continuation without making another channel wait.
             state
                 .proxy
                 .backend_time()
-                .sleep(Duration::from_secs(HA_OUTBOX_GC_RECHECK_SECS))
+                .sleep(Duration::from_secs(if work_state_busy {
+                    HA_OUTBOX_GC_BUSY_RECHECK_SECS
+                } else {
+                    HA_OUTBOX_GC_RECHECK_SECS
+                }))
                 .await;
         }
     })
@@ -1336,318 +1437,6 @@ async fn run_request_logs_body_gc_index_ensure_claimed_job(
                 ),
             }
             false
-        }
-    }
-}
-
-async fn finish_ha_gc_with_continuation(
-    state: &Arc<AppState>,
-    job_id: i64,
-    claim_generation: i64,
-    message: String,
-    continuation_delay_secs: i64,
-) -> ScheduledJobCompletion {
-    let available_at = state
-        .proxy
-        .backend_time()
-        .now_ts()
-        .saturating_add(continuation_delay_secs);
-    let result = state
-        .proxy
-        .scheduled_job_finish_and_enqueue_auto_at(
-            job_id,
-            claim_generation,
-            "ha_outbox_gc",
-            None,
-            1,
-            Some(&message),
-            available_at,
-        )
-        .await;
-    match result {
-        Ok(result) => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "continuation_queued",
-                job_id,
-                continuation_job_id = result.job_id,
-                continuation_created = result.created,
-                continuation_delay_secs,
-                available_at,
-            );
-            ScheduledJobCompletion::Deferred
-        }
-        Err(err) if err.is_stale_claim() => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "stale_claim_ignored",
-                job_id,
-                claim_generation,
-                "stale GC claim cannot finish or enqueue a continuation"
-            );
-            ScheduledJobCompletion::Deferred
-        }
-        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "continuation_persist_deferred",
-                job_id,
-                claim_generation,
-                continuation_delay_secs,
-                err = %err,
-                "HA outbox GC continuation hit a transient SQLite conflict; stale reaper will recover it"
-            );
-            ScheduledJobCompletion::Deferred
-        }
-        Err(err) => {
-            tracing::error!(
-                component = "ha_outbox_gc",
-                event = "continuation_transaction_failed",
-                job_id,
-                continuation_delay_secs,
-                err = %err,
-                "HA outbox GC could not persist its deferred continuation"
-            );
-            let _ = state
-                .proxy
-                .record_ha_outbox_gc_deferred("continuation_persist_failed")
-                .await;
-            if let Err(finish_err) = state
-                .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "error", Some(&message))
-                .await
-            {
-                tracing::error!(
-                    component = "ha_outbox_gc",
-                    event = "deferred_job_finish_failed",
-                    job_id,
-                    err = %finish_err,
-                    "HA outbox GC deferred job remains eligible for the outer continuation retry"
-                );
-                ScheduledJobCompletion::Deferred
-            } else {
-                ScheduledJobCompletion::Failed
-            }
-        }
-    }
-}
-
-async fn run_ha_outbox_gc_claimed_job(
-    state: Arc<AppState>,
-    claimed_job: ClaimedScheduledJob,
-) -> ScheduledJobCompletion {
-    let ClaimedScheduledJob {
-        job_id,
-        claim_generation,
-        _job_execution_gate,
-    } = claimed_job;
-    drop(_job_execution_gate);
-
-    let Some(_gc_lease) = LegacySchedulerAdapter::for_state(state.as_ref())
-        .await
-        .try_acquire_maintenance_lease()
-    else {
-        tracing::debug!(
-            component = "ha_outbox_gc",
-            event = "deferred",
-            job_id,
-            claim_generation,
-            defer_reason = "gc_lease_busy",
-            continuation_delay_secs = HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-        );
-        return finish_ha_gc_with_continuation(
-            &state,
-            job_id,
-            claim_generation,
-            "deferred=gc_lease_busy".to_string(),
-            HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-        )
-        .await;
-    };
-    let result = state
-        .proxy
-        .gc_ha_outbox_online_with_foreground_pressure(
-            foreground_activity_rps(),
-            foreground_activity_low_pressure_since_floor(),
-        )
-        .await;
-
-    match result {
-        Ok(report) => {
-            let needs_continuation = report.has_more || !report.completed;
-            let foreground_rps_after_slice = needs_continuation.then(foreground_activity_rps);
-            let effective_continuation_delay_secs = foreground_rps_after_slice.map_or(
-                report.continuation_delay_secs,
-                |foreground_rps| {
-                    Some(ha_gc_continuation_delay_secs(
-                        report.continuation_delay_secs,
-                        foreground_rps,
-                    ))
-                },
-            );
-            if report.max_batch_elapsed_ms > tavily_hikari::HA_OUTBOX_GC_ACTIVE_BUDGET_MS {
-                tracing::warn!(
-                    component = "ha_outbox_gc",
-                    event = "slow_slice",
-                    job_id,
-                    claim_generation,
-                    max_batch_elapsed_ms = report.max_batch_elapsed_ms as u64,
-                    active_elapsed_ms = report.active_elapsed_ms as u64,
-                    elapsed_ms = report.elapsed_ms as u64,
-                    "HA outbox GC slice exceeded its SQL budget"
-                );
-            }
-            for channel in &report.channels {
-                let sampling =
-                    tavily_hikari::sample_ha_perf_event_windowed("gc_aggregate", channel.channel);
-                if sampling.emit_info {
-                    tracing::info!(
-                        component = "ha_outbox_gc",
-                        event = "aggregate",
-                        job_id,
-                        claim_generation,
-                        channel = channel.channel.as_str(),
-                        deleted_rows = channel.deleted_rows,
-                        retention_deleted_rows = channel.retention_deleted_rows,
-                        invalid_legacy_deleted_rows = channel.invalid_legacy_deleted_rows,
-                        oldest_deletable_age_secs = channel.oldest_deletable_age_secs,
-                        deleted_rows_per_minute = channel.deleted_rows_per_minute,
-                        foreground_rps = channel.foreground_rps,
-                        debt_mode = channel.debt_mode.as_str(),
-                        slo_state = channel.slo_state.as_str(),
-                        has_more = channel.has_more,
-                        continuation_delay_secs = effective_continuation_delay_secs,
-                        next_retry_at = effective_continuation_delay_secs
-                            .map(|delay| channel.observed_at.saturating_add(delay)),
-                        elapsed_ms = report.elapsed_ms as u64,
-                    );
-                }
-                if let Some(transition) = channel.slo_state_transition.as_deref() {
-                    match transition {
-                        "breached" => tracing::warn!(
-                            component = "ha_outbox_gc",
-                            event = "slo_breached",
-                            job_id,
-                            channel = channel.channel.as_str(),
-                            oldest_deletable_age_secs = channel.oldest_deletable_age_secs,
-                            deleted_rows_per_minute = channel.deleted_rows_per_minute,
-                            recovery_deadline_at = channel.recovery_deadline_at,
-                            "HA outbox GC recovery SLO breached"
-                        ),
-                        "recovered" => tracing::info!(
-                            component = "ha_outbox_gc",
-                            event = "slo_recovered",
-                            job_id,
-                            channel = channel.channel.as_str(),
-                            oldest_deletable_age_secs = channel.oldest_deletable_age_secs,
-                            deleted_rows_per_minute = channel.deleted_rows_per_minute,
-                            "HA outbox GC recovery SLO recovered"
-                        ),
-                        _ => {}
-                    }
-                }
-            }
-            if needs_continuation {
-                // A request may arrive while the one-second slice is running.
-                // Finish that slice, but do not immediately start another one.
-                let foreground_rps_after_slice = foreground_rps_after_slice
-                    .expect("foreground RPS must be sampled when GC continuation is required");
-                let continuation_delay_secs = effective_continuation_delay_secs
-                    .expect("continuation delay must be set when GC continuation is required");
-                let defer_reason = if foreground_rps_after_slice > HA_OUTBOX_GC_LOW_PRESSURE_RPS {
-                    "foreground_pressure"
-                } else if continuation_delay_secs == HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS {
-                    "legacy_scan"
-                } else if continuation_delay_secs < HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS {
-                    "fast_progress"
-                } else {
-                    "slice_budget_exhausted"
-                };
-                tracing::debug!(
-                    component = "ha_outbox_gc",
-                    event = "deferred",
-                    job_id,
-                    claim_generation,
-                    defer_reason,
-                    deleted_rows = report.deleted_rows,
-                    active_elapsed_ms = report.active_elapsed_ms as u64,
-                    max_batch_elapsed_ms = report.max_batch_elapsed_ms as u64,
-                    elapsed_ms = report.elapsed_ms as u64,
-                    foreground_rps_after_slice,
-                    continuation_delay_secs,
-                );
-                return finish_ha_gc_with_continuation(
-                    &state,
-                    job_id,
-                    claim_generation,
-                    format!(
-                        "deferred={defer_reason} {}",
-                        format_ha_outbox_gc_report_message(&report, 1)
-                    ),
-                    continuation_delay_secs,
-                )
-                .await;
-            } else {
-                let message = format_ha_outbox_gc_report_message(&report, 1);
-                if let Err(err) = state
-                    .proxy
-                    .scheduled_job_finish_claimed(
-                        job_id,
-                        claim_generation,
-                        "success",
-                        Some(&message),
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        component = "ha_outbox_gc",
-                        event = "deferred",
-                        job_id,
-                        claim_generation,
-                        defer_reason = "job_finish_failed",
-                        err = %err,
-                        "HA outbox GC completion could not be persisted; retaining a durable continuation"
-                    );
-                    return finish_ha_gc_with_continuation(
-                        &state,
-                        job_id,
-                        claim_generation,
-                        format!("deferred=job_finish_failed error={err}"),
-                        HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-                    )
-                    .await;
-                }
-            }
-            ScheduledJobCompletion::Completed
-        }
-        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "deferred",
-                job_id,
-                claim_generation,
-                defer_reason = "sqlite_busy",
-                err = %err,
-            );
-            return finish_ha_gc_with_continuation(
-                &state,
-                job_id,
-                claim_generation,
-                format!("deferred=sqlite_busy error={err}"),
-                HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-            )
-            .await;
-        }
-        Err(err) => {
-            let message = err.to_string();
-            match state
-                .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "error", Some(&message))
-                .await
-            {
-                Ok(()) => ScheduledJobCompletion::Failed,
-                Err(_) => ScheduledJobCompletion::Deferred,
-            }
         }
     }
 }
@@ -2769,27 +2558,19 @@ async fn run_manual_claimed_job(
             )
             .await
             {
-                Ok(Ok(settled)) => {
-                    let now = state.proxy.backend_time().now_ts();
-                    match state.proxy.upstream_reconciliation_backoff_until().await {
-                        Ok(available_at) if available_at > now => state
-                            .proxy
-                            .scheduled_job_finish_and_enqueue_auto_at(
-                                job_id,
-                                claim_generation,
-                                "upstream_reconciliation",
-                                None,
-                                1,
-                                Some(&format!("settled={settled} backoff_until={available_at}")),
-                                available_at,
-                            )
-                            .await
-                            .is_ok(),
-                        Ok(_) => finish(state, "success", format!("settled={settled}")).await,
-                        Err(err) => finish(state, "error", err.to_string()).await,
-                    }
-                }
-                Ok(Err(err)) => finish(state, "error", err.to_string()).await,
+                Ok(Ok(settled)) => state
+                    .proxy
+                    .finish_upstream_reconciliation_job(job_id, claim_generation, settled)
+                    .await,
+                Ok(Err(err)) => state.proxy
+                    .recover_upstream_reconciliation_after_aborted_run(
+                        job_id,
+                        claim_generation,
+                        "error",
+                        err.to_string(),
+                        "aborted_run_reservation_recovery_failed",
+                    )
+                    .await,
                 Err(_) => {
                     tracing::debug!(
                         component = "reconciliation",
@@ -2808,7 +2589,14 @@ async fn run_manual_claimed_job(
                             err = %err,
                         );
                     }
-                    finish(state, "success", "settled=unknown budget_exhausted=true".to_string())
+                    state.proxy
+                        .recover_upstream_reconciliation_after_aborted_run(
+                            job_id,
+                            claim_generation,
+                            "success",
+                            "settled=unknown budget_exhausted=true".to_string(),
+                            "budget_run_reservation_recovery_failed",
+                        )
                         .await
                 }
             }

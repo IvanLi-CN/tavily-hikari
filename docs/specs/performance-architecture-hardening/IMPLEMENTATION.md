@@ -5,7 +5,9 @@
 ## Current Status
 
 - Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
-  child PR integration
+  child PR integration；Ticket #487 RequestStatsPipeline 已实现，等待 wave-gated integration；Ticket #489
+  per-channel HA GC 已合入 integration branch；Ticket #490 reconciliation work projection 已合入
+  integration branch
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -20,8 +22,8 @@
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline（child #487）
 5. HaPeerObservationStore
-6. per-channel HA GC 与 no-op outbox suppression
-7. reconciliation work projection
+6. per-channel HA GC 与 no-op outbox suppression（Ticket #489 已合入 integration branch）
+7. reconciliation work projection（Ticket #490 已合入 integration branch）
 8. AlertProjection expand/shadow
 9. ReconciliationEngine cutover
 10. 全部告警读取切换
@@ -43,6 +45,9 @@
   5 分钟 warmup 后采样 30 分钟，共 360 个 5 秒 RSS 样本；RSS P50 为 220,480 KiB，
   P95 为 254,276 KiB，最大值为 258,020 KiB，低于 256 MiB 门槛。上游为本地
   mock_tavily，完整状态与 workload 证据记录在 Issue #487 handover 中。
+- Ticket #489 已为 control、billing、runtime 建立独立 durable GC work、claim generation、eligibility、
+  adaptive continuation 与 typed outcome；channel scheduled job 完成和 continuation 在同一 SQLite
+  writer transaction 内提交，并为 wire-identical UPDATE 抑制 HA outbox 事件。
 
 ## Related Changes
 
@@ -57,6 +62,14 @@
   durable ids across retries and use an in-transaction marker to prevent additive replay after ambiguous
   commit outcomes.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
+- Ticket #489: durable per-channel HA GC work and unchanged-wire UPDATE suppression.
+- Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
+  recent/backlog cursors, stable per-key fair ranks, atomic reservations, bounded paged hydration,
+  restartable legacy backfill, representative scheduling, and reservation-fenced settlement
+  transitions.
+- Aborted and budget-exhausted runs recover reservations and finish their claimed representative in
+  one bounded transaction before scheduling the next continuation, so restart recovery cannot leave
+  eligible work waiting for an unrelated scheduler tick.
 
 ## References
 

@@ -151,6 +151,7 @@
         "tests::user_tokens_and_pending_billing::request_",
         "tests::proxy_affinity_and_summary::summary_",
         "tests::request_rollup::summary_",
+        "tests::request_rollup_quota_paging::summary_",
         "tests::dashboard_month_series::dashboard_",
         "tests::dashboard_hourly_credits::",
         "tests::request_rollup::dashboard_",
@@ -295,6 +296,7 @@
       ],
       "include_prefixes": [
         "ha_perf_sampling_tests::",
+        "tests::ha_gc_work::",
         "tests::jobs_and_request_log_retention::abandon_",
         "tests::jobs_and_request_log_retention::abandoned_",
         "tests::jobs_and_request_log_retention::auth_",

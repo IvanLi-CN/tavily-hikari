@@ -1318,6 +1318,8 @@ impl KeyStore {
             }
             let new_json = ha_trigger_json_object(channel, table, "NEW", &columns);
             let old_json = ha_trigger_json_object(channel, table, "OLD", &columns);
+            let new_wire_json = ha_trigger_wire_json_object(channel, table, "NEW", &columns);
+            let old_wire_json = ha_trigger_wire_json_object(channel, table, "OLD", &columns);
             let new_resource_id = ha_trigger_resource_id("NEW", &columns);
             let old_resource_id = ha_trigger_resource_id("OLD", &columns);
             let table_ident = sqlite_qualified_table_name(table);
@@ -1340,11 +1342,16 @@ impl KeyStore {
                     }
                     _ => String::new(),
                 };
+                let wire_payload_filter = if suffix == "update" {
+                    format!(" AND json({old_wire_json}) IS NOT json({new_wire_json})")
+                } else {
+                    String::new()
+                };
                 let sql = format!(
                     r#"
                     CREATE TRIGGER IF NOT EXISTS {trigger}
                     {timing} ON {table_ident}
-                    WHEN NOT EXISTS (SELECT 1 FROM ha_outbox_suppression WHERE id = 'local'){row_filter}
+                    WHEN NOT EXISTS (SELECT 1 FROM ha_outbox_suppression WHERE id = 'local'){row_filter}{wire_payload_filter}
                     BEGIN
                         INSERT INTO {} (
                             kind, resource, resource_id, op, payload_json, created_at, checksum
@@ -1893,6 +1900,33 @@ fn ha_trigger_json_object(
     let args = columns
         .iter()
         .map(|column| ha_export_json_arg(channel, table, Some(alias), column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("json_object({args})")
+}
+
+fn ha_trigger_wire_json_object(
+    channel: HaSyncChannel,
+    table: &str,
+    alias: &str,
+    columns: &[String],
+) -> String {
+    let args = columns
+        .iter()
+        .map(|column| {
+            let sanitized = match table {
+                "api_key_maintenance_records" => {
+                    matches!(column.as_str(), "request_log_id" | "auth_token_log_id")
+                }
+                "api_key_transient_backoffs" => column == "source_request_log_id",
+                _ => false,
+            };
+            if sanitized {
+                format!("{}, NULL", quote_sqlite_string(column))
+            } else {
+                ha_export_json_arg(channel, table, Some(alias), column)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!("json_object({args})")

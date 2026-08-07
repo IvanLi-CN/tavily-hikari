@@ -209,6 +209,11 @@ month-tail public metrics scan.
   evidence that a write micro-batch exceeded budget. Keep an hourly baseline sweep for newly
   expired rows, and gate a low-frequency watchdog on durable pending-channel debt so it rediscovers
   a lost continuation without creating clean-state jobs.
+- Persist that per-channel controller as independent `ha_outbox_gc_work` rows with eligibility,
+  generation leases, adaptive batch size, and typed outcomes. Use the bounded `SqliteRuntime`
+  `BEGIN IMMEDIATE` contract for claim and finish: writer contention returns typed `Busy` within
+  250ms, while a continuation finish updates the work row, scheduled job, and next channel job in
+  one transaction. A stale generation or expired lease must not finish a newer claim.
 - Sequence high-watermark deltas are useful low-cost evidence of drainage versus ingress, but they
   are estimates, not exact row counts. If historical exact counts were not sampled, report the
   oldest retained age moving forward as proof of partial cleanup only; do not claim that total

@@ -19,6 +19,11 @@
 - 外部业务 request 在 writable tenure admission 内运行；demotion 取得独占 admission、排空已进入的
   request 后再推进 SQLite epoch。authority 写使用独立短等待预算，writer contention 不会继承主 pool
   的 5 秒 busy timeout。
+- per-channel HA GC 使用独立 durable eligibility 与 generation lease；完成事务同时更新 typed
+  outcome、adaptive channel state、scheduled job 与 continuation，避免 control 延迟阻塞 billing 或
+  runtime，并让旧 claim 在接管后无法覆盖新状态。
+- HA outbox UPDATE trigger 以 wire JSON 比较 old/new payload；只有有效变化写入一条兼容事件，保持
+  旧 reader、retention、ACK 与 `410 -> baseline` 语义不变。
 
 ## Key Reasons / Replacements
 
@@ -30,6 +35,20 @@
 - durable per-channel work 替代单一 HA GC representative，避免一个 channel 的延迟阻塞全部排债。
 - durable projections 与共享 snapshots 替代请求线程上的重复聚合和 flush-on-read。
 - 窄 runtime 接口和 architecture checker 替代依赖约定，防止 raw pool/coalescer 再次泄漏。
+- reconciliation work projection 以 `token_id + period_code` 持久化逻辑结算窗口；recent/backlog
+  各自保存稳定的 per-key fair cursor，candidate page 通过有界 fair rank page 保持 12/8 配额，
+  并通过 `SqliteRuntime` 的 bounded immediate claim 保持首个远端尝试预算。
+- work reservation、retry、settlement 和 billing adjustment 在同一 SQLite 写事务中以 reservation
+  fence 排序；失效 worker 只能放弃结果，不能覆盖新 reservation 或重复改变账务真值。窗口内
+  hydration 按 32-key page 持久化游标和累计 upstream usage，最后一页完成后才结算，
+  `scheduling_key_id` 只承担公平代表调度。
+- usage projection 会 enqueue 唯一 reconciliation representative job；启动恢复 stale job、持续
+  推进 legacy backfill，并由 HTTP/MCP 两条入口唤醒 maintenance runtime，使新窗口不必等待
+  scheduler tick 才进入处理。work/cursor 是可由 replicated usage 重建的本地投影，不加入旧 HA
+  节点的严格事件白名单。
+- aborted or budget-exhausted runs must not leave reservations stranded behind a running job; recovery
+  therefore clears reservations, fences the claimed job, and enqueues its continuation in one bounded
+  transaction.
 
 ## References
 

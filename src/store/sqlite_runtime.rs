@@ -361,4 +361,22 @@ mod tests {
             .await
             .expect("release writer lock");
     }
+
+    #[tokio::test]
+    async fn exhausted_primary_pool_read_is_deferred_within_operation_budget() {
+        let (runtime, _lock_pool, _temp_dir) = test_runtime().await;
+        let primary = runtime.compatibility_primary_pool();
+        let first = primary.acquire().await.expect("first primary connection");
+        let second = primary.acquire().await.expect("second primary connection");
+        let started = std::time::Instant::now();
+
+        let outcome = runtime.read(&CancellationToken::new()).await;
+
+        assert!(matches!(
+            outcome,
+            SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(750));
+        drop((first, second));
+    }
 }

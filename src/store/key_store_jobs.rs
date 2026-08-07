@@ -19,6 +19,12 @@ impl KeyStore {
     }
 
     fn scheduled_job_priority(job_type: &str, trigger_source: &str) -> i64 {
+        if matches!(
+            job_type,
+            "ha_outbox_gc/control" | "ha_outbox_gc/billing" | "ha_outbox_gc/runtime"
+        ) {
+            return if trigger_source == "manual" { 1 } else { 3 };
+        }
         match (trigger_source, job_type) {
             ("manual", "request_logs_gc" | "db_compaction") => 0,
             ("manual", _) => 1,
@@ -60,7 +66,7 @@ impl KeyStore {
                 WHEN {trigger_source_column} = 'manual' AND ({job_type_column} = 'request_logs_gc' OR {job_type_column} = 'db_compaction') THEN 0 \
                 WHEN {trigger_source_column} = 'manual' THEN 1 \
                 WHEN {job_type_column} = 'request_logs_gc' OR {job_type_column} = 'db_compaction' THEN 2 \
-                WHEN {job_type_column} = 'auth_token_logs_gc' OR {job_type_column} = 'ha_outbox_gc' OR {job_type_column} = 'mcp_sessions_gc' OR {job_type_column} = 'mcp_session_init_backoffs_gc' OR {job_type_column} = 'token_usage_rollup' OR {job_type_column} = 'upstream_reconciliation' OR {job_type_column} = 'usage_aggregation' THEN 3 \
+                WHEN {job_type_column} = 'auth_token_logs_gc' OR {job_type_column} = 'ha_outbox_gc' OR {job_type_column} LIKE 'ha_outbox_gc/%' OR {job_type_column} = 'mcp_sessions_gc' OR {job_type_column} = 'mcp_session_init_backoffs_gc' OR {job_type_column} = 'token_usage_rollup' OR {job_type_column} = 'upstream_reconciliation' OR {job_type_column} = 'usage_aggregation' THEN 3 \
                 WHEN {job_type_column} = 'linuxdo_user_tag_binding_refresh' OR {job_type_column} = 'forward_proxy_geo_refresh' OR {job_type_column} = 'linuxdo_credit_recharge_lifecycle' OR {job_type_column} = 'linuxdo_user_status_sync' THEN 4 \
                 WHEN {job_type_column} = 'quota_sync' OR {job_type_column} = 'quota_sync/manual' OR {job_type_column} = 'quota_sync/hot' THEN 5 \
                 ELSE 6 \
@@ -160,6 +166,16 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
         }
+        if !self
+            .table_column_exists("scheduled_jobs", "ha_gc_work_generation")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE scheduled_jobs ADD COLUMN ha_gc_work_generation INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
         self.create_scheduled_jobs_indexes().await
     }
 
@@ -187,6 +203,7 @@ impl KeyStore {
                     queued_at INTEGER NOT NULL,
                     available_at INTEGER NOT NULL DEFAULT 0,
                     claim_generation INTEGER NOT NULL DEFAULT 0,
+                    ha_gc_work_generation INTEGER,
                     started_at INTEGER,
                     finished_at INTEGER,
                     FOREIGN KEY (key_id) REFERENCES api_keys(id)
@@ -208,6 +225,7 @@ impl KeyStore {
                     queued_at,
                     available_at,
                     claim_generation,
+                    ha_gc_work_generation,
                     started_at,
                     finished_at
                 )
@@ -222,6 +240,7 @@ impl KeyStore {
                     started_at,
                     0,
                     0,
+                    NULL,
                     started_at,
                     finished_at
                 FROM scheduled_jobs
@@ -858,7 +877,25 @@ impl KeyStore {
                     UPDATE scheduled_jobs
                     SET status = 'running',
                         started_at = ?,
-                        claim_generation = claim_generation + 1
+                        claim_generation = claim_generation + 1,
+                        ha_gc_work_generation = CASE job_type
+                            WHEN 'ha_outbox_gc/control' THEN (
+                                SELECT claim_generation
+                                FROM ha_outbox_gc_work
+                                WHERE channel = 'control'
+                            )
+                            WHEN 'ha_outbox_gc/billing' THEN (
+                                SELECT claim_generation
+                                FROM ha_outbox_gc_work
+                                WHERE channel = 'billing'
+                            )
+                            WHEN 'ha_outbox_gc/runtime' THEN (
+                                SELECT claim_generation
+                                FROM ha_outbox_gc_work
+                                WHERE channel = 'runtime'
+                            )
+                            ELSE ha_gc_work_generation
+                        END
                     WHERE id = ?
                       AND status = 'queued'
                       AND available_at <= ?
@@ -1127,37 +1164,70 @@ impl KeyStore {
                 r#"
                 UPDATE scheduled_jobs
                 SET status = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN 'queued'
+                        WHEN status = 'running'
+                            AND (
+                                job_type = 'upstream_reconciliation'
+                                OR job_type = 'ha_outbox_gc'
+                                OR job_type LIKE 'ha_outbox_gc/%'
+                            )
+                            THEN 'queued'
                         ELSE 'abandoned'
                     END,
                     message = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc'
+                        WHEN status = 'running'
+                            AND (
+                                job_type = 'upstream_reconciliation'
+                                OR job_type = 'ha_outbox_gc'
+                                OR job_type LIKE 'ha_outbox_gc/%'
+                            )
                             THEN COALESCE(message, 'deferred=process_restart')
                         ELSE COALESCE(message, 'abandoned after process restart')
                     END,
                     started_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND (
+                                job_type = 'upstream_reconciliation'
+                                OR job_type = 'ha_outbox_gc'
+                                OR job_type LIKE 'ha_outbox_gc/%'
+                            )
+                            THEN NULL
                         ELSE started_at
                     END,
                     finished_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND (
+                                job_type = 'upstream_reconciliation'
+                                OR job_type = 'ha_outbox_gc'
+                                OR job_type LIKE 'ha_outbox_gc/%'
+                            )
+                            THEN NULL
                         ELSE ?
                     END,
                     available_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN MAX(available_at, ?)
+                        WHEN status = 'running'
+                            AND (
+                                job_type = 'upstream_reconciliation'
+                                OR job_type = 'ha_outbox_gc'
+                                OR job_type LIKE 'ha_outbox_gc/%'
+                            )
+                            THEN MAX(available_at, ?)
                         ELSE available_at
                     END
                 WHERE (
                         status = 'running'
                         OR (
                             status = 'queued'
-                            -- These are durable GC catch-up contracts. Their available_at
+                            -- These are durable catch-up contracts. Their available_at
                             -- guards still prevent an early claim after restart.
                             AND NOT (
-                                trigger_source = 'auto'
-                                AND (
-                                    job_type = 'request_logs_gc'
-                                    OR job_type = 'ha_outbox_gc'
+                                job_type = 'upstream_reconciliation'
+                                OR (
+                                    trigger_source = 'auto'
+                                    AND (
+                                        job_type = 'request_logs_gc'
+                                        OR job_type = 'ha_outbox_gc'
+                                        OR job_type LIKE 'ha_outbox_gc/%'
+                                    )
                                 )
                             )
                         )
@@ -1170,7 +1240,15 @@ impl KeyStore {
             .execute(&self.pool)
             .await
             {
-                Ok(result) => return Ok(result.rows_affected()),
+                Ok(result) => {
+                    self.recover_upstream_reconciliation_reservations(
+                        now,
+                        "process_restart",
+                        "process_restart",
+                    )
+                    .await?;
+                    return Ok(result.rows_affected());
+                }
                 Err(err) => {
                     let err = ProxyError::Database(err);
                     if sleep_before_sqlite_transient_write_retry(
@@ -1225,13 +1303,13 @@ impl KeyStore {
                    available_at = ?,
                    claim_generation = claim_generation + 1,
                    message = CASE
-                       WHEN job_type = 'ha_outbox_gc' THEN 'deferred=stale_recovery'
+                       WHEN job_type = 'ha_outbox_gc' OR job_type LIKE 'ha_outbox_gc/%' THEN 'deferred=stale_recovery'
                        ELSE 'deferred=stale_reconciliation_recovery'
                    END
                WHERE status = 'running'
                  AND started_at IS NOT NULL
                  AND (
-                     (job_type = 'ha_outbox_gc' AND started_at <= ?)
+                     ((job_type = 'ha_outbox_gc' OR job_type LIKE 'ha_outbox_gc/%') AND started_at <= ?)
                      OR (job_type = 'upstream_reconciliation' AND started_at <= ?)
                  )"#,
         )
