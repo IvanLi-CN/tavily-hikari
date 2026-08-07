@@ -5,8 +5,8 @@
 ## Current Status
 
 - Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
-  child PR integration；Ticket #490 reconciliation work projection 已在 child branch 实现，等待
-  wave-gated integration
+  child PR integration；Ticket #489 per-channel HA GC 已合入 integration branch；Ticket #490
+  reconciliation work projection 已在 child branch 实现，等待 wave-gated integration
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -21,7 +21,7 @@
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
 5. HaPeerObservationStore
-6. per-channel HA GC 与 no-op outbox suppression
+6. per-channel HA GC 与 no-op outbox suppression（Ticket #489 已合入 integration branch）
 7. reconciliation work projection（Ticket #490 已实现，等待 wave-gated integration）
 8. AlertProjection expand/shadow
 9. ReconciliationEngine cutover
@@ -39,6 +39,9 @@
 - 将这些 legacy workers 封装为独立 `MaintenanceRuntime`、把 ingress fence 下沉为各业务写事务的细粒度
   authority epoch guard，以及其余 runtime ownership 收敛由后续 Ticket 完成。
 - aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
+- Ticket #489 已为 control、billing、runtime 建立独立 durable GC work、claim generation、eligibility、
+  adaptive continuation 与 typed outcome；channel scheduled job 完成和 continuation 在同一 SQLite
+  writer transaction 内提交，并为 wire-identical UPDATE 抑制 HA outbox 事件。
 
 ## Related Changes
 
@@ -48,6 +51,7 @@
   compatibility handles while expand-contract callers migrate; pool sizes, busy timeouts,
   PRAGMAs, and transaction SQL remain unchanged.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
+- Ticket #489: durable per-channel HA GC work and unchanged-wire UPDATE suppression.
 - Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
   recent/backlog cursors, stable per-key fair ranks, atomic reservations, bounded paged hydration,
   restartable legacy backfill, representative scheduling, and reservation-fenced settlement

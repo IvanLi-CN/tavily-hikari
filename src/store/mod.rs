@@ -11,13 +11,14 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tracing::log::LevelFilter;
 use tracing::{error, info, warn};
 
 mod immediate_transaction;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 pub(crate) mod sqlite_runtime;
-pub(crate) use sqlite_runtime::SqliteRuntime;
+pub(crate) use sqlite_runtime::{SqliteDeferredReason, SqliteOperationOutcome, SqliteRuntime};
 
 pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
@@ -2609,6 +2610,7 @@ include!("key_store_ha_defs.rs");
 include!("key_store_ha_watermarks.rs");
 include!("key_store_writable_authority.rs");
 include!("key_store_ha.rs");
+include!("key_store_ha_gc_work.rs");
 #[cfg(test)]
 include!("key_store_request_logs_and_dashboard_test_support.rs");
 

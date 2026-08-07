@@ -295,6 +295,7 @@
       ],
       "include_prefixes": [
         "ha_perf_sampling_tests::",
+        "tests::ha_gc_work::",
         "tests::jobs_and_request_log_retention::abandon_",
         "tests::jobs_and_request_log_retention::abandoned_",
         "tests::jobs_and_request_log_retention::auth_",
