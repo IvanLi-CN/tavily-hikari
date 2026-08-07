@@ -271,24 +271,33 @@ impl KeyStore {
     ) -> Result<DashboardMonthSeries, ProxyError> {
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
 
-        let current = Self::fetch_dashboard_month_series_points_tx(
-            &mut tx,
-            summary_windows.month_start,
-            summary_windows.month_period_end,
-            summary_windows.month_end,
+        let current = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_month_series_points_tx(
+                &mut tx,
+                summary_windows.month_start,
+                summary_windows.month_period_end,
+                summary_windows.month_end,
+            ),
         )
         .await?;
-        let comparison_has_retained_data = Self::dashboard_month_series_has_retained_data_tx(
-            &mut tx,
-            summary_windows.previous_month_start,
-            summary_windows.previous_month_end,
+        let comparison_has_retained_data = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::dashboard_month_series_has_retained_data_tx(
+                &mut tx,
+                summary_windows.previous_month_start,
+                summary_windows.previous_month_end,
+            ),
         )
         .await?;
-        let mut comparison = Self::fetch_dashboard_month_series_points_tx(
-            &mut tx,
-            summary_windows.previous_month_start,
-            summary_windows.previous_month_end,
-            summary_windows.previous_month_end,
+        let mut comparison = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_month_series_points_tx(
+                &mut tx,
+                summary_windows.previous_month_start,
+                summary_windows.previous_month_end,
+                summary_windows.previous_month_end,
+            ),
         )
         .await?;
         for (index, point) in comparison.iter_mut().enumerate() {

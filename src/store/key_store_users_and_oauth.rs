@@ -1569,7 +1569,10 @@ impl KeyStore {
         diagnostic_metadata: &RequestLogDiagnosticMetadata,
     ) -> Result<i64, ProxyError> {
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let log_id: i64 = sqlx::query_scalar(
+        let log_id = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            async {
+                let log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
                 token_id,
@@ -1696,6 +1699,10 @@ impl KeyStore {
         .bind(created_at)
         .bind(error_message)
         .execute(&mut **tx)
+        .await?;
+                Ok::<i64, ProxyError>(log_id)
+            },
+        )
         .await?;
         tx.commit().await?;
         Ok(log_id)

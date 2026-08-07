@@ -118,90 +118,96 @@ impl KeyStore {
         let mut cursor: Option<(String, i64, i64)> = None;
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
 
-        loop {
-            let query_sql = dashboard_quota_sample_page_sql(cursor.is_some());
-            let mut query = sqlx::query(&query_sql)
-                .bind(sample_window_start)
-                .bind(today_end)
-                .bind(sample_window_start);
-            if let Some((key_id, captured_at, id)) = cursor.as_ref() {
-                query = query
-                    .bind(key_id)
-                    .bind(key_id)
-                    .bind(captured_at)
-                    .bind(captured_at)
-                    .bind(id);
-            }
-            let sample_rows = query
-                .bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
-                .fetch_all(&mut **tx)
-                .await
-                .map_err(ProxyError::Database)?;
-            if sample_rows.is_empty() {
-                break;
-            }
-            let next_cursor = {
-                let row = sample_rows.last().expect("non-empty quota sample page");
-                (
-                    row.try_get::<String, _>("key_id")?,
-                    row.try_get::<i64, _>("captured_at")?,
-                    row.try_get::<i64, _>("id")?,
-                )
-            };
-
-            for row in sample_rows {
-                let key_id: String = row.try_get("key_id")?;
-                if current_key.as_deref() != Some(key_id.as_str()) {
-                    current_key = Some(key_id.clone());
-                    previous_sample = None;
+        SqliteRequestStatsTransaction::run_bounded_operation(tx.operation_budget(), async {
+            loop {
+                let query_sql = dashboard_quota_sample_page_sql(cursor.is_some());
+                let mut query = sqlx::query(&query_sql)
+                    .bind(sample_window_start)
+                    .bind(today_end)
+                    .bind(sample_window_start);
+                if let Some((key_id, captured_at, id)) = cursor.as_ref() {
+                    query = query
+                        .bind(key_id)
+                        .bind(key_id)
+                        .bind(captured_at)
+                        .bind(captured_at)
+                        .bind(id);
                 }
-
-                let sample = QuotaSyncSampleRow {
-                    quota_remaining: row.try_get("quota_remaining")?,
-                    captured_at: row.try_get("captured_at")?,
+                let sample_rows = query
+                    .bind(DASHBOARD_QUOTA_SAMPLE_PAGE_ROWS)
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(ProxyError::Database)?;
+                if sample_rows.is_empty() {
+                    break;
+                }
+                let next_cursor = {
+                    let row = sample_rows.last().expect("non-empty quota sample page");
+                    (
+                        row.try_get::<String, _>("key_id")?,
+                        row.try_get::<i64, _>("captured_at")?,
+                        row.try_get::<i64, _>("id")?,
+                    )
                 };
-                let delta = previous_sample
-                    .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
-                    .unwrap_or(0);
 
-                if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
-                    month_charge.upstream_actual_credits += delta;
-                    month_sampled_keys.insert(key_id.clone());
-                    if month_charge
-                        .latest_sync_at
-                        .map(|latest| sample.captured_at > latest)
-                        .unwrap_or(true)
-                    {
-                        month_charge.latest_sync_at = Some(sample.captured_at);
+                for row in sample_rows {
+                    let key_id: String = row.try_get("key_id")?;
+                    if current_key.as_deref() != Some(key_id.as_str()) {
+                        current_key = Some(key_id.clone());
+                        previous_sample = None;
                     }
-                }
-                if sample.captured_at >= today_start && sample.captured_at < today_end {
-                    today_charge.upstream_actual_credits += delta;
-                    today_sampled_keys.insert(key_id.clone());
-                    if today_charge
-                        .latest_sync_at
-                        .map(|latest| sample.captured_at > latest)
-                        .unwrap_or(true)
-                    {
-                        today_charge.latest_sync_at = Some(sample.captured_at);
-                    }
-                }
-                if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
-                    yesterday_charge.upstream_actual_credits += delta;
-                    yesterday_sampled_keys.insert(key_id.clone());
-                    if yesterday_charge
-                        .latest_sync_at
-                        .map(|latest| sample.captured_at > latest)
-                        .unwrap_or(true)
-                    {
-                        yesterday_charge.latest_sync_at = Some(sample.captured_at);
-                    }
-                }
 
-                previous_sample = Some(sample);
+                    let sample = QuotaSyncSampleRow {
+                        quota_remaining: row.try_get("quota_remaining")?,
+                        captured_at: row.try_get("captured_at")?,
+                    };
+                    let delta = previous_sample
+                        .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
+                        .unwrap_or(0);
+
+                    if sample.captured_at >= month_quota_charge_start
+                        && sample.captured_at < today_end
+                    {
+                        month_charge.upstream_actual_credits += delta;
+                        month_sampled_keys.insert(key_id.clone());
+                        if month_charge
+                            .latest_sync_at
+                            .map(|latest| sample.captured_at > latest)
+                            .unwrap_or(true)
+                        {
+                            month_charge.latest_sync_at = Some(sample.captured_at);
+                        }
+                    }
+                    if sample.captured_at >= today_start && sample.captured_at < today_end {
+                        today_charge.upstream_actual_credits += delta;
+                        today_sampled_keys.insert(key_id.clone());
+                        if today_charge
+                            .latest_sync_at
+                            .map(|latest| sample.captured_at > latest)
+                            .unwrap_or(true)
+                        {
+                            today_charge.latest_sync_at = Some(sample.captured_at);
+                        }
+                    }
+                    if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
+                        yesterday_charge.upstream_actual_credits += delta;
+                        yesterday_sampled_keys.insert(key_id.clone());
+                        if yesterday_charge
+                            .latest_sync_at
+                            .map(|latest| sample.captured_at > latest)
+                            .unwrap_or(true)
+                        {
+                            yesterday_charge.latest_sync_at = Some(sample.captured_at);
+                        }
+                    }
+
+                    previous_sample = Some(sample);
+                }
+                cursor = Some(next_cursor);
             }
-            cursor = Some(next_cursor);
-        }
+            Ok::<(), ProxyError>(())
+        })
+        .await?;
 
         tx.commit().await.map_err(ProxyError::Database)?;
 
@@ -298,9 +304,11 @@ impl KeyStore {
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let signature =
-            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start)
-                .await?;
+        let signature = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start),
+        )
+        .await?;
         tx.commit().await?;
         Ok(signature)
     }
@@ -643,7 +651,11 @@ impl KeyStore {
         self.best_effort_flush_request_stats_writes_for_read("summary_windows")
             .await?;
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
+        let windows = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_summary_windows_tx(&mut tx, bounds),
+        )
+        .await?;
         tx.commit().await?;
         Ok(windows)
     }
@@ -894,12 +906,15 @@ impl KeyStore {
         self.best_effort_flush_request_stats_writes_for_read("dashboard_hourly_request_window")
             .await?;
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let window = Self::fetch_dashboard_hourly_request_window_tx(
-            &mut tx,
-            current_bucket_start,
-            bucket_seconds,
-            visible_buckets,
-            retained_buckets,
+        let window = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_hourly_request_window_tx(
+                &mut tx,
+                current_bucket_start,
+                bucket_seconds,
+                visible_buckets,
+                retained_buckets,
+            ),
         )
         .await?;
         tx.commit().await?;
@@ -929,22 +944,35 @@ impl KeyStore {
         let pending_dashboard_rollup_signature =
             self.request_stats_pipeline.pending_dashboard_freshness_signature().await;
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let summary_windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
+        let summary_windows = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_summary_windows_tx(&mut tx, bounds),
+        )
+        .await?;
         #[cfg(debug_assertions)]
         self.wait_for_dashboard_overview_read_pause_if_installed().await;
-        let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
-        let dashboard_rollup_signature =
+        let summary = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_summary_without_flush_tx(&mut tx),
+        )
+        .await?;
+        let dashboard_rollup_signature = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
             Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(
                 &mut tx,
                 summary_windows.previous_month_start,
-            )
-            .await?;
-        let hourly_request_window = Self::fetch_dashboard_hourly_request_window_tx(
-            &mut tx,
-            current_bucket_start,
-            bucket_seconds,
-            visible_buckets,
-            retained_buckets,
+            ),
+        )
+        .await?;
+        let hourly_request_window = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_hourly_request_window_tx(
+                &mut tx,
+                current_bucket_start,
+                bucket_seconds,
+                visible_buckets,
+                retained_buckets,
+            ),
         )
         .await?;
         tx.commit().await?;

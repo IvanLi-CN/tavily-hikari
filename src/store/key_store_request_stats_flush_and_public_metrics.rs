@@ -290,39 +290,43 @@ impl RequestStatsPipeline {
         } else {
             request_stats_pipeline.begin_primary_transaction().await?
         };
-        let applied_at = request_stats_pipeline.backend_time().now_ts();
-        let marker_inserted = sqlx::query(
-            r#"
-            INSERT INTO request_stats_flush_batches (batch_id, applied_at)
-            VALUES (?, ?)
-            ON CONFLICT(batch_id) DO NOTHING
-            "#,
-        )
-        .bind(&batch.batch_id)
-        .bind(applied_at)
-        .execute(&mut **tx)
-        .await
-        .map_err(ProxyError::Database)?
-        .rows_affected()
-            > 0;
-
-        if marker_inserted {
-            request_stats_pipeline.flush_request_stats_writes_once(
-                &mut tx,
-                &batch.pending_dashboard_rollups,
-                &batch.pending_api_key_usage,
-                &batch.pending_auth_token_activity,
-                &batch.pending_account_request_rollups,
-                &batch.pending_request_log_catalog,
+        SqliteRequestStatsTransaction::run_bounded_operation(tx.operation_budget(), async {
+            let applied_at = request_stats_pipeline.backend_time().now_ts();
+            let marker_inserted = sqlx::query(
+                r#"
+                INSERT INTO request_stats_flush_batches (batch_id, applied_at)
+                VALUES (?, ?)
+                ON CONFLICT(batch_id) DO NOTHING
+                "#,
             )
-            .await?;
-        }
-
-        sqlx::query("DELETE FROM request_stats_flush_batches WHERE applied_at < ?")
-            .bind(applied_at.saturating_sub(REQUEST_STATS_FLUSH_BATCH_MARKER_RETENTION_SECS))
+            .bind(&batch.batch_id)
+            .bind(applied_at)
             .execute(&mut **tx)
             .await
-            .map_err(ProxyError::Database)?;
+            .map_err(ProxyError::Database)?
+            .rows_affected()
+                > 0;
+
+            if marker_inserted {
+                request_stats_pipeline.flush_request_stats_writes_once(
+                    &mut tx,
+                    &batch.pending_dashboard_rollups,
+                    &batch.pending_api_key_usage,
+                    &batch.pending_auth_token_activity,
+                    &batch.pending_account_request_rollups,
+                    &batch.pending_request_log_catalog,
+                )
+                .await?;
+            }
+
+            sqlx::query("DELETE FROM request_stats_flush_batches WHERE applied_at < ?")
+                .bind(applied_at.saturating_sub(REQUEST_STATS_FLUSH_BATCH_MARKER_RETENTION_SECS))
+                .execute(&mut **tx)
+                .await
+                .map_err(ProxyError::Database)?;
+            Ok::<(), ProxyError>(())
+        })
+        .await?;
         tx.commit().await.map_err(ProxyError::Database)
     }
 
@@ -648,10 +652,13 @@ impl KeyStore {
                 )
                 .await?;
             let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-            let retained_tail_success = Self::fetch_visible_request_log_success_count_tx(
-                &mut tx,
-                gap_end,
-                last_gap_bucket_end,
+            let retained_tail_success = SqliteRequestStatsTransaction::run_bounded_operation(
+                tx.operation_budget(),
+                Self::fetch_visible_request_log_success_count_tx(
+                    &mut tx,
+                    gap_end,
+                    last_gap_bucket_end,
+                ),
             )
             .await?;
             tx.commit().await?;

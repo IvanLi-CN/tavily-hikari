@@ -80,11 +80,33 @@ impl DerefMut for SqliteRequestStatsConnection {
 }
 
 #[derive(Debug)]
-pub(crate) struct SqliteRequestStatsTransaction<'c>(sqlx::Transaction<'c, Sqlite>);
+pub(crate) struct SqliteRequestStatsTransaction<'c> {
+    transaction: sqlx::Transaction<'c, Sqlite>,
+    operation_budget: Duration,
+}
 
 impl<'c> SqliteRequestStatsTransaction<'c> {
     pub(crate) async fn commit(self) -> Result<(), sqlx::Error> {
-        self.0.commit().await
+        match tokio::time::timeout(self.operation_budget, self.transaction.commit()).await {
+            Ok(result) => result,
+            Err(_) => Err(sqlx::Error::PoolTimedOut),
+        }
+    }
+
+    pub(crate) fn operation_budget(&self) -> Duration {
+        self.operation_budget
+    }
+
+    pub(crate) async fn run_bounded_operation<F, T>(
+        operation_budget: Duration,
+        operation: F,
+    ) -> Result<T, ProxyError>
+    where
+        F: Future<Output = Result<T, ProxyError>>,
+    {
+        run_bounded_request_stats_operation(operation_budget, operation)
+            .await
+            .into_result()
     }
 }
 
@@ -92,13 +114,35 @@ impl<'c> Deref for SqliteRequestStatsTransaction<'c> {
     type Target = sqlx::Transaction<'c, Sqlite>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.transaction
     }
 }
 
 impl<'c> DerefMut for SqliteRequestStatsTransaction<'c> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.transaction
+    }
+}
+
+async fn run_bounded_request_stats_operation<F, T, E>(
+    operation_budget: Duration,
+    operation: F,
+) -> SqliteOperationOutcome<T>
+where
+    F: Future<Output = Result<T, E>>,
+    E: Into<ProxyError>,
+{
+    match tokio::time::timeout(operation_budget, operation).await {
+        Ok(Ok(value)) => SqliteOperationOutcome::Completed(value),
+        Ok(Err(error)) => {
+            let error = error.into();
+            if is_transient_sqlite_write_error(&error) {
+                SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy)
+            } else {
+                SqliteOperationOutcome::Failed(error)
+            }
+        }
+        Err(_) => SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy),
     }
 }
 
@@ -209,33 +253,15 @@ impl SqliteRuntime {
         Arc::clone(&self.admission)
     }
 
-    async fn run_bounded_request_stats_operation<F, T>(
-        &self,
-        operation: F,
-    ) -> SqliteOperationOutcome<T>
-    where
-        F: Future<Output = Result<T, sqlx::Error>>,
-    {
-        match tokio::time::timeout(self.operation_budget, operation).await {
-            Ok(Ok(value)) => SqliteOperationOutcome::Completed(value),
-            Ok(Err(error)) => {
-                let error = ProxyError::Database(error);
-                if is_transient_sqlite_write_error(&error) {
-                    SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy)
-                } else {
-                    SqliteOperationOutcome::Failed(error)
-                }
-            }
-            Err(_) => SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy),
-        }
-    }
-
     pub(crate) async fn fetch_request_stats_one<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> SqliteOperationOutcome<sqlx::sqlite::SqliteRow> {
-        self.run_bounded_request_stats_operation(query.fetch_one(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.fetch_one(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_request_stats_scalar_one<'q, O>(
@@ -246,16 +272,22 @@ impl SqliteRuntime {
         O: Send + Unpin + 'q,
         (O,): Send + Unpin + for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>,
     {
-        self.run_bounded_request_stats_operation(query.fetch_one(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.fetch_one(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_request_stats_optional<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> SqliteOperationOutcome<Option<sqlx::sqlite::SqliteRow>> {
-        self.run_bounded_request_stats_operation(query.fetch_optional(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.fetch_optional(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_request_stats_scalar_optional<'q, O>(
@@ -266,46 +298,61 @@ impl SqliteRuntime {
         O: Send + Unpin + 'q,
         (O,): Send + Unpin + for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>,
     {
-        self.run_bounded_request_stats_operation(query.fetch_optional(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.fetch_optional(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_request_stats_all<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> SqliteOperationOutcome<Vec<sqlx::sqlite::SqliteRow>> {
-        self.run_bounded_request_stats_operation(query.fetch_all(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.fetch_all(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn execute_request_stats<'q>(
         &self,
         query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     ) -> SqliteOperationOutcome<sqlx::sqlite::SqliteQueryResult> {
-        self.run_bounded_request_stats_operation(query.execute(&self.primary_pool))
-            .await
+        run_bounded_request_stats_operation(
+            self.operation_budget,
+            query.execute(&self.primary_pool),
+        )
+        .await
     }
 
     pub(crate) async fn begin_primary_transaction(
         &self,
     ) -> SqliteOperationOutcome<SqliteRequestStatsTransaction<'_>> {
-        self.run_bounded_request_stats_operation(self.primary_pool.begin())
+        run_bounded_request_stats_operation(self.operation_budget, self.primary_pool.begin())
             .await
-            .map(SqliteRequestStatsTransaction)
+            .map(|transaction| SqliteRequestStatsTransaction {
+                transaction,
+                operation_budget: self.operation_budget,
+            })
     }
 
     pub(crate) async fn begin_read_flush_transaction(
         &self,
     ) -> SqliteOperationOutcome<SqliteRequestStatsTransaction<'_>> {
-        self.run_bounded_request_stats_operation(self.read_flush_pool.begin())
+        run_bounded_request_stats_operation(self.operation_budget, self.read_flush_pool.begin())
             .await
-            .map(SqliteRequestStatsTransaction)
+            .map(|transaction| SqliteRequestStatsTransaction {
+                transaction,
+                operation_budget: self.operation_budget,
+            })
     }
 
     pub(crate) async fn acquire_primary_connection(
         &self,
     ) -> SqliteOperationOutcome<SqliteRequestStatsConnection> {
-        self.run_bounded_request_stats_operation(self.primary_pool.acquire())
+        run_bounded_request_stats_operation(self.operation_budget, self.primary_pool.acquire())
             .await
             .map(SqliteRequestStatsConnection)
     }
@@ -416,6 +463,50 @@ mod tests {
             SqliteOperationOutcome::Deferred(SqliteDeferredReason::Busy)
         ));
         assert!(started.elapsed() < std::time::Duration::from_millis(750));
+        sqlx::query("ROLLBACK")
+            .execute(&mut *lock)
+            .await
+            .expect("release writer lock");
+    }
+
+    #[tokio::test]
+    async fn request_stats_transaction_statement_is_deferred_within_operation_budget() {
+        let (runtime, lock_pool, _temp_dir) = test_runtime().await;
+        let primary = runtime.compatibility_primary_pool();
+        sqlx::query("CREATE TABLE request_stats_transaction_probe (value INTEGER NOT NULL)")
+            .execute(&primary)
+            .await
+            .expect("create request stats transaction probe table");
+
+        let mut lock = lock_pool.acquire().await.expect("lock connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *lock)
+            .await
+            .expect("hold writer lock");
+
+        let mut transaction = match runtime.begin_primary_transaction().await {
+            SqliteOperationOutcome::Completed(transaction) => transaction,
+            other => panic!("request stats transaction did not begin: {other:?}"),
+        };
+        let started = std::time::Instant::now();
+        let outcome = SqliteRequestStatsTransaction::run_bounded_operation(
+            transaction.operation_budget(),
+            async {
+                sqlx::query("INSERT INTO request_stats_transaction_probe (value) VALUES (1)")
+                    .execute(&mut **transaction)
+                    .await
+                    .map(|_| ())
+                    .map_err(ProxyError::Database)
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            outcome,
+            Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(750));
+        drop(transaction);
         sqlx::query("ROLLBACK")
             .execute(&mut *lock)
             .await

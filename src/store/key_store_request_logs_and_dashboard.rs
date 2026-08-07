@@ -2579,7 +2579,11 @@ impl KeyStore {
 
     pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
         let mut tx = self.request_stats_pipeline.begin_primary_transaction().await?;
-        let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
+        let summary = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_summary_without_flush_tx(&mut tx),
+        )
+        .await?;
         tx.commit().await?;
         Ok(summary)
     }
@@ -2887,27 +2891,36 @@ impl KeyStore {
                         (0, floor)
                     } else {
                         let next_minute_start = minute_start.saturating_add(SECS_PER_MINUTE);
-                        let partial_minute_success = Self::fetch_visible_request_log_success_count_tx(
-                            &mut tx,
-                            floor,
-                            next_minute_start.min(now.saturating_add(1)),
-                        )
-                        .await?;
+                        let partial_minute_success =
+                            SqliteRequestStatsTransaction::run_bounded_operation(
+                                tx.operation_budget(),
+                                Self::fetch_visible_request_log_success_count_tx(
+                                    &mut tx,
+                                    floor,
+                                    next_minute_start.min(now.saturating_add(1)),
+                                ),
+                            )
+                            .await?;
                         (partial_minute_success, next_minute_start)
                     }
                 }
                 Some(_) => (0, month_start),
                 None => (0, now.saturating_add(1)),
             };
-        let dashboard_month_success = Self::fetch_dashboard_rollup_success_count_for_range_tx(
-            &mut tx,
-            dashboard_month_start,
-            now.saturating_add(1),
+        let dashboard_month_success = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_rollup_success_count_for_range_tx(
+                &mut tx,
+                dashboard_month_start,
+                now.saturating_add(1),
+            ),
         )
         .await?;
-        let daily_success =
-            Self::fetch_dashboard_rollup_success_count_for_range_tx(&mut tx, day_start, day_end)
-                .await?;
+        let daily_success = SqliteRequestStatsTransaction::run_bounded_operation(
+            tx.operation_budget(),
+            Self::fetch_dashboard_rollup_success_count_for_range_tx(&mut tx, day_start, day_end),
+        )
+        .await?;
         tx.commit().await?;
 
         Ok(SuccessBreakdown {
