@@ -63,19 +63,40 @@ impl DerefMut for SqliteReadConnection {
 }
 
 #[derive(Debug)]
-pub(crate) struct SqliteRequestStatsConnection(sqlx::pool::PoolConnection<Sqlite>);
+pub(crate) struct SqliteRequestStatsConnection {
+    connection: sqlx::pool::PoolConnection<Sqlite>,
+    operation_budget: Duration,
+}
 
 impl Deref for SqliteRequestStatsConnection {
     type Target = sqlx::SqliteConnection;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
+        self.connection.as_ref()
     }
 }
 
 impl DerefMut for SqliteRequestStatsConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut()
+        self.connection.as_mut()
+    }
+}
+
+impl SqliteRequestStatsConnection {
+    pub(crate) fn operation_budget(&self) -> Duration {
+        self.operation_budget
+    }
+
+    pub(crate) async fn run_bounded_operation<F, T>(
+        operation_budget: Duration,
+        operation: F,
+    ) -> Result<T, ProxyError>
+    where
+        F: Future<Output = Result<T, ProxyError>>,
+    {
+        run_bounded_request_stats_operation(operation_budget, operation)
+            .await
+            .into_result()
     }
 }
 
@@ -353,7 +374,10 @@ impl SqliteRuntime {
     ) -> SqliteOperationOutcome<SqliteRequestStatsConnection> {
         run_bounded_request_stats_operation(self.operation_budget, self.primary_pool.acquire())
             .await
-            .map(SqliteRequestStatsConnection)
+            .map(|connection| SqliteRequestStatsConnection {
+                connection,
+                operation_budget: self.operation_budget,
+            })
     }
 }
 
@@ -510,6 +534,52 @@ mod tests {
             .execute(&mut *lock)
             .await
             .expect("release writer lock");
+    }
+
+    #[tokio::test]
+    async fn request_stats_transaction_commit_is_deferred_within_operation_budget() {
+        let (runtime, lock_pool, _temp_dir) = test_runtime().await;
+        let primary = runtime.compatibility_primary_pool();
+        sqlx::query("CREATE TABLE request_stats_commit_probe (value INTEGER NOT NULL)")
+            .execute(&primary)
+            .await
+            .expect("create request stats commit probe table");
+        sqlx::query("INSERT INTO request_stats_commit_probe (value) VALUES (0)")
+            .execute(&primary)
+            .await
+            .expect("seed request stats commit probe");
+
+        let mut transaction = match runtime.begin_primary_transaction().await {
+            SqliteOperationOutcome::Completed(transaction) => transaction,
+            other => panic!("request stats transaction did not begin: {other:?}"),
+        };
+        sqlx::query("UPDATE request_stats_commit_probe SET value = 1")
+            .execute(&mut **transaction)
+            .await
+            .expect("write request stats commit probe");
+
+        let mut read_lock = lock_pool.acquire().await.expect("read lock connection");
+        sqlx::query("BEGIN")
+            .execute(&mut *read_lock)
+            .await
+            .expect("begin read lock transaction");
+        sqlx::query("SELECT value FROM request_stats_commit_probe")
+            .fetch_one(&mut *read_lock)
+            .await
+            .expect("hold read lock");
+
+        let started = std::time::Instant::now();
+        let outcome = transaction.commit().await;
+
+        assert!(matches!(
+            outcome,
+            Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(750));
+        sqlx::query("ROLLBACK")
+            .execute(&mut *read_lock)
+            .await
+            .expect("release read lock");
     }
 
     #[tokio::test]

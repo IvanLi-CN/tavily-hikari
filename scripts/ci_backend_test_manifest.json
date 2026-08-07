@@ -132,6 +132,8 @@
       ],
       "filtered_test_threads": 2,
       "serial_prefixes": [
+        "store::request_stats_flush_tests::",
+        "store::request_stats_pipeline_capacity_tests::",
         "tests::jobs_and_request_log_retention::request_",
         "tests::observability_and_lifecycle::request_",
         "tests::request_rollup_public_metrics::admin_",
@@ -142,6 +144,8 @@
         "tests::user_tokens_and_pending_billing::request_"
       ],
       "include_prefixes": [
+        "store::request_stats_flush_tests::",
+        "store::request_stats_pipeline_capacity_tests::",
         "tests::jobs_and_request_log_retention::request_",
         "tests::observability_and_lifecycle::request_",
         "tests::request_kind_and_core::request_",

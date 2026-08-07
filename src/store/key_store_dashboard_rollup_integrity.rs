@@ -216,25 +216,31 @@ impl KeyStore {
         let fence = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
         let hot_start = fence.saturating_sub(DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS);
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            INSERT INTO dashboard_rollup_integrity_state (
-                id, hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor,
-                last_history_attempt_at, last_day_reaudit_attempt_at, last_seal_attempt_at,
-                seal_cursor, updated_at
-            ) VALUES (1, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
-            ON CONFLICT(id) DO NOTHING
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    INSERT INTO dashboard_rollup_integrity_state (
+                        id, hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor,
+                        last_history_attempt_at, last_day_reaudit_attempt_at, last_seal_attempt_at,
+                        seal_cursor, updated_at
+                    ) VALUES (1, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+                    ON CONFLICT(id) DO NOTHING
+                    "#,
+                )
+                .bind(hot_start)
+                .bind(fence)
+                .bind(hot_start)
+                .bind(hot_start)
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(hot_start)
-        .bind(fence)
-        .bind(hot_start)
-        .bind(hot_start)
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -401,7 +407,9 @@ impl KeyStore {
         let counts_json = serde_json::to_string(&item.counts)
             .map_err(|err| ProxyError::Other(format!("serialize integrity work item: {err}")))?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = async {
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
             sqlx::query(
                 r#"
                 INSERT INTO dashboard_rollup_integrity_work_items (
@@ -468,8 +476,9 @@ impl KeyStore {
                 .execute(&mut *conn)
                 .await?;
             }
-            Ok::<_, ProxyError>(())
-        }
+                Ok::<_, ProxyError>(())
+            },
+        )
         .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
@@ -759,23 +768,29 @@ impl KeyStore {
                 ProxyError::Other(format!("serialize restarted integrity work item: {err}"))
             })?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_work_items
-            SET source_fence = ?, source_version = ?, cursor_created_at = NULL, cursor_id = NULL, counts_json = ?,
-                status = 'pending', updated_at = ?
-            WHERE range_start = ?
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    UPDATE dashboard_rollup_integrity_work_items
+                    SET source_fence = ?, source_version = ?, cursor_created_at = NULL, cursor_id = NULL, counts_json = ?,
+                        status = 'pending', updated_at = ?
+                    WHERE range_start = ?
+                    "#,
+                )
+                .bind(source_fence_id)
+                .bind(source_version)
+                .bind(counts_json)
+                .bind(now)
+                .bind(item.range_start)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(source_fence_id)
-        .bind(source_version)
-        .bind(counts_json)
-        .bind(now)
-        .bind(item.range_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await
     }
@@ -805,22 +820,28 @@ impl KeyStore {
         let counts_json = serde_json::to_string(&item.counts)
             .map_err(|err| ProxyError::Other(format!("serialize integrity work item: {err}")))?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_work_items
-            SET cursor_created_at = ?, cursor_id = ?, counts_json = ?, updated_at = ?
-            WHERE range_start = ? AND status = 'pending'
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    UPDATE dashboard_rollup_integrity_work_items
+                    SET cursor_created_at = ?, cursor_id = ?, counts_json = ?, updated_at = ?
+                    WHERE range_start = ? AND status = 'pending'
+                    "#,
+                )
+                .bind(item.cursor_created_at)
+                .bind(item.cursor_id)
+                .bind(counts_json)
+                .bind(now)
+                .bind(item.range_start)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(item.cursor_created_at)
-        .bind(item.cursor_id)
-        .bind(counts_json)
-        .bind(now)
-        .bind(item.range_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -881,23 +902,29 @@ impl KeyStore {
         now: i64,
     ) -> Result<(), ProxyError> {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            INSERT INTO dashboard_rollup_integrity_gaps (
-                range_start, range_end, detected_at, updated_at, reason
-            ) VALUES (?, ?, ?, ?, 'source_rollup_mismatch')
-            ON CONFLICT(range_start) DO UPDATE SET
-                range_end = excluded.range_end, updated_at = excluded.updated_at, reason = excluded.reason
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    INSERT INTO dashboard_rollup_integrity_gaps (
+                        range_start, range_end, detected_at, updated_at, reason
+                    ) VALUES (?, ?, ?, ?, 'source_rollup_mismatch')
+                    ON CONFLICT(range_start) DO UPDATE SET
+                        range_end = excluded.range_end, updated_at = excluded.updated_at, reason = excluded.reason
+                    "#,
+                )
+                .bind(item.range_start)
+                .bind(item.range_end)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(item.range_start)
-        .bind(item.range_end)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -905,12 +932,18 @@ impl KeyStore {
 
     async fn clear_dashboard_rollup_integrity_gap(&self, range_start: i64) -> Result<(), ProxyError> {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query("DELETE FROM dashboard_rollup_integrity_gaps WHERE range_start = ?")
-            .bind(range_start)
-            .execute(&mut *conn)
-            .await
-            .map(|_| ())
-            .map_err(Into::into);
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query("DELETE FROM dashboard_rollup_integrity_gaps WHERE range_start = ?")
+                    .bind(range_start)
+                    .execute(&mut *conn)
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into)
+            },
+        )
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -923,27 +956,30 @@ impl KeyStore {
     ) -> Result<bool, ProxyError> {
         let started = StdInstant::now();
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = async {
-            sqlx::query(
-                "DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?",
-            )
-            .bind(SECS_PER_MINUTE)
-            .bind(item.range_start)
-            .bind(item.range_end)
-            .execute(&mut *conn)
-            .await?;
-            for (bucket_start, counts) in &item.counts {
-                Self::insert_dashboard_rollup_bucket_exact(
-                    &mut conn,
-                    *bucket_start,
-                    SECS_PER_MINUTE,
-                    *counts,
-                    now,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    "DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?",
                 )
+                .bind(SECS_PER_MINUTE)
+                .bind(item.range_start)
+                .bind(item.range_end)
+                .execute(&mut *conn)
                 .await?;
-            }
-            Ok::<_, ProxyError>(())
-        }
+                for (bucket_start, counts) in &item.counts {
+                    Self::insert_dashboard_rollup_bucket_exact(
+                        &mut conn,
+                        *bucket_start,
+                        SECS_PER_MINUTE,
+                        *counts,
+                        now,
+                    )
+                    .await?;
+                }
+                Ok::<_, ProxyError>(())
+            },
+        )
         .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
@@ -1017,16 +1053,44 @@ impl KeyStore {
             self.request_stats_pipeline.acquire_primary_connection(),
         )
         .await
-        .map_err(|_| ProxyError::Other("dashboard integrity write pool acquisition timed out".into()))??;
-        sqlx::query("PRAGMA busy_timeout = 100")
-            .execute(&mut *conn)
-            .await?;
-        if let Err(err) = sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            let _ = sqlx::query("PRAGMA busy_timeout = 5000")
-                .execute(&mut *conn)
-                .await;
-            return Err(err.into());
+        .map_err(|_| ProxyError::Database(sqlx::Error::PoolTimedOut))??;
+        let begin_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query("PRAGMA busy_timeout = 100")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("BEGIN IMMEDIATE")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok::<(), ProxyError>(())
+            },
+        )
+        .await;
+        if let Err(err) = begin_result {
+            let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                conn.operation_budget(),
+                async {
+                    sqlx::query("ROLLBACK")
+                        .execute(&mut *conn)
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                },
+            )
+            .await;
+            let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                conn.operation_budget(),
+                async {
+                    sqlx::query("PRAGMA busy_timeout = 5000")
+                        .execute(&mut *conn)
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                },
+            )
+            .await;
+            return Err(err);
         }
         Ok(conn)
     }
@@ -1037,15 +1101,43 @@ impl KeyStore {
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
         let result = match write_result {
-            Ok(()) => sqlx::query("COMMIT").execute(&mut **conn).await.map(|_| ()).map_err(Into::into),
+            Ok(()) => SqliteRequestStatsConnection::run_bounded_operation(
+                conn.operation_budget(),
+                async {
+                    sqlx::query("COMMIT")
+                        .execute(&mut **conn)
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                },
+            )
+            .await,
             Err(err) => {
-                let _ = sqlx::query("ROLLBACK").execute(&mut **conn).await;
+                let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                    conn.operation_budget(),
+                    async {
+                        sqlx::query("ROLLBACK")
+                            .execute(&mut **conn)
+                            .await
+                            .map(|_| ())
+                            .map_err(Into::into)
+                    },
+                )
+                .await;
                 Err(err)
             }
         };
-        let _ = sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&mut **conn)
-            .await;
+        let _ = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query("PRAGMA busy_timeout = 5000")
+                    .execute(&mut **conn)
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into)
+            },
+        )
+        .await;
         result
     }
 
@@ -1055,15 +1147,21 @@ impl KeyStore {
         now: i64,
     ) -> Result<(), ProxyError> {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            "UPDATE dashboard_rollup_integrity_work_items SET status = 'done', updated_at = ? WHERE range_start = ?",
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    "UPDATE dashboard_rollup_integrity_work_items SET status = 'done', updated_at = ? WHERE range_start = ?",
+                )
+                .bind(now)
+                .bind(item.range_start)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(now)
-        .bind(item.range_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -1135,25 +1233,31 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            INSERT INTO dashboard_rollup_integrity_day_reaudits (
-                bucket_start, bucket_end, cursor, status, updated_at
-            ) VALUES (?, ?, ?, 'pending', ?)
-            ON CONFLICT(bucket_start) DO UPDATE SET
-                bucket_end = excluded.bucket_end,
-                status = 'pending',
-                updated_at = excluded.updated_at
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    INSERT INTO dashboard_rollup_integrity_day_reaudits (
+                        bucket_start, bucket_end, cursor, status, updated_at
+                    ) VALUES (?, ?, ?, 'pending', ?)
+                    ON CONFLICT(bucket_start) DO UPDATE SET
+                        bucket_end = excluded.bucket_end,
+                        status = 'pending',
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(day_start)
+                .bind(day_end)
+                .bind(day_start)
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(day_start)
-        .bind(day_end)
-        .bind(day_start)
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await
     }
@@ -1194,14 +1298,20 @@ impl KeyStore {
         }
         self.seal_dashboard_rollup_day(day_start, now).await?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            "DELETE FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    "DELETE FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+                )
+                .bind(day_start)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(day_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(true)
@@ -1220,36 +1330,39 @@ impl KeyStore {
         let counts_json = serde_json::to_string(&source_counts)
             .map_err(|err| ProxyError::Other(format!("serialize dashboard day seal: {err}")))?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = async {
-            sqlx::query(
-                "DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?",
-            )
-            .bind(SECS_PER_DAY)
-            .bind(day_start)
-            .execute(&mut *conn)
-            .await?;
-            Self::insert_dashboard_rollup_bucket_exact(
-                &mut conn,
-                day_start,
-                SECS_PER_DAY,
-                source_counts,
-                now,
-            )
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO dashboard_rollup_daily_seals (bucket_start, counts_json, verified_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(bucket_start) DO UPDATE SET counts_json = excluded.counts_json, verified_at = excluded.verified_at
-                "#,
-            )
-            .bind(day_start)
-            .bind(counts_json)
-            .bind(now)
-            .execute(&mut *conn)
-            .await?;
-            Ok::<_, ProxyError>(())
-        }
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    "DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?",
+                )
+                .bind(SECS_PER_DAY)
+                .bind(day_start)
+                .execute(&mut *conn)
+                .await?;
+                Self::insert_dashboard_rollup_bucket_exact(
+                    &mut conn,
+                    day_start,
+                    SECS_PER_DAY,
+                    source_counts,
+                    now,
+                )
+                .await?;
+                sqlx::query(
+                    r#"
+                    INSERT INTO dashboard_rollup_daily_seals (bucket_start, counts_json, verified_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(bucket_start) DO UPDATE SET counts_json = excluded.counts_json, verified_at = excluded.verified_at
+                    "#,
+                )
+                .bind(day_start)
+                .bind(counts_json)
+                .bind(now)
+                .execute(&mut *conn)
+                .await?;
+                Ok::<_, ProxyError>(())
+            },
+        )
         .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
@@ -1276,12 +1389,18 @@ impl KeyStore {
         )?;
         let Some(row) = row else {
             let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-            let write_result = sqlx::query("UPDATE dashboard_rollup_integrity_state SET seal_cursor = NULL, updated_at = ? WHERE id = 1")
-                .bind(now)
-                .execute(&mut *conn)
-                .await
-                .map(|_| ())
-                .map_err(Into::into);
+            let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+                conn.operation_budget(),
+                async {
+                    sqlx::query("UPDATE dashboard_rollup_integrity_state SET seal_cursor = NULL, updated_at = ? WHERE id = 1")
+                        .bind(now)
+                        .execute(&mut *conn)
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                },
+            )
+            .await;
             self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
                 .await?;
             return Ok(());
@@ -1316,34 +1435,43 @@ impl KeyStore {
                 .await?;
         } else if should_restore_daily || should_restore_expired_day {
             let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-            let write_result = async {
-                sqlx::query("DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?")
-                    .bind(SECS_PER_DAY)
-                    .bind(day_start)
-                    .execute(&mut *conn)
+            let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+                conn.operation_budget(),
+                async {
+                    sqlx::query("DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?")
+                        .bind(SECS_PER_DAY)
+                        .bind(day_start)
+                        .execute(&mut *conn)
+                        .await?;
+                    Self::insert_dashboard_rollup_bucket_exact(
+                        &mut conn,
+                        day_start,
+                        SECS_PER_DAY,
+                        expected,
+                        now,
+                    )
                     .await?;
-                Self::insert_dashboard_rollup_bucket_exact(
-                    &mut conn,
-                    day_start,
-                    SECS_PER_DAY,
-                    expected,
-                    now,
-                )
-                .await?;
-                Ok::<_, ProxyError>(())
-            }
+                    Ok::<_, ProxyError>(())
+                },
+            )
             .await;
             self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
                 .await?;
         }
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query("UPDATE dashboard_rollup_integrity_state SET seal_cursor = ?, updated_at = ? WHERE id = 1")
-            .bind(day_start)
-            .bind(now)
-            .execute(&mut *conn)
-            .await
-            .map(|_| ())
-            .map_err(Into::into);
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query("UPDATE dashboard_rollup_integrity_state SET seal_cursor = ?, updated_at = ? WHERE id = 1")
+                    .bind(day_start)
+                    .bind(now)
+                    .execute(&mut *conn)
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into)
+            },
+        )
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -1373,15 +1501,21 @@ impl KeyStore {
         now: i64,
     ) -> Result<(), ProxyError> {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            "UPDATE dashboard_rollup_integrity_state SET last_seal_attempt_at = ?, updated_at = ? WHERE id = 1",
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    "UPDATE dashboard_rollup_integrity_state SET last_seal_attempt_at = ?, updated_at = ? WHERE id = 1",
+                )
+                .bind(now)
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(now)
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await
     }
@@ -1418,21 +1552,27 @@ impl KeyStore {
         next_delay_secs: i64,
     ) -> Result<(), ProxyError> {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_state
-            SET last_verified_at = ?, stalled_since = NULL, last_error = NULL,
-                next_attempt_at = ?, updated_at = ?
-            WHERE id = 1
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    UPDATE dashboard_rollup_integrity_state
+                    SET last_verified_at = ?, stalled_since = NULL, last_error = NULL,
+                        next_attempt_at = ?, updated_at = ?
+                    WHERE id = 1
+                    "#,
+                )
+                .bind(now)
+                .bind(now.saturating_add(next_delay_secs))
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(now)
-        .bind(now.saturating_add(next_delay_secs))
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
@@ -1445,22 +1585,28 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let now = self.request_stats_pipeline.backend_time().now_ts();
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_state
-            SET stalled_since = COALESCE(stalled_since, ?), last_error = ?,
-                next_attempt_at = ?, updated_at = ?
-            WHERE id = 1
-            "#,
+        let write_result = SqliteRequestStatsConnection::run_bounded_operation(
+            conn.operation_budget(),
+            async {
+                sqlx::query(
+                    r#"
+                    UPDATE dashboard_rollup_integrity_state
+                    SET stalled_since = COALESCE(stalled_since, ?), last_error = ?,
+                        next_attempt_at = ?, updated_at = ?
+                    WHERE id = 1
+                    "#,
+                )
+                .bind(now)
+                .bind(err.to_string())
+                .bind(next_attempt_at)
+                .bind(now)
+                .execute(&mut *conn)
+                .await
+                .map(|_| ())
+                .map_err(Into::into)
+            },
         )
-        .bind(now)
-        .bind(err.to_string())
-        .bind(next_attempt_at)
-        .bind(now)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(())
