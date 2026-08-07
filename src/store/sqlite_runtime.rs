@@ -66,6 +66,7 @@ impl DerefMut for SqliteReadConnection {
 pub(crate) struct SqliteRequestStatsConnection {
     connection: Option<sqlx::pool::PoolConnection<Sqlite>>,
     operation_budget: Duration,
+    transaction_active: bool,
 }
 
 impl Deref for SqliteRequestStatsConnection {
@@ -93,7 +94,16 @@ impl SqliteRequestStatsConnection {
         self.operation_budget
     }
 
+    pub(crate) fn mark_transaction_active(&mut self) {
+        self.transaction_active = true;
+    }
+
+    pub(crate) fn mark_transaction_inactive(&mut self) {
+        self.transaction_active = false;
+    }
+
     pub(crate) fn discard(&mut self) {
+        self.transaction_active = false;
         if let Some(connection) = self.connection.take() {
             drop(connection.detach());
         }
@@ -109,6 +119,16 @@ impl SqliteRequestStatsConnection {
         run_bounded_request_stats_operation(operation_budget, operation)
             .await
             .into_result()
+    }
+}
+
+impl Drop for SqliteRequestStatsConnection {
+    fn drop(&mut self) {
+        if self.transaction_active
+            && let Some(connection) = self.connection.take()
+        {
+            drop(connection.detach());
+        }
     }
 }
 
@@ -389,6 +409,7 @@ impl SqliteRuntime {
             .map(|connection| SqliteRequestStatsConnection {
                 connection: Some(connection),
                 operation_budget: self.operation_budget,
+                transaction_active: false,
             })
     }
 }
@@ -592,6 +613,36 @@ mod tests {
             .execute(&mut *read_lock)
             .await
             .expect("release read lock");
+    }
+
+    #[tokio::test]
+    async fn dropped_request_stats_connection_detaches_active_transaction() {
+        let (runtime, _lock_pool, _temp_dir) = test_runtime().await;
+        let primary = runtime.compatibility_primary_pool();
+        let mut connection = match runtime.acquire_primary_connection().await {
+            SqliteOperationOutcome::Completed(connection) => connection,
+            other => panic!("request stats connection did not acquire: {other:?}"),
+        };
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await
+            .expect("begin request stats transaction");
+        connection.mark_transaction_active();
+        drop(connection);
+
+        let mut replacement =
+            tokio::time::timeout(std::time::Duration::from_secs(1), primary.acquire())
+                .await
+                .expect("pool should replace detached connection")
+                .expect("acquire replacement connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *replacement)
+            .await
+            .expect("replacement connection is not inside a transaction");
+        sqlx::query("ROLLBACK")
+            .execute(&mut *replacement)
+            .await
+            .expect("rollback replacement transaction");
     }
 
     #[tokio::test]

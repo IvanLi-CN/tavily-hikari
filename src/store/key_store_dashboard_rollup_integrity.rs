@@ -1093,6 +1093,7 @@ impl KeyStore {
             conn.discard();
             return Err(err);
         }
+        conn.mark_transaction_active();
         Ok(conn)
     }
 
@@ -1116,41 +1117,44 @@ impl KeyStore {
                 )
                 .await;
                 if let Err(err) = commit_result {
-                    if SqliteRequestStatsConnection::run_bounded_operation(
+                    let rollback_result = SqliteRequestStatsConnection::run_bounded_operation(
                         conn.operation_budget(),
                         async {
                             sqlx::query("ROLLBACK")
                                 .execute(&mut **conn)
                                 .await
                                 .map(|_| ())
-                                .map_err(Into::into)
+                            .map_err(Into::into)
                         },
                     )
-                    .await
-                    .is_err()
-                    {
+                    .await;
+                    if rollback_result.is_err() {
                         cleanup_failed = true;
+                    } else {
+                        conn.mark_transaction_inactive();
                     }
                     Err(err)
                 } else {
+                    conn.mark_transaction_inactive();
                     Ok(())
                 }
             }
             Err(err) => {
-                if SqliteRequestStatsConnection::run_bounded_operation(
+                let rollback_result = SqliteRequestStatsConnection::run_bounded_operation(
                     conn.operation_budget(),
                     async {
                         sqlx::query("ROLLBACK")
                             .execute(&mut **conn)
                             .await
                             .map(|_| ())
-                            .map_err(Into::into)
+                        .map_err(Into::into)
                     },
                 )
-                .await
-                .is_err()
-                {
+                .await;
+                if rollback_result.is_err() {
                     cleanup_failed = true;
+                } else {
+                    conn.mark_transaction_inactive();
                 }
                 Err(err)
             }
