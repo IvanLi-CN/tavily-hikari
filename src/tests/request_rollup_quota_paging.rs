@@ -1,14 +1,20 @@
 use super::*;
 
+const QUOTA_PAGING_TEST_NOW: i64 = 1_700_000_000;
+const QUOTA_PAGING_TEST_UPSTREAM: &str = "http://127.0.0.1:9/mcp";
+
 #[tokio::test]
 async fn summary_windows_page_quota_samples_without_losing_cross_page_delta() {
     let db_path = temp_db_path("summary-windows-quota-charge-pagination");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(
+    let (backend_time, _) = BackendTime::manual_from_ts(QUOTA_PAGING_TEST_NOW);
+    let proxy = TavilyProxy::with_options_and_time(
         vec!["tvly-summary-window-quota-charge-pagination".to_string()],
-        DEFAULT_UPSTREAM,
+        QUOTA_PAGING_TEST_UPSTREAM,
         &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
     )
     .await
     .expect("proxy created");
@@ -21,16 +27,7 @@ async fn summary_windows_page_quota_samples_without_losing_cross_page_delta() {
         .next()
         .expect("seeded key")
         .id;
-    let fallback_now = Local::now();
-    let now_naive = fallback_now
-        .date_naive()
-        .and_hms_opt(12, 0, 0)
-        .expect("valid midday");
-    let now = match Local.from_local_datetime(&now_naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(dt, _) => dt,
-        chrono::LocalResult::None => fallback_now,
-    };
+    let now = proxy.backend_time().local_now();
     let today_start = start_of_local_day_utc_ts(now);
     let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
 
