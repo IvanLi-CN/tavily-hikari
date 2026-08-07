@@ -514,7 +514,7 @@ impl RequestStatsPipeline {
                     state.oldest_pending_created_at = None;
                     state.newest_pending_created_at = None;
                 } else {
-                    Self::mark_flush_deadline_if_pending(&mut state);
+                    self.mark_flush_deadline_if_pending(&mut state);
                 }
                 self.flushed.notify_waiters();
                 Ok(())
@@ -551,7 +551,7 @@ impl RequestStatsPipeline {
         entry.primary_success += primary_success_delta.max(0);
         Self::bump_request_stats_version(&mut state);
         Self::note_pending_created_at(&mut state, created_at);
-        Self::mark_flush_deadline_if_pending(&mut state);
+        self.mark_flush_deadline_if_pending(&mut state);
         drop(state);
         self.wake.notify_one();
     }
@@ -631,9 +631,9 @@ impl RequestStatsPipeline {
         )
     }
 
-    fn mark_flush_deadline_if_pending(state: &mut RequestStatsPipelineState) {
+    fn mark_flush_deadline_if_pending(&self, state: &mut RequestStatsPipelineState) {
         if Self::pending_key_count(state) > 0 && state.flush_deadline.is_none() {
-            state.flush_deadline = Some(Instant::now() + Self::FLUSH_INTERVAL);
+            state.flush_deadline = Some(self.backend_time.deadline_after(Self::FLUSH_INTERVAL));
         }
     }
 
@@ -708,7 +708,7 @@ impl RequestStatsPipeline {
             }
             Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
-            Self::mark_flush_deadline_if_pending(&mut state);
+            self.mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
     }
@@ -732,7 +732,7 @@ impl RequestStatsPipeline {
             );
             Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
-            Self::mark_flush_deadline_if_pending(&mut state);
+            self.mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
     }
@@ -801,7 +801,7 @@ impl RequestStatsPipeline {
             );
             Self::bump_request_stats_version(&mut state);
             Self::note_pending_created_at(&mut state, created_at);
-            Self::mark_flush_deadline_if_pending(&mut state);
+            self.mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_one();
     }
@@ -899,7 +899,7 @@ impl RequestStatsPipeline {
                 .or_default()
                 .add(counts);
         }
-        Self::mark_flush_deadline_if_pending(&mut state);
+        self.mark_flush_deadline_if_pending(&mut state);
         drop(state);
         self.wake.notify_one();
         has_post_fence_changes
@@ -980,7 +980,7 @@ impl RequestStatsPipeline {
         {
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             state.shutdown = true;
-            state.flush_deadline = Some(Instant::now());
+            state.flush_deadline = Some(self.backend_time.instant_now());
         }
         self.wake.notify_waiters();
     }
@@ -988,7 +988,7 @@ impl RequestStatsPipeline {
     pub(crate) async fn nudge_flush(&self) {
         {
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::mark_flush_deadline_if_pending(&mut state);
+            self.mark_flush_deadline_if_pending(&mut state);
         }
         self.wake.notify_waiters();
     }
@@ -1000,7 +1000,7 @@ impl RequestStatsPipeline {
         let deadline_due = pending_key_count > 0
             && state
                 .flush_deadline
-                .map(|deadline| Instant::now() >= deadline)
+                .map(|deadline| self.backend_time.instant_now() >= deadline)
                 .unwrap_or(false);
         let flush_now = (state.shutdown && state.dashboard_rollup_repairs.is_empty())
             || pending_key_count >= Self::MAX_PENDING_KEYS
@@ -1010,7 +1010,9 @@ impl RequestStatsPipeline {
         } else {
             state
                 .flush_deadline
-                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .map(|deadline| {
+                    deadline.saturating_duration_since(self.backend_time.instant_now())
+                })
                 .unwrap_or(Self::FLUSH_INTERVAL)
         };
         RequestStatsWorkerWait {
@@ -1042,7 +1044,7 @@ impl RequestStatsPipeline {
             if !wait.flush_now {
                 tokio::select! {
                     _ = self.wake.notified() => {}
-                    _ = tokio::time::sleep(wait.wait_duration) => {}
+                    _ = self.backend_time.sleep(wait.wait_duration) => {}
                 }
                 continue;
             }
@@ -1055,7 +1057,7 @@ impl RequestStatsPipeline {
                 continue;
             }
 
-            let flush_started = Instant::now();
+            let flush_started = self.backend_time.instant_now();
             if let Err(err) = self.flush_request_stats_writes().await {
                 log_db_operation_error(
                     "request stats persist",
@@ -1070,7 +1072,7 @@ impl RequestStatsPipeline {
                     err = %err,
                     "request stats persist deferred after structured database error"
                 );
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                self.backend_time.sleep(Duration::from_millis(100)).await;
             } else {
                 log_slow_db_operation(
                     "request stats persist",

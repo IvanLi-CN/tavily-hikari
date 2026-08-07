@@ -64,6 +64,9 @@
 - Quota sample pagination regression coverage is isolated in `src/tests/request_rollup_quota_paging.rs`;
   it uses a local stub upstream and the `BackendTime` seam so the 500-row cursor boundary remains
   deterministic without production calls.
+- RequestStatsPipeline worker deadlines, retry waits, and flush timing now all route through its
+  `BackendTime` seam, keeping new request-stats scheduling code aligned with deterministic-time
+  testing.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 - Ticket #489: durable per-channel HA GC work and unchanged-wire UPDATE suppression.
 - Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
