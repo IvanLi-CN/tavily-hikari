@@ -139,7 +139,7 @@ async fn record_rebalance_period_usage(
     let request_id = research_request_id
         .map(ToOwned::to_owned)
         .or_else(|| extract_research_request_id(response_body));
-    if let Err(err) = state
+    match state
         .proxy
         .record_upstream_reconciliation_usage(
             token_id,
@@ -149,7 +149,13 @@ async fn record_rebalance_period_usage(
         )
         .await
     {
-        eprintln!("record upstream reconciliation usage failed: {err}");
+        Ok(Some(_)) => {
+            state.ha.maintenance_runtime().await.wake().notify_one();
+        }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("record upstream reconciliation usage failed: {err}");
+        }
     }
 }
 

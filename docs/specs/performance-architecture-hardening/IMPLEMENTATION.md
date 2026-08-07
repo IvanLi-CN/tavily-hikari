@@ -5,7 +5,8 @@
 ## Current Status
 
 - Implementation: Ticket #485 SqliteRuntime seam 已合入 integration branch；Ticket #484 已实现，等待
-  child PR integration；Ticket #489 per-channel HA GC 已实现，等待 child PR integration
+  child PR integration；Ticket #489 per-channel HA GC 已合入 integration branch；Ticket #490
+  reconciliation work projection 已在 child branch 实现，等待 wave-gated integration
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -20,8 +21,8 @@
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
 5. HaPeerObservationStore
-6. per-channel HA GC 与 no-op outbox suppression（Ticket #489 已实现，等待 child PR integration）
-7. reconciliation work projection
+6. per-channel HA GC 与 no-op outbox suppression（Ticket #489 已合入 integration branch）
+7. reconciliation work projection（Ticket #490 已实现，等待 wave-gated integration）
 8. AlertProjection expand/shadow
 9. ReconciliationEngine cutover
 10. 全部告警读取切换
@@ -51,6 +52,13 @@
   PRAGMAs, and transaction SQL remain unchanged.
 - Ticket #484: revisioned writable-tenure supervisor and mixed-version capability gate.
 - Ticket #489: durable per-channel HA GC work and unchanged-wire UPDATE suppression.
+- Ticket #490: logical-window reconciliation work projection with bounded eligible pages, persistent
+  recent/backlog cursors, stable per-key fair ranks, atomic reservations, bounded paged hydration,
+  restartable legacy backfill, representative scheduling, and reservation-fenced settlement
+  transitions.
+- Aborted and budget-exhausted runs recover reservations and finish their claimed representative in
+  one bounded transaction before scheduling the next continuation, so restart recovery cannot leave
+  eligible work waiting for an unrelated scheduler tick.
 
 ## References
 

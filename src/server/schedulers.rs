@@ -2558,27 +2558,19 @@ async fn run_manual_claimed_job(
             )
             .await
             {
-                Ok(Ok(settled)) => {
-                    let now = state.proxy.backend_time().now_ts();
-                    match state.proxy.upstream_reconciliation_backoff_until().await {
-                        Ok(available_at) if available_at > now => state
-                            .proxy
-                            .scheduled_job_finish_and_enqueue_auto_at(
-                                job_id,
-                                claim_generation,
-                                "upstream_reconciliation",
-                                None,
-                                1,
-                                Some(&format!("settled={settled} backoff_until={available_at}")),
-                                available_at,
-                            )
-                            .await
-                            .is_ok(),
-                        Ok(_) => finish(state, "success", format!("settled={settled}")).await,
-                        Err(err) => finish(state, "error", err.to_string()).await,
-                    }
-                }
-                Ok(Err(err)) => finish(state, "error", err.to_string()).await,
+                Ok(Ok(settled)) => state
+                    .proxy
+                    .finish_upstream_reconciliation_job(job_id, claim_generation, settled)
+                    .await,
+                Ok(Err(err)) => state.proxy
+                    .recover_upstream_reconciliation_after_aborted_run(
+                        job_id,
+                        claim_generation,
+                        "error",
+                        err.to_string(),
+                        "aborted_run_reservation_recovery_failed",
+                    )
+                    .await,
                 Err(_) => {
                     tracing::debug!(
                         component = "reconciliation",
@@ -2597,7 +2589,14 @@ async fn run_manual_claimed_job(
                             err = %err,
                         );
                     }
-                    finish(state, "success", "settled=unknown budget_exhausted=true".to_string())
+                    state.proxy
+                        .recover_upstream_reconciliation_after_aborted_run(
+                            job_id,
+                            claim_generation,
+                            "success",
+                            "settled=unknown budget_exhausted=true".to_string(),
+                            "budget_run_reservation_recovery_failed",
+                        )
                         .await
                 }
             }
