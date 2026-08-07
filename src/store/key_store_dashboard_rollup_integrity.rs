@@ -1054,6 +1054,7 @@ impl KeyStore {
         )
         .await
         .map_err(|_| ProxyError::Database(sqlx::Error::PoolTimedOut))??;
+        conn.mark_transaction_active();
         let begin_result = SqliteRequestStatsConnection::run_bounded_operation(
             conn.operation_budget(),
             async {
@@ -1093,7 +1094,6 @@ impl KeyStore {
             conn.discard();
             return Err(err);
         }
-        conn.mark_transaction_active();
         Ok(conn)
     }
 
