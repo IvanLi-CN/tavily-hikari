@@ -1130,12 +1130,9 @@ impl KeyStore {
                     .await;
                     if rollback_result.is_err() {
                         cleanup_failed = true;
-                    } else {
-                        conn.mark_transaction_inactive();
                     }
                     Err(err)
                 } else {
-                    conn.mark_transaction_inactive();
                     Ok(())
                 }
             }
@@ -1153,8 +1150,6 @@ impl KeyStore {
                 .await;
                 if rollback_result.is_err() {
                     cleanup_failed = true;
-                } else {
-                    conn.mark_transaction_inactive();
                 }
                 Err(err)
             }
@@ -1176,6 +1171,8 @@ impl KeyStore {
         }
         if cleanup_failed {
             conn.discard();
+        } else {
+            conn.mark_transaction_inactive();
         }
         result
     }
