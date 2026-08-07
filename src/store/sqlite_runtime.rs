@@ -646,6 +646,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_request_stats_cleanup_detaches_active_transaction() {
+        let (runtime, _lock_pool, _temp_dir) = test_runtime().await;
+        let primary = runtime.compatibility_primary_pool();
+        let mut connection = match runtime.acquire_primary_connection().await {
+            SqliteOperationOutcome::Completed(connection) => connection,
+            other => panic!("request stats connection did not acquire: {other:?}"),
+        };
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await
+            .expect("begin request stats transaction");
+        connection.mark_transaction_active();
+        let (cleanup_started, cleanup_started_rx) = tokio::sync::oneshot::channel();
+        let cleanup = tokio::spawn(async move {
+            let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                connection.operation_budget(),
+                async {
+                    let _ = cleanup_started.send(());
+                    std::future::pending::<Result<(), ProxyError>>().await
+                },
+            )
+            .await;
+            connection.mark_transaction_inactive();
+        });
+        cleanup_started_rx
+            .await
+            .expect("cleanup operation should start");
+        cleanup.abort();
+        assert!(
+            cleanup
+                .await
+                .expect_err("cancelled cleanup should abort its task")
+                .is_cancelled()
+        );
+
+        let mut replacement =
+            tokio::time::timeout(std::time::Duration::from_secs(1), primary.acquire())
+                .await
+                .expect("pool should replace detached connection")
+                .expect("acquire replacement connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *replacement)
+            .await
+            .expect("replacement connection is not inside a transaction");
+        sqlx::query("ROLLBACK")
+            .execute(&mut *replacement)
+            .await
+            .expect("rollback replacement transaction");
+    }
+
+    #[tokio::test]
     async fn exhausted_primary_pool_read_is_deferred_within_operation_budget() {
         let (runtime, _lock_pool, _temp_dir) = test_runtime().await;
         let primary = runtime.compatibility_primary_pool();
