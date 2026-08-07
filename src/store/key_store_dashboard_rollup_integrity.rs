@@ -1090,6 +1090,7 @@ impl KeyStore {
                 },
             )
             .await;
+            conn.discard().await;
             return Err(err);
         }
         Ok(conn)
@@ -1100,6 +1101,7 @@ impl KeyStore {
         conn: &mut SqliteRequestStatsConnection,
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
+        let mut cleanup_failed = false;
         let result = match write_result {
             Ok(()) => {
                 let commit_result = SqliteRequestStatsConnection::run_bounded_operation(
@@ -1114,7 +1116,7 @@ impl KeyStore {
                 )
                 .await;
                 if let Err(err) = commit_result {
-                    let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                    if SqliteRequestStatsConnection::run_bounded_operation(
                         conn.operation_budget(),
                         async {
                             sqlx::query("ROLLBACK")
@@ -1124,14 +1126,18 @@ impl KeyStore {
                                 .map_err(Into::into)
                         },
                     )
-                    .await;
+                    .await
+                    .is_err()
+                    {
+                        cleanup_failed = true;
+                    }
                     Err(err)
                 } else {
                     Ok(())
                 }
             }
             Err(err) => {
-                let _ = SqliteRequestStatsConnection::run_bounded_operation(
+                if SqliteRequestStatsConnection::run_bounded_operation(
                     conn.operation_budget(),
                     async {
                         sqlx::query("ROLLBACK")
@@ -1141,11 +1147,15 @@ impl KeyStore {
                             .map_err(Into::into)
                     },
                 )
-                .await;
+                .await
+                .is_err()
+                {
+                    cleanup_failed = true;
+                }
                 Err(err)
             }
         };
-        let _ = SqliteRequestStatsConnection::run_bounded_operation(
+        if SqliteRequestStatsConnection::run_bounded_operation(
             conn.operation_budget(),
             async {
                 sqlx::query("PRAGMA busy_timeout = 5000")
@@ -1155,7 +1165,14 @@ impl KeyStore {
                     .map_err(Into::into)
             },
         )
-        .await;
+        .await
+        .is_err()
+        {
+            cleanup_failed = true;
+        }
+        if cleanup_failed {
+            conn.discard().await;
+        }
         result
     }
 

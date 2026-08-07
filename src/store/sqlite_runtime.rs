@@ -1,5 +1,5 @@
 use super::{ImmediateSqliteTransaction, ProxyError, is_transient_sqlite_write_error};
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::{Connection, Sqlite, SqlitePool};
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ impl DerefMut for SqliteReadConnection {
 
 #[derive(Debug)]
 pub(crate) struct SqliteRequestStatsConnection {
-    connection: sqlx::pool::PoolConnection<Sqlite>,
+    connection: Option<sqlx::pool::PoolConnection<Sqlite>>,
     operation_budget: Duration,
 }
 
@@ -72,19 +72,31 @@ impl Deref for SqliteRequestStatsConnection {
     type Target = sqlx::SqliteConnection;
 
     fn deref(&self) -> &Self::Target {
-        self.connection.as_ref()
+        self.connection
+            .as_ref()
+            .expect("request stats connection")
+            .as_ref()
     }
 }
 
 impl DerefMut for SqliteRequestStatsConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.connection.as_mut()
+        self.connection
+            .as_mut()
+            .expect("request stats connection")
+            .as_mut()
     }
 }
 
 impl SqliteRequestStatsConnection {
     pub(crate) fn operation_budget(&self) -> Duration {
         self.operation_budget
+    }
+
+    pub(crate) async fn discard(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            connection.detach().close().await.ok();
+        }
     }
 
     pub(crate) async fn run_bounded_operation<F, T>(
@@ -375,7 +387,7 @@ impl SqliteRuntime {
         run_bounded_request_stats_operation(self.operation_budget, self.primary_pool.acquire())
             .await
             .map(|connection| SqliteRequestStatsConnection {
-                connection,
+                connection: Some(connection),
                 operation_budget: self.operation_budget,
             })
     }
