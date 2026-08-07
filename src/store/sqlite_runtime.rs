@@ -1,5 +1,5 @@
 use super::{ImmediateSqliteTransaction, ProxyError, is_transient_sqlite_write_error};
-use sqlx::{Connection, Sqlite, SqlitePool};
+use sqlx::{Sqlite, SqlitePool};
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -93,9 +93,9 @@ impl SqliteRequestStatsConnection {
         self.operation_budget
     }
 
-    pub(crate) async fn discard(&mut self) {
+    pub(crate) fn discard(&mut self) {
         if let Some(connection) = self.connection.take() {
-            connection.detach().close().await.ok();
+            drop(connection.detach());
         }
     }
 

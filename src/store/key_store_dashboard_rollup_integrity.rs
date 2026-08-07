@@ -1090,7 +1090,7 @@ impl KeyStore {
                 },
             )
             .await;
-            conn.discard().await;
+            conn.discard();
             return Err(err);
         }
         Ok(conn)
@@ -1171,7 +1171,7 @@ impl KeyStore {
             cleanup_failed = true;
         }
         if cleanup_failed {
-            conn.discard().await;
+            conn.discard();
         }
         result
     }
