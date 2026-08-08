@@ -288,6 +288,10 @@ month-tail public metrics scan.
 - If the snapshot export path stages large temporary backup files on the source host, treat cleanup
   of those staging directories as part of the same maintenance runbook. A successful upload to the
   shared testbox is not the end of the flow if tens of GiB remain under a temporary source path.
+- Treat online snapshots as sensitive production data: use `umask 077`, fail on run-directory
+  collisions, verify source and destination capacity, bound each backup, expose the live volume
+  read-only to a network-disabled helper, and clean only the exact owned source/testbox paths on
+  failure or completion.
 - Treat disk hygiene as an explicit post-maintenance step. Remove orphaned one-off snapshot
   directories, stale gzip/sqlite artifacts, and dangling images once the new release is verified, or
   the next “database is too large” incident can be self-inflicted by leftover maintenance inputs
@@ -301,13 +305,9 @@ month-tail public metrics scan.
 - For `billing_ledger` startup truth repair specifically, persist a high-watermark marker and let
   the readiness path prove “no gap / no drift” before invoking a whole-ledger reconcile. The first
   upgraded boot may still need one repair, but steady-state restarts should only pay the precheck.
-- If an owner-facing read depends on coalesced rollups, prefer a freshness-gated flush over an
-  unconditional flush. This keeps near-real-time semantics without turning every public/admin read
-  into a write barrier under SQLite's single-writer budget.
-- For owner-facing admin reads that can tolerate already durable rollups, bound the read-side flush
-  separately from the write-side retry budget. A dedicated short-timeout connection/pool and a
-  small synchronous retry budget keep `/api/summary`, rankings, and analysis-pressure first paint
-  responsive while the pending batch stays queued for a later successful flush.
+- If an owner-facing read can tolerate durable rollups, never flush the coalescer from that read.
+  A short read-side write budget still converts read traffic into writer contention; expose pending
+  state through internal freshness and let the background pipeline persist on its own cadence.
 - Do not let an SSE freshness poll become that write barrier by accident. In this service,
   `/api/events` was polling every 2 seconds; when its freshness path called the same
   `summary_windows` / rollup-flush helpers as the dashboard rebuild, it re-heated SQLite write
@@ -336,6 +336,12 @@ month-tail public metrics scan.
   branch with `ROLLBACK`. Hold the physical connection in a guard, commit or roll back explicitly,
   and detach/close it on drop while the transaction may still be open. Otherwise cancellation can
   return a transaction-polluted connection and the next borrower sees a false nested transaction.
+- Enforce that ownership with a source dependency gate. Runtime transaction SQL belongs in one
+  guard module; migrations, offline CLIs, and tests need explicit allowlist entries rather than an
+  informal convention.
+- Attribute pressure by stable operation/class windows, not raw SQL logs: aggregate pool wait, begin
+  wait, hold time, rows, errors, discarded connections, and process/cgroup write-byte deltas at low
+  frequency. Sample `/proc` and cgroup I/O only when emitting the window or a real error.
 - A durable scheduler claim needs a generation as well as a status. Increment it on claim and stale
   recovery, then require `(id, generation, running)` for finish and continuation writes; this closes
   the ABA window where a timed-out future completes a newly reclaimed job.

@@ -271,7 +271,6 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
-        self.flush_request_stats_writes().await?;
         self.fetch_dashboard_rollup_freshness_signature_without_flush(range_start)
             .await
     }
@@ -587,8 +586,6 @@ impl KeyStore {
         &self,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
-        self.best_effort_flush_request_stats_writes_for_read("summary_windows")
-            .await?;
         let mut tx = self.pool.begin().await?;
         let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
         tx.commit().await?;
@@ -843,8 +840,6 @@ impl KeyStore {
         visible_buckets: i64,
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        self.best_effort_flush_request_stats_writes_for_read("dashboard_hourly_request_window")
-            .await?;
         let mut tx = self.pool.begin().await?;
         let window = Self::fetch_dashboard_hourly_request_window_tx(
             &mut tx,
@@ -876,8 +871,6 @@ impl KeyStore {
         ),
         ProxyError,
     > {
-        self.best_effort_flush_request_stats_writes_for_read("dashboard_overview_snapshot")
-            .await?;
         let pending_dashboard_rollup_signature =
             self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
         let mut tx = self.pool.begin().await?;

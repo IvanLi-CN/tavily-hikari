@@ -8,6 +8,8 @@
 - 保留单体 + SQLite，以 runtime ownership、durable work 和 read model 收敛热路径。
 - 使用 expand-contract 保持滚动升级兼容，混跑期禁止 HA 角色切换。
 - child task 固定模型与 reasoning effort，恢复和 PR 修复不得擅自换档。
+- `SqliteRuntime` 先以独立止血变更建立强制事务边界与 read-never-writes 合同；后续架构 Ticket 基于该
+  边界继续迁移，不等待固定线上观察窗。
 
 ## Key Reasons / Replacements
 

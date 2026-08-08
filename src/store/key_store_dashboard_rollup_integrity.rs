@@ -987,42 +987,18 @@ impl KeyStore {
 
     async fn begin_dashboard_rollup_integrity_short_write(
         &self,
-    ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, ProxyError> {
-        let mut conn = tokio::time::timeout(
-            DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN,
-            self.pool.acquire(),
-        )
-        .await
-        .map_err(|_| ProxyError::Other("dashboard integrity write pool acquisition timed out".into()))??;
-        sqlx::query("PRAGMA busy_timeout = 100")
-            .execute(&mut *conn)
-            .await?;
-        if let Err(err) = sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            let _ = sqlx::query("PRAGMA busy_timeout = 5000")
-                .execute(&mut *conn)
-                .await;
-            return Err(err.into());
-        }
-        Ok(conn)
+    ) -> Result<SqliteImmediateTransaction, ProxyError> {
+        self.sqlite_runtime
+            .begin_immediate(SqliteOperation::DashboardIntegrityWrite)
+            .await
     }
 
     async fn finish_dashboard_rollup_integrity_short_write(
         &self,
-        conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+        conn: &mut SqliteImmediateTransaction,
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
-        let result = match write_result {
-            Ok(()) => sqlx::query("COMMIT").execute(&mut **conn).await.map(|_| ()).map_err(Into::into),
-            Err(err) => {
-                let _ = sqlx::query("ROLLBACK").execute(&mut **conn).await;
-                Err(err)
-            }
-        };
-        let _ = sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&mut **conn)
-            .await;
-        result
+        conn.finish(write_result).await
     }
 
     async fn finish_dashboard_rollup_integrity_work_item(

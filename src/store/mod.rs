@@ -15,14 +15,17 @@ use tracing::log::LevelFilter;
 use tracing::{error, info, warn};
 
 mod immediate_transaction;
+mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
+pub(crate) use sqlite_runtime::{
+    SqliteImmediateTransaction, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
+};
 
 pub(crate) struct ObservabilityOfflineGuard {
     _lock_file: File,
 }
 
 pub(crate) const SQLITE_BUSY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
-pub(crate) const SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT: Duration = Duration::from_millis(50);
 pub(crate) const SQLITE_SLOW_STATEMENT_THRESHOLD: Duration = Duration::from_millis(250);
 pub(crate) const SQLITE_SLOW_OPERATION_THRESHOLD: Duration = Duration::from_secs(1);
 
@@ -850,27 +853,6 @@ pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
     .await
 }
 
-pub(crate) async fn open_admin_read_flush_pool(
-    operation: &'static str,
-    context: &str,
-    core_database_path: &str,
-    observability_database_path: Option<&str>,
-) -> Result<SqlitePool, ProxyError> {
-    instrument_db_operation(
-        operation,
-        Some(context),
-        open_sqlite_pool_forced_observability_with_busy_timeout(
-            core_database_path,
-            observability_database_path,
-            true,
-            false,
-            1,
-            SQLITE_ADMIN_READ_FLUSH_BUSY_TIMEOUT,
-        ),
-    )
-    .await
-}
-
 async fn select_observability_attach_path(
     conn: &mut sqlx::SqliteConnection,
     core_database_path: &str,
@@ -1176,10 +1158,10 @@ pub(crate) async fn begin_immediate_sqlite_connection_for_monthly_quota_rebase(
 
 pub(crate) async fn begin_read_snapshot_sqlite_connection(
     pool: &SqlitePool,
-) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
-    let mut conn = pool.acquire().await?;
-    sqlx::query("BEGIN").execute(&mut *conn).await?;
-    Ok(conn)
+) -> Result<SqliteReadSnapshot, ProxyError> {
+    SqliteRuntime::new(pool.clone())
+        .begin_read_snapshot(SqliteOperation::BillingLedgerAuditRead)
+        .await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2503,7 +2485,7 @@ pub(crate) struct KeyStore {
     pub(crate) observability_database_path: Option<String>,
     pub(crate) _observability_lock: Option<File>,
     pub(crate) pool: SqlitePool,
-    pub(crate) read_flush_pool: SqlitePool,
+    pub(crate) sqlite_runtime: SqliteRuntime,
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:

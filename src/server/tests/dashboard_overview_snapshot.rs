@@ -135,7 +135,7 @@ async fn dashboard_overview_snapshot_caches_rebuilt_freshness_after_emitted_snap
     );
     assert_eq!(
         cached.freshness, cached.snapshot.freshness,
-        "cache key freshness should stay aligned with the rebuilt snapshot freshness after pending rollups flush"
+        "cache key freshness should stay aligned with the durable snapshot while rollups remain pending"
     );
 
     let _ = std::fs::remove_file(db_path);
@@ -185,13 +185,32 @@ async fn dashboard_overview_snapshot_keeps_summary_totals_in_sync_with_flushed_w
         dashboard_overview_cache: new_dashboard_overview_cache(),
     });
 
+    state.proxy.nudge_request_stats_flush().await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if state
+                .proxy
+                .summary_without_flush()
+                .await
+                .expect("durable summary")
+                .total_requests
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background flush before overview read");
+
     let snapshot = load_dashboard_overview_snapshot(&state)
         .await
         .expect("overview snapshot after pending rollup");
 
     assert_eq!(
         snapshot.payload.summary.total_requests, 1,
-        "overview summary totals should include the pending request-stats batch once the first flush-capable read succeeds",
+        "overview summary totals should include the request-stats batch after the background flush",
     );
     assert_eq!(
         snapshot.payload.summary.success_count, 1,
@@ -562,25 +581,10 @@ async fn dashboard_snapshot_event_uses_rebuilt_freshness_after_pending_rollups()
         dashboard_overview_build_count(&state).await >= 1,
         "pending rollup drift should trigger a shared snapshot rebuild",
     );
-    assert_ne!(
+    assert_eq!(
         emitted_sig.freshness.pending_dashboard_rollup_signature,
         probe_sig.freshness.pending_dashboard_rollup_signature,
-        "emitted snapshot freshness should reflect the rebuilt post-flush state, not the stale pre-rebuild probe",
-    );
-
-    reset_dashboard_overview_build_count(&state).await;
-    let cached = load_dashboard_overview_snapshot(&state)
-        .await
-        .expect("cached overview snapshot after flush-backed rebuild");
-    assert_eq!(
-        dashboard_overview_build_count(&state).await,
-        0,
-        "the first request after a flush-backed rebuild should reuse the cached snapshot instead of rebuilding again",
-    );
-    assert_eq!(
-        cached.freshness,
-        emitted_sig.freshness,
-        "shared cache entries should be keyed by the rebuilt freshness token",
+        "a Dashboard rebuild must preserve pending freshness instead of flushing from the read path",
     );
 
     let _ = std::fs::remove_file(db_path);

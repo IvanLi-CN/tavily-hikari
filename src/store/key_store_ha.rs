@@ -487,8 +487,10 @@ impl KeyStore {
         &self,
         channel: HaSyncChannel,
     ) -> Result<HaBaselineReadSession, ProxyError> {
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("BEGIN").execute(&mut *conn).await?;
+        let conn = self
+            .sqlite_runtime
+            .begin_read_snapshot(SqliteOperation::HaBaselineRead)
+            .await?;
         Ok(HaBaselineReadSession {
             channel,
             conn,
@@ -500,8 +502,10 @@ impl KeyStore {
         &self,
         channel: HaSyncChannel,
     ) -> Result<HaEventsReadSession, ProxyError> {
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("BEGIN").execute(&mut *conn).await?;
+        let conn = self
+            .sqlite_runtime
+            .begin_read_snapshot(SqliteOperation::HaEventsRead)
+            .await?;
         Ok(HaEventsReadSession {
             channel,
             conn,
@@ -1037,11 +1041,11 @@ impl KeyStore {
     }
 
     async fn table_columns_on_conn(
-        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        conn: &mut SqliteConnection,
         table: &str,
     ) -> Result<Vec<String>, ProxyError> {
         let sql = format!("PRAGMA table_info({})", quote_sqlite_identifier(table));
-        let rows = sqlx::query(&sql).fetch_all(&mut **conn).await?;
+        let rows = sqlx::query(&sql).fetch_all(&mut *conn).await?;
         rows.into_iter()
             .map(|row| row.try_get::<String, _>("name").map_err(ProxyError::from))
             .collect()
@@ -1069,7 +1073,7 @@ impl KeyStore {
     }
 
     async fn count_ha_baseline_rows_on_conn(
-        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        conn: &mut SqliteConnection,
         channel: HaSyncChannel,
     ) -> Result<usize, ProxyError> {
         let mut total = 0_i64;
@@ -1079,14 +1083,14 @@ impl KeyStore {
             }
             let sql = ha_baseline_count_sql(table);
             total += sqlx::query_scalar::<_, i64>(&sql)
-                .fetch_one(&mut **conn)
+                .fetch_one(&mut *conn)
                 .await?;
         }
         Ok(total.max(0) as usize)
     }
 
     async fn validate_ha_events_cursor_on_conn(
-        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        conn: &mut SqliteConnection,
         channel: HaSyncChannel,
         after_seq: i64,
         threshold: i64,
@@ -1098,7 +1102,7 @@ impl KeyStore {
         ))
         .bind(threshold)
         .bind(after_seq)
-        .fetch_one(&mut **conn)
+        .fetch_one(&mut *conn)
         .await?;
         // Cursor validity must use the same effective watermark as exports and
         // baselines. sqlite_sequence also includes discarded legacy rows and
@@ -1130,7 +1134,7 @@ impl KeyStore {
                 .bind(threshold)
                 .bind(after_seq)
                 .bind(min_seq)
-                .fetch_one(&mut **conn)
+                .fetch_one(&mut *conn)
                 .await?
             };
             if has_expired_valid_gap || (!has_expired_legacy_gap && !has_any_bridge) {
@@ -1144,7 +1148,7 @@ impl KeyStore {
     }
 
     async fn count_ha_events_after_on_conn(
-        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        conn: &mut SqliteConnection,
         channel: HaSyncChannel,
         after_seq: i64,
         limit: i64,
@@ -1167,7 +1171,7 @@ impl KeyStore {
             .bind(after_seq.max(0))
             .bind(threshold)
             .bind(limit.clamp(1, 1000))
-            .fetch_all(&mut **conn)
+            .fetch_all(&mut *conn)
             .await?;
         Ok(rows.len())
     }
@@ -1507,9 +1511,8 @@ impl HaBaselineReadSession {
     }
 
     // Read/export sessions only hold a snapshot transaction; closing them just releases that snapshot.
-    pub async fn close(mut self) -> Result<(), ProxyError> {
-        sqlx::query("ROLLBACK").execute(&mut *self.conn).await?;
-        Ok(())
+    pub async fn close(self) -> Result<(), ProxyError> {
+        self.conn.close().await
     }
 
     pub async fn rollback(self) -> Result<(), ProxyError> {
@@ -1634,9 +1637,8 @@ impl HaEventsReadSession {
         .await
     }
 
-    pub async fn close(mut self) -> Result<(), ProxyError> {
-        sqlx::query("ROLLBACK").execute(&mut *self.conn).await?;
-        Ok(())
+    pub async fn close(self) -> Result<(), ProxyError> {
+        self.conn.close().await
     }
 
     pub async fn rollback(self) -> Result<(), ProxyError> {

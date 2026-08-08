@@ -51,7 +51,11 @@
   写入的最终 fence/commit 通过同一 SQLite writer serialization point 排序。旧 revision 不得继续
   claim、远端调用或写入。
 - `MaintenanceRuntime` 独占 worker、reaper、`JoinSet`、lease 和 remote-I/O slot 的生命周期。
-- `SqliteRuntime` 唯一持有生产 pools、事务 guard、admission 和操作预算。
+- `SqliteRuntime` 唯一持有生产 pools、事务 guard、admission 和操作预算。迁移后的 HA read
+  session、通用 audit snapshot 与 Dashboard integrity write 不得取得裸 pooled connection；取消或
+  未完成 guard 必须丢弃物理连接。
+- 普通 Dashboard、summary、hourly window 与 rankings 读取只消费 durable request stats，不得触发
+  flush 或获取写连接。pending/flushing 仅参与内部 freshness，不改变 HTTP shape。
 - `ha_outbox_gc_work` 按 control、billing、runtime 独立持久化 eligibility、claim 与 continuation。
 - HA GC 与 scheduled work 使用 typed outcome 在同一原子边界完成 claim 和 continuation。
 - 相同 wire payload 的 UPDATE 不产生 HA outbox 事件；有效变化恰好产生一条兼容事件。
@@ -136,6 +140,8 @@
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。
+- 单连接池取消 read snapshot、HA export 或 immediate write 后，下一次 immediate transaction 可立即
+  开始；writer lock 下管理员读取在 250ms 内返回 durable 数据且不产生读取触发的 busy。
 
 ### Reproducible performance workload
 

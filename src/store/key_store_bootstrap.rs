@@ -648,13 +648,6 @@ impl KeyStore {
         )
         .await?;
         let observability_database_path = attached_database_path(&pool, "observability").await?;
-        let read_flush_pool = open_admin_read_flush_pool(
-            "sqlite startup open read flush pool",
-            startup_context.as_str(),
-            &layout.core_database_path,
-            observability_database_path.as_deref(),
-        )
-        .await?;
         if let Some(attached_path) = observability_database_path.as_deref()
             && sqlite_paths_match(&layout.core_database_path, attached_path)
             && layout.observability_database_path.as_deref() != Some(attached_path)
@@ -668,8 +661,8 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: Some(observability_lock),
+            sqlite_runtime: SqliteRuntime::new(pool.clone()),
             pool,
-            read_flush_pool,
             backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
@@ -727,13 +720,6 @@ impl KeyStore {
         )
         .await?;
         let observability_database_path = attached_database_path(&pool, "observability").await?;
-        let read_flush_pool = open_admin_read_flush_pool(
-            "sqlite request logs gc open read flush pool",
-            gc_context.as_str(),
-            &layout.core_database_path,
-            observability_database_path.as_deref(),
-        )
-        .await?;
         if let Some(attached_path) = observability_database_path.as_deref()
             && sqlite_paths_match(&layout.core_database_path, attached_path)
             && layout.observability_database_path.as_deref() != Some(attached_path)
@@ -747,8 +733,8 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: Some(observability_lock),
+            sqlite_runtime: SqliteRuntime::new(pool.clone()),
             pool,
-            read_flush_pool,
             backend_time,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),

@@ -38,6 +38,10 @@
 - HA export/sync 的窗口采样以 `outbox_sequence_span_estimate` 与 `outbox_high_watermark` 表示积压趋势；不得在
   该热路径计算或记录名为 `outbox_row_count` 的精确库存。
 - 内存 INFO 快照最多每 5 分钟真实读取一次 `/proc` 与 cgroup；slow/error 事件立即采集。
+- SQLite workload 以固定 operation/workload class 在有界内存窗口聚合；每 60 秒最多一条
+  `component=db event=sqlite_workload_window` INFO，报告调用量、pool/begin wait、transaction hold、
+  retries、logical rows、错误/丢弃连接以及 process/cgroup write-byte delta。不得记录 SQL、参数或
+  请求正文。
 - 内存字段同时报告 cgroup `anon/file/swap` 与进程 `RssAnon/RssFile/VmSwap`，避免把文件页缓存
   误诊为堆泄漏。
 - 事务污染、stale claim recovery、连续零进展、预算耗尽和全局退避只在进入、升级或恢复时告警。

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 未开始
+- Implementation: 渐进实施中
 - Lifecycle: active
 - Delivery topology: aggregate-stack
 - Integration branch: `prd/performance-architecture-hardening`
@@ -14,7 +14,7 @@
 实现拆为 12 个 risk-gated child Ticket，按依赖波次进入 integration branch：
 
 1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate
-2. SqliteRuntime seam
+2. SqliteRuntime seam（止血边界已覆盖 HA read session、audit snapshot 与 Dashboard integrity）
 3. MaintenanceRuntime legacy adapter
 4. RequestStatsPipeline
 5. HaPeerObservationStore
@@ -28,7 +28,9 @@
 
 ## Remaining Gaps
 
-- 所有 12 个 Ticket 尚未开始实现。
+- `SqliteRuntime` 的首个 containment slice 已进入交付：取消安全 read/immediate guard、读路径禁止
+  request-stats flush、事务源码门禁与低频 workload 归因。
+- 其余 runtime、durable work 与 read-model Ticket 尚未实现。
 - aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
 
 ## Related Changes

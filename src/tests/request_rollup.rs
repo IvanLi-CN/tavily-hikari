@@ -494,7 +494,7 @@ async fn legacy_single_db_request_logs_migrate_to_observability_sidecar() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_summary_and_key_metrics_on_read() {
+async fn request_stats_coalescer_flush_updates_summary_and_key_metrics() {
     let db_path = temp_db_path("request-stats-coalescer-summary-flush");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -557,7 +557,12 @@ async fn request_stats_coalescer_flushes_summary_and_key_metrics_on_read() {
         .enqueue_request_stats_rollup_for_test(Some(&key_id), now_ts - 1, OUTCOME_ERROR)
         .await;
 
-    let summary = proxy.summary().await.expect("summary");
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("flush request stats");
+    let summary = proxy.summary().await.expect("durable summary");
     assert_eq!(summary.total_requests, 2);
     assert_eq!(summary.success_count, 1);
     assert_eq!(summary.error_count, 1);

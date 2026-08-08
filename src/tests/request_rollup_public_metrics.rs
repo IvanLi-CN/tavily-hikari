@@ -551,9 +551,89 @@ async fn admin_summary_falls_back_to_durable_data_when_flush_hits_write_lock() {
         .expect("release writer lock");
     lock_conn.close().await.expect("close lock connection");
 
-    let summary_after = proxy.summary().await.expect("summary after lock release");
+    proxy.nudge_request_stats_flush().await;
+    let summary_after = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let summary = proxy.summary().await.expect("summary after lock release");
+            if summary.total_requests == 1 {
+                break summary;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background flush should persist within two seconds");
     assert_eq!(summary_after.total_requests, 1);
     assert_eq!(summary_after.success_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admin_summary_never_flushes_pending_request_stats_from_the_read_path() {
+    let db_path = temp_db_path("admin-summary-durable-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = public_metrics_proxy(&db_str, "tvly-admin-summary-read-only").await;
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let pause = proxy
+        .key_store
+        .request_stats_coalescer
+        .install_post_flush_pause()
+        .await;
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(1),
+            OUTCOME_SUCCESS,
+        )
+        .await;
+
+    let summary = tokio::time::timeout(Duration::from_millis(250), proxy.summary())
+        .await
+        .expect("durable summary read budget")
+        .expect("durable summary");
+    assert_eq!(summary.total_requests, 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), pause.arrived.notified())
+            .await
+            .is_err(),
+        "the read path must not start a request-stats flush"
+    );
+
+    proxy.nudge_request_stats_flush().await;
+    tokio::time::timeout(Duration::from_secs(2), pause.arrived.notified())
+        .await
+        .expect("background flush starts within its nominal cadence");
+    pause
+        .released
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if proxy
+                .summary_without_flush()
+                .await
+                .expect("durable summary after background flush")
+                .total_requests
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background flush persists the pending delta");
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -632,7 +712,7 @@ async fn admin_summary_returns_promptly_while_full_budget_flush_is_inflight() {
 }
 
 #[tokio::test]
-async fn admin_summary_falls_back_when_successful_flush_exceeds_read_budget() {
+async fn admin_summary_does_not_start_a_slow_background_flush() {
     let db_path = temp_db_path("admin-summary-slow-successful-flush-fallback");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-admin-summary-slow-flush").await;
@@ -656,33 +736,32 @@ async fn admin_summary_falls_back_when_successful_flush_exceeds_read_budget() {
         .request_stats_coalescer
         .install_post_flush_pause()
         .await;
-    let proxy_for_summary = proxy.clone();
-    let summary_handle = tokio::spawn(async move { proxy_for_summary.summary().await });
+    let summary = tokio::time::timeout(Duration::from_millis(250), proxy.summary())
+        .await
+        .expect("summary should return durable data promptly")
+        .expect("summary read should succeed");
+    assert_eq!(summary.total_requests, 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), pause.arrived.notified())
+            .await
+            .is_err(),
+        "summary reads must not start the background flush"
+    );
 
+    proxy.nudge_request_stats_flush().await;
     tokio::time::timeout(Duration::from_secs(1), pause.arrived.notified())
         .await
-        .expect("flush reached post-flush pause");
-
-    let summary = tokio::time::timeout(Duration::from_secs(1), summary_handle)
-        .await
-        .expect("summary should honor the admin read budget")
-        .expect("summary task join")
-        .expect("summary fallback should succeed");
-    assert!(
-        !pause.released.load(std::sync::atomic::Ordering::SeqCst),
-        "summary should return before the slow successful flush task is released"
-    );
+        .expect("explicit background flush reached post-flush pause");
 
     pause
         .released
         .store(true, std::sync::atomic::Ordering::SeqCst);
     pause.release.notify_waiters();
 
-    let summary_after = proxy.summary().await.expect("summary after pause release");
-    assert!(
-        summary.total_requests <= summary_after.total_requests,
-        "summary should not regress while the slow flush finishes in the background"
-    );
+    let summary_after = proxy
+        .summary()
+        .await
+        .expect("summary after background flush");
     assert_eq!(summary_after.total_requests, 1);
     assert_eq!(summary_after.success_count, 1);
 

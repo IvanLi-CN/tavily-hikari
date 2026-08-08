@@ -177,13 +177,13 @@ source when a usable persisted runtime already exists.
 - Pending/charged billing truth may move to a dedicated `billing_ledger` table as long as pending
   replay, settlement idempotency, and admin/history compatibility remain intact.
 - Request-derived dashboard/API-key/catalog rollups may be buffered in-memory and flushed in bounded
-  windows, provided owner-facing reads either complete one bounded synchronous flush inside a small
-  read-path budget or self-heal by serving already durable data while the pending batch stays queued
-  for the next successful flush.
+  background windows. Dashboard, summary, hourly-window, and rankings reads must serve durable data
+  without acquiring a write connection or synchronously flushing; pending/flushing state may affect
+  internal freshness while the existing HTTP response shape remains unchanged.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
-  stays synchronous and owner-facing reads use the same bounded-flush-or-durable-fallback contract
-  instead of inheriting the full write-side retry budget.
+  stays synchronous and owner-facing reads use durable fallback instead of inheriting any write-side
+  retry budget.
 - Observability-heavy tables may live in a separate attached SQLite file when they are not required
   for synchronous billing truth. In that layout, `request_logs`, request-derived rollups, and other
   rebuildable observability tables are allowed to be eventually consistent and are not required to
@@ -242,6 +242,11 @@ source when a usable persisted runtime already exists.
   guard. Successful work commits explicitly; handled failures roll back explicitly; cancellation or
   guard drop detaches and closes the physical connection so an open transaction cannot return to the
   pool.
+- HA baseline/events read sessions and generic audit snapshots must use the same cancellation-safe
+  ownership rule. Dashboard integrity's temporary busy timeout is restored only after commit; any
+  cancellation, rollback failure, or unfinished transaction closes the physical connection.
+- A source dependency gate must reject new production manual transaction statements outside the
+  runtime module, startup migrations, offline CLIs, and tests.
 - Scheduled-job claims carry a monotonically increasing `claim_generation`. Completion, failure,
   and atomic continuation persistence must match both job id and generation.
 - The stale-job reaper may recover an HA GC claim after 120 seconds or an upstream reconciliation

@@ -21,35 +21,14 @@ impl KeyStore {
             .await
     }
 
-    pub(crate) async fn best_effort_flush_request_stats_writes_for_read(
-        &self,
-        read_operation: &'static str,
-    ) -> Result<RequestStatsReadFreshness, ProxyError> {
-        const RETRY_BUDGET: Duration = Duration::from_millis(250);
-        let inflight_wait_deadline = self.backend_time.instant_now() + RETRY_BUDGET;
-        match self
-            .flush_request_stats_writes_with_wait_policy(
-                &self.read_flush_pool,
-                RETRY_BUDGET,
-                Some(inflight_wait_deadline),
-            )
-            .await
+    pub(crate) fn request_stats_read_freshness(&self) -> RequestStatsReadFreshness {
+        if self
+            .request_stats_coalescer
+            .try_has_pending_or_flushing_work()
         {
-            Ok(()) => Ok(RequestStatsReadFreshness::Fresh),
-            Err(err)
-                if is_transient_sqlite_write_error(&err)
-                    || is_request_stats_flush_wait_budget_exhausted(&err) =>
-            {
-                warn!(
-                    component = "admin_read",
-                    operation = read_operation,
-                    retry_budget_ms = RETRY_BUDGET.as_millis() as u64,
-                    error = %err,
-                    "serving durable stats without flushing pending request stats"
-                );
-                Ok(RequestStatsReadFreshness::DurableFallback)
-            }
-            Err(err) => Err(err),
+            RequestStatsReadFreshness::DurableFallback
+        } else {
+            RequestStatsReadFreshness::Fresh
         }
     }
 
@@ -61,7 +40,7 @@ impl KeyStore {
         let inflight_wait_deadline = self.backend_time.instant_now() + RETRY_BUDGET;
         match self
             .flush_request_stats_writes_with_wait_policy(
-                &self.read_flush_pool,
+                &self.pool,
                 RETRY_BUDGET,
                 Some(inflight_wait_deadline),
             )
@@ -202,7 +181,7 @@ impl KeyStore {
         inflight_wait_deadline: Option<Instant>,
     ) -> Result<(), ProxyError> {
         self.flush_request_stats_writes_with_wait_policy(
-            &self.read_flush_pool,
+            &self.pool,
             retry_budget,
             inflight_wait_deadline,
         )

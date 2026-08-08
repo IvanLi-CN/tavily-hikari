@@ -48,14 +48,14 @@ pub struct HaBaselineApplySession {
 #[derive(Debug)]
 pub struct HaBaselineReadSession {
     channel: HaSyncChannel,
-    conn: sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    conn: SqliteReadSnapshot,
     generated_at: i64,
 }
 
 #[derive(Debug)]
 pub struct HaEventsReadSession {
     channel: HaSyncChannel,
-    conn: sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    conn: SqliteReadSnapshot,
     generated_at: i64,
 }
 

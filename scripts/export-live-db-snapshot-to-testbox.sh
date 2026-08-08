@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 show_help() {
   cat <<'EOF'
@@ -18,6 +19,7 @@ Environment variables:
   SOURCE_BACKUP_PAGES         Defaults to -1 (single-step backup to avoid hot-DB restart loops)
   SOURCE_BACKUP_SLEEP_SECS    Defaults to 0.005
   SOURCE_BACKUP_PROGRESS_SECS Defaults to 15
+  SOURCE_BACKUP_TIMEOUT_SECS  Defaults to 600 per database
   SOURCE_DB_DIR               Fallback host path, defaults to /var/lib/docker/volumes/ai-tavily-hikari-data/_data
   SOURCE_CORE_DB_NAME         Defaults to tavily_proxy.db
   SOURCE_OBSERVABILITY_DB_NAME Defaults to tavily_proxy-observability.db
@@ -47,6 +49,7 @@ SOURCE_HELPER_IMAGE="${SOURCE_HELPER_IMAGE:-python:3.12-alpine}"
 SOURCE_BACKUP_PAGES="${SOURCE_BACKUP_PAGES:--1}"
 SOURCE_BACKUP_SLEEP_SECS="${SOURCE_BACKUP_SLEEP_SECS:-0.005}"
 SOURCE_BACKUP_PROGRESS_SECS="${SOURCE_BACKUP_PROGRESS_SECS:-15}"
+SOURCE_BACKUP_TIMEOUT_SECS="${SOURCE_BACKUP_TIMEOUT_SECS:-600}"
 SOURCE_DB_DIR="${SOURCE_DB_DIR:-/var/lib/docker/volumes/ai-tavily-hikari-data/_data}"
 SOURCE_CORE_DB_NAME="${SOURCE_CORE_DB_NAME:-tavily_proxy.db}"
 SOURCE_OBSERVABILITY_DB_NAME="${SOURCE_OBSERVABILITY_DB_NAME:-tavily_proxy-observability.db}"
@@ -74,7 +77,11 @@ print(hashlib.sha256(path).hexdigest()[:8])
 PY
 )"
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_${GIT_SHA}_ha_outbox}"
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_${GIT_SHA}_sqlite_runtime}"
+if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+  echo "invalid RUN_ID: $RUN_ID" >&2
+  exit 2
+fi
 WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
 REMOTE_BASE="/srv/codex/workspaces/$USER"
 REMOTE_WORKSPACE="$REMOTE_BASE/$WORKSPACE_SLUG"
@@ -88,15 +95,58 @@ SOURCE_SIDECAR_LIVE="$SOURCE_DB_DIR/$SOURCE_OBSERVABILITY_DB_NAME"
 SOURCE_CORE_SNAPSHOT="$SOURCE_TMP_DIR/$SOURCE_CORE_DB_NAME"
 SOURCE_SIDECAR_SNAPSHOT="$SOURCE_TMP_DIR/$SOURCE_OBSERVABILITY_DB_NAME"
 
+case "$SOURCE_TMP_DIR" in
+  /home/ivan/srv/media/shared_data/*)
+    if [[ "$SOURCE_TMP_DIR" == *"/../"* || "$SOURCE_TMP_DIR" == */.. || "$SOURCE_TMP_DIR" == *"/./"* || ! "$SOURCE_TMP_DIR" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+      echo "SOURCE_SNAPSHOT_DIR contains an unsafe path component" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "SOURCE_SNAPSHOT_DIR must be below /home/ivan/srv/media/shared_data" >&2
+    exit 2
+    ;;
+esac
+for snapshot_name in "$SOURCE_CORE_DB_NAME" "$SOURCE_OBSERVABILITY_DB_NAME"; do
+  if [[ ! "$snapshot_name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "invalid SQLite snapshot filename: $snapshot_name" >&2
+    exit 2
+  fi
+done
+
+source_tmp_owned=false
+ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" \
+  "umask 077; mkdir '$SOURCE_TMP_DIR'; chmod 700 '$SOURCE_TMP_DIR'"
+source_tmp_owned=true
+remote_run_owned=false
+completed=false
+cleanup_failed_run() {
+  if [[ "$completed" == "true" ]]; then
+    return
+  fi
+  if [[ "$source_tmp_owned" == "true" ]]; then
+    ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" \
+      "rm -f '$SOURCE_CORE_SNAPSHOT' '$SOURCE_SIDECAR_SNAPSHOT'; rmdir '$SOURCE_TMP_DIR' 2>/dev/null || true" \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ "$remote_run_owned" == "true" ]]; then
+    ssh -o BatchMode=yes "$TESTBOX_HOST" "rm -rf '$REMOTE_RUN'" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_failed_run EXIT
+
 manifest_get() {
   local key="$1"
   printf '%s\n' "$SOURCE_MANIFEST" | awk -F= -v target="$key" '$1 == target { sub($1"=",""); print; exit }'
 }
 
 printf 'Preparing isolated codex-testbox run dir: %s\n' "$REMOTE_RUN"
-ssh -o BatchMode=yes "$TESTBOX_HOST" "mkdir -p '$REMOTE_DB_DIR' '$REMOTE_REPO_DIR' '$REMOTE_WORKSPACE'"
+ssh -o BatchMode=yes "$TESTBOX_HOST" \
+  "test ! -e '$REMOTE_RUN' && mkdir -p '$REMOTE_DB_DIR' '$REMOTE_REPO_DIR' '$REMOTE_WORKSPACE' && chmod 700 '$REMOTE_RUN' '$REMOTE_DB_DIR' '$REMOTE_REPO_DIR'"
+remote_run_owned=true
 
 CREATED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# shellcheck disable=SC2087 # Manifest values are expanded by this local script.
 ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_WORKSPACE/workspace.txt'" <<TXT
 local_repo_root=$REPO_ROOT
 created_utc=$CREATED_UTC
@@ -132,11 +182,13 @@ SOURCE_MANIFEST="$(ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "bash -s" -- \
   "$SOURCE_BACKUP_PAGES" \
   "$SOURCE_BACKUP_SLEEP_SECS" \
   "$SOURCE_BACKUP_PROGRESS_SECS" \
+  "$SOURCE_BACKUP_TIMEOUT_SECS" \
   "$SOURCE_CORE_LIVE" \
   "$SOURCE_SIDECAR_LIVE" \
   "$SOURCE_CORE_SNAPSHOT" \
   "$SOURCE_SIDECAR_SNAPSHOT" <<'EOS'
 set -euo pipefail
+umask 077
 
 tmp_dir="$1"
 container_name="$2"
@@ -145,12 +197,14 @@ helper_image="$4"
 backup_pages="$5"
 backup_sleep_secs="$6"
 backup_progress_secs="$7"
-core_live="$8"
-sidecar_live="$9"
-core_snapshot="${10}"
-sidecar_snapshot="${11}"
+backup_timeout_secs="$8"
+core_live="$9"
+sidecar_live="${10}"
+core_snapshot="${11}"
+sidecar_snapshot="${12}"
 
 mkdir -p "$tmp_dir"
+chmod 700 "$tmp_dir"
 available_tmp_bytes="$(df -B1 --output=avail "$tmp_dir" | tail -n1 | tr -d ' ')"
 
 snapshot_source_kind="host-path"
@@ -158,14 +212,7 @@ effective_core_live="$core_live"
 effective_sidecar_live="$sidecar_live"
 
 if docker inspect "$container_name" >/dev/null 2>&1; then
-  if docker exec "$container_name" sh -lc "command -v sqlite3 >/dev/null && test -f '$container_db_dir/$(basename "$core_live")' && test -f '$container_db_dir/$(basename "$sidecar_live")'"; then
-    snapshot_source_kind="container-sqlite-backup"
-    effective_core_live="$container_db_dir/$(basename "$core_live")"
-    effective_sidecar_live="$container_db_dir/$(basename "$sidecar_live")"
-    core_live_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '$effective_core_live'")"
-    core_live_wal_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '${effective_core_live}-wal' 2>/dev/null || echo 0")"
-    sidecar_live_bytes="$(docker exec "$container_name" sh -lc "stat -c %s '$effective_sidecar_live'")"
-  elif docker exec "$container_name" sh -lc "test -f '$container_db_dir/$(basename "$core_live")' && test -f '$container_db_dir/$(basename "$sidecar_live")'"; then
+  if docker exec "$container_name" sh -lc "test -f '$container_db_dir/$(basename "$core_live")' && test -f '$container_db_dir/$(basename "$sidecar_live")'"; then
     snapshot_source_kind="container-helper-python-backup"
     effective_core_live="$container_db_dir/$(basename "$core_live")"
     effective_sidecar_live="$container_db_dir/$(basename "$sidecar_live")"
@@ -192,14 +239,12 @@ fi
 
 rm -f "$core_snapshot" "$sidecar_snapshot"
 
-if [[ "$snapshot_source_kind" == "container-sqlite-backup" ]]; then
-  docker exec "$container_name" sh -lc "sqlite3 '$effective_core_live' \".timeout 10000\" \".backup '/tmp/$(basename "$core_snapshot")'\""
-  docker exec "$container_name" sh -lc "sqlite3 '$effective_sidecar_live' \".timeout 10000\" \".backup '/tmp/$(basename "$sidecar_snapshot")'\""
-  docker cp "$container_name:/tmp/$(basename "$core_snapshot")" "$core_snapshot"
-  docker cp "$container_name:/tmp/$(basename "$sidecar_snapshot")" "$sidecar_snapshot"
-  docker exec "$container_name" sh -lc "rm -f '/tmp/$(basename "$core_snapshot")' '/tmp/$(basename "$sidecar_snapshot")'"
-elif [[ "$snapshot_source_kind" == "container-helper-python-backup" ]]; then
-  docker run --rm \
+if [[ "$snapshot_source_kind" == "container-helper-python-backup" ]]; then
+  docker image inspect "$helper_image" >/dev/null
+  timeout "$((backup_timeout_secs * 2 + 30))s" docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=64m \
     --volumes-from "$container_name":ro \
     -v "$tmp_dir:/backup" \
     "$helper_image" \
@@ -208,15 +253,17 @@ import os
 import sqlite3
 import sys
 import time
+import signal
 
 
 BACKUP_PAGES = int(sys.argv[1])
 BACKUP_SLEEP_SECS = float(sys.argv[2])
 BACKUP_PROGRESS_SECS = float(sys.argv[3])
-CORE_SRC_PATH = sys.argv[4]
-CORE_DST_PATH = sys.argv[5]
-SIDECAR_SRC_PATH = sys.argv[6]
-SIDECAR_DST_PATH = sys.argv[7]
+BACKUP_TIMEOUT_SECS = int(sys.argv[4])
+CORE_SRC_PATH = sys.argv[5]
+CORE_DST_PATH = sys.argv[6]
+SIDECAR_SRC_PATH = sys.argv[7]
+SIDECAR_DST_PATH = sys.argv[8]
 
 
 def backup_database(label: str, src_path: str, dst_path: str) -> None:
@@ -244,6 +291,7 @@ def backup_database(label: str, src_path: str, dst_path: str) -> None:
             last_report = now
 
     try:
+        signal.alarm(BACKUP_TIMEOUT_SECS)
         dst.execute("PRAGMA journal_mode=OFF;")
         dst.execute("PRAGMA synchronous=OFF;")
         dst.execute("PRAGMA temp_store=MEMORY;")
@@ -263,17 +311,20 @@ def backup_database(label: str, src_path: str, dst_path: str) -> None:
         )
         dst.commit()
     finally:
+        signal.alarm(0)
         src.close()
         dst.close()
 
 
 backup_database("core", CORE_SRC_PATH, CORE_DST_PATH)
 backup_database("observability", SIDECAR_SRC_PATH, SIDECAR_DST_PATH)
-' "$backup_pages" "$backup_sleep_secs" "$backup_progress_secs" "$effective_core_live" "/backup/$(basename "$core_snapshot")" "$effective_sidecar_live" "/backup/$(basename "$sidecar_snapshot")"
+' "$backup_pages" "$backup_sleep_secs" "$backup_progress_secs" "$backup_timeout_secs" "$effective_core_live" "/backup/$(basename "$core_snapshot")" "$effective_sidecar_live" "/backup/$(basename "$sidecar_snapshot")"
 else
-  sqlite3 "$effective_core_live" ".timeout 10000" ".backup '$core_snapshot'"
-  sqlite3 "$effective_sidecar_live" ".timeout 10000" ".backup '$sidecar_snapshot'"
+  timeout "${backup_timeout_secs}s" sqlite3 "$effective_core_live" ".timeout 10000" ".backup '$core_snapshot'"
+  timeout "${backup_timeout_secs}s" sqlite3 "$effective_sidecar_live" ".timeout 10000" ".backup '$sidecar_snapshot'"
 fi
+
+chmod 600 "$core_snapshot" "$sidecar_snapshot"
 
 core_integrity="$(sqlite3 "$core_snapshot" 'PRAGMA integrity_check;' | tr -d '\r')"
 sidecar_integrity="$(sqlite3 "$sidecar_snapshot" 'PRAGMA integrity_check;' | tr -d '\r')"
@@ -350,12 +401,20 @@ SIDECAR_SNAPSHOT_SHA256="$(manifest_get sidecar_snapshot_sha256)"
 CORE_SNAPSHOT_INTEGRITY="$(manifest_get core_snapshot_integrity)"
 SIDECAR_SNAPSHOT_INTEGRITY="$(manifest_get sidecar_snapshot_integrity)"
 
+REMOTE_AVAILABLE_BYTES="$(ssh -o BatchMode=yes "$TESTBOX_HOST" "df -B1 --output=avail '$REMOTE_DB_DIR' | tail -n1 | tr -d ' '")"
+REMOTE_REQUIRED_BYTES="$((CORE_SNAPSHOT_BYTES + SIDECAR_SNAPSHOT_BYTES + 1073741824))"
+if (( REMOTE_AVAILABLE_BYTES < REMOTE_REQUIRED_BYTES )); then
+  echo "insufficient testbox free space: available=${REMOTE_AVAILABLE_BYTES} required=${REMOTE_REQUIRED_BYTES}" >&2
+  exit 2
+fi
+
 printf 'Streaming full snapshot set to codex-testbox ...\n'
 ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "cat '$CORE_SNAPSHOT_PATH_REMOTE'" \
-  | ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_DB_DIR/$SOURCE_CORE_DB_NAME'"
+  | ssh -o BatchMode=yes "$TESTBOX_HOST" "umask 077; cat > '$REMOTE_DB_DIR/$SOURCE_CORE_DB_NAME'; chmod 600 '$REMOTE_DB_DIR/$SOURCE_CORE_DB_NAME'"
 ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "cat '$SIDECAR_SNAPSHOT_PATH_REMOTE'" \
-  | ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_DB_DIR/$SOURCE_OBSERVABILITY_DB_NAME'"
+  | ssh -o BatchMode=yes "$TESTBOX_HOST" "umask 077; cat > '$REMOTE_DB_DIR/$SOURCE_OBSERVABILITY_DB_NAME'; chmod 600 '$REMOTE_DB_DIR/$SOURCE_OBSERVABILITY_DB_NAME'"
 
+# shellcheck disable=SC2087 # Manifest values are expanded by this local script.
 ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_DB_DIR/manifest.env'" <<EOF
 run_id=$RUN_ID
 created_utc=$CREATED_UTC
@@ -367,6 +426,7 @@ source_helper_image=$SOURCE_HELPER_IMAGE
 source_backup_pages=$SOURCE_BACKUP_PAGES
 source_backup_sleep_secs=$SOURCE_BACKUP_SLEEP_SECS
 source_backup_progress_secs=$SOURCE_BACKUP_PROGRESS_SECS
+source_backup_timeout_secs=$SOURCE_BACKUP_TIMEOUT_SECS
 source_db_dir=$SOURCE_DB_DIR
 snapshot_source_kind=$SNAPSHOT_SOURCE_KIND
 helper_image=$HELPER_IMAGE_REMOTE
@@ -375,6 +435,8 @@ sidecar_live_path=$SIDECAR_LIVE_PATH_REMOTE
 core_live_bytes=$CORE_LIVE_BYTES
 core_live_wal_bytes=$CORE_LIVE_WAL_BYTES
 sidecar_live_bytes=$SIDECAR_LIVE_BYTES
+remote_available_bytes=$REMOTE_AVAILABLE_BYTES
+remote_required_bytes=$REMOTE_REQUIRED_BYTES
 available_tmp_bytes=$AVAILABLE_TMP_BYTES
 required_tmp_bytes=$REQUIRED_TMP_BYTES
 core_snapshot_bytes=$CORE_SNAPSHOT_BYTES
@@ -388,6 +450,7 @@ remote_repo_dir=$REMOTE_REPO_DIR
 remote_db_dir=$REMOTE_DB_DIR
 EOF
 
+# shellcheck disable=SC2087 # Checksums are expanded by this local script.
 ssh -o BatchMode=yes "$TESTBOX_HOST" "cat > '$REMOTE_DB_DIR/sha256sums.txt'" <<EOF
 $CORE_SNAPSHOT_SHA256  $SOURCE_CORE_DB_NAME
 $SIDECAR_SNAPSHOT_SHA256  $SOURCE_OBSERVABILITY_DB_NAME
@@ -401,7 +464,9 @@ ssh -o BatchMode=yes "$TESTBOX_HOST" "cd '$REMOTE_DB_DIR' \
 
 if [[ "$KEEP_SOURCE_SNAPSHOTS" != "true" && "$KEEP_SOURCE_SNAPSHOTS" != "1" ]]; then
   printf 'Cleaning temporary backups on %s ...\n' "$SOURCE_SSH_TARGET"
-  ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" "rm -f '$CORE_SNAPSHOT_PATH_REMOTE' '$SIDECAR_SNAPSHOT_PATH_REMOTE' && rmdir '$SOURCE_TMP_DIR_REMOTE' 2>/dev/null || true"
+  ssh -o BatchMode=yes "$SOURCE_SSH_TARGET" \
+    "rm -f '$CORE_SNAPSHOT_PATH_REMOTE' '$SIDECAR_SNAPSHOT_PATH_REMOTE' && rmdir '$SOURCE_TMP_DIR_REMOTE' && test ! -e '$SOURCE_TMP_DIR_REMOTE'"
+  source_tmp_owned=false
 fi
 
 printf '\nSnapshot export complete.\n'
@@ -410,3 +475,4 @@ printf 'REMOTE_REPO_DIR=%s\n' "$REMOTE_REPO_DIR"
 printf 'REMOTE_DB_DIR=%s\n' "$REMOTE_DB_DIR"
 printf 'CORE_SHA256=%s\n' "$CORE_SNAPSHOT_SHA256"
 printf 'SIDECAR_SHA256=%s\n' "$SIDECAR_SNAPSHOT_SHA256"
+completed=true

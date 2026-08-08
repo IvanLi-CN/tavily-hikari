@@ -193,19 +193,16 @@
   - request-log catalog rollup deltas,
   - auth-token `total_requests/last_used_at` deltas,
   - account request-rate (`account_usage_rollup_buckets` five-minute) deltas.
-- Request-derived rollups now flush in one background batcher (`1s / 100 pending keys`) instead of
-  issuing synchronous rollup writes per request. Request-log catalog reads still flush that
-  coalescer before reading, while owner-facing summary/rankings/summary-window/active-user reads
-  now go through a bounded best-effort flush path.
+- Request-derived rollups flush in one background batcher (`1s / 100 pending keys`) instead of
+  issuing synchronous rollup writes per request. Dashboard, summary, rankings, and hourly-window
+  reads no longer flush that coalescer or acquire a dedicated write connection; they serve durable
+  state while pending/flushing contributes only to freshness.
 - `flush_request_stats_writes` now retries transient SQLite writer contention inside a bounded `10s`
   application budget before requeueing the drained batch. The retry/exhaustion logs include
   pending-batch counts plus the oldest/newest drained `created_at`, so operators can tell
   whether they are looking at recoverable flush pressure or final fail-closed exhaustion.
-- Read-side request-stats flushes now use a dedicated `read_flush_pool` with a `50ms`
-  SQLite `busy_timeout` and a `250ms` retry budget instead of borrowing the default
-  `5s busy_timeout` / `10s` write-side budget from the main store pool. If transient writer
-  contention persists past that read budget, the handler logs `component=admin_read` and serves
-  already durable stats while requeueing the pending batch.
+- The former dedicated `read_flush_pool` and synchronous read-side retry budget are removed.
+  Background coalescer persistence retains its existing cadence and retry behavior.
 - Public `/api/public/metrics` and the first `metrics` event on `/api/public/events` now reuse the
   same freshness-gated read path on top of `dashboard_request_rollup_buckets`. The read path checks
   the last flushed timestamp plus the oldest pending request-stat write and only triggers one
@@ -521,6 +518,12 @@
 
 - Raw immediate transactions use an owning guard that commits or rolls back explicitly and detaches
   the physical connection if cancellation drops an open transaction.
+- The first `SqliteRuntime` containment slice owns HA baseline/events read snapshots, generic billing
+  audit snapshots, and Dashboard integrity immediate writes. A source gate prevents those production
+  paths from adding manual transaction SQL outside the allowlisted runtime/migration/CLI boundary.
+- The online dual-database snapshot helper now uses private permissions, collision-free owned paths,
+  capacity checks, per-database timeouts, a read-only network-disabled helper, transfer hashes and
+  integrity checks, plus exact failure cleanup before production-shaped shared-testbox validation.
 - Scheduled jobs increment `claim_generation` when claimed. All scheduler completion paths and
   atomic continuations match the generation, while the periodic stale reaper safely requeues only
   the currently running generation.

@@ -221,6 +221,11 @@
   contention and expose the queued delta after the lock clears, while the healthy-path
   flush-before-read semantics remain intact.
 
+## SqliteRuntime containment
+
+- Replaced the read-side flush pool with durable-only administrator reads and introduced the first
+  `SqliteRuntime` boundary for HA reads, audit snapshots, and Dashboard integrity writes.
+
 ## 2026-07-31
 
 - Added cancellation-safe immediate transactions, generation-bound scheduled-job completion, and

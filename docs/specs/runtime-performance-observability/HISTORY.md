@@ -2,6 +2,9 @@
 
 ## 关键演进
 
+- SQLite 事务诊断收敛为 operation/class 聚合窗口，关联 pool/begin wait、持有时间、逻辑写入量与
+  process/cgroup write-byte delta，同时禁止默认日志携带原始 SQL 或请求内容。
+
 - 2026-08-02：完成低压 HA GC 恢复、候选分页与本地退避、业务调用紧凑缓存和惰性 footprint
   采集；默认日志保留状态跃迁和真实错误，避免以高频采样反向增压。
 

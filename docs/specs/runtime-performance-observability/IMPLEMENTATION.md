@@ -2,8 +2,7 @@
 
 ## 当前状态
 
-- 状态：实现完成（待最终验证）
-- 最近更新：2026-08-02
+- 状态：渐进实现中（SQLite containment slice 待最终验证）
 
 ## 已落地实现
 
@@ -56,6 +55,9 @@
   立即采集。cgroup anon/file/swap 与进程 RssAnon/RssFile/VmSwap 分开输出。
 - 在线 HA GC、对账和调度恢复现已由结构化状态跃迁日志覆盖；普通切片、phase、逐 key 429 与
   enqueue reuse 不再逐次输出 INFO/WARN。
+- `SqliteRuntime` 使用 60 秒有界 operation/class window 汇总 pool/begin wait、transaction hold、
+  affected rows、错误和丢弃连接，并仅在窗口边界读取 process/cgroup write bytes。普通成功和重试不
+  逐次输出，连接污染与最终错误立即可见。
 
 ## 已完成验证
 

@@ -2837,9 +2837,14 @@ pub(crate) async fn audit_business_quota_ledger_with_pool(
     }
     .await;
 
-    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-
-    result
+    let close_result = conn.close().await;
+    match result {
+        Err(err) => Err(err),
+        Ok(report) => {
+            close_result?;
+            Ok(report)
+        }
+    }
 }
 
 pub(crate) fn local_date_start_utc_ts(

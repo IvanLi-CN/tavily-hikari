@@ -15,9 +15,7 @@ impl KeyStore {
         generated_at: i64,
         refresh_interval_secs: i64,
     ) -> Result<(UserRankingsSnapshot, RequestStatsReadFreshness), ProxyError> {
-        let freshness = self
-            .best_effort_flush_request_stats_writes_for_read("user_rankings_snapshot")
-            .await?;
+        let freshness = self.request_stats_read_freshness();
 
         let last24h = self
             .fetch_user_ranking_window(generated_at.saturating_sub(SECS_PER_DAY), generated_at)
