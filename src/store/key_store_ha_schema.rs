@@ -63,7 +63,9 @@ impl KeyStore {
                 deleted_rows_per_minute REAL NOT NULL DEFAULT 0,
                 recovery_deadline_at INTEGER,
                 slo_state TEXT NOT NULL DEFAULT 'unknown',
-                foreground_rps INTEGER NOT NULL DEFAULT 0
+                foreground_rps INTEGER NOT NULL DEFAULT 0,
+                claim_generation INTEGER NOT NULL DEFAULT 0,
+                claim_started_at INTEGER
             )"#,
         )
         .execute(&self.pool)
@@ -81,6 +83,8 @@ impl KeyStore {
             ("recovery_deadline_at", "INTEGER"),
             ("slo_state", "TEXT NOT NULL DEFAULT 'unknown'"),
             ("foreground_rps", "INTEGER NOT NULL DEFAULT 0"),
+            ("claim_generation", "INTEGER NOT NULL DEFAULT 0"),
+            ("claim_started_at", "INTEGER"),
         ] {
             if !self
                 .table_column_exists("ha_outbox_gc_channel_state", column)

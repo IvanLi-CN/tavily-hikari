@@ -18,6 +18,10 @@ related_specs:
 
 # SQLite admin read containment
 
+## Current contract
+
+Ordinary administrator HA status reads are cache-only. A background observation owner probes peers every 30 seconds with a bounded timeout, preserves last-good data, and marks an observation stale after 90 seconds without success. Promote, cutover, and finalize keep the live-probe path.
+
 ## Context
 
 Tavily Hikari uses SQLite for request logs, token logs, API key metrics, user management, and

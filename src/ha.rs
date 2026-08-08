@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -689,14 +690,62 @@ struct HaRuntimeState {
 }
 
 #[derive(Clone)]
+struct HaPeerObservation {
+    view: HaPeerNodeView,
+    observed_at: i64,
+    last_success_at: Option<i64>,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct HaPeerObservationStore {
+    peers: RwLock<HashMap<String, HaPeerObservation>>,
+}
+
+#[derive(Clone)]
 pub struct HaRuntime {
     config: Arc<HaConfig>,
     state: Arc<RwLock<HaRuntimeState>>,
     edgeone: EdgeOneClient,
     backend_time: BackendTime,
+    peer_observations: Arc<HaPeerObservationStore>,
 }
 
 impl HaRuntime {
+    fn unknown_peer_channel_health() -> Vec<HaChannelHealthView> {
+        [
+            HaSyncChannel::Control,
+            HaSyncChannel::Billing,
+            HaSyncChannel::Runtime,
+        ]
+        .into_iter()
+        .map(|channel| HaChannelHealthView {
+            channel,
+            acked_seq: None,
+            high_watermark: 0,
+            ack_lag: None,
+            cursor_state: "unknown".to_string(),
+            retention_secs: match channel {
+                HaSyncChannel::Control => 72 * 60 * 60,
+                HaSyncChannel::Billing | HaSyncChannel::Runtime => 14 * 24 * 60 * 60,
+            },
+            expired_backlog: false,
+            gc_state: "unknown".to_string(),
+            oldest_age_secs: None,
+            last_progress_at: None,
+            last_defer_reason: None,
+            next_retry_at: None,
+            batch_size: 250,
+            gc_debt_mode: "unknown".to_string(),
+            gc_observed_at: None,
+            gc_deleted_rows_per_minute: 0.0,
+            gc_recovery_deadline_at: None,
+            gc_slo_state: "unknown".to_string(),
+            gc_foreground_rps: 0,
+        })
+        .collect()
+    }
+
     pub fn new(config: HaConfig) -> Self {
         Self::new_with_time(config, BackendTime::system())
     }
@@ -722,7 +771,104 @@ impl HaRuntime {
             })),
             edgeone,
             backend_time,
+            peer_observations: Arc::new(HaPeerObservationStore::default()),
         }
+    }
+
+    pub async fn record_peer_observation(
+        &self,
+        peer: &HaPeerNodeConfig,
+        result: Result<HaPeerNodeView, String>,
+    ) {
+        let now = self.backend_time.now_ts();
+        let mut observations = self.peer_observations.peers.write().await;
+        match result {
+            Ok(mut view) => {
+                view.stale = false;
+                observations.insert(
+                    peer.node_id.clone(),
+                    HaPeerObservation {
+                        view,
+                        observed_at: now,
+                        last_success_at: Some(now),
+                        error: None,
+                    },
+                );
+            }
+            Err(error) => {
+                if let Some(observation) = observations.get_mut(&peer.node_id) {
+                    observation.observed_at = now;
+                    observation.error = Some(error.clone());
+                    observation.view.message = Some(error);
+                    observation.view.stale = observation
+                        .last_success_at
+                        .is_none_or(|last_success| now.saturating_sub(last_success) >= 90);
+                } else {
+                    observations.insert(
+                        peer.node_id.clone(),
+                        HaPeerObservation {
+                            view: HaPeerNodeView {
+                                node_id: peer.node_id.clone(),
+                                public_origin: Some(peer.public_origin.clone()),
+                                source_config_target: None,
+                                role: None,
+                                allows_basic_business: false,
+                                allows_full_writes: false,
+                                last_sync_at: None,
+                                sync_lag_seconds: None,
+                                recovery_status: None,
+                                message: Some(error.clone()),
+                                last_seen_at: None,
+                                stale: true,
+                                role_hint: peer.role_hint,
+                                planned_cutover_eligible: false,
+                                channel_health: Self::unknown_peer_channel_health(),
+                            },
+                            observed_at: now,
+                            last_success_at: None,
+                            error: Some(error),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    pub async fn cached_peer_views(&self) -> Vec<HaPeerNodeView> {
+        let now = self.backend_time.now_ts();
+        let observations = self.peer_observations.peers.read().await;
+        self.config
+            .peer_nodes
+            .iter()
+            .filter(|peer| peer.node_id != self.config.node_id)
+            .map(|peer| {
+                if let Some(observation) = observations.get(&peer.node_id) {
+                    let mut view = observation.view.clone();
+                    view.stale = observation
+                        .last_success_at
+                        .is_none_or(|last_success| now.saturating_sub(last_success) >= 90);
+                    view
+                } else {
+                    HaPeerNodeView {
+                        node_id: peer.node_id.clone(),
+                        public_origin: Some(peer.public_origin.clone()),
+                        source_config_target: None,
+                        role: None,
+                        allows_basic_business: false,
+                        allows_full_writes: false,
+                        last_sync_at: None,
+                        sync_lag_seconds: None,
+                        recovery_status: None,
+                        message: Some("peer observation pending".to_string()),
+                        last_seen_at: None,
+                        stale: true,
+                        role_hint: peer.role_hint,
+                        planned_cutover_eligible: false,
+                        channel_health: Self::unknown_peer_channel_health(),
+                    }
+                }
+            })
+            .collect()
     }
 
     pub async fn refresh_startup_role(&self) -> Result<(), String> {
@@ -2550,5 +2696,72 @@ mod tests {
         let decoded: HaStatusView = serde_json::from_value(payload).expect("decode legacy status");
         assert_eq!(decoded.peer_count, 0);
         assert_eq!(decoded.sync_disabled_reason, None);
+    }
+
+    #[tokio::test]
+    async fn peer_observation_failure_retains_last_good_until_stale_deadline() {
+        let (backend_time, clock) = BackendTime::manual_from_ts(1_700_000_000);
+        let peer = HaPeerNodeConfig {
+            node_id: "peer-b".to_string(),
+            admin_base_url: "http://peer-b.invalid".to_string(),
+            public_origin: "peer-b.invalid:443".to_string(),
+            role_hint: HaPeerRoleHint::StandbyCandidate,
+        };
+        let runtime = HaRuntime::new_with_time(
+            HaConfig {
+                mode: HaMode::ActiveStandby,
+                node_id: "node-a".to_string(),
+                peer_nodes: vec![peer.clone()],
+                ..HaConfig::default()
+            },
+            backend_time,
+        );
+        let mut view = runtime.cached_peer_views().await.remove(0);
+        view.role = Some(HaNodeRole::Standby);
+        view.last_seen_at = Some(clock.now_ts());
+        view.message = Some("ready".to_string());
+        runtime.record_peer_observation(&peer, Ok(view)).await;
+
+        clock.set_now_ts(1_700_000_060);
+        runtime
+            .record_peer_observation(&peer, Err("probe timeout".to_string()))
+            .await;
+        let retained = runtime.cached_peer_views().await.remove(0);
+        assert_eq!(retained.role, Some(HaNodeRole::Standby));
+        assert!(!retained.stale);
+        assert_eq!(retained.message.as_deref(), Some("probe timeout"));
+
+        clock.set_now_ts(1_700_000_091);
+        let stale = runtime.cached_peer_views().await.remove(0);
+        assert_eq!(stale.role, Some(HaNodeRole::Standby));
+        assert!(stale.stale);
+    }
+
+    #[tokio::test]
+    async fn first_peer_observation_failure_records_unknown_error() {
+        let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_000);
+        let peer = HaPeerNodeConfig {
+            node_id: "peer-b".to_string(),
+            admin_base_url: "http://peer-b.invalid".to_string(),
+            public_origin: "peer-b.invalid:443".to_string(),
+            role_hint: HaPeerRoleHint::StandbyCandidate,
+        };
+        let runtime = HaRuntime::new_with_time(
+            HaConfig {
+                mode: HaMode::ActiveStandby,
+                node_id: "node-a".to_string(),
+                peer_nodes: vec![peer.clone()],
+                ..HaConfig::default()
+            },
+            backend_time,
+        );
+        runtime
+            .record_peer_observation(&peer, Err("probe timeout".to_string()))
+            .await;
+
+        let failed = runtime.cached_peer_views().await.remove(0);
+        assert_eq!(failed.role, None);
+        assert!(failed.stale);
+        assert_eq!(failed.message.as_deref(), Some("probe timeout"));
     }
 }

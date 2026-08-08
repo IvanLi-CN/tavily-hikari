@@ -114,6 +114,152 @@ async fn ha_outbox_gc_watchdog_only_reports_persisted_channel_debt() {
 }
 
 #[tokio::test]
+async fn online_ha_gc_skips_a_deferred_channel_without_freezing_other_debt() {
+    let db_path = temp_db_path("ha-outbox-gc-independent-eligibility");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-independent-eligibility".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+
+    sqlx::query(
+        "UPDATE ha_outbox_gc_state SET next_channel = 'control', pending_channel_mask = 7 WHERE id = 'local'",
+    )
+    .execute(&pool)
+    .await
+    .expect("select control first");
+    sqlx::query(
+        "UPDATE ha_outbox_gc_channel_state SET next_retry_at = ? WHERE channel = 'control'",
+    )
+    .bind(now + 300)
+    .execute(&pool)
+    .await
+    .expect("defer control");
+    sqlx::query(
+        r#"INSERT INTO ha_billing_outbox
+           (kind, resource, resource_id, op, payload_json, created_at, checksum)
+           VALUES ('state', 'billing_ledger', 'eligible-billing', 'upsert', '{}', ?, NULL)"#,
+    )
+    .bind(now - 15 * SECS_PER_DAY)
+    .execute(&pool)
+    .await
+    .expect("seed eligible billing debt");
+    pool.close().await;
+
+    let report = proxy.gc_ha_outbox_online().await.expect("online GC");
+    assert_eq!(report.channels.len(), 1);
+    assert_eq!(
+        report.channels[0].channel,
+        HaSyncChannel::Billing,
+        "a deferred control channel must not freeze eligible billing work"
+    );
+    assert_eq!(report.channels[0].deleted_rows, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn online_ha_gc_does_not_steal_an_active_channel_claim() {
+    let db_path = temp_db_path("ha-outbox-gc-active-channel-claim");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-active-channel-claim".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        "UPDATE ha_outbox_gc_state SET next_channel = 'control', pending_channel_mask = 3 WHERE id = 'local'",
+    )
+    .execute(&pool)
+    .await
+    .expect("select control first");
+    sqlx::query(
+        "UPDATE ha_outbox_gc_channel_state SET claim_generation = 9, claim_started_at = ? WHERE channel = 'control'",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("seed active control claim");
+    sqlx::query(
+        r#"INSERT INTO ha_billing_outbox
+           (kind, resource, resource_id, op, payload_json, created_at, checksum)
+           VALUES ('state', 'billing_ledger', 'active-claim-billing', 'upsert', '{}', ?, NULL)"#,
+    )
+    .bind(now - 15 * SECS_PER_DAY)
+    .execute(&pool)
+    .await
+    .expect("seed eligible billing debt");
+    pool.close().await;
+
+    let report = proxy.gc_ha_outbox_online().await.expect("online GC");
+    assert_eq!(report.channels.len(), 1);
+    assert_eq!(report.channels[0].channel, HaSyncChannel::Billing);
+    let control_generation: i64 = sqlx::query_scalar(
+        "SELECT claim_generation FROM ha_outbox_gc_channel_state WHERE channel = 'control'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read active control generation");
+    assert_eq!(control_generation, 9);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn online_ha_gc_waits_for_the_earliest_channel_when_none_are_eligible() {
+    let db_path = temp_db_path("ha-outbox-gc-earliest-eligibility");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-gc-earliest-eligibility".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+    sqlx::query("UPDATE ha_outbox_gc_state SET pending_channel_mask = 7 WHERE id = 'local'")
+        .execute(&pool)
+        .await
+        .expect("mark channel debt");
+    for (channel, delay) in [("control", 300_i64), ("billing", 90), ("runtime", 180)] {
+        sqlx::query("UPDATE ha_outbox_gc_channel_state SET next_retry_at = ? WHERE channel = ?")
+            .bind(now + delay)
+            .bind(channel)
+            .execute(&pool)
+            .await
+            .expect("defer channel");
+    }
+    pool.close().await;
+
+    let report = proxy.gc_ha_outbox_online().await.expect("online GC");
+    assert!(report.channels.is_empty());
+    assert_eq!(report.batches, 0);
+    assert!(report.has_more);
+    assert!(matches!(report.continuation_delay_secs, Some(89..=90)));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn online_gc_report_exposes_recovery_debt_and_slo_state() {
     let db_path = temp_db_path("ha-outbox-gc-recovery-state");
     let db_str = db_path.to_string_lossy().to_string();
@@ -234,51 +380,6 @@ async fn online_ha_gc_burst_between_slices_resets_low_pressure_tenure() {
     assert_ne!(channel.debt_mode, "recovering");
     assert_ne!(report.continuation_delay_secs, Some(1));
 
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn deferred_ha_gc_sets_watchdog_debt_when_mask_is_clear() {
-    let db_path = temp_db_path("ha-outbox-gc-deferred-watchdog-debt");
-    let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-ha-gc-deferred-watchdog-debt".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
-    let pool = connect_sqlite_test_pool(&db_str).await;
-
-    sqlx::query(
-        "UPDATE ha_outbox_gc_state SET next_channel = 'billing', pending_channel_mask = 0 WHERE id = 'local'",
-    )
-    .execute(&pool)
-    .await
-    .expect("clear GC debt state");
-    proxy
-        .record_ha_outbox_gc_deferred("continuation_persist_failed")
-        .await
-        .expect("persist deferred GC state");
-
-    let pending_channel_mask: i64 = sqlx::query_scalar(
-        "SELECT pending_channel_mask FROM ha_outbox_gc_state WHERE id = 'local'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("read deferred GC debt state");
-    assert_eq!(pending_channel_mask, 2);
-    assert!(
-        proxy
-            .ha_outbox_gc_watchdog_needed()
-            .await
-            .expect("read deferred GC watchdog state")
-    );
-
-    pool.close().await;
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -478,6 +579,12 @@ async fn online_ha_gc_uses_a_short_continuation_while_a_large_debt_is_draining()
             .channel,
         HaSyncChannel::Runtime
     );
+    sqlx::query(
+        "UPDATE ha_outbox_gc_channel_state SET next_retry_at = NULL WHERE channel = 'control'",
+    )
+    .execute(&recovered_proxy.key_store.pool)
+    .await
+    .expect("make persisted control continuation eligible");
     assert_eq!(
         recovered_proxy
             .gc_ha_outbox_online()

@@ -1668,11 +1668,25 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Option<AccountQuotaResolution> {
+        if self
+            .account_quota_resolution_transitions
+            .load(std::sync::atomic::Ordering::Acquire)
+            != 0
+        {
+            return None;
+        }
         let now = self.backend_time.now_ts();
+        let global_generation = self
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let user_generations = self.account_quota_resolution_user_generations.read().await;
+        let user_generation = user_generations.get(user_id).copied().unwrap_or(0);
         if let Some(cached) = {
             let cache = self.account_quota_resolution_cache.read().await;
             cache.get(user_id).cloned()
         } && cached.expires_at > now
+            && cached.global_generation == global_generation
+            && cached.user_generation == user_generation
         {
             return Some(cached.resolution);
         }
@@ -1683,14 +1697,30 @@ impl KeyStore {
         &self,
         user_id: &str,
         resolution: &AccountQuotaResolution,
+        generation: (u64, u64),
     ) {
+        let user_generations = self.account_quota_resolution_user_generations.read().await;
         let mut cache = self.account_quota_resolution_cache.write().await;
+        if self
+            .account_quota_resolution_transitions
+            .load(std::sync::atomic::Ordering::Acquire)
+            != 0
+            || self
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            != generation.0
+            || user_generations.get(user_id).copied().unwrap_or(0) != generation.1
+        {
+            return;
+        }
         let now = self.backend_time.now_ts();
         cache.insert(
             user_id.to_string(),
             AccountQuotaResolutionCacheEntry {
                 resolution: resolution.clone(),
                 expires_at: now + ACCOUNT_QUOTA_RESOLUTION_CACHE_TTL_SECS as i64,
+                global_generation: generation.0,
+                user_generation: generation.1,
             },
         );
 
@@ -1708,11 +1738,39 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn invalidate_account_quota_resolution(&self, user_id: &str) {
-        self.account_quota_resolution_cache
-            .write()
+    pub(crate) async fn quota_cache_generation(
+        &self,
+        user_id: &str,
+    ) -> (u64, u64) {
+        let global = self
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let user = self
+            .account_quota_resolution_user_generations
+            .read()
             .await
-            .remove(user_id);
+            .get(user_id)
+            .copied()
+            .unwrap_or(0);
+        (global, user)
+    }
+
+    pub(crate) async fn invalidate_account_quota_resolution(&self, user_id: &str) {
+        let mut generations = self.account_quota_resolution_user_generations.write().await;
+        let generation = generations.entry(user_id.to_string()).or_default();
+        *generation = generation.saturating_add(1);
+        let reset_all = generations.len() > ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES;
+        if reset_all {
+            self.account_quota_resolution_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            generations.clear();
+        }
+        let mut cache = self.account_quota_resolution_cache.write().await;
+        if reset_all {
+            cache.clear();
+        } else {
+            cache.remove(user_id);
+        }
     }
 
     pub(crate) async fn invalidate_account_quota_resolutions<I, S>(&self, user_ids: I)
@@ -1720,13 +1778,38 @@ impl KeyStore {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let user_ids = user_ids
+            .into_iter()
+            .map(|user_id| user_id.as_ref().to_string())
+            .collect::<Vec<_>>();
+        let mut generations = self.account_quota_resolution_user_generations.write().await;
+        for user_id in &user_ids {
+            let generation = generations.entry(user_id.clone()).or_default();
+            *generation = generation.saturating_add(1);
+        }
+        let reset_all = generations.len() > ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES;
+        if reset_all {
+            self.account_quota_resolution_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            generations.clear();
+        }
         let mut cache = self.account_quota_resolution_cache.write().await;
-        for user_id in user_ids {
-            cache.remove(user_id.as_ref());
+        if reset_all {
+            cache.clear();
+        } else {
+            for user_id in user_ids {
+                cache.remove(&user_id);
+            }
         }
     }
 
     pub(crate) async fn invalidate_all_account_quota_resolutions(&self) {
+        self.account_quota_resolution_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.account_quota_resolution_user_generations
+            .write()
+            .await
+            .clear();
         self.account_quota_resolution_cache.write().await.clear();
     }
 

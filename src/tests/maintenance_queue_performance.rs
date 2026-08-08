@@ -104,12 +104,10 @@ async fn ha_gc_continuation_finishes_job_and_requeues_atomically() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read persisted GC continuation diagnostics");
-    assert_eq!(next_retry_at, Some(available_at));
-    assert_eq!(last_defer_reason.as_deref(), Some("foreground_pressure"));
-    assert_eq!(
-        last_continuation_delay_secs,
-        Some(queued_available_at.saturating_sub(queued_at))
-    );
+    assert_eq!(next_retry_at, None);
+    assert_eq!(last_defer_reason, None);
+    assert_eq!(last_continuation_delay_secs, None);
+    assert!(queued_available_at > queued_at);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

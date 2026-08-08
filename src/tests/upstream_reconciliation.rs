@@ -23,6 +23,121 @@ fn reconciliation_test_db_path() -> PathBuf {
 }
 
 #[tokio::test]
+async fn reconciliation_work_projection_uses_period_index() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-query-plan".to_string()],
+        "http://127.0.0.1:9",
+        &db_string,
+    )
+    .await
+    .expect("create proxy");
+
+    let plan_rows = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"EXPLAIN QUERY PLAN
+           SELECT token_id, period_code
+           FROM upstream_reconciliation_work
+           WHERE period_end >= ? AND period_end < ?
+           ORDER BY period_end, scheduling_key_id, token_id, period_code
+           LIMIT 20"#,
+    )
+    .bind(0_i64)
+    .bind(i64::MAX)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("explain reconciliation projection query");
+    let plan = plan_rows
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan.contains("idx_upstream_reconciliation_work_period"),
+        "reconciliation projection must use its bounded period index: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN upstream_reconciliation_usage"),
+        "candidate selection must not aggregate the raw usage table: {plan}"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_projection_preserves_global_min_across_backfill_pages() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-pages"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("disable live projection for backfill fixture");
+    sqlx::query(
+        r#"WITH RECURSIVE rows(n) AS (
+             VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 501
+           )
+           INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           )
+           SELECT 'projection-token', printf('key-%03d', n), '2026-07-15/S1',
+                  CASE WHEN n = 501 THEN 'project-a' ELSE 'project-z' END,
+                  CASE WHEN n = 501 THEN 'account:a' ELSE 'account:z' END,
+                  ?, ?, 1, ?, ?, ?,
+                  CASE WHEN n = 501 THEN 'actual' ELSE 'shadow' END
+           FROM rows"#,
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert paged projection fixture");
+
+    proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .expect("advance first projection page");
+    proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(1)
+        .await
+        .expect("advance second projection page");
+    let projected: (String, String, String) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode FROM upstream_reconciliation_work WHERE token_id = 'projection-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read merged projection");
+    assert_eq!(
+        projected,
+        (
+            "project-a".to_string(),
+            "account:a".to_string(),
+            "actual".to_string()
+        )
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_waits_for_a_complete_eligible_period() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -580,6 +695,109 @@ async fn run_upstream_reconciliation_once_updates_runtime_markers() {
 }
 
 #[tokio::test]
+async fn reconciliation_request_cap_never_settles_partially_observed_candidate() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-cap-a",
+            "tvly-reconciliation-cap-b",
+            "tvly-reconciliation-cap-c",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save reconciliation settings");
+    let token = proxy
+        .create_access_token(Some("reconciliation-cap"))
+        .await
+        .expect("create token");
+    let mut key_ids = Vec::new();
+    for suffix in ["a", "b", "c"] {
+        key_ids.push(
+            proxy
+                .add_or_undelete_key(&format!("tvly-reconciliation-cap-{suffix}"))
+                .await
+                .expect("create upstream key"),
+        );
+    }
+    for key_id in key_ids {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at,
+                 last_used_at, updated_at, settlement_mode
+               ) VALUES (?, ?, '2026-07-15/S1', ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')"#,
+        )
+        .bind(&token.id)
+        .bind(key_id)
+        .bind("project-reconciliation-cap")
+        .bind(format!("token:{}", token.id))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert multi-key candidate usage");
+    }
+
+    let upstream_hits = Arc::new(AtomicUsize::new(0));
+    let route_hits = Arc::clone(&upstream_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move || {
+            let route_hits = Arc::clone(&route_hits);
+            async move {
+                route_hits.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({ "key": { "usage": 0 } }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve capped reconciliation upstream");
+    });
+
+    let settled = proxy
+        .run_upstream_reconciliation_once(&format!("http://{addr}"))
+        .await
+        .expect("run capped reconciliation");
+    assert_eq!(upstream_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(settled, 0);
+    let settlement_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_settlements WHERE token_id = ?",
+    )
+    .bind(&token.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read partial settlement count");
+    assert_eq!(settlement_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn run_upstream_reconciliation_once_applies_key_scoped_backoff_for_429() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -886,7 +1104,7 @@ async fn local_reconciliation_pressure_is_separate_from_upstream_backoff() {
         .expect("read local pressure state");
     assert_eq!(local_streak, 3);
     assert_eq!(local_level, 1);
-    assert_eq!(local_until, now + 60 + 2);
+    assert_eq!(local_until, now + 30 + 2);
     assert_eq!(
         proxy
             .key_store
@@ -895,6 +1113,93 @@ async fn local_reconciliation_pressure_is_separate_from_upstream_backoff() {
             .expect("read global backoff state"),
         (0, 0, 0)
     );
+    let queued: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), MAX(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued' AND trigger_source = 'auto'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read atomic delayed representative");
+    assert_eq!(queued, (1, local_until));
+
+    proxy
+        .key_store
+        .update_upstream_reconciliation_local_backoff(false, now + 3)
+        .await
+        .expect("recover local pressure");
+    let queued_after_recovery: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued' AND trigger_source = 'auto'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recovered representative state");
+    assert_eq!(queued_after_recovery, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn claimed_reconciliation_backoff_requeues_the_same_generation_fenced_job() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-claimed-backoff"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    for offset in 0..2 {
+        proxy
+            .key_store
+            .update_upstream_reconciliation_local_backoff(true, now + offset)
+            .await
+            .expect("seed local pressure streak");
+    }
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue reconciliation representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim reconciliation representative")
+        .expect("running claim");
+
+    let (_, level, until) = proxy
+        .key_store
+        .update_upstream_reconciliation_local_backoff_claimed(
+            true,
+            now + 2,
+            queued.job_id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("atomically persist backoff and requeue claim");
+    assert_eq!(level, 1);
+    let job = proxy
+        .scheduled_job_by_id(queued.job_id)
+        .await
+        .expect("read representative")
+        .expect("representative exists");
+    assert_eq!(job.status, "queued");
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count active representatives");
+    assert_eq!(active_count, 1);
+    let available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(queued.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read representative availability");
+    assert_eq!(available_at, until);
 
     let _ = std::fs::remove_file(db_path);
 }

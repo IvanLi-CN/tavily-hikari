@@ -1,6 +1,80 @@
 use super::*;
 
 #[tokio::test]
+async fn ha_quota_truth_apply_invalidates_cached_account_resolution() {
+    let db_path = temp_db_path("ha-quota-cache-invalidation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-quota-cache-invalidation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let stale = build_account_quota_resolution(AccountQuotaLimits::zero_base(), Vec::new());
+    let cache_generation = (
+        proxy
+            .key_store
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        0,
+    );
+    proxy
+        .key_store
+        .cache_account_quota_resolution("ha-user", &stale, cache_generation)
+        .await;
+
+    let events = [
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_start",
+            "channel": "runtime",
+            "after": 0,
+            "limit": 1,
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "event",
+            "channel": "runtime",
+            "event": {
+                "seq": 1,
+                "resource": "account_quota_limits",
+                "resourceId": "missing-user",
+                "op": "delete",
+                "payload": null,
+            },
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_end",
+            "channel": "runtime",
+            "lastSeq": 1,
+            "eventCount": 1,
+        }),
+    ]
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    proxy
+        .apply_ha_events_ndjson(HaSyncChannel::Runtime, &events)
+        .await
+        .expect("apply runtime quota event");
+
+    assert!(
+        proxy
+            .key_store
+            .cached_account_quota_resolution("ha-user")
+            .await
+            .is_none(),
+        "HA quota truth must invalidate cached quota decisions"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn retired_passkey_ha_resources_are_discarded_without_blocking_control_sync() {
     let db_path = temp_db_path("ha-retired-passkey-resource");
     let db_str = db_path.to_string_lossy().to_string();

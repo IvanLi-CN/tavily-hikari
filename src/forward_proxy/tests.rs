@@ -176,7 +176,16 @@ rule-providers:
             pool: pool.clone(),
             backend_time: crate::BackendTime::system(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            account_quota_resolution_cache: tokio::sync::RwLock::new(
+            account_quota_resolution_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            account_quota_resolution_generation: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            account_quota_resolution_transitions: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            account_quota_resolution_user_generations: tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             ),
             request_logs_catalog_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),

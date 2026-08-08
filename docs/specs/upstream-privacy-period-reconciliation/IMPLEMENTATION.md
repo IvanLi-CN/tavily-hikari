@@ -31,8 +31,10 @@
 - 候选页先以 period/settlement 索引限制扫描，再做有界 hydrate 与 Research `EXISTS` 判断；执行
   前后不再运行精确队列聚合。系统状态读取 bounded observation，未首次观测时保留 unknown/null
   语义。
-- 本地全局压力连续三轮触发 `2/5/10/30` 分钟退避，`Retry-After` 取更晚值；延迟代表任务与
-  状态在同一持久化生命周期内复用，真实尝试或成功后恢复。
+- 本地压力连续三轮触发 `30/60/120/300` 秒退避；真实 upstream 429 独立触发
+  `2/5/10/30` 分钟退避并尊重更晚的 `Retry-After`。transport、semantic failure 与本地预算耗尽
+  不会清空已有 429 状态。
+- `upstream_reconciliation_work` 由 usage 写入增量维护，并用持久 cursor 分页吸收升级前历史行；候选查询不再每轮聚合原始 usage 全表。每轮最多发起两次串行远端请求。
 
 ## Remaining Gaps
 

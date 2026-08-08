@@ -2692,6 +2692,7 @@ impl KeyStore {
         if let Some(cached) = self.cached_account_quota_resolution(user_id).await {
             return Ok(cached);
         }
+        let cache_generation = self.quota_cache_generation(user_id).await;
 
         let base = self.ensure_account_quota_limits(user_id).await?;
         let tags = self.list_user_tag_bindings_for_user(user_id).await?;
@@ -2713,7 +2714,7 @@ impl KeyStore {
             monthly_entitlement_delta,
             permanent_entitlement_delta,
         );
-        self.cache_account_quota_resolution(user_id, &resolution)
+        self.cache_account_quota_resolution(user_id, &resolution, cache_generation)
             .await;
         Ok(resolution)
     }

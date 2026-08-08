@@ -1,6 +1,143 @@
 use super::*;
 
 #[tokio::test]
+async fn account_quota_cache_rejects_a_fill_started_before_invalidation() {
+    let db_path = temp_db_path("account-quota-cache-generation");
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-account-quota-cache-generation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let global_generation = proxy
+        .key_store
+        .account_quota_resolution_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let user_generation = proxy
+        .key_store
+        .account_quota_resolution_user_generations
+        .read()
+        .await
+        .get("race-user")
+        .copied()
+        .unwrap_or(0);
+    let stale = build_account_quota_resolution(AccountQuotaLimits::zero_base(), Vec::new());
+    proxy
+        .key_store
+        .cache_account_quota_resolution("stable-user", &stale, (global_generation, 0))
+        .await;
+
+    proxy
+        .key_store
+        .invalidate_account_quota_resolution("race-user")
+        .await;
+    proxy
+        .key_store
+        .cache_account_quota_resolution("race-user", &stale, (global_generation, user_generation))
+        .await;
+
+    assert!(
+        proxy
+            .key_store
+            .cached_account_quota_resolution("race-user")
+            .await
+            .is_none(),
+        "a pre-invalidation read must not refill stale quota state"
+    );
+    assert!(
+        proxy
+            .key_store
+            .cached_account_quota_resolution("stable-user")
+            .await
+            .is_some(),
+        "targeted invalidation must preserve unrelated hot cache entries"
+    );
+
+    let transition_generation = proxy
+        .key_store
+        .account_quota_resolution_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    proxy
+        .key_store
+        .account_quota_resolution_transitions
+        .fetch_add(2, std::sync::atomic::Ordering::AcqRel);
+    proxy
+        .key_store
+        .account_quota_resolution_transitions
+        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    proxy
+        .key_store
+        .cache_account_quota_resolution("transition-user", &stale, (transition_generation, 0))
+        .await;
+    proxy
+        .key_store
+        .account_quota_resolution_transitions
+        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    assert!(
+        proxy
+            .key_store
+            .cached_account_quota_resolution("transition-user")
+            .await
+            .is_none(),
+        "a fill completed during an HA truth transition must be discarded"
+    );
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn account_quota_user_generations_are_bounded() {
+    let db_path = temp_db_path("account-quota-cache-generation-bound");
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-account-quota-cache-generation-bound".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let initial_global_generation = proxy
+        .key_store
+        .account_quota_resolution_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    {
+        let mut generations = proxy
+            .key_store
+            .account_quota_resolution_user_generations
+            .write()
+            .await;
+        for index in 0..ACCOUNT_QUOTA_RESOLUTION_CACHE_MAX_ENTRIES {
+            generations.insert(format!("bounded-user-{index}"), 1);
+        }
+    }
+
+    proxy
+        .key_store
+        .invalidate_account_quota_resolution("overflow-user")
+        .await;
+
+    assert!(
+        proxy
+            .key_store
+            .account_quota_resolution_user_generations
+            .read()
+            .await
+            .is_empty(),
+        "overflow must reset per-user generations instead of retaining unbounded state"
+    );
+    assert!(
+        proxy
+            .key_store
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            > initial_global_generation,
+        "overflow reset must fence in-flight cache fills globally"
+    );
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn billing_pending_settlement_uses_injected_time() {
     let db_path = temp_db_path("pending-billing-injected-time");
     let db_str = db_path.to_string_lossy().to_string();

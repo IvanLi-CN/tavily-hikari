@@ -4,34 +4,26 @@
 
 ## Current Status
 
-- Implementation: 渐进实施中
+- Implementation: 当前主干上的增量收敛
 - Lifecycle: active
-- Delivery topology: aggregate-stack
-- Integration branch: `prd/performance-architecture-hardening`
+- Delivery topology: single fast-track change
+- Integration branch: `th/fix-performance-runtime-self-healing`
 
 ## Coverage / rollout summary
 
-实现拆为 12 个 risk-gated child Ticket，按依赖波次进入 integration branch：
+本轮已落地的边界包括：
 
-1. writable-tenure supervisor、持久 authority epoch 与 mixed-version capability gate
-2. SqliteRuntime seam（止血边界已覆盖 HA read session、audit snapshot 与 Dashboard integrity）
-3. MaintenanceRuntime legacy adapter
-4. RequestStatsPipeline
-5. HaPeerObservationStore
-6. per-channel HA GC 与 no-op outbox suppression
-7. reconciliation work projection
-8. AlertProjection expand/shadow
-9. ReconciliationEngine cutover
-10. 全部告警读取切换
-11. DashboardReadModel/SSE cutover
-12. 热路径旧 seam 删除与依赖门禁
+1. `HaPeerObservationStore` 的后台探测与管理员缓存读路径
+2. per-channel HA GC eligibility、claim generation 与最早唤醒
+3. reconciliation durable work projection、两秒主结算预算与 typed outcome
+4. versioned additive schema migration ledger
 
 ## Remaining Gaps
 
 - `SqliteRuntime` 的首个 containment slice 已进入交付：取消安全 read/immediate guard、读路径禁止
   request-stats flush、事务源码门禁与低频 workload 归因。
-- 其余 runtime、durable work 与 read-model Ticket 尚未实现。
-- aggregate 验证、架构 checker、30 分钟 RSS 基准及 rollout 文档尚待完成。
+- DashboardReadModel、AlertProjection、完整 MaintenanceRuntime 与 HA writable-tenure 生命周期仍是后续架构工作，未在本变更中伪装为已完成。
+- testbox 生产形状对比、全量质量门禁和 PR review 是交付前硬门禁。
 
 ## Related Changes
 

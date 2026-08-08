@@ -99,6 +99,7 @@ pub async fn serve(
         ),
     }
     spawn_ha_standby_sync_task(state.clone());
+    spawn_ha_peer_observation_task(state.clone());
     tracing::info!(
         component = "startup",
         event = "admin_auth_modes",

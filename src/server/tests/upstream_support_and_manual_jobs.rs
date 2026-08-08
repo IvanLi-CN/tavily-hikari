@@ -1463,7 +1463,6 @@ pub(super) async fn spawn_proxy_server_with_dev_and_ha(
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
     });
-
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/mcp", any(proxy_handler))
@@ -1694,6 +1693,7 @@ pub(super) async fn spawn_ha_admin_server(
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
     });
+    refresh_ha_peer_observation_store(&state).await;
 
     let app = Router::new()
         .route("/api/admin/ha/status", get(get_admin_ha_status))

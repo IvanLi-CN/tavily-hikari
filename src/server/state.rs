@@ -1,5 +1,5 @@
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,

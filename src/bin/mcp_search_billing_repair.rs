@@ -938,7 +938,7 @@ mod tests {
         )
         .await;
 
-        sqlx::query(
+        let current_auth_log_id: i64 = sqlx::query_scalar(
             "INSERT INTO auth_token_logs (
                 token_id,
                 method,
@@ -952,14 +952,29 @@ mod tests {
                 billing_state,
                 billing_subject,
                 created_at
-            ) VALUES (?, 'POST', '/mcp', 200, 'mcp:search', 'MCP | search', 'success', 1, 5, 'charged', ?, ?)",
+            ) VALUES (?, 'POST', '/mcp', 200, 'mcp:search', 'MCP | search', 'success', 1, 5, 'charged', ?, ?)
+            RETURNING id",
         )
         .bind("tok-current")
         .bind("token:tok-current")
         .bind(now.timestamp())
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .expect("seed current charged auth log");
+        sqlx::query(
+            r#"INSERT INTO billing_ledger (
+                 auth_token_log_id, token_id, billing_subject, billing_state,
+                 business_credits, result_status, created_at, updated_at, settled_at
+               )
+               SELECT id, token_id, billing_subject, billing_state, business_credits,
+                      result_status, created_at, created_at, created_at
+               FROM auth_token_logs
+               WHERE id = ?"#,
+        )
+        .bind(current_auth_log_id)
+        .execute(&pool)
+        .await
+        .expect("seed current billing ledger row");
 
         sqlx::query(
             "INSERT INTO auth_token_quota (token_id, month_start, month_count)

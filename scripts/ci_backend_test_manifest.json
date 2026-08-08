@@ -300,7 +300,6 @@
         "tests::account_quota_and_billing::billing_",
         "tests::account_quota_and_billing::dropped_",
         "tests::ha_baseline_streaming_and_sessions::",
-        "tests::ha_outbox_and_compaction::deferred_ha_gc_",
         "tests::ha_outbox_and_compaction::ha_outbox_",
         "tests::ha_outbox_and_compaction::ha_events_cursor_",
         "tests::ha_outbox_and_compaction::ha_peer_health_",
@@ -314,7 +313,9 @@
         "tests::ha_outbox_and_compaction::sqlite_",
         "tests::maintenance_queue_performance::",
         "tests::observability_and_lifecycle::published_",
+        "tests::schema_migrations::",
         "tests::upstream_reconciliation::",
+        "tavily_proxy::reconciliation_engine_tests::",
         "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
         "upstream_privacy::tests::"
       ]

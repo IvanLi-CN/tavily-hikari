@@ -2489,7 +2489,10 @@ pub(crate) struct KeyStore {
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
     pub(crate) account_quota_resolution_cache:
-        RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>,
+        Arc<RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>>,
+    pub(crate) account_quota_resolution_generation: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) account_quota_resolution_transitions: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) account_quota_resolution_user_generations: RwLock<HashMap<String, u64>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
     pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
@@ -2544,6 +2547,7 @@ impl KeyStore {
 }
 
 include!("key_store_bootstrap.rs");
+include!("key_store_schema_migrations.rs");
 include!("key_store_bootstrap_legacy.rs");
 include!("key_store_ha_schema.rs");
 include!("key_store_quota_schema_semantic_migration.rs");

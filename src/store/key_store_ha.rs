@@ -1232,6 +1232,11 @@ impl KeyStore {
             payload_bytes: 0,
             saw_start: false,
             saw_end: false,
+            quota_cache_dirty: mode == HaBaselineApplyMode::Replace
+                && channel != HaSyncChannel::Billing,
+            quota_cache: Arc::clone(&self.account_quota_resolution_cache),
+            quota_cache_generation: Arc::clone(&self.account_quota_resolution_generation),
+            quota_cache_transitions: Arc::clone(&self.account_quota_resolution_transitions),
         })
     }
 
@@ -1253,6 +1258,10 @@ impl KeyStore {
             payload_bytes: 0,
             saw_start: false,
             saw_end: false,
+            quota_cache_dirty: false,
+            quota_cache: Arc::clone(&self.account_quota_resolution_cache),
+            quota_cache_generation: Arc::clone(&self.account_quota_resolution_generation),
+            quota_cache_transitions: Arc::clone(&self.account_quota_resolution_transitions),
         })
     }
 
@@ -2608,6 +2617,7 @@ impl HaBaselineApplySession {
                     return Ok(());
                 }
                 ensure_ha_resource_whitelisted(self.channel, resource)?;
+                self.quota_cache_dirty |= ha_resource_affects_account_quota(resource);
                 let data = value
                     .get("data")
                     .cloned()
@@ -2670,7 +2680,20 @@ impl HaBaselineApplySession {
             let _ = self.conn.rollback().await;
             return Err(err);
         }
+        if self.quota_cache_dirty {
+            self.quota_cache_transitions
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.quota_cache_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         let mut conn = self.conn.commit_connection().await?;
+        if self.quota_cache_dirty {
+            self.quota_cache_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.quota_cache.write().await.clear();
+            self.quota_cache_transitions
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
         sqlx::query("PRAGMA foreign_keys = ON")
             .execute(&mut *conn)
             .await?;
@@ -2729,6 +2752,7 @@ impl HaEventsApplySession {
                     return Ok(());
                 }
                 ensure_ha_resource_whitelisted(self.channel, resource)?;
+                self.quota_cache_dirty |= ha_resource_affects_account_quota(resource);
                 let op = event
                     .get("op")
                     .and_then(serde_json::Value::as_str)
@@ -2821,7 +2845,20 @@ impl HaEventsApplySession {
             let _ = self.conn.rollback().await;
             return Err(err);
         }
+        if self.quota_cache_dirty {
+            self.quota_cache_transitions
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.quota_cache_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         self.conn.commit().await?;
+        if self.quota_cache_dirty {
+            self.quota_cache_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.quota_cache.write().await.clear();
+            self.quota_cache_transitions
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
         Ok(HaApplyResult {
             channel: self.channel,
             high_watermark: self.high_watermark,
@@ -3237,20 +3274,6 @@ impl KeyStore {
             HaSyncChannel::Billing => HaSyncChannel::Runtime,
             HaSyncChannel::Runtime => HaSyncChannel::Control,
         }
-    }
-
-    fn select_ha_outbox_gc_channel(
-        requested: HaSyncChannel,
-        pending_channel_mask: i64,
-    ) -> HaSyncChannel {
-        let mut candidate = requested;
-        for _ in 0..3 {
-            if pending_channel_mask & Self::ha_outbox_gc_channel_mask(candidate) != 0 {
-                return candidate;
-            }
-            candidate = Self::next_ha_outbox_gc_channel(candidate);
-        }
-        requested
     }
 
 }

@@ -43,6 +43,10 @@ pub struct HaBaselineApplySession {
     payload_bytes: usize,
     saw_start: bool,
     saw_end: bool,
+    quota_cache_dirty: bool,
+    quota_cache: Arc<RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>>,
+    quota_cache_generation: Arc<std::sync::atomic::AtomicU64>,
+    quota_cache_transitions: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -68,6 +72,21 @@ pub struct HaEventsApplySession {
     payload_bytes: usize,
     saw_start: bool,
     saw_end: bool,
+    quota_cache_dirty: bool,
+    quota_cache: Arc<RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>>,
+    quota_cache_generation: Arc<std::sync::atomic::AtomicU64>,
+    quota_cache_transitions: Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn ha_resource_affects_account_quota(resource: &str) -> bool {
+    matches!(
+        resource,
+        "account_entitlements"
+            | "account_quota_limits"
+            | "linuxdo_credit_recharge_entitlements"
+            | "user_tag_bindings"
+            | "user_tags"
+    )
 }
 
 const HA_SCHEMA_VERSION: i64 = 3;

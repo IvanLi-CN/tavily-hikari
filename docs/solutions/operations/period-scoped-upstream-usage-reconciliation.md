@@ -1,5 +1,9 @@
 # Period-scoped upstream usage reconciliation
 
+## Current scheduling contract
+
+Candidate windows are maintained in an indexed durable work projection. The engine hydrates a bounded page, starts primary settlement before research polling, permits at most two serial remote attempts per run, and leaves research to remaining budget. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff (`2/5/10/30m`); non-429 failures do not reset the remote circuit.
+
 When the upstream only exposes cumulative usage counters, a proxy cannot do exact per-request
 billing by reading upstream state inline. Tavily Hikari solves this by splitting local billing
 into two phases: optimistic request-time charging, then one idempotent settlement per complete

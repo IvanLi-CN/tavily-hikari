@@ -2,6 +2,9 @@
 
 ## Backend
 
+- Ordinary administrator HA status reads `HaPeerObservationStore`; the background owner probes every 30 seconds with a five-second timeout, retains last-good observations, and marks them stale after 90 seconds without success. Dangerous control-plane operations continue to probe live.
+- Online outbox GC persists independent control, billing, and runtime eligibility plus claim generation. Round-robin selection skips deferred channels, and the scheduler uses the earliest typed continuation instead of parsing GC log text.
+
 - Added `src/ha.rs` with HA mode, role state machine, runtime status view, and Tencent TC3-signed EdgeOne client calls.
 - Added HA startup role detection from EdgeOne current origin.
 - Added dual-active leader-key startup seeding and authority refresh through `meta.ha_full_master_node_id_v1`, so `HA_CORE_DUAL_ACTIVE=1` with `HA_SOURCE_KIND=origin_group` uses the persisted leader key instead of treating the current EdgeOne route as the only serving authority.
@@ -264,7 +267,7 @@
   the five-minute watchdog only resumes durable channel debt. Per-channel state records
   high-watermark deltas, an ingress-minus-delete estimate, and cumulative deletions without a
   hot-path `COUNT(*)`.
-- The CI shard manifest assigns `deferred_ha_gc_*` watchdog-debt regression coverage to `lib-misc`.
+- The CI shard manifest assigns `online_ha_gc_*` watchdog-debt regression coverage to `lib-misc`.
   `ci_backend_tests.py verify` requires every discovered backend test to have exactly one shard
   owner, so the continuation-recovery regression cannot silently disappear from the PR matrix.
 

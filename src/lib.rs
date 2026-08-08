@@ -710,7 +710,7 @@ pub const HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS: i64 = 30;
 pub const HA_OUTBOX_GC_LEGACY_SCAN_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
 pub const HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS: i64 = 1;
 pub const HA_OUTBOX_GC_LOW_PRESSURE_RPS: i64 = 5;
-pub const HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS: i64 = 30 * 60;
+pub const HA_OUTBOX_GC_LOW_PRESSURE_WINDOW_SECS: i64 = 5 * 60;
 pub const HA_OUTBOX_GC_RECOVERY_SLO_SECS: i64 = 24 * 60 * 60;
 
 pub fn ha_outbox_gc_continuation_delay_secs_for_pressure(
@@ -2680,4 +2680,6 @@ struct TokenBindingCacheEntry {
 struct AccountQuotaResolutionCacheEntry {
     resolution: AccountQuotaResolution,
     expires_at: i64,
+    global_generation: u64,
+    user_generation: u64,
 }

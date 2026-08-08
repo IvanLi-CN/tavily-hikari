@@ -671,7 +671,7 @@ async fn admin_ha_status_surfaces_peer_source_config_target() {
 }
 
 #[tokio::test]
-async fn admin_ha_status_keeps_unprobed_peer_channel_health_unavailable() {
+async fn admin_ha_status_returns_cached_unknown_without_waiting_for_peer_probe() {
     let db_path = temp_db_path("ha-peer-health-unprobed");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -695,19 +695,24 @@ async fn admin_ha_status_keeps_unprobed_peer_channel_health_unavailable() {
     });
     let addr = spawn_ha_admin_server(proxy, ha, true).await;
 
+    let started = std::time::Instant::now();
     let response = Client::new()
         .get(format!("http://{addr}/api/admin/ha/status"))
         .send()
         .await
         .expect("ha status response");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "ordinary admin status must not perform a live peer probe"
+    );
     let body: Value = response.json().await.expect("ha status body");
     let channel_health = body["peerNodes"][0]["channelHealth"]
         .as_array()
         .expect("unprobed peer channel health");
     assert_eq!(channel_health.len(), 3);
     assert!(channel_health.iter().all(|channel| {
-        channel["cursorState"] == "unavailable"
+        channel["cursorState"] == "unknown"
             && channel["ackedSeq"].is_null()
             && channel["ackLag"].is_null()
     }));

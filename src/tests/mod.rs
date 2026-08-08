@@ -39,6 +39,7 @@ mod proxy_affinity_runtime_geo;
 mod request_kind_and_core;
 mod request_rollup;
 mod request_rollup_public_metrics;
+mod schema_migrations;
 mod support;
 mod upstream_reconciliation;
 mod usage_series_and_backfills;

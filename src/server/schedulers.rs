@@ -1241,10 +1241,6 @@ async fn finish_ha_gc_with_continuation(
                 err = %err,
                 "HA outbox GC could not persist its deferred continuation"
             );
-            let _ = state
-                .proxy
-                .record_ha_outbox_gc_deferred("continuation_persist_failed")
-                .await;
             if let Err(finish_err) = state
                 .proxy
                 .scheduled_job_finish_claimed(job_id, claim_generation, "error", Some(&message))
@@ -2593,11 +2589,16 @@ async fn run_manual_claimed_job(
                 Duration::from_secs(20),
                 state
                     .proxy
-                    .run_upstream_reconciliation_once(&state.usage_base),
+                    .run_upstream_reconciliation_once_claimed(
+                        &state.usage_base,
+                        job_id,
+                        claim_generation,
+                    ),
             )
             .await
             {
-                Ok(Ok(settled)) => {
+                Ok(Ok((_settled, true))) => true,
+                Ok(Ok((settled, false))) => {
                     let now = state.proxy.backend_time().now_ts();
                     match state.proxy.upstream_reconciliation_backoff_until().await {
                         Ok(available_at) if available_at > now => state

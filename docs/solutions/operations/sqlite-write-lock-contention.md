@@ -17,6 +17,14 @@ related_specs:
 
 # SQLite write-lock contention
 
+## Current containment contract
+
+- Maintenance and reconciliation state transitions use one bounded immediate transaction; related circuit fields are updated atomically rather than as independent meta writes.
+- Online HA GC claims one eligible channel at a time. A deferred channel's `next_retry_at` cannot become a global scheduler delay for other channels.
+- Startup schema work is ledgered in `schema_migrations`; a warm process verifies the critical layout and skips already-applied DDL.
+- Administrator peer status reads an observation cache. A normal GET never waits for the five-second peer network probe.
+- A transport or semantic reconciliation failure does not clear an existing upstream-429 circuit. Only a real settlement or a real remote attempt follows the recovery contract.
+
 ## Context
 
 Tavily Hikari uses one SQLite database for billing ledgers, session affinity, scheduled job logs,

@@ -444,7 +444,7 @@ async fn attach_internal_source_channel_health(
     }];
 }
 
-async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatusView {
+async fn refresh_admin_ha_status_live(state: &Arc<AppState>) -> tavily_hikari::HaStatusView {
     let now_ts = state.proxy.backend_time().now_ts();
     let mut status = build_internal_ha_status(state).await;
     if let Some(internal_token) = state.ha.internal_token() {
@@ -611,6 +611,55 @@ async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatus
         }
         peer.channel_health = health;
     }
+    status
+}
+
+async fn refresh_ha_peer_observation_store(state: &Arc<AppState>) {
+    let status = refresh_admin_ha_status_live(state).await;
+    for peer in state
+        .ha
+        .peer_nodes()
+        .into_iter()
+        .filter(|peer| peer.node_id != status.node_id)
+    {
+        let result = status
+            .peer_nodes
+            .iter()
+            .find(|view| view.node_id == peer.node_id)
+            .cloned()
+            .map(|view| {
+                if view.role.is_some() && view.last_seen_at.is_some() {
+                    Ok(view)
+                } else {
+                    Err(view
+                        .message
+                        .unwrap_or_else(|| "peer probe failed".to_string()))
+                }
+            })
+            .unwrap_or_else(|| Err("peer probe produced no observation".to_string()));
+        state.ha.record_peer_observation(&peer, result).await;
+    }
+}
+
+pub(super) fn spawn_ha_peer_observation_task(state: Arc<AppState>) {
+    if state.ha.peer_nodes().is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            refresh_ha_peer_observation_store(&state).await;
+            state
+                .proxy
+                .backend_time()
+                .sleep(Duration::from_secs(30))
+                .await;
+        }
+    });
+}
+
+async fn build_admin_ha_status(state: &Arc<AppState>) -> tavily_hikari::HaStatusView {
+    let mut status = build_internal_ha_status(state).await;
+    status.peer_nodes = state.ha.cached_peer_views().await;
     status
 }
 
