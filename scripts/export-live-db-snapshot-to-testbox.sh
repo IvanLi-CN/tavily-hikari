@@ -240,10 +240,13 @@ fi
 rm -f "$core_snapshot" "$sidecar_snapshot"
 
 if [[ "$snapshot_source_kind" == "container-helper-python-backup" ]]; then
+  snapshot_uid="$(id -u)"
+  snapshot_gid="$(id -g)"
   docker image inspect "$helper_image" >/dev/null
   timeout "$((backup_timeout_secs * 2 + 30))s" docker run --rm \
     --network none \
     --read-only \
+    --user "$snapshot_uid:$snapshot_gid" \
     --tmpfs /tmp:rw,noexec,nosuid,size=64m \
     --volumes-from "$container_name":ro \
     -v "$tmp_dir:/backup" \
