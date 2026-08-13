@@ -66,7 +66,7 @@ impl DashboardRollupIntegrityWorkItem {
 
 impl KeyStore {
     pub(crate) fn dashboard_overview_refresh_defer_reason(&self) -> Option<SqliteAdmissionDeferReason> {
-        self.sqlite_runtime.maintenance_bulk_defer_reason()
+        self.sqlite_runtime.dashboard_read_defer_reason()
     }
 
     pub(crate) fn try_admit_dashboard_rollup_integrity(

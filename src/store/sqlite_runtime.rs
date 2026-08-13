@@ -364,8 +364,22 @@ impl SqliteRuntime {
         }
     }
 
-    pub(crate) fn maintenance_bulk_defer_reason(&self) -> Option<SqliteAdmissionDeferReason> {
-        self.maintenance_bulk_defer_reason_for(SqliteOperation::HaOutboxGc)
+    pub(crate) fn dashboard_read_defer_reason(&self) -> Option<SqliteAdmissionDeferReason> {
+        // Dashboard snapshot construction is a foreground read, not bulk
+        // maintenance. It must contain itself under real pressure without
+        // requiring two already-open idle connections: a lazy three-connection
+        // pool is intentionally allowed to stay at one connection while idle.
+        if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+            Some(SqliteAdmissionDeferReason::ForegroundPressure)
+        } else if self.recent_contention_active() {
+            Some(SqliteAdmissionDeferReason::RecentContention)
+        } else if self.inner.pool.num_idle() == 0
+            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+        {
+            Some(SqliteAdmissionDeferReason::PoolPressure)
+        } else {
+            None
+        }
     }
 
     fn maintenance_bulk_defer_reason_for(
@@ -443,7 +457,11 @@ impl SqliteRuntime {
                 Err(err)
             }
             Err(_) => {
-                let err = ProxyError::Other(format!("{operation} pool acquisition timed out"));
+                // Keep the timeout typed so every caller can make the same
+                // bounded-defer decision as a native sqlx pool timeout.
+                // Wrapping it in `Other` turns expected contention into an
+                // apparent scheduler failure and defeats foreground admission.
+                let err = ProxyError::Database(sqlx::Error::PoolTimedOut);
                 self.record_error(operation, acquire_started.elapsed(), Duration::ZERO, &err);
                 Err(err)
             }
@@ -660,16 +678,18 @@ impl SqliteRuntime {
                 "SQLite workload contention remains active"
             );
         }
-        let bulk_transient_defer = transient && operation.is_maintenance_bulk();
+        let maintenance_transient_defer = transient
+            && (operation.is_maintenance_bulk()
+                || matches!(operation, SqliteOperation::ScheduledJobControl));
         self.record(
             operation,
             pool_wait,
             begin_wait,
             Duration::ZERO,
             0,
-            !bulk_transient_defer,
+            !maintenance_transient_defer,
             false,
-            bulk_transient_defer.then_some(SqliteAdmissionDeferReason::RecentContention),
+            maintenance_transient_defer.then_some(SqliteAdmissionDeferReason::RecentContention),
         );
     }
 
@@ -1750,6 +1770,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_read_admission_allows_a_lazy_idle_pool() {
+        let runtime = SqliteRuntime::new(
+            SqlitePoolOptions::new()
+                .min_connections(1)
+                .max_connections(3)
+                .connect_with(
+                    SqliteConnectOptions::from_str("sqlite::memory:")
+                        .expect("SQLite options")
+                        .create_if_missing(true),
+                )
+                .await
+                .expect("lazy foreground pool"),
+        );
+        assert_eq!(runtime.inner.pool.num_idle(), 1);
+        assert_eq!(
+            runtime.dashboard_read_defer_reason(),
+            None,
+            "a foreground dashboard read must not require bulk's two-idle reservation",
+        );
+    }
+
+    #[tokio::test]
     async fn maintenance_control_bypasses_bulk_without_retry_loop() {
         let runtime = three_connection_runtime().await;
         let bulk = runtime
@@ -1768,6 +1810,40 @@ mod tests {
             .await
             .expect("rollback control transaction");
         drop(bulk);
+    }
+
+    #[tokio::test]
+    async fn maintenance_control_pool_timeout_is_a_typed_defer() {
+        let runtime = single_connection_runtime().await;
+        let held = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold the only connection");
+
+        let err = runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect_err("control connection must time out within its budget");
+        assert!(
+            is_transient_sqlite_write_error(&err),
+            "pool acquisition must remain a typed transient error, got {err}",
+        );
+        let window = runtime.inner.workload.lock().unwrap();
+        let metrics = &window.operations[&SqliteOperation::ScheduledJobControl];
+        assert_eq!(
+            metrics.errors, 0,
+            "control contention is a defer, not an error"
+        );
+        assert_eq!(metrics.deferred, 1);
+        assert_eq!(
+            metrics
+                .deferred_by_reason
+                .get(&SqliteAdmissionDeferReason::RecentContention),
+            Some(&1)
+        );
+        drop(held);
     }
 
     #[tokio::test]

@@ -1,9 +1,10 @@
 impl TavilyProxy {
-    pub(crate) async fn dashboard_quota_charge_snapshot(
+    #[doc(hidden)]
+    pub(crate) async fn dashboard_quota_charge_snapshot_with_token(
         &self,
         bounds: SummaryWindowBounds,
         stale_key_count: i64,
-    ) -> Result<DashboardQuotaChargeSnapshot, ProxyError> {
+    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 6]), ProxyError> {
         let token = self
             .key_store
             .fetch_dashboard_quota_charge_token(
@@ -19,7 +20,7 @@ impl TavilyProxy {
                 if let Some(cached) = cache.cached.as_ref()
                     && cached.token == token
                 {
-                    return Ok(cached.value.clone());
+                    return Ok((cached.value.clone(), token));
                 }
                 if cache.loading {
                     Some(cache.notify.clone().notified_owned())
@@ -37,7 +38,10 @@ impl TavilyProxy {
             let mut load_guard =
                 DashboardQuotaChargeLoadGuard::new(self.dashboard_quota_charge_cache.clone());
             let rebuild_started = Instant::now();
-            let snapshot = self.key_store.fetch_dashboard_quota_charge_snapshot(bounds).await;
+            let snapshot = self
+                .key_store
+                .fetch_dashboard_quota_charge_snapshot(bounds, stale_key_count)
+                .await;
             crate::emit_sampled_perf_log(
                 crate::DbLogStatus::Info,
                 "admin_read",
@@ -61,8 +65,18 @@ impl TavilyProxy {
             }
             cache.notify.notify_waiters();
             load_guard.disarm();
-            return snapshot;
+            return snapshot.map(|value| (value, token));
         }
+    }
+
+    pub(crate) async fn dashboard_quota_charge_snapshot(
+        &self,
+        bounds: SummaryWindowBounds,
+        stale_key_count: i64,
+    ) -> Result<DashboardQuotaChargeSnapshot, ProxyError> {
+        self.dashboard_quota_charge_snapshot_with_token(bounds, stale_key_count)
+            .await
+            .map(|(snapshot, _)| snapshot)
     }
 
     pub async fn dashboard_recent_alerts_summary(
@@ -73,7 +87,15 @@ impl TavilyProxy {
             .key_store
             .fetch_recent_alerts_summary_token(window_hours)
             .await?;
+        self.dashboard_recent_alerts_summary_for_token(window_hours, token)
+            .await
+    }
 
+    async fn dashboard_recent_alerts_summary_for_token(
+        &self,
+        window_hours: i64,
+        token: [i64; 4],
+    ) -> Result<RecentAlertsSummary, ProxyError> {
         loop {
             let waiter = {
                 let mut cache = self.dashboard_recent_alerts_cache.lock().await;
@@ -143,6 +165,21 @@ impl TavilyProxy {
                 }
             }
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn dashboard_recent_alerts_summary_with_token(
+        &self,
+        window_hours: i64,
+    ) -> Result<(RecentAlertsSummary, [i64; 4]), ProxyError> {
+        let token = self
+            .key_store
+            .fetch_recent_alerts_summary_token(window_hours)
+            .await?;
+        let summary = self
+            .dashboard_recent_alerts_summary_for_token(window_hours, token)
+            .await?;
+        Ok((summary, token))
     }
 
     pub async fn dashboard_quota_charge_token(
@@ -1168,6 +1205,8 @@ impl TavilyProxy {
             DashboardHourlyRequestWindow,
             [i64; 19],
             [i64; 10],
+            i64,
+            [i64; 6],
         ),
         ProxyError,
     > {
@@ -1222,8 +1261,8 @@ impl TavilyProxy {
                 DASHBOARD_HOURLY_RETAINED_BUCKETS,
             )
             .await?;
-        let quota_charge = self
-            .dashboard_quota_charge_snapshot(bounds, stale_key_count)
+        let (quota_charge, dashboard_quota_charge_token) = self
+            .dashboard_quota_charge_snapshot_with_token(bounds, stale_key_count)
             .await?;
         summary_windows.today.quota_charge.upstream_actual_credits =
             quota_charge.today.upstream_actual_credits;
@@ -1249,6 +1288,8 @@ impl TavilyProxy {
             hourly_request_window,
             dashboard_rollup_signature,
             pending_dashboard_rollup_signature,
+            stale_key_count,
+            dashboard_quota_charge_token,
         ))
     }
 

@@ -1264,13 +1264,15 @@ async fn build_dashboard_overview_payload(
     }
 
     let now_local = state.proxy.backend_time().local_now();
-    let now_utc = now_local.with_timezone(&Utc);
+    let now_ts = now_local.with_timezone(&Utc).timestamp();
     let (
         summary_windows,
         summary,
         hourly_request_window,
         dashboard_rollup_signature,
         pending_dashboard_rollup_signature,
+        dashboard_stale_key_count,
+        dashboard_quota_charge_token,
     ) = state.proxy.dashboard_overview_read_components_at(now_local).await?;
     let rollup_integrity = state.proxy.dashboard_rollup_integrity_status().await?;
     let month_series = state.proxy.dashboard_month_series(&summary_windows).await?;
@@ -1287,22 +1289,6 @@ async fn build_dashboard_overview_payload(
         .dashboard_exhausted_lifecycle_signature(
             summary_windows.previous_month_start,
             summary_windows.month_period_end,
-        )
-        .await?;
-    let now_ts = now_utc.timestamp();
-    let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
-    let hot_stale_before = now_ts.saturating_sub(15 * 60);
-    let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
-    let dashboard_stale_key_count = state
-        .proxy
-        .dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
-        .await?;
-    let dashboard_quota_charge_token = state
-        .proxy
-        .dashboard_quota_charge_token(
-            dashboard_stale_key_count,
-            start_of_month_dt(now_utc).timestamp(),
-            summary_windows.today_end,
         )
         .await?;
     let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
@@ -1344,12 +1330,15 @@ async fn build_dashboard_overview_payload(
         .list_recent_jobs(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
         .unwrap_or_default();
-    let recent_alerts = state
+    let (recent_alerts, recent_alerts_token) = state
         .proxy
-        .dashboard_recent_alerts_summary(24)
+        .dashboard_recent_alerts_summary_with_token(24)
         .await
-        .unwrap_or_else(|_| tavily_hikari::RecentAlertsSummary::default());
-    let recent_alerts_token = dashboard_recent_alerts_token_or_fallback(state, 24, &recent_alerts).await;
+        .unwrap_or_else(|_| {
+            let summary = tavily_hikari::RecentAlertsSummary::default();
+            let token = fallback_recent_alerts_token(&summary);
+            (summary, token)
+        });
 
     let hourly_window_anchor = dashboard_hourly_window_anchor(now_ts);
     let recent_job_signatures = recent_jobs

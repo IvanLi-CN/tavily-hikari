@@ -38,6 +38,7 @@ impl KeyStore {
     pub(crate) async fn fetch_dashboard_quota_charge_snapshot(
         &self,
         bounds: SummaryWindowBounds,
+        stale_key_count: i64,
     ) -> Result<DashboardQuotaChargeSnapshot, ProxyError> {
         let SummaryWindowBounds {
             today_start,
@@ -48,11 +49,6 @@ impl KeyStore {
             ..
         } = bounds;
         let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        let now_ts = today_end.saturating_sub(1);
-        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
-        let hot_stale_before = now_ts.saturating_sub(15 * 60);
-        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
-
         let sample_rows = sqlx::query(
             r#"
             WITH window_rows AS (
@@ -90,10 +86,6 @@ impl KeyStore {
         .bind(sample_window_start)
         .fetch_all(&self.pool)
         .await?;
-
-        let stale_key_count = self
-            .fetch_dashboard_stale_key_count(hot_active_since, hot_stale_before, cold_stale_before)
-            .await?;
 
         let mut today_charge = QuotaChargeAccumulator::default();
         let mut yesterday_charge = QuotaChargeAccumulator::default();
