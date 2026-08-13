@@ -1780,7 +1780,9 @@ async fn load_dashboard_overview_snapshot(
                 if let Some(cached) = cache.cached.as_ref() {
                     DashboardOverviewLoadAction::Return(cached.snapshot.clone())
                 } else {
-                    DashboardOverviewLoadAction::Wait(cache.notify.clone().notified_owned())
+                    let mut waiter = cache.notify.clone().notified_owned();
+                    waiter.enable();
+                    DashboardOverviewLoadAction::Wait(waiter)
                 }
             } else {
                 let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
@@ -1803,9 +1805,12 @@ async fn load_dashboard_overview_snapshot(
                     cache.loading = true;
                     cache.loading_generation = cache.loading_generation.wrapping_add(1);
                     cache.loading_started_at = Some(tokio::time::Instant::now());
+                    let mut cold_waiter = cache.notify.clone().notified_owned();
+                    cold_waiter.enable();
                     DashboardOverviewLoadAction::Refresh {
                         generation: cache.loading_generation,
                         last_good,
+                        cold_waiter: Some(cold_waiter),
                     }
                 }
             }
@@ -1827,11 +1832,12 @@ async fn load_dashboard_overview_snapshot(
                         ..Default::default()
                     },
                 );
-                waiter.await;
+                return wait_for_dashboard_overview_cold_snapshot(cache_handle, waiter).await;
             }
             DashboardOverviewLoadAction::Refresh {
                 generation,
                 last_good,
+                cold_waiter,
             } => {
                 if let Some(last_good) = last_good {
                     let refresh_state = state.clone();
@@ -1845,12 +1851,21 @@ async fn load_dashboard_overview_snapshot(
                     });
                     return Ok(last_good);
                 } else {
-                    return tokio::time::timeout(
-                        DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET,
-                        refresh_dashboard_overview_snapshot(state, cache_handle, generation),
+                    let refresh_state = state.clone();
+                    let refresh_cache = cache_handle.clone();
+                    tokio::spawn(async move {
+                        let _ = refresh_dashboard_overview_snapshot(
+                            &refresh_state,
+                            refresh_cache,
+                            generation,
+                        )
+                        .await;
+                    });
+                    return wait_for_dashboard_overview_cold_snapshot(
+                        cache_handle,
+                        cold_waiter.expect("cold dashboard refresh always installs a waiter"),
                     )
-                    .await
-                    .map_err(|_| ProxyError::Other("dashboard overview cold build timed out".to_string()))?;
+                    .await;
                 }
             }
         }
@@ -1863,7 +1878,27 @@ enum DashboardOverviewLoadAction {
     Refresh {
         generation: u64,
         last_good: Option<Arc<DashboardOverviewSnapshot>>,
+        cold_waiter: Option<tokio::sync::futures::OwnedNotified>,
     },
+}
+
+async fn wait_for_dashboard_overview_cold_snapshot(
+    cache_handle: Arc<Mutex<DashboardOverviewCacheState>>,
+    waiter: tokio::sync::futures::OwnedNotified,
+) -> Result<Arc<DashboardOverviewSnapshot>, ProxyError> {
+    let timed_out = tokio::time::timeout(DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET, waiter)
+        .await
+        .is_err();
+    let cache = cache_handle.lock().await;
+    if let Some(cached) = cache.cached.as_ref() {
+        return Ok(cached.snapshot.clone());
+    }
+    let message = if timed_out {
+        "dashboard overview cold build timed out"
+    } else {
+        "dashboard overview cold build failed"
+    };
+    Err(ProxyError::Other(message.to_string()))
 }
 
 async fn refresh_dashboard_overview_snapshot(

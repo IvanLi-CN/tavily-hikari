@@ -62,7 +62,8 @@
 - HA GC、request-stats flush、pressure rebuild、reconciliation projection 与 Dashboard integrity
   是 `maintenance_bulk`；GC 在每条 SQL 后重新检查 admission，压力只推迟当前 channel，不得冻结其余
   eligible channel。Dashboard 仅在有 last-good 时因 admission、busy 或 refresh 超时直接返回该快照；
-  冷启动可有一次不超过一秒的 singleflight build。
+  冷启动只允许一个 shared singleflight loader，每个读取请求最多等待一秒。超时只结束该读取请求，
+  不得取消仍在运行的 loader，后续读取在其完成后复用同一快照。
 - 普通 Dashboard、summary、hourly window 与 rankings 读取只消费 durable request stats，不得触发
   flush 或获取写连接。pending/flushing 仅参与内部 freshness，不改变 HTTP shape。
 - `ha_outbox_gc_work` 按 control、billing、runtime 独立持久化 eligibility、claim 与 continuation。
