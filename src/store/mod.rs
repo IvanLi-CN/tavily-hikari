@@ -797,10 +797,10 @@ pub(crate) async fn open_sqlite_pool_with_observability(
     )
     .await?;
     let mut pool_options = SqlitePoolOptions::new()
-        // The runtime admits maintenance bulk work only while two foreground
-        // connections are already idle. Prewarming the existing fixed-size
-        // pool makes that reservation observable without increasing its cap.
-        .min_connections(attach_plan.max_connections)
+        // Keep startup lazy so the fixed pool does not allocate three SQLite
+        // page caches before foreground traffic exists. Admission observes
+        // actual idle capacity once the pool has grown under load.
+        .min_connections(1)
         .max_connections(attach_plan.max_connections);
     if let Some(observability_database_path) = attach_plan.target_path {
         pool_options = pool_options.after_connect(move |conn, _meta| {

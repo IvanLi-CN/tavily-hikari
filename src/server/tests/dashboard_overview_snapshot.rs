@@ -479,6 +479,11 @@ async fn dashboard_pressure_allows_one_bounded_cold_build() {
     .expect("cold dashboard has no last-good snapshot to defer to");
     assert!(snapshot.payload.summary_windows.today_start > 0);
     assert_eq!(dashboard_overview_build_count(&state).await, 1);
+    assert_eq!(
+        dashboard_overview_freshness_probe_count(&state).await,
+        0,
+        "a cold snapshot must not duplicate the payload reads with a separate freshness probe",
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

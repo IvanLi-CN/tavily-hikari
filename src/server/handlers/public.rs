@@ -1902,37 +1902,45 @@ async fn refresh_dashboard_overview_snapshot(
 ) -> Result<Arc<DashboardOverviewSnapshot>, ProxyError> {
     let perf = tavily_hikari::RuntimePerfScope::start();
     let mut load_guard = DashboardOverviewLoadGuard::new(cache_handle.clone(), load_generation);
-    let freshness_started = Instant::now();
-    let freshness = match compute_dashboard_overview_freshness(state).await {
-        Ok(freshness) => freshness,
-        Err(error) => {
-            let mut cache = cache_handle.lock().await;
-            let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
-            if cache.loading_generation == load_generation {
-                cache.loading = false;
-                cache.loading_started_at = None;
-                cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
-                cache.notify.notify_waiters();
-            }
-            load_guard.disarm();
-            return last_good.ok_or(error);
-        }
+    // A cold process has no last-good snapshot to compare against. Build that
+    // snapshot once, instead of paying for a full freshness probe followed by
+    // the same domain reads again. Warm refreshes retain the cheap-token fast
+    // path and can fall back to the existing last-good snapshot on pressure.
+    let has_cached_snapshot = {
+        let cache = cache_handle.lock().await;
+        cache.cached.is_some()
     };
-    tavily_hikari::emit_sampled_perf_log(
-        tavily_hikari::DbLogStatus::Info,
-        "admin_read",
-        "dashboard_overview_phase",
-        freshness_started.elapsed(),
-        tavily_hikari::PerfLogScope {
-            route: Some("/api/dashboard/overview"),
-            scope: Some("dashboard"),
-            phase: Some("freshness_probe"),
-            degraded: Some("cheap_token"),
-            ..Default::default()
-        },
-    );
+    if has_cached_snapshot {
+        let freshness_started = Instant::now();
+        let freshness = match compute_dashboard_overview_freshness(state).await {
+            Ok(freshness) => freshness,
+            Err(error) => {
+                let mut cache = cache_handle.lock().await;
+                let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
+                if cache.loading_generation == load_generation {
+                    cache.loading = false;
+                    cache.loading_started_at = None;
+                    cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
+                    cache.notify.notify_waiters();
+                }
+                load_guard.disarm();
+                return last_good.ok_or(error);
+            }
+        };
+        tavily_hikari::emit_sampled_perf_log(
+            tavily_hikari::DbLogStatus::Info,
+            "admin_read",
+            "dashboard_overview_phase",
+            freshness_started.elapsed(),
+            tavily_hikari::PerfLogScope {
+                route: Some("/api/dashboard/overview"),
+                scope: Some("dashboard"),
+                phase: Some("freshness_probe"),
+                degraded: Some("cheap_token"),
+                ..Default::default()
+            },
+        );
 
-    {
         let mut cache = cache_handle.lock().await;
         if cache.loading_generation == load_generation {
             cache.last_freshness_probe_at = Some(tokio::time::Instant::now());

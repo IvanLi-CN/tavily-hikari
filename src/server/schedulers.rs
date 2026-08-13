@@ -171,12 +171,27 @@ async fn enqueue_scheduled_job_logged(
             Some(result.job_id)
         }
         Err(err) => {
-            tavily_hikari::emit_db_operation_error_log(
-                "scheduled job enqueue",
-                started.elapsed(),
-                Some(context.as_str()),
-                &err,
-            );
+            let transient = tavily_hikari::is_transient_sqlite_write_error(&err);
+            if transient {
+                tracing::debug!(
+                    component = "scheduler",
+                    event = "job_enqueue_deferred",
+                    job_type,
+                    trigger_source,
+                    key_id = key_id.unwrap_or("-"),
+                    defer_reason = "sqlite_contention",
+                    retry_via = "durable_representative_or_stale_reaper",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    err = %err,
+                );
+            } else {
+                tavily_hikari::emit_db_operation_error_log(
+                    "scheduled job enqueue",
+                    started.elapsed(),
+                    Some(context.as_str()),
+                    &err,
+                );
+            }
             if job_type == "upstream_reconciliation" {
                 let now = state.proxy.backend_time().now_ts();
                 if let Err(meta_err) = state
@@ -192,23 +207,36 @@ async fn enqueue_scheduled_job_logged(
                         err = %meta_err,
                     );
                 }
+                if transient {
+                    tracing::debug!(
+                        component = "reconciliation",
+                        event = "enqueue_deferred",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        job_type,
+                        defer_reason = "sqlite_contention",
+                        err = %err,
+                    );
+                } else {
+                    tracing::warn!(
+                        component = "reconciliation",
+                        event = "enqueue_exhausted",
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        job_type,
+                        err = %err,
+                    );
+                }
+            }
+            if !transient {
                 tracing::warn!(
-                    component = "reconciliation",
-                    event = "enqueue_exhausted",
-                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    component = "scheduler",
+                    event = "job_enqueue_failed",
                     job_type,
+                    trigger_source,
+                    key_id = key_id.unwrap_or("-"),
                     err = %err,
+                    "{log_prefix}: enqueue job error: {err}"
                 );
             }
-            tracing::warn!(
-                component = "scheduler",
-                event = "job_enqueue_failed",
-                job_type,
-                trigger_source,
-                key_id = key_id.unwrap_or("-"),
-                err = %err,
-                "{log_prefix}: enqueue job error: {err}"
-            );
             None
         }
     }
@@ -673,12 +701,26 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
                     }
                 }
                 Err(err) => {
-                    tracing::error!(
-                        component = "scheduler",
-                        event = "maintenance_dequeue_failed",
-                        err = %err,
-                    );
-                    state.proxy.backend_time().sleep(Duration::from_secs(1)).await;
+                    if tavily_hikari::is_transient_sqlite_write_error(&err) {
+                        tracing::debug!(
+                            component = "scheduler",
+                            event = "maintenance_dequeue_deferred",
+                            defer_reason = "sqlite_contention",
+                            retry_delay_secs = 30_u64,
+                            err = %err,
+                        );
+                        tokio::select! {
+                            _ = wake.notified() => {}
+                            _ = state.proxy.backend_time().sleep(Duration::from_secs(30)) => {}
+                        }
+                    } else {
+                        tracing::error!(
+                            component = "scheduler",
+                            event = "maintenance_dequeue_failed",
+                            err = %err,
+                        );
+                        state.proxy.backend_time().sleep(Duration::from_secs(1)).await;
+                    }
                 }
             }
         }
@@ -693,6 +735,13 @@ fn spawn_upstream_reconciliation_startup_resume(state: Arc<AppState>) {
             .await
         {
             Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
+            Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => tracing::debug!(
+                component = "reconciliation",
+                event = "startup_resume_enqueue_deferred",
+                defer_reason = "sqlite_contention",
+                retry_via = "stale_reaper",
+                err = %err,
+            ),
             Err(err) => tracing::error!(
                 component = "reconciliation",
                 event = "startup_resume_enqueue_failed",
