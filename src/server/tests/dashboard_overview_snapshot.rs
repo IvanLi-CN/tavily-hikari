@@ -489,6 +489,52 @@ async fn dashboard_pressure_allows_one_bounded_cold_build() {
 }
 
 #[tokio::test]
+async fn dashboard_startup_prewarm_reuses_the_first_snapshot_loader() {
+    let db_path = temp_db_path("dashboard-overview-startup-prewarm");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-startup-prewarm".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+
+    tokio::time::timeout(
+        DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET,
+        prewarm_dashboard_overview_snapshot(&state),
+    )
+    .await
+    .expect("startup prewarm uses the cold snapshot budget");
+    let snapshot = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("the first HTTP reader receives the prewarmed snapshot");
+    assert!(snapshot.payload.summary_windows.today_start > 0);
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        1,
+        "startup prewarm and the first HTTP request share one singleflight loader",
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn dashboard_cold_build_continues_after_the_first_request_times_out() {
     let db_path = temp_db_path("dashboard-overview-cold-build-continues");
     let db_str = db_path.to_string_lossy().to_string();

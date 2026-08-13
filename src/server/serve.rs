@@ -560,6 +560,11 @@ pub async fn serve(
         }
     });
 
+    // Reuse the same bounded singleflight that serves cold dashboard reads so
+    // the first external clients after a rolling restart inherit its head
+    // start instead of racing a one-second cold build.
+    prewarm_dashboard_overview_snapshot(&state).await;
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
     tracing::info!(

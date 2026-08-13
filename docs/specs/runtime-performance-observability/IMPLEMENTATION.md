@@ -44,6 +44,7 @@
   restores SQL-level diagnostics.
 - owner-facing 重读路径已补结构化 perf 事件：
   - dashboard overview
+  - startup dashboard overview prewarm / deferred
   - dashboard shared snapshot cache-hit / rebuild
   - dashboard phase-level 事件：`freshness_probe` / `cache_wait` / `quota_charge_rebuild` / `recent_alerts_rebuild` / `overview_payload_build` / `overview_serialize`
   - alerts phase-level 事件：`alerts_projection` / `alerts_grouping`

@@ -99,6 +99,10 @@ reads:
 - Guard shared admin snapshot loaders with both a drop-time reset and a stale-loading takeover
   window. A cancelled or wedged request must not leave `loading=true` forever and make every later
   request wait on a `Notify` that will never fire.
+- Before exposing a newly restarted listener, give the existing cold singleflight snapshot loader
+  its normal bounded head start. This prevents the first concurrent Dashboard clients from all
+  arriving at the same one-second cold-read deadline while keeping the loader, timeout, and HTTP
+  response contract unchanged.
 - Keep optional freshness tokens on a short deadline and derive a conservative token from the
   already-built optional summary when the dedicated token query is slow or unavailable. Freshness
   precision is less important than preserving first paint for the owner-facing dashboard.

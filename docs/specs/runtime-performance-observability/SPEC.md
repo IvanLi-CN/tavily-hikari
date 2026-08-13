@@ -87,6 +87,8 @@
   - `component=ha event=standby_sync_baseline_completed`
   - `component=ha event=standby_sync_events_completed`
 - Dashboard / shared snapshot:
+  - `component=startup event=dashboard_overview_prewarmed`
+  - `component=startup event=dashboard_overview_prewarm_deferred`
   - `component=admin_read event=dashboard_snapshot_cache_hit`
   - `component=admin_read event=dashboard_snapshot_rebuilt`
   - `component=admin_read event=dashboard_overview_phase phase=freshness_probe`

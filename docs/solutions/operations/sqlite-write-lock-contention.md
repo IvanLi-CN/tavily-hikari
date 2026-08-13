@@ -146,6 +146,10 @@ month-tail public metrics scan.
 - A request-stats coalescer may probe a released writer at its next nominal wake with one permit
   and a short transaction budget. Its exact delta restore makes this safe; it does not relax the
   contention cooldown for GC, rebuild, or reconciliation projection.
+- Do not let request-stats backlog size bypass that nominal wake. Under foreground load, one
+  admitted wake commits at most one minimum logical-key transaction, returns its tail atomically,
+  and waits for the next cadence. A shutdown drain may use its separate bounded deadline to finish
+  the remaining work without making the ordinary request path share a continuous writer lease.
 - Apply that same reuse rule explicitly to compare-only reconciliation scheduling. `upstream_reconciliation`
   should reuse an equivalent queued/running representative row before entering the write path, and
   it should emit stable `component=reconciliation event=enqueue_reused|enqueue_exhausted` logs plus

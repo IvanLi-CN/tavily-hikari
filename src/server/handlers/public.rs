@@ -1855,6 +1855,25 @@ async fn load_dashboard_overview_snapshot(
     }
 }
 
+async fn prewarm_dashboard_overview_snapshot(state: &Arc<AppState>) {
+    let started = Instant::now();
+    match load_dashboard_overview_snapshot(state).await {
+        Ok(_) => tracing::debug!(
+            component = "startup",
+            event = "dashboard_overview_prewarmed",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "dashboard overview singleflight completed before accepting connections"
+        ),
+        Err(err) => tracing::debug!(
+            component = "startup",
+            event = "dashboard_overview_prewarm_deferred",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            err = %err,
+            "dashboard overview singleflight continues after its bounded startup wait"
+        ),
+    }
+}
+
 enum DashboardOverviewLoadAction {
     Return(Arc<DashboardOverviewSnapshot>),
     Wait(tokio::sync::futures::OwnedNotified),

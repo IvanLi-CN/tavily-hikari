@@ -91,7 +91,6 @@ impl Default for RequestStatsCoalescer {
 }
 
 impl RequestStatsCoalescer {
-    pub(crate) const MAX_PENDING_KEYS: usize = 100;
     pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
     pub(crate) fn pending_key_count(state: &RequestStatsCoalescerState) -> usize {

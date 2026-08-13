@@ -8,9 +8,11 @@
   remain, foreground activity exceeds `5 rps`, or a busy/pool-timeout occurred in the last five
   seconds.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
-  its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks and put
-  an uncommitted chunk back into the coalescer exactly once when admission, cancellation, or a
-  transient SQLite result interrupts persistence.
+  its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
+  background admission commits one initial 25-key chunk with a 50ms retry budget, returns the
+  remaining tail to the coalescer exactly once, and waits for the next nominal second before its
+  next slice. Explicit shutdown drain paths may continue through further chunks within their own
+  bounded deadline.
 - Dashboard integrity and pressure rebuild use the same bulk boundary. Claim, finish,
   continuation, and stale recovery are short control transactions and do not wait on the bulk
   permit or run a background retry loop. Runtime transaction deadlines implement their short

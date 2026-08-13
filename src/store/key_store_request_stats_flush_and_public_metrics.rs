@@ -163,8 +163,13 @@ fn take_request_stats_chunk_entries<K, V>(
 impl KeyStore {
     #[cfg(debug_assertions)]
     pub(crate) async fn flush_request_stats_writes(&self) -> Result<(), ProxyError> {
-        self.flush_request_stats_writes_with_wait_policy(Duration::from_secs(10), None, true)
-            .await
+        self.flush_request_stats_writes_with_wait_policy(
+            Duration::from_secs(10),
+            None,
+            true,
+            None,
+        )
+        .await
     }
 
     pub(crate) async fn flush_request_stats_writes_in_background(
@@ -179,9 +184,12 @@ impl KeyStore {
         };
         let result = self
             .flush_request_stats_writes_with_wait_policy(
-                Duration::from_millis(100),
-                Some(self.backend_time.instant_now() + Duration::from_millis(100)),
+                // A background slice must yield before a foreground control
+                // transaction can spend its own 100ms admission budget.
+                Duration::from_millis(50),
+                Some(self.backend_time.instant_now() + Duration::from_millis(50)),
                 false,
+                Some(1),
             )
             .await;
         drop(permit);
@@ -227,6 +235,7 @@ impl KeyStore {
         retry_budget: Duration,
         inflight_wait_deadline: Option<Instant>,
         log_transient_exhaustion: bool,
+        max_committed_chunks: Option<usize>,
     ) -> Result<(), ProxyError> {
         loop {
             if inflight_wait_deadline.is_some_and(|deadline| {
@@ -296,8 +305,12 @@ impl KeyStore {
                 retry_budget,
                 drained,
                 log_transient_exhaustion,
+                max_committed_chunks,
             )
             .await?;
+            if max_committed_chunks.is_some() {
+                return Ok(());
+            }
         }
     }
 
@@ -311,6 +324,20 @@ impl KeyStore {
             retry_budget,
             inflight_wait_deadline,
             true,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn flush_request_stats_background_slice_for_test(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.flush_request_stats_writes_with_wait_policy(
+            Duration::from_millis(50),
+            Some(self.backend_time.instant_now() + Duration::from_millis(50)),
+            false,
+            Some(1),
         )
         .await
     }
@@ -322,6 +349,7 @@ impl KeyStore {
         retry_budget: Duration,
         drained: DrainedRequestStatsFlushBatch,
         log_transient_exhaustion: bool,
+        max_committed_chunks: Option<usize>,
     ) -> Result<(), ProxyError> {
         let retry_deadline = backend_time.instant_now() + retry_budget;
         let operation_started = Instant::now();
@@ -329,6 +357,7 @@ impl KeyStore {
         // Start conservatively because one logical key can fan out into several
         // rollup writes. Increase only after a transaction stays within budget.
         let mut chunk_size = REQUEST_STATS_FLUSH_MIN_LOGICAL_KEYS;
+        let mut committed_chunks = 0usize;
         let flush_result = loop {
             if uncommitted.is_empty() {
                 break Ok(());
@@ -350,11 +379,15 @@ impl KeyStore {
             .await
             {
                 Ok(()) => {
+                    committed_chunks = committed_chunks.saturating_add(1);
                     if chunk_started.elapsed() > REQUEST_STATS_FLUSH_SLOW_TRANSACTION {
                         chunk_size = (chunk_size / 2).max(REQUEST_STATS_FLUSH_MIN_LOGICAL_KEYS);
                     } else {
                         chunk_size = (chunk_size + REQUEST_STATS_FLUSH_MIN_LOGICAL_KEYS)
                             .min(REQUEST_STATS_FLUSH_MAX_LOGICAL_KEYS);
+                    }
+                    if max_committed_chunks.is_some_and(|limit| committed_chunks >= limit) {
+                        break Ok(());
                     }
                 }
                 Err(err) => {
@@ -378,6 +411,10 @@ impl KeyStore {
             }
             state.flushing_oldest_created_at = None;
             state.flushing_newest_created_at = None;
+            // A background admission intentionally owns only one committed
+            // transaction. Return every remaining key before releasing the
+            // coalescer so the next nominal tick can resume exactly once.
+            uncommitted.requeue_into(&mut state);
             if RequestStatsCoalescer::pending_key_count(&state) == 0 {
                 state.oldest_pending_created_at = None;
                 state.newest_pending_created_at = None;

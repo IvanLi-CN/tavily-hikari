@@ -1088,6 +1088,71 @@ async fn request_stats_chunked_flush_preserves_exact_deltas() {
 }
 
 #[tokio::test]
+async fn request_stats_background_slice_commits_one_chunk_and_requeues_the_tail() {
+    const BACKGROUND_SLICE_KEYS: i64 = 25;
+    let db_path = temp_db_path("request-stats-background-slice-tail");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-background-slice").await;
+    let created_at = proxy.backend_time().now_ts().saturating_sub(1);
+
+    for index in 0..51 {
+        let bucket_created_at = created_at + (i64::from(index) * SECS_PER_FIVE_MINUTES);
+        proxy
+            .key_store
+            .enqueue_request_stats_rollup_for_test(None, bucket_created_at, OUTCOME_SUCCESS)
+            .await;
+    }
+    let pending_before_slice = {
+        let pending = proxy.key_store.request_stats_coalescer.state.lock().await;
+        RequestStatsCoalescer::pending_key_count(&pending)
+    };
+
+    proxy
+        .key_store
+        .flush_request_stats_background_slice_for_test()
+        .await
+        .expect("one background admission flushes one transaction chunk");
+
+    let durable_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = ?",
+    )
+    .bind(SECS_PER_MINUTE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read committed background slice");
+    assert!(
+        (1..=BACKGROUND_SLICE_KEYS).contains(&durable_total),
+        "the first logical-key slice commits a bounded visible rollup prefix",
+    );
+
+    let pending = proxy.key_store.request_stats_coalescer.state.lock().await;
+    assert_eq!(
+        RequestStatsCoalescer::pending_key_count(&pending),
+        pending_before_slice - BACKGROUND_SLICE_KEYS as usize,
+        "the uncommitted tail remains durable in the coalescer for the next tick",
+    );
+    drop(pending);
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("the explicit drain persists the returned tail");
+    let final_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = ?",
+    )
+    .bind(SECS_PER_MINUTE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read fully drained rollups");
+    assert_eq!(final_total, 51, "each logical delta persists exactly once");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admitted_flush_drains_followup_batches_before_reporting_fresh() {
     let db_path = temp_db_path("admin-read-followup-batch-fresh");
     let db_str = db_path.to_string_lossy().to_string();

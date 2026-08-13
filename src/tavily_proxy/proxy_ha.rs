@@ -10,9 +10,7 @@ impl TavilyProxy {
             loop {
                 let (should_flush_now, wait_duration) = {
                     let state = coalescer.state.lock().await;
-                    let pending_key_count = RequestStatsCoalescer::pending_key_count(&state);
                     let should_flush_now = (state.shutdown && state.dashboard_rollup_repairs.is_empty())
-                        || pending_key_count >= RequestStatsCoalescer::MAX_PENDING_KEYS
                         || state
                             .flush_deadline
                             .map(|deadline| Instant::now() >= deadline)
