@@ -1235,7 +1235,7 @@ impl KeyStore {
         }
         .await;
         if let Err(err) = init_result {
-            let _ = conn.rollback().await;
+            let _ = conn.rollback_and_reenable_foreign_keys().await;
             return Err(err);
         }
         Ok(HaBaselineApplySession {
@@ -2685,13 +2685,13 @@ impl HaBaselineApplySession {
 
     pub async fn finish(mut self) -> Result<HaApplyResult, ProxyError> {
         if !self.saw_start || !self.saw_end {
-            let _ = self.conn.rollback().await;
+            let _ = self.conn.rollback_and_reenable_foreign_keys().await;
             return Err(ProxyError::Other(
                 "HA baseline must include baseline_start and baseline_end".to_string(),
             ));
         }
         if let Err(err) = clear_ha_outbox_suppression_on_conn(&mut self.conn).await {
-            let _ = self.conn.rollback().await;
+            let _ = self.conn.rollback_and_reenable_foreign_keys().await;
             return Err(err);
         }
         if self.quota_cache_dirty {
@@ -2708,9 +2708,13 @@ impl HaBaselineApplySession {
             self.quota_cache_transitions
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         }
-        sqlx::query("PRAGMA foreign_keys = ON")
+        if let Err(err) = sqlx::query("PRAGMA foreign_keys = ON")
             .execute(&mut *conn)
-            .await?;
+            .await
+        {
+            conn.detach().close().await.ok();
+            return Err(ProxyError::Database(err));
+        }
         Ok(HaApplyResult {
             channel: self.channel,
             high_watermark: self.high_watermark,
@@ -2720,7 +2724,7 @@ impl HaBaselineApplySession {
     }
 
     pub async fn abort(self) -> Result<(), ProxyError> {
-        self.conn.rollback().await
+        self.conn.rollback_and_reenable_foreign_keys().await
     }
 }
 

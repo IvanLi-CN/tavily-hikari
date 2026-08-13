@@ -64,24 +64,41 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
 }
 
 #[tokio::test]
-async fn scheduled_job_start_retries_transient_sqlite_write_lock() {
-    let db_path = temp_db_path("scheduled-job-start-retries-sqlite-lock");
+async fn scheduled_job_start_respects_control_transaction_budget_under_sqlite_write_lock() {
+    let db_path = temp_db_path("scheduled-job-start-control-budget-sqlite-lock");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let release = hold_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
+    let release =
+        hold_sqlite_write_lock_for_test_for(&proxy.key_store.pool, Duration::from_millis(500))
+            .await;
     let job_type = format!(
         "sqlite_lock_retry_test_{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
 
+    let started_at = std::time::Instant::now();
+    let err = proxy
+        .scheduled_job_start(&job_type, None, 1)
+        .await
+        .expect_err("control transaction should defer instead of retrying behind a writer lock");
+    assert!(
+        is_transient_sqlite_write_error(&err),
+        "expected bounded SQLite writer contention error, got {err}"
+    );
+    assert!(
+        started_at.elapsed() < Duration::from_millis(250),
+        "control transaction must not wait behind bulk SQLite work (elapsed={:?})",
+        started_at.elapsed()
+    );
+    release.await.expect("release task");
+
     let job_id = proxy
         .scheduled_job_start(&job_type, None, 1)
         .await
-        .expect("scheduled job starts after transient sqlite write lock");
+        .expect("durable job can be submitted after the writer lock releases");
     assert!(job_id > 0);
-    release.await.expect("release task");
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

@@ -116,6 +116,7 @@ async fn create_legacy_request_logs_source(pool: &sqlx::SqlitePool) {
             .id;
 
         let usage_base = format!("http://{}", upstream_addr);
+        let direct_proxy = proxy.clone();
         let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
         let admin_password = "key-token-logs-catalog-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
@@ -188,6 +189,10 @@ async fn create_legacy_request_logs_source(pool: &sqlx::SqlitePool) {
             .await
             .expect("search request");
         assert_eq!(search_resp.status(), reqwest::StatusCode::OK);
+        direct_proxy
+            .flush_request_stats_writes_for_test()
+            .await
+            .expect("persist request statistics before filtered catalog reads");
 
         let cached_key_catalog_resp = client
             .get(format!(

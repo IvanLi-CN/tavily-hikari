@@ -79,11 +79,10 @@ reads:
   day/month anchors, forward-proxy counts, retention window anchor, latest visible request-log id,
   exhausted-key ids, disabled-token coverage, recent-job signatures, recent-alert aggregates, and
   the current hour anchor.
-- For admin summary/rankings/analysis-pressure reads that only need request-stat rollups, split the
-  read path from the full write-side retry budget. Use a dedicated short-busy-timeout flush
-  connection or pool, cap synchronous flush attempts to a sub-second read budget, and fall back to
-  already durable rollups if contention persists. Requeueing the drained batch is better than
-  making first paint wait behind a multi-second writer retry loop.
+- For admin summary/rankings/analysis-pressure reads that only need request-stat rollups, consume
+  durable rollups only. Do not acquire a write connection or synchronously flush from a read;
+  pending/flushing state belongs to freshness coverage while one background-admitted batcher
+  persists the delta. This keeps first paint out of SQLite writer contention entirely.
 - When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
   “rebuild payload”. The probe path should use non-flushing summary / rollup reads plus a pending
   coalescer signature, while the actual shared-snapshot rebuild may flush once. Reusing the rebuild

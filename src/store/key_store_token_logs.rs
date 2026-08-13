@@ -1961,7 +1961,6 @@ impl KeyStore {
         &self,
         include_quarantine_detail: bool,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let query = format!(
             "{} ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
             Self::api_key_metrics_query(include_quarantine_detail),
@@ -1977,7 +1976,6 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let limit = limit.clamp(1, 50) as i64;
         let statuses = vec![STATUS_EXHAUSTED.to_string()];
         let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
@@ -2030,7 +2028,6 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -2104,7 +2101,6 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let mut builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(true));
         builder.push(" AND ak.id = ");
         builder.push_bind(key_id);

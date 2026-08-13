@@ -54,6 +54,15 @@
 - `SqliteRuntime` 唯一持有生产 pools、事务 guard、admission 和操作预算。迁移后的 HA read
   session、通用 audit snapshot 与 Dashboard integrity write 不得取得裸 pooled connection；取消或
   未完成 guard 必须丢弃物理连接。
+- `SqliteRuntime` 的 admission 属于单个 `KeyStore` 实例。`maintenance_control` 只可进行 claim、
+  finish、continuation 与 stale recovery 等短事务，连接和 SQLite writer 预算均不超过 `100ms`；
+  `maintenance_bulk` 必须在获取连接前检查至少两个前台可用 pool slot、前台到达率不高于 `5 rps`、最近
+  五秒无 SQLite busy/pool timeout，并持有唯一 bulk permit。拒绝必须返回 typed deferred，不得先取得
+  pooled connection 或启动后台无限重试。
+- HA GC、request-stats flush、pressure rebuild、reconciliation projection 与 Dashboard integrity
+  是 `maintenance_bulk`；GC 在每条 SQL 后重新检查 admission，压力只推迟当前 channel，不得冻结其余
+  eligible channel。Dashboard 仅在有 last-good 时因 admission、busy 或 refresh 超时直接返回该快照；
+  冷启动可有一次不超过一秒的 singleflight build。
 - 普通 Dashboard、summary、hourly window 与 rankings 读取只消费 durable request stats，不得触发
   flush 或获取写连接。pending/flushing 仅参与内部 freshness，不改变 HTTP shape。
 - `ha_outbox_gc_work` 按 control、billing、runtime 独立持久化 eligibility、claim 与 continuation。

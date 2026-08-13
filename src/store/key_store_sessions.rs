@@ -449,8 +449,6 @@ impl KeyStore {
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
     ) -> Result<(), ProxyError> {
-        self.flush_request_stats_writes().await?;
-
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
@@ -549,7 +547,8 @@ impl KeyStore {
         }
 
         tx.commit().await?;
-        self.invalidate_request_logs_catalog_cache().await;
+        // The catalog cache has a bounded 30-second TTL. A late key-effect
+        // classification must not invalidate every hot admin catalog view.
         Ok(())
     }
 

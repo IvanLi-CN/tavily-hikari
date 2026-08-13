@@ -2,6 +2,9 @@ impl TavilyProxy {
     const SERVER_PRESSURE_REBUILD_INACTIVE: u8 = 0;
     const SERVER_PRESSURE_REBUILD_BUFFERING: u8 = 1;
     const SERVER_PRESSURE_REBUILD_REPLAYING: u8 = 2;
+    const SERVER_PRESSURE_REBUILD_DEFERRED: u8 = 3;
+    const SERVER_PRESSURE_REBUILD_MAX_ADMISSION_DEFERS: usize = 3;
+    const SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY: Duration = Duration::from_millis(250);
 
     #[cfg(test)]
     async fn acquire_test_startup_guard() -> tokio::sync::OwnedSemaphorePermit {
@@ -1159,12 +1162,75 @@ impl TavilyProxy {
         let proxy = self.clone();
         tokio::spawn(async move {
             let mut attempt = 0usize;
+            let mut admission_defers = 0usize;
             loop {
                 if !proxy.server_pressure_source_rebuild_is_active(generation) {
                     return;
                 }
+                let _admission = match proxy.admit_server_pressure_rebuild() {
+                    SqliteAdmissionOutcome::Admitted(admission) => admission,
+                    SqliteAdmissionOutcome::Deferred { reason } => {
+                        admission_defers += 1;
+                        if admission_defers >= Self::SERVER_PRESSURE_REBUILD_MAX_ADMISSION_DEFERS {
+                            proxy
+                                .stop_server_pressure_rebuild_generation(generation, Vec::new())
+                                .await;
+                            tracing::warn!(
+                                component = "analysis_pressure",
+                                event = "server_pressure_buckets_rebuild_stalled",
+                                admission_defers,
+                                defer_reason = reason,
+                                "server pressure rebuild remained admission-deferred after bounded retries"
+                            );
+                            return;
+                        }
+                        if proxy
+                            .server_pressure_rebuild_phase
+                            .compare_exchange(
+                                Self::SERVER_PRESSURE_REBUILD_BUFFERING,
+                                Self::SERVER_PRESSURE_REBUILD_DEFERRED,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return;
+                        }
+                        tracing::debug!(
+                            component = "analysis_pressure",
+                            event = "server_pressure_buckets_rebuild_deferred",
+                            defer_reason = reason,
+                            retry_delay_ms = Self::SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY.as_millis() as u64,
+                            "server pressure rebuild deferred before SQLite connection acquisition"
+                        );
+                        proxy
+                            .backend_time
+                            .sleep(Self::SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY)
+                            .await;
+                        if proxy
+                            .server_pressure_rebuild_generation
+                            .load(Ordering::SeqCst)
+                            != generation
+                        {
+                            return;
+                        }
+                        if proxy
+                            .server_pressure_rebuild_phase
+                            .compare_exchange(
+                                Self::SERVER_PRESSURE_REBUILD_DEFERRED,
+                                Self::SERVER_PRESSURE_REBUILD_BUFFERING,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                };
                 let started = Instant::now();
-                tracing::info!(
+                tracing::debug!(
                     component = "analysis_pressure",
                     event = "server_pressure_buckets_rebuild_started",
                     attempt = attempt + 1,
@@ -1285,17 +1351,32 @@ impl TavilyProxy {
                         if !proxy.server_pressure_source_rebuild_is_active(generation) {
                             return;
                         }
-                        let retry_delay = Duration::from_secs(1);
                         attempt += 1;
-                        tracing::warn!(
+                        if attempt >= 3 {
+                            proxy
+                                .stop_server_pressure_rebuild_generation(generation, Vec::new())
+                                .await;
+                            tracing::warn!(
+                                component = "analysis_pressure",
+                                event = "server_pressure_buckets_rebuild_stalled",
+                                attempt,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                err = %err,
+                                "server pressure rebuild remained SQLite-contended after bounded retries"
+                            );
+                            return;
+                        }
+                        let retry_delay = Duration::from_secs(30);
+                        tracing::debug!(
                             component = "analysis_pressure",
                             event = "server_pressure_buckets_rebuild_retry_scheduled",
                             attempt,
                             retry_delay_ms = retry_delay.as_millis() as u64,
                             elapsed_ms = started.elapsed().as_millis() as u64,
                             err = %err,
-                            "server pressure buckets rebuild hit transient contention; retrying in background"
+                            "server pressure buckets rebuild hit transient contention; retrying after admission cooldown"
                         );
+                        drop(_admission);
                         proxy.backend_time.sleep(retry_delay).await;
                     }
                     Err(err) => {

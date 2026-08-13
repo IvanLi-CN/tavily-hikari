@@ -112,7 +112,7 @@ async fn public_success_breakdown_skips_flush_when_no_pending_request_stats() {
 }
 
 #[tokio::test]
-async fn public_success_breakdown_flushes_pending_request_stats_for_current_window() {
+async fn public_success_breakdown_serves_durable_data_before_background_flush() {
     let db_path = temp_db_path("public-success-breakdown-pending-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -142,21 +142,25 @@ async fn public_success_breakdown_flushes_pending_request_stats_for_current_wind
             OUTCOME_SUCCESS,
         )
         .await;
-
     let public = proxy
         .success_breakdown(Some(window))
         .await
         .expect("public success breakdown");
 
-    assert_eq!(public.monthly_success, 1);
-    assert_eq!(public.daily_success, 1);
+    assert_eq!(public.monthly_success, 0);
+    assert_eq!(public.daily_success, 0);
 
-    let persisted_flush = proxy
+    proxy
         .key_store
-        .get_meta_i64(META_KEY_REQUEST_STATS_LAST_FLUSHED_AT_V1)
+        .flush_request_stats_writes()
         .await
-        .expect("read request stats flush watermark");
-    assert!(persisted_flush.unwrap_or_default() > 0);
+        .expect("background-equivalent test flush");
+    let converged = proxy
+        .success_breakdown(Some(window))
+        .await
+        .expect("durable success breakdown after flush");
+    assert_eq!(converged.monthly_success, 1);
+    assert_eq!(converged.daily_success, 1);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -211,7 +215,7 @@ async fn public_request_stats_flush_uses_injected_time_for_persisted_rollups() {
 }
 
 #[tokio::test]
-async fn public_success_breakdown_flushes_when_newer_pending_rollup_is_inside_window() {
+async fn public_success_breakdown_serves_durable_data_until_mixed_pending_rollups_flush() {
     let db_path = temp_db_path("public-success-breakdown-mixed-pending-window");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -265,21 +269,26 @@ async fn public_success_breakdown_flushes_when_newer_pending_rollup_is_inside_wi
         .await
         .expect("public success breakdown");
 
-    assert_eq!(public.monthly_success, 2);
-    assert_eq!(public.daily_success, 1);
+    assert_eq!(public.monthly_success, 0);
+    assert_eq!(public.daily_success, 0);
 
-    let persisted_flush = proxy
+    proxy
         .key_store
-        .get_meta_i64(META_KEY_REQUEST_STATS_LAST_FLUSHED_AT_V1)
+        .flush_request_stats_writes()
         .await
-        .expect("read request stats flush watermark");
-    assert!(persisted_flush.unwrap_or_default() >= now.saturating_sub(10));
+        .expect("background-equivalent test flush");
+    let converged = proxy
+        .success_breakdown(Some(window))
+        .await
+        .expect("durable success breakdown after flush");
+    assert_eq!(converged.monthly_success, 2);
+    assert_eq!(converged.daily_success, 1);
 
     let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]
-async fn public_success_breakdown_flushes_when_pending_rollup_is_outside_day_but_inside_month() {
+async fn public_success_breakdown_defers_month_only_pending_rollup_to_background_flush() {
     let db_path = temp_db_path("public-success-breakdown-month-only-pending");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -310,8 +319,20 @@ async fn public_success_breakdown_flushes_when_pending_rollup_is_outside_day_but
         .await
         .expect("public success breakdown");
 
-    assert_eq!(public.monthly_success, 1);
+    assert_eq!(public.monthly_success, 0);
     assert_eq!(public.daily_success, 0);
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("background-equivalent test flush");
+    let converged = proxy
+        .success_breakdown(Some(day_window))
+        .await
+        .expect("durable success breakdown after flush");
+    assert_eq!(converged.monthly_success, 1);
+    assert_eq!(converged.daily_success, 0);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -353,7 +374,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
         .await;
     let flush_handle = tokio::spawn(async move { store.flush_request_stats_writes().await });
 
-    tokio::time::timeout(Duration::from_secs(1), pause.arrived.notified())
+    tokio::time::timeout(Duration::from_secs(2), pause.arrived.notified())
         .await
         .expect("flush reached post-flush pause");
 
@@ -418,7 +439,7 @@ async fn public_success_breakdown_flushes_pending_rollup_enqueued_during_flush()
 }
 
 #[tokio::test]
-async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metrics() {
+async fn public_success_breakdown_returns_durable_data_while_flush_is_inflight() {
     let db_path = temp_db_path("public-success-breakdown-inflight-flush-wait");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -487,12 +508,13 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
         let _ = done_tx.send(result);
     });
 
-    tokio::select! {
-        early = &mut done_rx => {
-            panic!("public metrics returned before inflight flush completed: {early:?}");
-        }
-        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-    }
+    let durable_before_flush = tokio::time::timeout(Duration::from_millis(250), &mut done_rx)
+        .await
+        .expect("public metrics must not wait for an inflight write")
+        .expect("public metrics result channel")
+        .expect("durable public success breakdown");
+    assert_eq!(durable_before_flush.monthly_success, 0);
+    assert_eq!(durable_before_flush.daily_success, 0);
 
     sqlx::query("ROLLBACK")
         .execute(&mut lock_conn)
@@ -505,10 +527,10 @@ async fn public_success_breakdown_waits_for_inflight_flush_before_serving_metric
         .expect("flush join")
         .expect("flush request stats");
 
-    let public = done_rx
+    let public = proxy
+        .success_breakdown(Some(window))
         .await
-        .expect("public metrics result channel")
-        .expect("public success breakdown");
+        .expect("durable public success breakdown after flush");
     assert_eq!(public.monthly_success, 1);
     assert_eq!(public.daily_success, 1);
 
@@ -771,7 +793,7 @@ async fn admin_summary_does_not_start_a_slow_background_flush() {
 }
 
 #[tokio::test]
-async fn admin_read_budget_expiry_after_drain_keeps_background_flush_progressing() {
+async fn expired_flush_budget_keeps_pending_deltas_for_the_admitted_worker() {
     let db_path = temp_db_path("admin-read-budget-expiry-drain-detach");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-admin-read-budget-expiry").await;
@@ -806,42 +828,179 @@ async fn admin_read_budget_expiry_after_drain_keeps_background_flush_progressing
         "unexpected error after budget expiry: {err}"
     );
 
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        proxy
-            .key_store
-            .request_stats_coalescer
-            .wait_until_not_flushing(),
-    )
-    .await
-    .expect("detached flush should eventually clear the inflight state");
-
-    let summary_after = proxy
-        .summary_without_flush()
-        .await
-        .expect("summary after detached flush");
-    assert_eq!(summary_after.total_requests, 1);
-    assert_eq!(summary_after.success_count, 1);
-
     let state = proxy.key_store.request_stats_coalescer.state.lock().await;
     assert!(
         !state.flushing,
-        "background flush should not leave the coalescer stuck in flushing=true"
+        "rejected flush must not leave the coalescer stuck in flushing=true"
     );
-    assert!(state.pending_dashboard_rollups.is_empty());
-    assert!(state.pending_api_key_usage.is_empty());
-    assert!(state.pending_auth_token_activity.is_empty());
-    assert!(state.pending_account_request_rollups.is_empty());
-    assert!(state.pending_request_log_catalog.is_empty());
+    assert!(
+        RequestStatsCoalescer::pending_key_count(&state) > 0,
+        "expired flush budgets must keep every derived delta for the next admitted worker"
+    );
 
     drop(state);
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("admitted flush persists the retained delta");
+    let summary_after = proxy
+        .summary_without_flush()
+        .await
+        .expect("summary after admitted flush");
+    assert_eq!(summary_after.total_requests, 1);
+    assert_eq!(summary_after.success_count, 1);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
 
 #[tokio::test]
-async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
+async fn request_stats_background_flush_defers_before_pool_acquire_and_preserves_pending_delta() {
+    let db_path = temp_db_path("request-stats-background-admission");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-background-admission").await;
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("drain setup coalescer state");
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(1),
+            OUTCOME_SUCCESS,
+        )
+        .await;
+    let pending_before_defer = {
+        let state = proxy.key_store.request_stats_coalescer.state.lock().await;
+        RequestStatsCoalescer::pending_key_count(&state)
+    };
+
+    let first_foreground_connection = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("first foreground connection");
+    let second_foreground_connection = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("second foreground connection");
+
+    let outcome = proxy
+        .key_store
+        .flush_request_stats_writes_in_background()
+        .await
+        .expect("bulk admission decision");
+    assert!(
+        matches!(
+            outcome,
+            RequestStatsBackgroundFlushOutcome::Deferred(SqliteAdmissionDeferReason::PoolPressure)
+        ),
+        "bulk persistence must defer before taking the final foreground pool slot"
+    );
+    let pending = proxy.key_store.request_stats_coalescer.state.lock().await;
+    assert_eq!(
+        RequestStatsCoalescer::pending_key_count(&pending),
+        pending_before_defer,
+        "deferred flush must preserve every logical delta already queued in the coalescer"
+    );
+    drop(pending);
+    drop(second_foreground_connection);
+    drop(first_foreground_connection);
+
+    let outcome = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let outcome = proxy
+                .key_store
+                .flush_request_stats_writes_in_background()
+                .await
+                .expect("background flush admission decision after foreground capacity returns");
+            if matches!(outcome, RequestStatsBackgroundFlushOutcome::Flushed) {
+                break outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background flush should resume once foreground capacity returns");
+    assert_eq!(outcome, RequestStatsBackgroundFlushOutcome::Flushed);
+    let summary = proxy
+        .summary_without_flush()
+        .await
+        .expect("durable summary after admitted flush");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.success_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn request_stats_chunked_flush_preserves_exact_deltas() {
+    let db_path = temp_db_path("request-stats-chunked-flush-exact-deltas");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-chunked-flush").await;
+    let created_at = proxy.backend_time().now_ts().saturating_sub(1);
+
+    for index in 0..501 {
+        let bucket_created_at = created_at + (i64::from(index) * SECS_PER_FIVE_MINUTES);
+        proxy
+            .key_store
+            .enqueue_request_stats_rollup_for_test(None, bucket_created_at, OUTCOME_SUCCESS)
+            .await;
+    }
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("chunked request stats flush");
+
+    let durable_total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(total_requests), 0)
+        FROM dashboard_request_rollup_buckets
+        WHERE bucket_secs = ?
+        "#,
+    )
+    .bind(SECS_PER_MINUTE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read chunked durable rollups");
+    assert_eq!(
+        durable_total, 501,
+        "every logical delta persists exactly once"
+    );
+
+    let state = proxy.key_store.request_stats_coalescer.state.lock().await;
+    assert_eq!(
+        RequestStatsCoalescer::pending_key_count(&state),
+        0,
+        "committed chunks must not be replayed from the coalescer"
+    );
+    drop(state);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admitted_flush_drains_followup_batches_before_reporting_fresh() {
     let db_path = temp_db_path("admin-read-followup-batch-fresh");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-admin-read-followup-batch").await;
@@ -869,7 +1028,7 @@ async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
         .await;
     let store = proxy.key_store.clone();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    let read_flush_handle = tokio::spawn(async move {
+    let flush_handle = tokio::spawn(async move {
         store
             .flush_request_stats_writes_with_wait_policy_for_test(
                 Duration::from_millis(250),
@@ -892,11 +1051,11 @@ async fn admin_read_flush_drains_followup_batches_before_reporting_fresh() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     pause.release.notify_waiters();
 
-    tokio::time::timeout(Duration::from_secs(2), read_flush_handle)
+    tokio::time::timeout(Duration::from_secs(2), flush_handle)
         .await
-        .expect("read-side flush should finish within the fresh-read budget window")
-        .expect("read-side flush join")
-        .expect("fresh read-side flush should drain the follow-up batch too");
+        .expect("admitted flush should finish within the bounded worker window")
+        .expect("admitted flush join")
+        .expect("admitted flush should drain the follow-up batch too");
 
     let summary_after = proxy
         .summary_without_flush()
@@ -1097,7 +1256,7 @@ async fn analysis_pressure_snapshot_returns_promptly_when_flush_hits_write_lock(
 }
 
 #[tokio::test]
-async fn admin_user_list_stats_wait_for_fresh_rollups_before_reporting_active_users() {
+async fn admin_user_list_stats_returns_durable_data_until_rollups_flush() {
     let db_path = temp_db_path("admin-user-list-stats-fresh-rollups");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-admin-user-list-stats-fresh").await;
@@ -1138,8 +1297,20 @@ async fn admin_user_list_stats_wait_for_fresh_rollups_before_reporting_active_us
     let stats = stats.expect("admin user list stats");
 
     assert_eq!(stats.total_users, 1);
-    assert_eq!(stats.active_users_90d, 1);
+    assert_eq!(stats.active_users_90d, 0);
     assert_eq!(stats.window_days, 90);
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("background-equivalent test flush");
+    let converged = proxy
+        .get_admin_user_list_stats()
+        .await
+        .expect("durable user list stats after flush");
+    assert_eq!(converged.total_users, 1);
+    assert_eq!(converged.active_users_90d, 1);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

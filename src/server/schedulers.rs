@@ -584,12 +584,21 @@ async fn run_dashboard_rollup_integrity_claimed_job(
         claim_generation,
         _job_execution_gate: existing_gate,
     } = claimed_job;
-    let _job_execution_gate = match existing_gate {
-        Some(gate) => gate,
-        None => acquire_db_job_execution_gate_for_state(state.as_ref()).await,
-    };
-    let _maintenance = acquire_db_maintenance_read_gate().await;
+    drop(existing_gate);
     let now = state.proxy.backend_time().now_ts();
+    let _bulk_admission = match state.proxy.admit_dashboard_rollup_integrity() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            return finish_dashboard_rollup_integrity_and_enqueue(
+                state.as_ref(),
+                job_id,
+                claim_generation,
+                &format!("state=deferred admission={reason}"),
+                now.saturating_add(30),
+            )
+            .await;
+        }
+    };
     let (message, next_delay_secs) = match state.proxy.run_dashboard_rollup_integrity_slice().await {
         Ok(result) => (format!("state={}", result.state), result.next_delay_secs),
         Err(err) => {
@@ -1270,30 +1279,35 @@ async fn run_ha_outbox_gc_claimed_job(
     } = claimed_job;
     drop(_job_execution_gate);
 
-    let Some(_gc_lease) = try_acquire_online_ha_gc_lease() else {
+    let foreground_rps = state.proxy.foreground_activity_rps();
+    let _bulk_admission = match state.proxy.admit_ha_outbox_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
         tracing::debug!(
             component = "ha_outbox_gc",
             event = "deferred",
             job_id,
             claim_generation,
-            defer_reason = "gc_lease_busy",
+            defer_reason = reason,
             continuation_delay_secs = HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
         );
         return finish_ha_gc_with_continuation(
             &state,
             job_id,
             claim_generation,
-            "deferred=gc_lease_busy".to_string(),
+            format!("deferred={reason}"),
             HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
         )
         .await;
+        }
     };
+    let proxy = state.proxy.clone();
     let result = state
         .proxy
         .gc_ha_outbox_online_with_foreground_activity(
-            foreground_activity_rps(),
-            foreground_activity_low_pressure_since_floor(),
-            foreground_activity_rps,
+            foreground_rps,
+            state.proxy.foreground_activity_low_pressure_since_floor(),
+            move || proxy.foreground_activity_rps(),
         )
         .await;
 
@@ -2560,7 +2574,7 @@ async fn run_manual_claimed_job(
         }
         "upstream_reconciliation" => {
             drop(_job_execution_gate);
-            let foreground_rps = foreground_activity_rps();
+            let foreground_rps = state.proxy.foreground_activity_rps();
             if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
                 return defer_reconciliation_for_foreground(
                     &state,
@@ -2581,7 +2595,7 @@ async fn run_manual_claimed_job(
                 );
                 tokio::pin!(run);
                 tokio::select! {
-                    foreground_rps = wait_for_foreground_maintenance_pressure() => Err(foreground_rps),
+                    foreground_rps = wait_for_foreground_maintenance_pressure(&state.proxy) => Err(foreground_rps),
                     result = &mut run => Ok(result),
                 }
             };
@@ -2714,10 +2728,10 @@ async fn run_manual_claimed_job(
     }
 }
 
-async fn wait_for_foreground_maintenance_pressure() -> i64 {
+async fn wait_for_foreground_maintenance_pressure(proxy: &TavilyProxy) -> i64 {
     loop {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let foreground_rps = foreground_activity_rps();
+        let foreground_rps = proxy.foreground_activity_rps();
         if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
             return foreground_rps;
         }

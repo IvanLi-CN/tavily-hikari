@@ -643,7 +643,7 @@ async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_b
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
+async fn request_stats_coalescer_flushes_auth_token_activity_after_background_persist() {
     let db_path = temp_db_path("request-stats-coalescer-token-activity-flush");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -660,6 +660,8 @@ async fn request_stats_coalescer_flushes_auth_token_activity_on_read() {
         .request_stats_coalescer
         .enqueue_auth_token_activity(&token.id, None, created_at)
         .await;
+
+    assert!(proxy.key_store.flush_request_stats_writes().await.is_ok());
 
     let tokens = proxy
         .list_access_tokens()

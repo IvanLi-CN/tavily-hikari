@@ -452,6 +452,14 @@ async fn account_usage_rollup_active90d_counts_exact_server_local_day_window() {
         .await
         .expect("record excluded request");
 
+    // Reads now intentionally use durable rollups and never trigger a writer.
+    // Make the test's persistence boundary explicit before asserting the view.
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("persist active-user rollups");
+
     manual_clock.set_now_ts(current_local_day_start + 15 * SECS_PER_HOUR);
     let active_users = proxy
         .key_store

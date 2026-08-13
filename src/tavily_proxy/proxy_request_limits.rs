@@ -1269,6 +1269,12 @@ impl TavilyProxy {
             .await;
     }
 
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn flush_request_stats_writes_for_test(&self) -> Result<(), ProxyError> {
+        self.key_store.flush_request_stats_writes().await
+    }
+
     pub async fn dashboard_month_series(
         &self,
         summary_windows: &SummaryWindows,

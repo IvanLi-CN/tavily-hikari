@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE_REF="${BASELINE_REF:-77f4e8bfc281aa1ed1fc47486401d7077a85f0b8}"
+BASELINE_REF="${BASELINE_REF:-194aafafd9d66d5ea11776b678f127001dc0a0f8}"
 DURATION_SECS="${DURATION_SECS:-600}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_$(git -C "$ROOT_DIR" rev-parse --short HEAD)_recovery_compare}"

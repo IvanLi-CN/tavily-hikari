@@ -65,6 +65,17 @@ impl DashboardRollupIntegrityWorkItem {
 }
 
 impl KeyStore {
+    pub(crate) fn dashboard_overview_refresh_defer_reason(&self) -> Option<SqliteAdmissionDeferReason> {
+        self.sqlite_runtime.maintenance_bulk_defer_reason()
+    }
+
+    pub(crate) fn try_admit_dashboard_rollup_integrity(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::DashboardIntegrityWrite)
+    }
+
     pub(crate) async fn reset_dashboard_rollup_integrity_pending_work_on_startup(
         &self,
     ) -> Result<(), ProxyError> {
@@ -554,11 +565,7 @@ impl KeyStore {
             });
         }
 
-        if self
-            .best_effort_flush_request_stats_writes_for_maintenance(
-                "dashboard_rollup_integrity_before_replace",
-            )
-            .await?
+        if self.request_stats_durable_freshness_for_maintenance()
             != RequestStatsReadFreshness::Fresh
         {
             self.persist_dashboard_rollup_integrity_work_item(&item, now).await?;

@@ -58,6 +58,9 @@ Tavily Hikari 的高可用方案采用核心业务双活 + 控制面单写，而
 - `billing` 与 `runtime` 事件流保留 14 天；过期 cursor 必须返回 `410 Gone`，standby 重新拉取该 channel baseline 后继续同步，不得阻止过期事件清理。
 - `billing` 只同步 `billing_ledger` 完整账本行历史，事件流写入 `ha_billing_outbox`，不再通过 `ha_outbox` 复制账本。
 - `runtime` 只同步 failover 后若不恢复就会影响基础 API/MCP 正确性的最小运行态，事件流写入 `ha_runtime_outbox`。允许的最小运行态包括 quota 当前状态与 bucket、token/account 月额度、MCP 当前会话必要状态、forward proxy 亲和与节点 override、以及主/次 API key affinity。
+- Online outbox GC is admitted as single-instance `maintenance_bulk`, never by acquiring a special
+  writer connection. A channel that sees foreground pressure, pool pressure, busy, or a slow SQL
+  operation records a typed 30-second defer; other eligible channels continue independently.
 - 如果 standby 在某个 channel 的 events apply 中命中 SQLite `FOREIGN KEY constraint failed`，
   该 channel 必须被视为“增量窗口不再自洽”，立即把 `baseline_applied` 与 `applied_seq`
   水位重置回 `0`，并要求下一轮重新拉取该 channel baseline；不得无限重试同一批坏 events。

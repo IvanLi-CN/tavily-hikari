@@ -104,7 +104,6 @@ impl TavilyProxy {
                     .collect(),
             });
         }
-        self.key_store.flush_request_stats_writes().await?;
         let now = self.backend_time.now_utc();
         let (
             metric_kind,

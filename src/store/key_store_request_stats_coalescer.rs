@@ -460,28 +460,6 @@ impl RequestStatsCoalescer {
         state.newest_pending_created_at
     }
 
-    pub(crate) async fn freshness_created_at_bounds(&self) -> Option<(i64, i64)> {
-        let state = self.state.lock().await;
-        let oldest_created_at = match (
-            state.oldest_pending_created_at,
-            state.flushing_oldest_created_at,
-        ) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (Some(value), None) | (None, Some(value)) => Some(value),
-            (None, None) => None,
-        }?;
-        let newest_created_at = match (
-            state.newest_pending_created_at,
-            state.flushing_newest_created_at,
-        ) {
-            (Some(left), Some(right)) => Some(left.max(right)),
-            (Some(value), None) | (None, Some(value)) => Some(value),
-            (None, None) => None,
-        }
-        .unwrap_or(oldest_created_at);
-        Some((oldest_created_at, newest_created_at))
-    }
-
     pub(crate) async fn pending_dashboard_freshness_signature(&self) -> [i64; 10] {
         let state = self.state.lock().await;
         let mut entries = state

@@ -5,6 +5,13 @@ pub(crate) enum ServerPressureBucketsRebuildOutcome {
 }
 
 impl KeyStore {
+    pub(crate) fn try_admit_server_pressure_rebuild(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::ServerPressureRebuild)
+    }
+
     async fn request_logs_support_server_pressure_rebuild(&self) -> Result<bool, ProxyError> {
         for column in [
             "request_user_id",
@@ -216,13 +223,10 @@ impl KeyStore {
             return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
         }
 
-        let mut conn = begin_immediate_sqlite_connection_with_retry(
-            &self.pool,
-            &self.backend_time,
-            "rebuild_server_pressure_buckets",
-            Duration::from_secs(5),
-        )
-        .await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ServerPressureRebuild)
+            .await?;
         let result = async {
             sqlx::query("DELETE FROM observability.server_pressure_buckets")
                 .execute(&mut *conn)
@@ -261,7 +265,7 @@ impl KeyStore {
             Ok(ServerPressureBucketsRebuildOutcome::Completed {
                 upper_bound_request_log_id,
             }) => {
-                conn.commit().await?;
+                conn.finish(Ok(())).await?;
                 Ok(ServerPressureBucketsRebuildOutcome::Completed {
                     upper_bound_request_log_id,
                 })

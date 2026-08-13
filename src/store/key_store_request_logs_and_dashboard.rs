@@ -70,7 +70,7 @@ impl KeyStore {
     }
 
     async fn upsert_request_log_catalog_rollup_delta(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteConnection,
         key: &RequestLogCatalogRollupKey,
         request_count_delta: i64,
         updated_at: i64,
@@ -123,7 +123,7 @@ impl KeyStore {
         .bind(&key.operational_class)
         .bind(request_count_delta)
         .bind(updated_at)
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query(
@@ -152,13 +152,13 @@ impl KeyStore {
         .bind(&key.auth_token_id)
         .bind(&key.api_key_id)
         .bind(&key.operational_class)
-        .execute(&mut **tx)
+        .execute(tx)
         .await?;
         Ok(())
     }
 
     async fn upsert_api_key_usage_bucket_delta(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteConnection,
         key_id: &str,
         bucket_start: i64,
         delta: ApiKeyUsageBucketDelta,
@@ -211,13 +211,13 @@ impl KeyStore {
         .bind(delta.other_failure_count)
         .bind(delta.unknown_count)
         .bind(updated_at)
-        .execute(&mut **tx)
+        .execute(tx)
         .await?;
         Ok(())
     }
 
     async fn upsert_auth_token_activity_delta(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteConnection,
         token_id: &str,
         delta: AuthTokenActivityDelta,
     ) -> Result<(), ProxyError> {
@@ -242,7 +242,7 @@ impl KeyStore {
         .bind(delta.last_used_at)
         .bind(delta.last_used_at)
         .bind(token_id)
-        .execute(&mut **tx)
+        .execute(tx)
         .await?;
         Ok(())
     }
@@ -904,54 +904,6 @@ impl KeyStore {
         Ok(query.build().fetch_optional(&self.pool).await?.is_some())
     }
 
-    async fn ensure_request_log_catalog_rollups_available(
-        &self,
-        since: Option<i64>,
-    ) -> Result<(), ProxyError> {
-        let rollup_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM observability.request_log_catalog_rollups WHERE bucket_start >= ?",
-        )
-        .bind(since.unwrap_or(0))
-        .fetch_one(&self.pool)
-        .await?;
-        if rollup_count > 0 {
-            return Ok(());
-        }
-
-        let visible_count = if let Some(since) = since {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM observability.request_logs WHERE visibility = ? AND created_at >= ?",
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(since)
-            .fetch_one(&self.pool)
-            .await?
-        } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM observability.request_logs WHERE visibility = ?")
-                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-                .fetch_one(&self.pool)
-                .await?
-        };
-        if visible_count == 0 {
-            return Ok(());
-        }
-
-        self.rebuild_request_log_catalog_rollups().await?;
-        let retention_days = self
-            .get_system_settings()
-            .await?
-            .request_log_retention
-            .max_log_retention_days;
-        self.set_meta_i64(META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_DONE, 1)
-            .await?;
-        self.set_meta_i64(
-            META_KEY_REQUEST_LOG_CATALOG_ROLLUP_V1_RETENTION_DAYS,
-            retention_days,
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn fetch_request_log_request_kind_options(
         &self,
         scoped_key_id: Option<&str>,
@@ -1172,14 +1124,11 @@ impl KeyStore {
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
         let started = Instant::now();
-        self.flush_request_stats_writes().await?;
         let since = Self::clamp_request_logs_rollup_since_at(
             since,
             retention_days,
             self.backend_time.local_now(),
         );
-        self.ensure_request_log_catalog_rollups_available(since)
-            .await?;
         let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
             Self::request_logs_catalog_cache_key(
                 scoped_key_id,
@@ -1607,8 +1556,6 @@ impl KeyStore {
             .acquire()
             .await
             .expect("admin heavy read semaphore is never closed");
-        self.ensure_request_log_catalog_rollups_available(since)
-            .await?;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
         let stored_request_kind_sql = "request_kind_key";
         let legacy_request_kind_predicate_sql =
@@ -2867,8 +2814,6 @@ impl KeyStore {
         day_start: i64,
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
-        self.flush_request_stats_writes_if_public_metrics_stale(month_start, day_start, day_end)
-            .await?;
         let now = self.backend_time.now_ts();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)

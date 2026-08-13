@@ -358,6 +358,15 @@ month-tail public metrics scan.
   one-second timestamp boundary. Prefer deterministic state shaping or a controlled time seam so the
   test still exercises the production retry logic without paying real-time cost.
 - Prefer bounded retries and narrower write windows before increasing SQLite pool size.
+- Treat the three-connection pool as a foreground reservation, not as spare writer capacity. Keep
+  two slots available for request-path work; admit at most one bulk maintenance operation per
+  `KeyStore` only after a pre-acquire check for pool capacity, low foreground arrival rate, and no
+  recent SQLite contention. A rejected bulk operation must persist its typed defer without first
+  entering the pool.
+- Short queue metadata transactions are control work, not bulk work: give them a fixed `100ms`
+  budget, bypass the bulk permit, and rely on their durable representative/stale-recovery contract
+  after a transient failure. Background retry loops merely transfer contention into an unbounded
+  task leak.
 
 ## Guardrails / Reuse Notes
 

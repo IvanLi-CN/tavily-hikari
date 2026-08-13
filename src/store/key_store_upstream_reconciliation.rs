@@ -78,6 +78,13 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
 }
 
 impl KeyStore {
+    pub(crate) fn try_admit_upstream_reconciliation_projection(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+    }
+
     pub(crate) async fn api_key_transient_backoff_state(
         &self,
         key_id: &str,

@@ -837,6 +837,7 @@ const DASHBOARD_TREND_WINDOW_SIZE: usize = 8;
 const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
 const DASHBOARD_OVERVIEW_LOADING_STALE_AFTER: Duration = Duration::from_secs(30);
 const DASHBOARD_OVERVIEW_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET: Duration = Duration::from_secs(1);
 const DASHBOARD_SSE_SNAPSHOT_MIN_INTERVAL: Duration = Duration::from_secs(10);
 const DASHBOARD_RECENT_ALERTS_TOKEN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -1081,7 +1082,7 @@ async fn sse_dashboard(
     let state = state.clone();
 
     let stream = stream! {
-        let _dashboard_sse_subscription = subscribe_dashboard_sse();
+        let _dashboard_sse_subscription = state.proxy.subscribe_dashboard_sse();
         let mut last_sig: Option<SummarySig> = None;
         let mut last_log_id: Option<i64> = None;
         let mut last_snapshot_at: Option<tokio::time::Instant> = None;
@@ -1782,12 +1783,28 @@ async fn load_dashboard_overview_snapshot(
                     DashboardOverviewLoadAction::Wait(cache.notify.clone().notified_owned())
                 }
             } else {
-                cache.loading = true;
-                cache.loading_generation = cache.loading_generation.wrapping_add(1);
-                cache.loading_started_at = Some(tokio::time::Instant::now());
-                DashboardOverviewLoadAction::Refresh {
-                    generation: cache.loading_generation,
-                    last_good: cache.cached.as_ref().map(|cached| cached.snapshot.clone()),
+                let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
+                if let Some(reason) = state.proxy.dashboard_overview_refresh_defer_reason() {
+                    cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
+                    if let Some(last_good) = last_good {
+                        tracing::debug!(
+                            component = "admin_read",
+                            event = "dashboard_overview_refresh_deferred",
+                            defer_reason = reason,
+                            "serving last-good dashboard overview without a SQLite refresh"
+                        );
+                        DashboardOverviewLoadAction::Return(last_good)
+                    } else {
+                        DashboardOverviewLoadAction::ColdDeferred { reason }
+                    }
+                } else {
+                    cache.loading = true;
+                    cache.loading_generation = cache.loading_generation.wrapping_add(1);
+                    cache.loading_started_at = Some(tokio::time::Instant::now());
+                    DashboardOverviewLoadAction::Refresh {
+                        generation: cache.loading_generation,
+                        last_good,
+                    }
                 }
             }
         };
@@ -1810,6 +1827,11 @@ async fn load_dashboard_overview_snapshot(
                 );
                 waiter.await;
             }
+            DashboardOverviewLoadAction::ColdDeferred { reason } => {
+                return Err(ProxyError::Other(format!(
+                    "dashboard overview cold build deferred: {reason}"
+                )));
+            }
             DashboardOverviewLoadAction::Refresh {
                 generation,
                 last_good,
@@ -1826,12 +1848,12 @@ async fn load_dashboard_overview_snapshot(
                     });
                     return Ok(last_good);
                 } else {
-                    return refresh_dashboard_overview_snapshot(
-                        state,
-                        cache_handle,
-                        generation,
+                    return tokio::time::timeout(
+                        DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET,
+                        refresh_dashboard_overview_snapshot(state, cache_handle, generation),
                     )
-                    .await;
+                    .await
+                    .map_err(|_| ProxyError::Other("dashboard overview cold build timed out".to_string()))?;
                 }
             }
         }
@@ -1841,6 +1863,7 @@ async fn load_dashboard_overview_snapshot(
 enum DashboardOverviewLoadAction {
     Return(Arc<DashboardOverviewSnapshot>),
     Wait(tokio::sync::futures::OwnedNotified),
+    ColdDeferred { reason: &'static str },
     Refresh {
         generation: u64,
         last_good: Option<Arc<DashboardOverviewSnapshot>>,

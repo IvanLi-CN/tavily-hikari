@@ -43,7 +43,7 @@ async fn system_settings_safe_defaults_disable_rollouts() {
 }
 
 #[tokio::test]
-async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
+async fn request_stats_coalescer_flushes_rate5m_series_after_background_persist() {
     let db_path = temp_db_path("request-stats-coalescer-rate5m-flush");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -91,6 +91,12 @@ async fn request_stats_coalescer_flushes_rate5m_series_on_read() {
             current_bucket_start + 30,
         )
         .await;
+
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("persist rate series before durable read");
 
     let series = proxy
         .admin_user_usage_series(&user.user_id, AdminUserUsageSeriesKind::Rate5m)

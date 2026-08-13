@@ -102,6 +102,13 @@ impl HaGcController {
 }
 
 impl KeyStore {
+    pub(crate) fn try_admit_ha_outbox_gc(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+    }
+
     pub(crate) async fn defer_claimed_ha_gc_channel_for_busy(
         &self,
         channel: HaSyncChannel,
@@ -111,13 +118,10 @@ impl KeyStore {
         foreground_rps: i64,
         started: Instant,
     ) -> Result<HaOutboxGcReport, ProxyError> {
-        let mut raw_conn = tokio::time::timeout(Duration::from_millis(100), self.pool.acquire())
-            .await
-            .map_err(|_| ProxyError::Database(sqlx::Error::PoolTimedOut))??;
-        sqlx::query("PRAGMA busy_timeout = 100")
-            .execute(&mut *raw_conn)
+        let mut conn = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::HaOutboxGc)
             .await?;
-        let mut conn = ImmediateSqliteTransaction::begin(raw_conn).await?;
         let result = async {
             let now = self.backend_time.now_ts();
             let channel_delay_secs = crate::HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS;
@@ -190,22 +194,9 @@ impl KeyStore {
             })
         }
         .await;
-        match result {
-            Ok(report) => {
-                sqlx::query(&format!(
-                    "PRAGMA busy_timeout = {}",
-                    crate::store::SQLITE_BUSY_TIMEOUT_DEFAULT.as_millis()
-                ))
-                .execute(&mut *conn)
-                .await?;
-                conn.commit().await?;
-                Ok(report)
-            }
-            Err(err) => {
-                let _ = conn.rollback().await;
-                Err(err)
-            }
-        }
+        let report = result?;
+        conn.finish(Ok(())).await?;
+        Ok(report)
     }
 
     pub(crate) async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {
@@ -273,17 +264,14 @@ impl KeyStore {
         let started = Instant::now();
         let deadline = started + Duration::from_secs(options.max_runtime_secs.max(1));
         let mut pooled_conn = Some(
-            tokio::time::timeout(Duration::from_millis(100), self.pool.acquire())
-                .await
-                .map_err(|_| ProxyError::Database(sqlx::Error::PoolTimedOut))??,
+            self.sqlite_runtime
+                .acquire_operation_connection(SqliteOperation::HaOutboxGc)
+                .await?,
         );
         let result = async {
             let conn = pooled_conn
                 .as_mut()
                 .expect("online HA GC must own a pooled connection");
-            sqlx::query("PRAGMA busy_timeout = 100")
-                .execute(&mut **conn)
-                .await?;
             let state_now = self.backend_time.now_ts();
             let (persisted_low_pressure_since, _persisted_recovery_mode, persisted_recovery_deadline):
                 (Option<i64>, i64, Option<i64>) = sqlx::query_as(
@@ -472,12 +460,11 @@ impl KeyStore {
                     }
                 }
                 let batch_started = Instant::now();
-                let mut transaction = ImmediateSqliteTransaction::begin(
-                    batch_conn
-                        .take()
-                        .expect("online HA GC batch must retain its pooled connection"),
-                )
-                .await?;
+                let mut transaction = batch_conn
+                    .as_mut()
+                    .expect("online HA GC batch must retain its pooled connection")
+                    .begin_immediate()
+                    .await?;
                 let batch_result = async {
                     let (deleted_invalid, scanned_more_legacy, scanned_legacy_rows) =
                         Self::delete_ha_invalid_legacy_events_bounded_on_conn(
@@ -531,7 +518,7 @@ impl KeyStore {
                 let (deleted_invalid, deleted_retention, scanned_more_legacy, scanned_legacy_rows) =
                     match batch_result {
                         Ok(result) => {
-                            batch_conn = Some(transaction.commit_connection().await?);
+                            transaction.commit().await?;
                             result
                         }
                         Err(err) => {
@@ -833,13 +820,15 @@ impl KeyStore {
             }
         }
         .await;
-        if let Some(mut conn) = pooled_conn.take() {
-            let _ = sqlx::query(&format!(
-                "PRAGMA busy_timeout = {}",
-                crate::store::SQLITE_BUSY_TIMEOUT_DEFAULT.as_millis()
-            ))
-            .execute(&mut *conn)
-            .await;
+        if let Some(conn) = pooled_conn.take()
+            && let Err(err) = conn.close().await
+        {
+            tracing::warn!(
+                component = "ha_outbox_gc",
+                event = "connection_cleanup_failed",
+                error = %err,
+                "discarded online HA GC connection after cleanup failure"
+            );
         }
         result
     }

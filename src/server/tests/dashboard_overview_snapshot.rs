@@ -241,136 +241,6 @@ async fn dashboard_overview_snapshot_keeps_summary_totals_in_sync_with_flushed_w
 }
 
 #[tokio::test]
-async fn dashboard_overview_snapshot_keeps_one_stale_boundary_when_background_flush_finishes_mid_build(
-) {
-    let db_path = temp_db_path("dashboard-overview-stale-boundary");
-    let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-dashboard-overview-stale-boundary".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_str,
-    )
-    .await
-    .expect("proxy created");
-
-    let key_id = proxy
-        .list_api_key_metrics()
-        .await
-        .expect("list key metrics")
-        .into_iter()
-        .next()
-        .expect("seeded key")
-        .id;
-    proxy
-        .debug_enqueue_request_stats_rollup_for_test(
-            Some(&key_id),
-            proxy.backend_time().now_ts().saturating_sub(60),
-            "success",
-        )
-        .await;
-
-    let state = Arc::new(AppState {
-        proxy,
-        static_dir: None,
-        forward_auth: ForwardAuthConfig::new(None, None, None, None),
-        forward_auth_enabled: false,
-        builtin_admin: BuiltinAdminAuth::new(false, None, None),
-        admin_passkey: AdminPasskeyOptions::disabled(),
-        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
-        linuxdo_credit: LinuxDoCreditOptions::disabled(),
-        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
-        dev_open_admin: false,
-        usage_base: "http://127.0.0.1:58088".to_string(),
-        api_key_ip_geo_origin: "https://api.country.is".to_string(),
-        dashboard_overview_cache: new_dashboard_overview_cache(),
-    });
-
-    let pause = state
-        .proxy
-        .install_dashboard_overview_read_pause_for_test()
-        .await;
-
-    let lock_options = SqliteConnectOptions::new()
-        .filename(&db_str)
-        .create_if_missing(false)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
-    let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
-        .await
-        .expect("open lock connection");
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut lock_conn)
-        .await
-        .expect("lock writer");
-
-    let state_for_snapshot = state.clone();
-    let snapshot_handle =
-        tokio::spawn(async move { load_dashboard_overview_snapshot(&state_for_snapshot).await });
-
-    tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
-        .await
-        .expect("overview read reached mid-build pause");
-
-    sqlx::query("ROLLBACK")
-        .execute(&mut lock_conn)
-        .await
-        .expect("release writer lock");
-    lock_conn.close().await.expect("close lock connection");
-
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        state.proxy.wait_until_request_stats_flush_finishes_for_test(),
-    )
-    .await
-    .expect("background flush should finish once the writer lock is released");
-
-    pause.release();
-
-    let snapshot = tokio::time::timeout(Duration::from_secs(2), snapshot_handle)
-        .await
-        .expect("overview snapshot should finish once the pause is released")
-        .expect("overview snapshot join")
-        .expect("overview snapshot result");
-
-    let stale_hourly_primary_success = snapshot
-        .payload
-        .hourly_request_window
-        .buckets
-        .iter()
-        .map(|bucket| bucket.primary_success)
-        .sum::<i64>();
-    assert_eq!(snapshot.payload.summary.total_requests, 0);
-    assert_eq!(snapshot.payload.summary_windows.today.total_requests, 0);
-    assert_eq!(
-        stale_hourly_primary_success, 0,
-        "hourly window should stay on the same stale snapshot boundary as summary totals",
-    );
-    assert_ne!(
-        snapshot.freshness.pending_dashboard_rollup_signature,
-        [0_i64; 10],
-        "emitted freshness must keep the pre-flush pending signature for a stale snapshot",
-    );
-
-    reset_dashboard_overview_build_count(&state).await;
-    let refreshed = load_dashboard_overview_after_background_refresh(&state).await;
-    let refreshed_hourly_primary_success = refreshed
-        .payload
-        .hourly_request_window
-        .buckets
-        .iter()
-        .map(|bucket| bucket.primary_success)
-        .sum::<i64>();
-    assert_eq!(refreshed.payload.summary.total_requests, 1);
-    assert_eq!(refreshed.payload.summary_windows.today.total_requests, 1);
-    assert_eq!(refreshed_hourly_primary_success, 1);
-    assert_eq!(refreshed.freshness.pending_dashboard_rollup_signature, [0_i64; 10]);
-
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
 async fn dashboard_overview_snapshot_is_reused_within_the_same_freshness_wave() {
     let db_path = temp_db_path("dashboard-overview-shared-snapshot");
     let db_str = db_path.to_string_lossy().to_string();
@@ -498,6 +368,74 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
         "subscriber count must not multiply the singleflight freshness probe",
     );
     pause.release();
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_pressure_returns_last_good_without_refresh() {
+    let db_path = temp_db_path("dashboard-overview-pressure-last-good");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-pressure-last-good".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let generation = {
+        let mut cache = cache_handle.lock().await;
+        cache.loading = true;
+        cache.loading_generation = cache.loading_generation.wrapping_add(1);
+        cache.loading_started_at = Some(tokio::time::Instant::now());
+        cache.loading_generation
+    };
+    let initial = refresh_dashboard_overview_snapshot(&state, cache_handle, generation)
+        .await
+        .expect("build an initial last-good overview snapshot for pressure containment");
+    reset_dashboard_overview_build_count(&state).await;
+    expire_dashboard_overview_freshness_probe(&state).await;
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+
+    let served = tokio::time::timeout(
+        Duration::from_millis(250),
+        load_dashboard_overview_snapshot(&state),
+    )
+    .await
+    .expect("last-good snapshot must return inside the foreground budget")
+    .expect("last-good overview snapshot");
+    assert!(
+        Arc::ptr_eq(&served, &initial),
+        "admission pressure must return the immutable last-good snapshot"
+    );
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "pressure containment must not start a freshness or payload rebuild"
+    );
+    assert_eq!(
+        dashboard_overview_freshness_probe_count(&state).await,
+        0,
+        "pressure containment must not issue a freshness query"
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

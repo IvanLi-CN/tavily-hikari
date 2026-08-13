@@ -46,27 +46,42 @@ impl TavilyProxy {
                 };
 
                 let flush_started = Instant::now();
-                if let Err(err) = store.flush_request_stats_writes().await {
-                    log_db_operation_error(
-                        "request stats persist",
-                        flush_started.elapsed(),
-                        Some("component=request-stats-coalescer"),
-                        &err,
-                    );
-                    tracing::debug!(
-                        component = "request_stats",
-                        event = "persist_retry",
-                        elapsed_ms = flush_started.elapsed().as_millis() as u64,
-                        err = %err,
-                        "request stats persist deferred after structured database error"
-                    );
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                } else {
-                    log_slow_db_operation(
-                        "request stats persist",
-                        flush_started.elapsed(),
-                        Some("component=request-stats-coalescer"),
-                    );
+                match store.flush_request_stats_writes_in_background().await {
+                    Ok(crate::store::RequestStatsBackgroundFlushOutcome::Flushed) => {
+                        log_slow_db_operation(
+                            "request stats persist",
+                            flush_started.elapsed(),
+                            Some("component=request-stats-coalescer"),
+                        );
+                    }
+                    Ok(crate::store::RequestStatsBackgroundFlushOutcome::Deferred(reason)) => {
+                        tracing::debug!(
+                            component = "request_stats",
+                            event = "persist_deferred",
+                            defer_reason = reason.as_str(),
+                            elapsed_ms = flush_started.elapsed().as_millis() as u64,
+                            "request stats flush deferred before SQLite connection acquisition"
+                        );
+                        tokio::time::sleep(RequestStatsCoalescer::FLUSH_INTERVAL).await;
+                    }
+                    Err(err) => {
+                        if !crate::store::is_transient_sqlite_write_error(&err) {
+                            log_db_operation_error(
+                                "request stats persist",
+                                flush_started.elapsed(),
+                                Some("component=request-stats-coalescer"),
+                                &err,
+                            );
+                        }
+                        tracing::debug!(
+                            component = "request_stats",
+                            event = "persist_retry",
+                            elapsed_ms = flush_started.elapsed().as_millis() as u64,
+                            err = %err,
+                            "request stats persist deferred after structured database error"
+                        );
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
 
                 {
@@ -127,6 +142,23 @@ impl TavilyProxy {
             state: state.to_string(),
             next_delay_secs,
         })
+    }
+
+    pub fn admit_dashboard_rollup_integrity(&self) -> SqliteAdmissionOutcome {
+        match self.key_store.try_admit_dashboard_rollup_integrity() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _permit: permit,
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn dashboard_overview_refresh_defer_reason(&self) -> Option<&'static str> {
+        self.key_store
+            .dashboard_overview_refresh_defer_reason()
+            .map(SqliteAdmissionDeferReason::as_str)
     }
 
     pub async fn dashboard_rollup_integrity_status(
@@ -324,6 +356,55 @@ impl TavilyProxy {
 
     pub async fn gc_ha_outbox_online(&self) -> Result<HaOutboxGcReport, ProxyError> {
         self.key_store.gc_ha_outbox_online().await
+    }
+
+    pub fn admit_ha_outbox_gc(&self) -> SqliteAdmissionOutcome {
+        match self.key_store.try_admit_ha_outbox_gc() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _permit: permit,
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn admit_server_pressure_rebuild(&self) -> SqliteAdmissionOutcome {
+        match self.key_store.try_admit_server_pressure_rebuild() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _permit: permit,
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn admit_upstream_reconciliation_projection(&self) -> SqliteAdmissionOutcome {
+        match self.key_store.try_admit_upstream_reconciliation_projection() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _permit: permit,
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn record_foreground_activity(&self) {
+        self.key_store.record_foreground_activity();
+    }
+
+    pub fn foreground_activity_rps(&self) -> i64 {
+        self.key_store.foreground_activity_rps()
+    }
+
+    pub fn foreground_activity_low_pressure_since_floor(&self) -> i64 {
+        self.key_store.foreground_activity_low_pressure_since_floor()
+    }
+
+    pub fn subscribe_dashboard_sse(&self) -> impl Drop {
+        self.key_store.subscribe_dashboard_sse()
     }
 
     pub async fn gc_ha_outbox_online_with_foreground_rps(

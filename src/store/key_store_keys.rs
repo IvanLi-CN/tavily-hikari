@@ -103,7 +103,6 @@ impl KeyStore {
         &self,
         since_bucket_start: i64,
     ) -> Result<i64, ProxyError> {
-        self.flush_request_stats_writes().await?;
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(DISTINCT user_id)
                FROM account_usage_rollup_buckets
@@ -151,7 +150,6 @@ impl KeyStore {
         key_id: &str,
         since: i64,
     ) -> Result<ProxySummary, ProxyError> {
-        self.flush_request_stats_writes().await?;
         // `api_key_usage_buckets.bucket_start` is aligned to *server-local midnight* (stored as UTC ts).
         // Callers might pass `since` aligned to UTC midnight (e.g. from browser). Normalize so daily
         // bucket queries remain correct under non-UTC server timezones.
@@ -1297,7 +1295,6 @@ impl KeyStore {
     // Using ThreadRng for simplicity
 
     pub(crate) async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -1347,7 +1344,6 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<AuthToken>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let limit = limit.clamp(1, 100) as i64;
         let rows = sqlx::query_as::<
             _,
@@ -1497,7 +1493,6 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Vec<AuthToken>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let rows = sqlx::query_as::<
             _,
             (
@@ -1863,7 +1858,6 @@ impl KeyStore {
         tag_id: Option<&str>,
         activity_scope: AdminUserActivityScope,
     ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
-        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -1919,7 +1913,6 @@ impl KeyStore {
         tag_id: Option<&str>,
         activity_scope: AdminUserActivityScope,
     ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
-        self.flush_request_stats_writes().await?;
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()

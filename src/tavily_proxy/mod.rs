@@ -766,6 +766,19 @@ pub struct TavilyProxy {
     pub(crate) backend_time: BackendTime,
 }
 
+/// Admission token for a bounded maintenance SQLite slice. The runtime owns
+/// the permit; callers can only retain it while doing the admitted work.
+#[derive(Debug)]
+pub struct SqliteMaintenanceAdmission {
+    _permit: SqliteMaintenanceBulkPermit,
+}
+
+#[derive(Debug)]
+pub enum SqliteAdmissionOutcome {
+    Admitted(SqliteMaintenanceAdmission),
+    Deferred { reason: &'static str },
+}
+
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct ServerPressureTailReplayTestGate {

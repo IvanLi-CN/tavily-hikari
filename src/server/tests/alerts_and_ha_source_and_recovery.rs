@@ -83,6 +83,7 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
         .await
         .expect("claim control worker job")
         .expect("initial job is due");
+    assert_eq!(state.proxy.foreground_activity_rps(), 0, "test starts without foreground pressure");
     assert!(
         run_ha_outbox_gc_claimed_job(
             state.clone(),
@@ -149,6 +150,7 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
     .await
     .expect("read billing progress");
     assert!(!billing_remaining, "billing must advance on the fair wake");
+
 
     drop(state);
     pool.close().await;

@@ -1152,18 +1152,29 @@ impl TavilyProxy {
             if bootstrap_budget.is_zero() {
                 preparation_budget_exhausted = true;
             } else {
-                match tokio::time::timeout(
-                    bootstrap_budget,
-                    self.key_store.advance_upstream_reconciliation_work_projection(),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) if crate::store::is_transient_sqlite_write_error(&err) => {
+                match self.admit_upstream_reconciliation_projection() {
+                    SqliteAdmissionOutcome::Admitted(_admission) => match tokio::time::timeout(
+                        bootstrap_budget,
+                        self.key_store.advance_upstream_reconciliation_work_projection(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) if crate::store::is_transient_sqlite_write_error(&err) => {
+                            preparation_budget_exhausted = true;
+                        }
+                        Ok(Err(err)) => return Err(err),
+                        Err(_) => preparation_budget_exhausted = true,
+                    },
+                    SqliteAdmissionOutcome::Deferred { reason } => {
+                        tracing::debug!(
+                            component = "reconciliation",
+                            event = "projection_deferred",
+                            defer_reason = reason,
+                            "legacy reconciliation projection deferred before SQLite connection acquisition"
+                        );
                         preparation_budget_exhausted = true;
                     }
-                    Ok(Err(err)) => return Err(err),
-                    Err(_) => preparation_budget_exhausted = true,
                 }
             }
         }

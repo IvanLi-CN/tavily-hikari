@@ -584,7 +584,7 @@ impl KeyStore {
     }
 
     async fn upsert_dashboard_request_rollup_bucket(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut SqliteConnection,
         bucket_start: i64,
         bucket_secs: i64,
         counts: DashboardRequestRollupCounts,
@@ -654,7 +654,7 @@ impl KeyStore {
         .bind(counts.api_billable)
         .bind(counts.local_estimated_credits)
         .bind(updated_at)
-        .execute(&mut **tx)
+        .execute(tx)
         .await?;
         Ok(())
     }

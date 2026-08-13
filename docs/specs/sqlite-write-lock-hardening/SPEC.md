@@ -187,6 +187,13 @@ source when a usable persisted runtime already exists.
   background windows. Dashboard, summary, hourly-window, and rankings reads must serve durable data
   without acquiring a write connection or synchronously flushing; pending/flushing state may affect
   internal freshness while the existing HTTP response shape remains unchanged.
+- The three-connection application pool reserves two actual or immediately allocatable slots for
+  foreground work. Bulk maintenance takes one instance-local permit only when foreground arrival
+  rate is at most `5 rps` and the preceding five seconds contain no pool-timeout or SQLite busy
+  outcome. Admission rejection occurs before pool acquisition and records a typed deferred reason.
+- Scheduled-job metadata writes are `maintenance_control`: they use a `100ms` connection/writer
+  budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
+  representative row or claim-fenced stale recovery owns later retry.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
   stays synchronous and owner-facing reads use durable fallback instead of inheriting any write-side

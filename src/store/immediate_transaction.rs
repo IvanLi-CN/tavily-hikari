@@ -20,12 +20,16 @@ impl ImmediateSqliteTransaction {
             .execute(&mut *transaction)
             .await
         {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *transaction).await;
             let conn = transaction
                 .conn
                 .take()
                 .expect("immediate transaction connection");
-            conn.detach().close().await.ok();
+            // A failed BEGIN has not opened a transaction. Sending ROLLBACK
+            // here can wait behind the same writer that rejected BEGIN, which
+            // turns a bounded control admission into multiple busy windows.
+            // Detach instead so this physical connection never returns to the
+            // pool with unknown state.
+            drop(conn.detach());
             return Err(ProxyError::Database(err));
         }
         Ok(transaction)
@@ -48,11 +52,39 @@ impl ImmediateSqliteTransaction {
         Ok(self.conn.take().expect("immediate transaction connection"))
     }
 
-    pub(crate) async fn rollback(mut self) -> Result<(), ProxyError> {
+    pub(crate) async fn rollback(self) -> Result<(), ProxyError> {
+        self.rollback_connection().await.map(drop)
+    }
+
+    pub(crate) async fn rollback_connection(
+        mut self,
+    ) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
         let result = sqlx::query("ROLLBACK").execute(&mut *self).await;
-        let conn = self.conn.take().expect("immediate transaction connection");
-        conn.detach().close().await.ok();
-        result.map(|_| ()).map_err(ProxyError::from)
+        match result {
+            Ok(_) => Ok(self.conn.take().expect("immediate transaction connection")),
+            Err(err) => {
+                let conn = self.conn.take().expect("immediate transaction connection");
+                conn.detach().close().await.ok();
+                Err(ProxyError::from(err))
+            }
+        }
+    }
+
+    /// Restores a connection-level foreign-key override after a successful
+    /// rollback. If the pragma cannot be restored, the connection is removed
+    /// from the pool instead of leaking the override to an unrelated request.
+    pub(crate) async fn rollback_and_reenable_foreign_keys(self) -> Result<(), ProxyError> {
+        let mut conn = self.rollback_connection().await?;
+        match sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                conn.detach().close().await.ok();
+                Err(ProxyError::Database(err))
+            }
+        }
     }
 }
 

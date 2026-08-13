@@ -581,7 +581,10 @@ pub async fn serve(
     axum::serve(
         listener,
         router
-            .layer(axum::middleware::from_fn(db_maintenance_http_gate))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                db_maintenance_http_gate,
+            ))
             .with_state(state)
             .into_make_service_with_connect_info::<SocketAddr>(),
     )

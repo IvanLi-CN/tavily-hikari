@@ -19,7 +19,8 @@ mod immediate_transaction;
 mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 pub(crate) use sqlite_runtime::{
-    SqliteImmediateTransaction, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
+    SqliteAdmissionDeferReason, SqliteImmediateTransaction, SqliteMaintenanceBulkPermit,
+    SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
 };
 
 pub(crate) struct ObservabilityOfflineGuard {
@@ -796,7 +797,10 @@ pub(crate) async fn open_sqlite_pool_with_observability(
     )
     .await?;
     let mut pool_options = SqlitePoolOptions::new()
-        .min_connections(1)
+        // The runtime admits maintenance bulk work only while two foreground
+        // connections are already idle. Prewarming the existing fixed-size
+        // pool makes that reservation observable without increasing its cap.
+        .min_connections(attach_plan.max_connections)
         .max_connections(attach_plan.max_connections);
     if let Some(observability_database_path) = attach_plan.target_path {
         pool_options = pool_options.after_connect(move |conn, _meta| {

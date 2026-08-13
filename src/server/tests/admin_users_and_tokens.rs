@@ -503,6 +503,10 @@ use super::upstream_support_and_manual_jobs::*;
             )
             .await
             .expect("record bob active request");
+        proxy
+            .flush_request_stats_writes_for_test()
+            .await
+            .expect("persist bob activity before durable admin read");
 
         let alice_request_log_success: i64 = sqlx::query_scalar(
             r#"
