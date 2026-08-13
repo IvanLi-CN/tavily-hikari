@@ -143,6 +143,9 @@ month-tail public metrics scan.
 - A deferred derived-write batch must atomically return its entire uncommitted logical delta to its
   in-memory coalescer before releasing admission. Report this as a typed defer and retry on the
   next admitted cadence; do not emit an exhaustion warning for every pressure cycle.
+- A request-stats coalescer may probe a released writer at its next nominal wake with one permit
+  and a short transaction budget. Its exact delta restore makes this safe; it does not relax the
+  contention cooldown for GC, rebuild, or reconciliation projection.
 - Apply that same reuse rule explicitly to compare-only reconciliation scheduling. `upstream_reconciliation`
   should reuse an equivalent queued/running representative row before entering the write path, and
   it should emit stable `component=reconciliation event=enqueue_reused|enqueue_exhausted` logs plus

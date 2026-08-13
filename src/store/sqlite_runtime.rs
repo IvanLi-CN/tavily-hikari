@@ -128,6 +128,14 @@ impl SqliteOperation {
                 | Self::ReconciliationProjection
         )
     }
+
+    fn probes_recent_contention(self) -> bool {
+        // The coalescer can atomically restore an uncommitted batch. Let it
+        // make one bounded attempt on its nominal wake instead of extending a
+        // prior writer conflict into a multi-second metrics backlog. Other
+        // bulk work keeps the full contention cooldown.
+        matches!(self, Self::RequestStatsFlush)
+    }
 }
 
 impl fmt::Display for SqliteOperation {
@@ -342,7 +350,7 @@ impl SqliteRuntime {
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
-        let reason = self.maintenance_bulk_defer_reason();
+        let reason = self.maintenance_bulk_defer_reason_for(operation);
         if let Some(reason) = reason {
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -357,10 +365,17 @@ impl SqliteRuntime {
     }
 
     pub(crate) fn maintenance_bulk_defer_reason(&self) -> Option<SqliteAdmissionDeferReason> {
+        self.maintenance_bulk_defer_reason_for(SqliteOperation::HaOutboxGc)
+    }
+
+    fn maintenance_bulk_defer_reason_for(
+        &self,
+        operation: SqliteOperation,
+    ) -> Option<SqliteAdmissionDeferReason> {
         let foreground_rps = self.foreground_activity_rps();
         if foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
-        } else if self.recent_contention_active() {
+        } else if self.recent_contention_active() && !operation.probes_recent_contention() {
             Some(SqliteAdmissionDeferReason::RecentContention)
         } else if !self.has_foreground_pool_capacity() {
             Some(SqliteAdmissionDeferReason::PoolPressure)

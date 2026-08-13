@@ -32,6 +32,7 @@ mod ha_outbox_and_compaction;
 mod jobs_and_request_log_retention;
 mod linuxdo_credit_recharge;
 mod maintenance_and_mcp_affinity;
+mod maintenance_control_admission;
 mod maintenance_queue_performance;
 mod observability_and_lifecycle;
 mod proxy_affinity_and_summary;

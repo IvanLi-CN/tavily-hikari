@@ -14,7 +14,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `maintenance bulk`: rebuilds, rollup persistence, GC, and local reconciliation projection. It
   obtains one instance-local admission permit only when two pool slots remain for foreground work,
   foreground activity is at most five requests per second, and there was no recent SQLite
-  contention.
+  contention. Request-stats flush is the bounded recovery exception: its next nominal wake can
+  probe a released writer with the same single permit and 100ms budget because it atomically
+  restores any uncommitted delta before yielding.
 - `recovery debt`: retained work that is safely eligible for automatic catch-up, including expired
   HA outbox events. It progresses through bounded work slices and never receives a special writer
   bypass.
