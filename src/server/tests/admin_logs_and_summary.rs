@@ -1820,6 +1820,14 @@ use super::upstream_support_and_manual_jobs::*;
         .await
         .expect("insert session delete neutral request log");
 
+        // The endpoint reads the durable catalog projection. This fixture writes
+        // request logs directly, so materialize that projection explicitly instead
+        // of relying on an administrative read to repair it.
+        proxy
+            .rebuild_request_log_catalog_for_test()
+            .await
+            .expect("materialize request log catalog fixture");
+
         let admin_password = "admin-logs-page-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
         let client = Client::builder()

@@ -1971,6 +1971,12 @@ impl TavilyProxy {
         self.key_store.fetch_request_log_bodies(log_id).await
     }
 
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn rebuild_request_log_catalog_for_test(&self) -> Result<(), ProxyError> {
+        self.key_store.rebuild_request_log_catalog_rollups().await
+    }
+
     /// Rebuild API-key request buckets from visible request logs.
     pub async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
         self.key_store.rebuild_api_key_usage_buckets().await
