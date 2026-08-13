@@ -95,15 +95,26 @@ impl SqliteOperation {
         }
     }
 
-    fn busy_timeout_ms(self) -> i64 {
+    fn begin_budget(self) -> Duration {
         match self {
-            Self::DashboardIntegrityWrite
-            | Self::HaOutboxGc
-            | Self::RequestStatsFlush
-            | Self::ServerPressureRebuild
-            | Self::ReconciliationProjection
-            | Self::ScheduledJobControl => 100,
-            _ => DEFAULT_BUSY_TIMEOUT_MS,
+            Self::DashboardIntegrityWrite | Self::RequestStatsFlush | Self::ScheduledJobControl => {
+                Duration::from_millis(100)
+            }
+            Self::HaOutboxGc | Self::ServerPressureRebuild | Self::ReconciliationProjection => {
+                Duration::from_millis(250)
+            }
+            _ => Duration::from_secs(5),
+        }
+    }
+
+    fn busy_timeout_override_ms(self) -> Option<i64> {
+        match self {
+            // Dashboard integrity already used this per-connection short
+            // timeout before workload admission existed. All new admission
+            // paths retain the database's configured busy timeout and use an
+            // explicit operation budget instead.
+            Self::DashboardIntegrityWrite => Some(100),
+            _ => None,
         }
     }
 
@@ -429,23 +440,22 @@ impl SqliteRuntime {
         operation: SqliteOperation,
     ) -> Result<SqliteOperationConnection, ProxyError> {
         let (conn, pool_wait) = self.acquire_pool_connection(operation).await?;
-        let conn = match (BusyTimeoutResetGuard { conn: Some(conn) })
-            .configure(operation.busy_timeout_ms())
-            .await
-        {
-            Ok(conn) => conn,
-            Err(err) => {
-                let err = ProxyError::Database(err);
-                self.record_error(operation, pool_wait, Duration::ZERO, &err);
-                return Err(err);
-            }
-        };
+        let (conn, restore_busy_timeout) =
+            match configure_operation_connection(conn, operation).await {
+                Ok(configured) => configured,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    self.record_error(operation, pool_wait, Duration::ZERO, &err);
+                    return Err(err);
+                }
+            };
         Ok(SqliteOperationConnection {
             conn: Some(conn),
             runtime: self.clone(),
             operation,
             pool_wait,
             started_at: Instant::now(),
+            restore_busy_timeout,
         })
     }
 
@@ -483,21 +493,29 @@ impl SqliteRuntime {
         operation: SqliteOperation,
     ) -> Result<SqliteImmediateTransaction, ProxyError> {
         let (conn, pool_wait) = self.acquire_pool_connection(operation).await?;
-        let conn = match (BusyTimeoutResetGuard { conn: Some(conn) })
-            .configure(operation.busy_timeout_ms())
-            .await
+        let (conn, restore_busy_timeout) =
+            match configure_operation_connection(conn, operation).await {
+                Ok(configured) => configured,
+                Err(err) => {
+                    let err = ProxyError::Database(err);
+                    self.record_error(operation, pool_wait, Duration::ZERO, &err);
+                    return Err(err);
+                }
+            };
+        let begin_started = Instant::now();
+        let mut transaction = match tokio::time::timeout(
+            operation.begin_budget(),
+            ImmediateSqliteTransaction::begin(conn),
+        )
+        .await
         {
-            Ok(conn) => conn,
-            Err(err) => {
-                let err = ProxyError::Database(err);
-                self.record_error(operation, pool_wait, Duration::ZERO, &err);
+            Ok(Ok(transaction)) => transaction,
+            Ok(Err(err)) => {
+                self.record_error(operation, pool_wait, begin_started.elapsed(), &err);
                 return Err(err);
             }
-        };
-        let begin_started = Instant::now();
-        let mut transaction = match ImmediateSqliteTransaction::begin(conn).await {
-            Ok(transaction) => transaction,
-            Err(err) => {
+            Err(_) => {
+                let err = ProxyError::Database(sqlx::Error::PoolTimedOut);
                 self.record_error(operation, pool_wait, begin_started.elapsed(), &err);
                 return Err(err);
             }
@@ -522,6 +540,7 @@ impl SqliteRuntime {
             begin_wait: begin_started.elapsed(),
             started_at: Instant::now(),
             start_total_changes,
+            restore_busy_timeout,
         })
     }
 
@@ -545,7 +564,11 @@ impl SqliteRuntime {
         );
     }
 
-    fn record_deferred(&self, operation: SqliteOperation, reason: SqliteAdmissionDeferReason) {
+    pub(crate) fn record_deferred(
+        &self,
+        operation: SqliteOperation,
+        reason: SqliteAdmissionDeferReason,
+    ) {
         self.record(
             operation,
             Duration::ZERO,
@@ -622,15 +645,16 @@ impl SqliteRuntime {
                 "SQLite workload contention remains active"
             );
         }
+        let bulk_transient_defer = transient && operation.is_maintenance_bulk();
         self.record(
             operation,
             pool_wait,
             begin_wait,
             Duration::ZERO,
             0,
-            true,
+            !bulk_transient_defer,
             false,
-            None,
+            bulk_transient_defer.then_some(SqliteAdmissionDeferReason::RecentContention),
         );
     }
 
@@ -810,6 +834,7 @@ pub(crate) struct SqliteOperationConnection {
     operation: SqliteOperation,
     pool_wait: Duration,
     started_at: Instant,
+    restore_busy_timeout: bool,
 }
 
 impl SqliteOperationConnection {
@@ -818,12 +843,27 @@ impl SqliteOperationConnection {
     ) -> Result<SqliteOperationTransaction<'_>, ProxyError> {
         let begin_started = Instant::now();
         let conn = self.conn.take().expect("SQLite operation connection");
-        match ImmediateSqliteTransaction::begin(conn).await {
-            Ok(transaction) => Ok(SqliteOperationTransaction {
+        match tokio::time::timeout(
+            self.operation.begin_budget(),
+            ImmediateSqliteTransaction::begin(conn),
+        )
+        .await
+        {
+            Ok(Ok(transaction)) => Ok(SqliteOperationTransaction {
                 transaction: Some(transaction),
                 connection: self,
             }),
-            Err(err) => {
+            Ok(Err(err)) => {
+                self.runtime.record_error(
+                    self.operation,
+                    self.pool_wait,
+                    begin_started.elapsed(),
+                    &err,
+                );
+                Err(err)
+            }
+            Err(_) => {
+                let err = ProxyError::Database(sqlx::Error::PoolTimedOut);
                 self.runtime.record_error(
                     self.operation,
                     self.pool_wait,
@@ -841,7 +881,7 @@ impl SqliteOperationConnection {
             // There is no pool state left to restore on this error path.
             return Ok(());
         };
-        if let Err(err) = (BusyTimeoutResetGuard { conn: Some(conn) }).restore().await {
+        if let Err(err) = restore_operation_connection(conn, self.restore_busy_timeout).await {
             let err = ProxyError::Database(err);
             self.runtime
                 .record_error(self.operation, self.pool_wait, Duration::ZERO, &err);
@@ -1020,10 +1060,36 @@ pub(crate) struct SqliteImmediateTransaction {
     begin_wait: Duration,
     started_at: Instant,
     start_total_changes: u64,
+    restore_busy_timeout: bool,
 }
 
 struct BusyTimeoutResetGuard {
     conn: Option<sqlx::pool::PoolConnection<Sqlite>>,
+}
+
+async fn configure_operation_connection(
+    conn: sqlx::pool::PoolConnection<Sqlite>,
+    operation: SqliteOperation,
+) -> Result<(sqlx::pool::PoolConnection<Sqlite>, bool), sqlx::Error> {
+    let Some(busy_timeout_ms) = operation.busy_timeout_override_ms() else {
+        return Ok((conn, false));
+    };
+    (BusyTimeoutResetGuard { conn: Some(conn) })
+        .configure(busy_timeout_ms)
+        .await
+        .map(|conn| (conn, true))
+}
+
+async fn restore_operation_connection(
+    conn: sqlx::pool::PoolConnection<Sqlite>,
+    restore_busy_timeout: bool,
+) -> Result<(), sqlx::Error> {
+    if restore_busy_timeout {
+        (BusyTimeoutResetGuard { conn: Some(conn) }).restore().await
+    } else {
+        drop(conn);
+        Ok(())
+    }
 }
 
 impl BusyTimeoutResetGuard {
@@ -1079,7 +1145,9 @@ impl SqliteImmediateTransaction {
             .expect("SQLite immediate transaction");
         match transaction.rollback_connection().await {
             Ok(conn) => {
-                if let Err(err) = (BusyTimeoutResetGuard { conn: Some(conn) }).restore().await {
+                if let Err(err) =
+                    restore_operation_connection(conn, self.restore_busy_timeout).await
+                {
                     let err = ProxyError::Database(err);
                     self.runtime.record_error(
                         self.operation,
@@ -1134,7 +1202,9 @@ impl SqliteImmediateTransaction {
                         return Err(err);
                     }
                 };
-                if let Err(err) = (BusyTimeoutResetGuard { conn: Some(conn) }).restore().await {
+                if let Err(err) =
+                    restore_operation_connection(conn, self.restore_busy_timeout).await
+                {
                     let err = ProxyError::Database(err);
                     self.runtime.record_error(
                         self.operation,
@@ -1161,7 +1231,7 @@ impl SqliteImmediateTransaction {
                 match transaction.rollback_connection().await {
                     Ok(conn) => {
                         if let Err(restore_err) =
-                            (BusyTimeoutResetGuard { conn: Some(conn) }).restore().await
+                            restore_operation_connection(conn, self.restore_busy_timeout).await
                         {
                             let restore_err = ProxyError::Database(restore_err);
                             self.runtime.record_error(
@@ -1574,6 +1644,36 @@ mod tests {
             .await
             .expect("read restored busy timeout");
         assert_eq!(busy_timeout_ms, DEFAULT_BUSY_TIMEOUT_MS);
+    }
+
+    #[tokio::test]
+    async fn admitted_maintenance_work_keeps_the_configured_busy_timeout() {
+        let runtime = single_connection_runtime().await;
+        for operation in [
+            SqliteOperation::ScheduledJobControl,
+            SqliteOperation::RequestStatsFlush,
+            SqliteOperation::HaOutboxGc,
+        ] {
+            runtime
+                .begin_immediate(operation)
+                .await
+                .expect("admitted maintenance transaction")
+                .rollback()
+                .await
+                .expect("rollback maintenance transaction");
+
+            let mut conn = runtime
+                .inner
+                .pool
+                .acquire()
+                .await
+                .expect("pooled connection");
+            let busy_timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("read configured busy timeout");
+            assert_eq!(busy_timeout_ms, DEFAULT_BUSY_TIMEOUT_MS, "{operation}");
+        }
     }
 
     #[tokio::test]

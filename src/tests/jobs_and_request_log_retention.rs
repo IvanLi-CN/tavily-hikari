@@ -106,8 +106,8 @@ async fn scheduled_job_start_respects_control_transaction_budget_under_sqlite_wr
 }
 
 #[tokio::test]
-async fn abandon_running_scheduled_jobs_retries_transient_sqlite_write_lock() {
-    let db_path = temp_db_path("scheduled-job-abandon-retries-sqlite-lock");
+async fn abandon_running_scheduled_jobs_defers_to_the_next_stale_recovery_after_writer_lock() {
+    let db_path = temp_db_path("scheduled-job-abandon-defers-sqlite-lock");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
@@ -118,12 +118,27 @@ async fn abandon_running_scheduled_jobs_retries_transient_sqlite_write_lock() {
         .expect("scheduled job starts");
     let release = hold_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
 
+    let started = Instant::now();
+    let err = proxy
+        .abandon_running_scheduled_jobs()
+        .await
+        .expect_err("short control transaction must yield to the held writer lock");
+    assert!(
+        is_transient_sqlite_write_error(&err),
+        "expected bounded SQLite writer contention error, got {err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "stale recovery must not wait behind the writer lock (elapsed={:?})",
+        started.elapsed()
+    );
+    release.await.expect("release task");
+
     let abandoned = proxy
         .abandon_running_scheduled_jobs()
         .await
-        .expect("abandon retries after transient sqlite write lock");
+        .expect("the next stale recovery persists after the lock releases");
     assert_eq!(abandoned, 1);
-    release.await.expect("release task");
 
     let status: String = sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
         .bind(job_id)
@@ -865,6 +880,45 @@ async fn scheduled_job_enqueue_reuses_upstream_reconciliation_without_waiting_fo
         .execute(&mut *immediate_conn)
         .await
         .expect("rollback immediate transaction");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn scheduled_job_enqueue_reuses_ha_gc_representative_under_writer_lock() {
+    let db_path = temp_db_path("scheduled-job-enqueue-ha-gc-writer-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let queued = proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "scheduler", None, 1)
+        .await
+        .expect("enqueue HA GC representative");
+    let mut immediate_conn = begin_held_sqlite_write_lock_for_test(&proxy.key_store.pool).await;
+
+    let started = Instant::now();
+    let reused = proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "manual", None, 1)
+        .await
+        .expect("manual HA GC trigger reuses durable representative under lock");
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "manual coalesce must not wait for the writer lock (elapsed={:?})",
+        started.elapsed()
+    );
+    assert_eq!(reused.job_id, queued.job_id);
+    assert!(!reused.created);
+    assert!(!reused.promoted);
+    assert_eq!(reused.status, "queued");
+    assert_eq!(reused.trigger_source, "scheduler");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *immediate_conn)
+        .await
+        .expect("release writer lock");
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

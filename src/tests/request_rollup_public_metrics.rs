@@ -950,6 +950,94 @@ async fn request_stats_background_flush_defers_before_pool_acquire_and_preserves
 }
 
 #[tokio::test]
+async fn request_stats_background_flush_defers_on_writer_lock_and_requeues_exact_delta() {
+    let db_path = temp_db_path("request-stats-background-writer-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-stats-background-writer-lock".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("drain setup coalescer state");
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(1),
+            OUTCOME_SUCCESS,
+        )
+        .await;
+    let pending_before_defer = {
+        let state = proxy.key_store.request_stats_coalescer.state.lock().await;
+        RequestStatsCoalescer::pending_key_count(&state)
+    };
+
+    let mut lock_conn = open_write_lock_connection(&db_str).await;
+    let started = Instant::now();
+    let outcome = proxy
+        .key_store
+        .flush_request_stats_writes_in_background()
+        .await
+        .expect("writer contention is a typed background defer");
+    assert!(
+        matches!(
+            outcome,
+            RequestStatsBackgroundFlushOutcome::Deferred(
+                SqliteAdmissionDeferReason::RecentContention
+            )
+        ),
+        "unexpected background flush outcome: {outcome:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "background flush must yield before the writer timeout (elapsed={:?})",
+        started.elapsed()
+    );
+    let pending = proxy.key_store.request_stats_coalescer.state.lock().await;
+    assert_eq!(
+        RequestStatsCoalescer::pending_key_count(&pending),
+        pending_before_defer,
+        "a deferred chunk must return every internal rollup delta to the coalescer"
+    );
+    drop(pending);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release writer lock");
+    lock_conn.close().await.expect("close lock connection");
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("requeued delta persists after the writer lock releases");
+    let summary = proxy
+        .summary_without_flush()
+        .await
+        .expect("read durable summary");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.success_count, 1);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn request_stats_chunked_flush_preserves_exact_deltas() {
     let db_path = temp_db_path("request-stats-chunked-flush-exact-deltas");
     let db_str = db_path.to_string_lossy().to_string();

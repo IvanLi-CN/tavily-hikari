@@ -27,6 +27,9 @@
 - HA GC, request-stats persistence, pressure rebuild, reconciliation projection, and Dashboard
   integrity use that admission boundary. Scheduler claim/finish/continuation remain short control
   transactions, so bulk backpressure cannot consume their control path or create an unbounded retry.
+- The short admission budgets are explicit runtime deadlines, not connection-level `PRAGMA busy_timeout` rewrites. A transient request-stats flush returns its complete uncommitted chunk to
+  the coalescer and reports `deferred`; manual HA GC wakes reuse an existing durable representative
+  rather than competing for a locked writer merely to promote queue metadata.
 - Dashboard snapshot reads preserve a last-good value under admission or SQLite pressure. A cold
   shared loader is bounded per caller to one second without cancelling its in-flight build.
 

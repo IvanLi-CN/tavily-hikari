@@ -136,6 +136,13 @@ month-tail public metrics scan.
   priority/source, do that coalescing through a read-only fast path. Requiring `BEGIN IMMEDIATE`
   before checking the active row turns harmless duplicate manual triggers into transient HTTP 500s
   whenever a bounded GC slice is holding SQLite's writer slot.
+- Keep admission budgets separate from SQLite connection configuration. A short maintenance budget
+  is an operation deadline around pool acquisition and `BEGIN IMMEDIATE`, not a per-connection
+  `PRAGMA busy_timeout` rewrite. Rewriting that pragma turns ordinary transient bulk pressure into
+  new final lock errors for unrelated control work.
+- A deferred derived-write batch must atomically return its entire uncommitted logical delta to its
+  in-memory coalescer before releasing admission. Report this as a typed defer and retry on the
+  next admitted cadence; do not emit an exhaustion warning for every pressure cycle.
 - Apply that same reuse rule explicitly to compare-only reconciliation scheduling. `upstream_reconciliation`
   should reuse an equivalent queued/running representative row before entering the write path, and
   it should emit stable `component=reconciliation event=enqueue_reused|enqueue_exhausted` logs plus

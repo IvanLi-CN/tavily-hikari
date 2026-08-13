@@ -83,6 +83,10 @@ reads:
   durable rollups only. Do not acquire a write connection or synchronously flush from a read;
   pending/flushing state belongs to freshness coverage while one background-admitted batcher
   persists the delta. This keeps first paint out of SQLite writer contention entirely.
+- When the admitted background batcher encounters a bounded writer conflict, preserve its exact
+  drained delta and return it to the coalescer before reporting degraded freshness. The next
+  admitted cadence can persist it; an owner-facing read must continue returning durable last-good
+  data rather than inheriting the failed write path.
 - When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
   “rebuild payload”. The probe path should use non-flushing summary / rollup reads plus a pending
   coalescer signature, while the actual shared-snapshot rebuild may flush once. Reusing the rebuild

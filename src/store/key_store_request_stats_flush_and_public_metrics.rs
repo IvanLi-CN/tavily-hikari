@@ -163,7 +163,7 @@ fn take_request_stats_chunk_entries<K, V>(
 impl KeyStore {
     #[cfg(debug_assertions)]
     pub(crate) async fn flush_request_stats_writes(&self) -> Result<(), ProxyError> {
-        self.flush_request_stats_writes_with_wait_policy(Duration::from_secs(10), None)
+        self.flush_request_stats_writes_with_wait_policy(Duration::from_secs(10), None, true)
             .await
     }
 
@@ -181,10 +181,28 @@ impl KeyStore {
             .flush_request_stats_writes_with_wait_policy(
                 Duration::from_millis(100),
                 Some(self.backend_time.instant_now() + Duration::from_millis(100)),
+                false,
             )
             .await;
         drop(permit);
-        result.map(|()| RequestStatsBackgroundFlushOutcome::Flushed)
+        match result {
+            Ok(()) => Ok(RequestStatsBackgroundFlushOutcome::Flushed),
+            Err(err) if is_transient_sqlite_write_error(&err) => Ok(
+                RequestStatsBackgroundFlushOutcome::Deferred(
+                    SqliteAdmissionDeferReason::RecentContention,
+                ),
+            ),
+            Err(err) if is_request_stats_flush_wait_budget_exhausted(&err) => {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::RequestStatsFlush,
+                    SqliteAdmissionDeferReason::RecentContention,
+                );
+                Ok(RequestStatsBackgroundFlushOutcome::Deferred(
+                    SqliteAdmissionDeferReason::RecentContention,
+                ))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub(crate) fn request_stats_read_freshness(&self) -> RequestStatsReadFreshness {
@@ -208,6 +226,7 @@ impl KeyStore {
         &self,
         retry_budget: Duration,
         inflight_wait_deadline: Option<Instant>,
+        log_transient_exhaustion: bool,
     ) -> Result<(), ProxyError> {
         loop {
             if inflight_wait_deadline.is_some_and(|deadline| {
@@ -276,6 +295,7 @@ impl KeyStore {
                 self.sqlite_runtime.clone(),
                 retry_budget,
                 drained,
+                log_transient_exhaustion,
             )
             .await?;
         }
@@ -290,6 +310,7 @@ impl KeyStore {
         self.flush_request_stats_writes_with_wait_policy(
             retry_budget,
             inflight_wait_deadline,
+            true,
         )
         .await
     }
@@ -300,6 +321,7 @@ impl KeyStore {
         sqlite_runtime: SqliteRuntime,
         retry_budget: Duration,
         drained: DrainedRequestStatsFlushBatch,
+        log_transient_exhaustion: bool,
     ) -> Result<(), ProxyError> {
         let retry_deadline = backend_time.instant_now() + retry_budget;
         let operation_started = Instant::now();
@@ -323,6 +345,7 @@ impl KeyStore {
                 retry_deadline,
                 operation_started,
                 &chunk,
+                log_transient_exhaustion,
             )
             .await
             {
@@ -376,6 +399,7 @@ impl KeyStore {
         retry_deadline: Instant,
         operation_started: Instant,
         chunk: &DrainedRequestStatsFlushBatch,
+        log_transient_exhaustion: bool,
     ) -> Result<(), ProxyError> {
         let pending_batch_counts = format!(
             "dashboard={},api_key={},auth_token={},account_rollup={},request_catalog={}",
@@ -414,24 +438,28 @@ impl KeyStore {
                 Err(err) if is_transient_sqlite_write_error(&err) => {
                     let now = backend_time.instant_now();
                     if now >= retry_deadline {
-                        log_sqlite_transient_write_exhaustion_with_fields(
-                            log_fields,
-                            retry_attempt + 1,
-                            operation_started.elapsed(),
-                            &err,
-                        );
+                        if log_transient_exhaustion {
+                            log_sqlite_transient_write_exhaustion_with_fields(
+                                log_fields,
+                                retry_attempt + 1,
+                                operation_started.elapsed(),
+                                &err,
+                            );
+                        }
                         return Err(err);
                     }
                     let backoff = sqlite_transient_write_retry_delay(retry_attempt)
                         .min(retry_deadline.saturating_duration_since(now));
                     sqlite_runtime.record_retry(SqliteOperation::RequestStatsFlush);
-                    log_sqlite_transient_write_retry_with_fields(
-                        log_fields,
-                        retry_attempt + 1,
-                        backoff,
-                        operation_started.elapsed(),
-                        &err,
-                    );
+                    if log_transient_exhaustion {
+                        log_sqlite_transient_write_retry_with_fields(
+                            log_fields,
+                            retry_attempt + 1,
+                            backoff,
+                            operation_started.elapsed(),
+                            &err,
+                        );
+                    }
                     backend_time.sleep(backoff).await;
                     retry_attempt += 1;
                 }
@@ -781,4 +809,8 @@ impl KeyStore {
 
 fn request_stats_flush_wait_budget_exhausted_error() -> ProxyError {
     ProxyError::Other("request stats flush wait budget exhausted".to_string())
+}
+
+fn is_request_stats_flush_wait_budget_exhausted(error: &ProxyError) -> bool {
+    matches!(error, ProxyError::Other(message) if message == "request stats flush wait budget exhausted")
 }

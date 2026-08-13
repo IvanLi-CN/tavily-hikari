@@ -9,7 +9,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `foreground work`: request-path reads and writes. It may use the application pool directly, but it
   reports activity and bounded waits so background work can yield before consuming its capacity.
 - `maintenance control`: short durable queue metadata work such as claim, finish, continuation, and
-  stale recovery. It has a fixed short SQLite budget and never carries scans or remote I/O.
+  stale recovery. It has a fixed short pool/writer budget enforced by `SqliteRuntime`, never
+  changes the database busy-timeout pragma, and never carries scans or remote I/O.
 - `maintenance bulk`: rebuilds, rollup persistence, GC, and local reconciliation projection. It
   obtains one instance-local admission permit only when two pool slots remain for foreground work,
   foreground activity is at most five requests per second, and there was no recent SQLite
@@ -18,8 +19,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   HA outbox events. It progresses through bounded work slices and never receives a special writer
   bypass.
 - `deferred outcome`: a typed decision made before pool acquisition when admission rejects a bulk
-  operation. The affected durable work records a retry time; unrelated eligible work remains free
-  to progress.
+  operation or when its bounded transaction sees transient writer contention. The affected durable
+  work returns uncommitted deltas or records a retry time; unrelated eligible work remains free to
+  progress.
 
 ## HA Terms
 

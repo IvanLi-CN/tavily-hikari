@@ -467,7 +467,11 @@ impl KeyStore {
         job_type: &str,
         key_id: Option<&str>,
     ) -> Result<Option<(i64, String, String)>, ProxyError> {
-        sqlx::query_as::<_, (i64, String, String)>(
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let lookup = sqlx::query_as::<_, (i64, String, String)>(
             r#"
             SELECT id, status, trigger_source
             FROM scheduled_jobs
@@ -481,9 +485,14 @@ impl KeyStore {
         .bind(job_type)
         .bind(key_id)
         .bind(key_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
-        .map_err(ProxyError::from)
+        .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (lookup, close) {
+            (Ok(row), Ok(())) => Ok(row),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
     }
 
     pub(crate) async fn scheduled_job_enqueue(
@@ -508,31 +517,49 @@ impl KeyStore {
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         // Fast-path repeated coalesce reads so owner-facing manual triggers do not
         // fail behind an unrelated long-lived write window.
-        if Self::scheduled_job_stale_group(job_type).is_none()
-            && let Some((job_id, status, current_trigger_source)) =
-                self.scheduled_job_lookup_active(job_type, key_id).await?
-        {
+        let active_representative = if Self::scheduled_job_stale_group(job_type).is_none() {
+            self.scheduled_job_lookup_active(job_type, key_id).await?
+        } else {
+            None
+        };
+        if let Some((job_id, status, current_trigger_source)) = active_representative.as_ref() {
             let promoted = Self::should_promote_scheduled_job_trigger_source(
                 job_type,
-                &current_trigger_source,
+                current_trigger_source,
                 trigger_source,
             );
             if !promoted && (trigger_source != "manual" || status != "queued") {
                 return Ok(ScheduledJobEnqueueResult {
-                    job_id,
+                    job_id: *job_id,
                     created: false,
                     promoted: false,
-                    status,
-                    trigger_source: current_trigger_source,
+                    status: status.clone(),
+                    trigger_source: current_trigger_source.clone(),
                 });
             }
         }
 
         let queued_at = self.backend_time.now_ts();
-        let mut conn = self
+        let mut conn = match self
             .sqlite_runtime
             .begin_immediate(SqliteOperation::ScheduledJobControl)
-            .await?;
+            .await
+        {
+            Ok(conn) => conn,
+            Err(err) if crate::is_transient_sqlite_write_error(&err) => {
+                if let Some((job_id, status, trigger_source)) = active_representative {
+                    return Ok(ScheduledJobEnqueueResult {
+                        job_id,
+                        created: false,
+                        promoted: false,
+                        status,
+                        trigger_source,
+                    });
+                }
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         let result = async {
             Self::abandon_stale_quota_sync_job_locked(&mut conn, job_type, key_id, queued_at)
                 .await?;
@@ -609,6 +636,29 @@ impl KeyStore {
             Ok(outcome) => {
                 conn.finish(Ok(())).await?;
                 Ok(outcome)
+            }
+            Err(err) if crate::is_transient_sqlite_write_error(&err) => {
+                let original_error = match conn.finish(Err(err)).await {
+                    Err(err) => err,
+                    Ok(()) => unreachable!("failed control transaction committed"),
+                };
+                // The active representative is already durable. Under a short
+                // control write budget, returning it is preferable to turning
+                // a coalesced manual wake into a foreground 500 solely to
+                // promote metadata that the next unlocked scheduler pass can
+                // update safely.
+                if let Some((job_id, status, current_trigger_source)) =
+                    self.scheduled_job_lookup_active(job_type, key_id).await?
+                {
+                    return Ok(ScheduledJobEnqueueResult {
+                        job_id,
+                        created: false,
+                        promoted: false,
+                        status,
+                        trigger_source: current_trigger_source,
+                    });
+                }
+                Err(original_error)
             }
             Err(err) => match conn.finish(Err(err)).await {
                 Err(err) => Err(err),
