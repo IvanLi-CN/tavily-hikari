@@ -18,6 +18,18 @@
 3. `ReconciliationEngine` durable work projection、两秒主结算预算与 typed terminal outcome
 4. versioned additive schema migration ledger
 
+## SQLite admission containment
+
+- `SqliteRuntime` is now instance-owned by `KeyStore` and admits a single bulk operation only
+  before pool acquisition. It reserves two pool slots for foreground work, defers bulk work when
+  foreground arrival, recent busy/timeout signals, or idle capacity violate the runtime contract,
+  and aggregates the decision by operation and workload class.
+- HA GC, request-stats persistence, pressure rebuild, reconciliation projection, and Dashboard
+  integrity use that admission boundary. Scheduler claim/finish/continuation remain short control
+  transactions, so bulk backpressure cannot consume their control path or create an unbounded retry.
+- Dashboard snapshot reads preserve a last-good value under admission or SQLite pressure. A cold
+  shared loader is bounded per caller to one second without cancelling its in-flight build.
+
 ## Remaining Gaps
 
 - `SqliteRuntime` 的首个 containment slice 已进入交付：取消安全 read/immediate guard、读路径禁止

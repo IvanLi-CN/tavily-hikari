@@ -2,6 +2,19 @@
 
 ## Current Coverage
 
+- `SqliteRuntime` now owns per-`KeyStore` foreground activity, recent contention signals, one
+  bulk permit, fixed workload budgets, and a bounded workload aggregation window. Bulk admission
+  is rejected before a pooled connection is obtained whenever fewer than two foreground slots
+  remain, foreground activity exceeds `5 rps`, or a busy/pool-timeout occurred in the last five
+  seconds.
+- HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
+  its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks and put
+  an uncommitted chunk back into the coalescer exactly once when admission, cancellation, or a
+  transient SQLite result interrupts persistence.
+- Dashboard integrity and pressure rebuild use the same bulk boundary. Claim, finish,
+  continuation, and stale recovery are short control transactions and do not wait on the bulk
+  permit or run a background retry loop.
+
 - Startup uses `schema_migrations(version,name,checksum,applied_at)` as the synchronous additive migration ledger. New databases alone run the full schema bootstrap; existing production layouts are adopted directly after complete baseline validation, without replaying legacy bootstrap DDL. Checksum drift or missing critical objects fails startup closed. Warm production startup skips registered DDL and runs only bounded semantic maintenance. Additive HA GC migrations include the per-channel legacy cursor and seed it from the former shared cursor before recording the migration, so an upgraded database preserves completed legacy-scan progress.
 - Reconciliation circuit fields are committed through one cancellation-safe immediate transaction. HA GC channel completion checks its persisted claim generation before clearing the claim.
 

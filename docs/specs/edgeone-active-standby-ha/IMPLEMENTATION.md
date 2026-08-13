@@ -2,6 +2,11 @@
 
 ## Backend
 
+- Online HA GC is admitted as instance-local bulk work. It never takes a process-global
+  maintenance gate or a special writer connection; admission pressure and SQLite busy defer only
+  the selected channel for 30 seconds, while other eligible channels retain their independent
+  controller wake time.
+
 - Ordinary administrator HA status reads `HaPeerObservationStore`; the background owner probes every 30 seconds with a five-second timeout, retains last-good observations, and marks them stale after 90 seconds without success. Dangerous control-plane operations continue to probe live.
 - Online outbox GC persists independent control, billing, and runtime eligibility plus claim generation. Round-robin selection skips deferred channels, and the scheduler uses the earliest typed continuation instead of parsing GC log text.
 - `HaGcController` now makes the per-channel durable row the single source of scheduling truth. A
