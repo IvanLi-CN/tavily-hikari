@@ -1784,20 +1784,22 @@ async fn load_dashboard_overview_snapshot(
                 }
             } else {
                 let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
-                if let Some(reason) = state.proxy.dashboard_overview_refresh_defer_reason() {
+                if let Some(reason) = state.proxy.dashboard_overview_refresh_defer_reason()
+                    && let Some(last_good) = last_good
+                {
                     cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
-                    if let Some(last_good) = last_good {
-                        tracing::debug!(
-                            component = "admin_read",
-                            event = "dashboard_overview_refresh_deferred",
-                            defer_reason = reason,
-                            "serving last-good dashboard overview without a SQLite refresh"
-                        );
-                        DashboardOverviewLoadAction::Return(last_good)
-                    } else {
-                        DashboardOverviewLoadAction::ColdDeferred { reason }
-                    }
+                    tracing::debug!(
+                        component = "admin_read",
+                        event = "dashboard_overview_refresh_deferred",
+                        defer_reason = reason,
+                        "serving last-good dashboard overview without a SQLite refresh"
+                    );
+                    DashboardOverviewLoadAction::Return(last_good)
                 } else {
+                    // A cold dashboard has no last-good snapshot to protect. Give its
+                    // singleflight loader one bounded chance even under transient
+                    // foreground pressure; otherwise readiness can remain permanently
+                    // unavailable while startup work is still releasing connections.
                     cache.loading = true;
                     cache.loading_generation = cache.loading_generation.wrapping_add(1);
                     cache.loading_started_at = Some(tokio::time::Instant::now());
@@ -1826,11 +1828,6 @@ async fn load_dashboard_overview_snapshot(
                     },
                 );
                 waiter.await;
-            }
-            DashboardOverviewLoadAction::ColdDeferred { reason } => {
-                return Err(ProxyError::Other(format!(
-                    "dashboard overview cold build deferred: {reason}"
-                )));
             }
             DashboardOverviewLoadAction::Refresh {
                 generation,
@@ -1863,7 +1860,6 @@ async fn load_dashboard_overview_snapshot(
 enum DashboardOverviewLoadAction {
     Return(Arc<DashboardOverviewSnapshot>),
     Wait(tokio::sync::futures::OwnedNotified),
-    ColdDeferred { reason: &'static str },
     Refresh {
         generation: u64,
         last_good: Option<Arc<DashboardOverviewSnapshot>>,
