@@ -1751,10 +1751,9 @@ async fn compute_dashboard_overview_freshness(
 async fn load_dashboard_overview_snapshot(
     state: &Arc<AppState>,
 ) -> Result<Arc<DashboardOverviewSnapshot>, ProxyError> {
-    loop {
-        let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
-        let action = {
-            let mut cache = cache_handle.lock().await;
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let action = {
+        let mut cache = cache_handle.lock().await;
             if cache.loading {
                 let stale = cache
                     .loading_started_at
@@ -1780,9 +1779,7 @@ async fn load_dashboard_overview_snapshot(
                 if let Some(cached) = cache.cached.as_ref() {
                     DashboardOverviewLoadAction::Return(cached.snapshot.clone())
                 } else {
-                    let mut waiter = cache.notify.clone().notified_owned();
-                    waiter.enable();
-                    DashboardOverviewLoadAction::Wait(waiter)
+                    DashboardOverviewLoadAction::Wait(cache.notify.clone().notified_owned())
                 }
             } else {
                 let last_good = cache.cached.as_ref().map(|cached| cached.snapshot.clone());
@@ -1805,20 +1802,18 @@ async fn load_dashboard_overview_snapshot(
                     cache.loading = true;
                     cache.loading_generation = cache.loading_generation.wrapping_add(1);
                     cache.loading_started_at = Some(tokio::time::Instant::now());
-                    let mut cold_waiter = cache.notify.clone().notified_owned();
-                    cold_waiter.enable();
                     DashboardOverviewLoadAction::Refresh {
                         generation: cache.loading_generation,
                         last_good,
-                        cold_waiter: Some(cold_waiter),
+                        cold_waiter: Some(cache.notify.clone().notified_owned()),
                     }
                 }
             }
-        };
+    };
 
-        match action {
-            DashboardOverviewLoadAction::Return(snapshot) => return Ok(snapshot),
-            DashboardOverviewLoadAction::Wait(waiter) => {
+    match action {
+        DashboardOverviewLoadAction::Return(snapshot) => Ok(snapshot),
+        DashboardOverviewLoadAction::Wait(waiter) => {
                 tavily_hikari::emit_sampled_perf_log(
                     tavily_hikari::DbLogStatus::Info,
                     "admin_read",
@@ -1832,41 +1827,40 @@ async fn load_dashboard_overview_snapshot(
                         ..Default::default()
                     },
                 );
-                return wait_for_dashboard_overview_cold_snapshot(cache_handle, waiter).await;
-            }
-            DashboardOverviewLoadAction::Refresh {
-                generation,
-                last_good,
-                cold_waiter,
-            } => {
-                if let Some(last_good) = last_good {
-                    let refresh_state = state.clone();
-                    tokio::spawn(async move {
-                        let _ = refresh_dashboard_overview_snapshot(
-                            &refresh_state,
-                            cache_handle,
-                            generation,
-                        )
-                        .await;
-                    });
-                    return Ok(last_good);
-                } else {
-                    let refresh_state = state.clone();
-                    let refresh_cache = cache_handle.clone();
-                    tokio::spawn(async move {
-                        let _ = refresh_dashboard_overview_snapshot(
-                            &refresh_state,
-                            refresh_cache,
-                            generation,
-                        )
-                        .await;
-                    });
-                    return wait_for_dashboard_overview_cold_snapshot(
+            wait_for_dashboard_overview_cold_snapshot(cache_handle, waiter).await
+        }
+        DashboardOverviewLoadAction::Refresh {
+            generation,
+            last_good,
+            cold_waiter,
+        } => {
+            if let Some(last_good) = last_good {
+                let refresh_state = state.clone();
+                tokio::spawn(async move {
+                    let _ = refresh_dashboard_overview_snapshot(
+                        &refresh_state,
                         cache_handle,
-                        cold_waiter.expect("cold dashboard refresh always installs a waiter"),
+                        generation,
                     )
                     .await;
-                }
+                });
+                Ok(last_good)
+            } else {
+                let refresh_state = state.clone();
+                let refresh_cache = cache_handle.clone();
+                tokio::spawn(async move {
+                    let _ = refresh_dashboard_overview_snapshot(
+                        &refresh_state,
+                        refresh_cache,
+                        generation,
+                    )
+                    .await;
+                });
+                wait_for_dashboard_overview_cold_snapshot(
+                    cache_handle,
+                    cold_waiter.expect("cold dashboard refresh always installs a waiter"),
+                )
+                .await
             }
         }
     }

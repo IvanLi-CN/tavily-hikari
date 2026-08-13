@@ -53,6 +53,7 @@ pub(crate) struct RequestLogRollupInput<'a> {
     pub(crate) request_log_catalog_key: Option<RequestLogCatalogRollupKey>,
 }
 
+#[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone)]
 pub struct RequestStatsPostFlushPause {
     pub(crate) arrived: Arc<Notify>,
@@ -60,6 +61,7 @@ pub struct RequestStatsPostFlushPause {
     pub(crate) released: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[cfg(any(test, debug_assertions))]
 impl RequestStatsPostFlushPause {
     #[doc(hidden)]
     pub async fn wait_until_arrived(&self) {
