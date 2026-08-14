@@ -336,9 +336,13 @@ impl KeyStore {
     pub(crate) async fn flush_request_stats_background_slice_for_test(
         &self,
     ) -> Result<(), ProxyError> {
+        // CI can spend a few scheduler quanta opening the test database. Keep
+        // the production 50ms slice unchanged while giving this deterministic
+        // contract test enough bounded time to observe one finite slice.
+        const TEST_SLICE_BUDGET: Duration = Duration::from_millis(250);
         self.flush_request_stats_writes_with_wait_policy(
-            Duration::from_millis(50),
-            Some(self.backend_time.instant_now() + Duration::from_millis(50)),
+            TEST_SLICE_BUDGET,
+            Some(self.backend_time.instant_now() + TEST_SLICE_BUDGET),
             false,
             Some(REQUEST_STATS_BACKGROUND_MAX_COMMITTED_CHUNKS),
         )

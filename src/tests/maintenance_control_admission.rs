@@ -107,7 +107,7 @@ async fn foreground_manual_enqueue_waits_for_short_pool_pressure() {
         .await
         .expect("hold third pool connection");
     let release = async move {
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         drop((first, second, third));
     };
 
