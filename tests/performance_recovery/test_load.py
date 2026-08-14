@@ -34,5 +34,17 @@ class PeriodicScheduleTests(unittest.TestCase):
         self.assertEqual(deadline, 110.0)
 
 
+class RecoveryTailTests(unittest.TestCase):
+    def test_full_production_shape_reserves_a_quiet_gc_tail(self) -> None:
+        self.assertEqual(LOAD.recovery_tail_secs_for_duration(600, None), 60)
+
+    def test_short_diagnostic_keeps_its_entire_traffic_window(self) -> None:
+        self.assertEqual(LOAD.recovery_tail_secs_for_duration(60, None), 0)
+
+    def test_recovery_tail_must_fit_inside_the_total_duration(self) -> None:
+        with self.assertRaises(ValueError):
+            LOAD.recovery_tail_secs_for_duration(60, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

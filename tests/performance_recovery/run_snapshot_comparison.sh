@@ -152,6 +152,39 @@ expand_variant_data() {
     "$SIDECAR_SNAPSHOT_PAGE_COUNT"
 }
 
+capture_ha_gc_state() {
+  local database_path="$1"
+  local target_path="$2"
+  sqlite3 -tabs "$database_path" "
+    SELECT
+      state.channel,
+      state.total_deleted_rows,
+      COALESCE(state.oldest_deletable_age_secs, -1),
+      CASE state.channel
+        WHEN 'control' THEN EXISTS(
+          SELECT 1 FROM ha_outbox
+          WHERE created_at < unixepoch() - 72 * 60 * 60
+        )
+        WHEN 'billing' THEN EXISTS(
+          SELECT 1 FROM ha_billing_outbox
+          WHERE created_at < unixepoch() - 14 * 24 * 60 * 60
+        )
+        WHEN 'runtime' THEN EXISTS(
+          SELECT 1 FROM ha_runtime_outbox
+          WHERE created_at < unixepoch() - 14 * 24 * 60 * 60
+        )
+        ELSE 0
+      END
+    FROM ha_outbox_gc_channel_state AS state
+    ORDER BY CASE state.channel
+      WHEN 'control' THEN 0
+      WHEN 'billing' THEN 1
+      WHEN 'runtime' THEN 2
+      ELSE 3
+    END;
+  " > "$target_path"
+}
+
 trap 'cleanup_compose; cleanup_app_image' EXIT
 mkdir -p "$ARTIFACTS_DIR" "$WORK_DIR"
 
@@ -283,6 +316,7 @@ run_variant() {
   compose build app
   compose up -d app upstream
   wait_for_dashboard_readiness "$artifact_dir"
+  capture_ha_gc_state "$variant_dir/tavily_proxy.db" "$artifact_dir/ha_gc_before.tsv"
   sample_memory "$artifact_dir/memory_samples.txt" &
   rss_pid=$!
   (
@@ -303,6 +337,7 @@ run_variant() {
   wait "$restart_pid"
   kill "$rss_pid" 2>/dev/null || true
   wait "$rss_pid" 2>/dev/null || true
+  capture_ha_gc_state "$variant_dir/tavily_proxy.db" "$artifact_dir/ha_gc_after.tsv"
   compose logs --no-color > "$artifact_dir/compose.log" 2>&1 || true
   python3 - "$name" "$artifact_dir" <<'PY'
 import json
@@ -313,6 +348,20 @@ import sys
 name = sys.argv[1]
 artifact_dir = pathlib.Path(sys.argv[2])
 load = json.loads((artifact_dir / "load.json").read_text())
+
+def read_ha_gc_state(path):
+    state = {}
+    for line in path.read_text().splitlines():
+        channel, deleted, oldest_age, has_debt = line.split("\t")
+        state[channel] = {
+            "totalDeletedRows": int(deleted),
+            "oldestDeletableAgeSecs": int(oldest_age),
+            "hasRetentionDebt": bool(int(has_debt)),
+        }
+    return state
+
+ha_gc_before = read_ha_gc_state(artifact_dir / "ha_gc_before.tsv")
+ha_gc_after = read_ha_gc_state(artifact_dir / "ha_gc_after.tsv")
 samples = []
 for line in (artifact_dir / "memory_samples.txt").read_text().splitlines():
     sample = {}
@@ -349,6 +398,14 @@ summary = {
     "sqliteLockErrors": logs.count("database is locked"),
     "nestedTransactionErrors": logs.count("cannot start a transaction within a transaction"),
     "http5xx": sum(count for key, count in load["statuses"].items() if key.endswith(":500") or key.endswith(":502") or key.endswith(":503")),
+    "haGc": {
+        "before": ha_gc_before,
+        "after": ha_gc_after,
+        "deletedRowsDelta": {
+            channel: ha_gc_after[channel]["totalDeletedRows"] - values["totalDeletedRows"]
+            for channel, values in ha_gc_before.items()
+        },
+    },
 }
 (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 PY
@@ -405,7 +462,7 @@ candidate_business_responses = (
 )
 diagnostic = baseline["load"]["durationSecs"] <= 120
 baseline_business_minimum = (
-    baseline["load"]["durationSecs"]
+    baseline["load"]["trafficDurationSecs"]
     * baseline["load"].get("businessClients", 0)
     * (0.10 if diagnostic else 0.30)
 )
@@ -424,9 +481,14 @@ for summary in (baseline, candidate):
     dashboard_clients = summary["load"].get("dashboardClients")
     dashboard_interval_secs = summary["load"].get("dashboardIntervalSecs")
     dashboard_attempts = summary["load"].get("dashboardAttempts")
+    traffic_duration_secs = summary["load"].get("trafficDurationSecs")
+    recovery_tail_secs = summary["load"].get("recoveryTailSecs")
+    diagnostic = summary["load"]["durationSecs"] <= 120
     if dashboard_clients != 20 or dashboard_interval_secs != 60.0:
         raise SystemExit(f"unexpected dashboard load shape for {summary['variant']}")
-    diagnostic = summary["load"]["durationSecs"] <= 120
+    expected_recovery_tail_secs = 0 if diagnostic else 60
+    if traffic_duration_secs is None or recovery_tail_secs != expected_recovery_tail_secs:
+        raise SystemExit(f"missing quiet GC recovery tail for {summary['variant']}")
     # A short diagnostic intentionally restarts the app halfway through. The
     # ten-minute production-shape gate below retains p95 and sustained
     # coverage comparisons.
@@ -438,7 +500,7 @@ for summary in (baseline, candidate):
     dashboard_minimum = (
         summary["load"]["durationSecs"] * dashboard_clients / dashboard_interval_secs * dashboard_coverage
     )
-    business_minimum = summary["load"]["durationSecs"] * business_clients * (0.10 if diagnostic else 0.30)
+    business_minimum = traffic_duration_secs * business_clients * (0.10 if diagnostic else 0.30)
     if dashboard_attempts is None or dashboard_attempts < dashboard_minimum:
         raise SystemExit(f"insufficient dashboard coverage for {summary['variant']}")
     # The 60-second diagnosis contains a halfway restart and production-shaped
@@ -480,6 +542,11 @@ for summary in (baseline, candidate):
         raise SystemExit(f"insufficient application business coverage for {summary['variant']}")
     if events.get("ha_export_interrupted", 0) < 1:
         raise SystemExit(f"missing HA export interruption for {summary['variant']}")
+
+candidate_gc = candidate["haGc"]
+for channel, before in candidate_gc["before"].items():
+    if before["hasRetentionDebt"] and candidate_gc["deletedRowsDelta"].get(channel, 0) <= 0:
+        raise SystemExit(f"candidate HA GC did not advance the debt-bearing {channel} channel")
 
 baseline_red = baseline_dashboard_red or baseline_business_red
 if baseline_red:
