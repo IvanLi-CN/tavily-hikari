@@ -37,6 +37,14 @@ WORK_DIR="${REMOTE_RUN}/performance-recovery"
 # is the exact Rust 1.91 Bookworm image used by the checked-in test Dockerfile.
 TESTBOX_RUST_BASE_IMAGE="rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33"
 
+# These lists deliberately mirror the HA event-table allowlists. The recovery
+# gate must only require progress on data the online GC may legally delete;
+# raw legacy rows outside the replication contract are handled only by the
+# bounded invalid-resource cursor and must never be treated as retention debt.
+HA_GC_CONTROL_RESOURCES="'admin_password_settings', 'announcements', 'account_entitlements', 'api_key_low_quota_depletions', 'api_key_maintenance_records', 'api_key_quarantines', 'api_keys', 'auth_tokens', 'forward_proxy_settings', 'linuxdo_credit_recharge_entitlements', 'linuxdo_credit_recharge_orders', 'meta', 'oauth_accounts', 'token_api_key_bindings', 'user_api_key_bindings', 'user_tag_bindings', 'user_tags', 'user_token_bindings', 'users'"
+HA_GC_BILLING_RESOURCES="'billing_ledger', 'billing_reconciliation_adjustments'"
+HA_GC_RUNTIME_RESOURCES="'account_monthly_quota', 'account_quota_limits', 'account_usage_buckets', 'auth_token_quota', 'forward_proxy_key_affinity', 'forward_proxy_node_overrides', 'http_project_api_key_affinity', 'mcp_sessions', 'research_requests', 'token_primary_api_key_affinity', 'token_usage_buckets', 'upstream_reconciliation_research', 'upstream_reconciliation_settlements', 'upstream_reconciliation_usage', 'upstream_reconciliation_work', 'upstream_usage_rate_attempts', 'user_primary_api_key_affinity'"
+
 manifest_get() {
   local key="$1"
   awk -F= -v target="$key" '$1 == target { sub($1"=", ""); print; exit }' \
@@ -164,14 +172,17 @@ capture_ha_gc_state() {
         WHEN 'control' THEN EXISTS(
           SELECT 1 FROM ha_outbox
           WHERE created_at < unixepoch() - 72 * 60 * 60
+            AND resource IN ($HA_GC_CONTROL_RESOURCES)
         )
         WHEN 'billing' THEN EXISTS(
           SELECT 1 FROM ha_billing_outbox
           WHERE created_at < unixepoch() - 14 * 24 * 60 * 60
+            AND resource IN ($HA_GC_BILLING_RESOURCES)
         )
         WHEN 'runtime' THEN EXISTS(
           SELECT 1 FROM ha_runtime_outbox
           WHERE created_at < unixepoch() - 14 * 24 * 60 * 60
+            AND resource IN ($HA_GC_RUNTIME_RESOURCES)
         )
         ELSE 0
       END
