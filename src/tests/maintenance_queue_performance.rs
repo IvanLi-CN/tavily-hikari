@@ -546,7 +546,7 @@ async fn request_log_body_gc_candidate_query_uses_partial_body_index() {
         r#"
         EXPLAIN QUERY PLAN
         SELECT id, created_at
-        FROM observability.request_logs
+        FROM observability.request_logs INDEXED BY idx_request_logs_body_gc_cursor
         WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
           AND created_at >= 0
         ORDER BY created_at ASC, id ASC

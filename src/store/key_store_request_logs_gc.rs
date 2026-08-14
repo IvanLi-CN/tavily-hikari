@@ -408,7 +408,7 @@ impl KeyStore {
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
                        request_kind_label, request_kind_detail, path, request_body, response_body
-                FROM observability.request_logs
+                FROM observability.request_logs INDEXED BY idx_request_logs_body_gc_cursor
                 WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
                   AND created_at >= ?
                   AND (created_at > ? OR (created_at = ? AND id > ?))
@@ -428,7 +428,7 @@ impl KeyStore {
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
                        request_kind_label, request_kind_detail, path, request_body, response_body
-                FROM observability.request_logs
+                FROM observability.request_logs INDEXED BY idx_request_logs_body_gc_cursor
                 WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
                   AND created_at >= ?
                 ORDER BY created_at ASC, id ASC
