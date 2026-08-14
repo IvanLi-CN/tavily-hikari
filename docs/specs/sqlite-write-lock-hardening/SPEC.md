@@ -376,8 +376,11 @@ source when a usable persisted runtime already exists.
   slice halves its next batch before retrying. Legacy-resource cursor verification is not retention
   debt and must continue no faster than five minutes, so a clean large outbox cannot become a
   permanent fast maintenance loop. The five-minute scheduler watchdog may coalesce with the current
-  representative only when durable GC state reports channel debt; the hourly baseline sweep discovers
-  newly expired rows and the watchdog rediscovers a lost continuation within five minutes.
+  representative when durable GC state reports channel debt. When the mask is empty, it may perform only
+  a short controller-state observation-age read; an overdue observation wakes the normal indexed,
+  admission-gated channel probe rather than scanning an outbox in the watchdog. The hourly baseline sweep
+  discovers newly expired rows and the watchdog rediscovers both lost continuations and stale empty
+  observations within five minutes.
 - Per-channel HA GC state must retain cumulative deleted rows, the last high watermark, ingress
   sequence delta, and estimated net-row delta. These are low-cost trend evidence for the read-only
   `ha_outbox_cleanup_once --dry-run` path and must not introduce an online exact `COUNT(*)`.

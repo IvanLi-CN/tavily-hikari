@@ -50,6 +50,7 @@ pub(crate) enum SqliteOperation {
     HaBaselineRead,
     HaEventsRead,
     HaOutboxGc,
+    HaOutboxGcWatchdog,
     RequestLogsGc,
     RequestStatsFlush,
     ServerPressureRebuild,
@@ -66,6 +67,7 @@ impl SqliteOperation {
             Self::HaBaselineRead => "ha_baseline_read",
             Self::HaEventsRead => "ha_events_read",
             Self::HaOutboxGc => "ha_outbox_gc",
+            Self::HaOutboxGcWatchdog => "ha_outbox_gc_watchdog",
             Self::RequestLogsGc => "request_logs_gc",
             Self::RequestStatsFlush => "request_stats_flush",
             Self::ServerPressureRebuild => "server_pressure_rebuild",
@@ -80,7 +82,7 @@ impl SqliteOperation {
             Self::BillingLedgerAuditRead | Self::HaBaselineRead | Self::HaEventsRead => {
                 "maintenance_read"
             }
-            Self::ScheduledJobControl => "maintenance_control",
+            Self::ScheduledJobControl | Self::HaOutboxGcWatchdog => "maintenance_control",
             Self::DashboardIntegrityWrite
             | Self::HaOutboxGc
             | Self::RequestLogsGc
@@ -92,7 +94,9 @@ impl SqliteOperation {
 
     fn acquire_budget(self) -> Duration {
         match self {
-            Self::DashboardIntegrityWrite | Self::ScheduledJobControl => Duration::from_millis(100),
+            Self::DashboardIntegrityWrite
+            | Self::ScheduledJobControl
+            | Self::HaOutboxGcWatchdog => Duration::from_millis(100),
             Self::ForegroundJobTrigger => Duration::from_millis(250),
             Self::HaOutboxGc
             | Self::RequestLogsGc
@@ -105,9 +109,10 @@ impl SqliteOperation {
 
     fn begin_budget(self) -> Duration {
         match self {
-            Self::DashboardIntegrityWrite | Self::RequestStatsFlush | Self::ScheduledJobControl => {
-                Duration::from_millis(100)
-            }
+            Self::DashboardIntegrityWrite
+            | Self::RequestStatsFlush
+            | Self::ScheduledJobControl
+            | Self::HaOutboxGcWatchdog => Duration::from_millis(100),
             Self::ForegroundJobTrigger => Duration::from_millis(100),
             Self::HaOutboxGc
             | Self::RequestLogsGc
@@ -714,7 +719,10 @@ impl SqliteRuntime {
         }
         let maintenance_transient_defer = transient
             && (operation.is_maintenance_bulk()
-                || matches!(operation, SqliteOperation::ScheduledJobControl));
+                || matches!(
+                    operation,
+                    SqliteOperation::ScheduledJobControl | SqliteOperation::HaOutboxGcWatchdog
+                ));
         self.record(
             operation,
             pool_wait,

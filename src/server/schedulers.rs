@@ -7,6 +7,7 @@ use tavily_hikari::{
     decode_linuxdo_credit_refund_external_success_marker,
     format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
     HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
+    HA_OUTBOX_GC_IDLE_DISCOVERY_SECS,
     HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS,
     linuxdo_credit_recharge_system_refund_retry_delay_secs,
     linuxdo_credit_refund_params as shared_linuxdo_credit_refund_params,
@@ -57,7 +58,6 @@ const TRIGGER_SOURCE_SCHEDULER: &str = "scheduler";
 const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
-const HA_OUTBOX_GC_RECHECK_SECS: u64 = 5 * 60;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE: &str = "request_logs_body_gc_index_ensure";
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
@@ -981,12 +981,12 @@ fn spawn_ha_outbox_gc_scheduler(state: Arc<AppState>) {
             }
 
             // The hourly baseline discovers newly expired records. Between sweeps,
-            // this only restores a lost continuation when durable GC state still
-            // reports channel debt.
+            // the controller either restores pending debt or rechecks an expired
+            // state observation before admitting another indexed channel slice.
             state
                 .proxy
                 .backend_time()
-                .sleep(Duration::from_secs(HA_OUTBOX_GC_RECHECK_SECS))
+                .sleep(Duration::from_secs(HA_OUTBOX_GC_IDLE_DISCOVERY_SECS as u64))
                 .await;
         }
     });

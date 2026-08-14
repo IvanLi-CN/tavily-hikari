@@ -25,6 +25,9 @@ related_specs:
   controller must atomically fence a channel claim, persist that channel's defer and compute the
   earliest eligible wake across all channels; a scheduler must never infer controller state from a
   log message or a single representative job's delay.
+- A zero pending mask is a completed observation rather than a permanent empty-outbox assertion.
+  Use a low-frequency, bounded controller-state observation-age read to rearm a fresh indexed
+  channel probe; never turn the watchdog itself into an outbox scan or a special writer bypass.
 - If a SQLite writer blocks the atomic HA job finish/continuation handoff, use a short fixed set of
   same-generation retries after the worker returns. This closes the post-lock 120-second stale-job
   gap without creating an unbounded retry loop; the stale reaper remains the last fallback.

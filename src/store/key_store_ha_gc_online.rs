@@ -200,12 +200,42 @@ impl KeyStore {
     }
 
     pub(crate) async fn ha_outbox_gc_watchdog_needed(&self) -> Result<bool, ProxyError> {
-        let pending_channel_mask: Option<i64> = sqlx::query_scalar(
-            "SELECT pending_channel_mask FROM ha_outbox_gc_state WHERE id = 'local'",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(pending_channel_mask.is_none_or(|mask| mask & 7 != 0))
+        // A zero pending mask is only a completed observation, not a permanent
+        // proof that every channel stays empty. Recheck the tiny controller
+        // state table at the scheduler's five-minute cadence so a historical
+        // channel missed by an older state writer is admitted for a fresh,
+        // indexed slice without putting an outbox scan in the watchdog.
+        let observed_before = self
+            .backend_time
+            .now_ts()
+            .saturating_sub(crate::HA_OUTBOX_GC_IDLE_DISCOVERY_SECS);
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::HaOutboxGcWatchdog)
+            .await?;
+        let result: Result<bool, ProxyError> = async {
+            let state: Option<(i64, i64)> = sqlx::query_as(
+                r#"
+                SELECT pending_channel_mask,
+                       EXISTS(
+                           SELECT 1
+                             FROM ha_outbox_gc_channel_state
+                            WHERE last_observed_at IS NULL OR last_observed_at <= ?
+                       )
+                  FROM ha_outbox_gc_state
+                 WHERE id = 'local'
+                "#,
+            )
+            .bind(observed_before)
+            .fetch_optional(&mut *conn)
+            .await?;
+            Ok(state.is_none_or(|(pending_channel_mask, discovery_due)| {
+                pending_channel_mask & 7 != 0 || discovery_due != 0
+            }))
+        }
+        .await;
+        conn.close().await?;
+        result
     }
 
     pub(crate) async fn gc_ha_outbox_online(&self) -> Result<HaOutboxGcReport, ProxyError> {

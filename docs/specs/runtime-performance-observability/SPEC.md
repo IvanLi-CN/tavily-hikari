@@ -42,6 +42,8 @@
   `component=db event=sqlite_workload_window` INFO，报告调用量、pool/begin wait、transaction hold、
   retries、logical rows、admitted/deferred 与原因、当前/峰值 pool acquire waiter、窗口最小 idle、
   错误/丢弃连接以及 process/cgroup write-byte delta。不得记录 SQL、参数或请求正文。
+- `ha_outbox_gc_watchdog` 是短 `maintenance_control` state read，按同一窗口归因；它不输出逐次
+  INFO/WARN，也不收集或输出 outbox inventory。
 - 内存字段同时报告 cgroup `anon/file/swap` 与进程 `RssAnon/RssFile/VmSwap`，避免把文件页缓存
   误诊为堆泄漏。
 - 事务污染、stale claim recovery、连续零进展、预算耗尽和全局退避只在进入、升级或恢复时告警。

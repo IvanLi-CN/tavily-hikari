@@ -75,6 +75,9 @@
 - 普通 Dashboard、summary、hourly window 与 rankings 读取只消费 durable request stats，不得触发
   flush 或获取写连接。pending/flushing 仅参与内部 freshness，不改变 HTTP shape。
 - `ha_outbox_gc_work` 按 control、billing、runtime 独立持久化 eligibility、claim 与 continuation。
+- `pending_channel_mask=0` 仅表示最近一轮 controller observation 没有剩余工作，不是永久库存断言。
+  scheduler 每五分钟以 `maintenance_control` 预算只读检查 channel state 的 observation age；到期时才
+  唤醒一个仍受 bulk admission 保护的 indexed channel slice。watchdog 不得扫描 outbox 或计算精确库存。
 - HA GC 与 scheduled work 使用 typed outcome 在同一原子边界完成 claim 和 continuation。
 - 相同 wire payload 的 UPDATE 不产生 HA outbox 事件；有效变化恰好产生一条兼容事件。
 - reconciliation 使用持久 work projection、公平 cursor 和原子 runtime state，并区分本地压力、429、
