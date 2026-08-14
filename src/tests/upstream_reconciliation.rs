@@ -801,7 +801,6 @@ async fn reconciliation_rejects_usage_generation_changed_during_remote_fetch() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert due reconciliation usage");
-
     let fetch_started = Arc::new(Notify::new());
     let release_first_fetch = Arc::new(Notify::new());
     let fetch_count = Arc::new(AtomicUsize::new(0));
@@ -879,13 +878,26 @@ async fn reconciliation_rejects_usage_generation_changed_during_remote_fetch() {
         Some(now),
     );
 
-    assert_eq!(
-        proxy
-            .run_upstream_reconciliation_once(&format!("http://{addr}"))
-            .await
-            .expect("settle current generation"),
-        1
-    );
+    // Admission keeps two SQLite slots available to foreground work. The
+    // unclaimed helper is intentionally allowed to yield while the first run
+    // drains its background persistence; the scheduler path preserves a
+    // durable continuation in that case. Retry only in this direct helper
+    // test, rather than weakening the foreground reservation contract.
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let settled = proxy
+                .run_upstream_reconciliation_once(&format!("http://{addr}"))
+                .await
+                .expect("retry current generation");
+            if settled > 0 {
+                break settled;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("settle current generation after foreground-safe admission");
+    assert_eq!(settled, 1);
     let current_generation: (i64, i64, String) = sqlx::query_as(
         "SELECT work_generation, completed_generation, last_outcome FROM upstream_reconciliation_work WHERE token_id = ?",
     )

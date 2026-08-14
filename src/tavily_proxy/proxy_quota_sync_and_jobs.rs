@@ -1049,25 +1049,29 @@ impl TavilyProxy {
                 return Ok(ClaimedReconciliationRunOutcome::Deferred { reason });
             }
         };
-        if let Some((job_id, claim_generation)) = claimed_job
-            && !self
-                .key_store
-                .scheduled_job_claim_is_current(job_id, claim_generation)
-                .await?
+        let run_admission_state = match self
+            .key_store
+            .upstream_reconciliation_run_admission_state(claimed_job)
+            .await
         {
+            Ok(state) => state,
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                return Ok(ClaimedReconciliationRunOutcome::Deferred {
+                    reason: "pool_pressure",
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        if claimed_job.is_some() && !run_admission_state.claim_current {
             tracing::debug!(
                 component = "reconciliation",
                 event = "stale_claim_rejected",
-                job_id,
-                claim_generation,
+                job_id = claimed_job.map(|(job_id, _)| job_id),
+                claim_generation = claimed_job.map(|(_, claim_generation)| claim_generation),
             );
             return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
-        let settings = self.key_store.get_system_settings().await?;
-        let shadow_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
-            && settings.api_rebalance_enabled
-            && settings.rebalance_mcp_enabled;
-        if !shadow_ready {
+        if !run_admission_state.shadow_ready {
             tracing::debug!(
                 component = "reconciliation",
                 event = "run_started",
@@ -1089,10 +1093,8 @@ impl TavilyProxy {
             return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let now = self.backend_time.now_ts();
-        let (_, global_backoff_level, global_backoff_until) = self
-            .key_store
-            .upstream_reconciliation_global_backoff_state()
-            .await?;
+        let global_backoff_level = run_admission_state.global_backoff_level;
+        let global_backoff_until = run_admission_state.global_backoff_until;
         if global_backoff_until > now {
             self.key_store
                 .mark_upstream_reconciliation_run_completed_at(now)
@@ -1106,10 +1108,8 @@ impl TavilyProxy {
             );
             return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
-        let (_, local_backoff_level, local_backoff_until) = self
-            .key_store
-            .upstream_reconciliation_local_backoff_state()
-            .await?;
+        let local_backoff_level = run_admission_state.local_backoff_level;
+        let local_backoff_until = run_admission_state.local_backoff_until;
         if local_backoff_until > now {
             self.key_store
                 .mark_upstream_reconciliation_run_completed_at(now)

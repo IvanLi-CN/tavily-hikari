@@ -494,6 +494,7 @@ pub struct RequestLogsGcReport {
     pub body_candidate_query_elapsed_ms: u128,
     pub body_retention_decision_elapsed_ms: u128,
     pub body_write_elapsed_ms: u128,
+    pub body_gc_index_pending: bool,
     pub progress_status: String,
 }
 
@@ -567,13 +568,14 @@ pub fn format_request_logs_gc_report_message(
     passes: usize,
 ) -> String {
     format!(
-        "cleaned_bodies={} deleted_rows={} rollup_deleted={} scanned_candidates={} unique_users={} retention_cache_hits={} progress={} completed={} has_more={} retention_days={} batches={} passes={} elapsed_ms={} candidate_query_ms={} decision_ms={} write_ms={}",
+        "cleaned_bodies={} deleted_rows={} rollup_deleted={} scanned_candidates={} unique_users={} retention_cache_hits={} body_gc_index_pending={} progress={} completed={} has_more={} retention_days={} batches={} passes={} elapsed_ms={} candidate_query_ms={} decision_ms={} write_ms={}",
         report.cleaned_request_log_bodies,
         report.deleted_request_logs,
         report.deleted_rollups,
         report.scanned_body_candidates,
         report.unique_retention_users,
         report.retention_context_cache_hits,
+        report.body_gc_index_pending,
         report.progress_status,
         report.completed,
         report.has_more,
@@ -602,6 +604,9 @@ pub(crate) async fn run_request_logs_gc_once_with_time(
     let key_store =
         crate::store::KeyStore::open_for_request_logs_gc_with_time(database_path, backend_time)
             .await?;
+    // The standalone maintenance command owns its write window, so it may create
+    // the body cursor index instead of reporting the online path's index_pending state.
+    key_store.ensure_request_log_body_gc_cursor_index().await?;
     let settings = key_store.get_system_settings().await?;
     let retention_days = settings.request_log_retention.max_log_retention_days;
     let threshold = configured_request_logs_retention_threshold_utc_ts_at(

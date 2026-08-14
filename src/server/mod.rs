@@ -85,6 +85,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
 use tokio_util::io::{ReaderStream, StreamReader};
 include!("state.rs");
 include!("schedulers.rs");
+include!("schedulers/request_log_index.rs");
 include!("spa.rs");
 include!("handlers/tavily.rs");
 include!("handlers/public.rs");

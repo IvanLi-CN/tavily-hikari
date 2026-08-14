@@ -82,6 +82,19 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
     }
 
+    pub(crate) fn request_logs_gc_continue_defer_reason(
+        &self,
+    ) -> Option<SqliteAdmissionDeferReason> {
+        self.sqlite_runtime.maintenance_bulk_continue_reason()
+    }
+
+    pub(crate) fn try_acquire_request_logs_gc_schema_permit(
+        &self,
+    ) -> Result<SqliteMaintenanceSchemaPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_acquire_maintenance_schema_permit(SqliteOperation::RequestLogsGc)
+    }
+
     pub(crate) async fn ensure_request_logs_gc_support_indexes(&self) -> Result<(), ProxyError> {
         for (table, sql) in [
             (
@@ -143,6 +156,21 @@ impl KeyStore {
             .await?;
         conn.close().await?;
         Ok(())
+    }
+
+    pub(crate) async fn request_log_body_gc_cursor_index_ready(&self) -> Result<bool, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
+        let ready: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'index' AND name = ?)",
+        )
+        .bind("idx_request_logs_body_gc_cursor")
+        .fetch_one(&mut *conn)
+        .await?;
+        conn.close().await?;
+        Ok(ready != 0)
     }
 
     async fn delete_old_request_logs_batch(
@@ -800,16 +828,20 @@ impl KeyStore {
         let mut batches = 0_i64;
         let mut retention_contexts = std::collections::HashMap::new();
         let mut body_gc_diagnostics = RequestLogBodyGcDiagnostics::default();
+        let body_gc_index_pending = !self.request_log_body_gc_cursor_index_ready().await?;
 
         while batches < max_batches && self.backend_time.instant_now() < deadline {
-            let body_batch = self
-                .clear_request_log_body_batch(
+            let body_batch = if body_gc_index_pending {
+                RequestLogBodyGcBatch::default()
+            } else {
+                self.clear_request_log_body_batch(
                     settings,
                     batch_size,
                     deadline,
                     &mut retention_contexts,
                 )
-                .await?;
+                .await?
+            };
             let raw_delete_cutoff = self
                 .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
                 .await?;
@@ -865,7 +897,8 @@ impl KeyStore {
             }
         }
 
-        let has_more = blocked_by_integrity
+        let has_more = body_gc_index_pending
+            || blocked_by_integrity
             || self.has_old_request_log_rows(threshold).await?
             || self.has_old_request_log_rollup_rows(threshold).await?
             || body_batch_has_more;
@@ -889,7 +922,10 @@ impl KeyStore {
             body_retention_decision_elapsed_ms: body_gc_diagnostics
                 .body_retention_decision_elapsed_ms,
             body_write_elapsed_ms: body_gc_diagnostics.body_write_elapsed_ms,
-            progress_status: if !has_more {
+            body_gc_index_pending,
+            progress_status: if body_gc_index_pending {
+                "index_pending"
+            } else if !has_more {
                 "completed"
             } else if blocked_by_integrity {
                 "incomplete_blocked_integrity"

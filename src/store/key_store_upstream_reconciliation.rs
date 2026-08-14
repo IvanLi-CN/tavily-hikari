@@ -21,6 +21,16 @@ const RECONCILIATION_RECENT_LANE_BUDGET: i64 = 12;
 const RECONCILIATION_BACKLOG_LANE_BUDGET: i64 = 8;
 const RECONCILIATION_QUEUE_ESTIMATE_LIMIT: i64 = 64;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpstreamReconciliationRunAdmissionState {
+    pub(crate) claim_current: bool,
+    pub(crate) shadow_ready: bool,
+    pub(crate) global_backoff_level: i64,
+    pub(crate) global_backoff_until: i64,
+    pub(crate) local_backoff_level: i64,
+    pub(crate) local_backoff_until: i64,
+}
+
 enum ReconciliationCandidateScope {
     Recent { start: i64, end: i64 },
     Backlog { before: i64 },
@@ -83,6 +93,69 @@ impl KeyStore {
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         self.sqlite_runtime
             .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+    }
+
+    pub(crate) async fn upstream_reconciliation_run_admission_state(
+        &self,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<UpstreamReconciliationRunAdmissionState, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
+        let claim_current = if let Some((job_id, claim_generation)) = claimed_job {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM scheduled_jobs WHERE id = ? AND status = 'running' AND claim_generation = ?)",
+            )
+            .bind(job_id)
+            .bind(claim_generation)
+            .fetch_one(&mut *conn)
+            .await?
+                != 0
+        } else {
+            true
+        };
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT key, value
+            FROM meta
+            WHERE key IN (?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+        .bind(META_KEY_API_REBALANCE_ENABLED_V1)
+        .bind(META_KEY_REBALANCE_MCP_ENABLED_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+        .fetch_all(&mut *conn)
+        .await?;
+        conn.close().await?;
+        let values = rows.into_iter().collect::<std::collections::HashMap<_, _>>();
+        let value_i64 = |key: &str| {
+            values
+                .get(key)
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0)
+        };
+        let shadow_ready = values
+            .get(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .and_then(|value| UpstreamProjectIdMode::from_meta_value(value))
+            .unwrap_or_default()
+            == UpstreamProjectIdMode::AccessToken
+            && value_i64(META_KEY_API_REBALANCE_ENABLED_V1)
+                != 0
+            && value_i64(META_KEY_REBALANCE_MCP_ENABLED_V1)
+                != 0;
+        Ok(UpstreamReconciliationRunAdmissionState {
+            claim_current,
+            shadow_ready,
+            global_backoff_level: value_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1),
+            global_backoff_until: value_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1),
+            local_backoff_level: value_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1),
+            local_backoff_until: value_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1),
+        })
     }
 
     pub(crate) async fn api_key_transient_backoff_state(

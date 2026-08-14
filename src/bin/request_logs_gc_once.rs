@@ -88,6 +88,7 @@ struct CliReport {
     body_candidate_query_elapsed_ms: u128,
     body_retention_decision_elapsed_ms: u128,
     body_write_elapsed_ms: u128,
+    body_gc_index_pending: bool,
     progress_status: String,
     pass_reports: Vec<RequestLogsGcReport>,
 }
@@ -141,6 +142,7 @@ impl CliReport {
                 .iter()
                 .map(|report| report.body_write_elapsed_ms)
                 .sum(),
+            body_gc_index_pending: last.body_gc_index_pending,
             progress_status: last.progress_status.clone(),
             pass_reports: reports,
         }
@@ -172,6 +174,7 @@ fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<
         body_candidate_query_elapsed_ms: report.body_candidate_query_elapsed_ms,
         body_retention_decision_elapsed_ms: report.body_retention_decision_elapsed_ms,
         body_write_elapsed_ms: report.body_write_elapsed_ms,
+        body_gc_index_pending: report.body_gc_index_pending,
         progress_status: report.progress_status.clone(),
     };
     writeln!(
@@ -240,6 +243,7 @@ mod tests {
                     body_candidate_query_elapsed_ms: 1,
                     body_retention_decision_elapsed_ms: 2,
                     body_write_elapsed_ms: 3,
+                    body_gc_index_pending: false,
                     progress_status: "incomplete_progress".to_string(),
                 },
                 RequestLogsGcReport {
@@ -260,6 +264,7 @@ mod tests {
                     body_candidate_query_elapsed_ms: 1,
                     body_retention_decision_elapsed_ms: 1,
                     body_write_elapsed_ms: 1,
+                    body_gc_index_pending: false,
                     progress_status: "completed".to_string(),
                 },
             ],

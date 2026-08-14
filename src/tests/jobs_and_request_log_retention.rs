@@ -1100,6 +1100,13 @@ pub(super) async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, 
     .expect("seed request log")
 }
 
+async fn prepare_request_log_body_gc(proxy: &TavilyProxy) {
+    proxy
+        .ensure_request_log_body_gc_cursor_index()
+        .await
+        .expect("prepare body GC index");
+}
+
 async fn seed_auth_token_log_reference_for_gc(
     pool: &SqlitePool,
     token_id: &str,
@@ -1687,6 +1694,7 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
     )
     .await
     .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 1;
@@ -1870,6 +1878,7 @@ async fn request_logs_gc_reevaluates_persisted_body_retention_days_after_policy_
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
 
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.global.business_body_days = 7;
@@ -1950,6 +1959,7 @@ async fn request_logs_gc_honors_debug_sharing_opt_out_for_persisted_debug_profil
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
@@ -2048,6 +2058,7 @@ async fn request_logs_gc_scans_past_unexpired_body_to_clear_later_expired_body()
     )
     .await
     .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
@@ -2195,6 +2206,7 @@ async fn request_logs_gc_resumes_body_scan_after_unexpired_scan_limit() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
@@ -2318,6 +2330,7 @@ async fn request_logs_gc_restarts_body_scan_when_cursor_restart_time_is_due() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
 
     let now = Utc::now().timestamp();
     let expired_id: i64 = sqlx::query_scalar(
@@ -2385,6 +2398,7 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
@@ -2489,6 +2503,7 @@ async fn request_logs_gc_preserves_cursor_until_retained_bodies_expire() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
@@ -2865,6 +2880,7 @@ async fn request_logs_gc_bounded_deletes_old_rows_and_preserves_recent_rows() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let now = Utc::now().timestamp();
     let old_ts = now - 40 * 24 * 60 * 60;
     let recent_ts = now - 2 * 24 * 60 * 60;
@@ -2927,6 +2943,7 @@ async fn request_logs_gc_bounded_reports_partial_and_resumes() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let old_ts = Utc::now().timestamp() - 40 * 24 * 60 * 60;
     for idx in 0..3 {
         seed_request_log_for_gc(&proxy.key_store.pool, old_ts + idx, "/mcp").await;
@@ -2976,6 +2993,7 @@ async fn request_logs_gc_retries_transient_sqlite_write_lock() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let old_ts = Utc::now().timestamp() - 40 * 24 * 60 * 60;
     let old_id = seed_request_log_for_gc(&proxy.key_store.pool, old_ts, "/mcp").await;
     seal_request_log_day_for_gc(&proxy.key_store.pool, old_ts).await;
@@ -3018,6 +3036,7 @@ async fn request_logs_gc_body_cleanup_retries_transient_sqlite_write_lock() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    prepare_request_log_body_gc(&proxy).await;
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.request_log_retention.max_log_retention_days = 32;
     settings.request_log_retention.global.business_body_days = 0;
