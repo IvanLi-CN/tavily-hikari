@@ -521,7 +521,6 @@
         "server::serve_tests::",
         "server::tests::system_settings_and_forward_proxy::startup_",
         "server::tests::admin_token_filters_and_maintenance::maintenance_",
-        "server::tests::admin_token_filters_and_maintenance::body_",
         "server::tests::admin_logs_and_summary::summary_",
         "server::tests::system_settings_and_forward_proxy::active_",
         "server::tests::system_settings_and_forward_proxy::concurrent_",
