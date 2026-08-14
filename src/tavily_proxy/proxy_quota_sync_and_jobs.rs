@@ -10,6 +10,22 @@ enum ReconciliationOutcome {
     LocalPressure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum ClaimedReconciliationRunOutcome {
+    Completed { settled: i64 },
+    Deferred { reason: &'static str },
+}
+
+impl ClaimedReconciliationRunOutcome {
+    fn settled(self) -> i64 {
+        match self {
+            Self::Completed { settled } => settled,
+            Self::Deferred { .. } => 0,
+        }
+    }
+}
+
 struct ReconciliationEngine;
 
 struct ReconciliationRunResult {
@@ -986,6 +1002,7 @@ impl TavilyProxy {
     ) -> Result<i64, ProxyError> {
         self.run_upstream_reconciliation_once_inner(usage_base, None)
             .await
+            .map(ClaimedReconciliationRunOutcome::settled)
     }
 
     #[doc(hidden)]
@@ -995,6 +1012,18 @@ impl TavilyProxy {
         job_id: i64,
         claim_generation: i64,
     ) -> Result<i64, ProxyError> {
+        self.run_upstream_reconciliation_once_claimed_outcome(usage_base, job_id, claim_generation)
+            .await
+            .map(ClaimedReconciliationRunOutcome::settled)
+    }
+
+    #[doc(hidden)]
+    pub async fn run_upstream_reconciliation_once_claimed_outcome(
+        &self,
+        usage_base: &str,
+        job_id: i64,
+        claim_generation: i64,
+    ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         self.run_upstream_reconciliation_once_inner(
             usage_base,
             Some((job_id, claim_generation)),
@@ -1006,7 +1035,7 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
         claimed_job: Option<(i64, i64)>,
-    ) -> Result<i64, ProxyError> {
+    ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let started_at = std::time::Instant::now();
         let local_admission = match self.admit_upstream_reconciliation_projection() {
             SqliteAdmissionOutcome::Admitted(admission) => admission,
@@ -1017,7 +1046,7 @@ impl TavilyProxy {
                     defer_reason = reason,
                     "reconciliation skipped local candidate preparation before SQLite connection acquisition"
                 );
-                return Ok(0);
+                return Ok(ClaimedReconciliationRunOutcome::Deferred { reason });
             }
         };
         if let Some((job_id, claim_generation)) = claimed_job
@@ -1032,7 +1061,7 @@ impl TavilyProxy {
                 job_id,
                 claim_generation,
             );
-            return Ok(0);
+            return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let settings = self.key_store.get_system_settings().await?;
         let shadow_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
@@ -1057,7 +1086,7 @@ impl TavilyProxy {
                 candidate_count = 0_i64,
                 settled_count = 0_i64,
             );
-            return Ok(0);
+            return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let now = self.backend_time.now_ts();
         let (_, global_backoff_level, global_backoff_until) = self
@@ -1075,7 +1104,7 @@ impl TavilyProxy {
                 backoff_level = global_backoff_level,
                 backoff_until = global_backoff_until,
             );
-            return Ok(0);
+            return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let (_, local_backoff_level, local_backoff_until) = self
             .key_store
@@ -1092,7 +1121,7 @@ impl TavilyProxy {
                 backoff_level = local_backoff_level,
                 backoff_until = local_backoff_until,
             );
-            return Ok(0);
+            return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let preparation_deadline = started_at
             + std::time::Duration::from_secs(Self::RECONCILIATION_MAIN_PREP_BUDGET_SECS);
@@ -1707,7 +1736,7 @@ impl TavilyProxy {
                 job_id,
                 claim_generation,
             );
-            return Ok(0);
+            return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
         }
         let main_budget_exhausted = result
             .as_ref()
@@ -1746,7 +1775,7 @@ impl TavilyProxy {
                         job_id,
                         claim_generation,
                     );
-                    return Ok(0);
+                    return Ok(ClaimedReconciliationRunOutcome::Completed { settled: 0 });
                 }
                 Err(err) => return Err(err),
             }
@@ -2049,7 +2078,7 @@ impl TavilyProxy {
                         previous_backoff_level,
                     );
                 }
-                Ok(settled)
+                Ok(ClaimedReconciliationRunOutcome::Completed { settled })
             }
             Err(err) => {
                 tracing::warn!(

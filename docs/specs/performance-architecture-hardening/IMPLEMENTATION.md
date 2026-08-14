@@ -56,12 +56,15 @@
 - 在线 GC 始终只持有一个 writer slice：每片一个 channel、`25..250` 自适应 batch、单 SQL `50ms` 目标和
   一秒上限。低压连续五分钟后采用一秒 continuation；正常进展保持五秒，前台压力、busy 或慢 SQL 只让
   受影响 channel 退让 30 秒。
-- 五分钟 watchdog 以 `SqliteRuntime` 的短 control read 复查三条 channel state 的 observation age，并将
-  已过期 channel 合并回 pending mask，即使另一个 channel 仍有 debt。这个 state-only discovery 可重新启动
-  漏标的历史债务，但不读取 outbox；实际 control/billing/runtime 查询仍逐片经过 bulk admission 和持久化轮转。
+- 五分钟 watchdog 以 `SqliteRuntime` 的短 control read 复查三条 channel state 的 observation age。已过期和从未
+  observation 的 channel 都加入当前 slice 的公平 probe，即使另一个 channel 仍有 debt；只有 probe 确认仍有工作时才
+  写回 durable pending mask，因此空 channel 不会形成一秒循环。这个 state-only discovery 不读取 outbox；实际
+  control/billing/runtime 查询仍逐片经过 bulk admission 和持久化轮转。
 - `ReconciliationEngine` 将 work 完成归类为 `settled`、`no_adjustment`、`upstream_429`、
   `transport_failure`、`semantic_failure` 或 `local_pressure`。`no_adjustment` 是当前 usage generation 的
   terminal result，只有新 usage 才重新投影 work；本地压力、429 与其他失败状态彼此独立持久化。
+- 若对账的 local preparation 被 SQLite bulk admission 拒绝，engine 返回 typed deferred outcome；scheduler 用短
+  control transaction 原子 finish 并在 30 秒后续排同一 durable representative，不能把零工作当作成功完成。
 
 ## Related Changes
 

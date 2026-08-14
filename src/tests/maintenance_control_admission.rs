@@ -189,6 +189,15 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .expect("enqueue durable reconciliation representative");
+    let claimed = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim durable reconciliation representative")
+        .expect("representative became running");
     let first = proxy
         .key_store
         .pool
@@ -209,17 +218,35 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
         .expect("third connection");
 
     let started = Instant::now();
-    let settled = proxy
-        .run_upstream_reconciliation_once(DEFAULT_UPSTREAM)
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            DEFAULT_UPSTREAM,
+            claimed.id,
+            claimed.claim_generation,
+        )
         .await
-        .expect("admission defer is a normal reconciliation outcome");
-    assert_eq!(settled, 0);
+        .expect("admission defer is a typed reconciliation outcome");
+    assert!(matches!(
+        outcome,
+        crate::tavily_proxy::ClaimedReconciliationRunOutcome::Deferred {
+            reason: "pool_pressure"
+        }
+    ));
     assert!(
         started.elapsed() < Duration::from_millis(250),
         "reconciliation must defer before candidate reads wait on foreground pool capacity: {:?}",
         started.elapsed()
     );
     drop((third, second, first));
+    let status: String = sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
+        .bind(claimed.id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read claimed representative after typed defer");
+    assert_eq!(
+        status, "running",
+        "the engine must not finish an unexecuted representative; scheduler owns its durable defer handoff"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

@@ -1,4 +1,5 @@
 use tavily_hikari::{
+    ClaimedReconciliationRunOutcome,
     LinuxDoCreditRechargeOrder,
     LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE,
     LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
@@ -2670,7 +2671,7 @@ async fn run_manual_claimed_job(
             let selected_run = {
                 let run = tokio::time::timeout(
                     Duration::from_secs(20),
-                    state.proxy.run_upstream_reconciliation_once_claimed(
+                    state.proxy.run_upstream_reconciliation_once_claimed_outcome(
                         &state.usage_base,
                         job_id,
                         claim_generation,
@@ -2695,7 +2696,7 @@ async fn run_manual_claimed_job(
                 }
             };
             match run_result {
-                Ok(Ok(settled)) => {
+                Ok(Ok(ClaimedReconciliationRunOutcome::Completed { settled })) => {
                     match state.proxy.upstream_reconciliation_representative_available_at().await {
                         Ok(Some(available_at)) => state
                             .proxy
@@ -2713,6 +2714,15 @@ async fn run_manual_claimed_job(
                         Ok(None) => finish(state, "success", format!("settled={settled}")).await,
                         Err(err) => finish(state, "error", err.to_string()).await,
                     }
+                }
+                Ok(Ok(ClaimedReconciliationRunOutcome::Deferred { reason })) => {
+                    defer_reconciliation_for_sqlite_admission(
+                        &state,
+                        job_id,
+                        claim_generation,
+                        reason,
+                    )
+                    .await
                 }
                 Ok(Err(err)) => finish(state, "error", err.to_string()).await,
                 Err(_) => {
@@ -2845,6 +2855,37 @@ async fn defer_reconciliation_for_foreground(
             None,
             1,
             Some("outcome=foreground_pressure"),
+            available_at,
+        )
+        .await
+        .is_ok()
+}
+
+async fn defer_reconciliation_for_sqlite_admission(
+    state: &Arc<AppState>,
+    job_id: i64,
+    claim_generation: i64,
+    defer_reason: &'static str,
+) -> bool {
+    let available_at = state.proxy.backend_time().now_ts().saturating_add(30);
+    tracing::debug!(
+        component = "reconciliation",
+        event = "local_preparation_deferred",
+        job_id,
+        claim_generation,
+        defer_reason,
+        available_at,
+        "reconciliation retained its representative after SQLite admission defer"
+    );
+    state
+        .proxy
+        .scheduled_job_finish_and_enqueue_auto_at(
+            job_id,
+            claim_generation,
+            "upstream_reconciliation",
+            None,
+            1,
+            Some(&format!("outcome=sqlite_admission_deferred defer_reason={defer_reason}")),
             available_at,
         )
         .await

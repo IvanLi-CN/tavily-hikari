@@ -28,12 +28,9 @@ related_specs:
 - A zero pending mask is a completed observation rather than a permanent empty-outbox assertion.
   Use a low-frequency, bounded controller-state observation-age read to rearm a fresh indexed
   channel probe; never turn the watchdog itself into an outbox scan or a special writer bypass.
-- If a SQLite writer blocks the atomic HA job finish/continuation handoff, use a short fixed set of
-  same-generation retries after the worker returns. This closes the post-lock 120-second stale-job
-  gap without creating an unbounded retry loop; the stale reaper remains the last fallback.
-- If a SQLite writer blocks the atomic HA job finish/continuation handoff, use a short fixed set of
-  same-generation retries after the worker returns. This closes the post-lock 120-second stale-job
-  gap without creating an unbounded retry loop; the stale reaper remains the last fallback.
+- If a SQLite writer blocks the atomic HA job finish/continuation handoff, do not spawn a background retry
+  loop. Keep the claim fenced and let the durable stale reaper recover it once after the threshold; this
+  avoids a hidden writer-pressure task while preserving the continuation.
 - Startup schema work is ledgered in `schema_migrations`; a warm process verifies the critical layout and skips already-applied DDL.
 - Administrator peer status reads an observation cache. A normal GET never waits for the five-second peer network probe.
 - A transport or semantic reconciliation failure does not clear an existing upstream-429 circuit. Only a real settlement or a real remote attempt follows the recovery contract.
@@ -253,8 +250,9 @@ month-tail public metrics scan.
   Measure only cleanup batches for adaptive timing; post-slice state probes are diagnostics, not
   evidence that a write micro-batch exceeded budget. Keep an hourly baseline sweep for newly
   expired rows, and gate a low-frequency watchdog on durable pending-channel debt so it rediscovers
-  a lost continuation without creating clean-state jobs. Merge only stale observed channels back into
-  the pending mask so one busy or delayed channel cannot hide another channel's recovery debt.
+  a lost continuation without creating clean-state jobs. Add stale observed and unobserved channels to the
+  current fair probe set so one busy or delayed channel cannot hide another channel's recovery debt; persist
+  a pending bit only after that probe confirms work, so empty discovery cannot create a fast wake loop.
 - Sequence high-watermark deltas are useful low-cost evidence of drainage versus ingress, but they
   are estimates, not exact row counts. If historical exact counts were not sampled, report the
   oldest retained age moving forward as proof of partial cleanup only; do not claim that total

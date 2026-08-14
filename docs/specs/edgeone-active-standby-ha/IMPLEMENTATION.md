@@ -277,8 +277,9 @@
   SQLite micro-batch stays within a 50ms target. Slow work, busy writers, and lease deferrals retain the 30-second
   delay; a valid-only legacy cursor scan remains on a five-minute cadence so compatibility cleanup
   cannot create a permanent online write loop. The hourly baseline discovers newly expired rows;
-  the five-minute watchdog resumes pending debt and merges each stale observed channel back into the
-  pending mask even when another channel remains active, without an outbox scan. Per-channel state records
+  the five-minute watchdog resumes pending debt and adds stale or unobserved channels to the current fair
+  probe set even when another channel remains active, without an outbox scan. Only a probe that confirms
+  remaining work persists a debt bit, so an empty unknown channel cannot create a fast wake loop. Per-channel state records
   high-watermark deltas, an ingress-minus-delete estimate, and cumulative deletions without a
   hot-path `COUNT(*)`.
 - The CI shard manifest assigns `online_ha_gc_*` watchdog-debt regression coverage to `lib-misc`.

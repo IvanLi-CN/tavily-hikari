@@ -235,6 +235,9 @@ reads:
   hydrating Research state. Admit that local preparation as bounded bulk work, release admission
   before remote I/O, keep the 12/8 recent/backlog fairness contract, and never run a global queue
   aggregate before the first remote attempt.
+- A rejected reconciliation preparation admission is a typed deferred outcome, not a successful zero-work
+  run. The scheduler must use a short control transaction to retain one durable representative with a fixed
+  delayed wake before releasing the worker.
 - Expose a bounded `ReconciliationObservation`: `hasEligible` and oldest-candidate age are precise
   for the bounded probe, while `queueEstimate=null` and `coverage=unknown` are required before the
   first observation. Never render an unknown queue as zero.

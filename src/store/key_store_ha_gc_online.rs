@@ -100,16 +100,11 @@ impl HaGcController {
         earliest_retry_at.map(|retry_at| retry_at.saturating_sub(now).max(1))
     }
 
-    fn stale_observation_mask(
-        now: i64,
-        include_unobserved: bool,
-        eligibility: &[HaGcChannelEligibility],
-    ) -> i64 {
+    fn stale_observation_mask(now: i64, eligibility: &[HaGcChannelEligibility]) -> i64 {
         let observed_before = now.saturating_sub(crate::HA_OUTBOX_GC_IDLE_DISCOVERY_SECS);
         eligibility.iter().fold(0, |mask, (name, _, _, _, observed_at)| {
             let channel = KeyStore::ha_outbox_gc_channel_from_name(name);
-            if observed_at.is_some_and(|observed_at| observed_at <= observed_before)
-                || (include_unobserved && observed_at.is_none())
+            if observed_at.is_none_or(|observed_at| observed_at <= observed_before)
             {
                 mask | KeyStore::ha_outbox_gc_channel_mask(channel)
             } else {
@@ -376,12 +371,12 @@ impl KeyStore {
             .fetch_all(&mut **conn)
             .await?;
             let state_now = self.backend_time.now_ts();
-            let pending_channel_mask = persisted_pending_channel_mask
-                | HaGcController::stale_observation_mask(
-                    state_now,
-                    was_completed_observation,
-                    &eligibility,
-                );
+            // Discovery is an in-memory probe set. It must join this slice's
+            // fair rotation, but it is not durable debt until the selected
+            // channel confirms more work. Otherwise an empty unknown channel
+            // would create a one-second wake loop after every foreground burst.
+            let discovery_channel_mask = HaGcController::stale_observation_mask(state_now, &eligibility);
+            let pending_channel_mask = persisted_pending_channel_mask | discovery_channel_mask;
             let selected = HaGcController::claim_eligible_channel(
                 preferred,
                 pending_channel_mask,
@@ -627,9 +622,9 @@ impl KeyStore {
             let high_watermark = Self::ha_channel_high_watermark_on_conn(conn, channel).await?;
             let channel_mask = Self::ha_outbox_gc_channel_mask(channel);
             let next_pending_channel_mask = if channel_has_more {
-                pending_channel_mask | channel_mask
+                persisted_pending_channel_mask | channel_mask
             } else {
-                pending_channel_mask & !channel_mask
+                persisted_pending_channel_mask & !channel_mask
             };
             let next_channel = Self::next_ha_outbox_gc_channel(channel);
             sqlx::query(
@@ -673,23 +668,27 @@ impl KeyStore {
             };
             let channel_next_retry_at =
                 channel_continuation_delay_secs.map(|delay| now.saturating_add(delay));
-            if let Some((_, next_retry_at, generation, claim_started_at, _)) = eligibility
+            if let Some((_, next_retry_at, generation, claim_started_at, last_observed_at)) = eligibility
                 .iter_mut()
                 .find(|(name, _, _, _, _)| name == channel.as_str())
             {
                 *next_retry_at = channel_next_retry_at;
                 *generation = claim.generation;
                 *claim_started_at = None;
+                *last_observed_at = Some(now);
             }
+            let wake_channel_mask = (!completed).then(|| {
+                next_pending_channel_mask | HaGcController::stale_observation_mask(now, &eligibility)
+            });
             let continuation_delay_secs = (!completed).then(|| {
                 HaGcController::next_wake_delay_secs(
                     next_channel,
-                    next_pending_channel_mask,
+                    wake_channel_mask.expect("pending debt retains a wake mask"),
                     now,
                     &eligibility,
-                    // A fair handoff is intentionally faster than the normal
-                    // same-channel cadence: another ready channel must not sit
-                    // behind this channel's defer or five-second progression.
+                    // A durable debt channel gives another eligible channel a
+                    // prompt fair handoff. Unknown-only probes do not persist a
+                    // continuation, so they cannot form a normal-mode fast loop.
                     crate::HA_OUTBOX_GC_RECOVERY_CONTINUATION_DELAY_SECS,
                 )
             })
@@ -864,7 +863,7 @@ impl KeyStore {
                     self.defer_claimed_ha_gc_channel_for_busy(
                         channel,
                         claim.generation,
-                        pending_channel_mask,
+                        persisted_pending_channel_mask,
                         options,
                         observed_foreground_rps,
                         started,
