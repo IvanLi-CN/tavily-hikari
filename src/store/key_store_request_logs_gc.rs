@@ -143,9 +143,6 @@ impl KeyStore {
             .begin_immediate(SqliteOperation::RequestLogsGc)
             .await?;
         let result = async {
-            sqlx::query("PRAGMA secure_delete = OFF")
-                .execute(&mut *tx)
-                .await?;
             sqlx::query(
                 r#"
                 DELETE FROM observability.request_logs
