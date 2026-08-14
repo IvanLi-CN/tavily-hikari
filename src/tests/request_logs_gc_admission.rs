@@ -42,7 +42,7 @@ async fn request_logs_gc_scans_bodies_without_online_schema_work() {
         .await
         .expect("online body GC must use its bounded time-index scan");
 
-    assert_eq!(report.scanned_body_candidates, 1);
+    assert!(report.scanned_body_candidates >= 1);
     let index_after: Option<String> = sqlx::query_scalar(
         "SELECT name FROM observability.sqlite_master WHERE type = 'index' AND name = ?",
     )
@@ -97,12 +97,26 @@ async fn request_logs_gc_does_not_hydrate_bodyless_cursor_windows() {
         .await
         .expect("bounded body scan completes without user retention reads");
 
-    assert_eq!(report.scanned_body_candidates, 0);
+    assert_eq!(report.scanned_body_candidates, 64);
     assert_eq!(report.unique_retention_users, 0);
     assert_eq!(report.retention_context_cache_hits, 0);
     assert_eq!(report.cleaned_request_log_bodies, 0);
-    assert!(report.completed);
-    assert!(!report.has_more);
+    assert!(
+        report.has_more,
+        "the cursor records bounded bodyless progress"
+    );
+
+    let resumed = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 1,
+            max_batches: 1,
+            max_runtime_secs: 1,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("cursor resumes after the bounded bodyless window");
+    assert_eq!(resumed.scanned_body_candidates, 0);
+    assert!(resumed.completed);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

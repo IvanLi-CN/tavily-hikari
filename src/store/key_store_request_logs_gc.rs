@@ -11,6 +11,13 @@ struct RequestLogBodyGcCandidate {
     response_body: Option<Vec<u8>>,
 }
 
+struct RequestLogBodyGcCandidatePage {
+    candidates: Vec<RequestLogBodyGcCandidate>,
+    scanned: i64,
+    last_scanned: Option<(i64, i64)>,
+    has_more: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct RequestLogBodyGcBatch {
     cleaned: i64,
@@ -373,20 +380,18 @@ impl KeyStore {
         scan_limit: i64,
         after: Option<(i64, i64)>,
         row_retention_threshold: i64,
-    ) -> Result<Vec<RequestLogBodyGcCandidate>, ProxyError> {
+    ) -> Result<RequestLogBodyGcCandidatePage, ProxyError> {
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::RequestLogsGc)
             .await?;
-        let rows = if let Some((created_at, id)) = after {
-            sqlx::query(
+        let scan_window: Vec<(i64, i64)> = if let Some((created_at, id)) = after {
+            sqlx::query_as(
                 r#"
-                SELECT id, created_at, request_user_id, result_status, request_kind_key,
-                       request_kind_label, request_kind_detail, path, request_body, response_body
+                SELECT id, created_at
                 FROM observability.request_logs INDEXED BY idx_request_logs_time
                 WHERE created_at >= ?
                   AND (created_at > ? OR (created_at = ? AND id > ?))
-                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
@@ -399,13 +404,11 @@ impl KeyStore {
             .fetch_all(&mut *conn)
             .await?
         } else {
-            sqlx::query(
+            sqlx::query_as(
                 r#"
-                SELECT id, created_at, request_user_id, result_status, request_kind_key,
-                       request_kind_label, request_kind_detail, path, request_body, response_body
+                SELECT id, created_at
                 FROM observability.request_logs INDEXED BY idx_request_logs_time
                 WHERE created_at >= ?
-                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
@@ -415,13 +418,68 @@ impl KeyStore {
             .fetch_all(&mut *conn)
             .await?
         };
+        let Some(&(last_id, last_created_at)) = scan_window.last() else {
+            conn.close().await?;
+            return Ok(RequestLogBodyGcCandidatePage {
+                candidates: Vec::new(),
+                scanned: 0,
+                last_scanned: None,
+                has_more: false,
+            });
+        };
+        let rows = if let Some((created_at, id)) = after {
+            sqlx::query(
+                r#"
+                SELECT id, created_at, request_user_id, result_status, request_kind_key,
+                       request_kind_label, request_kind_detail, path, request_body, response_body
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at > ? OR (created_at = ? AND id > ?))
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
+                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )
+            .bind(row_retention_threshold)
+            .bind(created_at)
+            .bind(created_at)
+            .bind(id)
+            .bind(last_created_at)
+            .bind(last_created_at)
+            .bind(last_id)
+            .fetch_all(&mut *conn)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, created_at, request_user_id, result_status, request_kind_key,
+                       request_kind_label, request_kind_detail, path, request_body, response_body
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
+                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )
+            .bind(row_retention_threshold)
+            .bind(last_created_at)
+            .bind(last_created_at)
+            .bind(last_id)
+            .fetch_all(&mut *conn)
+            .await?
+        };
         conn.close().await?;
         let candidates = rows
             .into_iter()
             .map(Self::map_request_log_body_gc_candidate)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProxyError::from)?;
-        Ok(candidates)
+        Ok(RequestLogBodyGcCandidatePage {
+            candidates,
+            scanned: scan_window.len() as i64,
+            last_scanned: Some((last_created_at, last_id)),
+            has_more: scan_window.len() as i64 >= scan_limit,
+        })
     }
 
     fn request_log_body_is_expired(
@@ -557,7 +615,7 @@ impl KeyStore {
             && self.backend_time.instant_now() < deadline
         {
             let query_started = self.backend_time.instant_now();
-            let candidates = self
+            let page = self
                 .fetch_request_log_body_gc_candidates(
                     scan_limit.saturating_sub(scanned),
                     after,
@@ -565,14 +623,13 @@ impl KeyStore {
                 )
                 .await?;
             diagnostics.body_candidate_query_elapsed_ms += query_started.elapsed().as_millis();
-            if candidates.is_empty() {
+            if page.scanned == 0 {
                 break;
             }
-            let fetched = candidates.len() as i64;
-            for candidate in candidates {
+            scanned += page.scanned;
+            diagnostics.scanned_body_candidates += page.scanned;
+            for candidate in page.candidates {
                 after = Some((candidate.created_at, candidate.id));
-                scanned += 1;
-                diagnostics.scanned_body_candidates += 1;
                 let request_body_slice = candidate.request_body.as_deref().unwrap_or(&[]);
                 let request_kind = canonicalize_request_log_request_kind(
                     &candidate.path,
@@ -621,7 +678,7 @@ impl KeyStore {
                             .map(|current| current.min(candidate_restart_at))
                             .unwrap_or(candidate_restart_at),
                     );
-                    if scanned >= scan_limit || self.backend_time.instant_now() >= deadline {
+                    if self.backend_time.instant_now() >= deadline {
                         has_more = true;
                         break 'scan;
                     }
@@ -717,7 +774,8 @@ impl KeyStore {
                     break 'scan;
                 }
             }
-            if fetched >= scan_limit {
+            after = page.last_scanned;
+            if page.has_more {
                 has_more = true;
             } else {
                 break;

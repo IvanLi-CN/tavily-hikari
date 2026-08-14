@@ -1,3 +1,5 @@
+type UpstreamReconciliationLastRunStats = (Option<i64>, i64, i64, i64, i64, bool);
+
 impl KeyStore {
     pub(crate) async fn upstream_reconciliation_global_backoff_state(
         &self,
@@ -8,6 +10,51 @@ impl KeyStore {
             META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
         )
         .await
+    }
+
+    pub(crate) async fn upstream_reconciliation_last_run_stats(
+        &self,
+    ) -> Result<UpstreamReconciliationLastRunStats, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result: Result<UpstreamReconciliationLastRunStats, ProxyError> = async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT key, value FROM meta WHERE key IN (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
+            .fetch_all(&mut *conn)
+            .await?;
+            let values = rows.into_iter().collect::<std::collections::HashMap<_, _>>();
+            let value_i64 = |key: &str| {
+                values
+                    .get(key)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(0)
+            };
+            Ok((
+                values
+                    .get(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
+                    .and_then(|value| value.parse::<i64>().ok()),
+                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1),
+                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1),
+                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1),
+                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1),
+                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1) != 0,
+            ))
+        }
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(stats), Ok(())) => Ok(stats),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
     }
 
     async fn begin_reconciliation_control(&self) -> Result<SqliteImmediateTransaction, ProxyError> {

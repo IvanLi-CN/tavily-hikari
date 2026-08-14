@@ -2469,7 +2469,7 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
     let report = proxy
         .gc_request_logs_with_options(RequestLogsGcOptions {
             batch_size: 1,
-            max_batches: 3,
+            max_batches: 10,
             max_runtime_secs: 30,
             inter_batch_sleep_ms: 0,
         })

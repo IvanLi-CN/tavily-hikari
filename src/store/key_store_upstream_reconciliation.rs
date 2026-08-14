@@ -904,31 +904,6 @@ impl KeyStore {
         .await
     }
 
-    pub(crate) async fn upstream_reconciliation_last_run_stats(
-        &self,
-    ) -> Result<(Option<i64>, i64, i64, i64, i64, bool), ProxyError> {
-        Ok((
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
-                .await?,
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1)
-                .await?
-                .unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1)
-                .await?
-                .unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1)
-                .await?
-                .unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1)
-                .await?
-                .unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
-                .await?
-                .unwrap_or(0)
-                != 0,
-        ))
-    }
-
     pub(crate) async fn record_upstream_reconciliation_run_stats(
         &self,
         duration_ms: i64,
