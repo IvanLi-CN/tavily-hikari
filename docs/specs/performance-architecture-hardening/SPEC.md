@@ -59,9 +59,11 @@
   `maintenance_bulk` 必须在获取连接前检查至少两个前台可用 pool slot、前台到达率不高于 `5 rps`、最近
   五秒无 SQLite busy/pool timeout，并持有唯一 bulk permit。拒绝必须返回 typed deferred，不得先取得
   pooled connection 或启动后台无限重试。
-- HA GC、request-stats flush、pressure rebuild、reconciliation projection 与 Dashboard integrity
-  是 `maintenance_bulk`；GC 在每条 SQL 后重新检查 admission，压力只推迟当前 channel，不得冻结其余
-  eligible channel。Dashboard 仅在有 last-good 时因 admission、busy 或 refresh 超时直接返回该快照；
+- HA GC、request-log GC、request-stats flush、pressure rebuild、reconciliation projection 与 Dashboard
+  integrity 是 `maintenance_bulk`；GC 在每条 SQL 后重新检查 admission，压力只推迟当前 channel，不得
+  冻结其余 eligible channel。request-log GC 遇到未封存的本地日时只完成一次安全检查并以既有
+  five-minute continuation 让步，不得在同一 slice 重复扫描或删除派生 rollup。Dashboard 仅在有
+  last-good 时因 admission、busy 或 refresh 超时直接返回该快照；
   request-stats background wake 每秒最多提交四个自适应 `25..250` logical-key transaction，并受同一
   `50ms` 预算约束后原子回灌尾部；只有 shutdown drain 可以连续处理。冷启动只允许
   一个 shared singleflight loader，server 在开始监听前可给同一 loader 一次一秒 head start；每个读取

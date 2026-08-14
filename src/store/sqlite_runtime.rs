@@ -49,6 +49,7 @@ pub(crate) enum SqliteOperation {
     HaBaselineRead,
     HaEventsRead,
     HaOutboxGc,
+    RequestLogsGc,
     RequestStatsFlush,
     ServerPressureRebuild,
     ReconciliationProjection,
@@ -63,6 +64,7 @@ impl SqliteOperation {
             Self::HaBaselineRead => "ha_baseline_read",
             Self::HaEventsRead => "ha_events_read",
             Self::HaOutboxGc => "ha_outbox_gc",
+            Self::RequestLogsGc => "request_logs_gc",
             Self::RequestStatsFlush => "request_stats_flush",
             Self::ServerPressureRebuild => "server_pressure_rebuild",
             Self::ReconciliationProjection => "reconciliation_projection",
@@ -78,6 +80,7 @@ impl SqliteOperation {
             Self::ScheduledJobControl => "maintenance_control",
             Self::DashboardIntegrityWrite
             | Self::HaOutboxGc
+            | Self::RequestLogsGc
             | Self::RequestStatsFlush
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => "maintenance_bulk",
@@ -88,6 +91,7 @@ impl SqliteOperation {
         match self {
             Self::DashboardIntegrityWrite | Self::ScheduledJobControl => Duration::from_millis(100),
             Self::HaOutboxGc
+            | Self::RequestLogsGc
             | Self::RequestStatsFlush
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => Duration::from_millis(100),
@@ -100,9 +104,10 @@ impl SqliteOperation {
             Self::DashboardIntegrityWrite | Self::RequestStatsFlush | Self::ScheduledJobControl => {
                 Duration::from_millis(100)
             }
-            Self::HaOutboxGc | Self::ServerPressureRebuild | Self::ReconciliationProjection => {
-                Duration::from_millis(250)
-            }
+            Self::HaOutboxGc
+            | Self::RequestLogsGc
+            | Self::ServerPressureRebuild
+            | Self::ReconciliationProjection => Duration::from_millis(250),
             _ => Duration::from_secs(5),
         }
     }
@@ -123,6 +128,7 @@ impl SqliteOperation {
             self,
             Self::DashboardIntegrityWrite
                 | Self::HaOutboxGc
+                | Self::RequestLogsGc
                 | Self::RequestStatsFlush
                 | Self::ServerPressureRebuild
                 | Self::ReconciliationProjection
@@ -1688,6 +1694,7 @@ mod tests {
             SqliteOperation::ScheduledJobControl,
             SqliteOperation::RequestStatsFlush,
             SqliteOperation::HaOutboxGc,
+            SqliteOperation::RequestLogsGc,
         ] {
             runtime
                 .begin_immediate(operation)

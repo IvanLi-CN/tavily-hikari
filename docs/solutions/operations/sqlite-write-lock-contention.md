@@ -88,6 +88,10 @@ month-tail public metrics scan.
   in fallback text mode the same fields remain grep-friendly.
 - Keep billing and MCP serialization fail-closed, but retry transient SQLite busy/locked writes
   inside the existing bounded lock wait or lease budget.
+- Treat online request-log retention as bulk work. Check admission before acquiring a connection;
+  if the earliest eligible local day is not sealed, retain raw rows and their derived rollups,
+  record one deferred outcome, and leave the durable five-minute continuation to retry later.
+  Repeating a blocked batch only amplifies the writer pressure that the guard is meant to contain.
 - Retry background job bookkeeping writes before surfacing scheduler errors.
 - Retry OAuth upsert/refresh wrapper calls so login/profile sync can survive short writer collisions.
 - Retry forward-proxy runtime snapshot persistence at the startup/maintenance boundary so a short

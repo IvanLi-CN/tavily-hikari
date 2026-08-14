@@ -47,6 +47,9 @@
 - 事务污染、stale claim recovery、连续零进展、预算耗尽和全局退避只在进入、升级或恢复时告警。
 - HA GC 低压恢复、SLO deadline、最老可删事件年龄与真实删除率必须可从管理员状态和聚合日志
   还原；sequence span 仅作趋势估算，不作为库存或 ETA。
+- Request-log GC admission and an unsealed-day retention guard are DEBUG-level typed outcomes. They
+  retain the existing five-minute continuation but must not emit one WARN or repeat one failed
+  cleanup batch per scheduler loop.
 - 对账主结算必须先于 Research sweep；本地预算压力与 upstream 429 必须分开记录，且最终
   远端观察、结算和状态落盘都必须受同一轮预算约束。HA GC 正常进展继续按通道 60 秒聚合，
   不能恢复逐片 WARN。

@@ -1086,14 +1086,30 @@ async fn run_request_logs_gc_catchup_claimed_job(
         _job_execution_gate,
     } = claimed_job;
     drop(_job_execution_gate);
-    let _job_execution_gate = acquire_db_job_execution_gate_for_state(state.as_ref()).await;
-    let _maintenance = acquire_db_maintenance_read_gate().await;
+    let _bulk_admission = match state.proxy.admit_request_logs_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            let msg = format!("deferred={reason}");
+            tracing::debug!(
+                component = "request_logs_gc",
+                event = "deferred",
+                job_id,
+                defer_reason = reason,
+                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                "request-log GC deferred before SQLite connection acquisition"
+            );
+            let _ = state
+                .proxy
+                .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&msg))
+                .await;
+            return false;
+        }
+    };
     let result = state
         .proxy
         .gc_request_logs_with_options(scheduled_request_logs_gc_options())
         .await;
-    drop(_maintenance);
-    drop(_job_execution_gate);
+    drop(_bulk_admission);
 
     match result {
         Ok(report) => {

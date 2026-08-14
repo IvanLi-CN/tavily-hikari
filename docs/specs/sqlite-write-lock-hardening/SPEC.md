@@ -157,7 +157,9 @@ source when a usable persisted runtime already exists.
   trigger may reuse and immediately unlock its queued representative row. Body cleanup must cache
   retention context per unique user for a bounded pass, and its `(created_at, id)` partial body
   cursor index must be built by a low-priority post-ready maintenance task rather than schema
-  bootstrap.
+  bootstrap. The online scheduler obtains `maintenance_bulk` admission before acquiring a
+  connection; when a required local-day seal is absent it records one typed incomplete result and
+  defers instead of repeating raw-row, reference-unlink, or rollup work in that slice.
 - Service startup must abandon leftover `queued` or `running` maintenance rows from the previous
   process lifetime rather than implicitly resuming them after restart, except an automatic
   `request_logs_gc` continuation that remains queued so its persisted `available_at` delay survives.

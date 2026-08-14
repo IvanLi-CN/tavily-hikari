@@ -75,6 +75,13 @@ fn request_value_bucket_for_stored_request_log(
 }
 
 impl KeyStore {
+    pub(crate) fn try_admit_request_logs_gc(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+    }
+
     pub(crate) async fn ensure_request_logs_gc_support_indexes(&self) -> Result<(), ProxyError> {
         for (table, sql) in [
             (
@@ -727,6 +734,7 @@ impl KeyStore {
         let mut deleted_request_logs = 0_i64;
         let mut deleted_rollups = 0_i64;
         let mut body_batch_has_more = false;
+        let mut blocked_by_integrity = false;
         let mut batches = 0_i64;
         let mut retention_contexts = std::collections::HashMap::new();
         let mut body_gc_diagnostics = RequestLogBodyGcDiagnostics::default();
@@ -751,23 +759,34 @@ impl KeyStore {
                 self.delete_old_request_logs_batch(raw_delete_cutoff, batch_size)
                     .await?
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     component = "dashboard_rollup_integrity",
                     event = "request_logs_gc_blocked_unsealed_day",
                     threshold,
                     "request log deletion and reference unlinking delayed until its local-day recovery seal exists"
                 );
+                blocked_by_integrity = true;
                 0
             };
-            let rollup_deleted = self
-                .delete_old_request_log_rollups_batch(threshold, batch_size)
-                .await?;
+            let rollup_deleted = if blocked_by_integrity {
+                // Raw request rows and their derived rollups must advance as one
+                // retention unit. A missing day seal is not productive work, so
+                // do not turn one delayed continuation into five write batches.
+                0
+            } else {
+                self.delete_old_request_log_rollups_batch(threshold, batch_size)
+                    .await?
+            };
             body_batch_has_more = body_batch.has_more;
             cleaned_request_log_bodies += body_batch.cleaned;
             body_gc_diagnostics.merge(body_batch.diagnostics);
             deleted_request_logs += request_deleted;
             deleted_rollups += rollup_deleted;
             batches += 1;
+
+            if blocked_by_integrity {
+                break;
+            }
 
             if !body_batch.has_more
                 && body_batch.cleaned == 0
@@ -784,7 +803,8 @@ impl KeyStore {
             }
         }
 
-        let has_more = self.has_old_request_log_rows(threshold).await?
+        let has_more = blocked_by_integrity
+            || self.has_old_request_log_rows(threshold).await?
             || self.has_old_request_log_rollup_rows(threshold).await?
             || body_batch_has_more;
         self.invalidate_request_logs_catalog_cache().await;
@@ -809,6 +829,8 @@ impl KeyStore {
             body_write_elapsed_ms: body_gc_diagnostics.body_write_elapsed_ms,
             progress_status: if !has_more {
                 "completed"
+            } else if blocked_by_integrity {
+                "incomplete_blocked_integrity"
             } else if cleaned_request_log_bodies + deleted_request_logs + deleted_rollups > 0 {
                 "incomplete_progress"
             } else {
