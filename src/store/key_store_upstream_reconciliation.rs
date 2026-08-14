@@ -1163,6 +1163,10 @@ impl KeyStore {
     ) -> Result<Vec<crate::models::UpstreamReconciliationResearchCandidate>, ProxyError> {
         let now = self.backend_time.now_ts();
         let day_window = server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
         let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, i64, i64)>(
             r#"
             WITH pending AS (
@@ -1208,8 +1212,9 @@ impl KeyStore {
         .bind(day_window.start)
         .bind(day_window.end)
         .bind(limit.max(1))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
+        conn.close().await?;
         Ok(rows
             .into_iter()
             .map(|(request_id, token_id, key_id, period_code, billing_subject, period_end, poll_attempt_count, _, _)| {
@@ -1503,10 +1508,15 @@ impl KeyStore {
             LIMIT "#,
             )
             .push_bind(limit.max(1));
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
         let rows = query
             .build_query_as::<UpstreamReconciliationCandidateRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?;
+        conn.close().await?;
         Ok(self.build_upstream_reconciliation_candidates(rows, now))
     }
 
@@ -1627,10 +1637,15 @@ impl KeyStore {
                 .push(")");
         }
         query.push(" ORDER BY token_id ASC, period_code ASC, key_id ASC");
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
         let rows = query
             .build_query_as::<(String, String, String)>()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?;
+        conn.close().await?;
         let mut grouped = std::collections::HashMap::new();
         for (token_id, period_code, key_id) in rows {
             grouped
@@ -1680,10 +1695,15 @@ impl KeyStore {
             GROUP BY requested.token_id, requested.period_code
             "#,
         );
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
         let rows = query
             .build_query_as::<(String, String, i64)>()
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?;
+        conn.close().await?;
         Ok(rows
             .into_iter()
             .map(|(token_id, period_code, credits)| ((token_id, period_code), credits))
@@ -1696,7 +1716,10 @@ impl KeyStore {
     ) -> Result<Result<(), i64>, ProxyError> {
         let now = self.backend_time.now_ts();
         let threshold = now - 600;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ReconciliationProjection)
+            .await?;
         sqlx::query("DELETE FROM upstream_usage_rate_attempts WHERE attempted_at <= ?")
             .bind(threshold)
             .execute(&mut *tx)
@@ -1716,7 +1739,7 @@ impl KeyStore {
             .bind(threshold)
             .fetch_one(&mut *tx)
             .await?;
-            tx.commit().await?;
+            tx.finish(Ok(())).await?;
             return Ok(Err(oldest.saturating_add(600)));
         }
         sqlx::query(
@@ -1727,13 +1750,13 @@ impl KeyStore {
         .bind(now)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
+        tx.finish(Ok(())).await?;
         Ok(Ok(()))
     }
 
     async fn lock_reconciliation_work_generation(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut SqliteImmediateTransaction,
         candidate: &UpstreamReconciliationCandidate,
         fence: Option<ReconciliationWorkFence>,
     ) -> Result<bool, ProxyError> {
@@ -1775,7 +1798,7 @@ impl KeyStore {
 
     async fn claim_reconciliation_work_completion(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut SqliteImmediateTransaction,
         candidate: &UpstreamReconciliationCandidate,
         fence: Option<ReconciliationWorkFence>,
         outcome: &str,
@@ -1825,7 +1848,7 @@ impl KeyStore {
 
     async fn mark_reconciliation_work_completed(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &mut SqliteImmediateTransaction,
         candidate: &UpstreamReconciliationCandidate,
         expected_generation: Option<i64>,
         outcome: &str,
@@ -1867,7 +1890,10 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let normalized_reason = reason.map(|value| classify_reconciliation_retry_reason(Some(value)));
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ReconciliationProjection)
+            .await?;
         if !self
             .lock_reconciliation_work_generation(&mut tx, candidate, fence)
             .await?
@@ -1922,7 +1948,7 @@ impl KeyStore {
         .bind(expected_generation)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
+        tx.finish(Ok(())).await?;
         self.ensure_upstream_reconciliation_representative_job().await?;
         Ok(())
     }
@@ -1947,7 +1973,10 @@ impl KeyStore {
             .unwrap_or_else(|| self.backend_time.now_utc());
         let day_bucket = start_of_local_day_utc_ts(attributed_utc.with_timezone(&Local));
         let month_start = start_of_month(attributed_utc).timestamp();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ReconciliationProjection)
+            .await?;
         let completion_outcome = if delta == 0 {
             RECONCILIATION_OUTCOME_NO_ADJUSTMENT
         } else {
@@ -2015,7 +2044,7 @@ impl KeyStore {
                 now,
             )
             .await?;
-            tx.commit().await?;
+            tx.finish(Ok(())).await?;
             return Ok(true);
         }
         let inserted = sqlx::query(
@@ -2047,7 +2076,7 @@ impl KeyStore {
                 now,
             )
             .await?;
-            tx.commit().await?;
+            tx.finish(Ok(())).await?;
             return Ok(false);
         }
         let (subject_kind, subject_id) = candidate
@@ -2160,7 +2189,7 @@ impl KeyStore {
             now,
         )
         .await?;
-        tx.commit().await?;
+        tx.finish(Ok(())).await?;
         Ok(true)
     }
 
@@ -2176,7 +2205,10 @@ impl KeyStore {
         let settlement_key = format!("v1:{}:{}", candidate.token_id, candidate.period_code);
         let delta = upstream_usage.saturating_sub(local_billed_credits);
         let attributed_at = candidate.period_end.saturating_sub(60);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ReconciliationProjection)
+            .await?;
         let completion_outcome = if delta == 0 {
             RECONCILIATION_OUTCOME_NO_ADJUSTMENT
         } else {
@@ -2268,7 +2300,7 @@ impl KeyStore {
                 now,
             )
             .await?;
-            tx.commit().await?;
+            tx.finish(Ok(())).await?;
             return Ok(true);
         }
         let inserted = sqlx::query(
@@ -2300,7 +2332,7 @@ impl KeyStore {
                 now,
             )
             .await?;
-            tx.commit().await?;
+            tx.finish(Ok(())).await?;
             return Ok(false);
         }
         sqlx::query(
@@ -2358,7 +2390,7 @@ impl KeyStore {
             now,
         )
         .await?;
-        tx.commit().await?;
+        tx.finish(Ok(())).await?;
         Self::emit_shadow_adjustment_written_log(
             started_at.elapsed().as_millis() as u64,
             &settlement_key,

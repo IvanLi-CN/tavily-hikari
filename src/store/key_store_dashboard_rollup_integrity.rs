@@ -105,6 +105,10 @@ impl KeyStore {
     pub(crate) async fn dashboard_rollup_integrity_status(
         &self,
     ) -> Result<DashboardRollupIntegrityStatus, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
+            .await?;
         let now = self.backend_time.now_ts();
         let state = sqlx::query(
             r#"
@@ -113,7 +117,7 @@ impl KeyStore {
             WHERE id = 1
             "#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
         let unverified_bucket_count: i64 = sqlx::query_scalar(
             r#"
@@ -126,7 +130,7 @@ impl KeyStore {
             )
             "#,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await?;
         let DashboardRollupIntegrityStateRow {
             last_verified_at,
@@ -152,7 +156,7 @@ impl KeyStore {
             "SELECT MIN(created_at) FROM request_logs WHERE visibility = ?",
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await?;
         let hot_backlog_bucket_count = hot_cursor
             .zip(hot_fence)
@@ -184,14 +188,16 @@ impl KeyStore {
         } else {
             "healthy"
         };
-        Ok(DashboardRollupIntegrityStatus {
+        let result = DashboardRollupIntegrityStatus {
             state: state.to_string(),
             last_verified_at,
             next_attempt_at,
             unverified_bucket_count: unverified_bucket_count
                 + hot_backlog_bucket_count
                 + history_backlog_bucket_count,
-        })
+        };
+        conn.close().await?;
+        Ok(result)
     }
 
     pub(crate) async fn run_dashboard_rollup_integrity_slice(

@@ -390,6 +390,12 @@ def p95(key):
     return values[min(len(values) - 1, int(len(values) * 0.95))]
 
 logs = (artifact_dir / "compose.log").read_text(errors="replace")
+sqlite_lock_markers = (
+    "database is locked",
+    "database table is locked",
+    "database schema is locked",
+    "database is busy",
+)
 summary = {
     "variant": name,
     "load": load,
@@ -406,9 +412,13 @@ summary = {
             "memory_current_bytes",
         )
     },
-    "sqliteLockErrors": logs.count("database is locked"),
+    "sqliteLockErrors": sum(logs.count(marker) for marker in sqlite_lock_markers),
     "nestedTransactionErrors": logs.count("cannot start a transaction within a transaction"),
-    "http5xx": sum(count for key, count in load["statuses"].items() if key.endswith(":500") or key.endswith(":502") or key.endswith(":503")),
+    "http5xx": sum(
+        count
+        for key, count in load["statuses"].items()
+        if int(key.split(":", 1)[1]) >= 500
+    ),
     "haGc": {
         "before": ha_gc_before,
         "after": ha_gc_after,

@@ -50,6 +50,10 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("additive_tolerance=RSS_P95_NOISE_BAND_KIB", COMPARISON)
         self.assertIn('return summary["load"]["dashboardP95Ms"]', COMPARISON)
         self.assertIn('"rssP95KiB": p95("rss_kib")', COMPARISON)
+        self.assertIn('int(key.split(":", 1)[1]) >= 500', COMPARISON)
+        self.assertIn('"database table is locked"', COMPARISON)
+        self.assertIn('"database schema is locked"', COMPARISON)
+        self.assertIn('"database is busy"', COMPARISON)
 
 
 if __name__ == "__main__":
