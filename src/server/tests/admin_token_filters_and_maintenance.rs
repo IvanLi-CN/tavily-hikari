@@ -537,7 +537,7 @@ use super::upstream_support_and_manual_jobs::*;
         .expect("read failed job and delayed retry");
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].0, job_id);
-        assert_eq!(jobs[0].1, "error");
+        assert_eq!(jobs[0].1, "success");
         assert_eq!(jobs[1].1, "queued");
         assert_eq!(jobs[1].2, TRIGGER_SOURCE_AUTO);
         assert!(

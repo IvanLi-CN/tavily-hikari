@@ -1206,36 +1206,39 @@ async fn run_request_logs_body_gc_index_ensure_claimed_job(
                 .now_ts()
                 .saturating_add(REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS);
             let message = format!("deferred={reason}");
-            let _ = state
+            match state
                 .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&message))
-                .await;
-            match enqueue_scheduled_job_at(
-                state.as_ref(),
-                REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
-                None,
-                TRIGGER_SOURCE_AUTO,
-                available_at,
-            )
-            .await
+                .scheduled_job_finish_and_enqueue_auto_at(
+                    job_id,
+                    claim_generation,
+                    REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
+                    None,
+                    1,
+                    Some(&message),
+                    available_at,
+                )
+                .await
             {
-                Ok(retry_job_id) => tracing::debug!(
+                Ok(retry) => {
+                    maintenance_worker_wake_for_state(state.as_ref()).notify_one();
+                    tracing::debug!(
                     component = "request_logs_gc",
                     event = "body_gc_index_deferred",
                     job_id,
-                    retry_job_id,
+                    retry_job_id = retry.job_id,
                     defer_reason = reason,
                     available_at,
                     "request-log body GC index build deferred before SQLite connection acquisition"
-                ),
+                    );
+                }
                 Err(err) => tracing::warn!(
                     component = "request_logs_gc",
-                    event = "body_gc_index_defer_enqueue_failed",
+                    event = "body_gc_index_defer_handoff_failed",
                     job_id,
                     defer_reason = reason,
                     available_at,
                     err = %err,
-                    "request-log body GC index defer could not be persisted"
+                    "request-log body GC index defer handoff could not be persisted; stale recovery remains eligible"
                 ),
             }
             return false;
@@ -1258,47 +1261,46 @@ async fn run_request_logs_body_gc_index_ensure_claimed_job(
             true
         }
         Err(err) => {
-            let _ = state
-                .proxy
-                .scheduled_job_finish_claimed(
-                    job_id,
-                    claim_generation,
-                    "error",
-                    Some(&err.to_string()),
-                )
-                .await;
             let available_at = state
                 .proxy
                 .backend_time()
                 .now_ts()
                 .saturating_add(REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS);
-            match enqueue_scheduled_job_at(
-                state.as_ref(),
-                REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
-                None,
-                TRIGGER_SOURCE_AUTO,
-                available_at,
-            )
-            .await
+            match state
+                .proxy
+                .scheduled_job_finish_and_enqueue_auto_at(
+                    job_id,
+                    claim_generation,
+                    REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
+                    None,
+                    1,
+                    Some(&err.to_string()),
+                    available_at,
+                )
+                .await
             {
-                Ok(retry_job_id) => tracing::warn!(
+                Ok(retry) => {
+                    maintenance_worker_wake_for_state(state.as_ref()).notify_one();
+                    tracing::warn!(
+                        component = "request_logs_gc",
+                        event = "body_gc_index_retry_queued",
+                        failed_job_id = job_id,
+                        retry_job_id = retry.job_id,
+                        retry_delay_secs = REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS,
+                        available_at,
+                        err = %err,
+                        "request-log body GC index build failed; retry persisted atomically"
+                    );
+                }
+                Err(handoff_err) => tracing::warn!(
                     component = "request_logs_gc",
-                    event = "body_gc_index_retry_queued",
+                    event = "body_gc_index_retry_handoff_failed",
                     failed_job_id = job_id,
-                    retry_job_id,
                     retry_delay_secs = REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS,
                     available_at,
                     err = %err,
-                    "request-log body GC index build failed; retry queued"
-                ),
-                Err(retry_err) => tracing::warn!(
-                    component = "request_logs_gc",
-                    event = "body_gc_index_retry_enqueue_failed",
-                    failed_job_id = job_id,
-                    retry_delay_secs = REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS,
-                    err = %err,
-                    retry_err = %retry_err,
-                    "request-log body GC index build failed and retry could not be queued"
+                    handoff_err = %handoff_err,
+                    "request-log body GC index build retry handoff failed; stale recovery remains eligible"
                 ),
             }
             false
