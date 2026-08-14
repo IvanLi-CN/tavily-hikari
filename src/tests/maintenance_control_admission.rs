@@ -313,6 +313,45 @@ async fn reconciliation_claim_fence_and_run_marker_use_control_budget() {
         "run marker exceeded its control budget: {:?}",
         marker_started.elapsed()
     );
+
+    let stats_started = Instant::now();
+    let stats_err = proxy
+        .key_store
+        .record_upstream_reconciliation_run_stats(1, 1, 0, 0, 0, false)
+        .await
+        .expect_err("run stats must not wait behind foreground pool saturation");
+    assert!(is_transient_sqlite_write_error(&stats_err));
+    assert!(
+        stats_started.elapsed() < Duration::from_millis(250),
+        "run stats exceeded its control budget: {:?}",
+        stats_started.elapsed()
+    );
+
+    let continuation_started = Instant::now();
+    let continuation_err = proxy
+        .key_store
+        .upstream_reconciliation_continuation_at()
+        .await
+        .expect_err("continuation discovery must not wait behind foreground pool saturation");
+    assert!(is_transient_sqlite_write_error(&continuation_err));
+    assert!(
+        continuation_started.elapsed() < Duration::from_millis(250),
+        "continuation discovery exceeded its control budget: {:?}",
+        continuation_started.elapsed()
+    );
+
+    let projection_started = Instant::now();
+    let projection_err = proxy
+        .key_store
+        .advance_upstream_reconciliation_work_projection()
+        .await
+        .expect_err("legacy projection must not wait behind foreground pool saturation");
+    assert!(is_transient_sqlite_write_error(&projection_err));
+    assert!(
+        projection_started.elapsed() < Duration::from_millis(250),
+        "legacy projection exceeded its bulk acquisition budget: {:?}",
+        projection_started.elapsed()
+    );
     drop((third, second, first));
 
     let _ = std::fs::remove_file(&db_path);

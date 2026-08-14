@@ -2476,7 +2476,10 @@ async fn request_logs_gc_continues_when_body_scan_only_advances_cursor() {
         .await
         .expect("run multi-batch request logs gc");
     assert_eq!(report.cleaned_request_log_bodies, 1);
-    assert!(report.completed);
+    assert!(
+        report.completed,
+        "expected the final cursor pass to complete: {report:?}"
+    );
     assert!(!report.has_more);
     assert!(report.unique_retention_users == 1 && report.retention_context_cache_hits >= 63);
 

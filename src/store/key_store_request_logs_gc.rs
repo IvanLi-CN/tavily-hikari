@@ -370,7 +370,7 @@ impl KeyStore {
 
     async fn fetch_request_log_body_gc_candidates(
         &self,
-        batch_size: i64,
+        scan_limit: i64,
         after: Option<(i64, i64)>,
         row_retention_threshold: i64,
     ) -> Result<Vec<RequestLogBodyGcCandidate>, ProxyError> {
@@ -386,6 +386,7 @@ impl KeyStore {
                 FROM observability.request_logs INDEXED BY idx_request_logs_time
                 WHERE created_at >= ?
                   AND (created_at > ? OR (created_at = ? AND id > ?))
+                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
@@ -394,7 +395,7 @@ impl KeyStore {
             .bind(created_at)
             .bind(created_at)
             .bind(id)
-            .bind(batch_size)
+            .bind(scan_limit)
             .fetch_all(&mut *conn)
             .await?
         } else {
@@ -404,20 +405,23 @@ impl KeyStore {
                        request_kind_label, request_kind_detail, path, request_body, response_body
                 FROM observability.request_logs INDEXED BY idx_request_logs_time
                 WHERE created_at >= ?
+                  AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 "#,
             )
             .bind(row_retention_threshold)
-            .bind(batch_size)
+            .bind(scan_limit)
             .fetch_all(&mut *conn)
             .await?
         };
         conn.close().await?;
-        rows.into_iter()
+        let candidates = rows
+            .into_iter()
             .map(Self::map_request_log_body_gc_candidate)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(ProxyError::from)
+            .map_err(ProxyError::from)?;
+        Ok(candidates)
     }
 
     fn request_log_body_is_expired(
@@ -554,7 +558,11 @@ impl KeyStore {
         {
             let query_started = self.backend_time.instant_now();
             let candidates = self
-                .fetch_request_log_body_gc_candidates(batch_size, after, row_retention_threshold)
+                .fetch_request_log_body_gc_candidates(
+                    scan_limit.saturating_sub(scanned),
+                    after,
+                    row_retention_threshold,
+                )
                 .await?;
             diagnostics.body_candidate_query_elapsed_ms += query_started.elapsed().as_millis();
             if candidates.is_empty() {
@@ -565,9 +573,6 @@ impl KeyStore {
                 after = Some((candidate.created_at, candidate.id));
                 scanned += 1;
                 diagnostics.scanned_body_candidates += 1;
-                if candidate.request_body.is_none() && candidate.response_body.is_none() {
-                    continue;
-                }
                 let request_body_slice = candidate.request_body.as_deref().unwrap_or(&[]);
                 let request_kind = canonicalize_request_log_request_kind(
                     &candidate.path,
@@ -712,7 +717,9 @@ impl KeyStore {
                     break 'scan;
                 }
             }
-            if fetched < batch_size {
+            if fetched >= scan_limit {
+                has_more = true;
+            } else {
                 break;
             }
         }

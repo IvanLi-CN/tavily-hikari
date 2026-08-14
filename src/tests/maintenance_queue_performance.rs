@@ -528,6 +528,7 @@ async fn request_log_body_gc_candidate_query_uses_time_cursor_index() {
         SELECT id, created_at
         FROM observability.request_logs INDEXED BY idx_request_logs_time
         WHERE created_at >= 0
+          AND (request_body IS NOT NULL OR response_body IS NOT NULL)
         ORDER BY created_at ASC, id ASC
         LIMIT 100
         "#,

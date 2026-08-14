@@ -163,6 +163,10 @@ impl KeyStore {
         key_id: &str,
         scope: &str,
     ) -> Result<Option<ApiKeyTransientBackoffState>, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
         let state = sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT cooldown_until, retry_after_secs
@@ -173,8 +177,9 @@ impl KeyStore {
         )
         .bind(key_id)
         .bind(scope)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
+        conn.close().await?;
         Ok(state.map(|(cooldown_until, retry_after_secs)| ApiKeyTransientBackoffState {
             cooldown_until,
             retry_after_secs,
@@ -187,7 +192,7 @@ impl KeyStore {
         job_id: i64,
         claim_generation: i64,
     ) -> Result<Option<ApiKeyTransientBackoffState>, ProxyError> {
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
         if !Self::reconciliation_claim_is_current_locked(
             &mut transaction,
             Some((job_id, claim_generation)),
@@ -269,7 +274,7 @@ impl KeyStore {
                 retry_after_secs: current.1,
             },
         );
-        transaction.commit().await?;
+        transaction.finish(Ok(())).await?;
         Ok(state)
     }
 
@@ -544,24 +549,15 @@ impl KeyStore {
         .map_err(ProxyError::Database)
     }
 
-    pub(crate) async fn upstream_reconciliation_global_backoff_state(
-        &self,
-    ) -> Result<(i64, i64, i64), ProxyError> {
-        Ok((
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1).await?.unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1).await?.unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1).await?.unwrap_or(0),
-        ))
-    }
-
     pub(crate) async fn upstream_reconciliation_local_backoff_state(
         &self,
     ) -> Result<(i64, i64, i64), ProxyError> {
-        Ok((
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1).await?.unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1).await?.unwrap_or(0),
-            self.get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1).await?.unwrap_or(0),
-        ))
+        self.read_reconciliation_backoff_state(
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+        )
+        .await
     }
 
     pub(crate) async fn upstream_reconciliation_local_last_recovered_at(
@@ -574,6 +570,11 @@ impl KeyStore {
         &self,
     ) -> Result<Option<i64>, ProxyError> {
         let now = self.backend_time.now_ts();
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = async {
         let work_at: Option<i64> = sqlx::query_scalar(
             r#"
             SELECT MIN(MAX(
@@ -599,7 +600,7 @@ impl KeyStore {
             "#,
         )
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await?;
         let research_at: Option<i64> = sqlx::query_scalar(
             r#"
@@ -609,20 +610,22 @@ impl KeyStore {
             "#,
         )
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await?;
         // A one-time versioned lifecycle flag keeps historical source projection off the hot
         // continuation read path. New usage is maintained by triggers and therefore never
         // reopens a completed period merely because the legacy cursor is absent.
-        let projection_pending = self
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1)
-            .await?
-            .unwrap_or(0)
-            == 0;
+        let projection_pending: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM meta WHERE key = ?",
+        )
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1)
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(0);
         // Historical projection is local maintenance, not a main-settlement retry. Keep the
         // representative delayed while no durable candidate exists so a disabled or not-yet
         // ready reconciliation configuration cannot spin an immediate worker loop.
-        let projection_at = projection_pending.then_some(now.saturating_add(30));
+        let projection_at = (projection_pending == 0).then_some(now.saturating_add(30));
         let Some(pending_at) = (match (work_at, research_at, projection_at) {
             (Some(work_at), Some(research_at), Some(projection_at)) => {
                 Some(work_at.min(research_at).min(projection_at))
@@ -637,15 +640,28 @@ impl KeyStore {
         }) else {
             return Ok(None);
         };
-        let global_until = self
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1)
-            .await?
-            .unwrap_or(0);
-        let local_until = self
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
-            .await?
-            .unwrap_or(0);
+        let (_, _, global_until) = Self::reconciliation_backoff_state_locked(
+            &mut conn,
+            META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
+        )
+        .await?;
+        let (_, _, local_until) = Self::reconciliation_backoff_state_locked(
+            &mut conn,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+        )
+        .await?;
         Ok(Some(pending_at.max(global_until).max(local_until).max(now)))
+        }
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(continuation_at), Ok(())) => Ok(continuation_at),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
     }
 
     /// Returns a runnable representative wake. Durable reconciliation state remains intact while
@@ -653,8 +669,7 @@ impl KeyStore {
     pub(crate) async fn upstream_reconciliation_representative_available_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
-        let settings = self.get_system_settings().await?;
-        if !upstream_reconciliation_shadow_ready(&settings) {
+        if !self.upstream_reconciliation_shadow_ready_for_control().await? {
             return Ok(None);
         }
         self.upstream_reconciliation_continuation_at().await
@@ -680,10 +695,103 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn reconciliation_claim_is_current_locked(
-        transaction: &mut ImmediateSqliteTransaction,
+    async fn upstream_reconciliation_shadow_ready_for_control(&self) -> Result<bool, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT key, value FROM meta WHERE key IN (?, ?, ?)",
+            )
+            .bind(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .bind(META_KEY_API_REBALANCE_ENABLED_V1)
+            .bind(META_KEY_REBALANCE_MCP_ENABLED_V1)
+            .fetch_all(&mut *conn)
+            .await?;
+            let values = rows.into_iter().collect::<std::collections::HashMap<_, _>>();
+            let value_i64 = |key: &str| {
+                values
+                    .get(key)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(0)
+            };
+            Ok(
+                values
+                    .get(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+                    .and_then(|value| UpstreamProjectIdMode::from_meta_value(value))
+                    .unwrap_or_default()
+                    == UpstreamProjectIdMode::AccessToken
+                    && value_i64(META_KEY_API_REBALANCE_ENABLED_V1) != 0
+                    && value_i64(META_KEY_REBALANCE_MCP_ENABLED_V1) != 0,
+            )
+        }
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(shadow_ready), Ok(())) => Ok(shadow_ready),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
+    }
+
+    async fn read_reconciliation_backoff_state(
+        &self,
+        streak_key: &str,
+        level_key: &str,
+        until_key: &str,
+    ) -> Result<(i64, i64, i64), ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = Self::reconciliation_backoff_state_locked(
+            &mut conn,
+            streak_key,
+            level_key,
+            until_key,
+        )
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(state), Ok(())) => Ok(state),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
+    }
+
+    async fn reconciliation_backoff_state_locked<T>(
+        connection: &mut T,
+        streak_key: &str,
+        level_key: &str,
+        until_key: &str,
+    ) -> Result<(i64, i64, i64), ProxyError>
+    where
+        T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
+    {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value FROM meta WHERE key IN (?, ?, ?)",
+        )
+        .bind(streak_key)
+        .bind(level_key)
+        .bind(until_key)
+        .fetch_all(&mut **connection)
+        .await?;
+        let values = rows.into_iter().collect::<std::collections::HashMap<_, _>>();
+        let value_i64 = |key: &str| {
+            values
+                .get(key)
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0)
+        };
+        Ok((value_i64(streak_key), value_i64(level_key), value_i64(until_key)))
+    }
+
+    async fn reconciliation_claim_is_current_locked<T>(
+        transaction: &mut T,
         claimed_job: Option<(i64, i64)>,
-    ) -> Result<bool, ProxyError> {
+    ) -> Result<bool, ProxyError>
+    where
+        T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
+    {
         let Some((job_id, claim_generation)) = claimed_job else {
             return Ok(true);
         };
@@ -703,101 +811,20 @@ impl KeyStore {
         Ok(current != 0)
     }
 
-    async fn sync_upstream_reconciliation_representative_locked(
-        transaction: &mut ImmediateSqliteTransaction,
-        now: i64,
-        claimed_job: Option<(i64, i64)>,
-    ) -> Result<(), ProxyError> {
-        let available_at = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(CAST(value AS INTEGER)) FROM meta WHERE key IN (?, ?)",
-        )
-        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
-        .bind(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1)
-        .fetch_one(&mut **transaction)
-        .await?
-        .unwrap_or(0);
-        if let Some((job_id, claim_generation)) = claimed_job {
-            if available_at <= now {
-                if !Self::reconciliation_claim_is_current_locked(
-                    transaction,
-                    Some((job_id, claim_generation)),
-                )
-                .await?
-                {
-                    return Err(ProxyError::StaleClaim {
-                        job_id,
-                        claim_generation,
-                    });
-                }
-                return Ok(());
-            }
-            let updated = sqlx::query(
-                r#"UPDATE scheduled_jobs
-                   SET status = 'queued', available_at = ?, started_at = NULL,
-                       finished_at = NULL, message = 'reconciliation backoff active'
-                   WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
-            )
-            .bind(available_at)
-            .bind(job_id)
-            .bind(claim_generation)
-            .execute(&mut **transaction)
-            .await?;
-            if updated.rows_affected() == 0 {
-                return Err(ProxyError::StaleClaim {
-                    job_id,
-                    claim_generation,
-                });
-            }
-            return Ok(());
-        }
-        if available_at > now {
-            sqlx::query(
-                r#"UPDATE scheduled_jobs
-                   SET available_at = MAX(available_at, ?)
-                   WHERE job_type = 'upstream_reconciliation'
-                     AND status = 'queued' AND trigger_source = 'auto'"#,
-            )
-            .bind(available_at)
-            .execute(&mut **transaction)
-            .await?;
-            sqlx::query(
-                r#"INSERT INTO scheduled_jobs (
-                     job_type, trigger_source, status, attempt, queued_at, available_at
-                   )
-                   SELECT 'upstream_reconciliation', 'auto', 'queued', 1, ?, ?
-                   WHERE NOT EXISTS (
-                     SELECT 1 FROM scheduled_jobs
-                     WHERE job_type = 'upstream_reconciliation'
-                       AND status IN ('queued', 'running')
-                   )"#,
-            )
-            .bind(now)
-            .bind(available_at)
-            .execute(&mut **transaction)
-            .await?;
-        } else {
-            sqlx::query(
-                r#"UPDATE scheduled_jobs
-                   SET status = 'abandoned', finished_at = ?,
-                       message = 'reconciliation backoff recovered'
-                   WHERE job_type = 'upstream_reconciliation'
-                     AND status = 'queued' AND trigger_source = 'auto'"#,
-            )
-            .bind(now)
-            .execute(&mut **transaction)
-            .await?;
-        }
-        Ok(())
-    }
-
     async fn update_upstream_reconciliation_local_backoff_inner(
         &self,
         pressure: bool,
         now: i64,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<(i64, i64, i64), ProxyError> {
-        let (previous_streak, previous_level, _) =
-            self.upstream_reconciliation_local_backoff_state().await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
+        let (previous_streak, previous_level, _) = Self::reconciliation_backoff_state_locked(
+            &mut transaction,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+        )
+        .await?;
         let (streak, level, until) = if pressure {
             let streak = previous_streak.saturating_add(1);
             let level = if streak < 3 {
@@ -816,7 +843,6 @@ impl KeyStore {
         } else {
             (0, 0, 0)
         };
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
             transaction.rollback().await?;
@@ -850,7 +876,7 @@ impl KeyStore {
             claimed_job,
         )
         .await?;
-        transaction.commit_connection().await?;
+        transaction.finish(Ok(())).await?;
         Ok((streak, level, until))
     }
 
@@ -912,7 +938,8 @@ impl KeyStore {
         upstream_429: i64,
         budget_exhausted: bool,
     ) -> Result<(), ProxyError> {
-        sqlx::query(
+        let mut transaction = self.begin_reconciliation_control().await?;
+        let result = sqlx::query(
             r#"INSERT INTO meta (key, value) VALUES
                    (?, ?), (?, ?), (?, ?), (?, ?), (?, ?), (?, ?)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
@@ -929,9 +956,12 @@ impl KeyStore {
         .bind(upstream_429.to_string())
         .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
         .bind(if budget_exhausted { "1" } else { "0" })
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        .execute(&mut *transaction)
+        .await;
+        match result {
+            Ok(_) => transaction.finish(Ok(())).await,
+            Err(err) => transaction.finish(Err(ProxyError::Database(err))).await,
+        }
     }
 
     async fn update_upstream_reconciliation_global_backoff_inner(
@@ -941,8 +971,14 @@ impl KeyStore {
         retry_after_until: Option<i64>,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<(i64, i64, i64), ProxyError> {
-        let (previous_streak, previous_level, _) =
-            self.upstream_reconciliation_global_backoff_state().await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
+        let (previous_streak, previous_level, _) = Self::reconciliation_backoff_state_locked(
+            &mut transaction,
+            META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1,
+        )
+        .await?;
         let (streak, level, until) = if pressure {
             let streak = previous_streak.saturating_add(1);
             let level = if streak < 3 {
@@ -965,7 +1001,6 @@ impl KeyStore {
         } else {
             (0, 0, 0)
         };
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
             transaction.rollback().await?;
@@ -999,7 +1034,7 @@ impl KeyStore {
             claimed_job,
         )
         .await?;
-        transaction.commit_connection().await?;
+        transaction.finish(Ok(())).await?;
         Ok((streak, level, until))
     }
 
@@ -1069,7 +1104,7 @@ impl KeyStore {
         timestamp: i64,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<(), ProxyError> {
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
             transaction.rollback().await?;
@@ -1083,7 +1118,7 @@ impl KeyStore {
             .bind(timestamp.to_string())
             .execute(&mut *transaction)
             .await?;
-        transaction.commit().await
+        transaction.finish(Ok(())).await
     }
 
     pub(crate) async fn record_upstream_reconciliation_usage(
@@ -1207,7 +1242,7 @@ impl KeyStore {
         claimed_job: Option<(i64, i64)>,
     ) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
             transaction.rollback().await?;
@@ -1243,7 +1278,7 @@ impl KeyStore {
                 .execute(&mut *transaction)
                 .await?;
         }
-        transaction.commit().await?;
+        transaction.finish(Ok(())).await?;
         Ok(changed > 0)
     }
 
@@ -1366,7 +1401,7 @@ impl KeyStore {
         claimed_job: Option<(i64, i64)>,
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut transaction = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
+        let mut transaction = self.begin_reconciliation_control().await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
             transaction.rollback().await?;
@@ -1391,7 +1426,7 @@ impl KeyStore {
         .bind(request_id)
         .execute(&mut *transaction)
         .await?;
-        transaction.commit().await
+        transaction.finish(Ok(())).await
     }
 
     fn build_upstream_reconciliation_candidates(
@@ -1444,28 +1479,40 @@ impl KeyStore {
         &self,
     ) -> Result<(), ProxyError> {
         const CURSOR_KEY: &str = "upstream_reconciliation_work_cursor_v1";
-        if self
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1)
-            .await?
-            .unwrap_or(0)
-            != 0
-        {
+        let mut transaction = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ReconciliationProjection)
+            .await?;
+        let projection_complete: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM meta WHERE key = ?",
+        )
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .unwrap_or(0);
+        if projection_complete != 0 {
+            transaction.finish(Ok(())).await?;
             return Ok(());
         }
-        let cursor = self.get_meta_i64(CURSOR_KEY).await?.unwrap_or(0);
+        let cursor: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(CAST(value AS INTEGER), 0) FROM meta WHERE key = ?",
+        )
+        .bind(CURSOR_KEY)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .unwrap_or(0);
         let next_cursor: Option<i64> = sqlx::query_scalar(
             "SELECT MAX(rowid) FROM (SELECT rowid FROM upstream_reconciliation_usage WHERE rowid > ? ORDER BY rowid LIMIT 500)",
         )
         .bind(cursor)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *transaction)
         .await?;
         let Some(next_cursor) = next_cursor else {
-            self.set_meta_i64(
-                META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1,
-                1,
-            )
-            .await?;
-            return Ok(());
+            sqlx::query("INSERT INTO meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                .bind(META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1)
+                .execute(&mut *transaction)
+                .await?;
+            return transaction.finish(Ok(())).await;
         };
         sqlx::query(
             r#"INSERT INTO upstream_reconciliation_work (
@@ -1489,9 +1536,14 @@ impl KeyStore {
         )
         .bind(cursor)
         .bind(next_cursor)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.set_meta_i64(CURSOR_KEY, next_cursor).await
+        sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(CURSOR_KEY)
+            .bind(next_cursor.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.finish(Ok(())).await
     }
 
     async fn query_upstream_reconciliation_candidates(

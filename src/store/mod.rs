@@ -2678,6 +2678,7 @@ include!("key_store_sessions.rs");
 include!("key_store_mcp_session_bindings.rs");
 include!("key_store_system_settings.rs");
 include!("key_store_upstream_reconciliation.rs");
+include!("key_store_upstream_reconciliation_admission.rs");
 include!("key_store_users_and_oauth.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
 include!("key_store_request_log_body_retention.rs");

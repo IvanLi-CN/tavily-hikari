@@ -61,6 +61,55 @@ async fn request_logs_gc_scans_bodies_without_online_schema_work() {
 }
 
 #[tokio::test]
+async fn request_logs_gc_does_not_hydrate_bodyless_cursor_windows() {
+    let db_path = temp_db_path("request-logs-gc-bodyless-cursor-window");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE candidates(id) AS (
+            VALUES(1)
+            UNION ALL
+            SELECT id + 1 FROM candidates WHERE id < 64
+        )
+        INSERT INTO observability.request_logs (
+            method, path, result_status, visibility, created_at
+        )
+        SELECT 'POST', '/api/tavily/search', 'success', ?, ? + id
+        FROM candidates
+        "#,
+    )
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(Utc::now().timestamp())
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed bodyless cursor window");
+
+    let report = proxy
+        .gc_request_logs_with_options(RequestLogsGcOptions {
+            batch_size: 1,
+            max_batches: 1,
+            max_runtime_secs: 1,
+            inter_batch_sleep_ms: 0,
+        })
+        .await
+        .expect("bounded body scan completes without user retention reads");
+
+    assert_eq!(report.scanned_body_candidates, 0);
+    assert_eq!(report.unique_retention_users, 0);
+    assert_eq!(report.retention_context_cache_hits, 0);
+    assert_eq!(report.cleaned_request_log_bodies, 0);
+    assert!(report.completed);
+    assert!(!report.has_more);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn request_logs_gc_stops_after_an_unsealed_day_without_repeating_work() {
     let lock = env_lock();
     let _env_lock = lock.lock().await;
