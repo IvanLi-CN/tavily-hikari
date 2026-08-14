@@ -127,9 +127,9 @@ source when a usable persisted runtime already exists.
   `job_type`.
 - Manual scheduled-job triggers must use the same execution path as scheduler runs, coalesce onto an
   existing `queued`/`running` representative row of the same logical job, and return that
-  representative `job_id` instead of rejecting on a shared execution gate timeout. The self-scheduling
-  `ha_outbox_gc` exception may return `202 status=deferred` with `jobId=0` when foreground SQLite
-  admission itself times out: that sentinel is not a durable row, and the controller/watchdog owns
+  representative `job_id` instead of rejecting on a shared execution gate timeout. If foreground
+  SQLite admission cannot persist an `ha_outbox_gc` representative, the endpoint returns `503`; it
+  must not claim `202` acceptance with a synthetic job id. The controller/watchdog owns automatic
   recovery without a background retry loop.
 - Manual trigger responses may add queue-state hints such as representative `status`,
   `coalesced=true`, and `promoted=true` as long as the existing `jobId` / `jobType` /
@@ -199,6 +199,9 @@ source when a usable persisted runtime already exists.
 - Scheduled-job metadata writes are `maintenance_control`: they use a `100ms` connection/writer
   budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
   representative row or claim-fenced stale recovery owns later retry.
+- Scheduler dequeue and next-wake reads are also `maintenance_control`: they acquire through the
+  same bounded operation path. If the remote-I/O slot makes the first candidate page ineligible,
+  the scheduler must perform one bounded local-only fallback lookup before yielding.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
   stays synchronous and owner-facing reads use durable fallback instead of inheriting any write-side
@@ -284,7 +287,8 @@ source when a usable persisted runtime already exists.
   the finish transaction; a transient conflict may use a fixed, bounded same-generation retry, or
   leave the running claim for stale reaper recovery. It must never create an unbounded background
   retry loop.
-- Reconciliation candidate selection is bounded by indexed pages before hydration. Three consecutive
+- Reconciliation candidate selection and key/cooldown hydration are bounded local bulk work before
+  any remote request; they must acquire admission and release it before remote I/O. Three consecutive
   rounds with eligible candidates but no remote attempt and exhausted local budget enter a persisted
   short local backoff with one delayed representative job. Only actual upstream 429 attempts enter
   the persisted `2/5/10/30` minute remote backoff and honor `Retry-After`.
@@ -377,8 +381,9 @@ source when a usable persisted runtime already exists.
   debt and must continue no faster than five minutes, so a clean large outbox cannot become a
   permanent fast maintenance loop. The five-minute scheduler watchdog may coalesce with the current
   representative when durable GC state reports channel debt. When the mask is empty, it may perform only
-  a short controller-state observation-age read; an overdue observation wakes the normal indexed,
-  admission-gated channel probe rather than scanning an outbox in the watchdog. The hourly baseline sweep
+  a short controller-state observation-age read; an overdue observation adds its specific channel to
+  the pending mask and wakes the normal indexed, admission-gated channel probe rather than scanning an
+  outbox in the watchdog. The hourly baseline sweep
   discovers newly expired rows and the watchdog rediscovers both lost continuations and stale empty
   observations within five minutes.
 - Per-channel HA GC state must retain cumulative deleted rows, the last high watermark, ingress

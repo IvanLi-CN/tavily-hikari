@@ -309,6 +309,8 @@
         "tests::ha_outbox_and_compaction::online_ha_gc_",
         "tests::ha_outbox_and_compaction::online_gc_",
         "tests::ha_outbox_and_compaction::db_",
+        "tests::maintenance_control_admission::",
+        "tests::request_logs_gc_admission::",
         "tests::account_quota_and_billing::monthly_",
         "tests::usage_series_and_backfills::monthly_",
         "tests::proxy_affinity_and_summary::quarantine_",

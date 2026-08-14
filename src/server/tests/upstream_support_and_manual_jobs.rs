@@ -1994,6 +1994,57 @@ pub(super) async fn manual_jobs_trigger_coalesces_running_job_and_returns_repres
 }
 
 #[tokio::test]
+pub(super) async fn manual_ha_gc_trigger_rejects_without_a_synthetic_job_when_admission_fails() {
+    let db_path = temp_db_path("manual-ha-gc-trigger-no-synthetic-job");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let release = hold_sqlite_write_lock_for_manual_trigger_test(&db_str, Duration::from_secs(1)).await;
+    let admin_addr = spawn_keys_admin_server(
+        proxy.clone(),
+        ForwardAuthConfig::new(None, None, None, None),
+        true,
+    )
+    .await;
+
+    let response = Client::new()
+        .post(format!("http://{admin_addr}/api/jobs/trigger"))
+        .json(&serde_json::json!({ "jobType": "ha_outbox_gc" }))
+        .send()
+        .await
+        .expect("manual HA GC trigger response");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "a trigger that could not persist a representative must not claim acceptance"
+    );
+    release.await.expect("release writer lock");
+
+    let inspection_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&db_str)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("open inspection pool");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'ha_outbox_gc'",
+    )
+    .fetch_one(&inspection_pool)
+    .await
+    .expect("count HA GC representatives");
+    assert_eq!(rows, 0, "no durable job exists after rejected admission");
+
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(format!("{db_str}-shm"));
+    let _ = std::fs::remove_file(format!("{db_str}-wal"));
+}
+
+#[tokio::test]
 pub(super) async fn manual_jobs_trigger_coalesces_running_manual_job_without_waiting_for_write_lock() {
     let db_path = temp_db_path("manual-jobs-trigger-running-manual-fast-path");
     let db_str = db_path.to_string_lossy().to_string();

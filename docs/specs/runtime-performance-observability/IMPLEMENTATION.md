@@ -13,6 +13,9 @@
   state transitions.
 - The runtime reads `/proc` and cgroup I/O only for a window emission, slow/error path, or state
   transition. The aggregation never includes SQL, parameters, request bodies, or credentials.
+- A low-pressure GC slice may request allocator trimming only after the connection closes, and the
+  process-wide request is rate-limited to one attempt per five minutes. The trim duration is DEBUG
+  diagnostic data, so debt recovery cannot turn allocator maintenance into a per-slice CPU cost.
 
 - 默认 runtime logging 继续沿用现有 JSON stderr 与 `RUNTIME_LOG_FORMAT=text` fallback，
   没有引入第二套 telemetry。

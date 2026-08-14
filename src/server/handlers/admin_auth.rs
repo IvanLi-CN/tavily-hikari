@@ -46,27 +46,12 @@ struct TriggerJobResponse {
     promoted: bool,
 }
 
-const DEFERRED_MANUAL_HA_GC_JOB_ID: i64 = 0;
-
-fn deferred_manual_ha_gc_trigger_response(
-    job_type: &str,
-    err: &ProxyError,
-) -> Option<TriggerJobResponse> {
-    if job_type != "ha_outbox_gc" || !tavily_hikari::is_transient_sqlite_write_error(err) {
-        return None;
+fn manual_trigger_failure_status(err: &ProxyError) -> StatusCode {
+    if tavily_hikari::is_transient_sqlite_write_error(err) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
     }
-
-    // SQLite generated job ids are always positive. Zero keeps the existing
-    // response shape while making it explicit that this is an accepted
-    // admission defer, not a durable job row a caller can query.
-    Some(TriggerJobResponse {
-        job_id: DEFERRED_MANUAL_HA_GC_JOB_ID,
-        job_type: job_type.to_string(),
-        trigger_source: TRIGGER_SOURCE_MANUAL.to_string(),
-        status: "deferred".to_string(),
-        coalesced: true,
-        promoted: false,
-    })
 }
 
 fn manual_trigger_requires_key(job_type: &str) -> bool {
@@ -278,16 +263,15 @@ async fn post_trigger_job(
         )
             .into_response()),
         Err(err) => {
-            if let Some(deferred) = deferred_manual_ha_gc_trigger_response(&job_type, &err) {
+            if tavily_hikari::is_transient_sqlite_write_error(&err) {
                 tracing::debug!(
-                    component = "ha_outbox_gc",
-                    event = "manual_trigger_deferred",
+                    component = "scheduler",
+                    event = "manual_trigger_unavailable",
                     defer_reason = "sqlite_contention",
                     job_type,
-                    "HA outbox GC manual trigger deferred before durable job admission"
+                    "manual trigger rejected because no durable representative could be admitted"
                 );
-                maintenance_worker_wake_for_state(state.as_ref()).notify_one();
-                return Ok((StatusCode::ACCEPTED, Json(deferred)).into_response());
+                return Err(manual_trigger_failure_status(&err));
             }
             tracing::error!(
                 component = "scheduler",
@@ -296,17 +280,14 @@ async fn post_trigger_job(
                 err = %err,
                 "manual scheduled job trigger failed"
             );
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err(manual_trigger_failure_status(&err))
         }
     }
 }
 
 #[cfg(test)]
 mod manual_trigger_tests {
-    use super::{
-        DEFERRED_MANUAL_HA_GC_JOB_ID, ManualTriggerKeyIdError, ProxyError,
-        deferred_manual_ha_gc_trigger_response, manual_trigger_key_id_for_claim,
-    };
+    use super::{ManualTriggerKeyIdError, ProxyError, manual_trigger_failure_status, manual_trigger_key_id_for_claim};
 
     #[test]
     fn manual_global_jobs_reject_key_id() {
@@ -326,26 +307,18 @@ mod manual_trigger_tests {
     }
 
     #[test]
-    fn manual_ha_gc_trigger_returns_deferred_for_transient_sqlite_pressure() {
-        let response = deferred_manual_ha_gc_trigger_response(
-            "ha_outbox_gc",
-            &ProxyError::Database(sqlx::Error::PoolTimedOut),
-        )
-        .expect("HA GC is self-scheduling and may defer under SQLite pressure");
-        assert_eq!(response.job_id, DEFERRED_MANUAL_HA_GC_JOB_ID);
-        assert_eq!(response.status, "deferred");
-        assert!(response.coalesced);
-        assert!(!response.promoted);
+    fn manual_transient_sqlite_pressure_returns_no_synthetic_job_id() {
+        assert_eq!(
+            manual_trigger_failure_status(&ProxyError::Database(sqlx::Error::PoolTimedOut)),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]
-    fn manual_non_gc_trigger_keeps_transient_failure_visible() {
-        assert!(
-            deferred_manual_ha_gc_trigger_response(
-                "quota_sync",
-                &ProxyError::Database(sqlx::Error::PoolTimedOut),
-            )
-            .is_none()
+    fn manual_non_transient_failure_is_internal_error() {
+        assert_eq!(
+            manual_trigger_failure_status(&ProxyError::Other("test failure".to_string())),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 }

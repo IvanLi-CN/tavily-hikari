@@ -371,17 +371,18 @@ fn duration_until_next_local_daily_run(now: DateTime<Local>, hour: u32, minute: 
     tavily_hikari::duration_until_next_local_daily_run(now, hour, minute)
 }
 
+const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 7] = [
+    "quota_sync",
+    "quota_sync/manual",
+    "quota_sync/hot",
+    LINUXDO_USER_STATUS_SYNC_JOB_TYPE,
+    LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE,
+    "upstream_reconciliation",
+    "forward_proxy_geo_refresh",
+];
+
 fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
-    matches!(
-        job_type,
-        "quota_sync"
-            | "quota_sync/manual"
-            | "quota_sync/hot"
-            | LINUXDO_USER_STATUS_SYNC_JOB_TYPE
-            | LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE
-            | "upstream_reconciliation"
-            | "forward_proxy_geo_refresh"
-    )
+    REMOTE_IO_SCHEDULED_JOB_TYPES.contains(&job_type)
 }
 
 fn scheduled_job_uses_db_execution_gate(job_type: &str) -> bool {
@@ -420,6 +421,16 @@ async fn dequeue_next_scheduled_job(
 
         selected = Some(candidate);
         break;
+    }
+
+    if selected.is_none() {
+        // The remote-I/O slot is intentionally single-filed. Do not let an
+        // arbitrarily long remote queue hide eligible local maintenance behind
+        // the first dequeue page while that slot is busy.
+        selected = state
+            .proxy
+            .fetch_next_queued_scheduled_job_excluding_types(&REMOTE_IO_SCHEDULED_JOB_TYPES)
+            .await?;
     }
 
     let Some(candidate) = selected else {

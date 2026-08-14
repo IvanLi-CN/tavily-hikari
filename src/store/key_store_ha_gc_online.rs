@@ -10,7 +10,7 @@ type HaOutboxGcChannelStateRow = (
     String,
 );
 const HA_GC_CHANNEL_CLAIM_STALE_SECS: i64 = 120;
-type HaGcChannelEligibility = (String, Option<i64>, i64, Option<i64>);
+type HaGcChannelEligibility = (String, Option<i64>, i64, Option<i64>, Option<i64>);
 
 #[derive(Debug, Clone, Copy)]
 struct HaGcChannelClaim {
@@ -46,7 +46,7 @@ impl HaGcController {
             }
             eligibility
                 .iter()
-                .find_map(|(name, next_retry_at, generation, claim_started_at)| {
+                .find_map(|(name, next_retry_at, generation, claim_started_at, _)| {
                 (name == candidate.as_str()
                     && next_retry_at.is_none_or(|available_at| available_at <= now)
                     && claim_started_at.is_none_or(|started_at| {
@@ -78,9 +78,9 @@ impl HaGcController {
             if pending_channel_mask & KeyStore::ha_outbox_gc_channel_mask(candidate) == 0 {
                 continue;
             }
-            let Some((_, next_retry_at, _, claim_started_at)) = eligibility
+            let Some((_, next_retry_at, _, claim_started_at, _)) = eligibility
                 .iter()
-                .find(|(name, _, _, _)| name == candidate.as_str())
+                .find(|(name, _, _, _, _)| name == candidate.as_str())
             else {
                 continue;
             };
@@ -98,6 +98,24 @@ impl HaGcController {
             );
         }
         earliest_retry_at.map(|retry_at| retry_at.saturating_sub(now).max(1))
+    }
+
+    fn stale_observation_mask(
+        now: i64,
+        include_unobserved: bool,
+        eligibility: &[HaGcChannelEligibility],
+    ) -> i64 {
+        let observed_before = now.saturating_sub(crate::HA_OUTBOX_GC_IDLE_DISCOVERY_SECS);
+        eligibility.iter().fold(0, |mask, (name, _, _, _, observed_at)| {
+            let channel = KeyStore::ha_outbox_gc_channel_from_name(name);
+            if observed_at.is_some_and(|observed_at| observed_at <= observed_before)
+                || (include_unobserved && observed_at.is_none())
+            {
+                mask | KeyStore::ha_outbox_gc_channel_mask(channel)
+            } else {
+                mask
+            }
+        })
     }
 }
 
@@ -165,7 +183,7 @@ impl KeyStore {
             .execute(&mut *conn)
             .await?;
             let eligibility = sqlx::query_as::<_, HaGcChannelEligibility>(
-                "SELECT channel, next_retry_at, claim_generation, claim_started_at FROM ha_outbox_gc_channel_state",
+                "SELECT channel, next_retry_at, claim_generation, claim_started_at, last_observed_at FROM ha_outbox_gc_channel_state",
             )
             .fetch_all(&mut *conn)
             .await?;
@@ -345,18 +363,25 @@ impl KeyStore {
             )
             .fetch_one(&mut **conn)
             .await?;
-            let pending_channel_mask = if pending_channel_mask == 0 {
+            let was_completed_observation = pending_channel_mask == 0;
+            let persisted_pending_channel_mask = if was_completed_observation {
                 7
             } else {
                 pending_channel_mask & 7
             };
             let preferred = Self::ha_outbox_gc_channel_from_name(&next_channel);
             let mut eligibility = sqlx::query_as::<_, HaGcChannelEligibility>(
-                "SELECT channel, next_retry_at, claim_generation, claim_started_at FROM ha_outbox_gc_channel_state",
+                "SELECT channel, next_retry_at, claim_generation, claim_started_at, last_observed_at FROM ha_outbox_gc_channel_state",
             )
             .fetch_all(&mut **conn)
             .await?;
             let state_now = self.backend_time.now_ts();
+            let pending_channel_mask = persisted_pending_channel_mask
+                | HaGcController::stale_observation_mask(
+                    state_now,
+                    was_completed_observation,
+                    &eligibility,
+                );
             let selected = HaGcController::claim_eligible_channel(
                 preferred,
                 pending_channel_mask,
@@ -366,7 +391,7 @@ impl KeyStore {
             let Some(claim) = selected else {
                 let next_retry_at = eligibility
                     .iter()
-                    .filter_map(|(name, retry_at, _, claim_started_at)| {
+                    .filter_map(|(name, retry_at, _, claim_started_at, _)| {
                         let channel = Self::ha_outbox_gc_channel_from_name(name);
                         if pending_channel_mask & Self::ha_outbox_gc_channel_mask(channel) == 0 {
                             return None;
@@ -648,9 +673,9 @@ impl KeyStore {
             };
             let channel_next_retry_at =
                 channel_continuation_delay_secs.map(|delay| now.saturating_add(delay));
-            if let Some((_, next_retry_at, generation, claim_started_at)) = eligibility
+            if let Some((_, next_retry_at, generation, claim_started_at, _)) = eligibility
                 .iter_mut()
-                .find(|(name, _, _, _)| name == channel.as_str())
+                .find(|(name, _, _, _, _)| name == channel.as_str())
             {
                 *next_retry_at = channel_next_retry_at;
                 *generation = claim.generation;

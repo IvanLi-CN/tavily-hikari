@@ -144,10 +144,11 @@ month-tail public metrics scan.
   before checking the active row turns harmless duplicate manual triggers into transient HTTP 500s
   whenever a bounded GC slice is holding SQLite's writer slot.
 - Treat a failed foreground admission differently from a failed durable command. HA outbox GC is
-  self-scheduling recovery debt: after its bounded `250ms` foreground pool budget expires, return a
-  stable `202/deferred` trigger response with a non-row sentinel id instead of a 500, wake the worker,
-  and let the controller/watchdog re-establish the durable representative. Do not apply this exception
-  to manual operations whose request itself is the only durable command.
+  self-scheduling recovery debt, but a manual endpoint must not report acceptance without a durable
+  representative: after its bounded `250ms` foreground pool budget expires, return `503`, log the
+  typed contention reason, and let the controller/watchdog re-establish automatic debt recovery.
+  Do not use a synthetic job id or apply this exception to manual operations whose request itself is
+  the only durable command.
 - Keep admission budgets separate from SQLite connection configuration. A short maintenance budget
   is an operation deadline around pool acquisition and `BEGIN IMMEDIATE`, not a per-connection
   `PRAGMA busy_timeout` rewrite. Rewriting that pragma turns ordinary transient bulk pressure into
@@ -252,7 +253,8 @@ month-tail public metrics scan.
   Measure only cleanup batches for adaptive timing; post-slice state probes are diagnostics, not
   evidence that a write micro-batch exceeded budget. Keep an hourly baseline sweep for newly
   expired rows, and gate a low-frequency watchdog on durable pending-channel debt so it rediscovers
-  a lost continuation without creating clean-state jobs.
+  a lost continuation without creating clean-state jobs. Merge only stale observed channels back into
+  the pending mask so one busy or delayed channel cannot hide another channel's recovery debt.
 - Sequence high-watermark deltas are useful low-cost evidence of drainage versus ingress, but they
   are estimates, not exact row counts. If historical exact counts were not sampled, report the
   oldest retained age moving forward as proof of partial cleanup only; do not claim that total
@@ -305,6 +307,9 @@ month-tail public metrics scan.
   execution gate, and they should not pin the queue worker when the remaining DB phase can be
   resumed separately. At the same time, do not “solve” that by fan-out spawning every remote job:
   keep a bounded remote-I/O slot so the queue cannot turn a backlog into an upstream stampede.
+- Bound scheduler queue reads as maintenance control too. If a remote-heavy candidate page is blocked
+  by the remote slot, make one indexed local-only fallback selection before yielding so remote work
+  cannot create queue-head blocking for local HA recovery.
 - Keep `quota_sync` bounded. `/usage` fetches should have a hard timeout, the whole sync run should
   finish on a short wall-clock budget, and stale `quota_sync` / `quota_sync/hot` `running` rows
   should be abandoned during the next claim instead of waiting for a restart.
@@ -385,7 +390,8 @@ month-tail public metrics scan.
   test still exercises the production retry logic without paying real-time cost.
 - Prefer bounded retries and narrower write windows before increasing SQLite pool size.
 - Treat the three-connection pool as a foreground reservation, not as spare writer capacity. Keep
-  two slots available for request-path work; admit at most one bulk maintenance operation per
+  two slots actually idle or immediately allocatable for request-path work; admit at most one bulk
+  maintenance operation per
   `KeyStore` only after a pre-acquire check for pool capacity, low foreground arrival rate, and no
   recent SQLite contention. A rejected bulk operation must persist its typed defer without first
   entering the pool.

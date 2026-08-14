@@ -840,11 +840,15 @@ impl KeyStore {
             LIMIT ?
             "#
         );
-        sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
             .bind(now)
             .bind(now)
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await
             .map(|rows| {
                 rows.into_iter()
@@ -864,18 +868,99 @@ impl KeyStore {
                     )
                     .collect()
             })
-            .map_err(ProxyError::from)
+            .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(rows), Ok(())) => Ok(rows),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
+    }
+
+    pub(crate) async fn fetch_next_queued_scheduled_job_excluding_types(
+        &self,
+        excluded_job_types: &[&str],
+    ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
+        if excluded_job_types.is_empty() {
+            return Ok(self.fetch_queued_scheduled_jobs(1).await?.into_iter().next());
+        }
+
+        let now = self.backend_time.now_ts();
+        let priority_sql = Self::scheduled_job_effective_priority_sql(
+            "job_type",
+            "trigger_source",
+            "queued_at",
+        );
+        let placeholders = std::iter::repeat_n("?", excluded_job_types.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            r#"
+            SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
+                   {priority_sql} AS effective_priority
+            FROM scheduled_jobs
+            WHERE status = 'queued'
+              AND available_at <= ?
+              AND job_type NOT IN ({placeholders})
+            ORDER BY effective_priority ASC, available_at ASC, queued_at ASC, id ASC
+            LIMIT 1
+            "#,
+        );
+        let mut query = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+            .bind(now)
+            .bind(now);
+        for job_type in excluded_job_types {
+            query = query.bind(*job_type);
+        }
+
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = query
+            .fetch_optional(&mut *conn)
+            .await
+            .map(|row| {
+                row.map(
+                    |(id, job_type, trigger_source, key_id, attempt, queued_at, available_at, effective_priority)| {
+                        QueuedScheduledJob {
+                            id,
+                            job_type,
+                            trigger_source,
+                            key_id,
+                            attempt,
+                            queued_at,
+                            available_at,
+                            effective_priority,
+                        }
+                    },
+                )
+            })
+            .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(job), Ok(())) => Ok(job),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
     }
 
     pub(crate) async fn next_queued_scheduled_job_available_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar(
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = sqlx::query_scalar(
             "SELECT MIN(available_at) FROM scheduled_jobs WHERE status = 'queued'",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await
-        .map_err(ProxyError::from)
+        .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(available_at), Ok(())) => Ok(available_at),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
     }
 
     pub(crate) async fn scheduled_job_mark_running(

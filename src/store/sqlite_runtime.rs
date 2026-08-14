@@ -15,6 +15,7 @@ const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5_000;
 const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
 const MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS: u32 = 2;
+const MAINTENANCE_BULK_HEAP_TRIM_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
 
@@ -202,7 +203,9 @@ impl Default for WorkloadWindow {
 #[derive(Debug)]
 struct SqliteRuntimeInner {
     pool: SqlitePool,
+    maximum_connections: u32,
     maintenance_bulk: Arc<Semaphore>,
+    last_bulk_heap_trim_at: Mutex<Option<Instant>>,
     last_contention_at: Mutex<Option<Instant>>,
     contention_warning_active: AtomicBool,
     foreground_activity: ForegroundActivityMeter,
@@ -321,10 +324,16 @@ pub(crate) struct SqliteRuntime {
 
 impl SqliteRuntime {
     pub(crate) fn new(pool: SqlitePool) -> Self {
+        Self::with_max_connections(pool, crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT)
+    }
+
+    pub(crate) fn with_max_connections(pool: SqlitePool, maximum_connections: u32) -> Self {
         Self {
             inner: Arc::new(SqliteRuntimeInner {
                 pool,
+                maximum_connections: maximum_connections.max(1),
                 maintenance_bulk: Arc::new(Semaphore::new(1)),
+                last_bulk_heap_trim_at: Mutex::new(None),
                 last_contention_at: Mutex::new(None),
                 contention_warning_active: AtomicBool::new(false),
                 foreground_activity: ForegroundActivityMeter::new(),
@@ -362,18 +371,47 @@ impl SqliteRuntime {
         let can_trim = self.foreground_activity_rps() <= MAINTENANCE_BULK_MAX_FOREGROUND_RPS
             && self.inner.acquire_waiters.load(AtomicOrdering::Acquire) == 0;
 
+        if !can_trim || !self.bulk_heap_trim_due() {
+            return;
+        }
+
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        if can_trim {
+        {
             // SAFETY: `malloc_trim` is process-global but does not require an
             // allocator-owned pointer. The caller has already closed its bulk
-            // SQLite connection and this branch excludes active foreground waits.
+            // SQLite connection; admission excludes foreground waits and the
+            // five-minute rate limit prevents recovery micro-slices from
+            // repeatedly taking the allocator lock.
+            let started_at = Instant::now();
             unsafe {
                 libc::malloc_trim(0);
             }
+            debug!(
+                component = "sqlite_runtime",
+                event = "bulk_heap_trim",
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "released bulk SQLite heap pages after connection close"
+            );
         }
 
         #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         let _ = can_trim;
+    }
+
+    fn bulk_heap_trim_due(&self) -> bool {
+        let now = Instant::now();
+        let mut last_trim_at = self
+            .inner
+            .last_bulk_heap_trim_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last_trim_at
+            .is_some_and(|last| now.duration_since(last) < MAINTENANCE_BULK_HEAP_TRIM_INTERVAL)
+        {
+            return false;
+        }
+        *last_trim_at = Some(now);
+        true
     }
 
     pub(crate) fn subscribe_dashboard_sse(&self) -> impl Drop {
@@ -450,11 +488,23 @@ impl SqliteRuntime {
     }
 
     fn has_foreground_pool_capacity(&self) -> bool {
-        // Bulk work only consumes a connection that is already demonstrably
-        // idle. Reserving unopened capacity is not enough: a concurrent
-        // foreground burst could claim it first and turn admission into the
-        // very pool race this gate is intended to prevent.
-        self.inner.pool.num_idle() as u32 >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS
+        // Keep two foreground slots available. A lazy pool begins with one
+        // open connection, so unopened capacity is usable for this admission
+        // decision as long as it still covers both reserved foreground slots
+        // and the single bulk permit. This does not acquire a connection: the
+        // eventual operation remains bounded by its 100ms pool budget.
+        let idle = self.inner.pool.num_idle().min(u32::MAX as usize) as u32;
+        let unopened = self
+            .inner
+            .maximum_connections
+            .saturating_sub(self.inner.pool.size());
+        // Once a pool has reached its configured size, two returned slots are
+        // sufficient: any already checked-out connection is part of the
+        // foreground capacity currently in use. Before the pool grows, reserve
+        // the two allocatable foreground slots plus the one pending bulk slot.
+        idle >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS
+            || idle.saturating_add(unopened)
+                >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS.saturating_add(1)
     }
 
     fn recent_contention_active(&self) -> bool {
@@ -1449,7 +1499,7 @@ mod tests {
             )
             .await
             .expect("single connection pool");
-        SqliteRuntime::new(pool)
+        SqliteRuntime::with_max_connections(pool, 1)
     }
 
     async fn three_connection_runtime() -> SqliteRuntime {
@@ -1463,7 +1513,7 @@ mod tests {
             )
             .await
             .expect("three connection pool");
-        SqliteRuntime::new(pool)
+        SqliteRuntime::with_max_connections(pool, 3)
     }
 
     #[test]
@@ -1772,6 +1822,61 @@ mod tests {
                 .expect("foreground pool acquisition");
         drop(foreground);
         drop(first);
+    }
+
+    #[tokio::test]
+    async fn sqlite_runtime_admits_bulk_from_a_lazy_three_connection_pool() {
+        let runtime = SqliteRuntime::with_max_connections(
+            SqlitePoolOptions::new()
+                .min_connections(1)
+                .max_connections(3)
+                .connect_with(
+                    SqliteConnectOptions::from_str("sqlite::memory:")
+                        .expect("SQLite options")
+                        .create_if_missing(true),
+                )
+                .await
+                .expect("lazy three connection pool"),
+            3,
+        );
+        assert_eq!(runtime.inner.pool.num_idle(), 1);
+
+        let bulk = runtime
+            .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+            .expect("unopened capacity must satisfy the two-slot foreground reservation");
+        let first_foreground =
+            tokio::time::timeout(Duration::from_millis(250), runtime.inner.pool.acquire())
+                .await
+                .expect("first foreground acquisition stays bounded")
+                .expect("first foreground connection");
+        let second_foreground =
+            tokio::time::timeout(Duration::from_millis(250), runtime.inner.pool.acquire())
+                .await
+                .expect("second foreground acquisition stays bounded")
+                .expect("second foreground connection");
+
+        drop((second_foreground, first_foreground, bulk));
+    }
+
+    #[tokio::test]
+    async fn sqlite_runtime_never_admits_bulk_from_a_single_connection_pool() {
+        let runtime = single_connection_runtime().await;
+        assert_eq!(
+            runtime
+                .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+                .expect_err("a one-connection pool cannot reserve two foreground slots"),
+            SqliteAdmissionDeferReason::PoolPressure
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_runtime_rate_limits_process_wide_heap_trims() {
+        let runtime = three_connection_runtime().await;
+        assert!(runtime.bulk_heap_trim_due());
+        assert!(
+            !runtime.bulk_heap_trim_due(),
+            "adjacent recovery slices must not repeatedly take the allocator lock"
+        );
     }
 
     #[tokio::test]

@@ -40,6 +40,64 @@ async fn scheduled_job_aging_prevents_request_logs_gc_from_starving_ha_gc() {
 }
 
 #[tokio::test]
+async fn blocked_remote_queue_page_does_not_hide_local_ha_gc_work() {
+    let db_path = temp_db_path("scheduled-job-remote-head-local-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    for index in 0..17 {
+        let key_id = format!("remote-head-{index}");
+        sqlx::query(
+            "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+        )
+        .bind(&key_id)
+        .bind(format!("tvly-{key_id}"))
+        .bind(Utc::now().timestamp())
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("create remote job key");
+        proxy
+            .scheduled_job_enqueue("quota_sync", "manual", Some(&key_id), 1)
+            .await
+            .expect("enqueue independently-addressable remote job");
+    }
+    let local = proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "scheduler", None, 1)
+        .await
+        .expect("enqueue local HA GC work behind remote queue");
+
+    let head = proxy
+        .fetch_queued_scheduled_jobs(16)
+        .await
+        .expect("fetch blocked remote head page");
+    assert!(
+        head.iter().all(|job| job.job_type == "quota_sync"),
+        "the first page deliberately contains only remote work"
+    );
+    let local_fallback = proxy
+        .fetch_next_queued_scheduled_job_excluding_types(&[
+            "quota_sync",
+            "quota_sync/manual",
+            "quota_sync/hot",
+            "linuxdo_user_status_sync",
+            "linuxdo_credit_recharge_lifecycle",
+            "upstream_reconciliation",
+            "forward_proxy_geo_refresh",
+        ])
+        .await
+        .expect("find local maintenance fallback")
+        .expect("eligible local job remains discoverable behind remote head");
+    assert_eq!(local_fallback.id, local.job_id);
+    assert_eq!(local_fallback.job_type, "ha_outbox_gc");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn ha_gc_continuation_finishes_job_and_requeues_atomically() {
     let db_path = temp_db_path("ha-gc-continuation-transaction");
     let db_str = db_path.to_string_lossy().to_string();

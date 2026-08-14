@@ -1008,6 +1008,18 @@ impl TavilyProxy {
         claimed_job: Option<(i64, i64)>,
     ) -> Result<i64, ProxyError> {
         let started_at = std::time::Instant::now();
+        let local_admission = match self.admit_upstream_reconciliation_projection() {
+            SqliteAdmissionOutcome::Admitted(admission) => admission,
+            SqliteAdmissionOutcome::Deferred { reason } => {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "local_preparation_deferred",
+                    defer_reason = reason,
+                    "reconciliation skipped local candidate preparation before SQLite connection acquisition"
+                );
+                return Ok(0);
+            }
+        };
         if let Some((job_id, claim_generation)) = claimed_job
             && !self
                 .key_store
@@ -1152,29 +1164,18 @@ impl TavilyProxy {
             if bootstrap_budget.is_zero() {
                 preparation_budget_exhausted = true;
             } else {
-                match self.admit_upstream_reconciliation_projection() {
-                    SqliteAdmissionOutcome::Admitted(_admission) => match tokio::time::timeout(
-                        bootstrap_budget,
-                        self.key_store.advance_upstream_reconciliation_work_projection(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) if crate::store::is_transient_sqlite_write_error(&err) => {
-                            preparation_budget_exhausted = true;
-                        }
-                        Ok(Err(err)) => return Err(err),
-                        Err(_) => preparation_budget_exhausted = true,
-                    },
-                    SqliteAdmissionOutcome::Deferred { reason } => {
-                        tracing::debug!(
-                            component = "reconciliation",
-                            event = "projection_deferred",
-                            defer_reason = reason,
-                            "legacy reconciliation projection deferred before SQLite connection acquisition"
-                        );
+                match tokio::time::timeout(
+                    bootstrap_budget,
+                    self.key_store.advance_upstream_reconciliation_work_projection(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) if crate::store::is_transient_sqlite_write_error(&err) => {
                         preparation_budget_exhausted = true;
                     }
+                    Ok(Err(err)) => return Err(err),
+                    Err(_) => preparation_budget_exhausted = true,
                 }
             }
         }
@@ -1261,6 +1262,10 @@ impl TavilyProxy {
             research_retry_count = 0_i64,
             research_skipped_cooldown_count = 0_i64,
         );
+        // Remote I/O and durable settlement must never retain the local bulk
+        // permit. The permit protects only candidate selection, hydration and
+        // the optional legacy projection above.
+        drop(local_admission);
         let result = async {
             let mut settled = 0_i64;
             let mut completed = 0_i64;
@@ -2736,6 +2741,15 @@ impl TavilyProxy {
         limit: usize,
     ) -> Result<Vec<QueuedScheduledJob>, ProxyError> {
         self.key_store.fetch_queued_scheduled_jobs(limit).await
+    }
+
+    pub async fn fetch_next_queued_scheduled_job_excluding_types(
+        &self,
+        excluded_job_types: &[&str],
+    ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
+        self.key_store
+            .fetch_next_queued_scheduled_job_excluding_types(excluded_job_types)
+            .await
     }
 
     pub async fn next_queued_scheduled_job_available_at(&self) -> Result<Option<i64>, ProxyError> {

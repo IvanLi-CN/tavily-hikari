@@ -126,3 +126,102 @@ async fn foreground_manual_enqueue_waits_for_short_pool_pressure() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn scheduler_queue_reads_defer_before_waiting_behind_a_saturated_pool() {
+    let db_path = temp_db_path("scheduled-job-queue-read-admission");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let first = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("first connection");
+    let second = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("second connection");
+    let third = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("third connection");
+
+    let started = Instant::now();
+    let err = proxy
+        .fetch_queued_scheduled_jobs(16)
+        .await
+        .expect_err("scheduler dequeue must defer before becoming a long-lived pool waiter");
+    assert!(is_transient_sqlite_write_error(&err));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "control queue read exceeded its admission budget: {:?}",
+        started.elapsed()
+    );
+    let next_wake_started = Instant::now();
+    let next_wake_err = proxy
+        .next_queued_scheduled_job_available_at()
+        .await
+        .expect_err("scheduler next-wake read must use the same bounded control admission");
+    assert!(is_transient_sqlite_write_error(&next_wake_err));
+    assert!(
+        next_wake_started.elapsed() < Duration::from_millis(250),
+        "next-wake control read exceeded its admission budget: {:?}",
+        next_wake_started.elapsed()
+    );
+    drop((third, second, first));
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
+    let db_path = temp_db_path("reconciliation-preparation-admission");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let first = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("first connection");
+    let second = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("second connection");
+    let third = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("third connection");
+
+    let started = Instant::now();
+    let settled = proxy
+        .run_upstream_reconciliation_once(DEFAULT_UPSTREAM)
+        .await
+        .expect("admission defer is a normal reconciliation outcome");
+    assert_eq!(settled, 0);
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "reconciliation must defer before candidate reads wait on foreground pool capacity: {:?}",
+        started.elapsed()
+    );
+    drop((third, second, first));
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}

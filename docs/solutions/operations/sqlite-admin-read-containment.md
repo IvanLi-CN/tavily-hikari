@@ -232,8 +232,9 @@ reads:
 ## Bounded reconciliation and memory observations
 
 - Candidate selection for reconciliation should fetch an indexed, bounded page before grouping or
-  hydrating Research state. Keep the 12/8 recent/backlog fairness contract, but never run a global
-  queue aggregate before the first remote attempt.
+  hydrating Research state. Admit that local preparation as bounded bulk work, release admission
+  before remote I/O, keep the 12/8 recent/backlog fairness contract, and never run a global queue
+  aggregate before the first remote attempt.
 - Expose a bounded `ReconciliationObservation`: `hasEligible` and oldest-candidate age are precise
   for the bounded probe, while `queueEstimate=null` and `coverage=unknown` are required before the
   first observation. Never render an unknown queue as zero.
