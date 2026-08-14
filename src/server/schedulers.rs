@@ -1197,11 +1197,52 @@ async fn run_request_logs_body_gc_index_ensure_claimed_job(
         _job_execution_gate,
     } = claimed_job;
     drop(_job_execution_gate);
-    let _job_execution_gate = acquire_db_job_execution_gate_for_state(state.as_ref()).await;
-    let _maintenance = acquire_db_maintenance_write_gate().await;
+    let _bulk_admission = match state.proxy.admit_request_logs_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            let available_at = state
+                .proxy
+                .backend_time()
+                .now_ts()
+                .saturating_add(REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS);
+            let message = format!("deferred={reason}");
+            let _ = state
+                .proxy
+                .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&message))
+                .await;
+            match enqueue_scheduled_job_at(
+                state.as_ref(),
+                REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
+                None,
+                TRIGGER_SOURCE_AUTO,
+                available_at,
+            )
+            .await
+            {
+                Ok(retry_job_id) => tracing::debug!(
+                    component = "request_logs_gc",
+                    event = "body_gc_index_deferred",
+                    job_id,
+                    retry_job_id,
+                    defer_reason = reason,
+                    available_at,
+                    "request-log body GC index build deferred before SQLite connection acquisition"
+                ),
+                Err(err) => tracing::warn!(
+                    component = "request_logs_gc",
+                    event = "body_gc_index_defer_enqueue_failed",
+                    job_id,
+                    defer_reason = reason,
+                    available_at,
+                    err = %err,
+                    "request-log body GC index defer could not be persisted"
+                ),
+            }
+            return false;
+        }
+    };
     let result = state.proxy.ensure_request_log_body_gc_cursor_index().await;
-    drop(_maintenance);
-    drop(_job_execution_gate);
+    drop(_bulk_admission);
 
     match result {
         Ok(()) => {

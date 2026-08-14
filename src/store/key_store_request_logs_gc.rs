@@ -115,7 +115,18 @@ impl KeyStore {
     }
 
     pub(crate) async fn ensure_request_log_body_gc_cursor_index(&self) -> Result<(), ProxyError> {
-        if !self.table_exists("request_logs").await? {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
+        let request_logs_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = ?)",
+        )
+        .bind("request_logs")
+        .fetch_one(&mut *conn)
+        .await?;
+        if request_logs_exists == 0 {
+            conn.close().await?;
             return Ok(());
         }
         sqlx::query(
@@ -125,11 +136,12 @@ impl KeyStore {
             WHERE request_body IS NOT NULL OR response_body IS NOT NULL
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query("ANALYZE observability.idx_request_logs_body_gc_cursor")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
+        conn.close().await?;
         Ok(())
     }
 
@@ -325,25 +337,42 @@ impl KeyStore {
     }
 
     async fn has_old_request_log_rows(&self, threshold: i64) -> Result<bool, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM observability.request_logs WHERE created_at < ? LIMIT 1",
         )
         .bind(threshold)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
+        conn.close().await?;
         Ok(exists.is_some())
     }
 
     async fn has_old_request_log_rollup_rows(&self, threshold: i64) -> Result<bool, ProxyError> {
-        if !self.table_exists("request_log_catalog_rollups").await? {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
+        let rollup_table_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = ?)",
+        )
+        .bind("request_log_catalog_rollups")
+        .fetch_one(&mut *conn)
+        .await?;
+        if rollup_table_exists == 0 {
+            conn.close().await?;
             return Ok(false);
         }
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM observability.request_log_catalog_rollups WHERE bucket_start < ? LIMIT 1",
         )
         .bind(threshold)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
+        conn.close().await?;
         Ok(exists.is_some())
     }
 
@@ -443,10 +472,18 @@ impl KeyStore {
     async fn get_request_log_body_gc_cursor(
         &self,
     ) -> Result<Option<RequestLogBodyGcCursor>, ProxyError> {
-        let Some(value) = self
-            .get_meta_string(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
-            .await?
-        else {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
+        let value = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM meta WHERE key = ? LIMIT 1",
+        )
+        .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
+        .fetch_optional(&mut *conn)
+        .await?;
+        conn.close().await?;
+        let Some(value) = value else {
             return Ok(None);
         };
         let mut parts = value.split(':');
@@ -474,24 +511,37 @@ impl KeyStore {
         &self,
         cursor: Option<RequestLogBodyGcCursor>,
     ) -> Result<(), ProxyError> {
-        if let Some(cursor) = cursor {
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::RequestLogsGc)
+            .await?;
+        let result = if let Some(cursor) = cursor {
             let value = if let Some(restart_at) = cursor.restart_at {
                 format!("{}:{}:{}", cursor.created_at, cursor.id, restart_at)
             } else {
                 format!("{}:{}", cursor.created_at, cursor.id)
             };
-            self.set_meta_string(
-                META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1,
-                &value,
+            sqlx::query(
+                r#"
+                INSERT INTO meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
             )
-            .await?;
+            .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
         } else {
             sqlx::query("DELETE FROM meta WHERE key = ?")
                 .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
-                .execute(&self.pool)
-                .await?;
+                .execute(&mut *tx)
+                .await
+        };
+        match result {
+            Ok(_) => tx.finish(Ok(())).await,
+            Err(err) => tx.finish(Err(ProxyError::Database(err))).await,
         }
-        Ok(())
     }
 
     pub(crate) async fn clear_request_log_body_gc_cursor(&self) -> Result<(), ProxyError> {
