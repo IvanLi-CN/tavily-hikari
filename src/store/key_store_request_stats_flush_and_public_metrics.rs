@@ -24,6 +24,7 @@ struct DrainedRequestStatsFlushBatch {
 const REQUEST_STATS_FLUSH_MAX_LOGICAL_KEYS: usize = 250;
 const REQUEST_STATS_FLUSH_MIN_LOGICAL_KEYS: usize = 25;
 const REQUEST_STATS_FLUSH_SLOW_TRANSACTION: Duration = Duration::from_millis(50);
+const REQUEST_STATS_BACKGROUND_MAX_COMMITTED_CHUNKS: usize = 4;
 
 impl DrainedRequestStatsFlushBatch {
     fn is_empty(&self) -> bool {
@@ -185,11 +186,13 @@ impl KeyStore {
         let result = self
             .flush_request_stats_writes_with_wait_policy(
                 // A background slice must yield before a foreground control
-                // transaction can spend its own 100ms admission budget.
+                // transaction can spend its own 100ms admission budget. Four
+                // adaptive chunks can cover at most 250 logical keys while
+                // the wall-clock budget remains the primary bound.
                 Duration::from_millis(50),
                 Some(self.backend_time.instant_now() + Duration::from_millis(50)),
                 false,
-                Some(1),
+                Some(REQUEST_STATS_BACKGROUND_MAX_COMMITTED_CHUNKS),
             )
             .await;
         drop(permit);
@@ -337,7 +340,7 @@ impl KeyStore {
             Duration::from_millis(50),
             Some(self.backend_time.instant_now() + Duration::from_millis(50)),
             false,
-            Some(1),
+            Some(REQUEST_STATS_BACKGROUND_MAX_COMMITTED_CHUNKS),
         )
         .await
     }
@@ -411,9 +414,9 @@ impl KeyStore {
             }
             state.flushing_oldest_created_at = None;
             state.flushing_newest_created_at = None;
-            // A background admission intentionally owns only one committed
-            // transaction. Return every remaining key before releasing the
-            // coalescer so the next nominal tick can resume exactly once.
+            // A background admission owns a small, wall-clock-bounded group
+            // of committed transactions. Return every remaining key before
+            // releasing the coalescer so the next nominal tick can resume.
             uncommitted.requeue_into(&mut state);
             if RequestStatsCoalescer::pending_key_count(&state) == 0 {
                 state.oldest_pending_created_at = None;

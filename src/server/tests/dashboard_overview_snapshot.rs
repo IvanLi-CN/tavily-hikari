@@ -535,6 +535,58 @@ async fn dashboard_startup_prewarm_reuses_the_first_snapshot_loader() {
 }
 
 #[tokio::test]
+async fn dashboard_sse_defers_freshness_while_the_cold_loader_is_active() {
+    let db_path = temp_db_path("dashboard-overview-sse-cold-loader");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-sse-cold-loader".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: true,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    {
+        let mut cache = cache_handle.lock().await;
+        cache.loading = true;
+        cache.loading_started_at = Some(tokio::time::Instant::now());
+    }
+
+    let response = sse_dashboard(State(state.clone()), HeaderMap::new())
+        .await
+        .expect("open dashboard SSE stream while the cold loader is active");
+    let mut frames = response.into_body().into_data_stream();
+    let first = tokio::time::timeout(Duration::from_millis(100), futures_util::StreamExt::next(&mut frames))
+        .await
+        .expect("cold SSE should immediately report its degraded state")
+        .expect("cold SSE stream must produce one frame")
+        .expect("cold SSE frame must be valid");
+    assert_eq!(first.as_ref(), b"event: degraded\ndata: {}\n\n");
+    assert_eq!(
+        dashboard_overview_freshness_probe_count(&state).await,
+        0,
+        "a cold loader must not require SSE clients to run freshness probes"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn dashboard_cold_build_continues_after_the_first_request_times_out() {
     let db_path = temp_db_path("dashboard-overview-cold-build-continues");
     let db_str = db_path.to_string_lossy().to_string();

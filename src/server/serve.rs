@@ -98,8 +98,6 @@ pub async fn serve(
             "scheduled-jobs: stale queued/running cleanup warning"
         ),
     }
-    spawn_ha_standby_sync_task(state.clone());
-    spawn_ha_peer_observation_task(state.clone());
     tracing::info!(
         component = "startup",
         event = "admin_auth_modes",
@@ -576,6 +574,11 @@ pub async fn serve(
 
     // Always-on HA tasks must stay available on standby/recovery so health, role
     // refresh, and pull-sync keep working even while business traffic is fenced.
+    // Start them after the dashboard singleflight prewarm: a cold restart must
+    // not let HA observation work consume the small SQLite pool ahead of the
+    // first administrative snapshot.
+    spawn_ha_standby_sync_task(state.clone());
+    spawn_ha_peer_observation_task(state.clone());
     spawn_ha_edgeone_authority_task(state.clone());
     spawn_ha_control_plane_gc_task(state.clone());
     spawn_background_tasks_for_current_role(state.clone()).await;

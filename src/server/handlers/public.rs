@@ -1088,6 +1088,16 @@ async fn sse_dashboard(
         let mut last_snapshot_at: Option<tokio::time::Instant> = None;
 
         loop {
+            // A rolling restart has no last-good overview yet. Let the one
+            // startup singleflight loader own its bounded SQLite reads; every
+            // SSE connection running a freshness probe here would otherwise
+            // consume the three-connection pool before the first snapshot is
+            // available.
+            if dashboard_overview_snapshot_is_loading(&state).await {
+                yield Ok(Bytes::from_static(b"event: degraded\ndata: {}\n\n"));
+                state.proxy.backend_time().sleep(Duration::from_secs(2)).await;
+                continue;
+            }
             match compute_signatures(&state).await {
                 Ok((sig, latest_id)) => {
                     let snapshot_due = last_snapshot_at.is_none_or(|emitted_at| {
@@ -1872,6 +1882,12 @@ async fn prewarm_dashboard_overview_snapshot(state: &Arc<AppState>) {
             "dashboard overview singleflight continues after its bounded startup wait"
         ),
     }
+}
+
+async fn dashboard_overview_snapshot_is_loading(state: &Arc<AppState>) -> bool {
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let cache = cache_handle.lock().await;
+    cache.cached.is_none() && cache.loading
 }
 
 enum DashboardOverviewLoadAction {

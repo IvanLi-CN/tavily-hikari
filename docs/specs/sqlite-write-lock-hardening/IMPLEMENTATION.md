@@ -9,7 +9,7 @@
   seconds.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
-  background admission commits one initial 25-key chunk with a 50ms retry budget, returns the
+  background admission commits at most four chunks within one 50ms retry budget, returns the
   remaining tail to the coalescer exactly once, and waits for the next nominal second before its
   next slice. Explicit shutdown drain paths may continue through further chunks within their own
   bounded deadline.

@@ -87,6 +87,11 @@ reads:
   drained delta and return it to the coalescer before reporting degraded freshness. The next
   admitted cadence can persist it; an owner-facing read must continue returning durable last-good
   data rather than inheriting the failed write path.
+- Keep the request-stats cadence bounded without allowing its in-memory tail to become a second
+  pressure source: one nominal wake may commit at most four adaptive `25..250` logical-key
+  transactions under one 50ms budget, then returns the remaining tail atomically. During a cold
+  dashboard singleflight, SSE clients emit degraded frames instead of independently starting
+  freshness reads against the small shared pool.
 - When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
   “rebuild payload”. The probe path should use non-flushing summary / rollup reads plus a pending
   coalescer signature, while the actual shared-snapshot rebuild may flush once. Reusing the rebuild
