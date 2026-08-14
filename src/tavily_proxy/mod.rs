@@ -779,19 +779,6 @@ pub enum SqliteAdmissionOutcome {
     Deferred { reason: &'static str },
 }
 
-/// Admission token for maintenance schema work. Unlike a bulk slice, this
-/// serializes only DDL within one `KeyStore`; it never gates foreground reads.
-#[derive(Debug)]
-pub struct SqliteMaintenanceSchemaAdmission {
-    _permit: SqliteMaintenanceSchemaPermit,
-}
-
-#[derive(Debug)]
-pub enum SqliteSchemaAdmissionOutcome {
-    Admitted(SqliteMaintenanceSchemaAdmission),
-    Deferred { reason: &'static str },
-}
-
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct ServerPressureTailReplayTestGate {

@@ -1563,7 +1563,6 @@ fn spawn_business_background_tasks(state: Arc<AppState>) {
     spawn_mcp_sessions_gc_scheduler(state.clone());
     spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
-    spawn_request_logs_body_gc_index_ensure_scheduler(state.clone());
     spawn_dashboard_rollup_integrity_scheduler(state.clone());
     spawn_auth_token_logs_alert_index_ensure_scheduler(state.clone());
     if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {

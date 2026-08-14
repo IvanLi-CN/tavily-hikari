@@ -2550,10 +2550,6 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn ensure_request_log_body_gc_cursor_index(&self) -> Result<(), ProxyError> {
-        self.key_store.ensure_request_log_body_gc_cursor_index().await
-    }
-
     pub async fn gc_mcp_sessions(&self) -> Result<i64, ProxyError> {
         let now = self.backend_time.now_ts();
         self.key_store

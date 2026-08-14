@@ -4,12 +4,20 @@ use super::jobs_and_request_log_retention::{
 use super::*;
 
 #[tokio::test]
-async fn request_logs_gc_reports_index_pending_until_async_body_index_is_ready() {
-    let db_path = temp_db_path("request-logs-gc-body-index-pending");
+async fn request_logs_gc_scans_bodies_without_online_schema_work() {
+    let db_path = temp_db_path("request-logs-gc-body-index-free-scan");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    let index_before: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM observability.sqlite_master WHERE type = 'index' AND name = ?",
+    )
+    .bind("idx_request_logs_body_gc_cursor")
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("read optional body index before online GC");
+    assert!(index_before.is_none());
     sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
@@ -32,13 +40,20 @@ async fn request_logs_gc_reports_index_pending_until_async_body_index_is_ready()
             inter_batch_sleep_ms: 0,
         })
         .await
-        .expect("missing asynchronous body index must defer instead of failing SQL planning");
+        .expect("online body GC must use its bounded time-index scan");
 
-    assert!(report.body_gc_index_pending);
-    assert_eq!(report.progress_status, "index_pending");
-    assert!(report.has_more);
-    assert!(!report.completed);
-    assert_eq!(report.scanned_body_candidates, 0);
+    assert_eq!(report.scanned_body_candidates, 1);
+    let index_after: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM observability.sqlite_master WHERE type = 'index' AND name = ?",
+    )
+    .bind("idx_request_logs_body_gc_cursor")
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("read optional body index after online GC");
+    assert!(
+        index_after.is_none(),
+        "online GC must not build schema indexes"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
@@ -55,10 +70,6 @@ async fn request_logs_gc_stops_after_an_unsealed_day_without_repeating_work() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    proxy
-        .ensure_request_log_body_gc_cursor_index()
-        .await
-        .expect("prepare body GC index");
     let old_ts = Utc::now().timestamp() - 40 * SECS_PER_DAY;
     let old_id = seed_request_log_for_gc(&proxy.key_store.pool, old_ts, "/api/tavily/search").await;
     seed_request_log_rollup_for_gc(&proxy.key_store.pool, old_ts).await;

@@ -1160,6 +1160,10 @@ impl KeyStore {
         job_id: i64,
         claim_generation: i64,
     ) -> Result<bool, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
         let current: i64 = sqlx::query_scalar(
             r#"
             SELECT EXISTS(
@@ -1171,8 +1175,9 @@ impl KeyStore {
         )
         .bind(job_id)
         .bind(claim_generation)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *conn)
         .await?;
+        conn.close().await?;
         Ok(current != 0)
     }
 

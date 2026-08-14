@@ -60,10 +60,8 @@ const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
-const REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE: &str = "request_logs_body_gc_index_ensure";
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
-const REQUEST_LOGS_BODY_GC_INDEX_ENSURE_RETRY_DELAY_SECS: i64 = 5 * 60;
 const DASHBOARD_ROLLUP_INTEGRITY_JOB_TYPE: &str = "dashboard_rollup_integrity";
 const DASHBOARD_ROLLUP_INTEGRITY_FAILURE_BACKOFF_SECS: i64 = 60;
 const DASHBOARD_ROLLUP_INTEGRITY_WATCHDOG_SECS: u64 = 60;
@@ -1066,19 +1064,6 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
             )
             .await;
         }
-    });
-}
-
-fn spawn_request_logs_body_gc_index_ensure_scheduler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let _ = enqueue_scheduled_job_logged(
-            state.as_ref(),
-            REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE,
-            None,
-            TRIGGER_SOURCE_SCHEDULER,
-            "request-logs-body-gc-index",
-        )
-        .await;
     });
 }
 
@@ -2441,9 +2426,6 @@ async fn run_manual_claimed_job(
     }
     if job_type == "request_logs_gc" {
         return run_request_logs_gc_catchup_claimed_job(state, claimed_job).await;
-    }
-    if job_type == REQUEST_LOGS_BODY_GC_INDEX_ENSURE_JOB_TYPE {
-        return run_request_logs_body_gc_index_ensure_claimed_job(state, claimed_job).await;
     }
     if job_type == AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE {
         let ClaimedScheduledJob {

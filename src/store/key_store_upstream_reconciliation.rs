@@ -364,8 +364,25 @@ impl KeyStore {
         &self,
         timestamp: i64,
     ) -> Result<(), ProxyError> {
-        self.set_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1, timestamp)
-            .await
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1)
+        .bind(timestamp.to_string())
+        .execute(&mut *conn)
+        .await;
+        match result {
+            Ok(_) => conn.close().await,
+            Err(err) => Err(ProxyError::Database(err)),
+        }
     }
 
     pub(crate) async fn upstream_reconciliation_observation(

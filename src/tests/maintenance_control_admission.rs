@@ -252,3 +252,70 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn reconciliation_claim_fence_and_run_marker_use_control_budget() {
+    let db_path = temp_db_path("reconciliation-control-marker-admission");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "scheduler", None, 1)
+        .await
+        .expect("enqueue durable reconciliation representative");
+    let claimed = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim durable reconciliation representative")
+        .expect("representative became running");
+    let first = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("first connection");
+    let second = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("second connection");
+    let third = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("third connection");
+
+    let claim_started = Instant::now();
+    let claim_err = proxy
+        .key_store
+        .scheduled_job_claim_is_current(claimed.id, claimed.claim_generation)
+        .await
+        .expect_err("claim fence must not wait behind foreground pool saturation");
+    assert!(is_transient_sqlite_write_error(&claim_err));
+    assert!(
+        claim_started.elapsed() < Duration::from_millis(250),
+        "claim fence exceeded its control budget: {:?}",
+        claim_started.elapsed()
+    );
+
+    let marker_started = Instant::now();
+    let marker_err = proxy
+        .key_store
+        .mark_upstream_reconciliation_run_completed_at(Utc::now().timestamp())
+        .await
+        .expect_err("run marker must not wait behind foreground pool saturation");
+    assert!(is_transient_sqlite_write_error(&marker_err));
+    assert!(
+        marker_started.elapsed() < Duration::from_millis(250),
+        "run marker exceeded its control budget: {:?}",
+        marker_started.elapsed()
+    );
+    drop((third, second, first));
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}

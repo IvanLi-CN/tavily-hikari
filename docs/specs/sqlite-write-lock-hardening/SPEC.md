@@ -367,8 +367,9 @@ source when a usable persisted runtime already exists.
 - A continuously incomplete request-log GC cannot prevent an aged `ha_outbox_gc` row from being
   claimed after the five-minute age window. Delayed automatic continuations remain ineligible after
   process recreation, while a manual trigger reuses and immediately unlocks the representative row.
-- Body-GC cursor queries use `observability.idx_request_logs_body_gc_cursor`, and a same-user
-  candidate page reports one retention context with cache hits for subsequent candidates.
+- Body-GC cursor queries use the schema-validated `observability.idx_request_logs_time` cursor
+  with a fixed scan window. A same-user candidate page reports one retention context with cache
+  hits for subsequent candidates. Online cleanup must not create or analyze body-specific indexes.
 - Online HA outbox GC must use a non-blocking maintenance write lease and a one-second slice
   budget. If the lease or SQLite writer is busy, it must finish the current scheduled row and
   persist a bounded continuation handoff instead of waiting through the scheduler's long retry

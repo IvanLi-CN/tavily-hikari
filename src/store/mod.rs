@@ -20,7 +20,7 @@ mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 pub(crate) use sqlite_runtime::{
     SqliteAdmissionDeferReason, SqliteImmediateTransaction, SqliteMaintenanceBulkPermit,
-    SqliteMaintenanceSchemaPermit, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
+    SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
 };
 
 pub(crate) struct ObservabilityOfflineGuard {

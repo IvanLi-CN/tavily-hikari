@@ -6,7 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, warn};
 
 const SQLITE_WORKLOAD_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -25,7 +25,6 @@ pub(crate) enum SqliteAdmissionDeferReason {
     ForegroundPressure,
     PoolPressure,
     RecentContention,
-    SchemaBusy,
 }
 
 impl SqliteAdmissionDeferReason {
@@ -35,7 +34,6 @@ impl SqliteAdmissionDeferReason {
             Self::ForegroundPressure => "foreground_pressure",
             Self::PoolPressure => "pool_pressure",
             Self::RecentContention => "recent_contention",
-            Self::SchemaBusy => "schema_busy",
         }
     }
 }
@@ -43,14 +41,6 @@ impl SqliteAdmissionDeferReason {
 #[derive(Debug)]
 pub(crate) struct SqliteMaintenanceBulkPermit {
     _permit: OwnedSemaphorePermit,
-}
-
-/// Instance-local serialization for maintenance DDL. It deliberately does not
-/// gate foreground reads; callers obtain it only after bulk admission and
-/// recheck foreground pressure immediately before schema work.
-#[derive(Debug)]
-pub(crate) struct SqliteMaintenanceSchemaPermit {
-    _permit: OwnedMutexGuard<()>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -215,7 +205,6 @@ struct SqliteRuntimeInner {
     pool: SqlitePool,
     maximum_connections: u32,
     maintenance_bulk: Arc<Semaphore>,
-    maintenance_schema: Arc<AsyncMutex<()>>,
     last_bulk_heap_trim_at: Mutex<Option<Instant>>,
     last_contention_at: Mutex<Option<Instant>>,
     contention_warning_active: AtomicBool,
@@ -344,7 +333,6 @@ impl SqliteRuntime {
                 pool,
                 maximum_connections: maximum_connections.max(1),
                 maintenance_bulk: Arc::new(Semaphore::new(1)),
-                maintenance_schema: Arc::new(AsyncMutex::new(())),
                 last_bulk_heap_trim_at: Mutex::new(None),
                 last_contention_at: Mutex::new(None),
                 contention_warning_active: AtomicBool::new(false),
@@ -463,20 +451,6 @@ impl SqliteRuntime {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else {
             None
-        }
-    }
-
-    pub(crate) fn try_acquire_maintenance_schema_permit(
-        &self,
-        operation: SqliteOperation,
-    ) -> Result<SqliteMaintenanceSchemaPermit, SqliteAdmissionDeferReason> {
-        debug_assert!(operation.is_maintenance_bulk());
-        match self.inner.maintenance_schema.clone().try_lock_owned() {
-            Ok(permit) => Ok(SqliteMaintenanceSchemaPermit { _permit: permit }),
-            Err(_) => {
-                self.record_deferred(operation, SqliteAdmissionDeferReason::SchemaBusy);
-                Err(SqliteAdmissionDeferReason::SchemaBusy)
-            }
         }
     }
 

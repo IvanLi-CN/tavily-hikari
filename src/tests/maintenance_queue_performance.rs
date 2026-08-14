@@ -484,23 +484,12 @@ async fn stale_reaper_recovers_ha_gc_once_with_delay() {
 }
 
 #[tokio::test]
-async fn request_log_body_gc_candidate_query_uses_partial_body_index() {
-    let db_path = temp_db_path("request-log-body-gc-partial-index");
+async fn request_log_body_gc_candidate_query_uses_time_cursor_index() {
+    let db_path = temp_db_path("request-log-body-gc-time-index");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
-    let index_before_maintenance: Option<String> = sqlx::query_scalar(
-        "SELECT name FROM observability.sqlite_master WHERE type = 'index' AND name = ?",
-    )
-    .bind("idx_request_logs_body_gc_cursor")
-    .fetch_optional(&proxy.key_store.pool)
-    .await
-    .expect("query body GC index before maintenance task");
-    assert!(
-        index_before_maintenance.is_none(),
-        "body-GC partial index must not be built on the startup schema path"
-    );
     sqlx::query(
         r#"
         WITH RECURSIVE candidates(id) AS (
@@ -533,22 +522,12 @@ async fn request_log_body_gc_candidate_query_uses_partial_body_index() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed body-bearing request log");
-    proxy
-        .ensure_request_log_body_gc_cursor_index()
-        .await
-        .expect("create partial body-GC index");
-    proxy
-        .ensure_request_log_body_gc_cursor_index()
-        .await
-        .expect("repeat partial body-GC index creation");
-
     let plan = sqlx::query(
         r#"
         EXPLAIN QUERY PLAN
         SELECT id, created_at
-        FROM observability.request_logs INDEXED BY idx_request_logs_body_gc_cursor
-        WHERE (request_body IS NOT NULL OR response_body IS NOT NULL)
-          AND created_at >= 0
+        FROM observability.request_logs INDEXED BY idx_request_logs_time
+        WHERE created_at >= 0
         ORDER BY created_at ASC, id ASC
         LIMIT 100
         "#,
@@ -565,8 +544,8 @@ async fn request_log_body_gc_candidate_query_uses_partial_body_index() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        details.contains("idx_request_logs_body_gc_cursor"),
-        "expected partial body-GC index, got query plan:\n{details}"
+        details.contains("idx_request_logs_time"),
+        "expected request-log time cursor index, got query plan:\n{details}"
     );
 
     let _ = std::fs::remove_file(&db_path);

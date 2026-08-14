@@ -384,19 +384,6 @@ impl TavilyProxy {
             .map(|reason| reason.as_str())
     }
 
-    pub fn admit_request_logs_gc_schema(&self) -> SqliteSchemaAdmissionOutcome {
-        match self.key_store.try_acquire_request_logs_gc_schema_permit() {
-            Ok(permit) => {
-                SqliteSchemaAdmissionOutcome::Admitted(SqliteMaintenanceSchemaAdmission {
-                    _permit: permit,
-                })
-            }
-            Err(reason) => SqliteSchemaAdmissionOutcome::Deferred {
-                reason: reason.as_str(),
-            },
-        }
-    }
-
     pub fn admit_server_pressure_rebuild(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_server_pressure_rebuild() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {

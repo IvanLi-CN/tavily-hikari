@@ -1100,11 +1100,9 @@ pub(super) async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, 
     .expect("seed request log")
 }
 
-async fn prepare_request_log_body_gc(proxy: &TavilyProxy) {
-    proxy
-        .ensure_request_log_body_gc_cursor_index()
-        .await
-        .expect("prepare body GC index");
+async fn prepare_request_log_body_gc(_proxy: &TavilyProxy) {
+    // The online scanner uses the durable request-log time index and must not
+    // create a partial index while foreground requests may be writing.
 }
 
 async fn seed_auth_token_log_reference_for_gc(
