@@ -348,6 +348,29 @@ impl SqliteRuntime {
             .low_pressure_since_floor_at(foreground_activity_slot())
     }
 
+    pub(crate) fn release_bulk_heap_after_connection_close(&self) {
+        // SQLite and SQLx release their allocations when the short-lived bulk
+        // connection closes, but glibc may retain those free pages in the
+        // process heap after a large retention delete. Only ask the allocator
+        // to return them while the same foreground checks that admitted bulk
+        // work still show an idle process.
+        let can_trim = self.foreground_activity_rps() <= MAINTENANCE_BULK_MAX_FOREGROUND_RPS
+            && self.inner.acquire_waiters.load(AtomicOrdering::Acquire) == 0;
+
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if can_trim {
+            // SAFETY: `malloc_trim` is process-global but does not require an
+            // allocator-owned pointer. The caller has already closed its bulk
+            // SQLite connection and this branch excludes active foreground waits.
+            unsafe {
+                libc::malloc_trim(0);
+            }
+        }
+
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        let _ = can_trim;
+    }
+
     pub(crate) fn subscribe_dashboard_sse(&self) -> impl Drop {
         // A dashboard SSE connection is a foreground arrival, but it is not a
         // sustained request rate. Counting its lifetime as RPS would freeze

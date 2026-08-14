@@ -820,15 +820,29 @@ impl KeyStore {
             }
         }
         .await;
-        if let Some(conn) = pooled_conn.take()
-            && let Err(err) = conn.close().await
-        {
-            tracing::warn!(
-                component = "ha_outbox_gc",
-                event = "connection_cleanup_failed",
-                error = %err,
-                "discarded online HA GC connection after cleanup failure"
-            );
+        let deleted_rows = result
+            .as_ref()
+            .map(|report| report.deleted_rows)
+            .unwrap_or_default();
+        let connection_closed = if let Some(conn) = pooled_conn.take() {
+            match conn.close().await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(
+                        component = "ha_outbox_gc",
+                        event = "connection_cleanup_failed",
+                        error = %err,
+                        "discarded online HA GC connection after cleanup failure"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if connection_closed && deleted_rows > 0 {
+            self.sqlite_runtime
+                .release_bulk_heap_after_connection_close();
         }
         result
     }
