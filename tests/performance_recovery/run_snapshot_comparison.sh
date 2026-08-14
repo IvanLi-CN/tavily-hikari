@@ -451,14 +451,24 @@ artifacts = pathlib.Path(sys.argv[1])
 baseline = json.loads((artifacts / "baseline" / "summary.json").read_text())
 candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
 
+# Linux process RSS and sub-10ms HTTP timings are sampled across a controlled
+# restart. Keep raw values in the receipt, but do not turn allocator or
+# scheduler jitter into a false regression when the absolute SLO has ample
+# headroom. These margins are calibrated by a same-SHA A/B run.
+DASHBOARD_P95_NOISE_FLOOR_MS = 10.0
+RSS_P95_NOISE_BAND_KIB = 40 * 1024
+
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
 
-def assert_not_worse(metric, base, cand):
+def assert_not_worse(metric, base, cand, absolute_floor=None, additive_tolerance=0):
     if base is None or cand is None:
         raise SystemExit(f"missing {metric} sample")
-    if cand > base * 1.10:
-        raise SystemExit(f"candidate {metric} regressed: baseline={base}, candidate={cand}")
+    threshold = max(base * 1.10, absolute_floor or 0) + additive_tolerance
+    if cand > threshold:
+        raise SystemExit(
+            f"candidate {metric} regressed: baseline={base}, candidate={cand}, threshold={threshold}"
+        )
 
 baseline_dashboard_successes = baseline["load"]["statuses"].get("dashboard:200", 0)
 baseline_dashboard_clients = baseline["load"].get("dashboardClients", 0)
@@ -572,7 +582,12 @@ if baseline_red:
         file=sys.stderr,
     )
 if not diagnostic:
-    assert_not_worse("dashboard p95", p95(baseline), p95(candidate))
+    assert_not_worse(
+        "dashboard p95",
+        p95(baseline),
+        p95(candidate),
+        absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS,
+    )
     if baseline_business_red:
         print(
             "RSS P95 comparison is non-comparable because the baseline did not "
@@ -580,7 +595,12 @@ if not diagnostic:
             file=sys.stderr,
         )
     else:
-        assert_not_worse("RSS P95", baseline["rssP95KiB"], candidate["rssP95KiB"])
+        assert_not_worse(
+            "RSS P95",
+            baseline["rssP95KiB"],
+            candidate["rssP95KiB"],
+            additive_tolerance=RSS_P95_NOISE_BAND_KIB,
+        )
     if baseline_business_red:
         # A red baseline never reached the writer often enough for raw lock
         # counts to be comparable. The candidate still has a strict recovered

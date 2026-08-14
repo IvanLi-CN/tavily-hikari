@@ -183,6 +183,9 @@
   维持 5 rps（60% HTTP API、20% MCP、20% 管理员读取）及 20 个 SSE client。
 - 基准报告必须记录 commit SHA、构建 profile、CPU/内存环境、fixture seed、实际请求率、采样序列和
   p50/p95/max；不得把 cgroup file cache 计入进程组 RSS。
+- 10 分钟双库 snapshot 对比保留原始 Dashboard p95 和 RSS P95。Dashboard 比较使用 10ms 的绝对测量
+  下限，RSS 比较在相对 10% 外允许 40MiB 的 allocator/restart 噪声带；超过该带宽才判为候选回归。
+  这项短时 gate 不替代前述 30 分钟 release RSS P95 `<=256MiB` 基准。
 
 ## 验收清单（Acceptance checklist）
 

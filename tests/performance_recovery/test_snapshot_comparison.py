@@ -43,6 +43,14 @@ class SnapshotComparisonTests(unittest.TestCase):
             with self.subTest(variable=variable):
                 self.assertSetEqual(comparison_resources(variable), resources)
 
+    def test_comparison_keeps_calibrated_noise_bounds_and_raw_metrics(self) -> None:
+        self.assertIn("DASHBOARD_P95_NOISE_FLOOR_MS = 10.0", COMPARISON)
+        self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
+        self.assertIn("absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS", COMPARISON)
+        self.assertIn("additive_tolerance=RSS_P95_NOISE_BAND_KIB", COMPARISON)
+        self.assertIn('return summary["load"]["dashboardP95Ms"]', COMPARISON)
+        self.assertIn('"rssP95KiB": p95("rss_kib")', COMPARISON)
+
 
 if __name__ == "__main__":
     unittest.main()
