@@ -105,10 +105,17 @@ async fn enqueue_scheduled_job_result(
     key_id: Option<&str>,
     trigger_source: &str,
 ) -> Result<tavily_hikari::ScheduledJobEnqueueResult, ProxyError> {
-    let result = state
-        .proxy
-        .scheduled_job_enqueue(job_type, trigger_source, key_id, 1)
-        .await?;
+    let result = if trigger_source == TRIGGER_SOURCE_MANUAL {
+        state
+            .proxy
+            .scheduled_job_enqueue_foreground(job_type, trigger_source, key_id, 1)
+            .await?
+    } else {
+        state
+            .proxy
+            .scheduled_job_enqueue(job_type, trigger_source, key_id, 1)
+            .await?
+    };
     maintenance_worker_wake_for_state(state).notify_one();
     Ok(result)
 }

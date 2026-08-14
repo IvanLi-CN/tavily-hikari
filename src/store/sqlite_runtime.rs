@@ -46,6 +46,7 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
 pub(crate) enum SqliteOperation {
     BillingLedgerAuditRead,
     DashboardIntegrityWrite,
+    ForegroundJobTrigger,
     HaBaselineRead,
     HaEventsRead,
     HaOutboxGc,
@@ -61,6 +62,7 @@ impl SqliteOperation {
         match self {
             Self::BillingLedgerAuditRead => "billing_ledger_audit_read",
             Self::DashboardIntegrityWrite => "dashboard_integrity_write",
+            Self::ForegroundJobTrigger => "foreground_job_trigger",
             Self::HaBaselineRead => "ha_baseline_read",
             Self::HaEventsRead => "ha_events_read",
             Self::HaOutboxGc => "ha_outbox_gc",
@@ -74,6 +76,7 @@ impl SqliteOperation {
 
     fn workload_class(self) -> &'static str {
         match self {
+            Self::ForegroundJobTrigger => "foreground_work",
             Self::BillingLedgerAuditRead | Self::HaBaselineRead | Self::HaEventsRead => {
                 "maintenance_read"
             }
@@ -90,6 +93,7 @@ impl SqliteOperation {
     fn acquire_budget(self) -> Duration {
         match self {
             Self::DashboardIntegrityWrite | Self::ScheduledJobControl => Duration::from_millis(100),
+            Self::ForegroundJobTrigger => Duration::from_millis(250),
             Self::HaOutboxGc
             | Self::RequestLogsGc
             | Self::RequestStatsFlush
@@ -104,6 +108,7 @@ impl SqliteOperation {
             Self::DashboardIntegrityWrite | Self::RequestStatsFlush | Self::ScheduledJobControl => {
                 Duration::from_millis(100)
             }
+            Self::ForegroundJobTrigger => Duration::from_millis(100),
             Self::HaOutboxGc
             | Self::RequestLogsGc
             | Self::ServerPressureRebuild

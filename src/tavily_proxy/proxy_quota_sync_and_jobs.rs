@@ -2621,6 +2621,18 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn scheduled_job_enqueue_foreground(
+        &self,
+        job_type: &str,
+        trigger_source: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        self.key_store
+            .scheduled_job_enqueue_foreground(job_type, trigger_source, key_id, attempt)
+            .await
+    }
+
     pub async fn scheduled_job_enqueue_at(
         &self,
         job_type: &str,

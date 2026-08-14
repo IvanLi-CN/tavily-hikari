@@ -385,7 +385,12 @@ impl KeyStore {
                     Ok(()) => unreachable!("failed scheduled job transaction committed"),
                 };
                 if let Some((job_id, _status, _current_trigger_source)) =
-                    self.scheduled_job_lookup_active(job_type, key_id).await?
+                    self.scheduled_job_lookup_active(
+                        job_type,
+                        key_id,
+                        SqliteOperation::ScheduledJobControl,
+                    )
+                    .await?
                 {
                     Ok(job_id)
                 } else {
@@ -466,10 +471,11 @@ impl KeyStore {
         &self,
         job_type: &str,
         key_id: Option<&str>,
+        operation: SqliteOperation,
     ) -> Result<Option<(i64, String, String)>, ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .acquire_operation_connection(operation)
             .await?;
         let lookup = sqlx::query_as::<_, (i64, String, String)>(
             r#"
@@ -503,8 +509,34 @@ impl KeyStore {
         attempt: i64,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         let available_at = self.backend_time.now_ts();
-        self.scheduled_job_enqueue_at(job_type, trigger_source, key_id, attempt, available_at)
+        self.scheduled_job_enqueue_at_with_operation(
+            job_type,
+            trigger_source,
+            key_id,
+            attempt,
+            available_at,
+            SqliteOperation::ScheduledJobControl,
+        )
             .await
+    }
+
+    pub(crate) async fn scheduled_job_enqueue_foreground(
+        &self,
+        job_type: &str,
+        trigger_source: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        let available_at = self.backend_time.now_ts();
+        self.scheduled_job_enqueue_at_with_operation(
+            job_type,
+            trigger_source,
+            key_id,
+            attempt,
+            available_at,
+            SqliteOperation::ForegroundJobTrigger,
+        )
+        .await
     }
 
     pub(crate) async fn scheduled_job_enqueue_at(
@@ -515,10 +547,31 @@ impl KeyStore {
         attempt: i64,
         available_at: i64,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        self.scheduled_job_enqueue_at_with_operation(
+            job_type,
+            trigger_source,
+            key_id,
+            attempt,
+            available_at,
+            SqliteOperation::ScheduledJobControl,
+        )
+        .await
+    }
+
+    async fn scheduled_job_enqueue_at_with_operation(
+        &self,
+        job_type: &str,
+        trigger_source: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+        available_at: i64,
+        operation: SqliteOperation,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         // Fast-path repeated coalesce reads so owner-facing manual triggers do not
         // fail behind an unrelated long-lived write window.
         let active_representative = if Self::scheduled_job_stale_group(job_type).is_none() {
-            self.scheduled_job_lookup_active(job_type, key_id).await?
+            self.scheduled_job_lookup_active(job_type, key_id, operation)
+                .await?
         } else {
             None
         };
@@ -542,7 +595,7 @@ impl KeyStore {
         let queued_at = self.backend_time.now_ts();
         let mut conn = match self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_immediate(operation)
             .await
         {
             Ok(conn) => conn,
@@ -648,7 +701,7 @@ impl KeyStore {
                 // promote metadata that the next unlocked scheduler pass can
                 // update safely.
                 if let Some((job_id, status, current_trigger_source)) =
-                    self.scheduled_job_lookup_active(job_type, key_id).await?
+                    self.scheduled_job_lookup_active(job_type, key_id, operation).await?
                 {
                     return Ok(ScheduledJobEnqueueResult {
                         job_id,

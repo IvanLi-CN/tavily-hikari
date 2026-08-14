@@ -80,3 +80,49 @@ async fn scheduled_job_enqueue_reuses_ha_gc_representative_under_writer_lock() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn foreground_manual_enqueue_waits_for_short_pool_pressure() {
+    let db_path = temp_db_path("foreground-manual-enqueue-pool-pressure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let first = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("hold first pool connection");
+    let second = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("hold second pool connection");
+    let third = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("hold third pool connection");
+    let release = async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        drop((first, second, third));
+    };
+
+    let started = Instant::now();
+    let enqueue = proxy.scheduled_job_enqueue_foreground("ha_outbox_gc", "manual", None, 1);
+    let (job, ()) = tokio::join!(enqueue, release);
+    let job = job.expect("foreground manual enqueue after short pool pressure");
+    assert!(job.created);
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "foreground enqueue must fit its bounded acquisition window (elapsed={:?})",
+        started.elapsed()
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
