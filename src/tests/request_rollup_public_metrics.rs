@@ -573,22 +573,17 @@ async fn admin_summary_falls_back_to_durable_data_when_flush_hits_write_lock() {
         .expect("release writer lock");
     lock_conn.close().await.expect("close lock connection");
 
+    let flushed = proxy.key_store.request_stats_coalescer.flushed.clone();
+    let flush_complete = flushed.notified();
     proxy.nudge_request_stats_flush().await;
     // The write lock deliberately enters the runtime's recent-contention
     // protection window. The background writer must yield while that window
     // drains, rather than racing a foreground transaction; the no-contention
     // tests retain the nominal two-second persistence contract.
-    let summary_after = tokio::time::timeout(Duration::from_secs(8), async {
-        loop {
-            let summary = proxy.summary().await.expect("summary after lock release");
-            if summary.total_requests == 1 {
-                break summary;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("background flush should persist after bounded contention recovery");
+    tokio::time::timeout(Duration::from_secs(8), flush_complete)
+        .await
+        .expect("background flush should persist after bounded contention recovery");
+    let summary_after = proxy.summary().await.expect("summary after lock release");
     assert_eq!(summary_after.total_requests, 1);
     assert_eq!(summary_after.success_count, 1);
 
