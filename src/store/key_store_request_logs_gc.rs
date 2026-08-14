@@ -138,53 +138,39 @@ impl KeyStore {
         threshold: i64,
         batch_size: i64,
     ) -> Result<i64, ProxyError> {
-        let deadline = self.backend_time.deadline_after(Duration::from_secs(10));
-        let mut retry_attempt = 0usize;
-        loop {
-            let result = async {
-                let mut tx = self.pool.begin().await?;
-                sqlx::query("PRAGMA secure_delete = OFF")
-                    .execute(&mut *tx)
-                    .await?;
-                let result = sqlx::query(
-                    r#"
-                    DELETE FROM observability.request_logs
-                    WHERE id IN (
-                        SELECT id
-                        FROM observability.request_logs
-                        WHERE created_at < ?
-                        ORDER BY created_at ASC, id ASC
-                        LIMIT ?
-                    )
-                    "#,
-                )
-                .bind(threshold)
-                .bind(batch_size)
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::RequestLogsGc)
+            .await?;
+        let result = async {
+            sqlx::query("PRAGMA secure_delete = OFF")
                 .execute(&mut *tx)
                 .await?;
-                tx.commit().await?;
-                Ok::<_, sqlx::Error>(result)
+            sqlx::query(
+                r#"
+                DELETE FROM observability.request_logs
+                WHERE id IN (
+                    SELECT id
+                    FROM observability.request_logs
+                    WHERE created_at < ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                )
+                "#,
+            )
+            .bind(threshold)
+            .bind(batch_size)
+            .execute(&mut *tx)
+            .await
+        }
+        .await
+        .map_err(ProxyError::Database);
+        match result {
+            Ok(result) => {
+                tx.finish(Ok(())).await?;
+                Ok(result.rows_affected() as i64)
             }
-            .await;
-            match result {
-                Ok(result) => return Ok(result.rows_affected() as i64),
-                Err(err) => {
-                    let err = ProxyError::Database(err);
-                    if sleep_before_sqlite_transient_write_retry(
-                        &self.backend_time,
-                        "request logs gc batch delete",
-                        retry_attempt,
-                        deadline,
-                        &err,
-                    )
-                    .await
-                    {
-                        retry_attempt += 1;
-                        continue;
-                    }
-                    return Err(err);
-                }
-            }
+            Err(err) => tx.finish(Err(err)).await.map(|_| unreachable!()),
         }
     }
 
@@ -246,14 +232,22 @@ impl KeyStore {
             let deadline = self.backend_time.deadline_after(Duration::from_secs(10));
             let mut retry_attempt = 0usize;
             loop {
+                let mut conn = self
+                    .sqlite_runtime
+                    .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+                    .await?;
                 match sqlx::query(sql)
                     .bind(threshold)
                     .bind(batch_size)
-                    .execute(&self.pool)
+                    .execute(&mut *conn)
                     .await
                 {
-                    Ok(_) => break,
+                    Ok(_) => {
+                        conn.close().await?;
+                        break;
+                    }
                     Err(err) => {
+                        drop(conn);
                         let err = ProxyError::Database(err);
                         if sleep_before_sqlite_transient_write_retry(
                             &self.backend_time,
@@ -287,6 +281,10 @@ impl KeyStore {
         let deadline = self.backend_time.deadline_after(Duration::from_secs(10));
         let mut retry_attempt = 0usize;
         loop {
+            let mut conn = self
+                .sqlite_runtime
+                .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+                .await?;
             match sqlx::query(
                 r#"
                 DELETE FROM observability.request_log_catalog_rollups
@@ -301,11 +299,15 @@ impl KeyStore {
             )
             .bind(threshold)
             .bind(batch_size)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             {
-                Ok(result) => return Ok(result.rows_affected() as i64),
+                Ok(result) => {
+                    conn.close().await?;
+                    return Ok(result.rows_affected() as i64);
+                }
                 Err(err) => {
+                    drop(conn);
                     let err = ProxyError::Database(err);
                     if sleep_before_sqlite_transient_write_retry(
                         &self.backend_time,
@@ -371,6 +373,10 @@ impl KeyStore {
         after: Option<(i64, i64)>,
         row_retention_threshold: i64,
     ) -> Result<Vec<RequestLogBodyGcCandidate>, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+            .await?;
         let rows = if let Some((created_at, id)) = after {
             sqlx::query(
                 r#"
@@ -389,7 +395,7 @@ impl KeyStore {
             .bind(created_at)
             .bind(id)
             .bind(batch_size)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?
         } else {
             sqlx::query(
@@ -405,9 +411,10 @@ impl KeyStore {
             )
             .bind(row_retention_threshold)
             .bind(batch_size)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *conn)
             .await?
         };
+        conn.close().await?;
         rows.into_iter()
             .map(Self::map_request_log_body_gc_candidate)
             .collect::<Result<Vec<_>, _>>()
@@ -609,7 +616,11 @@ impl KeyStore {
                 let mut retry_attempt = 0usize;
                 let write_started = self.backend_time.instant_now();
                 let result = loop {
-                    match sqlx::query(
+                    let mut conn = self
+                        .sqlite_runtime
+                        .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+                        .await?;
+                    let result = sqlx::query(
                         r#"
                         UPDATE observability.request_logs
                         SET request_body = NULL,
@@ -642,11 +653,15 @@ impl KeyStore {
                     .bind(reason)
                     .bind(now)
                     .bind(candidate.id)
-                    .execute(&self.pool)
-                    .await
-                    {
-                        Ok(result) => break result,
+                    .execute(&mut *conn)
+                    .await;
+                    match result {
+                        Ok(result) => {
+                            conn.close().await?;
+                            break result;
+                        }
                         Err(err) => {
+                            drop(conn);
                             let err = ProxyError::Database(err);
                             if sleep_before_sqlite_transient_write_retry(
                                 &self.backend_time,
