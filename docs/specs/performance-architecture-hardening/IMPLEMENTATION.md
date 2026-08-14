@@ -27,6 +27,9 @@
 - HA GC, request-stats persistence, pressure rebuild, reconciliation projection, and Dashboard
   integrity use that admission boundary. Scheduler claim/finish/continuation remain short control
   transactions, so bulk backpressure cannot consume their control path or create an unbounded retry.
+- HTTP manual enqueue uses a separate foreground operation budget. A transient HA GC enqueue failure
+  returns the existing trigger-response shape as `202/deferred` with `jobId=0`, which means no durable
+  row was created; the self-scheduling HA controller and worker wake provide the bounded recovery path.
 - The short admission budgets are explicit runtime deadlines, not connection-level `PRAGMA busy_timeout` rewrites. A background request-stats admission commits at most four adaptive
   `25..250` logical-key transactions under one 50ms retry budget, then atomically returns its
   complete tail to the coalescer and reports `deferred` when needed; manual HA GC wakes reuse an

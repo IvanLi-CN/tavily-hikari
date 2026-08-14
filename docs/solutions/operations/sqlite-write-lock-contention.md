@@ -140,6 +140,11 @@ month-tail public metrics scan.
   priority/source, do that coalescing through a read-only fast path. Requiring `BEGIN IMMEDIATE`
   before checking the active row turns harmless duplicate manual triggers into transient HTTP 500s
   whenever a bounded GC slice is holding SQLite's writer slot.
+- Treat a failed foreground admission differently from a failed durable command. HA outbox GC is
+  self-scheduling recovery debt: after its bounded `250ms` foreground pool budget expires, return a
+  stable `202/deferred` trigger response with a non-row sentinel id instead of a 500, wake the worker,
+  and let the controller/watchdog re-establish the durable representative. Do not apply this exception
+  to manual operations whose request itself is the only durable command.
 - Keep admission budgets separate from SQLite connection configuration. A short maintenance budget
   is an operation deadline around pool acquisition and `BEGIN IMMEDIATE`, not a per-connection
   `PRAGMA busy_timeout` rewrite. Rewriting that pragma turns ordinary transient bulk pressure into

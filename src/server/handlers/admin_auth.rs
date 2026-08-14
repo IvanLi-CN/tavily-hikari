@@ -46,6 +46,29 @@ struct TriggerJobResponse {
     promoted: bool,
 }
 
+const DEFERRED_MANUAL_HA_GC_JOB_ID: i64 = 0;
+
+fn deferred_manual_ha_gc_trigger_response(
+    job_type: &str,
+    err: &ProxyError,
+) -> Option<TriggerJobResponse> {
+    if job_type != "ha_outbox_gc" || !tavily_hikari::is_transient_sqlite_write_error(err) {
+        return None;
+    }
+
+    // SQLite generated job ids are always positive. Zero keeps the existing
+    // response shape while making it explicit that this is an accepted
+    // admission defer, not a durable job row a caller can query.
+    Some(TriggerJobResponse {
+        job_id: DEFERRED_MANUAL_HA_GC_JOB_ID,
+        job_type: job_type.to_string(),
+        trigger_source: TRIGGER_SOURCE_MANUAL.to_string(),
+        status: "deferred".to_string(),
+        coalesced: true,
+        promoted: false,
+    })
+}
+
 fn manual_trigger_requires_key(job_type: &str) -> bool {
     matches!(job_type, "quota_sync")
 }
@@ -255,7 +278,24 @@ async fn post_trigger_job(
         )
             .into_response()),
         Err(err) => {
-            eprintln!("manual job trigger error: {err}");
+            if let Some(deferred) = deferred_manual_ha_gc_trigger_response(&job_type, &err) {
+                tracing::debug!(
+                    component = "ha_outbox_gc",
+                    event = "manual_trigger_deferred",
+                    defer_reason = "sqlite_contention",
+                    job_type,
+                    "HA outbox GC manual trigger deferred before durable job admission"
+                );
+                maintenance_worker_wake_for_state(state.as_ref()).notify_one();
+                return Ok((StatusCode::ACCEPTED, Json(deferred)).into_response());
+            }
+            tracing::error!(
+                component = "scheduler",
+                event = "manual_trigger_failed",
+                job_type,
+                err = %err,
+                "manual scheduled job trigger failed"
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -263,7 +303,10 @@ async fn post_trigger_job(
 
 #[cfg(test)]
 mod manual_trigger_tests {
-    use super::{ManualTriggerKeyIdError, manual_trigger_key_id_for_claim};
+    use super::{
+        DEFERRED_MANUAL_HA_GC_JOB_ID, ManualTriggerKeyIdError, ProxyError,
+        deferred_manual_ha_gc_trigger_response, manual_trigger_key_id_for_claim,
+    };
 
     #[test]
     fn manual_global_jobs_reject_key_id() {
@@ -280,6 +323,30 @@ mod manual_trigger_tests {
         let key_id = manual_trigger_key_id_for_claim("quota_sync", Some("key-1".to_string()))
             .expect("quota key accepted");
         assert_eq!(key_id.as_deref(), Some("key-1"));
+    }
+
+    #[test]
+    fn manual_ha_gc_trigger_returns_deferred_for_transient_sqlite_pressure() {
+        let response = deferred_manual_ha_gc_trigger_response(
+            "ha_outbox_gc",
+            &ProxyError::Database(sqlx::Error::PoolTimedOut),
+        )
+        .expect("HA GC is self-scheduling and may defer under SQLite pressure");
+        assert_eq!(response.job_id, DEFERRED_MANUAL_HA_GC_JOB_ID);
+        assert_eq!(response.status, "deferred");
+        assert!(response.coalesced);
+        assert!(!response.promoted);
+    }
+
+    #[test]
+    fn manual_non_gc_trigger_keeps_transient_failure_visible() {
+        assert!(
+            deferred_manual_ha_gc_trigger_response(
+                "quota_sync",
+                &ProxyError::Database(sqlx::Error::PoolTimedOut),
+            )
+            .is_none()
+        );
     }
 }
 

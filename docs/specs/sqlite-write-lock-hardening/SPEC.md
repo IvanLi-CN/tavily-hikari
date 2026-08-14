@@ -127,7 +127,10 @@ source when a usable persisted runtime already exists.
   `job_type`.
 - Manual scheduled-job triggers must use the same execution path as scheduler runs, coalesce onto an
   existing `queued`/`running` representative row of the same logical job, and return that
-  representative `job_id` instead of rejecting on a shared execution gate timeout.
+  representative `job_id` instead of rejecting on a shared execution gate timeout. The self-scheduling
+  `ha_outbox_gc` exception may return `202 status=deferred` with `jobId=0` when foreground SQLite
+  admission itself times out: that sentinel is not a durable row, and the controller/watchdog owns
+  recovery without a background retry loop.
 - Manual trigger responses may add queue-state hints such as representative `status`,
   `coalesced=true`, and `promoted=true` as long as the existing `jobId` / `jobType` /
   `triggerSource` contract remains backward compatible.

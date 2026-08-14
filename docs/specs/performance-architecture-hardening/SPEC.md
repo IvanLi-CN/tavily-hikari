@@ -59,6 +59,10 @@
   `maintenance_bulk` 必须在获取连接前检查至少两个前台可用 pool slot、前台到达率不高于 `5 rps`、最近
   五秒无 SQLite busy/pool timeout，并持有唯一 bulk permit。拒绝必须返回 typed deferred，不得先取得
   pooled connection 或启动后台无限重试。
+- HTTP 发起的 manual scheduled-job enqueue 属于 `foreground_work`，其 pool acquisition 预算不超过
+  `250ms`，但不占用 bulk permit。若 `ha_outbox_gc` 在此预算内仍不能取得连接，端点返回既有 JSON
+  shape 的 `202`、`status=deferred` 与 sentinel `jobId=0`，不伪造 durable row；HA 的既有 watchdog
+  和 worker wake 继续恢复该自动 recovery debt。其他人工触发仍将实际 persistence failure 返回给调用方。
 - HA GC、request-log GC、request-stats flush、pressure rebuild、reconciliation projection 与 Dashboard
   integrity 是 `maintenance_bulk`；GC 在每条 SQL 后重新检查 admission，压力只推迟当前 channel，不得
   冻结其余 eligible channel。request-log GC 遇到未封存的本地日时只完成一次安全检查并以既有
