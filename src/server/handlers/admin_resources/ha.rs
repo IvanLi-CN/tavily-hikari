@@ -155,6 +155,29 @@ fn emit_ha_perf_event(
     }
 }
 
+fn best_effort_ha_outbox_stats<T, E>(
+    result: Result<T, E>,
+    event: &'static str,
+    channel: tavily_hikari::HaSyncChannel,
+) -> Option<T> {
+    match result {
+        Ok(stats) => Some(stats),
+        Err(_) => {
+            // Export bytes are already durable in the response file. A sampled
+            // diagnostic must not turn that completed HA protocol operation into
+            // a 5xx or expose a database error to the peer.
+            tracing::debug!(
+                component = "ha",
+                event,
+                channel = channel.as_str(),
+                outcome = "outbox_stats_unavailable",
+                "HA export diagnostic sample unavailable"
+            );
+            None
+        }
+    }
+}
+
 fn parse_ha_channel(raw: Option<&str>) -> Result<tavily_hikari::HaSyncChannel, (StatusCode, String)> {
     let Some(value) = raw else {
         return Err((
@@ -1037,11 +1060,10 @@ async fn build_ha_baseline_reader(
     let elapsed = started.elapsed();
     let sampling = tavily_hikari::sample_ha_perf_event("baseline_export_completed", channel, elapsed);
     let outbox = if sampling.capture_heavy_stats {
-        Some(
-            proxy
-                .ha_channel_outbox_stats(channel, None)
-                .await
-                .map_err(map_ha_export_error)?,
+        best_effort_ha_outbox_stats(
+            proxy.ha_channel_outbox_stats(channel, None).await,
+            "baseline_export_completed",
+            channel,
         )
     } else {
         None
@@ -1104,11 +1126,10 @@ async fn build_ha_events_reader(
             let sampling =
                 tavily_hikari::sample_ha_perf_event("events_export_completed", channel, elapsed);
             let outbox = if sampling.capture_heavy_stats {
-                Some(
-                    proxy
-                        .ha_channel_outbox_stats(channel, None)
-                        .await
-                        .map_err(map_ha_export_error)?,
+                best_effort_ha_outbox_stats(
+                    proxy.ha_channel_outbox_stats(channel, None).await,
+                    "events_export_completed",
+                    channel,
                 )
             } else {
                 None
@@ -2375,5 +2396,16 @@ mod channel_health_tests {
         assert_eq!(health.len(), 3);
         assert!(health.iter().all(|value| value.cursor_state == "unknown"));
         assert!(health.iter().all(|value| value.gc_state == "unknown"));
+    }
+
+    #[test]
+    fn sampled_ha_outbox_stats_never_fail_a_completed_export() {
+        let sample = best_effort_ha_outbox_stats::<(), &str>(
+            Err("database is locked"),
+            "events_export_completed",
+            tavily_hikari::HaSyncChannel::Control,
+        );
+
+        assert!(sample.is_none());
     }
 }

@@ -886,15 +886,28 @@ struct HaSyncPerfEvent<'a> {
 async fn emit_ha_sync_perf_event(
     state: &AppState,
     perf: HaSyncPerfEvent<'_>,
-) -> Result<(), ProxyError> {
+) {
     let sampling = tavily_hikari::sample_ha_perf_event(perf.event, perf.channel, perf.elapsed);
     let outbox = if sampling.capture_heavy_stats {
-        Some(
-            state
-                .proxy
-                .ha_channel_outbox_stats(perf.channel, perf.peer_node_id)
-                .await?,
-        )
+        match state
+            .proxy
+            .ha_channel_outbox_stats(perf.channel, perf.peer_node_id)
+            .await
+        {
+            Ok(stats) => Some(stats),
+            Err(_) => {
+                // Sync state has already been applied. Its sampled diagnostic
+                // must not turn a completed replication step into a retry.
+                tracing::debug!(
+                    component = "ha",
+                    event = perf.event,
+                    channel = perf.channel.as_str(),
+                    outcome = "outbox_stats_unavailable",
+                    "HA sync diagnostic sample unavailable"
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -951,7 +964,6 @@ async fn emit_ha_sync_perf_event(
             "ha perf"
         );
     }
-    Ok(())
 }
 
 fn is_ha_retryable_foreign_key_gap(
@@ -1090,7 +1102,7 @@ async fn run_ha_standby_sync_once(
                     detail: Some("baseline_applied"),
                 },
             )
-            .await?;
+            .await;
         }
 
         let target = format!(
@@ -1209,7 +1221,7 @@ async fn run_ha_standby_sync_once(
                 detail: None,
             },
         )
-        .await?;
+        .await;
         let ack_target = format!("{}/api/admin/ha/events/ack", source_url.trim_end_matches('/'));
         let _ = client
             .post(ack_target)
@@ -1733,7 +1745,7 @@ async fn apply_ha_baseline_response_stream(
             detail: Some(detail),
         },
     )
-    .await?;
+    .await;
     Ok(result)
 }
 
@@ -1794,7 +1806,7 @@ async fn apply_ha_events_response_stream(
             detail: None,
         },
     )
-    .await?;
+    .await;
     Ok(result)
 }
 
