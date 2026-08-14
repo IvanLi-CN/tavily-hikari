@@ -362,6 +362,15 @@ impl SqliteRuntime {
             .low_pressure_since_floor_at(foreground_activity_slot())
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_recent_contention_for_test(&self) {
+        *self
+            .inner
+            .last_contention_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+    }
+
     pub(crate) fn release_bulk_heap_after_connection_close(&self) {
         // SQLite and SQLx release their allocations when the short-lived bulk
         // connection closes, but glibc may retain those free pages in the

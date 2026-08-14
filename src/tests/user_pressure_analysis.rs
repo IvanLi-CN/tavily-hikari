@@ -840,9 +840,13 @@ async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
         "cancelled rebuild must not keep writing after role demotion"
     );
 
+    reopened
+        .key_store
+        .sqlite_runtime
+        .mark_recent_contention_for_test();
     assert!(
         reopened.spawn_server_pressure_buckets_rebuild_once(),
-        "serving promotion should be able to reschedule rebuild after cancellation"
+        "serving promotion should reschedule after cancellation through the contention cooldown"
     );
 
     tokio::time::timeout(Duration::from_secs(8), async {

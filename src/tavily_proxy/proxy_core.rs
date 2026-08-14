@@ -5,6 +5,7 @@ impl TavilyProxy {
     const SERVER_PRESSURE_REBUILD_DEFERRED: u8 = 3;
     const SERVER_PRESSURE_REBUILD_MAX_ADMISSION_DEFERS: usize = 3;
     const SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY: Duration = Duration::from_millis(250);
+    const SERVER_PRESSURE_REBUILD_CONTENTION_DEFER_DELAY: Duration = Duration::from_secs(5);
 
     #[cfg(test)]
     async fn acquire_test_startup_guard() -> tokio::sync::OwnedSemaphorePermit {
@@ -1170,6 +1171,11 @@ impl TavilyProxy {
                 let _admission = match proxy.admit_server_pressure_rebuild() {
                     SqliteAdmissionOutcome::Admitted(admission) => admission,
                     SqliteAdmissionOutcome::Deferred { reason } => {
+                        let retry_delay = if reason == "recent_contention" {
+                            Self::SERVER_PRESSURE_REBUILD_CONTENTION_DEFER_DELAY
+                        } else {
+                            Self::SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY
+                        };
                         admission_defers += 1;
                         if admission_defers >= Self::SERVER_PRESSURE_REBUILD_MAX_ADMISSION_DEFERS {
                             proxy
@@ -1200,12 +1206,12 @@ impl TavilyProxy {
                             component = "analysis_pressure",
                             event = "server_pressure_buckets_rebuild_deferred",
                             defer_reason = reason,
-                            retry_delay_ms = Self::SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY.as_millis() as u64,
+                            retry_delay_ms = retry_delay.as_millis() as u64,
                             "server pressure rebuild deferred before SQLite connection acquisition"
                         );
                         proxy
                             .backend_time
-                            .sleep(Self::SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY)
+                            .sleep(retry_delay)
                             .await;
                         if proxy
                             .server_pressure_rebuild_generation
