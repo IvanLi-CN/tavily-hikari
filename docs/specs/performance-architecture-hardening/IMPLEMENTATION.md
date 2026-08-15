@@ -28,12 +28,16 @@
 - HA GC, request-stats persistence, pressure rebuild, reconciliation projection, and Dashboard
   integrity use that admission boundary. Scheduler claim/finish/continuation remain short control
   transactions, so bulk backpressure cannot consume their control path or create an unbounded retry.
+  A transient short-control completion leaves its generation-fenced row running for the periodic
+  stale reaper; request-log GC persists its five-minute continuation in the same transaction as
+  completion.
 - HTTP manual enqueue uses a separate foreground operation budget. A transient HA GC enqueue failure
   returns `503` instead of claiming acceptance with a synthetic job id; the self-scheduling HA
   controller and worker wake provide the bounded recovery path without inventing a durable row.
 - The short admission budgets are explicit runtime deadlines, not connection-level `PRAGMA busy_timeout` rewrites. A background request-stats admission commits at most four adaptive
   `25..250` logical-key transactions under one 50ms retry budget, then atomically returns its
-  complete tail to the coalescer and reports `deferred` when needed; manual HA GC wakes reuse an
+  complete tail to the coalescer and reports `deferred` when needed. The deadline covers pool
+  acquisition and `BEGIN IMMEDIATE`; manual HA GC wakes reuse an
   existing durable representative rather than
   competing for a locked writer merely to promote queue metadata.
 - Dashboard snapshot reads preserve a last-good value under admission or SQLite pressure. A cold

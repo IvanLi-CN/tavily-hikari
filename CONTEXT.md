@@ -10,14 +10,17 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   reports activity and bounded waits so background work can yield before consuming its capacity.
 - `maintenance control`: short durable queue metadata work such as claim, finish, continuation, and
   stale recovery. It has a fixed short pool/writer budget enforced by `SqliteRuntime`, never
-  changes the database busy-timeout pragma, and never carries scans or remote I/O.
+  changes the database busy-timeout pragma, and never carries scans or remote I/O. A transient
+  completion failure leaves its fenced claim running for type-specific stale recovery rather than
+  dropping durable work or retrying indefinitely in the background.
 - `maintenance bulk`: rebuilds, rollup persistence, GC, and local reconciliation projection. It
   obtains one instance-local admission permit only when two foreground pool slots are either idle
   or immediately allocatable within the configured pool maximum, foreground activity is at most
   five requests per second, and there was no recent SQLite contention. Request-stats flush is the
   bounded recovery exception: each nominal wake owns at
   most four adaptive `25..250` logical-key transactions within one 50ms retry budget, atomically
-  restoring every uncommitted delta before yielding.
+  restoring every uncommitted delta before yielding. That budget includes pool acquisition and
+  `BEGIN IMMEDIATE`, not only statement retries after a transaction starts.
 - `recovery debt`: retained work that is safely eligible for automatic catch-up, including expired
   HA outbox events. It progresses through bounded work slices and never receives a special writer
   bypass.

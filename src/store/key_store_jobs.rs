@@ -1323,22 +1323,35 @@ impl KeyStore {
                SET status = 'queued',
                    started_at = NULL,
                    finished_at = NULL,
-                   available_at = ?,
+                   available_at = CASE
+                       WHEN job_type = 'request_logs_gc' THEN ?
+                       ELSE ?
+                   END,
                    claim_generation = claim_generation + 1,
                    message = CASE
                        WHEN job_type = 'ha_outbox_gc' THEN 'deferred=stale_recovery'
-                       ELSE 'deferred=stale_reconciliation_recovery'
+                       WHEN job_type = 'upstream_reconciliation' THEN 'deferred=stale_reconciliation_recovery'
+                       WHEN job_type = 'request_logs_gc' THEN 'deferred=stale_request_logs_gc_recovery'
+                       ELSE 'deferred=stale_control_recovery'
                    END
                WHERE status = 'running'
                  AND started_at IS NOT NULL
                  AND (
                      (job_type = 'ha_outbox_gc' AND started_at <= ?)
                      OR (job_type = 'upstream_reconciliation' AND started_at <= ?)
+                     OR (job_type = 'request_logs_gc' AND started_at <= ?)
+                     OR (
+                         job_type NOT IN ('ha_outbox_gc', 'upstream_reconciliation', 'request_logs_gc', 'db_compaction')
+                         AND started_at <= ?
+                     )
                  )"#,
         )
+        .bind(now.saturating_add(300))
         .bind(now.saturating_add(30))
         .bind(now.saturating_sub(120))
         .bind(now.saturating_sub(60))
+        .bind(now.saturating_sub(120))
+        .bind(now.saturating_sub(300))
         .execute(&mut *conn)
         .await
         .map(|result| result.rows_affected())

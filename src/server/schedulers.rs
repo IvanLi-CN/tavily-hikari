@@ -477,58 +477,18 @@ async fn dequeue_next_scheduled_job(
 async fn run_queued_scheduled_job(state: Arc<AppState>, job: JobLog) {
     let job_type = job.job_type.clone();
     let key_id = job.key_id.clone();
-    let trigger_source = job.trigger_source.clone();
     let claimed_job = ClaimedScheduledJob {
         job_id: job.id,
         claim_generation: job.claim_generation,
         _job_execution_gate: None,
     };
-    let completed = run_manual_claimed_job(
+    run_manual_claimed_job(
         state.clone(),
         job_type.clone(),
         key_id.clone(),
         claimed_job,
     )
     .await;
-    // HA GC persists its continuation together with job completion. The stale
-    // reaper is the sole recovery path when that transaction cannot commit;
-    // enqueueing again here creates an unbounded retry loop.
-    let continuation_delay = match job_type.as_str() {
-        "request_logs_gc" if !completed => Some(REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS),
-        _ => None,
-    };
-    if let Some(continuation_delay) = continuation_delay {
-        let available_at = state
-            .proxy
-            .backend_time()
-            .now_ts()
-            .saturating_add(continuation_delay);
-        match enqueue_scheduled_job_at(
-            state.as_ref(),
-            &job_type,
-            key_id.as_deref(),
-            TRIGGER_SOURCE_AUTO,
-            available_at,
-        )
-        .await
-        {
-            Ok(continuation_job_id) => tracing::debug!(
-                component = %job_type,
-                event = "continuation_queued",
-                trigger_source = %trigger_source,
-                continuation_job_id,
-                continuation_delay_secs = continuation_delay,
-                available_at,
-            ),
-            Err(err) => tracing::warn!(
-                component = %job_type,
-                event = "continuation_enqueue_failed",
-                trigger_source = %trigger_source,
-                continuation_delay_secs = continuation_delay,
-                err = %err,
-            ),
-        }
-    }
 }
 
 fn spawn_dashboard_rollup_integrity_scheduler(state: Arc<AppState>) {
@@ -1102,11 +1062,13 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
                 "request-log GC deferred before SQLite connection acquisition"
             );
-            let _ = state
-                .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&msg))
-                .await;
-            return false;
+            return finish_request_logs_gc_with_continuation(
+                &state,
+                job_id,
+                claim_generation,
+                msg,
+            )
+            .await;
         }
     };
     let result = state
@@ -1147,26 +1109,91 @@ async fn run_request_logs_gc_catchup_claimed_job(
                     "request-log GC is incomplete without progress"
                 );
             }
-            let _ = state
-                .proxy
-                .scheduled_job_update_message(job_id, Some(&msg))
-                .await;
-            let _ = state
-                .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&msg))
-                .await;
-            report.completed
+            if report.completed {
+                match state
+                    .proxy
+                    .scheduled_job_finish_claimed(job_id, claim_generation, "success", Some(&msg))
+                    .await
+                {
+                    Ok(()) => true,
+                    Err(err) if err.is_stale_claim() => true,
+                    Err(err) => {
+                        tracing::warn!(
+                            component = "request_logs_gc",
+                            event = "completion_persist_deferred",
+                            job_id,
+                            claim_generation,
+                            stale_reaper_after_secs = 120_u64,
+                            err = %err,
+                            "request-log GC completion remains running for stale-reaper recovery"
+                        );
+                        false
+                    }
+                }
+            } else {
+                finish_request_logs_gc_with_continuation(&state, job_id, claim_generation, msg).await
+            }
         }
         Err(err) => {
-            let _ = state
-                .proxy
-                .scheduled_job_finish_claimed(
-                    job_id,
-                    claim_generation,
-                    "error",
-                    Some(&err.to_string()),
-                )
-                .await;
+            finish_request_logs_gc_with_continuation(
+                &state,
+                job_id,
+                claim_generation,
+                format!("error={err}"),
+            )
+            .await
+        }
+    }
+}
+
+async fn finish_request_logs_gc_with_continuation(
+    state: &Arc<AppState>,
+    job_id: i64,
+    claim_generation: i64,
+    message: String,
+) -> bool {
+    let available_at = state
+        .proxy
+        .backend_time()
+        .now_ts()
+        .saturating_add(REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS);
+    match state
+        .proxy
+        .scheduled_job_finish_and_enqueue_auto_at(
+            job_id,
+            claim_generation,
+            "request_logs_gc",
+            None,
+            1,
+            Some(&message),
+            available_at,
+        )
+        .await
+    {
+        Ok(continuation) => {
+            tracing::debug!(
+                component = "request_logs_gc",
+                event = "continuation_queued",
+                job_id,
+                continuation_job_id = continuation.job_id,
+                continuation_created = continuation.created,
+                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                available_at,
+            );
+            true
+        }
+        Err(err) if err.is_stale_claim() => true,
+        Err(err) => {
+            tracing::warn!(
+                component = "request_logs_gc",
+                event = "continuation_persist_deferred",
+                job_id,
+                claim_generation,
+                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                stale_reaper_after_secs = 120_u64,
+                err = %err,
+                "request-log GC continuation remains running for stale-reaper recovery"
+            );
             false
         }
     }

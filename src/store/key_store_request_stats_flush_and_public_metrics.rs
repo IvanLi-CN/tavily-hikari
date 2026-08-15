@@ -470,11 +470,8 @@ impl KeyStore {
             match Self::flush_request_stats_writes_once(
                 sqlite_runtime,
                 backend_time,
-                &chunk.pending_dashboard_rollups,
-                &chunk.pending_api_key_usage,
-                &chunk.pending_auth_token_activity,
-                &chunk.pending_account_request_rollups,
-                &chunk.pending_request_log_catalog,
+                retry_deadline,
+                chunk,
             )
             .await
             {
@@ -515,18 +512,19 @@ impl KeyStore {
     async fn flush_request_stats_writes_once(
         sqlite_runtime: &SqliteRuntime,
         backend_time: &BackendTime,
-        pending_dashboard_rollups: &HashMap<(i64, i64), DashboardRequestRollupCounts>,
-        pending_api_key_usage: &HashMap<(String, i64), ApiKeyUsageBucketDelta>,
-        pending_auth_token_activity: &HashMap<String, AuthTokenActivityDelta>,
-        pending_account_request_rollups: &HashMap<AccountRequestRollupKey, AccountUsageRollupDelta>,
-        pending_request_log_catalog: &HashMap<RequestLogCatalogRollupKey, i64>,
+        retry_deadline: Instant,
+        chunk: &DrainedRequestStatsFlushBatch,
     ) -> Result<(), ProxyError> {
         let updated_at = backend_time.now_ts();
         let mut tx = sqlite_runtime
-            .begin_immediate(SqliteOperation::RequestStatsFlush)
+            .begin_immediate_before(
+                SqliteOperation::RequestStatsFlush,
+                retry_deadline.into(),
+            )
             .await?;
         let write_result = async {
-        let mut dashboard_entries = pending_dashboard_rollups
+        let mut dashboard_entries = chunk
+            .pending_dashboard_rollups
             .iter()
             .map(|(key, counts)| (*key, *counts))
             .collect::<Vec<_>>();
@@ -542,7 +540,8 @@ impl KeyStore {
             .await?;
         }
 
-        let mut api_key_usage_entries = pending_api_key_usage
+        let mut api_key_usage_entries = chunk
+            .pending_api_key_usage
             .iter()
             .map(|(key, delta)| (key.clone(), *delta))
             .collect::<Vec<_>>();
@@ -558,7 +557,8 @@ impl KeyStore {
             .await?;
         }
 
-        let mut auth_token_activity_entries = pending_auth_token_activity
+        let mut auth_token_activity_entries = chunk
+            .pending_auth_token_activity
             .iter()
             .map(|(token_id, delta)| (token_id.clone(), delta.clone()))
             .collect::<Vec<_>>();
@@ -567,7 +567,8 @@ impl KeyStore {
             Self::upsert_auth_token_activity_delta(&mut tx, &token_id, delta).await?;
         }
 
-        let mut account_request_rollup_entries = pending_account_request_rollups
+        let mut account_request_rollup_entries = chunk
+            .pending_account_request_rollups
             .iter()
             .map(|(key, delta)| (key.clone(), *delta))
             .collect::<Vec<_>>();
@@ -674,7 +675,8 @@ impl KeyStore {
             }
         }
 
-        let mut request_log_catalog_entries = pending_request_log_catalog
+        let mut request_log_catalog_entries = chunk
+            .pending_request_log_catalog
             .iter()
             .map(|(key, delta)| (key.clone(), *delta))
             .collect::<Vec<_>>();

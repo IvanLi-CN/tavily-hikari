@@ -320,6 +320,108 @@ async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
 }
 
 #[tokio::test]
+async fn request_logs_gc_continuation_lock_defers_to_stale_reaper() {
+    let db_path = temp_db_path("request-logs-gc-continuation-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let queued = proxy
+        .scheduled_job_enqueue("request_logs_gc", "test", None, 1)
+        .await
+        .expect("enqueue request-log GC");
+    let claimed = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim request-log GC")
+        .expect("request-log GC is due");
+    let lock_options = SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(0));
+    let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+        .await
+        .expect("connect writer lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("hold SQLite writer lock");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    assert!(
+        !tokio::time::timeout(
+            Duration::from_millis(500),
+            finish_request_logs_gc_with_continuation(
+                &state,
+                claimed.id,
+                claimed.claim_generation,
+                "incomplete=true".to_string(),
+            )
+        )
+        .await
+        .expect("request-log GC handoff must yield under writer contention")
+    );
+    let running: String = sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
+        .bind(claimed.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read unresolved request-log claim");
+    assert_eq!(running, "running");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release SQLite writer lock");
+    lock_conn.close().await.expect("close writer lock holder");
+    let recovery_now = Utc::now().timestamp();
+    sqlx::query("UPDATE scheduled_jobs SET started_at = ? WHERE id = ?")
+        .bind(recovery_now - 120)
+        .bind(claimed.id)
+        .execute(&pool)
+        .await
+        .expect("age unresolved request-log continuation");
+    assert_eq!(
+        state
+            .proxy
+            .recover_stale_scheduled_jobs()
+            .await
+            .expect("recover request-log GC continuation"),
+        1
+    );
+    let recovered: (String, i64, String) = sqlx::query_as(
+        "SELECT status, available_at, message FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(claimed.id)
+    .fetch_one(&pool)
+    .await
+    .expect("read recovered request-log continuation");
+    assert_eq!(recovered.0, "queued");
+    assert!(recovered.1 >= recovery_now + 299);
+    assert_eq!(recovered.2, "deferred=stale_request_logs_gc_recovery");
+
+    drop(state);
+    pool.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn ha_channel_outbox_stats_reports_indexed_span_age_and_ack_lag() {
     let db_path = temp_db_path("ha-outbox-stats");
     let db_str = db_path.to_string_lossy().to_string();

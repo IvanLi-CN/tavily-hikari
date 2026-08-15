@@ -688,6 +688,25 @@ impl SqliteRuntime {
         })
     }
 
+    pub(crate) async fn begin_immediate_before(
+        &self,
+        operation: SqliteOperation,
+        deadline: Instant,
+    ) -> Result<SqliteImmediateTransaction, ProxyError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
+            return Err(ProxyError::Database(sqlx::Error::PoolTimedOut));
+        }
+        match tokio::time::timeout(remaining, self.begin_immediate(operation)).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
+                Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
+            }
+        }
+    }
+
     fn record_success(
         &self,
         operation: SqliteOperation,
@@ -2012,6 +2031,31 @@ mod tests {
                 .deferred_by_reason
                 .get(&SqliteAdmissionDeferReason::RecentContention),
             Some(&1)
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn request_stats_begin_respects_the_slice_deadline() {
+        let runtime = single_connection_runtime().await;
+        let held = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold the only connection");
+        let started = Instant::now();
+        let err = runtime
+            .begin_immediate_before(
+                SqliteOperation::RequestStatsFlush,
+                Instant::now() + Duration::from_millis(50),
+            )
+            .await
+            .expect_err("flush must yield when its caller deadline expires");
+        assert!(is_transient_sqlite_write_error(&err));
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "caller deadline must bound pool acquisition and BEGIN"
         );
         drop(held);
     }

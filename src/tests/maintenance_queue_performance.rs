@@ -484,6 +484,75 @@ async fn stale_reaper_recovers_ha_gc_once_with_delay() {
 }
 
 #[tokio::test]
+async fn stale_reaper_recovers_short_control_jobs_and_request_log_continuations() {
+    let db_path = temp_db_path("scheduled-job-stale-control-reaper");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let control = proxy
+        .scheduled_job_enqueue("mcp_sessions_gc", "auto", None, 1)
+        .await
+        .expect("enqueue short control job");
+    let request_logs = proxy
+        .scheduled_job_enqueue("request_logs_gc", "auto", None, 1)
+        .await
+        .expect("enqueue request-log GC");
+    proxy
+        .scheduled_job_mark_running(control.job_id)
+        .await
+        .expect("claim short control job")
+        .expect("short control job is due");
+    proxy
+        .scheduled_job_mark_running(request_logs.job_id)
+        .await
+        .expect("claim request-log GC")
+        .expect("request-log GC is due");
+    let now = Utc::now().timestamp();
+    sqlx::query("UPDATE scheduled_jobs SET started_at = ? WHERE id = ?")
+        .bind(now - 301)
+        .bind(control.job_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("age short control job");
+    sqlx::query("UPDATE scheduled_jobs SET started_at = ? WHERE id = ?")
+        .bind(now - 121)
+        .bind(request_logs.job_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("age unresolved request-log continuation");
+
+    assert_eq!(
+        proxy
+            .recover_stale_scheduled_jobs()
+            .await
+            .expect("recover stale control work"),
+        2
+    );
+    let recovered: Vec<(i64, String, i64, String)> = sqlx::query_as(
+        "SELECT id, status, available_at, message FROM scheduled_jobs WHERE id IN (?, ?) ORDER BY id",
+    )
+    .bind(control.job_id)
+    .bind(request_logs.job_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read recovered rows");
+    assert_eq!(recovered[0].0, control.job_id);
+    assert_eq!(recovered[0].1, "queued");
+    assert!(recovered[0].2 >= now + 29);
+    assert_eq!(recovered[0].3, "deferred=stale_control_recovery");
+    assert_eq!(recovered[1].0, request_logs.job_id);
+    assert_eq!(recovered[1].1, "queued");
+    assert!(recovered[1].2 >= now + 299);
+    assert_eq!(recovered[1].3, "deferred=stale_request_logs_gc_recovery");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn request_log_body_gc_candidate_query_uses_time_cursor_index() {
     let db_path = temp_db_path("request-log-body-gc-time-index");
     let db_str = db_path.to_string_lossy().to_string();
