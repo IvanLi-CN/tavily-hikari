@@ -17,15 +17,6 @@ pub enum ClaimedReconciliationRunOutcome {
     Deferred { reason: &'static str },
 }
 
-impl ClaimedReconciliationRunOutcome {
-    fn settled(self) -> i64 {
-        match self {
-            Self::Completed { settled } => settled,
-            Self::Deferred { .. } => 0,
-        }
-    }
-}
-
 struct ReconciliationEngine;
 
 struct ReconciliationRunResult {
@@ -49,6 +40,11 @@ struct ReconciliationRunResult {
 
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
+    // The scheduler consumes `Deferred` directly and persists a durable retry.
+    // This compatibility one-shot API has no representative job, so it may wait
+    // briefly for a transient local maintenance slice instead of reporting it as
+    // a successful zero-settlement run.
+    const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
     fn outcome(
         settled: i64,
@@ -1000,9 +996,25 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
     ) -> Result<i64, ProxyError> {
-        self.run_upstream_reconciliation_once_inner(usage_base, None)
-            .await
-            .map(ClaimedReconciliationRunOutcome::settled)
+        let deadline = std::time::Instant::now() + ReconciliationEngine::ONE_SHOT_ADMISSION_WAIT;
+        loop {
+            match self
+                .run_upstream_reconciliation_once_inner(usage_base, None)
+                .await?
+            {
+                ClaimedReconciliationRunOutcome::Completed { settled } => return Ok(settled),
+                ClaimedReconciliationRunOutcome::Deferred { reason } => {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(ProxyError::Other(format!(
+                            "upstream reconciliation local preparation remained deferred for {}ms: {reason}",
+                            ReconciliationEngine::ONE_SHOT_ADMISSION_WAIT.as_millis(),
+                        )));
+                    }
+                    tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
+                }
+            }
+        }
     }
 
     #[doc(hidden)]
@@ -1014,7 +1026,10 @@ impl TavilyProxy {
     ) -> Result<i64, ProxyError> {
         self.run_upstream_reconciliation_once_claimed_outcome(usage_base, job_id, claim_generation)
             .await
-            .map(ClaimedReconciliationRunOutcome::settled)
+            .map(|outcome| match outcome {
+                ClaimedReconciliationRunOutcome::Completed { settled } => settled,
+                ClaimedReconciliationRunOutcome::Deferred { .. } => 0,
+            })
     }
 
     #[doc(hidden)]
