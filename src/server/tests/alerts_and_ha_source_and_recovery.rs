@@ -77,19 +77,36 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
         .scheduled_job_enqueue("ha_outbox_gc", "test", None, 1)
         .await
         .expect("enqueue control worker job");
-    let initial_claim = state
-        .proxy
-        .scheduled_job_mark_running(initial.job_id)
+    // Claim admission has its own bounded concurrency regression coverage. This
+    // fixture isolates controller wake persistence and must not depend on an
+    // unrelated 100ms test-pool control budget.
+    let initial_started_at = Utc::now().timestamp();
+    assert_eq!(
+        sqlx::query(
+            "UPDATE scheduled_jobs SET status = 'running', started_at = ?, claim_generation = claim_generation + 1 WHERE id = ? AND status = 'queued'",
+        )
+        .bind(initial_started_at)
+        .bind(initial.job_id)
+        .execute(&pool)
         .await
-        .expect("claim control worker job")
-        .expect("initial job is due");
+        .expect("claim control worker job in the isolated fixture")
+        .rows_affected(),
+        1
+    );
+    let initial_claim_generation: i64 = sqlx::query_scalar(
+        "SELECT claim_generation FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(initial.job_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read control worker claim generation");
     assert_eq!(state.proxy.foreground_activity_rps(), 0, "test starts without foreground pressure");
     assert!(
         run_ha_outbox_gc_claimed_job(
             state.clone(),
             ClaimedScheduledJob {
-                job_id: initial_claim.id,
-                claim_generation: initial_claim.claim_generation,
+                job_id: initial.job_id,
+                claim_generation: initial_claim_generation,
                 _job_execution_gate: None,
             },
         )
@@ -126,18 +143,33 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
         .execute(&pool)
         .await
         .expect("advance continuation to its fair wake");
-    let billing_claim = state
-        .proxy
-        .scheduled_job_mark_running(continuation.0)
+    let billing_started_at = Utc::now().timestamp();
+    assert_eq!(
+        sqlx::query(
+            "UPDATE scheduled_jobs SET status = 'running', started_at = ?, claim_generation = claim_generation + 1 WHERE id = ? AND status = 'queued' AND available_at <= ?",
+        )
+        .bind(billing_started_at)
+        .bind(continuation.0)
+        .bind(billing_started_at)
+        .execute(&pool)
         .await
-        .expect("claim billing worker job")
-        .expect("fair continuation is due");
+        .expect("claim billing worker job in the isolated fixture")
+        .rows_affected(),
+        1
+    );
+    let billing_claim_generation: i64 = sqlx::query_scalar(
+        "SELECT claim_generation FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(continuation.0)
+    .fetch_one(&pool)
+    .await
+    .expect("read billing worker claim generation");
     assert!(
         run_ha_outbox_gc_claimed_job(
             state.clone(),
             ClaimedScheduledJob {
-                job_id: billing_claim.id,
-                claim_generation: billing_claim.claim_generation,
+                job_id: continuation.0,
+                claim_generation: billing_claim_generation,
                 _job_execution_gate: None,
             },
         )
