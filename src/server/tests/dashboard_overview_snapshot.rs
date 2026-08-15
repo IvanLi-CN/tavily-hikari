@@ -535,6 +535,62 @@ async fn dashboard_startup_prewarm_reuses_the_first_snapshot_loader() {
 }
 
 #[tokio::test]
+async fn dashboard_startup_prewarm_waits_past_the_request_budget_before_listening() {
+    let db_path = temp_db_path("dashboard-overview-startup-prewarm-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-startup-prewarm-retry".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    let pause = state
+        .proxy
+        .install_dashboard_overview_read_pause_for_test()
+        .await;
+    let prewarm_state = state.clone();
+    let prewarm = tokio::spawn(async move { prewarm_dashboard_overview_snapshot(&prewarm_state).await });
+
+    tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+        .await
+        .expect("startup prewarm reached the controlled read pause");
+    tokio::time::sleep(DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET + Duration::from_millis(50)).await;
+    assert!(
+        !prewarm.is_finished(),
+        "startup prewarm must keep the listener closed while its singleflight continues"
+    );
+
+    pause.release();
+    tokio::time::timeout(DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET, prewarm)
+        .await
+        .expect("startup prewarm finishes within its separate startup budget")
+        .expect("startup prewarm task joins");
+    let snapshot = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("the first HTTP reader receives the completed startup snapshot");
+    assert!(snapshot.payload.summary_windows.today_start > 0);
+    assert_eq!(dashboard_overview_build_count(&state).await, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn dashboard_sse_defers_freshness_while_the_cold_loader_is_active() {
     let db_path = temp_db_path("dashboard-overview-sse-cold-loader");
     let db_str = db_path.to_string_lossy().to_string();

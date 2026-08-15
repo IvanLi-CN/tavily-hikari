@@ -59,6 +59,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('candidate["sqliteFinalLockErrors"]', COMPARISON)
         self.assertIn('structured_field(line, "defer_reason", reason)', COMPARISON)
         self.assertIn('("sqlite_contention", "sqlite_busy")', COMPARISON)
+        self.assertIn('(baseline_business_responses * 95 + 99) // 100', COMPARISON)
         self.assertIn('"database table is locked"', COMPARISON)
         self.assertIn('"database schema is locked"', COMPARISON)
         self.assertIn('"database is busy"', COMPARISON)

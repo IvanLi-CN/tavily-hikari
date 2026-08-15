@@ -838,6 +838,9 @@ const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
 const DASHBOARD_OVERVIEW_LOADING_STALE_AFTER: Duration = Duration::from_secs(30);
 const DASHBOARD_OVERVIEW_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET: Duration = Duration::from_secs(1);
+// Startup happens before the listener accepts traffic, so it can safely wait longer
+// for the same singleflight than an externally visible cold request may wait.
+const DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET: Duration = Duration::from_secs(5);
 const DASHBOARD_SSE_SNAPSHOT_MIN_INTERVAL: Duration = Duration::from_secs(10);
 const DASHBOARD_RECENT_ALERTS_TOKEN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -1867,21 +1870,33 @@ async fn load_dashboard_overview_snapshot(
 
 async fn prewarm_dashboard_overview_snapshot(state: &Arc<AppState>) {
     let started = Instant::now();
-    match load_dashboard_overview_snapshot(state).await {
-        Ok(_) => tracing::debug!(
-            component = "startup",
-            event = "dashboard_overview_prewarmed",
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "dashboard overview singleflight completed before accepting connections"
-        ),
-        Err(err) => tracing::debug!(
-            component = "startup",
-            event = "dashboard_overview_prewarm_deferred",
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            err = %err,
-            "dashboard overview singleflight continues after its bounded startup wait"
-        ),
-    }
+    let last_error = loop {
+        match load_dashboard_overview_snapshot(state).await {
+            Ok(_) => {
+                tracing::debug!(
+                    component = "startup",
+                    event = "dashboard_overview_prewarmed",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "dashboard overview singleflight completed before accepting connections"
+                );
+                return;
+            }
+            Err(err) if started.elapsed() >= DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET => {
+                break err;
+            }
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    };
+    tracing::warn!(
+        component = "startup",
+        event = "dashboard_overview_prewarm_deferred",
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        startup_budget_ms = DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET.as_millis() as u64,
+        err = %last_error,
+        "dashboard overview singleflight did not complete before accepting connections"
+    );
 }
 
 async fn dashboard_overview_snapshot_is_loading(state: &Arc<AppState>) -> bool {
