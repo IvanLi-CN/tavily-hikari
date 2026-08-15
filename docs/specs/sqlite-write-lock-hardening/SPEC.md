@@ -166,7 +166,8 @@ source when a usable persisted runtime already exists.
 - The request-log GC completion and its incomplete five-minute continuation must be one fenced
   queue transaction. If the short control transaction cannot commit, the current claim remains
   running for the request-log stale reaper; it must not finish first and then silently lose a
-  separate continuation enqueue.
+  separate continuation enqueue. A permanent GC error must retain `error` status on the completed
+  claim while still recording its delayed continuation.
 - Service startup must abandon leftover `queued` or `running` maintenance rows from the previous
   process lifetime rather than implicitly resuming them after restart, except an automatic
   `request_logs_gc` continuation that remains queued so its persisted `available_at` delay survives.

@@ -37,7 +37,7 @@
 - The short admission budgets are explicit runtime deadlines, not connection-level `PRAGMA busy_timeout` rewrites. A background request-stats admission commits at most four adaptive
   `25..250` logical-key transactions under one 50ms retry budget, then atomically returns its
   complete tail to the coalescer and reports `deferred` when needed. The deadline covers pool
-  acquisition and `BEGIN IMMEDIATE`; manual HA GC wakes reuse an
+  acquisition, `BEGIN IMMEDIATE`, writes, and commit; manual HA GC wakes reuse an
   existing durable representative rather than
   competing for a locked writer merely to promote queue metadata.
 - Dashboard snapshot reads preserve a last-good value under admission or SQLite pressure. A cold

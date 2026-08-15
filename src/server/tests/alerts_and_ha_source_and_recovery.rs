@@ -320,7 +320,7 @@ async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
 }
 
 #[tokio::test]
-async fn request_logs_gc_continuation_lock_defers_to_stale_reaper() {
+async fn request_logs_gc_handoff_preserves_error_and_defers_to_stale_reaper() {
     let db_path = temp_db_path("request-logs-gc-continuation-lock");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -370,6 +370,7 @@ async fn request_logs_gc_continuation_lock_defers_to_stale_reaper() {
                 &state,
                 claimed.id,
                 claimed.claim_generation,
+                "success",
                 "incomplete=true".to_string(),
             )
         )
@@ -413,6 +414,41 @@ async fn request_logs_gc_continuation_lock_defers_to_stale_reaper() {
     assert_eq!(recovered.0, "queued");
     assert!(recovered.1 >= recovery_now + 299);
     assert_eq!(recovered.2, "deferred=stale_request_logs_gc_recovery");
+
+    sqlx::query("UPDATE scheduled_jobs SET status = 'success' WHERE id = ?")
+        .bind(claimed.id)
+        .execute(&pool)
+        .await
+        .expect("retire the recovered continuation before the error handoff case");
+
+    let failed = state
+        .proxy
+        .scheduled_job_enqueue("request_logs_gc", "test", None, 1)
+        .await
+        .expect("enqueue failing request-log GC");
+    let failed_claim = state
+        .proxy
+        .scheduled_job_mark_running(failed.job_id)
+        .await
+        .expect("claim failing request-log GC")
+        .expect("failing request-log GC is due");
+    assert!(
+        finish_request_logs_gc_with_continuation(
+            &state,
+            failed_claim.id,
+            failed_claim.claim_generation,
+            "error",
+            "error=permanent_failure".to_string(),
+        )
+        .await,
+        "error must finish the failed job and retain its continuation"
+    );
+    let failed_status: String = sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
+        .bind(failed_claim.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read failed request-log GC status");
+    assert_eq!(failed_status, "error", "permanent GC errors remain observable");
 
     drop(state);
     pool.close().await;

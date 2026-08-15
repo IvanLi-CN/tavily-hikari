@@ -515,6 +515,42 @@ impl KeyStore {
         retry_deadline: Instant,
         chunk: &DrainedRequestStatsFlushBatch,
     ) -> Result<(), ProxyError> {
+        let remaining = retry_deadline.saturating_duration_since(backend_time.instant_now());
+        if remaining.is_zero() {
+            sqlite_runtime.record_deferred(
+                SqliteOperation::RequestStatsFlush,
+                SqliteAdmissionDeferReason::RecentContention,
+            );
+            return Err(ProxyError::Database(sqlx::Error::PoolTimedOut));
+        }
+        match tokio::time::timeout(
+            remaining,
+            Self::flush_request_stats_writes_once_within_deadline(
+                sqlite_runtime,
+                backend_time,
+                retry_deadline,
+                chunk,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                sqlite_runtime.record_deferred(
+                    SqliteOperation::RequestStatsFlush,
+                    SqliteAdmissionDeferReason::RecentContention,
+                );
+                Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
+            }
+        }
+    }
+
+    async fn flush_request_stats_writes_once_within_deadline(
+        sqlite_runtime: &SqliteRuntime,
+        backend_time: &BackendTime,
+        retry_deadline: Instant,
+        chunk: &DrainedRequestStatsFlushBatch,
+    ) -> Result<(), ProxyError> {
         let updated_at = backend_time.now_ts();
         let mut tx = sqlite_runtime
             .begin_immediate_before(

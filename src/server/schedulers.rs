@@ -1066,6 +1066,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 &state,
                 job_id,
                 claim_generation,
+                "success",
                 msg,
             )
             .await;
@@ -1131,7 +1132,14 @@ async fn run_request_logs_gc_catchup_claimed_job(
                     }
                 }
             } else {
-                finish_request_logs_gc_with_continuation(&state, job_id, claim_generation, msg).await
+                finish_request_logs_gc_with_continuation(
+                    &state,
+                    job_id,
+                    claim_generation,
+                    "success",
+                    msg,
+                )
+                .await
             }
         }
         Err(err) => {
@@ -1139,6 +1147,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 &state,
                 job_id,
                 claim_generation,
+                "error",
                 format!("error={err}"),
             )
             .await
@@ -1150,6 +1159,7 @@ async fn finish_request_logs_gc_with_continuation(
     state: &Arc<AppState>,
     job_id: i64,
     claim_generation: i64,
+    status: &str,
     message: String,
 ) -> bool {
     let available_at = state
@@ -1159,9 +1169,10 @@ async fn finish_request_logs_gc_with_continuation(
         .saturating_add(REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS);
     match state
         .proxy
-        .scheduled_job_finish_and_enqueue_auto_at(
+        .scheduled_job_finish_and_enqueue_auto_at_with_status(
             job_id,
             claim_generation,
+            status,
             "request_logs_gc",
             None,
             1,

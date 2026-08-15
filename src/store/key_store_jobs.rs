@@ -731,6 +731,31 @@ impl KeyStore {
         message: Option<&str>,
         available_at: i64,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        self.scheduled_job_finish_and_enqueue_auto_at_with_status(
+            job_id,
+            claim_generation,
+            "success",
+            job_type,
+            key_id,
+            attempt,
+            message,
+            available_at,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn scheduled_job_finish_and_enqueue_auto_at_with_status(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        status: &str,
+        job_type: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+        message: Option<&str>,
+        available_at: i64,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         let finished_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
@@ -741,9 +766,10 @@ impl KeyStore {
             // into the scheduler's long retry window.
             let updated = sqlx::query(
                 r#"UPDATE scheduled_jobs
-                   SET status = 'success', message = ?, finished_at = ?
+                   SET status = ?, message = ?, finished_at = ?
                    WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
             )
+            .bind(status)
             .bind(message)
             .bind(finished_at)
             .bind(job_id)
