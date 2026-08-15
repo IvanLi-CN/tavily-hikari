@@ -16,6 +16,10 @@ DASHBOARD_CLIENTS = 20
 DASHBOARD_INTERVAL_SECS = 60.0
 BUSINESS_CLIENTS = 5
 BUSINESS_INTERVAL_SECS = 1.0
+# A production-shaped snapshot may have bounded startup maintenance reclaiming
+# the three SQLite connections. Bootstrap traffic is outside the measured load
+# lane, so give both variants the same finite window to become ready.
+BOOTSTRAP_DEADLINE_SECS = 180.0
 
 
 class Recorder:
@@ -94,7 +98,7 @@ def request(
 
 
 def create_test_api_key(host: str, port: int) -> None:
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + BOOTSTRAP_DEADLINE_SECS
     while True:
         connection = http.client.HTTPConnection(host, port, timeout=10)
         try:
@@ -127,7 +131,7 @@ def create_test_access_token(host: str, port: int) -> str:
     business-lane coverage, while keeping all retry writes inside the COW test
     database.
     """
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + BOOTSTRAP_DEADLINE_SECS
     while True:
         connection = http.client.HTTPConnection(host, port, timeout=10)
         try:
