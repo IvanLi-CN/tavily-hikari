@@ -397,21 +397,35 @@ sqlite_lock_markers = (
     "database is busy",
 )
 
-# A retry is evidence of contention, but it is not a foreground request
-# failure. Count each structured log line once so the message/err duplication
-# in tracing fields cannot inflate the rate. Keep final lock errors separate:
-# the candidate must never return one, while successful retries have a small
-# absolute budget under the deliberate concurrent writer workload.
+# A retry or typed admission deferral is evidence of recoverable contention,
+# not a foreground request failure. Count each structured log line once so the
+# message/err duplication in tracing fields cannot inflate the rate. Keep
+# final lock errors separate: the candidate must never return one, while
+# successful retries have a small absolute budget under the deliberate
+# concurrent writer workload.
 sqlite_lock_lines = [
     line
     for line in logs.splitlines()
     if any(marker in line for marker in sqlite_lock_markers)
 ]
+
+def structured_field(line, field, value):
+    return f'"{field}":"{value}"' in line or f"{field}={value}" in line
+
 sqlite_transient_lock_retries = sum(
-    '"event":"sqlite_transient_write_retry"' in line
+    structured_field(line, "event", "sqlite_transient_write_retry")
     for line in sqlite_lock_lines
 )
-sqlite_final_lock_errors = len(sqlite_lock_lines) - sqlite_transient_lock_retries
+sqlite_typed_lock_deferrals = sum(
+    any(
+        structured_field(line, "defer_reason", reason)
+        for reason in ("sqlite_contention", "sqlite_busy")
+    )
+    for line in sqlite_lock_lines
+)
+sqlite_final_lock_errors = (
+    len(sqlite_lock_lines) - sqlite_transient_lock_retries - sqlite_typed_lock_deferrals
+)
 
 def lane_5xx(lane):
     return sum(
@@ -437,6 +451,7 @@ summary = {
         )
     },
     "sqliteTransientLockRetries": sqlite_transient_lock_retries,
+    "sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals,
     "sqliteFinalLockErrors": sqlite_final_lock_errors,
     "nestedTransactionErrors": logs.count("cannot start a transaction within a transaction"),
     "foregroundHttp5xx": lane_5xx("business"),
