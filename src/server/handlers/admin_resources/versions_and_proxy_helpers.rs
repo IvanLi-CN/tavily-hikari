@@ -1,7 +1,24 @@
+fn resolve_backend_base_version(
+    runtime_version: Option<&str>,
+    compile_time_version: Option<&str>,
+    package_version: &str,
+) -> String {
+    [runtime_version, compile_time_version, Some(package_version)]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|version| !version.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
-    let backend_base = option_env!("APP_EFFECTIVE_VERSION")
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let runtime_version = std::env::var("APP_EFFECTIVE_VERSION").ok();
+    let backend_base = resolve_backend_base_version(
+        runtime_version.as_deref(),
+        option_env!("APP_EFFECTIVE_VERSION"),
+        env!("CARGO_PKG_VERSION"),
+    );
     let backend = if cfg!(debug_assertions) {
         format!("{}-dev", backend_base)
     } else {
@@ -67,6 +84,22 @@ fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
 #[cfg(test)]
 mod version_detection_tests {
     use super::*;
+
+    #[test]
+    fn runtime_version_overrides_compile_time_and_package_fallbacks() {
+        assert_eq!(
+            resolve_backend_base_version(Some(" runtime-version "), Some("compile-version"), "package-version"),
+            "runtime-version"
+        );
+        assert_eq!(
+            resolve_backend_base_version(Some("  "), Some("compile-version"), "package-version"),
+            "compile-version"
+        );
+        assert_eq!(
+            resolve_backend_base_version(None, None, "package-version"),
+            "package-version"
+        );
+    }
 
     #[test]
     fn static_dir_version_overrides_embedded_version() {

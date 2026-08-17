@@ -1,0 +1,12 @@
+**
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!src/
+!src/**
+!scripts/
+!scripts/docker-entrypoint.sh
+!scripts/docker-healthcheck.sh
+!web/
+!web/dist/
+!web/dist/**

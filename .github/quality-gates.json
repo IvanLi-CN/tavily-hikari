@@ -18,6 +18,7 @@
     "Release intent label gate",
     "Worktree Bootstrap Smoke",
     "Web Assets",
+    "Version Layer Reuse",
     "Lint & Checks",
     "Backend Shard Plan",
     "Backend Tests",
@@ -42,6 +43,7 @@
       "jobs": [
         "Worktree Bootstrap Smoke",
         "Web Assets",
+        "Version Layer Reuse",
         "Lint & Checks",
         "Backend Shard Plan",
         "Backend Tests",

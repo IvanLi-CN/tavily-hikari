@@ -60,6 +60,32 @@ jobs:
           path: web/dist
           if-no-files-found: error
 
+  version-layer-reuse:
+    name: Version Layer Reuse
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install PWA asset dependencies
+        run: python3 -m pip install --user Pillow
+
+      - name: Build and verify version layers
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          cd web
+          bun install --frozen-lockfile
+          cd ..
+          bash scripts/check-version-layer-reuse.sh
+
   brand-assets:
     name: Brand Assets
     runs-on: ubuntu-24.04
@@ -475,6 +501,14 @@ jobs:
             cat "${tmp}" || true
             exit 1
           fi
+
+      - name: Verify release version endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="ci-${GITHUB_SHA}"
+          curl -sS "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
+            '.backend == $expected and .frontend == $expected'
 
       - name: Dump compose logs (on failure)
         if: failure()

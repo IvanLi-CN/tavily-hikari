@@ -80,6 +80,26 @@ test('built service workers wait for explicit update activation after precache',
   }
 })
 
+test('built service workers carry the release version in their identity', () => {
+  const versionPath = path.resolve(import.meta.dir, '../../dist/version.json')
+  const serviceWorkerPaths = [
+    path.resolve(import.meta.dir, '../../dist/sw-public.js'),
+    path.resolve(import.meta.dir, '../../dist/sw-admin.js'),
+  ]
+
+  if (!fs.existsSync(versionPath) || !serviceWorkerPaths.every((serviceWorkerPath) => fs.existsSync(serviceWorkerPath))) {
+    expect(true).toBe(true)
+    return
+  }
+
+  const version = JSON.parse(fs.readFileSync(versionPath, 'utf8')) as { version: string }
+  expect(version.version).toBeString()
+  for (const serviceWorkerPath of serviceWorkerPaths) {
+    const source = fs.readFileSync(serviceWorkerPath, 'utf8')
+    expect(source).toContain(`const BUILD_VERSION = ${JSON.stringify(version.version)};`)
+  }
+})
+
 test('built service workers leave network-only requests to the browser and contain runtime fetch failures', async () => {
   const serviceWorkerPaths = [
     path.resolve(import.meta.dir, '../../dist/sw-public.js'),

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,9 @@ from PIL import Image
 
 
 WEB_ROOT = Path(__file__).resolve().parent.parent
-DIST_DIR = WEB_ROOT / "dist"
+DIST_DIR = Path(os.environ.get("WEB_DIST_DIR", WEB_ROOT / "dist")).resolve()
 VITE_MANIFEST_PATH = DIST_DIR / ".vite" / "manifest.json"
+VERSION_PATH = DIST_DIR / "version.json"
 ICON_SIZES = (64, 96, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024)
 MASKABLE_SIZES = (192, 512)
 
@@ -93,6 +95,14 @@ def hash_cache_key(values: list[str]) -> str:
     return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()[:12]
 
 
+def load_build_version() -> str:
+    payload = json.loads(VERSION_PATH.read_text(encoding="utf-8"))
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        raise RuntimeError(f"{VERSION_PATH} must contain a non-empty string version")
+    return version.strip()
+
+
 def collect_icon_files(icons: dict[str, dict[str, str] | str]) -> list[str]:
     output: list[str] = []
     any_icons = icons.get("any")
@@ -152,9 +162,16 @@ def make_manifest(
     }
 
 
-def make_service_worker(cache_name: str, files: list[str], offline_fallbacks: dict[str, str], reject_admin: bool) -> str:
+def make_service_worker(
+    build_version: str,
+    cache_name: str,
+    files: list[str],
+    offline_fallbacks: dict[str, str],
+    reject_admin: bool,
+) -> str:
     precache_urls = [f"/{file_name}" for file_name in files]
-    return f"""const CACHE_NAME = {json.dumps(cache_name)};
+    return f"""const BUILD_VERSION = {json.dumps(build_version)};
+const CACHE_NAME = {json.dumps(cache_name)};
 const PRECACHE_URLS = {json.dumps(precache_urls, indent=2)};
 const OFFLINE_FALLBACKS = {json.dumps(offline_fallbacks, indent=2)};
 const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE';
@@ -273,6 +290,7 @@ def write_text(relative_path: str, value: str) -> None:
 
 
 def main() -> None:
+    build_version = load_build_version()
     manifest = json.loads(VITE_MANIFEST_PATH.read_text(encoding="utf-8"))
     public_files = collect_assets(manifest, PUBLIC_HTML_FILES)
     admin_files = collect_assets(manifest, ADMIN_HTML_FILES)
@@ -316,7 +334,8 @@ def main() -> None:
     write_text(
         "sw-public.js",
         make_service_worker(
-            cache_name=f"tavily-hikari-public-{hash_cache_key(public_precache_files)}",
+            build_version=build_version,
+            cache_name=f"tavily-hikari-public-{hash_cache_key(public_precache_files)}-{hash_cache_key([build_version])}",
             files=public_precache_files,
             offline_fallbacks={
                 "/console": "/console.html",
@@ -330,7 +349,8 @@ def main() -> None:
     write_text(
         "sw-admin.js",
         make_service_worker(
-            cache_name=f"tavily-hikari-admin-{hash_cache_key(admin_precache_files)}",
+            build_version=build_version,
+            cache_name=f"tavily-hikari-admin-{hash_cache_key(admin_precache_files)}-{hash_cache_key([build_version])}",
             files=admin_precache_files,
             offline_fallbacks={"/admin/": "/admin.html", "/admin": "/admin.html"},
             reject_admin=False,

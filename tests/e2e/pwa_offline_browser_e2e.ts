@@ -195,10 +195,24 @@ function switchStaticRelease(staticDir: string, releaseId: string) {
     path.join(staticDir, "version.json"),
     `${JSON.stringify({ version: releaseId }, null, 2)}\n`,
   );
+  for (const htmlName of ["index.html", "admin.html", "console.html", "login.html", "registration-paused.html"]) {
+    const htmlPath = path.join(staticDir, htmlName);
+    const source = readFileSync(htmlPath, "utf8");
+    const next = source.replace(
+      /<meta\s+name="tavily-hikari-build-version"\s+content="[^"]*"\s*\/?\s*>/,
+      `<meta name="tavily-hikari-build-version" content="${releaseId}" />`,
+    );
+    if (next === source) throw new Error(`failed to rewrite version marker for ${htmlName}`);
+    writeFileSync(htmlPath, next);
+  }
   for (const workerName of ["sw-public.js", "sw-admin.js"]) {
     const workerPath = path.join(staticDir, workerName);
     const source = readFileSync(workerPath, "utf8");
-    const next = source.replace(
+    const withVersion = source.replace(
+      /^const BUILD_VERSION = .*;$/m,
+      `const BUILD_VERSION = ${JSON.stringify(releaseId)};`,
+    );
+    const next = withVersion.replace(
       /^const CACHE_NAME = .*;$/m,
       `const CACHE_NAME = ${JSON.stringify(`tavily-hikari-${workerName}-e2e-${releaseId}`)};`,
     );
