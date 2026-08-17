@@ -91,7 +91,7 @@
 
 - `sw-public.js` 与 `sw-admin.js` 安装时必须先完成 precache，再进入 waiting；不得在 install 阶段主动 `skipWaiting()`。
 - 页面检测到 `/api/version.frontend` 变化时，只触发当前 identity 的 `registration.update()`；用户可见的更新提示必须以 service worker 已发现 waiting worker 且新版资源已准备完成为准。安装/缓存中的中间态保持静默，不对用户暴露“正在更新”的提示。
-- 更新提示中的“当前版本”必须表示当前页面实际运行的前端 bundle 版本；“目标版本”必须表示后端当前提供、且与 waiting worker 对齐的具体版本号，不得回退为 `latest`、channel 名称或其他非版本号占位词。
+- 更新提示中的“当前版本”必须读取当前 HTML shell 的 `tavily-hikari-build-version` meta 标记，表示当前页面实际运行的前端 bundle 版本；“目标版本”必须表示后端当前提供、且与 waiting worker 对齐的具体版本号，不得回退为 `latest`、channel 名称或其他非版本号占位词。
 - 用户点击更新时：
   - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`，并立即刷新当前页以应用新版本。
   - worker 的 activate 事件只清理旧 cache，不调用 `clients.claim()`；版本更新由目标 worker 到达 `activated` 后 reload，并在新导航中接管页面。
@@ -224,12 +224,17 @@
   When admin worker 完成安装
   Then admin worker 静默激活，不展示版本更新提示，不触发主动 reload。
 
+- Given 只发布了新的前端版本号且稳定静态资源内容未改变
+  When post-build 写入 HTML shell meta、`version.json` 与两个 service worker
+  Then 五个 HTML shell、两个 worker 与 `version.json` 携带新版本，旧 shell 仍可离线运行，且 worker cache identity 发生变化。
+
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
 - `cd web && bun test`
 - `cargo test`
+- 版本 A/B 构建门禁必须证明稳定 `assets/**`、`pwa/**`、favicon、两个 manifest 与 Vite manifest 不随纯版本发布变化；仅五个 HTML shell、两个 worker 与 `version.json` 可以变化。
 
 ### Build
 

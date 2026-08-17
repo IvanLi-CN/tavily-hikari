@@ -7,6 +7,10 @@
 - SPA 服务路径改为统一从外部静态目录优先读取，找不到时回落到内嵌资源；`/assets/*`、`/favicon.svg`、`/version.json` 与 HTML 页面共享这套读取逻辑。
 - 版本检测同样保持外部静态目录优先，避免 `--static-dir` 覆盖部署时版本信息与实际服务的前端不一致。
 - `Dockerfile` 在 builder 阶段复制 `build.rs`，保证新增 Cargo build script 后容器构建路径仍可用；容器运行时继续通过 `WEB_STATIC_DIR=/srv/app/web` 使用镜像内静态目录。
+- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest，移除 builder 阶段的版本 ARG；稳定 Xray/入口/维护二进制/Web 资产层位于尾部动态 COPY 之前，维护 CLI 继续保留，入口脚本使用 `COPY --chmod`。
+- `.dockerignore` 采用 Cargo 源码、Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
+- 后端版本 helper 优先读取运行时 `APP_EFFECTIVE_VERSION`，缺失时回退编译期版本；镜像 ENV、OCI label 与 `/api/version` 由同一发布版本驱动，原生发行二进制继续使用编译期回退。
+- `scripts/check-version-layer-reuse.sh` 与 PR job 构建版本 A/B，机械断言稳定 Web 产物不变、仅尾部 HTML/SW/version.json 变化，并检查 RootFS 稳定前缀、ENV/LABEL 与上下文审计。
 - release workflow 先在单独的 `web-assets` job 内构建一次 `web/dist` 并上传 `release-web-dist` artifact，随后 `docker-native` 与 `binary-native` 都只下载该 artifact 复用，不再各自重复 Bun 安装与前端构建。
 - `binary-native` matrix 继续在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上构建 release binary、打包 `tar.gz`、生成 `.sha256` 并 smoke 解包后的 binary。
 - `reqwest` 改为按目标平台分流：glibc / native Linux 资产继续保留原本默认 `default-tls` 行为，避免现有发布因为 portable 需求而整体切换 TLS backend；只有 musl portable 构建改用 `rustls-tls-webpki-roots`，把 HTTPS trust roots 一并内嵌进 release artifact，同时只保留与 native 资产对齐的 `charset`、`http2`、`system-proxy`、`json`、`stream` 与 `socks` 能力，避免 portable 资产单独启用透明压缩解码后改变上游响应语义。

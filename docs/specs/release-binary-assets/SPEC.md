@@ -19,6 +19,9 @@
 - 继续保留 GHCR 镜像发布路径，不用 binary 替代镜像。
 - release workflow 在上传 GitHub Release 前，对打包后的 binary 做本机 smoke，阻断不可用资产发布。
 - release workflow 内部的前端 `web/dist` 只构建一次，并通过 release-local artifact 复用给 Docker 与 binary 发布 job。
+- Docker 镜像必须使用已解析的 tag+digest 基础镜像；稳定运行时层先复制 Xray、入口、维护二进制与稳定 Web 资产，最后以单一动态 COPY 放入版本 HTML shell、service worker 与 `version.json`。
+- `APP_EFFECTIVE_VERSION` 只能作为运行时配置与 OCI 元数据输入，不能污染 Rust builder、稳定运行时层或 hashed Web 资产；后端运行时优先读取该值并保留编译期回退。
+- Docker 构建上下文采用严格 allowlist，必须排除环境文件、数据库与依赖目录；Docker Dependabot 每周检查基础镜像更新。
 
 ### Non-goals
 
@@ -72,6 +75,9 @@
 - Given 任一架构 binary smoke 失败
   When release workflow 进入 GitHub Release job 前
   Then GitHub Release 资产上传必须被阻断。
+- Given 两次构建只改变发布版本号
+  When 使用同一 `web/dist` 稳定资产构建镜像 A/B
+  Then RootFS 稳定前缀完全相同，只有最后动态元数据层不同；镜像 ENV 与 OCI version label 必须分别匹配 A/B，且 `/api/version` 后端与前端版本一致。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -79,6 +85,7 @@
 - `cargo check --locked --all-targets --all-features`
 - `cd web && bun install --frozen-lockfile && bun run build`
 - Targeted contract tests for embedded public/admin assets and existing console route compatibility.
+- `scripts/check-version-layer-reuse.sh` 必须执行前端产物 A/B、镜像 RootFS 前缀、ENV/LABEL 与严格上下文审计；基础镜像均使用 tag+digest，`.github/dependabot.yml` 每周更新 Docker ecosystem。
 
 ## 风险 / 假设
 

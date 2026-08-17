@@ -18,7 +18,8 @@
 - 为避免 public root service worker 抢占已安装 admin app 的离线入口，admin 入口在运行时归一到 `/admin/`，并让 admin manifest/scope 与 SW 都锁定 `/admin/`。
 - public/admin service worker 安装阶段只负责 precache，不主动 `skipWaiting()`；用户确认更新后，页面向 waiting worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE` 激活消息。
 - `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；安装/缓存中的中间态继续静默，只有 waiting worker 已 ready 或用户触发后的失败态才展示 banner。
-- 更新横幅的“当前版本”现在由当前 bundle 的编译期版本常量提供；“目标版本”会在初始版本探测、waiting worker ready、以及失败重试态重新向 `/api/version` 校准，避免回退到 `latest` 或把服务器版本误认成当前页版本。
+- 更新横幅的“当前版本”现在由当前 HTML shell 的 `tavily-hikari-build-version` meta 标记提供；“目标版本”会在初始版本探测、waiting worker ready、以及失败重试态重新向 `/api/version` 校准，避免回退到 `latest` 或把服务器版本误认成当前页版本。
+- `write-version.mjs` 支持 `WEB_DIST_DIR`，在五个 HTML shell 中注入 HTML 转义后的版本、写入 `version.json`；PWA 生成器校验该 JSON 并把版本纳入两个 worker 的 cache identity，不改写 hashed assets、asset graph 或 web manifest。
 - 更新提示由共享 runtime/hook 与 `UpdateAvailableBanner` 承载，覆盖 public、console、login、registration-paused 与 admin app shell。
 - 管理员登录页将更新提示提升为页头后的页面级状态：桌面宽度独立于 `36rem` 登录表单，移动端保持操作按钮同行且无横向溢出；提示标题、版本信息和操作按钮按阅读优先级分层。
 - 用户触发激活后以 `controllerchange` 或 waiting worker 的 `activated` 状态确认成功；后者使用单次 reload guard 兼容浏览器漏发当前页接管事件的情况。
@@ -53,6 +54,7 @@
 - `cd web && bun run test:e2e:pwa-offline`
 - `cargo test`
 - `cd docs-site && bun run build`
+- 版本 A/B 构建与 Docker 层复用门禁：仅版本 JSON、五个 HTML shell 与两个 worker 可变，稳定 Web 层与镜像 RootFS 前缀必须保持一致。
 - 2026-07-08:
   - `cd web && bun test`
   - `cd web && bun run build`

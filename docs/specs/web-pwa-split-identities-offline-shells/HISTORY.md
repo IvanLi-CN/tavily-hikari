@@ -14,6 +14,7 @@
 - 2026-07-31: 管理员登录页将更新提示从凭据流程中移出，固定在全局页头之后、登录主内容之前；桌面采用页头级宽度，移动端保持操作按钮同行，并重新建立标题、版本信息与操作按钮的视觉层级。
 - 2026-08-01: 完整 Relay Mesh lockup 将副标语固定为 `KEY POOL · BALANCE. ROUTE.` 的 weight 400 outline；右侧两行文字块与 Relay Mesh mark 共享光学中轴，字间点和单一连续渐变保留原始品牌语法。完整/compact 的选择改由 `260px` 容器宽度驱动，PWA 图标与 identity 不随文字可读性修复改变。
 - 2026-08-01: 文档站导航被确认为 utility 位而非品牌主视觉；Rspress 的品牌容器固定为 `180px`，按共享容器合同显示 compact lockup，避免将完整两行标志压入导航栏。
+- 2026-08-18: 前端版本身份从 Vite 编译期 define 收敛到 HTML shell meta、`version.json` 与版本化 service worker cache；纯版本发布只改变尾部动态产物，旧 shell 继续支持离线回退。
 
 ## 变更记录（Change log）
 
@@ -26,6 +27,7 @@
 - 2026-06-27: 品牌静态资源合同统一收口到 `/assets/*`；根路径 Relay Mesh 与 LinuxDo 品牌资源退出长期公开路由，仅保留 `/favicon.svg` 作为站点入口。
 - 2026-07-08: 补齐 public/admin PWA 更新提示合同，要求新 service worker 完成资源缓存后等待用户确认激活，并以 inline banner 覆盖全部 Web 入口。
 - 2026-07-11: 更新激活状态机增加 10 秒 watchdog、失败重试、`redundant`/消息异常终态与 activated 单次刷新回退，并按 registration 自身 active worker 区分首次安装与升级。
+- 2026-08-18: 补充版本 A/B 机械门禁，确认稳定 PWA 资产不随纯版本发布变化，且两个 worker 的 cache identity 随版本变化。
 
 ## Legacy Identity
 

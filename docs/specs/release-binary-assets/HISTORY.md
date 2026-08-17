@@ -16,6 +16,7 @@
 - release workflow 内部的 `web/dist` 只构建一次，再通过 release-local artifact 复用给 Docker 与 binary 矩阵，避免在发布链里重复 Bun 安装与前端构建。
 - portable 资产合同按目标源码树声明启用，而不是按“当前主干 workflow 是否支持 portable”强推到所有历史 backfill；`workflow_dispatch(head_sha=...)` 必须继续兼容 pre-portable 提交的 native-only 发布事实。
 - portable 构建链上的 `cargo-zigbuild` 必须显式钉版本，否则 tag 重放或历史 backfill 会因外部工具漂移而失去可复现性。
+- 2026-08-18: 版本 ARG 从 builder 与稳定运行时层移除，Docker 基础镜像改为 tag+digest，稳定 Web 层与尾部动态版本层分离，并增加上下文审计、Dependabot 与 A/B RootFS 复用门禁。
 
 ## Legacy Identity
 
