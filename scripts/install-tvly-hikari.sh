@@ -37,7 +37,8 @@ die() {
 tvly_version() {
   local tvly_bin="$1"
   "${tvly_bin}" --version 2>/dev/null \
-    | python3 -c 'import re, sys; data=sys.stdin.read(); match=re.search(r"\d+\.\d+\.\d+", data); print(match.group(0) if match else "")'
+    | python3 -c 'import re, sys; data=sys.stdin.read(); match=re.search(r"\d+\.\d+\.\d+", data); print(match.group(0) if match else "")' \
+    | tr -d '\r'
 }
 
 tvly_is_compatible() {
