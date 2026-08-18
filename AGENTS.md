@@ -95,7 +95,7 @@ The repository uses a single-context domain layout. See `docs/agents/domain.md`.
 
 - Storybook:
   - Start: `cd web && bun install --frozen-lockfile && bun run storybook` → `http://127.0.0.1:56006` (Storybook CLI forced through Bun runtime by the package script).
-  - Keep it in the current shell for short sessions, or run it under any team-approved background strategy.
+  - 仅在任务需要 Storybook 的 UI/浏览器验证时，于验证期间将其保留在当前 shell 或使用团队认可的后台策略；验证完成后释放该进程和会话。
 
 - Validation:
   - 当任务需要交互验收、UI/浏览器验证或 HTTP 集成测试时，保持相关的 Playwright/Chrome DevTools 会话以供复核，并验证任务涉及的 `/api/*`、`/mcp` 和 SPA 路由。
