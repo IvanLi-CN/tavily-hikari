@@ -57,7 +57,17 @@ build_web() {
     VITE_APP_VERSION="$version" WEB_DIST_DIR="$output_dir" bun ./scripts/write-version.mjs
     WEB_DIST_DIR="$output_dir" python3 ./scripts/generate_pwa_assets.py
   )
-  find "$output_dir" -exec touch -t 197001010000 {} +
+  # Normalize stable files so their COPY layers are reproducible, while leaving
+  # version-bearing files with build-specific metadata to prevent cache aliasing.
+  find "$output_dir" -type d -exec touch -t 197001010000 {} +
+  while IFS= read -r file; do
+    case "$file" in
+      "$output_dir/version.json"|"$output_dir/index.html"|"$output_dir/admin.html"|"$output_dir/console.html"|"$output_dir/login.html"|"$output_dir/registration-paused.html"|"$output_dir/sw-public.js"|"$output_dir/sw-admin.js")
+        continue
+        ;;
+    esac
+    touch -t 197001010000 "$file"
+  done < <(find "$output_dir" -type f -print)
 }
 
 hash_file() {
@@ -123,18 +133,24 @@ docker build --build-arg "APP_EFFECTIVE_VERSION=$VERSION_B" -t "$IMAGE_B" "$ROOT
 
 mapfile -t layers_a < <(docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE_A")
 mapfile -t layers_b < <(docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE_B")
-if [[ "${#layers_a[@]}" -eq 0 || "${#layers_a[@]}" -ne "${#layers_b[@]}" ]]; then
+if [[ "${#layers_a[@]}" -lt 2 || "${#layers_a[@]}" -ne "${#layers_b[@]}" ]]; then
   echo "version A/B image layer counts differ or are empty" >&2
   exit 1
 fi
-for ((index = 0; index < ${#layers_a[@]} - 1; index += 1)); do
+dynamic_layer_index=$((${#layers_a[@]} - 2))
+for ((index = 0; index < dynamic_layer_index; index += 1)); do
   if [[ "${layers_a[$index]}" != "${layers_b[$index]}" ]]; then
     echo "stable image layer changed at index $index" >&2
     exit 1
   fi
 done
-if [[ "${layers_a[$((${#layers_a[@]} - 1))]}" == "${layers_b[$((${#layers_b[@]} - 1))]}" ]]; then
+# VOLUME may leave an empty trailing RootFS layer after the dynamic COPY.
+if [[ "${layers_a[$dynamic_layer_index]}" == "${layers_b[$dynamic_layer_index]}" ]]; then
   echo "version-specific final image layer did not change" >&2
+  exit 1
+fi
+if [[ "${layers_a[$((${#layers_a[@]} - 1))]}" != "${layers_b[$((${#layers_b[@]} - 1))]}" ]]; then
+  echo "post-metadata image layer changed unexpectedly" >&2
   exit 1
 fi
 

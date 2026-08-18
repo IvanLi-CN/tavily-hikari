@@ -10,3 +10,11 @@
 !web/
 !web/dist/
 !web/dist/**
+
+# Keep dependency caches, local configuration, and runtime databases out of the context.
+node_modules
+**/node_modules
+.env
+.env.*
+*.db
+*.db-*
