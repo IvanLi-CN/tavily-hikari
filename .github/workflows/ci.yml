@@ -507,7 +507,7 @@ jobs:
         run: |
           set -euo pipefail
           expected="ci-${GITHUB_SHA}"
-          curl -sS "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
+          curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
             '.backend == $expected and .frontend == $expected'
 
       - name: Dump compose logs (on failure)
