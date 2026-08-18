@@ -204,4 +204,9 @@ for image_version in "$VERSION_A" "$VERSION_B"; do
   [[ "$label_version" == "$image_version" ]]
 done
 
+if [[ -n "${IMAGE_B_ARCHIVE:-}" ]]; then
+  mkdir -p "$(dirname -- "$IMAGE_B_ARCHIVE")"
+  docker save "$IMAGE_B" | gzip -1 > "$IMAGE_B_ARCHIVE"
+fi
+
 echo "version layer reuse check passed for $VERSION_A and $VERSION_B"

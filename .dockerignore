@@ -5,9 +5,11 @@
 !src/
 !src/**
 !scripts/
+scripts/*
 !scripts/docker-entrypoint.sh
 !scripts/docker-healthcheck.sh
 !web/
+web/*
 !web/dist/
 !web/dist/**
 

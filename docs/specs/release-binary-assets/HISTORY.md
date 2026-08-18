@@ -17,6 +17,7 @@
 - portable 资产合同按目标源码树声明启用，而不是按“当前主干 workflow 是否支持 portable”强推到所有历史 backfill；`workflow_dispatch(head_sha=...)` 必须继续兼容 pre-portable 提交的 native-only 发布事实。
 - portable 构建链上的 `cargo-zigbuild` 必须显式钉版本，否则 tag 重放或历史 backfill 会因外部工具漂移而失去可复现性。
 - 2026-08-18: 版本 ARG 从 builder 与稳定运行时层移除，Docker 基础镜像改为 tag+digest，稳定 Web 层与尾部动态版本层分离，并增加上下文审计、Dependabot 与 A/B RootFS 复用门禁。
+- 2026-08-18: 严格上下文审计收紧到文件 allowlist，Compose smoke 改为加载 A/B 门禁生成的 B 镜像，release OCI version label 显式跟随有效发布版本。
 
 ## Legacy Identity
 

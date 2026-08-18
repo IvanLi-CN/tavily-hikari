@@ -341,6 +341,10 @@ async function assertText(page: import("playwright-core").Page, text: string) {
   );
 }
 
+async function readBuildVersion(page: import("playwright-core").Page): Promise<string | null> {
+  return await page.locator('meta[name="tavily-hikari-build-version"]').getAttribute("content");
+}
+
 function seedLinuxDoUserSession(dbPath: string): string {
   const db = new Database(dbPath);
   const now = Math.floor(Date.now() / 1000);
@@ -426,6 +430,20 @@ async function main() {
     await waitForServiceWorker(publicPage);
     await publicPage.reload({ waitUntil: "domcontentloaded" });
     await waitForController(publicPage, "/sw-public.js");
+    const initialBuildVersion = await readBuildVersion(publicPage);
+    if (initialBuildVersion !== "release-a") {
+      throw new Error(`initial public shell reported ${initialBuildVersion}, expected release-a`);
+    }
+
+    log("verifying the release-a shell remains usable offline before an update");
+    await setOffline(publicPage, true);
+    await publicPage.reload({ waitUntil: "domcontentloaded" });
+    await assertText(publicPage, "Offline shell loaded");
+    const offlineBuildVersion = await readBuildVersion(publicPage);
+    if (offlineBuildVersion !== "release-a") {
+      throw new Error(`offline public shell reported ${offlineBuildVersion}, expected release-a`);
+    }
+    await setOffline(publicPage, false);
 
     log("verifying an explicit app-shell update activates and reloads");
     switchStaticRelease(staticDir, "release-b");

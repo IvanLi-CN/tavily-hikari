@@ -343,6 +343,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
+          labels: |
+            org.opencontainers.image.version=${{ env.APP_EFFECTIVE_VERSION }}
 
       - name: Build and push Docker image by digest
         id: build-push
@@ -351,7 +353,9 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ env.APP_EFFECTIVE_VERSION }}
           build-args: |
             APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }},push-by-digest=true,name-canonical=true,push=true

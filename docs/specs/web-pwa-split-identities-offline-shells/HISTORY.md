@@ -28,6 +28,7 @@
 - 2026-07-08: 补齐 public/admin PWA 更新提示合同，要求新 service worker 完成资源缓存后等待用户确认激活，并以 inline banner 覆盖全部 Web 入口。
 - 2026-07-11: 更新激活状态机增加 10 秒 watchdog、失败重试、`redundant`/消息异常终态与 activated 单次刷新回退，并按 registration 自身 active worker 区分首次安装与升级。
 - 2026-08-18: 补充版本 A/B 机械门禁，确认稳定 PWA 资产不随纯版本发布变化，且两个 worker 的 cache identity 随版本变化。
+- 2026-08-18: 离线浏览器 E2E 增加 HTML meta 版本来源与旧 release shell 离线可用断言。
 
 ## Legacy Identity
 

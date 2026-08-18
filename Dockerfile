@@ -33,7 +33,13 @@ COPY . /context
 RUN test ! -e /context/.env \
     && test ! -e /context/.env.local \
     && test -z "$(find /context -type d -name node_modules -print -quit)" \
-    && test -z "$(find /context -type f \( -name '*.db' -o -name '*.db-*' \) -print -quit)"
+    && test -z "$(find /context -type f \( -name '*.db' -o -name '*.db-*' \) -print -quit)" \
+    && test -z "$(find /context -mindepth 1 -print | sed 's#^/context/##' | while IFS= read -r path; do \
+      case "${path}" in \
+        Cargo.toml|Cargo.lock|build.rs|src|src/*|scripts|scripts/docker-entrypoint.sh|scripts/docker-healthcheck.sh|web|web/dist|web/dist/*) ;; \
+        *) printf '%s\n' "${path}" ;; \
+      esac; \
+    done)"
 
 ########## Stage 2: import the official Xray runtime ##########
 FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e AS xray-downloader

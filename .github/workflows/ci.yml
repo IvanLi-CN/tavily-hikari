@@ -78,6 +78,8 @@ jobs:
         run: python3 -m pip install --user Pillow
 
       - name: Build and verify version layers
+        env:
+          IMAGE_B_ARCHIVE: ${{ runner.temp }}/version-layer-image-b.tar.gz
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
@@ -85,6 +87,13 @@ jobs:
           bun install --frozen-lockfile
           cd ..
           bash scripts/check-version-layer-reuse.sh
+
+      - name: Upload version layer B image
+        uses: actions/upload-artifact@v4
+        with:
+          name: version-layer-image-b
+          path: ${{ runner.temp }}/version-layer-image-b.tar.gz
+          if-no-files-found: error
 
   brand-assets:
     name: Brand Assets
@@ -401,7 +410,7 @@ jobs:
   compose-smoke-forwardauth-caddy:
     name: Compose Smoke (ForwardAuth + Caddy)
     runs-on: ubuntu-24.04
-    needs: [web-assets]
+    needs: [web-assets, version-layer-reuse]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 20
     env:
@@ -409,16 +418,16 @@ jobs:
       COMPOSE_FILE: examples/forwardauth-caddy/docker-compose.yml
       BASIC_AUTH_USER: admin
       BASIC_AUTH_PASS: password
-      IMAGE_TAG: tavily-hikari:ci
+      IMAGE_TAG: tavily-hikari-version-layer-${{ github.run_id }}-b
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download web assets artifact
+      - name: Download version layer B image
         uses: actions/download-artifact@v4
         with:
-          name: web-dist
-          path: web/dist
+          name: version-layer-image-b
+          path: ${{ runner.temp }}/version-layer-image-b
 
       - name: Install system dependencies
         shell: bash
@@ -429,14 +438,12 @@ jobs:
           docker --version
           docker compose version || (sudo apt-get install -y docker-compose-plugin && docker compose version)
 
-      - name: Build local Docker image (PR checkout)
+      - name: Load version layer B image
         shell: bash
         run: |
           set -euo pipefail
-          docker build \
-            --build-arg "APP_EFFECTIVE_VERSION=ci-${GITHUB_SHA}" \
-            -t "${IMAGE_TAG}" \
-            .
+          gzip -dc "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tar.gz" | docker load
+          docker image inspect "${IMAGE_TAG}" >/dev/null
 
       - name: Start compose stack
         shell: bash
@@ -506,7 +513,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected="ci-${GITHUB_SHA}"
+          expected="ci-layer-b"
           curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
             '.backend == $expected and .frontend == $expected'
 
