@@ -109,7 +109,9 @@ The repository uses a single-context domain layout. See `docs/agents/domain.md`.
 
 - 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. All future tests must target a local/mock upstream. Never hit production Tavily without explicit approval.
 
-## Agent Review Prep
+## Local Service Review
 
-- 工作收尾时，心羽需确保后端服务正在运行（dev 模式可加 `--dev-open-admin`），以便主人可以立即访问 `/` 或 `/admin` 进行验收。若需关闭服务，必须先征得主人确认再停。
-- 心羽在“工作就绪”进入评审前，必须确保开发服务器已就绪：后端监听在 `127.0.0.1:58087` 且健康检查通过，前端 Vite Dev Server 运行在 `127.0.0.1:55173`，页面可直接打开并完成交互验证（必要时保持 Playwright 会话开启供主人复查）。
+- 仅在主人要求交互验收、任务的 UI/浏览器验证，或集成测试需要运行中的应用时，启动本地后端或前端服务。
+- 对文档、配置、构建、CI 与其他非交互任务，使用任务对应的验证；完成工作本身不启动或保留本地服务、浏览器会话或固定端口。
+- 启动服务时说明用途并限定于当前任务；仅管理当前任务启动的进程，并保留不终止无关进程的安全边界。
+- 交付 localhost URL 时，仅在已请求的复核或验证期间保持相应端口和会话，并遵守全局端口租约规则。
