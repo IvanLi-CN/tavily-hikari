@@ -98,8 +98,8 @@ The repository uses a single-context domain layout. See `docs/agents/domain.md`.
   - Keep it in the current shell for short sessions, or run it under any team-approved background strategy.
 
 - Validation:
-  - Keep Playwright/Chrome DevTools sessions open for review; verify `/api/*`, `/mcp`, and SPA routes.
-  - Health: `curl -s http://127.0.0.1:58087/health` → `200`; Summary: `curl -s http://127.0.0.1:58087/api/summary | jq .`.
+  - 当任务需要交互验收、UI/浏览器验证或 HTTP 集成测试时，保持相关的 Playwright/Chrome DevTools 会话以供复核，并验证任务涉及的 `/api/*`、`/mcp` 和 SPA 路由。
+  - 后端服务参与该验证时，Health: `curl -s http://127.0.0.1:58087/health` → `200`; Summary: `curl -s http://127.0.0.1:58087/api/summary | jq .`.
 
 **IMPORTANT**
 
