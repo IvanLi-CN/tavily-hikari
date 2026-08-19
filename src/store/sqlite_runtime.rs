@@ -182,7 +182,7 @@ impl SqliteOperation {
         // the same bounded probe; other bulk work keeps the full cooldown.
         matches!(
             self,
-            Self::RequestStatsFlush | Self::ReconciliationProjection
+            Self::AdminRead | Self::RequestStatsFlush | Self::ReconciliationProjection
         )
     }
 }

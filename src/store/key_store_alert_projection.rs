@@ -64,6 +64,13 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
     }
 
+    pub(crate) fn try_admit_admin_alert_read(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AdminRead)
+    }
+
     async fn alert_projection_source_state(
         &self,
         lane: AlertProjectionLane,

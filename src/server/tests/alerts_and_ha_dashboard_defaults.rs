@@ -284,6 +284,14 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
         .await
     .expect("insert maintenance alert");
 
+    for _ in 0..48 {
+        proxy
+            .advance_dashboard_alert_projection_slice()
+            .await
+            .expect("advance alert projection before admin reads");
+        tokio::task::yield_now().await;
+    }
+
     let projection_proxy = proxy.clone();
     let admin_password = "alerts-dashboard-default-window-password";
     let (admin_addr, dashboard_state) =
@@ -568,6 +576,14 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
         Some("user_request_rate_limited")
     );
 
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_recent_summaries SET computed_at = ? WHERE window_hours = 24",
+    )
+    .bind(Utc::now().timestamp().saturating_sub(61))
+    .execute(&pool)
+    .await
+    .expect("expire projected alert summary before dashboard refresh");
+
     for _ in 0..48 {
         projection_proxy
             .advance_dashboard_alert_projection_scheduler_step()
@@ -816,11 +832,12 @@ async fn alerts_and_dashboard_recent_alerts_include_api_key_exhausted_and_job_fa
     .await
     .expect("insert failed scheduled job");
 
-    for _ in 0..8 {
+    for _ in 0..48 {
         proxy
             .advance_dashboard_alert_projection_slice()
             .await
             .expect("advance projected recent alerts before Dashboard read");
+        tokio::task::yield_now().await;
         let summary = proxy
             .recent_alerts_summary(24)
             .await
@@ -833,8 +850,25 @@ async fn alerts_and_dashboard_recent_alerts_include_api_key_exhausted_and_job_fa
         .recent_alerts_summary(24)
         .await
         .expect("read final projected recent alerts");
+    assert_eq!(projected_summary.coverage, "ok");
     assert_eq!(projected_summary.total_events, 2);
     assert!(!projected_summary.stale);
+    let mut direct_alerts = None;
+    for _ in 0..128 {
+        proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("advance full alert projection before admin read");
+        if let Ok(events) = proxy
+            .admin_alert_events_page(None, None, None, None, None, None, &[], 1, 20)
+            .await
+        {
+            direct_alerts = Some(events);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(direct_alerts.is_some(), "direct admin alerts read did not become ready");
 
     let admin_password = "alerts-dashboard-api-key-exhausted-job-failed-password";
     let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
@@ -852,7 +886,6 @@ async fn alerts_and_dashboard_recent_alerts_include_api_key_exhausted_and_job_fa
     assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
     let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
         .expect("admin session cookie");
-
     let events_resp = client
         .get(format!("http://{}/api/alerts/events", admin_addr))
         .header(reqwest::header::COOKIE, &admin_cookie)

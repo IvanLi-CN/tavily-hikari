@@ -16,7 +16,7 @@ impl TavilyProxy {
 
     #[doc(hidden)]
     pub fn admin_alert_read_defer_reason(&self) -> Option<&'static str> {
-        match self.key_store.try_admit_alert_projection() {
+        match self.key_store.try_admit_admin_alert_read() {
             Ok(permit) => {
                 drop(permit);
                 None
@@ -211,7 +211,7 @@ impl TavilyProxy {
     async fn acquire_admin_alert_read(&self) -> Result<SqliteMaintenanceBulkPermit, ProxyError> {
         let permit = self
             .key_store
-            .try_admit_alert_projection()
+            .try_admit_admin_alert_read()
             .map_err(|reason| ProxyError::Deferred {
                 operation: "admin_alerts_read",
                 reason: reason.as_str().to_string(),

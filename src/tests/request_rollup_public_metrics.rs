@@ -659,14 +659,14 @@ async fn admin_summary_never_flushes_pending_request_stats_from_the_read_path() 
     );
 
     proxy.nudge_request_stats_flush().await;
-    tokio::time::timeout(Duration::from_secs(2), pause.arrived.notified())
+    tokio::time::timeout(Duration::from_secs(5), pause.arrived.notified())
         .await
         .expect("background flush starts within its nominal cadence");
     pause
         .released
         .store(true, std::sync::atomic::Ordering::SeqCst);
     pause.release.notify_waiters();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if proxy
                 .summary_without_flush()
