@@ -262,25 +262,25 @@
 
     PR: include
 
-    ![管理员对账 transport failure 桌面状态](assets/admin-read-transport-desktop.png)
+    ![管理员对账 transport failure 桌面状态](./assets/admin-read-transport-desktop.png)
 
   - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=1440x1000`, `viewport_strategy=storybook-viewport`, `state=stale-sqlite-pressure`。证明同一页面显示告警投影 stale、隐私状态 stale、sqlite pressure 和最近观察时间。
 
     PR: include
 
-    ![管理员读模型 stale 桌面状态](assets/admin-read-stale-desktop.png)
+    ![管理员读模型 stale 桌面状态](./assets/admin-read-stale-desktop.png)
 
   - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=393x852`, `viewport_strategy=storybook-viewport`, `state=transport-known-mobile`。
 
     PR: include
 
-    ![管理员对账 transport failure 移动状态](assets/admin-read-transport-mobile.png)
+    ![管理员对账 transport failure 移动状态](./assets/admin-read-transport-mobile.png)
 
   - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=393x852`, `viewport_strategy=storybook-viewport`, `state=stale-sqlite-pressure-mobile`。
 
     PR: include
 
-    ![管理员读模型 stale 移动状态](assets/admin-read-stale-mobile.png)
+    ![管理员读模型 stale 移动状态](./assets/admin-read-stale-mobile.png)
 
 - Storybook canvas 组件证据：
   - `Admin/Components/DashboardOverview / RecentAlertsDesktopEvidence` 提供稳定桌面证据，近期告警区已重做为“24h 队列导语 + 三窗聚合计数 + 聚合告警队列表格”。
@@ -290,15 +290,15 @@
   - 分组查看按钮具备主体化可访问名称，且窄屏表头仍保留在无障碍语义树中，不再因为 `display: none` 丢失表格关系。
   - 用户主体 `Alice Wang` 以轻量可聚焦按钮呈现，可跳转用户详情；本地 request-rate 告警摘要明确写出 `rolling 5m request-rate window` 与请求类型，告警类型 badge 仅保留分类与 `5m window`，不重复展示 request kind 或上游封禁原因，也不再单独展示 `latestEvent.title`。
 
-    ![仪表盘近期告警聚合摘要 Storybook 证据](assets/dashboard-alerts-24h-grouped-summary.png)
+    ![仪表盘近期告警聚合摘要 Storybook 证据](./assets/dashboard-alerts-24h-grouped-summary.png)
 
-    ![仪表盘近期告警用户名跳转与限流窗口说明证据](assets/dashboard-alerts-user-link-window-summary.png)
+    ![仪表盘近期告警用户名跳转与限流窗口说明证据](./assets/dashboard-alerts-user-link-window-summary.png)
 
 - Storybook page fallback 证据：
   - `Admin/Pages / Alerts` 的 header tabs 与页面内 tabs 顺序已统一为 `聚合告警 -> 事件记录`。
   - 默认激活态仍为 `view=groups`，仅调整展示顺序，不改变查询语义。
 
-    ![告警中心 tabs 顺序统一 Storybook 证据](assets/alerts-center-groups-first-tabs.png)
+    ![告警中心 tabs 顺序统一 Storybook 证据](./assets/alerts-center-groups-first-tabs.png)
 
 - Chrome DevTools 复核：
   - `iframe.html?id=admin-components-dashboardoverview--recent-alerts-desktop-evidence` 已确认近期告警区显示 `Last 1 hour / Last 24 hours / Last 7 days` 三窗计数，以及 `Alert window` 连续区间文案。
