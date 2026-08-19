@@ -338,3 +338,17 @@ impl ReconciliationOutcome {
         }
     }
 }
+async fn await_reconciliation_post_process<T>(
+    deadline: std::time::Instant,
+    operation: impl std::future::Future<Output = Result<T, ProxyError>>,
+) -> Result<T, ProxyError> {
+    if deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .is_zero()
+    {
+        return Err(ProxyError::Other(
+            "reconciliation post-processing deadline exceeded".to_string(),
+        ));
+    }
+    operation.await
+}

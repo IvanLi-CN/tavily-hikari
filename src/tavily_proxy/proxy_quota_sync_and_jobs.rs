@@ -24,19 +24,6 @@ fn should_emit_reconciliation_summary(now: i64) -> bool {
     should_emit_reconciliation_summary_at(&LAST_RECONCILIATION_SUMMARY_LOG_AT, now)
 }
 
-async fn await_reconciliation_post_process<T>(
-    deadline: std::time::Instant,
-    operation: impl std::future::Future<Output = Result<T, ProxyError>>,
-) -> Result<T, ProxyError> {
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    if remaining.is_zero() {
-        return Err(ProxyError::Other(
-            "reconciliation post-processing deadline exceeded".to_string(),
-        ));
-    }
-    operation.await
-}
-
 impl TavilyProxy {
     const RECONCILIATION_BACKOFF_SCOPE: &'static str = "period_reconciliation";
     // Candidate hydration is deliberately bounded so the first main settlement
