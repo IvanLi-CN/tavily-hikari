@@ -756,6 +756,104 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
 }
 
 #[tokio::test]
+async fn admin_privacy_status_returns_expired_last_good_when_sqlite_is_under_pressure() {
+    let db_path = temp_db_path("admin-privacy-status-last-good");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-privacy-status-last-good".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let password = "admin-privacy-status-last-good-password";
+    let (admin_addr, state) = spawn_builtin_keys_admin_server_with_state(proxy, password).await;
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+    let login = client
+        .post(format!("http://{admin_addr}/api/admin/login"))
+        .json(&serde_json::json!({ "password": password }))
+        .send()
+        .await
+        .expect("admin login");
+    let cookie = find_cookie_pair(login.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+        .expect("admin session cookie");
+    let privacy_status_url = format!("http://{admin_addr}/api/settings/system/privacy-status");
+
+    let warm = client
+        .get(&privacy_status_url)
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .expect("warm privacy status");
+    assert_eq!(warm.status(), reqwest::StatusCode::OK);
+    expire_admin_privacy_status_last_good_for_test(state.as_ref()).await;
+
+    let held = match state.proxy.admit_dashboard_rollup_integrity() {
+        SqliteAdmissionOutcome::Admitted(permit) => permit,
+        SqliteAdmissionOutcome::Deferred { reason } => {
+            panic!("test must hold the shared bulk permit, got {reason}")
+        }
+    };
+    let stale = client
+        .get(&privacy_status_url)
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .expect("stale privacy status");
+    assert_eq!(stale.status(), reqwest::StatusCode::OK);
+    let stale_body: serde_json::Value = stale.json().await.expect("stale privacy status json");
+    assert_eq!(stale_body.get("coverage").and_then(|v| v.as_str()), Some("stale"));
+    assert_eq!(
+        stale_body.get("staleReason").and_then(|v| v.as_str()),
+        Some("sqlite_pressure")
+    );
+    assert!(stale_body.get("observedAt").and_then(|v| v.as_i64()).is_some());
+    drop(held);
+
+    let cold_db_path = temp_db_path("admin-privacy-status-cold-pressure");
+    let cold_db_str = cold_db_path.to_string_lossy().to_string();
+    let cold_proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-privacy-status-cold-pressure".to_string()],
+        DEFAULT_UPSTREAM,
+        &cold_db_str,
+    )
+    .await
+    .expect("cold proxy created");
+    let cold_password = "admin-privacy-status-cold-pressure-password";
+    let (cold_addr, cold_state) =
+        spawn_builtin_keys_admin_server_with_state(cold_proxy, cold_password).await;
+    let cold_login = client
+        .post(format!("http://{cold_addr}/api/admin/login"))
+        .json(&serde_json::json!({ "password": cold_password }))
+        .send()
+        .await
+        .expect("cold admin login");
+    let cold_cookie = find_cookie_pair(cold_login.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+        .expect("cold admin session cookie");
+    let cold_held = match cold_state.proxy.admit_dashboard_rollup_integrity() {
+        SqliteAdmissionOutcome::Admitted(permit) => permit,
+        SqliteAdmissionOutcome::Deferred { reason } => {
+            panic!("test must hold the cold shared bulk permit, got {reason}")
+        }
+    };
+    let cold = client
+        .get(format!("http://{cold_addr}/api/settings/system/privacy-status"))
+        .header(reqwest::header::COOKIE, &cold_cookie)
+        .send()
+        .await
+        .expect("cold privacy status");
+    assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(cold.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("1"));
+    drop(cold_held);
+
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(cold_db_path);
+}
+
+#[tokio::test]
 async fn alerts_and_dashboard_recent_alerts_include_api_key_exhausted_and_job_failed() {
     let db_path = temp_db_path("alerts-dashboard-api-key-exhausted-job-failed");
     let db_str = db_path.to_string_lossy().to_string();

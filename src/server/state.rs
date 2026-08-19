@@ -174,6 +174,24 @@ pub(crate) async fn admin_privacy_status_last_good(
         .then(|| (entry.value.clone(), entry.observed_at))
 }
 
+pub(crate) async fn admin_privacy_status_cached(
+    state: &AppState,
+) -> Option<(tavily_hikari::UpstreamPrivacyStatus, i64)> {
+    let cache = dashboard_overview_cache_for_state(state);
+    let cache = cache.lock().await;
+    let entry = cache.admin_privacy_status.as_ref()?;
+    Some((entry.value.clone(), entry.observed_at))
+}
+
+#[cfg(test)]
+pub(crate) async fn expire_admin_privacy_status_last_good_for_test(state: &AppState) {
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    if let Some(entry) = cache.admin_privacy_status.as_mut() {
+        entry.stored_at = tokio::time::Instant::now() - ADMIN_PRIVACY_STATUS_CACHE_TTL;
+    }
+}
+
 pub(crate) async fn record_admin_privacy_status_last_good(
     state: &AppState,
     mut value: tavily_hikari::UpstreamPrivacyStatus,

@@ -413,6 +413,7 @@
         "server::tests::api_keys_and_registration::announcement_",
         "server::tests::alerts_and_ha_dashboard_defaults::alerts_",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
+        "server::tests::alerts_and_ha_dashboard_defaults::admin_privacy_",
         "server::tests::alerts_and_ha_source_and_recovery::compute_",
         "server::tests::dashboard_overview_snapshot::compute_",
         "server::tests::log_catalog_and_dashboard_sse::compute_"

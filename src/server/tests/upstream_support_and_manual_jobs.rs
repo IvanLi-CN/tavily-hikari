@@ -2374,6 +2374,10 @@ pub(super) async fn spawn_builtin_keys_admin_server_with_state(
         .route("/api/alerts/catalog", get(get_alert_catalog))
         .route("/api/alerts/events", get(get_alert_events))
         .route("/api/alerts/groups", get(get_alert_groups))
+        .route(
+            "/api/settings/system/privacy-status",
+            get(get_upstream_privacy_status),
+        )
         .route("/api/keys", get(list_keys))
         .route("/api/keys/:id", get(get_api_key_detail))
         .route("/api/keys/:id/logs", get(get_key_logs))
