@@ -208,7 +208,18 @@ function buildNodeRows(status: HaStatus, strings: AdminTranslations['systemSetti
 }
 
 function adminNeedsAttention(status: HaStatus): boolean {
-  return status.mode !== 'single' && (status.degraded || status.role !== 'full_master' || !status.allowsFullWrites)
+  return status.mode !== 'single'
+    && (status.degraded || status.role !== 'full_master' || !status.allowsFullWrites || status.syncDisabledReason != null)
+}
+
+function syncDisabledMessage(
+  reason: string | null,
+  strings: AdminTranslations['systemSettings']['ha'],
+): string | null {
+  if (!reason) return null
+  return reason === 'no_configured_peers'
+    ? strings.syncDisabledNoConfiguredPeers
+    : strings.syncDisabledUnknown
 }
 
 export default function HaStatusBanner({
@@ -258,6 +269,7 @@ export default function HaStatusBanner({
           : labels.panelDescriptionFullMaster
   const toneClass = status.role === 'full_master' ? 'ha-status-banner-active' : ''
   const rows = buildNodeRows(status, labels, lang)
+  const syncDiagnostic = syncDisabledMessage(status.syncDisabledReason, labels)
   const authorityLabel = status.allowsFullWrites
     ? labels.authorityFullWrites
     : status.allowsBasicBusiness
@@ -275,7 +287,7 @@ export default function HaStatusBanner({
           </div>
           <div className="ha-status-banner-copy">
             <div className="ha-status-banner-title">{compactTitle ?? labels.compactTitle}</div>
-            <p>{compactDescription ?? labels.compactDescription}</p>
+            <p>{syncDiagnostic ?? compactDescription ?? labels.compactDescription}</p>
           </div>
           {compactHref && compactActionLabel && (
             <Button asChild size="sm" variant="outline" className="ha-status-banner-action">
@@ -323,6 +335,9 @@ export default function HaStatusBanner({
         </div>
 
         <dl className="ha-status-summary" aria-label={labels.title}>
+          <div><dt>{labels.summaryCoreMode}</dt><dd>{status.dualActiveEnabled ? labels.coreModeDualActive : labels.coreModeActiveStandby}</dd></div>
+          <div><dt>{labels.summaryControlLeader}</dt><dd>{status.fullMasterNodeId ?? '—'}</dd></div>
+          <div><dt>{labels.summaryConfiguredPeers}</dt><dd>{status.peerCount}</dd></div>
           <div><dt>{labels.summaryEdgeoneDomain}</dt><dd>{status.edgeoneDomain ?? '—'}</dd></div>
           <div><dt>{labels.summaryCurrentOrigin}</dt><dd>{status.edgeoneCurrentTarget ?? status.edgeoneOrigin ?? '—'}</dd></div>
           <div><dt>{labels.summaryExpectedOrigin}</dt><dd>{status.edgeoneExpectedOrigin ?? '—'}</dd></div>
@@ -332,6 +347,13 @@ export default function HaStatusBanner({
           <div><dt>{labels.summaryEdgeoneApi}</dt><dd>{status.edgeoneApiConfigured ? labels.healthServingEdgeone : labels.healthNotRouted}</dd></div>
           <div><dt>{labels.summaryRecovery}</dt><dd>{formatHaRecoveryStatus(status.recoveryStatus, labels) ?? '—'}</dd></div>
         </dl>
+
+        {syncDiagnostic && (
+          <div className="ha-status-message ha-status-message-warning" role="alert">
+            <CircleAlert size={16} aria-hidden="true" />
+            <span>{syncDiagnostic}</span>
+          </div>
+        )}
 
         <div className="ha-node-list" aria-label={labels.nodeInventoryTitle}>
           <div className="ha-node-list-title">

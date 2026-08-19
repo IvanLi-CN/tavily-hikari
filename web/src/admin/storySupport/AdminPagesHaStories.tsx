@@ -9,12 +9,14 @@ type Story = StoryObj
 
 const dashboardHaAttentionStatus: HaStatus = {
   mode: 'active_standby',
-  nodeId: 'node-b',
-  nodePublicOrigin: '203.0.113.10:58087',
-  role: 'standby',
-  degraded: true,
-  allowsBasicBusiness: false,
-  allowsFullWrites: false,
+  nodeId: 'node-a',
+  nodePublicOrigin: '203.0.113.9:58087',
+  role: 'full_master',
+  dualActiveEnabled: true,
+  fullMasterNodeId: 'node-a',
+  degraded: false,
+  allowsBasicBusiness: true,
+  allowsFullWrites: true,
   edgeoneDomain: 'api.example.com',
   edgeoneOrigin: '203.0.113.9:58087',
   edgeoneExpectedOrigin: '203.0.113.9:58087',
@@ -46,25 +48,10 @@ const dashboardHaAttentionStatus: HaStatus = {
   lastSyncAt: 1_700_000_002,
   syncLagSeconds: 8,
   recoveryStatus: null,
-  message: 'standby is synchronized and ready for manual promotion',
-  peerNodes: [
-    {
-      nodeId: 'node-a',
-      publicOrigin: '203.0.113.9:58087',
-      sourceConfigTarget: '203.0.113.9:58087',
-      role: 'full_master',
-      allowsBasicBusiness: true,
-      allowsFullWrites: true,
-      lastSyncAt: 1_700_000_000,
-      syncLagSeconds: 2,
-      recoveryStatus: null,
-      message: 'active node is serving traffic',
-      lastSeenAt: 1_700_000_001,
-      stale: false,
-      roleHint: 'standby_candidate',
-      plannedCutoverEligible: false,
-    },
-  ],
+  message: 'node is serving as active master',
+  peerCount: 0,
+  syncDisabledReason: 'no_configured_peers',
+  peerNodes: [],
   plannedCutoverEligible: false,
 }
 
@@ -73,6 +60,8 @@ const systemSettingsHaStatus: HaStatus = {
   nodeId: 'node-a',
   nodePublicOrigin: '203.0.113.9:58087',
   role: 'full_master',
+  dualActiveEnabled: true,
+  fullMasterNodeId: 'node-a',
   degraded: false,
   allowsBasicBusiness: true,
   allowsFullWrites: true,
@@ -108,6 +97,8 @@ const systemSettingsHaStatus: HaStatus = {
   syncLagSeconds: 0,
   recoveryStatus: null,
   message: 'full master is ready to drain traffic for planned maintenance',
+  peerCount: 2,
+  syncDisabledReason: null,
   peerNodes: [
     {
       nodeId: 'node-b',
@@ -226,7 +217,7 @@ export const DashboardHaAttention: Story = {
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 80))
     const text = canvasElement.textContent ?? ''
-    if (!text.includes('高可用状态需要关注') || !text.includes('查看 HA 设置')) {
+    if (!text.includes('高可用状态需要关注') || !text.includes('当前未配置可用的 HA peer') || !text.includes('查看 HA 设置')) {
       throw new Error('Expected abnormal HA state to render the compact settings link.')
     }
     if (text.includes('节点清单') || text.includes('提升为主节点')) {

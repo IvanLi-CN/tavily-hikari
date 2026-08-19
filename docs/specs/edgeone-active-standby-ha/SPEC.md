@@ -88,6 +88,10 @@ Tavily Hikari 的高可用方案采用核心业务双活 + 控制面单写，而
   no usable sync path. A legacy `HA_SYNC_SOURCE_URL` is a usable path only outside dual-active
   peer-sync mode. This is diagnostic only: the service remains healthy and does not invent a peer
   or disable its local serving role.
+- Admin and public Web clients must normalize every HA status response through one rolling-upgrade
+  boundary. Current responses preserve `dualActiveEnabled`, `fullMasterNodeId`, `peerCount`, and
+  `syncDisabledReason`; older responses default to `false`, `null`, `peerNodes.length`, and `null`
+  respectively. Individual fetch and mutation call sites must not invent their own defaults.
 - `GET /api/admin/ha/status` 的 `peerNodes[]` 需要同时返回对外入口 `publicOrigin` 与节点私有源站配置目标 `sourceConfigTarget`；节点清单中的“源站”列展示节点源站配置，而不是当前 EdgeOne 路由或 peer 的对外入口。
 - `GET /api/ha/status` 返回可公开给用户控制台的降级摘要，不包含 secret 或 expected origin。
 - `GET /api/admin/ha/status` 还要返回当前/预期源站类型、本地默认源站、本地覆盖源站和当前 EdgeOne target。
@@ -193,6 +197,7 @@ count.
 - HA 源站设置弹窗的本地校验必须贴近字段本身：`host`、`port`、`origin group` 错误继续绑定各自控件并保留 `aria-invalid`，不得与远端提交失败共用同一块文案区域。
 - HA 源站设置弹窗的远端提交失败必须使用正式 destructive alert，包含任务相关标题、简短修复提示，以及默认折叠的“技术详情”展开区；原始后端文本只在展开后展示。
 - 管理员业务页面在 `full_master` 正常态不得显示 HA 面板；在 failover、standby、recovery 或写入受限时，只显示紧凑异常提示并链接到系统设置的高可用界面，不直接执行 promote/finalize。
+- `active_standby` 缺少可用 peer 时，即使本机仍是健康 `full_master`，管理员业务页面也必须显示紧凑提醒；HA 设置页必须展示核心模式、当前控制面主节点、配置 peer 数量和固定的“未配置 peer”诊断。未知 `syncDisabledReason` 只能映射为通用脱敏文案，不得直接渲染原始值；用户侧 HA 提示不得暴露这些管理员诊断。
 - `provisional_master` 阶段必须明确提示注册、充值和配置写入仍被禁用。
 
 ## Visual Evidence

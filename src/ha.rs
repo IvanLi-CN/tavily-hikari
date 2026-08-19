@@ -2686,6 +2686,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ha_status_contract_includes_topology_diagnostics() {
+        let status = HaRuntime::new(HaConfig {
+            mode: HaMode::ActiveStandby,
+            core_dual_active: true,
+            source_origin_group_id: Some("origin-group".to_string()),
+            ..HaConfig::default()
+        })
+        .status()
+        .await;
+        let payload = serde_json::to_value(&status).expect("serialize HA status");
+        let object = payload.as_object().expect("HA status serializes as object");
+
+        for field in [
+            "dualActiveEnabled",
+            "fullMasterNodeId",
+            "peerCount",
+            "syncDisabledReason",
+        ] {
+            assert!(
+                object.contains_key(field),
+                "missing HA status field {field}"
+            );
+        }
+
+        assert_eq!(payload["dualActiveEnabled"], status.dual_active_enabled);
+        assert_eq!(
+            payload["fullMasterNodeId"],
+            serde_json::to_value(&status.full_master_node_id).expect("serialize leader")
+        );
+        assert_eq!(payload["peerCount"], status.peer_count);
+        assert_eq!(
+            payload["syncDisabledReason"],
+            serde_json::to_value(&status.sync_disabled_reason).expect("serialize sync reason")
+        );
+    }
+
+    #[tokio::test]
     async fn active_standby_pull_sync_does_not_report_peer_sync_as_globally_disabled() {
         let runtime = HaRuntime::new(HaConfig {
             mode: HaMode::ActiveStandby,

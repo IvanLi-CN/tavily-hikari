@@ -155,6 +155,15 @@
 
 ## Frontend
 
+- The TypeScript HA client now treats the four topology diagnostics as optional wire fields and
+  normalizes every status-producing API response through one boundary. Rolling upgrades default
+  missing values to `false`, `null`, `peerNodes.length`, and `null`, while current server values
+  remain authoritative.
+- The administrator HA page shows the core mode, control-plane leader, and configured peer count.
+  `no_configured_peers` also raises the compact Dashboard attention state; unknown disable reasons
+  map to generic localized guidance instead of rendering backend detail. User-facing HA banners do
+  not consume these administrator diagnostics.
+
 ## 2026-08-02 self-healing GC status
 
 - `HaChannelHealth` and `HaNodeDetailPanel` now display per-channel debt mode, observed timestamp,

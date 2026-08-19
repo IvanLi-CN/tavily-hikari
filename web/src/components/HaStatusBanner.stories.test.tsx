@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import meta, * as stories from './HaStatusBanner.stories'
+import HaStatusBanner from './HaStatusBanner'
 import { LanguageProvider, translations } from '../i18n'
 import { ThemeProvider } from '../theme'
 
@@ -208,6 +209,129 @@ describe('HaStatusBanner Storybook proofs', () => {
     expect(markup).toContain(translations.zh.admin.systemSettings.ha.viewSettings)
     expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.nodeInventoryTitle)
     expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.promoteToMaster)
+  })
+
+  it('renders missing-peer diagnostics in the panel and compact admin views', () => {
+    const renderStory = meta.render as ((args: typeof stories.MissingPeerDiagnostics.args) => JSX.Element) | undefined
+    const status = stories.MissingPeerDiagnostics.args?.status
+    expect(renderStory).toBeDefined()
+    expect(status).toBeDefined()
+
+    const panelMarkup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, renderStory?.({
+          ...(meta.args ?? {}),
+          ...(stories.MissingPeerDiagnostics.args ?? {}),
+        })),
+      ),
+    )
+    const compactMarkup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(HaStatusBanner, {
+            status,
+            audience: 'admin',
+            adminVariant: 'compact',
+            compactHref: '/admin/system-settings/ha',
+            compactActionLabel: translations.zh.admin.systemSettings.ha.viewSettings,
+          }),
+        ),
+      ),
+    )
+
+    expect(panelMarkup).toContain(translations.zh.admin.systemSettings.ha.summaryCoreMode)
+    expect(panelMarkup).toContain(translations.zh.admin.systemSettings.ha.summaryControlLeader)
+    expect(panelMarkup).toContain(translations.zh.admin.systemSettings.ha.summaryConfiguredPeers)
+    expect(panelMarkup).toContain(translations.zh.admin.systemSettings.ha.syncDisabledNoConfiguredPeers)
+    expect(compactMarkup).toContain(translations.zh.admin.systemSettings.ha.syncDisabledNoConfiguredPeers)
+  })
+
+  it('keeps healthy peer states quiet and sanitizes unknown sync reasons', () => {
+    const healthyStatus = stories.FullMasterAdmin.args?.status
+    const missingPeerStatus = stories.MissingPeerDiagnostics.args?.status
+    expect(healthyStatus).toBeDefined()
+    expect(missingPeerStatus).toBeDefined()
+
+    const healthyMarkup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(HaStatusBanner, {
+            status: healthyStatus,
+            audience: 'admin',
+            adminVariant: 'compact',
+          }),
+        ),
+      ),
+    )
+    const unknownReason = 'internal_peer_probe_stacktrace'
+    const unknownMarkup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(HaStatusBanner, {
+            status: { ...missingPeerStatus, syncDisabledReason: unknownReason },
+            audience: 'admin',
+          }),
+        ),
+      ),
+    )
+
+    expect(healthyMarkup).toBe('')
+    expect(unknownMarkup).toContain(translations.zh.admin.systemSettings.ha.syncDisabledUnknown)
+    expect(unknownMarkup).not.toContain(unknownReason)
+  })
+
+  it('keeps topology diagnostics out of the user-facing degraded banner', () => {
+    const missingPeerStatus = stories.MissingPeerDiagnostics.args?.status
+    const unknownReason = 'internal_peer_probe_stacktrace'
+    expect(missingPeerStatus).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(HaStatusBanner, {
+            status: {
+              ...missingPeerStatus,
+              role: 'recovery',
+              degraded: true,
+              syncDisabledReason: unknownReason,
+            },
+            audience: 'user',
+          }),
+        ),
+      ),
+    )
+
+    expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.summaryCoreMode)
+    expect(markup).not.toContain(translations.zh.admin.systemSettings.ha.syncDisabledUnknown)
+    expect(markup).not.toContain(unknownReason)
+  })
+
+  it('keeps the rolling-upgrade compatibility story available', () => {
+    expect(stories.RollingUpgradeCompatibility).toBeDefined()
+    expect(stories.RollingUpgradeCompatibility.args?.status).toMatchObject({
+      dualActiveEnabled: false,
+      fullMasterNodeId: null,
+      peerCount: 1,
+      syncDisabledReason: null,
+    })
   })
 
   it('keeps the origin group source settings dialog story available', () => {

@@ -1,4 +1,5 @@
 export * from './runtime'
+export * from './haStatus'
 export * from './userAuth'
 export type * from './requestLogRetention'
 export type * from './systemSettingsTypes'

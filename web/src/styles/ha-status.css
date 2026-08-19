@@ -382,6 +382,12 @@
   margin-top: 1px;
 }
 
+.ha-status-message-warning {
+  border-color: hsl(var(--warning) / 0.36);
+  background: hsl(var(--warning) / 0.1);
+  color: hsl(var(--warning-readable));
+}
+
 .ha-timeline-list {
   display: grid;
   gap: 10px;

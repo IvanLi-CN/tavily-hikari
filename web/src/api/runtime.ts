@@ -6,6 +6,7 @@ import {
 import type { TokenLogRequestKindOption } from '../tokenLogRequestKinds'
 import type { ClientIpHeaderValue } from './clientIp'
 import type { HaChannelHealth } from './haTypes'
+import { normalizeHaStatus, type HaStatus, type HaStatusWire } from './haStatus'
 import type { RequestLogRetentionSettings } from './requestLogRetention'
 import type {
   AdminMcpSessionBindingsPage,
@@ -34,6 +35,7 @@ import {
 } from './adminUserNormalization'
 
 export type { HaChannelHealth, HaGcState } from './haTypes'
+export type { HaStatus } from './haStatus'
 
 export interface Summary {
   total_requests: number
@@ -1446,34 +1448,8 @@ export interface HaSourceSettings {
   target: string | null
 }
 
-export interface HaStatus {
-  mode: HaMode
-  nodeId: string
-  nodePublicOrigin: string | null
-  role: HaNodeRole
-  degraded: boolean
-  allowsBasicBusiness: boolean
-  allowsFullWrites: boolean
-  edgeoneDomain: string | null
-  edgeoneOrigin: string | null
-  edgeoneExpectedOrigin: string | null
-  edgeoneCurrentTarget: string | null
-  edgeoneExpectedTarget: string | null
-  edgeoneCurrentSourceKind: HaSourceKind | null
-  edgeoneExpectedSourceKind: HaSourceKind | null
-  edgeoneCurrentOriginGroupId: string | null
-  edgeoneExpectedOriginGroupId: string | null
-  haSourceDefaults: HaSourceSettings | null
-  haSourceOverride: HaSourceSettings | null
-  haSourceEffective: HaSourceSettings | null
-  edgeoneApiConfigured: boolean
-  lastEdgeoneCheckAt: number | null
-  lastSyncAt: number | null
-  syncLagSeconds: number | null
-  recoveryStatus: string | null
-  message: string | null
-  peerNodes: HaPeerNode[]
-  plannedCutoverEligible: boolean
+function requestHaStatus(input: RequestInfo, init?: RequestInit): Promise<HaStatus> {
+  return requestJson<HaStatusWire>(input, init).then(normalizeHaStatus)
 }
 export interface HaPeerNode {
   nodeId: string
@@ -1523,7 +1499,7 @@ export interface PlannedCutoverResult {
 }
 
 export function fetchAdminHaStatus(signal?: AbortSignal): Promise<HaStatus> {
-  return requestJson('/api/admin/ha/status', { signal })
+  return requestHaStatus('/api/admin/ha/status', { signal })
 }
 
 export interface UpdateHaSourceSettingsPayload {
@@ -1562,7 +1538,7 @@ function formatHaSourceSettingsError(body: string, applyToEdgeone: boolean): HaS
 export function updateAdminHaSourceSettings(
   payload: UpdateHaSourceSettingsPayload,
 ): Promise<HaStatus> {
-  return requestJson<HaStatus>('/api/admin/ha/source', {
+  return requestHaStatus('/api/admin/ha/source', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -1574,11 +1550,11 @@ export function updateAdminHaSourceSettings(
 }
 
 export function fetchPublicHaStatus(signal?: AbortSignal): Promise<HaStatus> {
-  return requestJson('/api/ha/status', { signal })
+  return requestHaStatus('/api/ha/status', { signal })
 }
 
 export function promoteHaNode(force = false): Promise<HaStatus> {
-  return requestJson('/api/admin/ha/promote', {
+  return requestHaStatus('/api/admin/ha/promote', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ force }),
@@ -1586,7 +1562,7 @@ export function promoteHaNode(force = false): Promise<HaStatus> {
 }
 
 export function finalizeHaFailover(): Promise<HaStatus> {
-  return requestJson('/api/admin/ha/finalize', { method: 'POST' })
+  return requestHaStatus('/api/admin/ha/finalize', { method: 'POST' })
 }
 
 export function runPlannedCutover(targetNodeId: string): Promise<PlannedCutoverResult> {

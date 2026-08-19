@@ -723,6 +723,13 @@ export interface AdminTranslationsShape {
       roleProvisionalMaster: string
       roleStandby: string
       roleRecovery: string
+      summaryCoreMode: string
+      summaryControlLeader: string
+      summaryConfiguredPeers: string
+      coreModeDualActive: string
+      coreModeActiveStandby: string
+      syncDisabledNoConfiguredPeers: string
+      syncDisabledUnknown: string
       summaryEdgeoneDomain: string
       summaryCurrentOrigin: string
       summaryExpectedOrigin: string

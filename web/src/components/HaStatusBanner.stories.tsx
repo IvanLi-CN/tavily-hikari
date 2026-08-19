@@ -1,6 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { HaPeerNode, HaSourceSettingsApiError, HaStatus, HaTimelineEvent } from '../api'
+import {
+  normalizeHaStatus,
+  type HaPeerNode,
+  type HaSourceSettingsApiError,
+  type HaStatus,
+  type HaTimelineEvent,
+} from '../api'
 import HaSourceSettingsDialog from '../admin/HaSourceSettingsDialog'
 import HaStatusBanner from './HaStatusBanner'
 import { translations } from '../i18n'
@@ -10,6 +16,8 @@ const baseStatus: HaStatus = {
   nodeId: 'node-b',
   nodePublicOrigin: '203.0.113.10:58087',
   role: 'standby',
+  dualActiveEnabled: false,
+  fullMasterNodeId: null,
   degraded: true,
   allowsBasicBusiness: false,
   allowsFullWrites: false,
@@ -45,6 +53,8 @@ const baseStatus: HaStatus = {
   syncLagSeconds: 8,
   recoveryStatus: null,
   message: 'standby is synchronized and ready for manual promotion',
+  peerCount: 1,
+  syncDisabledReason: null,
   peerNodes: [
     {
       nodeId: 'node-a',
@@ -85,6 +95,8 @@ const fullMasterStatus: HaStatus = {
 
 const originGroupMasterStatus: HaStatus = {
   ...fullMasterStatus,
+  dualActiveEnabled: true,
+  fullMasterNodeId: 'node-b',
   edgeoneCurrentTarget: 'eo-origin-group-ha-demo',
   edgeoneExpectedTarget: 'eo-origin-group-ha-demo',
   edgeoneCurrentSourceKind: 'origin_group',
@@ -111,6 +123,26 @@ const originGroupMasterStatus: HaStatus = {
   },
   message: 'node is serving through an EdgeOne origin group',
 }
+
+const missingPeerStatus: HaStatus = {
+  ...originGroupMasterStatus,
+  nodeId: 'node-a',
+  nodePublicOrigin: '203.0.113.9:58087',
+  fullMasterNodeId: 'node-a',
+  peerCount: 0,
+  syncDisabledReason: 'no_configured_peers',
+  peerNodes: [],
+  plannedCutoverEligible: false,
+  message: 'node is serving through an EdgeOne origin group',
+}
+
+const rollingUpgradeStatus = normalizeHaStatus({
+  ...baseStatus,
+  dualActiveEnabled: undefined,
+  fullMasterNodeId: undefined,
+  peerCount: undefined,
+  syncDisabledReason: undefined,
+})
 
 const recoveryStatus: HaStatus = {
   ...baseStatus,
@@ -380,6 +412,48 @@ export const FullMasterAdmin: Story = {
   args: {
     status: fullMasterStatus,
     onPromote: undefined,
+  },
+}
+
+export const MissingPeerDiagnostics: Story = {
+  args: {
+    status: missingPeerStatus,
+    onPromote: undefined,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: 'Healthy dual-active leader with no configured peer. The panel keeps serving authority truthful while making disabled synchronization actionable.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const text = canvasElement.textContent ?? ''
+    for (const expected of ['核心业务双活', 'node-a', '已配置 peer', '当前未配置可用的 HA peer']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected missing-peer diagnostics story to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const MissingPeerDiagnosticsMobile: Story = {
+  ...MissingPeerDiagnostics,
+  parameters: { viewport: { defaultViewport: '0393-admin-mobile' } },
+}
+
+export const RollingUpgradeCompatibility: Story = {
+  args: {
+    status: rollingUpgradeStatus,
+    audience: 'admin',
+  },
+  play: async ({ canvasElement }) => {
+    const text = canvasElement.textContent ?? ''
+    for (const expected of ['传统主备', '已配置 peer', '1']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected rolling-upgrade HA story to contain: ${expected}`)
+      }
+    }
   },
 }
 

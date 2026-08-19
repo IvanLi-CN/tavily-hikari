@@ -15,6 +15,8 @@ const baseStatus: HaStatus = {
   nodeId: 'node-b',
   nodePublicOrigin: '203.0.113.10:58087',
   role: 'full_master',
+  dualActiveEnabled: false,
+  fullMasterNodeId: null,
   degraded: false,
   allowsBasicBusiness: true,
   allowsFullWrites: true,
@@ -50,6 +52,8 @@ const baseStatus: HaStatus = {
   syncLagSeconds: 8,
   recoveryStatus: null,
   message: 'node is serving as active master',
+  peerCount: 0,
+  syncDisabledReason: null,
 }
 
 async function flushEffects(): Promise<void> {

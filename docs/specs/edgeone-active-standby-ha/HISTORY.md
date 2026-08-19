@@ -1,5 +1,11 @@
 # History
 
+## 2026-08-19
+
+- Unified the HA client response boundary for rolling upgrades and made the control-plane leader,
+  core mode, configured peer count, and missing-peer synchronization state visible to
+  administrators without exposing raw internal reasons to user-facing views.
+
 ## 2026-08-02
 
 - Extended the administrator HA channel contract with low-pressure recovery mode, observed deletion
