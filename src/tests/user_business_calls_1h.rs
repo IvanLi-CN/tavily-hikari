@@ -439,29 +439,43 @@ async fn user_business_calls_1h_sqlite_bridge_returns_applied_receipt() {
     let request_kind = TokenRequestKind::new("api:search", "API | search", None);
     let now = manual_clock.now_ts();
 
-    let request_log_id: i64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO observability.request_logs (
-            method,
-            path,
-            status_code,
-            tavily_status_code,
-            result_status,
-            request_kind_key,
-            request_kind_label,
-            counts_business_quota,
-            request_user_id,
-            upstream_operation,
-            created_at
-        ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
-        "#,
-    )
-    .bind(&user.user_id)
-    .bind(now - 10 * SECS_PER_MINUTE)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("insert request log");
+    manual_clock.set_now_ts(now - 10 * SECS_PER_MINUTE);
+    let request_body = br#"{"query":"bridge"}"#;
+    let response_body = br#"{"results":[]}"#;
+    let headers = Vec::new();
+    let request_log_id = proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: None,
+            auth_token_id: Some(&token.id),
+            method: &Method::POST,
+            path: "/api/tavily/search",
+            query: Some("q=bridge"),
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body,
+            response_body,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: Some("http_search"),
+            fallback_reason: None,
+            forwarded_headers: &headers,
+            dropped_headers: &headers,
+            client_ip: None,
+        })
+        .await
+        .expect("record request log");
     manual_clock.set_now_ts(now);
     let receipt = proxy
         .record_token_attempt_with_kind_request_log_metadata_receipt(

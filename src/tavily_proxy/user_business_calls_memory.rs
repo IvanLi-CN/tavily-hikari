@@ -589,7 +589,7 @@ mod out_of_order_tests {
             .record_event(
                 user_id,
                 UserBusinessCallEvent {
-                    request_log_id: Some(2),
+                    request_log_id: Some(1),
                     created_at: now - 5 * SECS_PER_MINUTE,
                     outcome: UserBusinessCallOutcome::Failure,
                 },
@@ -601,7 +601,7 @@ mod out_of_order_tests {
             .record_event(
                 user_id,
                 UserBusinessCallEvent {
-                    request_log_id: Some(1),
+                    request_log_id: Some(2),
                     created_at: now - 10 * SECS_PER_MINUTE,
                     outcome: UserBusinessCallOutcome::Success,
                 },
@@ -624,8 +624,10 @@ mod out_of_order_tests {
             .series_data_for_user(user_id, now, UserBusinessCalls1hWindow::RETENTION_SECS)
             .await;
         assert_eq!(series.raw_events.len(), 2);
-        assert_eq!(series.raw_events[0].request_log_id, Some(1));
-        assert_eq!(series.raw_events[1].request_log_id, Some(2));
+        assert_eq!(series.raw_events[0].request_log_id, Some(2));
+        assert_eq!(series.raw_events[0].created_at, now - 10 * SECS_PER_MINUTE);
+        assert_eq!(series.raw_events[1].request_log_id, Some(1));
+        assert_eq!(series.raw_events[1].created_at, now - 5 * SECS_PER_MINUTE);
     }
 }
 

@@ -1707,8 +1707,16 @@ impl KeyStore {
         let Some(request_log_id) = request_log_id else {
             return Ok(RequestLogDiagnosticMetadata::default());
         };
+        if let Some(metadata) = self
+            .request_log_diagnostic_handoff
+            .lock()
+            .await
+            .take(request_log_id)
+        {
+            return Ok(metadata);
+        }
 
-        type DiagnosticRow = (
+        let row = sqlx::query_as::<_, (
             Option<i64>,
             Option<String>,
             Option<String>,
@@ -1717,14 +1725,7 @@ impl KeyStore {
             Option<String>,
             Option<String>,
             Option<String>,
-        );
-        let query = r#"
-            SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
-            FROM request_logs
-            WHERE id = ?
-            LIMIT 1
-            "#;
-        let row = sqlx::query_as::<_, DiagnosticRow>(
+        )>(
             r#"
             SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
             FROM observability.request_logs
@@ -1735,21 +1736,6 @@ impl KeyStore {
         .bind(request_log_id)
         .fetch_optional(&self.pool)
         .await?;
-        let row = if row.is_some() {
-            row
-        } else if let Some(database_path) = self.observability_database_path.as_deref() {
-            let options = sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(database_path)
-                .read_only(true)
-                .busy_timeout(SQLITE_BUSY_TIMEOUT_DEFAULT);
-            let mut connection = SqliteConnection::connect_with(&options).await?;
-            sqlx::query_as::<_, DiagnosticRow>(query)
-                .bind(request_log_id)
-                .fetch_optional(&mut connection)
-                .await?
-        } else {
-            None
-        };
 
         Ok(row
             .map(
@@ -2646,12 +2632,9 @@ fn build_user_business_call_event_write(
             reason: UserBusinessCallEventSkipReason::QuotaExhausted,
         };
     }
-    // Only request-log-backed upstream calls participate in business-call and
-    // server-pressure live windows; metadata-free token logs stay excluded.
-    // The request-log id is the durable bridge contract, so a transiently
-    // unavailable diagnostic column must not drop an otherwise valid event.
-    let upstream_outcome = matches!(result_status, OUTCOME_SUCCESS | OUTCOME_ERROR);
-    if upstream_operation.is_none() && (request_log_id.is_none() || !upstream_outcome) {
+    // Keep live eligibility identical to durable backfill and server-pressure
+    // reconstruction; metadata-free token logs stay excluded.
+    if upstream_operation.is_none() {
         return UserBusinessCallEventWriteDecision::Skipped {
             request_log_id,
             reason: UserBusinessCallEventSkipReason::MissingUpstreamOperation,
@@ -2663,4 +2646,62 @@ fn build_user_business_call_event_write(
         created_at,
         result_status: result_status.to_string(),
     })
+}
+
+#[cfg(test)]
+mod user_business_call_event_write_tests {
+    use super::*;
+
+    fn decision(
+        request_user_id: Option<&str>,
+        counts_business_quota: i64,
+        upstream_operation: Option<&str>,
+        result_status: &str,
+    ) -> UserBusinessCallEventWriteDecision {
+        build_user_business_call_event_write(
+            request_user_id.map(str::to_string),
+            Some(42),
+            counts_business_quota,
+            upstream_operation.map(str::to_string),
+            result_status,
+            1_700_200_000,
+        )
+    }
+
+    #[test]
+    fn skip_reasons_are_stable_and_precedence_ordered() {
+        assert_eq!(
+            decision(None, 1, Some("http_search"), OUTCOME_SUCCESS),
+            UserBusinessCallEventWriteDecision::Skipped {
+                request_log_id: Some(42),
+                reason: UserBusinessCallEventSkipReason::MissingUserId,
+            }
+        );
+        assert_eq!(
+            decision(Some("user"), 0, Some("http_search"), OUTCOME_SUCCESS),
+            UserBusinessCallEventWriteDecision::Skipped {
+                request_log_id: Some(42),
+                reason: UserBusinessCallEventSkipReason::NotBusinessQuota,
+            }
+        );
+        assert_eq!(
+            decision(
+                Some("user"),
+                1,
+                Some("http_search"),
+                OUTCOME_QUOTA_EXHAUSTED,
+            ),
+            UserBusinessCallEventWriteDecision::Skipped {
+                request_log_id: Some(42),
+                reason: UserBusinessCallEventSkipReason::QuotaExhausted,
+            }
+        );
+        assert_eq!(
+            decision(Some("user"), 1, None, OUTCOME_SUCCESS),
+            UserBusinessCallEventWriteDecision::Skipped {
+                request_log_id: Some(42),
+                reason: UserBusinessCallEventSkipReason::MissingUpstreamOperation,
+            }
+        );
+    }
 }

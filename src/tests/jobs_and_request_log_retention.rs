@@ -28,6 +28,7 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         account_quota_resolution_user_generations: RwLock::new(std::collections::HashMap::new()),
         request_logs_catalog_cache: RwLock::new(std::collections::HashMap::new()),
         request_log_retention_cache: RwLock::new(None),
+        request_log_diagnostic_handoff: Mutex::new(Default::default()),
         user_debug_info_shared_cache: RwLock::new(std::collections::HashMap::new()),
         request_stats_coalescer: RequestStatsCoalescer::default(),
         admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),

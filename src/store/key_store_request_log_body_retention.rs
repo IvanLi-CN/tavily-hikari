@@ -451,6 +451,21 @@ impl KeyStore {
         .bind(created_at)
         .fetch_one(&self.pool)
         .await?;
+        if entry.auth_token_id.is_some() {
+            self.request_log_diagnostic_handoff.lock().await.insert(
+                request_log_id,
+                RequestLogDiagnosticMetadata {
+                    created_at: Some(created_at),
+                    request_user_id: request_user_id.clone(),
+                    gateway_mode: entry.gateway_mode.map(str::to_string),
+                    experiment_variant: entry.experiment_variant.map(str::to_string),
+                    proxy_session_id: entry.proxy_session_id.map(str::to_string),
+                    routing_subject_hash: entry.routing_subject_hash.map(str::to_string),
+                    upstream_operation: entry.upstream_operation.map(str::to_string),
+                    fallback_reason: entry.fallback_reason.map(str::to_string),
+                },
+            );
+        }
         self.request_stats_coalescer
             .enqueue_request_log_rollups(RequestLogRollupInput {
                 api_key_id: entry.key_id,

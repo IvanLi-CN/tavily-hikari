@@ -7,6 +7,7 @@ use sqlx::ConnectOptions;
 use sqlx::Connection;
 use sqlx::Row;
 use sqlx::SqliteConnection;
+use std::collections::{HashMap as StdHashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::os::fd::AsRawFd;
@@ -1410,6 +1411,36 @@ struct RequestLogDiagnosticMetadata {
     fallback_reason: Option<String>,
 }
 
+const REQUEST_LOG_DIAGNOSTIC_HANDOFF_CAPACITY: usize = 4096;
+
+#[derive(Debug, Default)]
+pub(crate) struct RequestLogDiagnosticHandoff {
+    entries: StdHashMap<i64, RequestLogDiagnosticMetadata>,
+    order: VecDeque<i64>,
+}
+
+impl RequestLogDiagnosticHandoff {
+    fn insert(&mut self, request_log_id: i64, metadata: RequestLogDiagnosticMetadata) {
+        if !self.entries.contains_key(&request_log_id) {
+            self.order.push_back(request_log_id);
+        }
+        self.entries.insert(request_log_id, metadata);
+        while self.entries.len() > REQUEST_LOG_DIAGNOSTIC_HANDOFF_CAPACITY {
+            if let Some(evicted_id) = self.order.pop_front() {
+                self.entries.remove(&evicted_id);
+            }
+        }
+    }
+
+    fn take(&mut self, request_log_id: i64) -> Option<RequestLogDiagnosticMetadata> {
+        let metadata = self.entries.remove(&request_log_id)?;
+        if let Some(index) = self.order.iter().position(|id| *id == request_log_id) {
+            self.order.remove(index);
+        }
+        Some(metadata)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UserBusinessCallEventWrite {
     pub(crate) user_id: String,
@@ -2624,6 +2655,7 @@ pub(crate) struct KeyStore {
     pub(crate) account_quota_resolution_user_generations: RwLock<HashMap<String, u64>>,
     pub(crate) request_logs_catalog_cache: RwLock<HashMap<String, RequestLogsCatalogCacheEntry>>,
     pub(crate) request_log_retention_cache: RwLock<Option<RequestLogRetentionSettings>>,
+    pub(crate) request_log_diagnostic_handoff: Mutex<RequestLogDiagnosticHandoff>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
     pub(crate) request_stats_coalescer: RequestStatsCoalescer,
     pub(crate) admin_heavy_read_semaphore: Semaphore,

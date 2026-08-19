@@ -1883,10 +1883,11 @@ impl UserBusinessCalls1hWindow {
     async fn backfill_recent_impl(&self) -> Result<(), ProxyError> {
         let now_ts = self.backend_time.now_ts();
         let since_ts = now_ts.saturating_sub(self.retention_secs);
-        let upper_bound_request_log_id =
-            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM request_logs")
-                .fetch_one(&self.store.pool)
-                .await?;
+        let upper_bound_request_log_id = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(id), 0) FROM observability.request_logs",
+        )
+        .fetch_one(&self.store.pool)
+        .await?;
         if upper_bound_request_log_id == 0 {
             self.backend
                 .replace_from_backfill(&[], upper_bound_request_log_id, now_ts, self.retention_secs)
@@ -1902,7 +1903,7 @@ impl UserBusinessCalls1hWindow {
             let rows = sqlx::query(
                 r#"
                 SELECT id, request_user_id, created_at, result_status
-                FROM request_logs INDEXED BY idx_request_logs_time
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
                 WHERE created_at >= ?
                   AND request_user_id IS NOT NULL
                   AND counts_business_quota = 1

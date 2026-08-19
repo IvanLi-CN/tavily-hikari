@@ -1240,6 +1240,7 @@ impl KeyStore {
             account_quota_resolution_user_generations: RwLock::new(HashMap::new()),
             request_logs_catalog_cache: RwLock::new(HashMap::new()),
             request_log_retention_cache: RwLock::new(None),
+            request_log_diagnostic_handoff: Mutex::new(RequestLogDiagnosticHandoff::default()),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             request_stats_coalescer: RequestStatsCoalescer::default(),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),

@@ -190,6 +190,7 @@ rule-providers:
             ),
             request_logs_catalog_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             request_log_retention_cache: tokio::sync::RwLock::new(None),
+            request_log_diagnostic_handoff: tokio::sync::Mutex::new(Default::default()),
             user_debug_info_shared_cache: tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             ),
