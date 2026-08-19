@@ -84,6 +84,10 @@ pub struct ReconciliationRunObservation {
     pub semantic_failure: i64,
     pub local_pressure: i64,
     pub last_transport_kind: Option<String>,
+    #[serde(default)]
+    pub last_transport_kind_at: Option<i64>,
+    #[serde(default)]
+    pub last_retryable_outcome: Option<String>,
     pub continuation_reason: Option<String>,
     pub next_retry_at: Option<i64>,
     pub observed_at: Option<i64>,
@@ -166,4 +170,10 @@ pub struct UpstreamPrivacyStatus {
     pub daily_reconciliation_by_key: Vec<DailyReconciliationKeyProgress>,
     pub recent_adjustments: Vec<UpstreamReconciliationAdjustment>,
     pub generated_at: i64,
+    #[serde(default)]
+    pub coverage: String,
+    #[serde(default)]
+    pub observed_at: Option<i64>,
+    #[serde(default)]
+    pub stale_reason: Option<String>,
 }

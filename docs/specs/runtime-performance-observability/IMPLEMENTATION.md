@@ -73,6 +73,15 @@
 - The workload window includes bounded derived-observability flushes. Server-pressure and rebalance
   audit defer/retry events stay DEBUG, while stale/recovered coverage changes and fixed transport
   categories are safe owner-facing diagnostics without SQL, request bodies, endpoints, or tokens.
+- Administrator privacy status uses one immutable 60-second last-good entry. Administrator alert
+  Events, Groups, and Catalog use a normalized exact-query cache with a five-minute cap; a bounded
+  read may return the matching stale entry, while a cold key returns `503 Retry-After: 1` rather
+  than waiting for a raw alert CTE. These fallback states expose coverage, observed time, and a
+  fixed stale reason only.
+- Server-pressure rebuilds are source-fenced and hysteretic: ordinary deferred deltas do not start
+  a rebuild, while overflow, lost coverage, or five minutes of continuous stale state may start at
+  most one generation every five minutes. Rebuild slices remain bounded and replayable from the
+  request-log source.
 - Schema migration emits fixed `component/event/outcome/elapsed_ms` fields for baseline adoption and warm verification. GC and reconciliation keep normal work at DEBUG, aggregate INFO to one-minute windows, and reserve WARN/INFO for state transitions.
 
 ## 已完成验证

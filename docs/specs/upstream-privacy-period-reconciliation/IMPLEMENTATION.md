@@ -83,5 +83,7 @@
   clears local-pressure state; only `settled` or `no_adjustment` recovery clears the upstream
   circuit. This prevents unrelated local outcomes from restarting the remote-rate-limit loop.
 - `upstream_reconciliation_run_observation.last_transport_kind` is an additive local diagnostic
-  column. It records only the stable transport category, keeps retryable work incomplete, and adds
-  no HA outbox event or startup work scan.
+  column. Versioned observation state also records `last_transport_kind_at` and the latest
+  retryable outcome. A later non-transport run preserves the last transport category and timestamp;
+  only a terminal result clears the retryable outcome. The migration adds columns without scanning
+  work, emitting HA outbox events, or changing billing truth.

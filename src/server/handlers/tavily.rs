@@ -679,6 +679,7 @@ async fn tavily_http_research_result(
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
                 | ProxyError::StaleClaim { .. }
+                | ProxyError::Deferred { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
 
@@ -1284,6 +1285,7 @@ async fn proxy_tavily_http_endpoint(
                     | ProxyError::InvalidEndpoint { .. }
                     | ProxyError::LastAdminLoginMethod
                     | ProxyError::StaleClaim { .. }
+                    | ProxyError::Deferred { .. }
                     | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 };
 
@@ -1555,6 +1557,7 @@ async fn proxy_tavily_http_endpoint(
                 | ProxyError::QuotaDataMissing { .. }
                 | ProxyError::UsageHttp { .. }
                 | ProxyError::StaleClaim { .. }
+                | ProxyError::Deferred { .. }
                 | ProxyError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
 

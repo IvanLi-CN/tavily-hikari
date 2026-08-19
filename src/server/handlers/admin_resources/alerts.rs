@@ -38,16 +38,13 @@ async fn get_alert_catalog(
     }
 
     let key = "catalog";
-    if state.proxy.admin_alert_read_defer_reason().is_some() {
-        return match admin_alerts_last_good(state.as_ref(), key).await {
-            Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at)) => {
-                Ok(Json(AlertCatalogView::from(catalog).stale(observed_at)).into_response())
-            }
-            _ => Err(alerts_sqlite_pressure_response()),
-        };
-    }
-    match state.proxy.alert_catalog().await {
-        Ok(catalog) => {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        state.proxy.admin_alert_catalog(),
+    )
+    .await
+    {
+        Ok(Ok(catalog)) => {
             record_admin_alerts_last_good(
                 state.as_ref(),
                 key.to_string(),
@@ -56,7 +53,7 @@ async fn get_alert_catalog(
             .await;
             Ok(Json(AlertCatalogView::from(catalog)).into_response())
         }
-        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
+        Ok(Err(error)) if tavily_hikari::is_transient_sqlite_write_error(&error) || error.is_deferred() => {
             match admin_alerts_last_good(state.as_ref(), key).await {
                 Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at)) => {
                     Ok(Json(AlertCatalogView::from(catalog).stale(observed_at)).into_response())
@@ -64,7 +61,13 @@ async fn get_alert_catalog(
                 _ => Err(alerts_sqlite_pressure_response()),
             }
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => match admin_alerts_last_good(state.as_ref(), key).await {
+            Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at)) => {
+                Ok(Json(AlertCatalogView::from(catalog).stale(observed_at)).into_response())
+            }
+            _ => Err(alerts_sqlite_pressure_response()),
+        },
+        Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     }
 }
 
@@ -139,15 +142,9 @@ async fn get_alert_events(
         per_page,
     };
     let cache_key = alert_read_cache_key("events", &cache_query);
-    if state.proxy.admin_alert_read_defer_reason().is_some() {
-        return match admin_alerts_last_good(state.as_ref(), &cache_key).await {
-            Some((AdminAlertsReadCacheValue::Events(events), observed_at)) => {
-                Ok(Json(PaginatedAlertEventsView::from(events).stale(observed_at)).into_response())
-            }
-            _ => Err(alerts_sqlite_pressure_response()),
-        };
-    }
-    match state.proxy.alert_events_page(
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        state.proxy.admin_alert_events_page(
             alert_type,
             since,
             until,
@@ -157,10 +154,11 @@ async fn get_alert_events(
             &request_kinds,
             page,
             per_page,
-        )
-        .await
+        ),
+    )
+    .await
     {
-        Ok(events) => {
+        Ok(Ok(events)) => {
             record_admin_alerts_last_good(
                 state.as_ref(),
                 cache_key,
@@ -169,7 +167,7 @@ async fn get_alert_events(
             .await;
             Ok(Json(PaginatedAlertEventsView::from(events)).into_response())
         }
-        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
+        Ok(Err(error)) if tavily_hikari::is_transient_sqlite_write_error(&error) || error.is_deferred() => {
             match admin_alerts_last_good(state.as_ref(), &cache_key).await {
                 Some((AdminAlertsReadCacheValue::Events(events), observed_at)) => {
                     Ok(Json(PaginatedAlertEventsView::from(events).stale(observed_at)).into_response())
@@ -177,7 +175,13 @@ async fn get_alert_events(
                 _ => Err(alerts_sqlite_pressure_response()),
             }
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => match admin_alerts_last_good(state.as_ref(), &cache_key).await {
+            Some((AdminAlertsReadCacheValue::Events(events), observed_at)) => {
+                Ok(Json(PaginatedAlertEventsView::from(events).stale(observed_at)).into_response())
+            }
+            _ => Err(alerts_sqlite_pressure_response()),
+        },
+        Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     }
 }
 
@@ -213,15 +217,9 @@ async fn get_alert_groups(
         per_page,
     };
     let cache_key = alert_read_cache_key("groups", &cache_query);
-    if state.proxy.admin_alert_read_defer_reason().is_some() {
-        return match admin_alerts_last_good(state.as_ref(), &cache_key).await {
-            Some((AdminAlertsReadCacheValue::Groups(groups), observed_at)) => {
-                Ok(Json(PaginatedAlertGroupsView::from(groups).stale(observed_at)).into_response())
-            }
-            _ => Err(alerts_sqlite_pressure_response()),
-        };
-    }
-    match state.proxy.alert_groups_page(
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        state.proxy.admin_alert_groups_page(
             alert_type,
             since,
             until,
@@ -231,10 +229,11 @@ async fn get_alert_groups(
             &request_kinds,
             page,
             per_page,
-        )
-        .await
+        ),
+    )
+    .await
     {
-        Ok(groups) => {
+        Ok(Ok(groups)) => {
             record_admin_alerts_last_good(
                 state.as_ref(),
                 cache_key,
@@ -243,7 +242,7 @@ async fn get_alert_groups(
             .await;
             Ok(Json(PaginatedAlertGroupsView::from(groups)).into_response())
         }
-        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
+        Ok(Err(error)) if tavily_hikari::is_transient_sqlite_write_error(&error) || error.is_deferred() => {
             match admin_alerts_last_good(state.as_ref(), &cache_key).await {
                 Some((AdminAlertsReadCacheValue::Groups(groups), observed_at)) => {
                     Ok(Json(PaginatedAlertGroupsView::from(groups).stale(observed_at)).into_response())
@@ -251,6 +250,12 @@ async fn get_alert_groups(
                 _ => Err(alerts_sqlite_pressure_response()),
             }
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => match admin_alerts_last_good(state.as_ref(), &cache_key).await {
+            Some((AdminAlertsReadCacheValue::Groups(groups), observed_at)) => {
+                Ok(Json(PaginatedAlertGroupsView::from(groups).stale(observed_at)).into_response())
+            }
+            _ => Err(alerts_sqlite_pressure_response()),
+        },
+        Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     }
 }

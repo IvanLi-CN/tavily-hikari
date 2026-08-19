@@ -68,6 +68,10 @@ const RECONCILIATION_TRANSPORT_OBSERVATION_NAME: &str =
     "reconciliation-transport-observation-v1";
 const RECONCILIATION_TRANSPORT_OBSERVATION_CHECKSUM: &str =
     "sha256:8ad321a9b9624b550c29e434d3dfb37d";
+const RECONCILIATION_TRANSPORT_STATE_VERSION: i64 = 19;
+const RECONCILIATION_TRANSPORT_STATE_NAME: &str = "reconciliation-transport-observation-state-v1";
+const RECONCILIATION_TRANSPORT_STATE_CHECKSUM: &str =
+    "sha256:3d0e3b1c8a0b1f9d7c1e0a2b4f6d8e90";
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
@@ -754,6 +758,11 @@ impl KeyStore {
                 RECONCILIATION_TRANSPORT_OBSERVATION_NAME,
                 RECONCILIATION_TRANSPORT_OBSERVATION_CHECKSUM,
             ),
+            (
+                RECONCILIATION_TRANSPORT_STATE_VERSION,
+                RECONCILIATION_TRANSPORT_STATE_NAME,
+                RECONCILIATION_TRANSPORT_STATE_CHECKSUM,
+            ),
         ];
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
@@ -854,6 +863,26 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 18".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(RECONCILIATION_TRANSPORT_STATE_VERSION)
+            .await?
+            && (!self
+                .table_column_exists(
+                    "upstream_reconciliation_run_observation",
+                    "last_transport_kind_at",
+                )
+                .await?
+                || !self
+                    .table_column_exists(
+                        "upstream_reconciliation_run_observation",
+                        "last_retryable_outcome",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 19".to_string(),
             ));
         }
         if self
@@ -1514,6 +1543,41 @@ impl KeyStore {
         .await
     }
 
+    async fn apply_reconciliation_transport_state_migration(&self) -> Result<(), ProxyError> {
+        if !self
+            .table_column_exists(
+                "upstream_reconciliation_run_observation",
+                "last_transport_kind_at",
+            )
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE upstream_reconciliation_run_observation ADD COLUMN last_transport_kind_at INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !self
+            .table_column_exists(
+                "upstream_reconciliation_run_observation",
+                "last_retryable_outcome",
+            )
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE upstream_reconciliation_run_observation ADD COLUMN last_retryable_outcome TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        self.record_schema_migration(
+            RECONCILIATION_TRANSPORT_STATE_VERSION,
+            RECONCILIATION_TRANSPORT_STATE_NAME,
+            RECONCILIATION_TRANSPORT_STATE_CHECKSUM,
+        )
+        .await
+    }
+
     async fn apply_reconciliation_work_migration(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_work (
@@ -1932,6 +1996,12 @@ impl KeyStore {
             self.apply_reconciliation_transport_observation_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(RECONCILIATION_TRANSPORT_STATE_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_transport_state_migration().await?;
+        }
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -1982,6 +2052,7 @@ impl KeyStore {
             .await?;
         self.apply_reconciliation_transport_observation_migration()
             .await?;
+        self.apply_reconciliation_transport_state_migration().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -1989,7 +2060,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 18_i64,
+            migration_count = 19_i64,
         );
         Ok(())
     }

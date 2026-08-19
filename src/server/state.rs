@@ -64,6 +64,7 @@ struct DashboardOverviewCacheState {
     last_freshness_probe_at: Option<tokio::time::Instant>,
     notify: Arc<tokio::sync::Notify>,
     admin_alerts: AdminAlertsReadCache,
+    admin_privacy_status: Option<AdminPrivacyStatusCacheEntry>,
     #[cfg(test)]
     build_count: usize,
     #[cfg(test)]
@@ -84,6 +85,7 @@ impl Default for DashboardOverviewCacheState {
             last_freshness_probe_at: None,
             notify: Arc::new(tokio::sync::Notify::new()),
             admin_alerts: AdminAlertsReadCache::default(),
+            admin_privacy_status: None,
             #[cfg(test)]
             build_count: 0,
             #[cfg(test)]
@@ -114,6 +116,15 @@ struct AdminAlertsReadCacheEntry {
 struct AdminAlertsReadCache {
     entries: VecDeque<AdminAlertsReadCacheEntry>,
 }
+
+#[derive(Debug, Clone)]
+struct AdminPrivacyStatusCacheEntry {
+    value: tavily_hikari::UpstreamPrivacyStatus,
+    observed_at: i64,
+    stored_at: tokio::time::Instant,
+}
+
+const ADMIN_PRIVACY_STATUS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn admin_alerts_last_good(
     state: &AppState,
@@ -151,6 +162,33 @@ async fn record_admin_alerts_last_good(
         .admin_alerts
         .entries
         .truncate(ADMIN_ALERTS_CACHE_CAPACITY);
+}
+
+pub(crate) async fn admin_privacy_status_last_good(
+    state: &AppState,
+) -> Option<(tavily_hikari::UpstreamPrivacyStatus, i64)> {
+    let cache = dashboard_overview_cache_for_state(state);
+    let cache = cache.lock().await;
+    let entry = cache.admin_privacy_status.as_ref()?;
+    (entry.stored_at.elapsed() <= ADMIN_PRIVACY_STATUS_CACHE_TTL)
+        .then(|| (entry.value.clone(), entry.observed_at))
+}
+
+pub(crate) async fn record_admin_privacy_status_last_good(
+    state: &AppState,
+    mut value: tavily_hikari::UpstreamPrivacyStatus,
+) {
+    let observed_at = state.proxy.backend_time().now_ts();
+    value.coverage = "ok".to_string();
+    value.observed_at = Some(observed_at);
+    value.stale_reason = None;
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    cache.admin_privacy_status = Some(AdminPrivacyStatusCacheEntry {
+        value,
+        observed_at,
+        stored_at: tokio::time::Instant::now(),
+    });
 }
 
 fn new_dashboard_overview_cache() -> Arc<Mutex<DashboardOverviewCacheState>> {

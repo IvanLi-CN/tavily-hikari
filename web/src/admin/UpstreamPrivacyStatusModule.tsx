@@ -529,6 +529,15 @@ export default function UpstreamPrivacyStatusModule({
                   }
                 />
                 <PrivacyStat
+                  label={language === 'zh' ? '隐私状态新鲜度' : 'Privacy status freshness'}
+                  value={status.coverage || strings.statusMissing}
+                  supportingText={
+                    status.staleReason
+                      ? `${status.staleReason} · ${formatOptionalTimestamp(status.observedAt ?? null, timestampFormatter, '-')}`
+                      : formatOptionalTimestamp(status.observedAt ?? null, timestampFormatter, '-')
+                  }
+                />
+                <PrivacyStat
                   label={strings.userAgentEffective}
                   value={formatOptionalValue(status.effectiveMcpUserAgent, strings.statusOmitted)}
                 />
@@ -642,6 +651,13 @@ export default function UpstreamPrivacyStatusModule({
                 <PrivacyStat
                   label={language === 'zh' ? '最近传输失败类别' : 'Last transport failure'}
                   value={status.reconciliationRunObservation?.lastTransportKind ?? (language === 'zh' ? '无' : 'None')}
+                  supportingText={status.reconciliationRunObservation?.lastTransportKindAt == null
+                    ? undefined
+                    : formatOptionalTimestamp(status.reconciliationRunObservation.lastTransportKindAt, timestampFormatter, '-')}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? '最近可重试结果' : 'Last retryable outcome'}
+                  value={status.reconciliationRunObservation?.lastRetryableOutcome ?? (language === 'zh' ? '无' : 'None')}
                 />
                 <PrivacyStat
                   label={language === 'zh' ? '阶段耗时（准备 / 首次远端 / 远端）' : 'Phase ms (hydrate / first remote / remote)'}

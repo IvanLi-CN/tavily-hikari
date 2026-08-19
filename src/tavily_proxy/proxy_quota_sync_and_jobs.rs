@@ -280,6 +280,9 @@ impl TavilyProxy {
                 .recent_reconciliation_adjustments(10)
                 .await?,
             generated_at: now,
+            coverage: "ok".to_string(),
+            observed_at: Some(now),
+            stale_reason: None,
         })
     }
 
@@ -1024,6 +1027,7 @@ impl TavilyProxy {
                         semantic_failure: 0,
                         local_pressure: 0,
                         last_transport_kind: None,
+                        last_retryable_outcome: None,
                         continuation_reason: None,
                         next_retry_at: None,
                     },
@@ -2173,6 +2177,17 @@ impl TavilyProxy {
                             semantic_failure: semantic_failure_windows,
                             local_pressure: i64::from(local_pressure),
                             last_transport_kind,
+                            last_retryable_outcome: reconciliation_outcome
+                                .filter(|outcome| {
+                                    matches!(
+                                        outcome,
+                                        ReconciliationOutcome::Upstream429
+                                            | ReconciliationOutcome::TransportFailure
+                                            | ReconciliationOutcome::SemanticFailure
+                                            | ReconciliationOutcome::LocalPressure
+                                    )
+                                })
+                                .map(ReconciliationOutcome::as_str),
                             continuation_reason: reconciliation_outcome.map(|value| value.as_str()),
                             next_retry_at,
                         },

@@ -75,8 +75,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `AlertProjection`: an observability-sidecar projection with separate stable cursor/fence lanes:
   the recent tail serves Dashboard and the historical lane serves administrator Events and Groups.
   Dashboard accepts a recent summary only at `recent_coverage=ok`; otherwise the read model retains
-  last-good data. Administrator reads use the sidecar only at complete history coverage; while it
-  catches up or is stale, they retain the established source query so incomplete history is never
+  last-good data. Administrator reads use the sidecar only at complete history coverage and keep an
+  exact-query last-good cache for transient pressure. A cold or expired key returns an explicit
+  retryable response instead of starting an expensive raw alert CTE, so incomplete history is never
   shown as empty.
 - `idle alert probe`: a source-fence check that finds no work. It is not projection progress: it
   never advances a cursor or generation, and a separate low-frequency observation heartbeat keeps

@@ -20,6 +20,9 @@
 - 为 `/api/dashboard/overview` 增加最近 24 小时告警摘要；仪表盘摘要固定 24h，CTA 显式进入同口径 `聚合告警` 时间切片，而直接打开告警中心默认展示 retention 内全部历史。
 - 将仪表盘“近期告警”收口为“顶部三窗聚合计数 + 下方 24h 聚合列表”：顶部展示最近 `1h / 24h / 7d` 的聚合告警条数，下方列表固定展示最近 `24h`、最多 `10` 条聚合告警，并显示连续区间时间。
 - 为 Web UI 补齐 Storybook 稳定入口、页面/交互覆盖与视觉证据。
+- 管理员 Events、Groups 与 Catalog 在 projection 不完整或 SQLite 压力下只返回同一规范查询键
+  的 last-good 结果，并标记 `coverage`、`observedAt`、`staleReason`；没有可复用快照时返回
+  `503 Retry-After: 1`，不得在读取路径启动原始告警 CTE。
 
 ## Non-goals
 

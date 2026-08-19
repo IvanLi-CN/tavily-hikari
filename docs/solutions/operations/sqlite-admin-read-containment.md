@@ -69,6 +69,10 @@ reads:
   query rather than sharing one broad cache entry. Under SQLite admission pressure return only the
   matching stale result with `coverage`, `observedAt`, and `staleReason`; a cold key returns
   `503 Retry-After: 1` rather than starting a raw alert CTE.
+- Apply the same last-good boundary to the single-key privacy-status read. Keep the immutable
+  successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
+  while cold pressure fails fast with `503 Retry-After: 1`. The bounded read deadline is 250ms,
+  including operation admission and result construction.
 - Replace repeated window scans with a single bounded scan that derives all needed windows, then add
   a short manager-scoped TTL cache when settings and live stats can request the same window set in
   one admin refresh cycle.

@@ -31,7 +31,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
         ]
     );
     let transport_observation_column: i64 = sqlx::query_scalar(
@@ -41,6 +41,13 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read transport observation column");
     assert_eq!(transport_observation_column, 1);
+    let transport_state_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name IN ('last_transport_kind_at', 'last_retryable_outcome')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read transport state columns");
+    assert_eq!(transport_state_columns, 2);
     let projection_state: (i64, i64, i64) = sqlx::query_as(
         "SELECT batch_size, scanned_rows, completed FROM upstream_reconciliation_projection_state WHERE id = 'local'",
     )
@@ -137,10 +144,26 @@ async fn reconciliation_transport_observation_migration_is_additive_and_warm_saf
     .execute(&proxy.key_store.pool)
     .await
     .expect("shape v17 observation table");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_run_observation DROP COLUMN last_transport_kind_at",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("shape v18 transport state table");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_run_observation DROP COLUMN last_retryable_outcome",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("shape v18 retryable state table");
     sqlx::query("DELETE FROM schema_migrations WHERE version = 18")
         .execute(&proxy.key_store.pool)
         .await
         .expect("remove v18 ledger record");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 19")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove v19 ledger record");
 
     assert!(
         !proxy
@@ -164,6 +187,13 @@ async fn reconciliation_transport_observation_migration_is_additive_and_warm_saf
     .expect("verify migration did not scan or rewrite durable work");
     assert_eq!(column_count, 1);
     assert_eq!(work_count, 1);
+    let transport_state_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name IN ('last_transport_kind_at', 'last_retryable_outcome')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read re-added transport state columns");
+    assert_eq!(transport_state_columns, 2);
 
     drop(proxy);
     let reopened = TavilyProxy::with_endpoint(
@@ -201,7 +231,11 @@ async fn reconciliation_engine_state_migration_resumes_an_incomplete_legacy_proj
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN transport_retry_at",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_failure_streak",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_retry_at",
-        "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13)",
+        // Rebuild the full post-v8 migration tail from the legacy fixture.  Keeping
+        // v19 recorded while its observation table is intentionally dropped would
+        // correctly trigger warm-start drift rejection before the missing migrations
+        // can be replayed.
+        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 19",
     ] {
         sqlx::query(statement)
             .execute(&proxy.key_store.pool)
@@ -886,7 +920,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
         ]
     );
 

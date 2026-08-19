@@ -19,6 +19,8 @@ struct ReconciliationRunObservationRow {
     semantic_failure: i64,
     local_pressure: i64,
     last_transport_kind: Option<String>,
+    last_transport_kind_at: Option<i64>,
+    last_retryable_outcome: Option<String>,
     continuation_reason: Option<String>,
     next_retry_at: Option<i64>,
     observed_at: i64,
@@ -40,6 +42,7 @@ pub(crate) struct ReconciliationRunObservationWrite {
     pub(crate) semantic_failure: i64,
     pub(crate) local_pressure: i64,
     pub(crate) last_transport_kind: Option<&'static str>,
+    pub(crate) last_retryable_outcome: Option<&'static str>,
     pub(crate) continuation_reason: Option<&'static str>,
     pub(crate) next_retry_at: Option<i64>,
 }
@@ -76,7 +79,16 @@ impl KeyStore {
                    finalization_ms = ?, research_ms = ?, settled_count = ?,
                    no_adjustment_count = ?, observed_count = ?, upstream_429_count = ?,
                    transport_failure_count = ?, semantic_failure_count = ?,
-                   local_pressure_count = ?, last_transport_kind = ?,
+                   local_pressure_count = ?,
+                   last_transport_kind = COALESCE(?, last_transport_kind),
+                   last_transport_kind_at = COALESCE(?, last_transport_kind_at),
+                   last_retryable_outcome = CASE
+                       WHEN ? IN ('upstream_429', 'transport_failure', 'semantic_failure', 'local_pressure')
+                           THEN ?
+                       WHEN ? IN ('settled', 'no_adjustment', 'observed')
+                           THEN NULL
+                       ELSE last_retryable_outcome
+                   END,
                    continuation_reason = ?, next_retry_at = ?,
                    observed_at = ?
                WHERE id = 'local'"#,
@@ -95,6 +107,10 @@ impl KeyStore {
         .bind(observation.semantic_failure)
         .bind(observation.local_pressure)
         .bind(observation.last_transport_kind)
+        .bind(observation.last_transport_kind.map(|_| now))
+        .bind(observation.last_retryable_outcome)
+        .bind(observation.last_retryable_outcome)
+        .bind(observation.continuation_reason)
         .bind(observation.continuation_reason)
         .bind(observation.next_retry_at)
         .bind(now)
@@ -127,6 +143,8 @@ impl KeyStore {
                           o.semantic_failure_count AS semantic_failure,
                           o.local_pressure_count AS local_pressure,
                           o.last_transport_kind,
+                          o.last_transport_kind_at,
+                          o.last_retryable_outcome,
                           COALESCE(o.continuation_reason, p.last_defer_reason)
                               AS continuation_reason,
                           CASE
@@ -161,6 +179,8 @@ impl KeyStore {
             semantic_failure: row.semantic_failure,
             local_pressure: row.local_pressure,
             last_transport_kind: row.last_transport_kind,
+            last_transport_kind_at: row.last_transport_kind_at,
+            last_retryable_outcome: row.last_retryable_outcome,
             continuation_reason: row.continuation_reason,
             next_retry_at: row.next_retry_at,
             observed_at: (row.observed_at > 0).then_some(row.observed_at),

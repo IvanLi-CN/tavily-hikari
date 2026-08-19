@@ -1,5 +1,100 @@
 use super::upstream_reconciliation::{local_ts, reconciliation_test_db_path};
 use super::*;
+
+#[tokio::test]
+async fn reconciliation_transport_observation_survives_a_following_non_transport_run() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 19, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-transport-state"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    proxy
+        .key_store
+        .record_upstream_reconciliation_engine_observation(
+            crate::store::ReconciliationRunObservationWrite {
+                claimed_job: None,
+                mode: "compare",
+                hydrate_ms: 1,
+                first_remote_ms: Some(2),
+                remote_ms: 3,
+                finalization_ms: 1,
+                research_ms: 0,
+                settled: 0,
+                no_adjustment: 0,
+                observed: 0,
+                upstream_429: 0,
+                transport_failure: 1,
+                semantic_failure: 0,
+                local_pressure: 0,
+                last_transport_kind: Some("timeout"),
+                last_retryable_outcome: Some("transport_failure"),
+                continuation_reason: Some("transport_failure"),
+                next_retry_at: Some(now + 30),
+            },
+        )
+        .await
+        .expect("record transport observation");
+
+    let first = proxy
+        .key_store
+        .upstream_reconciliation_run_observation()
+        .await
+        .expect("read transport observation");
+    assert_eq!(first.last_transport_kind.as_deref(), Some("timeout"));
+    assert_eq!(first.last_transport_kind_at, Some(now));
+    assert_eq!(
+        first.last_retryable_outcome.as_deref(),
+        Some("transport_failure")
+    );
+
+    proxy
+        .key_store
+        .record_upstream_reconciliation_engine_observation(
+            crate::store::ReconciliationRunObservationWrite {
+                claimed_job: None,
+                mode: "compare",
+                hydrate_ms: 1,
+                first_remote_ms: None,
+                remote_ms: 0,
+                finalization_ms: 1,
+                research_ms: 0,
+                settled: 0,
+                no_adjustment: 1,
+                observed: 0,
+                upstream_429: 0,
+                transport_failure: 0,
+                semantic_failure: 0,
+                local_pressure: 0,
+                last_transport_kind: None,
+                last_retryable_outcome: None,
+                continuation_reason: Some("no_adjustment"),
+                next_retry_at: None,
+            },
+        )
+        .await
+        .expect("record terminal observation");
+
+    let recovered = proxy
+        .key_store
+        .upstream_reconciliation_run_observation()
+        .await
+        .expect("read recovered observation");
+    assert_eq!(recovered.last_transport_kind.as_deref(), Some("timeout"));
+    assert_eq!(recovered.last_transport_kind_at, Some(now));
+    assert_eq!(recovered.last_retryable_outcome, None);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
 use axum::{Json, Router, routing::get};
 use tokio::net::TcpListener;
 

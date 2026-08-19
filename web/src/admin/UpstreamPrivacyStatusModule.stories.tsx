@@ -82,6 +82,9 @@ const pendingStatus: UpstreamPrivacyStatus = {
     observedAt: 1_783_958_320,
     staleReason: null,
   },
+  coverage: 'ok',
+  observedAt: 1_783_958_320,
+  staleReason: null,
   retryBuckets: {
     upstream429: 3,
     localUsageRateLimit: 1,
@@ -322,12 +325,29 @@ const upstreamBackoffStatus: UpstreamPrivacyStatus = {
 
 const transportFailureStatus: UpstreamPrivacyStatus = {
   ...compareStatus,
+  coverage: 'ok',
+  observedAt: 1_783_959_010,
+  staleReason: null,
   reconciliationRunObservation: {
     ...runObservationBase,
     transportFailure: 1,
     lastTransportKind: 'timeout',
+    lastTransportKindAt: 1_783_959_010,
+    lastRetryableOutcome: 'transport_failure',
     continuationReason: 'transport_failure',
     nextRetryAt: 1_783_959_030,
+  },
+}
+
+const stalePrivacyStatus: UpstreamPrivacyStatus = {
+  ...transportFailureStatus,
+  coverage: 'stale',
+  observedAt: 1_783_958_320,
+  staleReason: 'sqlite_pressure',
+  dashboardAlertProjection: {
+    coverage: 'stale',
+    observedAt: 1_783_958_320,
+    staleReason: 'tail_replay_deferred',
   },
 }
 
@@ -575,11 +595,50 @@ export const Observed: Story = {
 
 export const TransportFailure: Story = {
   args: { status: transportFailureStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('最近传输失败类别')).toBeInTheDocument()
+    await expect(canvas.getByText('timeout')).toBeInTheDocument()
+    await expect(canvas.getByText('transport_failure')).toBeInTheDocument()
+  },
+}
+
+export const EvidenceTransportFailure: Story = {
+  render: () => renderEvidenceSurface(renderWithStatus(transportFailureStatus)),
 }
 
 export const TransportFailureMobile393x852: Story = {
   args: { status: transportFailureStatus },
   parameters: mobileViewport,
+}
+
+export const EvidenceTransportFailureMobile393x852: Story = {
+  parameters: mobileViewport,
+  render: EvidenceTransportFailure.render,
+}
+
+export const PrivacyStatusStale: Story = {
+  args: { status: stalePrivacyStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('隐私状态新鲜度')).toBeInTheDocument()
+    await expect(canvas.getByText('stale')).toBeInTheDocument()
+    await expect(canvas.getByText(/sqlite_pressure/)).toBeInTheDocument()
+  },
+}
+
+export const EvidencePrivacyStatusStale: Story = {
+  render: () => renderEvidenceSurface(renderWithStatus(stalePrivacyStatus)),
+}
+
+export const PrivacyStatusStaleMobile393x852: Story = {
+  args: { status: stalePrivacyStatus },
+  parameters: mobileViewport,
+}
+
+export const EvidencePrivacyStatusStaleMobile393x852: Story = {
+  parameters: mobileViewport,
+  render: EvidencePrivacyStatusStale.render,
 }
 
 export const SemanticFailure: Story = {
@@ -630,6 +689,7 @@ export const Gallery: Story = {
         { title: 'Projecting', status: projectingStatus },
         { title: 'Observed', status: observedStatus },
         { title: 'Transport failure', status: transportFailureStatus },
+        { title: 'Privacy status stale', status: stalePrivacyStatus },
         { title: 'Semantic failure', status: semanticFailureStatus },
         { title: 'Recovered', status: observedStatus },
         { title: 'Pending', status: pendingStatus },

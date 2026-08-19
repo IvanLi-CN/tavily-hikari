@@ -680,6 +680,24 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
     let cookie = find_cookie_pair(login.headers(), BUILTIN_ADMIN_COOKIE_NAME)
         .expect("admin session cookie");
 
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        let summary = state
+            .proxy
+            .recent_alerts_summary(24)
+            .await
+            .expect("read empty projected alerts");
+        projection_ready = state.proxy.admin_alert_catalog().await.is_ok();
+        if projection_ready && !summary.stale {
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before warming admin cache");
     let warm = client
         .get(format!("http://{admin_addr}/api/alerts/catalog"))
         .header(reqwest::header::COOKIE, &cookie)

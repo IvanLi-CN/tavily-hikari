@@ -114,6 +114,8 @@ export interface ReconciliationRunObservation {
   semanticFailure: number
   localPressure: number
   lastTransportKind?: 'connect' | 'timeout' | 'response_body' | 'invalid_endpoint' | 'credentials_or_database' | 'unknown' | string | null
+  lastTransportKindAt?: number | null
+  lastRetryableOutcome?: string | null
   continuationReason: string | null
   nextRetryAt: number | null
   observedAt: number | null
@@ -174,6 +176,9 @@ export interface UpstreamPrivacyStatus {
   reconciliationRunObservation?: ReconciliationRunObservation
   reconciliationController?: ReconciliationControllerStatus
   dashboardAlertProjection?: DashboardAlertProjectionStatus
+  coverage?: string
+  observedAt?: number | null
+  staleReason?: string | null
   retryBuckets: UpstreamReconciliationRetryBuckets
   currentPeriodBoundUsersByKey: UpstreamKeyActivityPoint[]
   currentPeriodPendingProjectIdsByKey: UpstreamKeyActivityPoint[]

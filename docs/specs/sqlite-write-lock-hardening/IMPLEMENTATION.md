@@ -18,6 +18,10 @@
   permit or run a background retry loop. Runtime transaction deadlines implement their short
   writer budgets without changing the configured SQLite `busy_timeout`; bulk contention returns a
   typed deferred outcome, while a control write can reuse an already durable representative row.
+- Administrator alert and privacy reads are bounded operations. Alerts use the complete projection
+  through the `AlertProjection` runtime connection and exact-query last-good cache; privacy status
+  uses a 250ms cold-build deadline and a 60-second immutable last-good entry. Pressure never
+  releases an admission check and then waits on an unbounded raw pool acquire.
 - Server-pressure deltas and rebalance audit persistence use an instance-owned deferred writer.
   Pressure batches contain at most 25 bucket keys per `ObservabilityDeferredWrite` transaction and
   return to a bounded queue after transient contention; its source-fenced rebuild remains the

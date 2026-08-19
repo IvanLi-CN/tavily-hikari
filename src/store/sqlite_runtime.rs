@@ -52,6 +52,7 @@ pub(crate) struct SqliteMaintenanceRunLease {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SqliteOperation {
+    AdminRead,
     AlertProjection,
     BillingLedgerAuditRead,
     DashboardIntegrityWrite,
@@ -71,6 +72,7 @@ pub(crate) enum SqliteOperation {
 impl SqliteOperation {
     fn as_str(self) -> &'static str {
         match self {
+            Self::AdminRead => "admin_read",
             Self::AlertProjection => "alert_projection",
             Self::BillingLedgerAuditRead => "billing_ledger_audit_read",
             Self::DashboardIntegrityWrite => "dashboard_integrity_write",
@@ -90,12 +92,8 @@ impl SqliteOperation {
 
     fn workload_class(self) -> &'static str {
         match self {
-            Self::ForegroundJobTrigger => "foreground_work",
-            Self::BillingLedgerAuditRead | Self::HaBaselineRead | Self::HaEventsRead => {
-                "maintenance_read"
-            }
-            Self::ScheduledJobControl | Self::HaOutboxGcWatchdog => "maintenance_control",
-            Self::AlertProjection
+            Self::AdminRead
+            | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::HaOutboxGc
             | Self::RequestLogsGc
@@ -103,12 +101,18 @@ impl SqliteOperation {
             | Self::ObservabilityDeferredWrite
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => "maintenance_bulk",
+            Self::ForegroundJobTrigger => "foreground_work",
+            Self::BillingLedgerAuditRead | Self::HaBaselineRead | Self::HaEventsRead => {
+                "maintenance_read"
+            }
+            Self::ScheduledJobControl | Self::HaOutboxGcWatchdog => "maintenance_control",
         }
     }
 
     fn acquire_budget(self) -> Duration {
         match self {
-            Self::AlertProjection
+            Self::AdminRead
+            | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::ScheduledJobControl
             | Self::HaOutboxGcWatchdog => Duration::from_millis(100),
@@ -125,7 +129,8 @@ impl SqliteOperation {
 
     fn begin_budget(self) -> Duration {
         match self {
-            Self::AlertProjection
+            Self::AdminRead
+            | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::RequestStatsFlush
             | Self::ScheduledJobControl
@@ -146,7 +151,8 @@ impl SqliteOperation {
             // cooperative run budget expires. A connection-local timeout
             // returns writer contention as a typed defer without cancelling
             // a future that still owns the physical connection.
-            Self::AlertProjection
+            Self::AdminRead
+            | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::ObservabilityDeferredWrite
             | Self::ReconciliationProjection => Some(100),
@@ -157,7 +163,8 @@ impl SqliteOperation {
     fn is_maintenance_bulk(self) -> bool {
         matches!(
             self,
-            Self::AlertProjection
+            Self::AdminRead
+                | Self::AlertProjection
                 | Self::DashboardIntegrityWrite
                 | Self::HaOutboxGc
                 | Self::RequestLogsGc

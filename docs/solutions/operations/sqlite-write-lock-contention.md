@@ -34,6 +34,12 @@ related_specs:
 - Startup schema work is ledgered in `schema_migrations`; a warm process verifies the critical layout and skips already-applied DDL.
 - Administrator peer status reads an observation cache. A normal GET never waits for the five-second peer network probe.
 - A transport or semantic reconciliation failure does not clear an existing upstream-429 circuit. Only a real settlement or a real remote attempt follows the recovery contract.
+- Transport observations are persisted as fixed, redacted categories with their observation time.
+  Later non-transport runs preserve that diagnostic while retryable state remains independent;
+  only a terminal compare/active result clears the retryable outcome.
+- Derived pressure rebuilds are hysteretic and source-fenced. A transient deferred flush is not a
+  rebuild trigger; overflow, coverage loss, or five minutes of stale state starts at most one
+  bounded rebuild generation every five minutes.
 
 ## Context
 

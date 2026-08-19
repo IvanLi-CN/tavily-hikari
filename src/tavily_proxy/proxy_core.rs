@@ -3,6 +3,7 @@ impl TavilyProxy {
     const SERVER_PRESSURE_REBUILD_BUFFERING: u8 = 1;
     const SERVER_PRESSURE_REBUILD_REPLAYING: u8 = 2;
     const SERVER_PRESSURE_REBUILD_DEFERRED: u8 = 3;
+    const SERVER_PRESSURE_REBUILD_MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
     const SERVER_PRESSURE_REBUILD_MAX_ADMISSION_DEFERS: usize = 3;
     const SERVER_PRESSURE_REBUILD_ADMISSION_DEFER_DELAY: Duration = Duration::from_millis(250);
     const SERVER_PRESSURE_REBUILD_CONTENTION_DEFER_DELAY: Duration = Duration::from_secs(5);
@@ -980,6 +981,7 @@ impl TavilyProxy {
                 bucket_secs: SECS_PER_HOUR,
             },
         ];
+        let now = self.backend_time.now_ts();
         let (spawn_flush, rebuild) = {
             let mut writer = self.observability_deferred_writer.lock().await;
             let mut rebuild = false;
@@ -988,7 +990,9 @@ impl TavilyProxy {
                     && writer.pressure_deltas.len() >= 128
                 {
                     writer.pressure_stale = true;
+                    writer.pressure_stale_since.get_or_insert(now);
                     writer.pressure_unrecoverable_overflow |= !source_backed;
+                    writer.pressure_rebuild_requested = true;
                     rebuild = true;
                     continue;
                 }
@@ -999,10 +1003,25 @@ impl TavilyProxy {
             if spawn_flush {
                 writer.pressure_flush_running = true;
             }
-            (spawn_flush, rebuild)
+            (
+                spawn_flush,
+                rebuild
+                    && (writer.pressure_rebuild_requested
+                        || writer.pressure_stale_since.is_some_and(|since| {
+                            now.saturating_sub(since)
+                                >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+                        }))
+                    && writer.last_pressure_rebuild_started_at.is_none_or(|started| {
+                        now.saturating_sub(started)
+                            >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+                    }),
+            )
         };
-        if rebuild {
-            self.spawn_server_pressure_buckets_rebuild_once();
+        if rebuild && self.spawn_server_pressure_buckets_rebuild_once() {
+            let mut writer = self.observability_deferred_writer.lock().await;
+            writer.last_pressure_rebuild_started_at = Some(now);
+            writer.pressure_rebuild_requested = false;
+            writer.pressure_stale_since = None;
         }
         if spawn_flush {
             let proxy = self.clone();
@@ -1062,6 +1081,8 @@ impl TavilyProxy {
                     writer.consecutive_pressure_defers = 0;
                     if writer.pressure_deltas.is_empty() && !writer.pressure_unrecoverable_overflow {
                         writer.pressure_stale = false;
+                        writer.pressure_stale_since = None;
+                        writer.pressure_rebuild_requested = false;
                     }
                 }
                 Err(error) => {
@@ -1094,6 +1115,7 @@ impl TavilyProxy {
         deltas: Vec<(ServerPressureBucketKey, ServerPressureBucketCounts)>,
         mark_stale: bool,
     ) {
+        let now = self.backend_time.now_ts();
         let rebuild = {
             let mut writer = self.observability_deferred_writer.lock().await;
             for (key, delta) in deltas {
@@ -1101,7 +1123,11 @@ impl TavilyProxy {
                     && writer.pressure_deltas.len() >= 128
                 {
                     writer.pressure_stale = true;
+                    writer.pressure_stale_since.get_or_insert(now);
                     writer.pressure_unrecoverable_overflow |= delta.has_unsourced();
+                    if delta.has_unsourced() {
+                        writer.pressure_rebuild_requested = true;
+                    }
                     continue;
                 }
                 let counts = writer.pressure_deltas.entry(key).or_default();
@@ -1110,11 +1136,23 @@ impl TavilyProxy {
             if mark_stale {
                 writer.consecutive_pressure_defers = writer.consecutive_pressure_defers.saturating_add(1);
                 writer.pressure_stale = true;
+                writer.pressure_stale_since.get_or_insert(now);
             }
-            writer.consecutive_pressure_defers >= 3 || writer.pressure_deltas.len() >= 128
+            (writer.pressure_rebuild_requested
+                || writer.pressure_stale_since.is_some_and(|since| {
+                    now.saturating_sub(since)
+                        >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+                }))
+                && writer.last_pressure_rebuild_started_at.is_none_or(|started| {
+                    now.saturating_sub(started)
+                        >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+                })
         };
-        if rebuild {
-            self.spawn_server_pressure_buckets_rebuild_once();
+        if rebuild && self.spawn_server_pressure_buckets_rebuild_once() {
+            let mut writer = self.observability_deferred_writer.lock().await;
+            writer.last_pressure_rebuild_started_at = Some(now);
+            writer.pressure_rebuild_requested = false;
+            writer.pressure_stale_since = None;
         }
     }
 
@@ -1143,6 +1181,17 @@ impl TavilyProxy {
         });
         writer.consecutive_pressure_defers = 0;
         writer.pressure_stale = writer.pressure_unrecoverable_overflow;
+        writer.pressure_stale_since = None;
+        writer.pressure_rebuild_requested = false;
+    }
+
+    async fn mark_server_pressure_rebuild_retryable(&self) {
+        let mut writer = self.observability_deferred_writer.lock().await;
+        writer.pressure_stale = true;
+        writer
+            .pressure_stale_since
+            .get_or_insert_with(|| self.backend_time.now_ts());
+        writer.pressure_rebuild_requested = true;
     }
 
     #[cfg(test)]
@@ -1364,6 +1413,13 @@ impl TavilyProxy {
             return false;
         }
 
+        let rebuild_started_at = self.backend_time.now_ts();
+        if let Ok(mut writer) = self.observability_deferred_writer.try_lock() {
+            writer.last_pressure_rebuild_started_at = Some(rebuild_started_at);
+            writer.pressure_rebuild_requested = false;
+            writer.pressure_stale_since = None;
+        }
+
         let proxy = self.clone();
         tokio::spawn(async move {
             let mut attempt = 0usize;
@@ -1385,6 +1441,7 @@ impl TavilyProxy {
                             proxy
                                 .stop_server_pressure_rebuild_generation(generation, Vec::new())
                                 .await;
+                            proxy.mark_server_pressure_rebuild_retryable().await;
                             tracing::warn!(
                                 component = "analysis_pressure",
                                 event = "server_pressure_buckets_rebuild_stalled",
@@ -1568,6 +1625,7 @@ impl TavilyProxy {
                             proxy
                                 .stop_server_pressure_rebuild_generation(generation, Vec::new())
                                 .await;
+                            proxy.mark_server_pressure_rebuild_retryable().await;
                             tracing::warn!(
                                 component = "analysis_pressure",
                                 event = "server_pressure_buckets_rebuild_stalled",
@@ -1595,6 +1653,7 @@ impl TavilyProxy {
                         proxy
                             .stop_server_pressure_rebuild_generation(generation, Vec::new())
                             .await;
+                        proxy.mark_server_pressure_rebuild_retryable().await;
                         tracing::warn!(
                             component = "analysis_pressure",
                             event = "server_pressure_buckets_rebuild_failed",

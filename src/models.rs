@@ -2163,6 +2163,11 @@ pub enum ProxyError {
     LastAdminLoginMethod,
     #[error("scheduled job {job_id} claim generation {claim_generation} is stale")]
     StaleClaim { job_id: i64, claim_generation: i64 },
+    #[error("deferred {operation}: {reason}")]
+    Deferred {
+        operation: &'static str,
+        reason: String,
+    },
     #[error("other error: {0}")]
     Other(String),
 }
@@ -2170,6 +2175,10 @@ pub enum ProxyError {
 impl ProxyError {
     pub fn is_stale_claim(&self) -> bool {
         matches!(self, Self::StaleClaim { .. })
+    }
+
+    pub fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred { .. })
     }
 }
 
