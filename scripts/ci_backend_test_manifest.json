@@ -246,6 +246,8 @@
         "tests::request_kind_and_core::user_",
         "tests::usage_series_and_backfills::user_",
         "tests::user_business_calls_1h::user_",
+        "store::user_business_call_event_write_tests::",
+        "tavily_proxy::user_business_calls_memory::out_of_order_tests::",
         "tests::user_tokens_and_pending_billing::user_",
         "tests::usage_series_and_backfills::admin_",
         "tests::user_tokens_and_pending_billing::ensure_",
