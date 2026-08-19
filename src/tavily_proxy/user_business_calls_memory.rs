@@ -577,6 +577,59 @@ impl MemoryUserBusinessCalls1hBackend {
 }
 
 #[cfg(test)]
+mod out_of_order_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn late_older_success_is_inserted_before_newer_failure() {
+        let backend = MemoryUserBusinessCalls1hBackend::default();
+        let now = 1_700_200_000;
+        let user_id = "out-of-order-user";
+        backend
+            .record_event(
+                user_id,
+                UserBusinessCallEvent {
+                    request_log_id: Some(2),
+                    created_at: now - 5 * SECS_PER_MINUTE,
+                    outcome: UserBusinessCallOutcome::Failure,
+                },
+                now,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+        backend
+            .record_event(
+                user_id,
+                UserBusinessCallEvent {
+                    request_log_id: Some(1),
+                    created_at: now - 10 * SECS_PER_MINUTE,
+                    outcome: UserBusinessCallOutcome::Success,
+                },
+                now,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+
+        let counts = backend
+            .snapshot_many(
+                &[user_id.to_string()],
+                now,
+                UserBusinessCalls1hWindow::ROLLING_WINDOW_SECS,
+                UserBusinessCalls1hWindow::RETENTION_SECS,
+            )
+            .await;
+        assert_eq!(counts[user_id].success_count, 1);
+        assert_eq!(counts[user_id].failure_count, 1);
+        let series = backend
+            .series_data_for_user(user_id, now, UserBusinessCalls1hWindow::RETENTION_SECS)
+            .await;
+        assert_eq!(series.raw_events.len(), 2);
+        assert_eq!(series.raw_events[0].request_log_id, Some(1));
+        assert_eq!(series.raw_events[1].request_log_id, Some(2));
+    }
+}
+
+#[cfg(test)]
 mod memory_window_regression_tests {
     use super::*;
 

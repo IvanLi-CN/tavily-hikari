@@ -581,6 +581,9 @@ impl TavilyProxy {
             token_quota,
             token_request_limit,
             user_business_calls_1h_window,
+            user_business_call_bridge_diagnostics: Arc::new(Mutex::new(
+                UserBusinessCallBridgeDiagnostics::new(backend_time.instant_now()),
+            )),
             research_request_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),

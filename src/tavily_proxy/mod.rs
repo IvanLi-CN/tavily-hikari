@@ -182,6 +182,42 @@ struct UserBusinessCallEvent {
     outcome: UserBusinessCallOutcome,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UserBusinessCallEventBridgeReceipt {
+    Applied {
+        request_log_id: Option<i64>,
+        created_at: i64,
+        outcome: UserBusinessCallOutcome,
+    },
+    Skipped {
+        request_log_id: Option<i64>,
+        reason: UserBusinessCallEventSkipReason,
+    },
+}
+
+#[derive(Debug)]
+struct UserBusinessCallBridgeDiagnostics {
+    window_started_at: Instant,
+    applied: u64,
+    missing_user_id: u64,
+    not_business_quota: u64,
+    missing_upstream_operation: u64,
+    quota_exhausted: u64,
+}
+
+impl UserBusinessCallBridgeDiagnostics {
+    fn new(window_started_at: Instant) -> Self {
+        Self {
+            window_started_at,
+            applied: 0,
+            missing_user_id: 0,
+            not_business_quota: 0,
+            missing_upstream_operation: 0,
+            quota_exhausted: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserBusinessCallReservation {
     user_id: String,
@@ -215,7 +251,7 @@ struct ServerPressureBufferedEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UserBusinessCallOutcome {
+pub(crate) enum UserBusinessCallOutcome {
     Success,
     Failure,
 }
@@ -763,6 +799,7 @@ pub struct TavilyProxy {
     token_quota: TokenQuota,
     token_request_limit: TokenRequestLimit,
     user_business_calls_1h_window: UserBusinessCalls1hWindow,
+    user_business_call_bridge_diagnostics: Arc<Mutex<UserBusinessCallBridgeDiagnostics>>,
     pub(crate) research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
     summary_windows_cache: Arc<Mutex<SummaryWindowsCacheState>>,

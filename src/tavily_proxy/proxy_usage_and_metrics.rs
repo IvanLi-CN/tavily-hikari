@@ -585,7 +585,53 @@ impl TavilyProxy {
         selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<(), ProxyError> {
-        let event = self
+        self.record_token_attempt_with_kind_request_log_metadata_receipt(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            request_kind,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
+            request_log_id,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_token_attempt_with_kind_request_log_metadata_receipt(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        request_kind: &TokenRequestKind,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
+        request_log_id: Option<i64>,
+    ) -> Result<UserBusinessCallEventBridgeReceipt, ProxyError> {
+        let decision = self
             .key_store
             .insert_token_log(
                 token_id,
@@ -608,23 +654,105 @@ impl TavilyProxy {
                 request_log_id,
             )
             .await?;
-        if let Some(event) = event {
-            let outcome = if event.result_status == OUTCOME_SUCCESS {
-                UserBusinessCallOutcome::Success
-            } else {
-                UserBusinessCallOutcome::Failure
-            };
-            self.user_business_calls_1h_window
-                .record_event(&event.user_id, event.request_log_id, event.created_at, outcome)
-                .await;
+        let receipt = self.apply_user_business_call_event_write(decision).await;
+        if let UserBusinessCallEventBridgeReceipt::Applied {
+            request_log_id,
+            created_at,
+            outcome,
+        } = receipt
+        {
             self.record_server_pressure_event(
-                event.request_log_id,
-                event.created_at,
-                &event.result_status,
+                request_log_id,
+                created_at,
+                match outcome {
+                    UserBusinessCallOutcome::Success => OUTCOME_SUCCESS,
+                    UserBusinessCallOutcome::Failure => "error",
+                },
             )
             .await?;
         }
-        Ok(())
+        Ok(receipt)
+    }
+
+    async fn apply_user_business_call_event_write(
+        &self,
+        decision: UserBusinessCallEventWriteDecision,
+    ) -> UserBusinessCallEventBridgeReceipt {
+        let receipt = match decision {
+            UserBusinessCallEventWriteDecision::Applied(event) => {
+                let outcome = if event.result_status == OUTCOME_SUCCESS {
+                    UserBusinessCallOutcome::Success
+                } else {
+                    UserBusinessCallOutcome::Failure
+                };
+                self.user_business_calls_1h_window
+                    .record_event(&event.user_id, event.request_log_id, event.created_at, outcome)
+                    .await;
+                UserBusinessCallEventBridgeReceipt::Applied {
+                    request_log_id: event.request_log_id,
+                    created_at: event.created_at,
+                    outcome,
+                }
+            }
+            UserBusinessCallEventWriteDecision::Skipped {
+                request_log_id,
+                reason,
+            } => UserBusinessCallEventBridgeReceipt::Skipped {
+                request_log_id,
+                reason,
+            },
+        };
+        self.record_user_business_call_bridge_diagnostic(&receipt)
+            .await;
+        receipt
+    }
+
+    async fn record_user_business_call_bridge_diagnostic(
+        &self,
+        receipt: &UserBusinessCallEventBridgeReceipt,
+    ) {
+        const LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+        let now = self.backend_time.instant_now();
+        let mut diagnostics = self.user_business_call_bridge_diagnostics.lock().await;
+        match receipt {
+            UserBusinessCallEventBridgeReceipt::Applied { .. } => {
+                diagnostics.applied = diagnostics.applied.saturating_add(1);
+            }
+            UserBusinessCallEventBridgeReceipt::Skipped { reason, .. } => match reason {
+                UserBusinessCallEventSkipReason::MissingUserId => {
+                    diagnostics.missing_user_id = diagnostics.missing_user_id.saturating_add(1);
+                }
+                UserBusinessCallEventSkipReason::NotBusinessQuota => {
+                    diagnostics.not_business_quota =
+                        diagnostics.not_business_quota.saturating_add(1);
+                }
+                UserBusinessCallEventSkipReason::MissingUpstreamOperation => {
+                    diagnostics.missing_upstream_operation =
+                        diagnostics.missing_upstream_operation.saturating_add(1);
+                }
+                UserBusinessCallEventSkipReason::QuotaExhausted => {
+                    diagnostics.quota_exhausted = diagnostics.quota_exhausted.saturating_add(1);
+                }
+            },
+        }
+        if now.saturating_duration_since(diagnostics.window_started_at) < LOG_INTERVAL {
+            return;
+        }
+        tracing::info!(
+            component = "user_business_calls_1h",
+            event = "business_call_event_bridge_summary",
+            window_secs = now
+                .saturating_duration_since(diagnostics.window_started_at)
+                .as_secs(),
+            applied = diagnostics.applied,
+            skipped_missing_user_id = diagnostics.missing_user_id,
+            skipped_not_business_quota = diagnostics.not_business_quota,
+            skipped_missing_upstream_operation = diagnostics.missing_upstream_operation,
+            skipped_quota_exhausted = diagnostics.quota_exhausted,
+            "business-call event bridge summary"
+        );
+        *diagnostics = UserBusinessCallBridgeDiagnostics::new(now);
     }
 
     /// Persist a billable attempt before quota counters are charged, so it can be replayed if the
@@ -1113,19 +1241,20 @@ impl TavilyProxy {
                 request_log_id,
             )
             .await?;
-        if let Some(event) = event {
-            let outcome = if event.result_status == OUTCOME_SUCCESS {
-                UserBusinessCallOutcome::Success
-            } else {
-                UserBusinessCallOutcome::Failure
-            };
-            self.user_business_calls_1h_window
-                .record_event(&event.user_id, event.request_log_id, event.created_at, outcome)
-                .await;
+        let receipt = self.apply_user_business_call_event_write(event).await;
+        if let UserBusinessCallEventBridgeReceipt::Applied {
+            request_log_id,
+            created_at,
+            outcome,
+        } = receipt
+        {
             self.record_server_pressure_event(
-                event.request_log_id,
-                event.created_at,
-                &event.result_status,
+                request_log_id,
+                created_at,
+                match outcome {
+                    UserBusinessCallOutcome::Success => OUTCOME_SUCCESS,
+                    UserBusinessCallOutcome::Failure => "error",
+                },
             )
             .await?;
         }

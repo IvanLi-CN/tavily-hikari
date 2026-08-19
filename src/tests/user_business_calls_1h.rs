@@ -37,7 +37,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
 
     let request_log_success: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             method,
             path,
@@ -86,7 +86,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
 
     let request_log_failure: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             method,
             path,
@@ -135,7 +135,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
 
     let request_log_quota_exhausted: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             method,
             path,
@@ -184,7 +184,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
 
     let request_log_pre_upstream: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             method,
             path,
@@ -302,7 +302,7 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
     let now = manual_clock.now_ts();
     sqlx::query(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             api_key_id,
             method,
             path,
@@ -406,9 +406,9 @@ async fn user_business_calls_1h_backfill_rehydrates_recent_request_logs() {
 }
 
 #[tokio::test]
-async fn user_business_calls_1h_series_keeps_late_arriving_older_events_in_order() {
+async fn user_business_calls_1h_sqlite_bridge_returns_applied_receipt() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_200_000);
-    let db_path = temp_db_path("user-business-calls-1h-out-of-order-arrival");
+    let db_path = temp_db_path("user-business-calls-1h-sqlite-bridge");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_options_and_time(
         Vec::<String>::new(),
@@ -422,9 +422,9 @@ async fn user_business_calls_1h_series_keeps_late_arriving_older_events_in_order
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {
             provider: "github".to_string(),
-            provider_user_id: "business-calls-out-of-order".to_string(),
-            username: Some("business_calls_out_of_order".to_string()),
-            name: Some("Business Calls Out Of Order".to_string()),
+            provider_user_id: "business-calls-sqlite-bridge".to_string(),
+            username: Some("business_calls_sqlite_bridge".to_string()),
+            name: Some("Business Calls SQLite Bridge".to_string()),
             avatar_template: None,
             active: true,
             trust_level: None,
@@ -433,63 +433,15 @@ async fn user_business_calls_1h_series_keeps_late_arriving_older_events_in_order
         .await
         .expect("upsert user");
     let token = proxy
-        .ensure_user_token_binding(&user.user_id, Some("business-calls-out-of-order"))
+        .ensure_user_token_binding(&user.user_id, Some("business-calls-sqlite-bridge"))
         .await
         .expect("bind token");
     let request_kind = TokenRequestKind::new("api:search", "API | search", None);
     let now = manual_clock.now_ts();
 
-    let newer_request_log: i64 = sqlx::query_scalar(
+    let request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
-            method,
-            path,
-            status_code,
-            tavily_status_code,
-            result_status,
-            request_kind_key,
-            request_kind_label,
-            counts_business_quota,
-            request_user_id,
-            upstream_operation,
-            created_at
-        ) VALUES ('POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
-        "#,
-    )
-    .bind(&user.user_id)
-    .bind(now - 5 * 60)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("insert newer request log");
-    manual_clock.set_now_ts(now);
-    proxy
-        .record_token_attempt_with_kind_request_log_metadata(
-            &token.id,
-            &Method::POST,
-            "/api/tavily/search",
-            Some("q=newer"),
-            Some(500),
-            Some(500),
-            true,
-            "error",
-            Some("newer upstream failure"),
-            &request_kind,
-            Some("upstream_error"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(newer_request_log),
-        )
-        .await
-        .expect("record newer attempt");
-
-    let older_request_log: i64 = sqlx::query_scalar(
-        r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method,
             path,
             status_code,
@@ -506,17 +458,17 @@ async fn user_business_calls_1h_series_keeps_late_arriving_older_events_in_order
         "#,
     )
     .bind(&user.user_id)
-    .bind(now - 10 * 60)
+    .bind(now - 10 * SECS_PER_MINUTE)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("insert older request log");
+    .expect("insert request log");
     manual_clock.set_now_ts(now);
-    proxy
-        .record_token_attempt_with_kind_request_log_metadata(
+    let receipt = proxy
+        .record_token_attempt_with_kind_request_log_metadata_receipt(
             &token.id,
             &Method::POST,
             "/api/tavily/search",
-            Some("q=older"),
+            Some("q=bridge"),
             Some(200),
             Some(200),
             true,
@@ -530,43 +482,35 @@ async fn user_business_calls_1h_series_keeps_late_arriving_older_events_in_order
             None,
             None,
             None,
-            Some(older_request_log),
+            Some(request_log_id),
         )
         .await
-        .expect("record older attempt after newer arrival");
+        .expect("record token log and bridge event");
+    assert_eq!(
+        receipt,
+        UserBusinessCallEventBridgeReceipt::Applied {
+            request_log_id: Some(request_log_id),
+            created_at: now - 10 * SECS_PER_MINUTE,
+            outcome: UserBusinessCallOutcome::Success,
+        }
+    );
 
-    manual_clock.set_now_ts(now);
+    let stored_request_log_id: Option<i64> = sqlx::query_scalar(
+        "SELECT request_log_id FROM auth_token_logs WHERE token_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&token.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load token log bridge source");
+    assert_eq!(stored_request_log_id, Some(request_log_id));
+
     let summary = proxy
         .user_dashboard_summary(&user.user_id, None)
         .await
         .expect("load user dashboard summary");
     assert_eq!(summary.business_calls_1h.success_count, 1);
-    assert_eq!(summary.business_calls_1h.failure_count, 1);
-    assert_eq!(summary.business_calls_1h.total_count, 2);
-
-    let series = proxy
-        .admin_user_business_calls_1h_series(&user.user_id)
-        .await
-        .expect("load business calls 1h series");
-    let latest = series.points.last().expect("latest business calls point");
-    assert_eq!(latest.pressure, Some(2));
-
-    let older_bucket = (now - 10 * 60) - (now - 10 * 60).rem_euclid(SECS_PER_FIVE_MINUTES);
-    let newer_bucket = (now - 5 * 60) - (now - 5 * 60).rem_euclid(SECS_PER_FIVE_MINUTES);
-    let older_point = series
-        .points
-        .iter()
-        .find(|point| point.bucket_start == older_bucket)
-        .expect("older bucket point");
-    let newer_point = series
-        .points
-        .iter()
-        .find(|point| point.bucket_start == newer_bucket)
-        .expect("newer bucket point");
-    assert_eq!(older_point.bars.success, Some(1));
-    assert_eq!(older_point.bars.failure, Some(0));
-    assert_eq!(newer_point.bars.success, Some(0));
-    assert_eq!(newer_point.bars.failure, Some(1));
+    assert_eq!(summary.business_calls_1h.failure_count, 0);
+    assert_eq!(summary.business_calls_1h.total_count, 1);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -606,7 +550,7 @@ async fn user_business_calls_1h_backfill_pages_same_timestamp_without_gaps() {
             UNION ALL
             SELECT value + 1 FROM sequence WHERE value < 501
         )
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, status_code, tavily_status_code, result_status,
             request_kind_key, request_kind_label, counts_business_quota,
             request_user_id, upstream_operation, created_at
@@ -623,7 +567,7 @@ async fn user_business_calls_1h_backfill_pages_same_timestamp_without_gaps() {
     .expect("seed one full page plus one same-timestamp row");
     sqlx::query(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method, path, status_code, tavily_status_code, result_status,
             request_kind_key, request_kind_label, counts_business_quota,
             request_user_id, upstream_operation, created_at
@@ -697,7 +641,7 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
 
     let historical_request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method,
             path,
             status_code,
@@ -746,7 +690,7 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
 
     let live_request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method,
             path,
             status_code,
@@ -859,7 +803,7 @@ async fn user_business_calls_1h_backfill_dedupes_same_request_log_event() {
 
     let request_log_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO request_logs (
+        INSERT INTO observability.request_logs (
             method,
             path,
             status_code,
@@ -973,8 +917,8 @@ async fn user_business_calls_1h_metadata_free_token_logs_stay_out_of_live_busine
     let now = manual_clock.now_ts();
 
     manual_clock.set_now_ts(now);
-    proxy
-        .record_token_attempt_with_kind(
+    let receipt = proxy
+        .record_token_attempt_with_kind_request_log_metadata_receipt(
             &token.id,
             &Method::POST,
             "/api/tavily/search",
@@ -985,9 +929,24 @@ async fn user_business_calls_1h_metadata_free_token_logs_stay_out_of_live_busine
             OUTCOME_SUCCESS,
             None,
             &request_kind,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("record metadata-free token log");
+    assert_eq!(
+        receipt,
+        UserBusinessCallEventBridgeReceipt::Skipped {
+            request_log_id: None,
+            reason: UserBusinessCallEventSkipReason::MissingUpstreamOperation,
+        }
+    );
 
     let summary = proxy
         .user_dashboard_summary(&user.user_id, None)

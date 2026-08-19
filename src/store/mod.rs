@@ -1419,6 +1419,23 @@ pub(crate) struct UserBusinessCallEventWrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UserBusinessCallEventSkipReason {
+    MissingUserId,
+    NotBusinessQuota,
+    MissingUpstreamOperation,
+    QuotaExhausted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UserBusinessCallEventWriteDecision {
+    Applied(UserBusinessCallEventWrite),
+    Skipped {
+        request_log_id: Option<i64>,
+        reason: UserBusinessCallEventSkipReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLogsRebuildMode {
     DropLegacyApiKeyColumn,
     RelaxApiKeyIdNullability,

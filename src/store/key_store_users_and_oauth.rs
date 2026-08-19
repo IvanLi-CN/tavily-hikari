@@ -1268,7 +1268,7 @@ impl KeyStore {
         selection_effect_code: &str,
         selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
-    ) -> Result<Option<UserBusinessCallEventWrite>, ProxyError> {
+    ) -> Result<UserBusinessCallEventWriteDecision, ProxyError> {
         let created_at = self.backend_time.now_ts();
         let request_kind = self
             .resolve_token_log_request_kind(request_log_id, request_kind)
@@ -1377,7 +1377,7 @@ impl KeyStore {
         selection_effect_code: &str,
         selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
-    ) -> Result<(i64, Option<UserBusinessCallEventWrite>), ProxyError> {
+    ) -> Result<(i64, UserBusinessCallEventWriteDecision), ProxyError> {
         let created_at = self.backend_time.now_ts();
         let request_kind = self
             .resolve_token_log_request_kind(request_log_id, request_kind)
@@ -1708,7 +1708,7 @@ impl KeyStore {
             return Ok(RequestLogDiagnosticMetadata::default());
         };
 
-        let row = sqlx::query_as::<_, (
+        type DiagnosticRow = (
             Option<i64>,
             Option<String>,
             Option<String>,
@@ -1717,10 +1717,17 @@ impl KeyStore {
             Option<String>,
             Option<String>,
             Option<String>,
-        )>(
-            r#"
+        );
+        let query = r#"
             SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
             FROM request_logs
+            WHERE id = ?
+            LIMIT 1
+            "#;
+        let row = sqlx::query_as::<_, DiagnosticRow>(
+            r#"
+            SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
+            FROM observability.request_logs
             WHERE id = ?
             LIMIT 1
             "#,
@@ -1728,6 +1735,21 @@ impl KeyStore {
         .bind(request_log_id)
         .fetch_optional(&self.pool)
         .await?;
+        let row = if row.is_some() {
+            row
+        } else if let Some(database_path) = self.observability_database_path.as_deref() {
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(database_path)
+                .read_only(true)
+                .busy_timeout(SQLITE_BUSY_TIMEOUT_DEFAULT);
+            let mut connection = SqliteConnection::connect_with(&options).await?;
+            sqlx::query_as::<_, DiagnosticRow>(query)
+                .bind(request_log_id)
+                .fetch_optional(&mut connection)
+                .await?
+        } else {
+            None
+        };
 
         Ok(row
             .map(
@@ -1766,7 +1788,7 @@ impl KeyStore {
         let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
             r#"
             SELECT request_kind_key, request_kind_label, request_kind_detail
-            FROM request_logs
+            FROM observability.request_logs
             WHERE id = ?
             LIMIT 1
             "#,
@@ -2605,18 +2627,37 @@ fn build_user_business_call_event_write(
     upstream_operation: Option<String>,
     result_status: &str,
     created_at: i64,
-) -> Option<UserBusinessCallEventWrite> {
-    let user_id = request_user_id?;
+) -> UserBusinessCallEventWriteDecision {
+    let Some(user_id) = request_user_id else {
+        return UserBusinessCallEventWriteDecision::Skipped {
+            request_log_id,
+            reason: UserBusinessCallEventSkipReason::MissingUserId,
+        };
+    };
     if counts_business_quota != 1 {
-        return None;
+        return UserBusinessCallEventWriteDecision::Skipped {
+            request_log_id,
+            reason: UserBusinessCallEventSkipReason::NotBusinessQuota,
+        };
+    }
+    if result_status == OUTCOME_QUOTA_EXHAUSTED {
+        return UserBusinessCallEventWriteDecision::Skipped {
+            request_log_id,
+            reason: UserBusinessCallEventSkipReason::QuotaExhausted,
+        };
     }
     // Only request-log-backed upstream calls participate in business-call and
     // server-pressure live windows; metadata-free token logs stay excluded.
-    upstream_operation.as_ref()?;
-    if result_status == OUTCOME_QUOTA_EXHAUSTED {
-        return None;
+    // The request-log id is the durable bridge contract, so a transiently
+    // unavailable diagnostic column must not drop an otherwise valid event.
+    let upstream_outcome = matches!(result_status, OUTCOME_SUCCESS | OUTCOME_ERROR);
+    if upstream_operation.is_none() && (request_log_id.is_none() || !upstream_outcome) {
+        return UserBusinessCallEventWriteDecision::Skipped {
+            request_log_id,
+            reason: UserBusinessCallEventSkipReason::MissingUpstreamOperation,
+        };
     }
-    Some(UserBusinessCallEventWrite {
+    UserBusinessCallEventWriteDecision::Applied(UserBusinessCallEventWrite {
         user_id,
         request_log_id,
         created_at,
