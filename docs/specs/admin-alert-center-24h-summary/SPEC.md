@@ -257,6 +257,23 @@
 
 ## Visual Evidence
 
+- 当前实现 SHA `0325ae57` 的 Storybook 状态证据（`PR: include`）：
+  - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=1440x1000`, `viewport_strategy=storybook-viewport`, `state=transport-known`。证明管理员对账卡片显示脱敏传输类别、观察时间、retryable outcome 和阶段耗时。
+
+    ![管理员对账 transport failure 桌面状态](assets/admin-read-transport-desktop.png)
+
+  - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=1440x1000`, `viewport_strategy=storybook-viewport`, `state=stale-sqlite-pressure`。证明同一页面显示告警投影 stale、隐私状态 stale、sqlite pressure 和最近观察时间。
+
+    ![管理员读模型 stale 桌面状态](assets/admin-read-stale-desktop.png)
+
+  - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=393x852`, `viewport_strategy=storybook-viewport`, `state=transport-known-mobile`。
+
+    ![管理员对账 transport failure 移动状态](assets/admin-read-transport-mobile.png)
+
+  - `source_type=storybook_canvas`, `target_program=mock-only`, `capture_scope=browser-viewport`, `requested_viewport=393x852`, `viewport_strategy=storybook-viewport`, `state=stale-sqlite-pressure-mobile`。
+
+    ![管理员读模型 stale 移动状态](assets/admin-read-stale-mobile.png)
+
 - Storybook canvas 组件证据：
   - `Admin/Components/DashboardOverview / RecentAlertsDesktopEvidence` 提供稳定桌面证据，近期告警区已重做为“24h 队列导语 + 三窗聚合计数 + 聚合告警队列表格”。
   - 顶部概览区只保留最近 `1 小时 / 24 小时 / 7 天` 三窗聚合计数，并用 `24h` 窗口显式标注当前队列口径。
