@@ -213,7 +213,7 @@ PR: include
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from final UI source SHA `15e416f456f5b9c52aa5714fe1ea3f7ae70a35e6`. The HA
+- evidence_note: Captured from final UI source SHA `8343fc74c479cfa3eafe217d8094468abad19436`. The HA
   settings summary adds core mode, the current control-plane leader, and the configured peer count.
 
 ![HA settings topology diagnostics](./assets/ha-topology-diagnostics-desktop.png)
@@ -229,7 +229,7 @@ PR: include
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: The compact Dashboard attention state identifies that no usable HA peer is
+- evidence_note: Captured from final UI source SHA `8343fc74c479cfa3eafe217d8094468abad19436`. The compact Dashboard attention state identifies that no usable HA peer is
   configured and links directly to HA settings without exposing administrator diagnostics to users.
 
 ![Dashboard no-peer mobile attention](./assets/ha-dashboard-no-peer-mobile.png)
