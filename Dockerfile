@@ -1,5 +1,5 @@
 ########## Stage 1: compile the Rust binary ##########
-FROM rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS builder
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 WORKDIR /app
 
 RUN apt-get update \
