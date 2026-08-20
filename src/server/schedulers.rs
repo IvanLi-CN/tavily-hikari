@@ -2672,12 +2672,13 @@ async fn run_manual_claimed_job(
                         Err(err) => finish(state, "error", err.to_string()).await,
                     }
                 }
-                Ok(ClaimedReconciliationRunOutcome::Deferred { reason }) => {
+                Ok(ClaimedReconciliationRunOutcome::Deferred { reason, retry_at }) => {
                     defer_reconciliation_for_sqlite_admission(
                         &state,
                         job_id,
                         claim_generation,
                         reason,
+                        retry_at,
                     )
                     .await
                 }
@@ -2781,8 +2782,9 @@ async fn defer_reconciliation_for_sqlite_admission(
     job_id: i64,
     claim_generation: i64,
     defer_reason: &'static str,
+    retry_at: i64,
 ) -> bool {
-    let available_at = state.proxy.backend_time().now_ts().saturating_add(30);
+    let available_at = retry_at.max(state.proxy.backend_time().now_ts());
     tracing::debug!(
         component = "reconciliation",
         event = "local_preparation_deferred",
@@ -2794,13 +2796,10 @@ async fn defer_reconciliation_for_sqlite_admission(
     );
     state
         .proxy
-        .scheduled_job_finish_and_enqueue_auto_at(
+        .finalize_deferred_upstream_reconciliation_claim(
             job_id,
             claim_generation,
-            "upstream_reconciliation",
-            None,
-            1,
-            Some(&format!("outcome=sqlite_admission_deferred defer_reason={defer_reason}")),
+            defer_reason,
             available_at,
         )
         .await

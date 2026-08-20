@@ -28,6 +28,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   operation or when its bounded transaction sees transient writer contention. The affected durable
   work returns uncommitted deltas or records a retry time; unrelated eligible work remains free to
   progress.
+- `admin privacy read session`: a dedicated immutable SQLite snapshot for privacy status. Its
+  acquire and begin budgets are 100ms, the HTTP build is bounded to 250ms, and it never uses
+  maintenance-bulk admission. A 60-second last-good result is explicit stale coverage; a cold miss
+  returns retryable service-unavailable.
 
 ## Reconciliation Terms
 
@@ -65,6 +69,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `best-effort audit`: rebalance audit records are capped in memory and may report stale coverage
   when contention or capacity prevents persistence. A missing audit record never changes MCP
   response semantics, billing truth, or durable business work.
+- `staged pressure generation`: a source-fenced server-pressure rebuild generation that remains
+  invisible until atomic publish. Source scans use 500-row keyset slices, transition events replay
+  after publish, and obsolete generations are cleaned in 25-row slices so live-tail correctness
+  does not require a whole-table replacement.
 
 ## Dashboard Read Terms
 

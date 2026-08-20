@@ -82,6 +82,14 @@
   a rebuild, while overflow, lost coverage, or five minutes of continuous stale state may start at
   most one generation every five minutes. Rebuild slices remain bounded and replayable from the
   request-log source.
+- Privacy status now acquires a dedicated read snapshot within 100ms and constructs its full
+  immutable response on that one connection under the handler's 250ms bound. It bypasses
+  maintenance-bulk admission and returns the existing 60-second last-good result as additive stale
+  coverage, or cold `503 Retry-After: 1` on pressure.
+- Server-pressure recovery allocates a staged generation, aggregates fixed-fence 500-row keyset
+  slices, publishes once, and removes obsolete buckets in 25-row cleanup slices. Direct deltas and
+  buffered tail replay always write the active generation, so source rebuilds do not amplify normal
+  business writes or expose a partial live series.
 - Schema migration emits fixed `component/event/outcome/elapsed_ms` fields for baseline adoption and warm verification. GC and reconciliation keep normal work at DEBUG, aggregate INFO to one-minute windows, and reserve WARN/INFO for state transitions.
 
 ## 已完成验证

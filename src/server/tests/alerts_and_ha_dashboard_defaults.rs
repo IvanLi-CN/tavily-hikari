@@ -756,7 +756,7 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
 }
 
 #[tokio::test]
-async fn admin_privacy_status_returns_expired_last_good_when_sqlite_is_under_pressure() {
+async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admission() {
     let db_path = temp_db_path("admin-privacy-status-last-good");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -797,20 +797,20 @@ async fn admin_privacy_status_returns_expired_last_good_when_sqlite_is_under_pre
             panic!("test must hold the shared bulk permit, got {reason}")
         }
     };
-    let stale = client
+    let fresh = client
         .get(&privacy_status_url)
         .header(reqwest::header::COOKIE, &cookie)
         .send()
         .await
-        .expect("stale privacy status");
-    assert_eq!(stale.status(), reqwest::StatusCode::OK);
-    let stale_body: serde_json::Value = stale.json().await.expect("stale privacy status json");
-    assert_eq!(stale_body.get("coverage").and_then(|v| v.as_str()), Some("stale"));
-    assert_eq!(
-        stale_body.get("staleReason").and_then(|v| v.as_str()),
-        Some("sqlite_pressure")
+        .expect("fresh privacy status");
+    assert_eq!(fresh.status(), reqwest::StatusCode::OK);
+    let fresh_body: serde_json::Value = fresh.json().await.expect("fresh privacy status json");
+    assert_eq!(fresh_body.get("coverage").and_then(|v| v.as_str()), Some("ok"));
+    assert!(
+        fresh_body
+            .get("staleReason")
+            .is_none_or(serde_json::Value::is_null)
     );
-    assert!(stale_body.get("observedAt").and_then(|v| v.as_i64()).is_some());
     drop(held);
 
     let cold_db_path = temp_db_path("admin-privacy-status-cold-pressure");
@@ -845,8 +845,11 @@ async fn admin_privacy_status_returns_expired_last_good_when_sqlite_is_under_pre
         .send()
         .await
         .expect("cold privacy status");
-    assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(cold.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("1"));
+    assert_eq!(
+        cold.status(),
+        reqwest::StatusCode::OK,
+        "privacy reads use their own bounded session rather than the maintenance bulk permit"
+    );
     drop(cold_held);
 
     let _ = std::fs::remove_file(db_path);

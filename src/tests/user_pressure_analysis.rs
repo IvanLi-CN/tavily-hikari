@@ -803,6 +803,102 @@ async fn analysis_pressure_rebuild_does_not_hold_writer_during_source_aggregatio
 }
 
 #[tokio::test]
+async fn analysis_pressure_rebuild_never_deletes_the_live_generation() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_395_000);
+    let db_path = temp_db_path("analysis-pressure-staged-generation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("proxy created");
+    let now = manual_clock.now_ts();
+    sqlx::query(
+        r#"
+        INSERT INTO observability.request_logs (
+            method, path, status_code, tavily_status_code, result_status,
+            request_kind_key, request_kind_label, counts_business_quota,
+            request_user_id, upstream_operation, created_at
+        ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success',
+                  'api:search', 'API | search', 1, 'staged-generation', 'search', ?)
+        "#,
+    )
+    .bind(now - 120)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed pressure request log");
+    proxy
+        .key_store
+        .ensure_server_pressure_bucket_schema()
+        .await
+        .expect("initialize pressure generation schema");
+    for bucket_start in 0..26 {
+        sqlx::query(
+            r#"
+            INSERT INTO observability.server_pressure_buckets (
+                bucket_kind, bucket_start, bucket_secs, success_count,
+                failure_count, updated_at, generation
+            ) VALUES ('five_minute', ?, 300, 1, 0, ?, 0)
+            "#,
+        )
+        .bind(bucket_start)
+        .bind(now)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed old live generation");
+    }
+    sqlx::query(
+        "CREATE TABLE observability.server_pressure_delete_counter (count INTEGER NOT NULL)",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("create delete counter");
+    sqlx::query("INSERT INTO observability.server_pressure_delete_counter (count) VALUES (0)")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("initialize delete counter");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER observability.forbid_server_pressure_generation_delete
+        BEFORE DELETE ON server_pressure_buckets
+        BEGIN
+            UPDATE server_pressure_delete_counter SET count = count + 1;
+            SELECT CASE WHEN (SELECT count FROM server_pressure_delete_counter) > 25
+                THEN RAISE(ABORT, 'live pressure cleanup exceeded its bounded slice') END;
+        END
+        "#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("forbid destructive pressure publication");
+
+    proxy
+        .key_store
+        .rebuild_server_pressure_buckets_with_cancel(|| true)
+        .await
+        .expect("staged rebuild should publish without deleting live buckets");
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(success_count + failure_count), 0)
+        FROM observability.server_pressure_buckets
+        WHERE generation = (
+            SELECT active_generation FROM observability.server_pressure_rebuild_state WHERE singleton = 1
+        )
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read staged pressure generation");
+    assert_eq!(total, 2, "both staged bucket resolutions are published");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_400_000);
     let db_path = temp_db_path("analysis-pressure-background-cancel");

@@ -31,7 +31,7 @@ impl TavilyProxy {
     // allowed to use the remainder of the scheduler's 20 second budget.
     const RECONCILIATION_MAIN_PREP_BUDGET_SECS: u64 = 2;
     const RECONCILIATION_TOTAL_BUDGET_SECS: u64 = 20;
-    const RECONCILIATION_FINALIZATION_HEADROOM_SECS: u64 = 1;
+    const RECONCILIATION_FINALIZATION_HEADROOM_SECS: u64 = 2;
     const RECONCILIATION_POST_PROCESS_HEADROOM_SECS: u64 = 2;
     const RECONCILIATION_RETRY_BOOKKEEPING_HEADROOM_SECS: u64 = 2;
     const RECONCILIATION_OUTER_TIMEOUT_MARGIN_SECS: u64 = 1;
@@ -59,218 +59,16 @@ impl TavilyProxy {
     }
 
     pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let settings = self.key_store.get_system_settings().await?;
-        let active_upstream_mcp_sessions = self
+        let mut session = self.key_store.begin_admin_privacy_read_session().await?;
+        let result = self
             .key_store
-            .count_active_upstream_mcp_sessions(now)
-            .await?;
-        let period = business_period_for_timestamp(now);
-        let stored_epoch = self
-            .key_store
-            .get_meta_i64(META_KEY_UPSTREAM_RECONCILIATION_READY_AFTER_V1)
-            .await?
-            .unwrap_or(0);
-        let mode_ready = settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken;
-        let api_ready = settings.api_rebalance_enabled;
-        let mcp_ready = settings.rebalance_mcp_enabled;
-        let shadow_ready = mode_ready && api_ready && mcp_ready;
-        let sessions_ready = active_upstream_mcp_sessions == 0;
-        let gates = vec![
-            UpstreamPrivacyGate {
-                key: "accessTokenMode".to_string(),
-                ready: mode_ready,
-                detail: format!("{:?}", settings.upstream_project_id_mode),
-            },
-            UpstreamPrivacyGate {
-                key: "apiRebalance".to_string(),
-                ready: api_ready,
-                detail: if api_ready { "enabled" } else { "disabled" }.to_string(),
-            },
-            UpstreamPrivacyGate {
-                key: "mcpRebalance".to_string(),
-                ready: mcp_ready,
-                detail: if mcp_ready { "enabled" } else { "disabled" }.to_string(),
-            },
-            UpstreamPrivacyGate {
-                key: "controlSessionsDrained".to_string(),
-                ready: sessions_ready,
-                detail: active_upstream_mcp_sessions.to_string(),
-            },
-        ];
-        let completed_gates = gates.iter().filter(|gate| gate.ready).count() as i64;
-        let total_gates = gates.len() as i64;
-        let reconciliation_observation = self
-            .key_store
-            .upstream_reconciliation_observation()
-            .await?;
-        let retry_buckets = self
-            .key_store
-            .upstream_reconciliation_retry_buckets()
-            .await?;
-        let (current_period_bound_users_by_key, current_period_pending_project_ids_by_key) = self
-            .key_store
-            .current_period_reconciliation_key_activity(&period.code)
-            .await?;
-        let (daily_reconciliation_progress, daily_reconciliation_by_key) = self
-            .key_store
-            .daily_reconciliation_progress()
-            .await?;
-        let pending_research = Some(daily_reconciliation_progress.research_pending);
-        let queued_settlements = reconciliation_observation.queue_estimate;
-        let (degraded_settlements, degraded_settlements_capped) = self
-            .key_store
-            .upstream_reconciliation_degraded_estimate()
-            .await?;
-        let (
-            last_reconciliation_run_at,
-            last_shadow_adjustment_at,
-            last_reconciliation_enqueue_error_at,
-            last_research_sweep_at,
-            last_research_terminal_at,
-        ) = self
-            .key_store
-            .upstream_reconciliation_runtime_markers()
-            .await?;
-        let (
-            reconciliation_pressure_streak,
-            reconciliation_backoff_level,
-            reconciliation_backoff_until,
-        ) = self
-            .key_store
-            .upstream_reconciliation_global_backoff_state()
-            .await?;
-        let (
-            reconciliation_local_pressure_streak,
-            reconciliation_local_backoff_level,
-            reconciliation_local_backoff_until,
-        ) = self
-            .key_store
-            .upstream_reconciliation_local_backoff_state()
-            .await?;
-        let reconciliation_local_last_recovered_at = self
-            .key_store
-            .upstream_reconciliation_local_last_recovered_at()
-            .await?;
-        let reconciliation_run_observation = self
-            .key_store
-            .upstream_reconciliation_run_observation()
-            .await?;
-        let reconciliation_controller = self
-            .key_store
-            .upstream_reconciliation_control_state()
-            .await?;
-        let dashboard_alert_projection = self.dashboard_alert_projection_status().await?;
-        let (
-            reconciliation_last_duration_ms,
-            reconciliation_last_attempted,
-            reconciliation_last_settled,
-            reconciliation_last_no_adjustment,
-            reconciliation_last_upstream_429,
-            reconciliation_last_budget_exhausted,
-        ) = self
-            .key_store
-            .upstream_reconciliation_last_run_stats()
-            .await?;
-        let next_epoch_at = if reconciliation_controller.legacy_active
-            && reconciliation_controller.mode == ReconciliationMode::Active
-            && shadow_ready
-            && sessions_ready
-        {
-            Some(if stored_epoch > 0 { stored_epoch } else { period.ends_at })
-        } else {
-            reconciliation_controller.activation_period_start
-        };
-        let phase = reconciliation_controller.mode.as_str();
-        Ok(UpstreamPrivacyStatus {
-            phase: phase.to_string(),
-            configured_project_id_mode: settings.upstream_project_id_mode,
-            effective_project_id_mode: settings.upstream_project_id_mode,
-            fixed_project_id_configured: !settings.upstream_project_id_fixed_value.is_empty(),
-            configured_mcp_user_agent: settings.upstream_mcp_user_agent.clone(),
-            effective_mcp_user_agent: (!settings.upstream_mcp_user_agent.is_empty())
-                .then_some(settings.upstream_mcp_user_agent),
-            upstream_precise_reconciliation_enabled: settings.upstream_precise_reconciliation_enabled,
-            http_allowed_headers: vec![
-                "accept".to_string(),
-                "accept-encoding".to_string(),
-                "content-type".to_string(),
-                "x-project-id (policy injected)".to_string(),
-            ],
-            control_mcp_allowed_headers: vec![
-                "accept".to_string(),
-                "accept-encoding".to_string(),
-                "cache-control".to_string(),
-                "content-type".to_string(),
-                "last-event-id".to_string(),
-                "mcp-protocol-version".to_string(),
-                "mcp-session-id".to_string(),
-                "pragma".to_string(),
-                "user-agent (configured only)".to_string(),
-            ],
-            gates,
-            completed_gates,
-            total_gates,
-            active_upstream_mcp_sessions,
-            current_period_code: period.code,
-            current_period_ends_at: period.ends_at,
-            next_epoch_at,
-            pending_research,
-            queued_settlements,
-            degraded_settlements,
-            degraded_settlements_capped,
-            last_reconciliation_run_at,
-            last_shadow_adjustment_at,
-            last_reconciliation_enqueue_error_at,
-            last_research_sweep_at,
-            last_research_terminal_at,
-            reconciliation_pressure_streak,
-            reconciliation_backoff_level,
-            reconciliation_backoff_until: (reconciliation_backoff_until > now)
-                .then_some(reconciliation_backoff_until),
-            reconciliation_last_duration_ms,
-            reconciliation_last_attempted,
-            reconciliation_last_settled,
-            reconciliation_last_no_adjustment,
-            reconciliation_last_upstream_429,
-            reconciliation_last_budget_exhausted,
-            reconciliation_observation,
-            reconciliation_local_backoff: ReconciliationLocalBackoff {
-                pressure_streak: reconciliation_local_pressure_streak,
-                level: reconciliation_local_backoff_level,
-                available_at: (reconciliation_local_backoff_until > now)
-                    .then_some(reconciliation_local_backoff_until),
-                last_recovered_at: reconciliation_local_last_recovered_at,
-            },
-            reconciliation_run_observation,
-            reconciliation_controller: ReconciliationControllerStatus {
-                mode: reconciliation_controller.mode.as_str().to_string(),
-                activation_period_code: reconciliation_controller.activation_period_code,
-                activation_period_start: reconciliation_controller.activation_period_start,
-                legacy_active: reconciliation_controller.legacy_active,
-                paused_reason: reconciliation_controller.paused_reason,
-                transitioned_at: (reconciliation_controller.transitioned_at > 0)
-                    .then_some(reconciliation_controller.transitioned_at),
-            },
-            dashboard_alert_projection: DashboardAlertProjectionStatus {
-                coverage: dashboard_alert_projection.coverage,
-                observed_at: dashboard_alert_projection.observed_at,
-                stale_reason: dashboard_alert_projection.stale_reason,
-            },
-            retry_buckets,
-            current_period_bound_users_by_key,
-            current_period_pending_project_ids_by_key,
-            daily_reconciliation_progress,
-            daily_reconciliation_by_key,
-            recent_adjustments: self
-                .key_store
-                .recent_reconciliation_adjustments(10)
-                .await?,
-            generated_at: now,
-            coverage: "ok".to_string(),
-            observed_at: Some(now),
-            stale_reason: None,
-        })
+            .upstream_privacy_status_from_snapshot(&mut session)
+            .await;
+        let close = session.close().await;
+        match (result, close) {
+            (Ok(status), Ok(())) => Ok(status),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
     }
 
     pub async fn record_upstream_reconciliation_usage(
@@ -837,7 +635,7 @@ impl TavilyProxy {
                     no_adjustment,
                     observed,
                 } => return Ok(settled + no_adjustment + observed),
-                ClaimedReconciliationRunOutcome::Deferred { reason } => {
+                ClaimedReconciliationRunOutcome::Deferred { reason, .. } => {
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
                         return Err(ProxyError::Other(format!(
@@ -958,7 +756,7 @@ impl TavilyProxy {
                     defer_reason = reason,
                     "reconciliation skipped local candidate preparation before SQLite connection acquisition"
                 );
-                return Ok(ClaimedReconciliationRunOutcome::Deferred { reason });
+                return Ok(ReconciliationEngine::deferred(self, reason));
             }
         };
         let run_admission_state = match self
@@ -968,9 +766,7 @@ impl TavilyProxy {
         {
             Ok(state) => state,
             Err(err) if is_transient_sqlite_write_error(&err) => {
-                return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "pool_pressure",
-                });
+                return Ok(ReconciliationEngine::deferred(self, "pool_pressure"));
             }
             Err(err) => return Err(err),
         };
@@ -1102,9 +898,7 @@ impl TavilyProxy {
         let mut preparation_budget_exhausted = false;
         let mut candidate_batch;
         if preparation_deadline <= std::time::Instant::now() {
-            return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                reason: "local_pressure",
-            });
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
         } else {
             candidate_batch = match self
                 .key_store
@@ -1113,9 +907,7 @@ impl TavilyProxy {
             {
                 Ok(batch) => batch,
                 Err(err) if is_transient_sqlite_write_error(&err) => {
-                    return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                        reason: "local_pressure",
-                    });
+                    return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                 }
                 Err(err) => return Err(err),
             };
@@ -1161,9 +953,10 @@ impl TavilyProxy {
                             {
                                 Ok(batch) => batch,
                                 Err(err) if is_transient_sqlite_write_error(&err) => {
-                                    return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                                        reason: "local_pressure",
-                                    });
+                                    return Ok(ReconciliationEngine::deferred(
+                                        self,
+                                        "local_pressure",
+                                    ));
                                 }
                                 Err(err) => return Err(err),
                             };
@@ -1207,9 +1000,7 @@ impl TavilyProxy {
             let remaining = candidate_hydration_deadline
                 .saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "local_pressure",
-                });
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
             } else {
                 match self
                     .key_store
@@ -1218,9 +1009,7 @@ impl TavilyProxy {
                 {
                     Ok(result) => result,
                     Err(err) if is_transient_sqlite_write_error(&err) => {
-                        return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                            reason: "local_pressure",
-                        });
+                        return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                     }
                     Err(err) => return Err(err),
                 }
@@ -1236,9 +1025,7 @@ impl TavilyProxy {
             let remaining = candidate_hydration_deadline
                 .saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "local_pressure",
-                });
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
             } else {
                 match self
                     .key_store
@@ -1251,9 +1038,7 @@ impl TavilyProxy {
                 {
                     Ok(result) => result,
                     Err(err) if is_transient_sqlite_write_error(&err) => {
-                        return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                            reason: "local_pressure",
-                        });
+                        return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                     }
                     Err(err) => return Err(err),
                 }
@@ -1840,9 +1625,7 @@ impl TavilyProxy {
                     reason = "local_pressure",
                     err = %err,
                 );
-                return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "local_pressure",
-                });
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
             }
             return Err(err);
         }
@@ -2220,9 +2003,7 @@ impl TavilyProxy {
                     reason = "local_pressure",
                     err = %err,
                 );
-                Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "local_pressure",
-                })
+                Ok(ReconciliationEngine::deferred(self, "local_pressure"))
             }
             Err(err) => {
                 tracing::warn!(
@@ -2866,6 +2647,23 @@ impl TavilyProxy {
                 attempt,
                 message,
                 available_at,
+            )
+            .await
+    }
+
+    pub async fn finalize_deferred_upstream_reconciliation_claim(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        reason: &'static str,
+        retry_at: i64,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        self.key_store
+            .finalize_deferred_upstream_reconciliation_claim(
+                job_id,
+                claim_generation,
+                reason,
+                retry_at,
             )
             .await
     }

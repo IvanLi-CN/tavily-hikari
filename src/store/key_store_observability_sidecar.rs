@@ -497,8 +497,61 @@ impl KeyStore {
                 success_count INTEGER NOT NULL,
                 failure_count INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (bucket_kind, bucket_start)
             )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        let has_generation = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM observability.pragma_table_info('server_pressure_buckets') \
+             WHERE name = 'generation' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+        if !has_generation {
+            sqlx::query(
+                "ALTER TABLE observability.server_pressure_buckets \
+                 ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.server_pressure_bucket_staging (
+                generation INTEGER NOT NULL,
+                bucket_kind TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                failure_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (generation, bucket_kind, bucket_start)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.server_pressure_rebuild_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                active_generation INTEGER NOT NULL,
+                last_allocated_generation INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO observability.server_pressure_rebuild_state (
+                singleton, active_generation, last_allocated_generation
+            ) VALUES (1, 0, 0)
+            ON CONFLICT(singleton) DO NOTHING
             "#,
         )
         .execute(pool)
@@ -508,6 +561,8 @@ impl KeyStore {
                ON server_pressure_buckets(bucket_kind, bucket_start DESC)"#,
             r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_time
                ON server_pressure_buckets(bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_generation_kind_time
+               ON server_pressure_buckets(generation, bucket_kind, bucket_start DESC)"#,
         ] {
             sqlx::query(sql).execute(pool).await?;
         }

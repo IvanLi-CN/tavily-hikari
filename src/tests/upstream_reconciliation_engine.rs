@@ -95,6 +95,79 @@ async fn reconciliation_transport_observation_survives_a_following_non_transport
     drop(proxy);
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn post_process_defer_finalization_is_atomic_and_never_marks_the_claim_error() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 1, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-atomic-defer"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let retry_at = now + 30;
+
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "local_pressure",
+            retry_at,
+        )
+        .await
+        .expect("atomically finalize deferred claim");
+    let current: (String, String) =
+        sqlx::query_as("SELECT status, message FROM scheduled_jobs WHERE id = ?")
+            .bind(claim.id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read completed claim");
+    assert_eq!(current.0, "success");
+    assert_ne!(current.0, "error");
+    assert!(current.1.contains("defer_reason=local_pressure"));
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count active representatives");
+    assert_eq!(active_count, 1);
+    let continuation_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(continuation.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read continuation schedule");
+    assert_eq!(continuation_available_at, retry_at);
+    let observation = proxy
+        .key_store
+        .upstream_reconciliation_run_observation()
+        .await
+        .expect("read deferred observation");
+    assert_eq!(
+        observation.last_retryable_outcome.as_deref(),
+        Some("local_pressure")
+    );
+    assert_eq!(observation.next_retry_at, Some(retry_at));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
 use axum::{Json, Router, routing::get};
 use tokio::net::TcpListener;
 
@@ -804,19 +877,21 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
         .expect("claim representative")
         .expect("representative is claimed");
 
-    assert_eq!(
-        proxy
-            .run_upstream_reconciliation_once_claimed_outcome(
-                &format!("http://{address}"),
-                claim.id,
-                claim.claim_generation,
-            )
-            .await
-            .expect("SQLite pressure is a typed run outcome"),
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            &format!("http://{address}"),
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("SQLite pressure is a typed run outcome");
+    assert!(matches!(
+        outcome,
         ClaimedReconciliationRunOutcome::Deferred {
-            reason: "local_pressure"
-        }
-    );
+            reason: "local_pressure",
+            retry_at,
+        } if retry_at >= proxy.backend_time().now_ts().saturating_add(30)
+    ));
     let generations: (i64, i64) = sqlx::query_as(
         "SELECT work_generation, completed_generation FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = '2026-07-15/S1'",
     )

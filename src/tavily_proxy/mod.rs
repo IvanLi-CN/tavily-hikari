@@ -838,7 +838,7 @@ pub struct TavilyProxy {
 /// the permit; callers can only retain it while doing the admitted work.
 #[derive(Debug)]
 pub struct SqliteMaintenanceAdmission {
-    _permit: SqliteMaintenanceBulkPermit,
+    _permit: Option<SqliteMaintenanceBulkPermit>,
 }
 
 #[derive(Debug)]

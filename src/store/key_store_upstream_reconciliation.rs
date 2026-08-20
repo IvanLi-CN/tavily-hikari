@@ -376,6 +376,7 @@ impl KeyStore {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_runtime_markers(
         &self,
     ) -> Result<(Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>), ProxyError> {
@@ -418,6 +419,7 @@ impl KeyStore {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_observation(
         &self,
     ) -> Result<ReconciliationObservation, ProxyError> {
@@ -545,6 +547,7 @@ impl KeyStore {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_degraded_estimate(
         &self,
     ) -> Result<(i64, bool), ProxyError> {
@@ -576,6 +579,7 @@ impl KeyStore {
         .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_local_last_recovered_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
@@ -2560,6 +2564,7 @@ impl KeyStore {
         );
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn recent_reconciliation_adjustments(
         &self,
         limit: i64,
@@ -2604,6 +2609,7 @@ impl KeyStore {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_retry_buckets(
         &self,
     ) -> Result<UpstreamReconciliationRetryBuckets, ProxyError> {
@@ -2639,6 +2645,7 @@ impl KeyStore {
         Ok(buckets)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn current_period_reconciliation_key_activity(
         &self,
         current_period_code: &str,
@@ -2697,6 +2704,7 @@ impl KeyStore {
     }
 
 
+    #[allow(dead_code)]
     pub(crate) async fn daily_reconciliation_progress(
         &self,
     ) -> Result<(

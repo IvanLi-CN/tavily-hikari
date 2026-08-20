@@ -1,17 +1,8 @@
 impl TavilyProxy {
     pub fn admit_admin_privacy_status(&self) -> SqliteAdmissionOutcome {
-        match self
-            .key_store
-            .sqlite_runtime
-            .try_admit_maintenance_bulk(SqliteOperation::AdminRead)
-        {
-            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: permit,
-            }),
-            Err(reason) => SqliteAdmissionOutcome::Deferred {
-                reason: reason.as_str(),
-            },
-        }
+        // Compatibility surface only: privacy status owns its bounded read
+        // session and must never re-enter maintenance-bulk admission.
+        SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission { _permit: None })
     }
 
     #[doc(hidden)]
@@ -81,6 +72,7 @@ impl TavilyProxy {
         Ok(dashboard_dirty)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn dashboard_alert_projection_status(
         &self,
     ) -> Result<AlertProjectionStatus, ProxyError> {

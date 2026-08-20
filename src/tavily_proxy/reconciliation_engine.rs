@@ -41,7 +41,7 @@ pub enum ClaimedReconciliationRunOutcome {
         no_adjustment: i64,
         observed: i64,
     },
-    Deferred { reason: &'static str },
+    Deferred { reason: &'static str, retry_at: i64 },
     StaleClaim,
 }
 
@@ -86,8 +86,28 @@ impl TransportFailureKind {
 
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
+    const DEFER_RETRY_DELAY_SECS: i64 = 30;
     // The compatibility one-shot API has no durable representative job.
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+    fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason,
+            retry_at: proxy
+                .backend_time()
+                .now_ts()
+                .saturating_add(Self::DEFER_RETRY_DELAY_SECS),
+        }
+    }
+
+    fn post_process_exhaustion_is_deferred(error: &ProxyError) -> bool {
+        matches!(
+            error,
+            ProxyError::Other(message)
+                if message.contains("reconciliation post-processing deadline exceeded")
+                    || message.contains("reconciliation retry bookkeeping deadline exceeded")
+        )
+    }
 
     async fn run_claimed(
         proxy: &TavilyProxy,
@@ -101,9 +121,7 @@ impl ReconciliationEngine {
         tokio::spawn(async move {
             let _remote_io_permit = remote_io_permit;
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
-                return Ok(ClaimedReconciliationRunOutcome::Deferred {
-                    reason: "shutdown",
-                });
+                return Ok(Self::deferred(&proxy, "shutdown"));
             };
             match proxy
                 .run_upstream_reconciliation_once_inner(
@@ -114,6 +132,15 @@ impl ReconciliationEngine {
             {
                 Err(ProxyError::StaleClaim { .. }) => {
                     Ok(ClaimedReconciliationRunOutcome::StaleClaim)
+                }
+                Err(error) if Self::post_process_exhaustion_is_deferred(&error) => {
+                    tracing::debug!(
+                        component = "reconciliation",
+                        event = "durable_finalization_deferred",
+                        reason = "local_pressure",
+                        "reserved finalization time elapsed before a durable reconciliation transition"
+                    );
+                    Ok(Self::deferred(&proxy, "local_pressure"))
                 }
                 result => result,
             }
@@ -208,7 +235,7 @@ impl ReconciliationEngine {
 mod reconciliation_engine_tests {
     use std::sync::atomic::AtomicI64;
 
-    use crate::ProxyError;
+    use crate::{ProxyError, TavilyProxy};
 
     use super::{
         ReconciliationEngine, ReconciliationOutcome, TransportFailureKind,
@@ -250,6 +277,24 @@ mod reconciliation_engine_tests {
         ));
         assert!(ReconciliationEngine::clears_upstream_429(
             ReconciliationOutcome::NoAdjustment
+        ));
+    }
+
+    #[test]
+    fn claimed_runs_reserve_two_seconds_for_durable_finalization() {
+        assert_eq!(
+            TavilyProxy::RECONCILIATION_FINALIZATION_HEADROOM_SECS,
+            2,
+            "a remote attempt must leave a durable finalization reserve"
+        );
+    }
+
+    #[test]
+    fn post_process_exhaustion_is_a_durable_defer_not_a_terminal_error() {
+        let error = ProxyError::Other("reconciliation post-processing deadline exceeded".to_string());
+        assert!(ReconciliationEngine::post_process_exhaustion_is_deferred(&error));
+        assert!(!ReconciliationEngine::post_process_exhaustion_is_deferred(
+            &ProxyError::Other("unrelated reconciliation failure".to_string())
         ));
     }
 

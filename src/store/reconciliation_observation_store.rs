@@ -48,6 +48,104 @@ pub(crate) struct ReconciliationRunObservationWrite {
 }
 
 impl KeyStore {
+    pub(crate) async fn finalize_deferred_upstream_reconciliation_claim(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+        reason: &'static str,
+        retry_at: i64,
+    ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = async {
+            let message = format!(
+                "outcome=sqlite_admission_deferred defer_reason={reason} retry_at={retry_at}"
+            );
+            let updated = sqlx::query(
+                r#"UPDATE scheduled_jobs
+                   SET status = 'success', message = ?, finished_at = ?
+                   WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
+            )
+            .bind(message)
+            .bind(now)
+            .bind(job_id)
+            .bind(claim_generation)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() == 0 {
+                return Err(ProxyError::StaleClaim {
+                    job_id,
+                    claim_generation,
+                });
+            }
+            sqlx::query(
+                r#"UPDATE upstream_reconciliation_run_observation
+                   SET local_pressure_count = local_pressure_count + 1,
+                       last_retryable_outcome = 'local_pressure',
+                       continuation_reason = ?, next_retry_at = ?, observed_at = ?
+                   WHERE id = 'local'"#,
+            )
+            .bind(reason)
+            .bind(retry_at)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+
+            if let Some((continuation_id, status, trigger_source)) =
+                Self::scheduled_job_lookup_active_locked(&mut tx, "upstream_reconciliation", None)
+                    .await?
+            {
+                if status == "queued" {
+                    sqlx::query(
+                        "UPDATE scheduled_jobs SET available_at = MIN(available_at, ?) WHERE id = ?",
+                    )
+                    .bind(retry_at)
+                    .bind(continuation_id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                return Ok(ScheduledJobEnqueueResult {
+                    job_id: continuation_id,
+                    created: false,
+                    promoted: false,
+                    status,
+                    trigger_source,
+                });
+            }
+            let inserted = sqlx::query(
+                r#"INSERT INTO scheduled_jobs (
+                       job_type, trigger_source, status, attempt, queued_at, available_at,
+                       started_at, finished_at
+                   ) VALUES ('upstream_reconciliation', 'auto', 'queued', 1, ?, ?, NULL, NULL)"#,
+            )
+            .bind(now)
+            .bind(retry_at)
+            .execute(&mut *tx)
+            .await?;
+            Ok(ScheduledJobEnqueueResult {
+                job_id: inserted.last_insert_rowid(),
+                created: true,
+                promoted: false,
+                status: "queued".to_string(),
+                trigger_source: "auto".to_string(),
+            })
+        }
+        .await;
+        match result {
+            Ok(result) => {
+                tx.finish(Ok(())).await?;
+                Ok(result)
+            }
+            Err(error) => {
+                tx.finish(Err(error)).await?;
+                unreachable!("failed reconciliation finalization transaction committed")
+            }
+        }
+    }
+
     pub(crate) async fn record_upstream_reconciliation_engine_observation(
         &self,
         observation: ReconciliationRunObservationWrite,
@@ -118,6 +216,7 @@ impl KeyStore {
         .await?;
         tx.finish(Ok(())).await
     }
+    #[allow(dead_code)]
     pub(crate) async fn upstream_reconciliation_run_observation(
         &self,
     ) -> Result<ReconciliationRunObservation, ProxyError> {

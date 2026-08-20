@@ -226,12 +226,17 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
         )
         .await
         .expect("admission defer is a typed reconciliation outcome");
-    assert!(matches!(
-        outcome,
+    let retry_at = match outcome {
         crate::tavily_proxy::ClaimedReconciliationRunOutcome::Deferred {
-            reason: "pool_pressure"
-        }
-    ));
+            reason: "pool_pressure",
+            retry_at,
+        } => retry_at,
+        other => panic!("expected a pool-pressure deferred outcome, got {other:?}"),
+    };
+    assert!(
+        retry_at >= proxy.backend_time().now_ts().saturating_add(30),
+        "a typed defer must carry its durable retry time"
+    );
     assert!(
         started.elapsed() < Duration::from_millis(250),
         "reconciliation must defer before candidate reads wait on foreground pool capacity: {:?}",

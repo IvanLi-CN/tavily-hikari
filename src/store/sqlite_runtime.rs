@@ -52,6 +52,7 @@ pub(crate) struct SqliteMaintenanceRunLease {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SqliteOperation {
+    AdminPrivacyRead,
     AdminRead,
     AlertProjection,
     BillingLedgerAuditRead,
@@ -72,6 +73,7 @@ pub(crate) enum SqliteOperation {
 impl SqliteOperation {
     fn as_str(self) -> &'static str {
         match self {
+            Self::AdminPrivacyRead => "admin_privacy_read",
             Self::AdminRead => "admin_read",
             Self::AlertProjection => "alert_projection",
             Self::BillingLedgerAuditRead => "billing_ledger_audit_read",
@@ -92,6 +94,10 @@ impl SqliteOperation {
 
     fn workload_class(self) -> &'static str {
         match self {
+            Self::AdminPrivacyRead
+            | Self::BillingLedgerAuditRead
+            | Self::HaBaselineRead
+            | Self::HaEventsRead => "maintenance_read",
             Self::AdminRead
             | Self::AlertProjection
             | Self::DashboardIntegrityWrite
@@ -102,16 +108,14 @@ impl SqliteOperation {
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => "maintenance_bulk",
             Self::ForegroundJobTrigger => "foreground_work",
-            Self::BillingLedgerAuditRead | Self::HaBaselineRead | Self::HaEventsRead => {
-                "maintenance_read"
-            }
             Self::ScheduledJobControl | Self::HaOutboxGcWatchdog => "maintenance_control",
         }
     }
 
     fn acquire_budget(self) -> Duration {
         match self {
-            Self::AdminRead
+            Self::AdminPrivacyRead
+            | Self::AdminRead
             | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::ScheduledJobControl
@@ -129,7 +133,8 @@ impl SqliteOperation {
 
     fn begin_budget(self) -> Duration {
         match self {
-            Self::AdminRead
+            Self::AdminPrivacyRead
+            | Self::AdminRead
             | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::RequestStatsFlush
@@ -151,7 +156,8 @@ impl SqliteOperation {
             // cooperative run budget expires. A connection-local timeout
             // returns writer contention as a typed defer without cancelling
             // a future that still owns the physical connection.
-            Self::AdminRead
+            Self::AdminPrivacyRead
+            | Self::AdminRead
             | Self::AlertProjection
             | Self::DashboardIntegrityWrite
             | Self::ObservabilityDeferredWrite
@@ -1159,6 +1165,14 @@ impl SqliteRuntime {
 }
 
 impl KeyStore {
+    pub(crate) async fn begin_admin_privacy_read_session(
+        &self,
+    ) -> Result<SqliteReadSnapshot, ProxyError> {
+        self.sqlite_runtime
+            .begin_read_snapshot(SqliteOperation::AdminPrivacyRead)
+            .await
+    }
+
     pub(crate) fn record_foreground_activity(&self) {
         self.sqlite_runtime.record_foreground_activity();
     }
@@ -2229,6 +2243,50 @@ mod tests {
                 .expect("foreground pool acquisition");
         drop(foreground);
         drop(first);
+    }
+
+    #[tokio::test]
+    async fn admin_privacy_read_session_is_bounded_and_independent_of_bulk_admission() {
+        let runtime = three_connection_runtime().await;
+        let bulk = runtime
+            .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+            .expect("hold unrelated bulk admission");
+        let session = runtime
+            .begin_read_snapshot(SqliteOperation::AdminPrivacyRead)
+            .await
+            .expect("privacy read does not require the bulk permit");
+        session.close().await.expect("close privacy session");
+        drop(bulk);
+
+        let first = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold first connection");
+        let second = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold second connection");
+        let third = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold third connection");
+        let started = Instant::now();
+        let error = runtime
+            .begin_read_snapshot(SqliteOperation::AdminPrivacyRead)
+            .await
+            .expect_err("pool exhaustion must reject the cold privacy read");
+        assert!(matches!(
+            error,
+            ProxyError::Database(sqlx::Error::PoolTimedOut)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(150));
+        drop((third, second, first));
     }
 
     #[tokio::test]

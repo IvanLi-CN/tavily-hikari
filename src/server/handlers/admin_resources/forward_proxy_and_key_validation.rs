@@ -220,16 +220,6 @@ async fn get_upstream_privacy_status(
         return Err(StatusCode::FORBIDDEN.into_response());
     }
 
-    let _admission = match state.proxy.admit_admin_privacy_status() {
-        tavily_hikari::SqliteAdmissionOutcome::Admitted(admission) => admission,
-        tavily_hikari::SqliteAdmissionOutcome::Deferred { .. } => {
-            return match stale_admin_privacy_status(state.as_ref(), "sqlite_pressure").await {
-                Some(status) => Ok(Json(status).into_response()),
-                None => Err((StatusCode::SERVICE_UNAVAILABLE, [("retry-after", "1")]).into_response()),
-            };
-        }
-    };
-
     if let Some((status, _observed_at)) = admin_privacy_status_last_good(state.as_ref()).await {
         return Ok(Json(status).into_response());
     }

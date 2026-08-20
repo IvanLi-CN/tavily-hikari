@@ -45,6 +45,15 @@
   compare-mode non-zero deltas complete as `observed` without writing billing truth, while active
   non-zero deltas alone complete as `settled`. Transport, semantic, upstream-429, and local-pressure
   retry state remain independent. The status projection exposes phase timing and outcome counts.
+- Claimed reconciliation reserves two seconds for finalization and exposes only completed,
+  stale-claim, or typed deferred outcomes to the scheduler. A deferred finalization uses one
+  `ScheduledJobControl` transaction for the claim fence, local-pressure observation, retry time,
+  and single auto representative; failure to acquire that transaction intentionally retains the
+  running claim for stale recovery.
+- Research starvation is evaluated independently of settlement retry buckets. The operational
+  acceptance window is ten minutes: terminal rate must become positive while pending Research does
+  not grow. `upstream429` remains a rate-limited settlement bucket and is not evidence of Research
+  convergence or non-convergence.
 
 ## Remaining Gaps
 

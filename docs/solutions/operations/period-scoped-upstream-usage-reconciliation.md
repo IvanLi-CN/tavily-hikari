@@ -198,3 +198,21 @@ normal per-key 429 logs at DEBUG and reserve state-transition logs for enter, es
 Main settlement must start before terminal-research polling. Hydrate the bounded candidate page and
 key/cooldown state in one indexed batch, reserve the first eligible key within the two-second local
 preparation budget, then use the remaining 20-second job budget for the research sweep.
+
+## Claim-fenced deferred finalization
+
+Treat finalization as durable work with its own reserve, not as an afterthought after remote I/O.
+Before starting the next remote request, reserve two seconds for the terminal observation and
+continuation boundary. If that reserve is exhausted, return only a typed deferred outcome with a
+reason and retry time.
+
+The scheduler must persist one deferred outcome through a single claim-fenced control transaction:
+finish the claimed job, record local-pressure observation and retry time, and retain or create one
+delayed auto representative. If the transaction cannot acquire the writer, leave the claim running
+for stale recovery. Do not turn that condition into a terminal job error, and do not add an
+in-memory retry loop that can fan out jobs after restart.
+
+Research health is separate from settlement retries. For a current-period starvation investigation,
+observe a fixed ten-minute window: terminal rate must become positive and pending Research must not
+grow. An `upstream429` bucket measures settlement retry pressure only; it is neither backlog size
+nor proof of terminal progress.

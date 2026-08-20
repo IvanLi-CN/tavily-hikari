@@ -476,6 +476,11 @@ month-tail public metrics scan.
   most 500 rows or 150ms per slice, then replace only the confirmed-different bucket rows in a short
   write transaction. A dense slice may carry its in-memory aggregate into the next work item, but it
   must not publish a partial replacement.
+- For a live derived series such as server pressure, stage the rebuild in a new generation behind a
+  fixed source fence. Publish the generation once, replay the transition-buffered tail, and delete
+  old-generation rows only in 25-row cleanup slices. Normal deltas always target the active
+  generation. This prevents a whole-table delete/reinsert rebuild from turning observability repair
+  into sustained write amplification or exposing an empty live series.
 - Treat `busy`/`locked`, a queue backlog, and a write above the 250ms slow threshold as deferral
   signals for observability repair. Record the gap, release the writer, and retry through the single
   persisted maintenance queue; do not increase the pool or compete with the request path.

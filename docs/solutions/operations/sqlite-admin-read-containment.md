@@ -73,6 +73,11 @@ reads:
   successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
   while cold pressure fails fast with `503 Retry-After: 1`. The bounded read deadline is 250ms,
   including operation admission and result construction.
+- Give privacy status its own read session rather than classifying it as maintenance bulk. Acquire
+  and begin its one immutable SQLite snapshot within 100ms, build every field on that same
+  connection, and release it before returning. Do not let one status field borrow a raw pool
+  connection after another field has already read the snapshot: that mixes generations and defeats
+  the cold-path bound.
 - Replace repeated window scans with a single bounded scan that derives all needed windows, then add
   a short manager-scoped TTL cache when settings and live stats can request the same window set in
   one admin refresh cycle.

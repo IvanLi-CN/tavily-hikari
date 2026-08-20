@@ -70,6 +70,15 @@
 - 对账主结算必须先于 Research sweep；本地预算压力与 upstream 429 必须分开记录，且最终
   远端观察、结算和状态落盘都必须受同一轮预算约束。HA GC 正常进展继续按通道 60 秒聚合，
   不能恢复逐片 WARN。
+- Privacy status owns a dedicated `AdminPrivacyRead` session: acquire and `BEGIN` are bounded to
+  100ms, response construction is bounded to 250ms, and every status query runs through one
+  immutable SQLite snapshot connection. It neither enters maintenance-bulk admission nor borrows
+  raw pool connections; a warm 60-second last-good result may become additive stale coverage,
+  while a cold result returns `503 Retry-After: 1`.
+- A server-pressure rebuild scans at most 500 source rows per keyset slice below its fixed source
+  fence, writes only an inactive staged generation, then atomically publishes that generation before
+  replaying its buffered tail. Old generations are cleaned in 25-row slices; no rebuild may delete
+  the whole live bucket set or replace it with a partial result.
 
 - 继续使用默认 `RUNTIME_LOG_FORMAT=json` + `stderr` 输出，保留 `text` fallback。
 - 新增的性能事件必须使用现有 `tracing` 结构化字段，按事件适用性包含：
