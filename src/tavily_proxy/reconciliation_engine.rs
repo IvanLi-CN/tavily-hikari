@@ -115,38 +115,56 @@ impl ReconciliationEngine {
         job_id: i64,
         claim_generation: i64,
         remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
+    ) -> ClaimedReconciliationRunOutcome {
         let proxy = proxy.clone();
+        let finalization_proxy = proxy.clone();
         let usage_base = usage_base.to_string();
-        tokio::spawn(async move {
+        let run_result = tokio::spawn(async move {
             let _remote_io_permit = remote_io_permit;
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
-            match proxy
+            proxy
                 .run_upstream_reconciliation_once_inner(
                     &usage_base,
                     Some((job_id, claim_generation)),
                 )
                 .await
-            {
-                Err(ProxyError::StaleClaim { .. }) => {
-                    Ok(ClaimedReconciliationRunOutcome::StaleClaim)
-                }
-                Err(error) if Self::post_process_exhaustion_is_deferred(&error) => {
-                    tracing::debug!(
-                        component = "reconciliation",
-                        event = "durable_finalization_deferred",
-                        reason = "local_pressure",
-                        "reserved finalization time elapsed before a durable reconciliation transition"
-                    );
-                    Ok(Self::deferred(&proxy, "local_pressure"))
-                }
-                result => result,
-            }
         })
-        .await
-        .map_err(|err| ProxyError::Other(format!("reconciliation engine task failed: {err}")))?
+        .await;
+        match run_result {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(ProxyError::StaleClaim { .. })) => ClaimedReconciliationRunOutcome::StaleClaim,
+            Ok(Err(error)) => {
+                let reason = Self::deferred_reason_for_claimed_failure(&error);
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = "claimed_run_deferred",
+                    defer_reason = reason,
+                    err = %error,
+                    "claimed reconciliation failure is retained for durable deferred finalization"
+                );
+                Self::deferred(&finalization_proxy, reason)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    component = "reconciliation",
+                    event = "claimed_run_task_deferred",
+                    defer_reason = "retryable_failure",
+                    err = %error,
+                    "claimed reconciliation task ended before a durable transition"
+                );
+                Self::deferred(&finalization_proxy, "retryable_failure")
+            }
+        }
+    }
+
+    fn deferred_reason_for_claimed_failure(error: &ProxyError) -> &'static str {
+        if Self::post_process_exhaustion_is_deferred(error) {
+            "local_pressure"
+        } else {
+            "retryable_failure"
+        }
     }
 
     fn outcome(
@@ -293,9 +311,19 @@ mod reconciliation_engine_tests {
     fn post_process_exhaustion_is_a_durable_defer_not_a_terminal_error() {
         let error = ProxyError::Other("reconciliation post-processing deadline exceeded".to_string());
         assert!(ReconciliationEngine::post_process_exhaustion_is_deferred(&error));
+        assert_eq!(
+            ReconciliationEngine::deferred_reason_for_claimed_failure(&error),
+            "local_pressure"
+        );
         assert!(!ReconciliationEngine::post_process_exhaustion_is_deferred(
             &ProxyError::Other("unrelated reconciliation failure".to_string())
         ));
+        assert_eq!(
+            ReconciliationEngine::deferred_reason_for_claimed_failure(&ProxyError::Other(
+                "unrelated reconciliation failure".to_string()
+            )),
+            "retryable_failure"
+        );
     }
 
     #[test]

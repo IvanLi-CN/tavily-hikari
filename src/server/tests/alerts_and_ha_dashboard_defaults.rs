@@ -839,6 +839,17 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
             panic!("test must hold the cold shared bulk permit, got {reason}")
         }
     };
+    let cold_lock_pool = connect_sqlite_test_pool(&cold_db_str).await;
+    let mut cold_writer = cold_lock_pool.acquire().await.expect("acquire cold writer");
+    sqlx::query("BEGIN EXCLUSIVE")
+        .execute(&mut *cold_writer)
+        .await
+        .expect("hold exclusive cold read lock");
+    sqlx::query("CREATE TABLE admin_privacy_status_cold_lock (id INTEGER)")
+        .execute(&mut *cold_writer)
+        .await
+        .expect("hold schema lock for cold privacy status");
+    let cold_started = std::time::Instant::now();
     let cold = client
         .get(format!("http://{cold_addr}/api/settings/system/privacy-status"))
         .header(reqwest::header::COOKIE, &cold_cookie)
@@ -847,9 +858,20 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
         .expect("cold privacy status");
     assert_eq!(
         cold.status(),
-        reqwest::StatusCode::OK,
-        "privacy reads use their own bounded session rather than the maintenance bulk permit"
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "a cold privacy read under SQLite pressure must return a bounded retry response"
     );
+    assert_eq!(
+        cold.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert!(cold_started.elapsed() < std::time::Duration::from_millis(350));
+    sqlx::query("ROLLBACK")
+        .execute(&mut *cold_writer)
+        .await
+        .expect("release exclusive cold read lock");
     drop(cold_held);
 
     let _ = std::fs::remove_file(db_path);

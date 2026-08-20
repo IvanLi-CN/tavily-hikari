@@ -2,7 +2,9 @@ impl TavilyProxy {
     pub fn admit_admin_privacy_status(&self) -> SqliteAdmissionOutcome {
         // Compatibility surface only: privacy status owns its bounded read
         // session and must never re-enter maintenance-bulk admission.
-        SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission { _permit: None })
+        SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+            _kind: SqliteMaintenanceAdmissionKind::DetachedRead,
+        })
     }
 
     #[doc(hidden)]

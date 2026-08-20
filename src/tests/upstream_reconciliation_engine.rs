@@ -164,6 +164,43 @@ async fn post_process_defer_finalization_is_atomic_and_never_marks_the_claim_err
         Some("local_pressure")
     );
     assert_eq!(observation.next_retry_at, Some(retry_at));
+    let local_backoff: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM meta WHERE key IN ('upstream_reconciliation_local_pressure_streak_v1', 'upstream_reconciliation_local_backoff_level_v1') ORDER BY key",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read atomically updated local backoff");
+    assert_eq!(
+        local_backoff,
+        vec![
+            (
+                "upstream_reconciliation_local_backoff_level_v1".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "upstream_reconciliation_local_pressure_streak_v1".to_string(),
+                "1".to_string(),
+            ),
+        ]
+    );
+    assert!(matches!(
+        proxy
+            .finalize_deferred_upstream_reconciliation_claim(
+                claim.id,
+                claim.claim_generation,
+                "local_pressure",
+                retry_at,
+            )
+            .await,
+        Err(ProxyError::StaleClaim { .. })
+    ));
+    let stale_backoff: String = sqlx::query_scalar(
+        "SELECT value FROM meta WHERE key = 'upstream_reconciliation_local_pressure_streak_v1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stale-finalization backoff state");
+    assert_eq!(stale_backoff, "1");
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

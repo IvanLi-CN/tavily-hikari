@@ -720,14 +720,14 @@ impl TavilyProxy {
         claim_generation: i64,
         remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
-        ReconciliationEngine::run_claimed(
+        Ok(ReconciliationEngine::run_claimed(
             self,
             usage_base,
             job_id,
             claim_generation,
             remote_io_permit,
         )
-        .await
+        .await)
     }
 
     async fn run_upstream_reconciliation_once_inner(

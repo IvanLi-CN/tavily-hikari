@@ -61,8 +61,17 @@ impl KeyStore {
             .begin_immediate(SqliteOperation::ScheduledJobControl)
             .await?;
         let result = async {
+            let (_, _, local_backoff_until) =
+                Self::apply_upstream_reconciliation_local_backoff_locked(
+                    &mut tx,
+                    true,
+                    now,
+                    Some((job_id, claim_generation)),
+                )
+                .await?;
+            let available_at = retry_at.max(local_backoff_until).max(now);
             let message = format!(
-                "outcome=sqlite_admission_deferred defer_reason={reason} retry_at={retry_at}"
+                "outcome=sqlite_admission_deferred defer_reason={reason} retry_at={available_at}"
             );
             let updated = sqlx::query(
                 r#"UPDATE scheduled_jobs
@@ -89,7 +98,7 @@ impl KeyStore {
                    WHERE id = 'local'"#,
             )
             .bind(reason)
-            .bind(retry_at)
+            .bind(available_at)
             .bind(now)
             .execute(&mut *tx)
             .await?;
@@ -102,7 +111,7 @@ impl KeyStore {
                     sqlx::query(
                         "UPDATE scheduled_jobs SET available_at = MIN(available_at, ?) WHERE id = ?",
                     )
-                    .bind(retry_at)
+                    .bind(available_at)
                     .bind(continuation_id)
                     .execute(&mut *tx)
                     .await?;
@@ -122,7 +131,7 @@ impl KeyStore {
                    ) VALUES ('upstream_reconciliation', 'auto', 'queued', 1, ?, ?, NULL, NULL)"#,
             )
             .bind(now)
-            .bind(retry_at)
+            .bind(available_at)
             .execute(&mut *tx)
             .await?;
             Ok(ScheduledJobEnqueueResult {

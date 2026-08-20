@@ -75,8 +75,8 @@
 - 远端请求启动、观察结果、结算写入和 Research 状态落盘均受同一轮截止时间约束；最后的持久化收尾预算不得被新一轮远端请求抢占。
 - 在发起远端请求前必须保留两秒给持久化收尾。收尾预算、post-processing 或 retry bookkeeping
   不足时，claimed run 只能返回 `Deferred { reason, retry_at }`，不得写 terminal job error。
-  Claim-fenced control transaction 必须把 deferred outcome、local-pressure observation、retry time
-  与唯一 delayed auto representative 一起提交；该 transaction 不能开始时，保留 running claim 供
+  Claim-fenced control transaction 必须把 deferred outcome、独立 local-backoff 元数据、local-pressure
+  observation、retry time 与唯一 delayed auto representative 一起提交；该 transaction 不能开始时，保留 running claim 供
   stale recovery，而不是伪造完成或本地重试循环。
 - 本地预算耗尽只推进独立 local backoff，不增加 upstream 429 压力；local backoff 的持久化元数据随 HA meta 增量和 baseline 同步，接管后继续执行原退避而不是立即重试。
 - Historical usage projection has a versioned durable lifecycle. An upgraded database with legacy
@@ -209,7 +209,7 @@
 - Given 近期窗口与旧 backlog 同时堆积，When reconciliation worker 选择候选窗口，Then 今日+昨日窗口优先进入 recent lane，且不会被老 backlog 长期饿死。
 - Given 同一上游 Key 的多个窗口同时到期且首次 `/usage` 查询收到 429 或本地 usage 限流，When reconciliation worker 执行，Then 该 Key 的到期窗口整体进入同一退避时间，本轮不再反复打同一个 Key，其他 Key 的候选仍可继续结算。
 - Given a claimed run reaches its finalization reserve or post-processing deadline, When the scheduler
-  persists the outcome, Then the job finish, local-pressure observation, retry deadline, and one
+  persists the outcome, Then the job finish, local-backoff state, local-pressure observation, retry deadline, and one
   delayed representative commit in one claim-fenced control transaction; a control-acquire failure
   leaves the running claim for stale recovery and does not create a terminal error.
 - Given current-period Research has pending work but no terminal progress, When its health is

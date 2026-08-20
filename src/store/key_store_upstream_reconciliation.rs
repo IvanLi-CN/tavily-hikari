@@ -840,8 +840,41 @@ impl KeyStore {
         claimed_job: Option<(i64, i64)>,
     ) -> Result<(i64, i64, i64), ProxyError> {
         let mut transaction = self.begin_reconciliation_control().await?;
-        let (previous_streak, previous_level, _) = Self::reconciliation_backoff_state_locked(
+        let result = Self::apply_upstream_reconciliation_local_backoff_locked(
             &mut transaction,
+            pressure,
+            now,
+            claimed_job,
+        )
+        .await;
+        let (streak, level, until) = match result {
+            Ok(state) => state,
+            Err(error) => {
+                transaction.finish(Err(error)).await?;
+                unreachable!("failed reconciliation local backoff transaction committed")
+            }
+        };
+        Self::sync_upstream_reconciliation_representative_locked(
+            &mut transaction,
+            now,
+            claimed_job,
+        )
+        .await?;
+        transaction.finish(Ok(())).await?;
+        Ok((streak, level, until))
+    }
+
+    pub(crate) async fn apply_upstream_reconciliation_local_backoff_locked<T>(
+        transaction: &mut T,
+        pressure: bool,
+        now: i64,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<(i64, i64, i64), ProxyError>
+    where
+        T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
+    {
+        let (previous_streak, previous_level, _) = Self::reconciliation_backoff_state_locked(
+            transaction,
             META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
             META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
             META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
@@ -865,9 +898,8 @@ impl KeyStore {
         } else {
             (0, 0, 0)
         };
-        if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
+        if !Self::reconciliation_claim_is_current_locked(transaction, claimed_job).await? {
             let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
-            transaction.rollback().await?;
             return Err(ProxyError::StaleClaim {
                 job_id,
                 claim_generation,
@@ -883,22 +915,15 @@ impl KeyStore {
         .bind(level.to_string())
         .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
         .bind(until.to_string())
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
         if !pressure && previous_level > 0 {
             sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
                 .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_LAST_RECOVERED_AT_V1)
                 .bind(now.to_string())
-                .execute(&mut *transaction)
+                .execute(&mut **transaction)
                 .await?;
         }
-        Self::sync_upstream_reconciliation_representative_locked(
-            &mut transaction,
-            now,
-            claimed_job,
-        )
-        .await?;
-        transaction.finish(Ok(())).await?;
         Ok((streak, level, until))
     }
 

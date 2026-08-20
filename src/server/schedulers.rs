@@ -2622,11 +2622,12 @@ async fn run_manual_claimed_job(
             drop(_job_execution_gate);
             let foreground_rps = state.proxy.foreground_activity_rps();
             if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
-                return defer_reconciliation_for_foreground(
+                return defer_reconciliation_for_sqlite_admission(
                     &state,
                     job_id,
                     claim_generation,
-                    foreground_rps,
+                    "foreground_pressure",
+                    state.proxy.backend_time().now_ts().saturating_add(30),
                 )
                 .await;
             }
@@ -2745,36 +2746,6 @@ async fn run_manual_claimed_job(
         }
         _ => finish(state, "error", format!("unsupported manual job type: {job_type}")).await,
     }
-}
-
-async fn defer_reconciliation_for_foreground(
-    state: &Arc<AppState>,
-    job_id: i64,
-    claim_generation: i64,
-    foreground_rps: i64,
-) -> bool {
-    let available_at = state.proxy.backend_time().now_ts().saturating_add(30);
-    tracing::debug!(
-        component = "reconciliation",
-        event = "foreground_deferred",
-        job_id,
-        claim_generation,
-        foreground_rps,
-        available_at,
-    );
-    state
-        .proxy
-        .scheduled_job_finish_and_enqueue_auto_at(
-            job_id,
-            claim_generation,
-            "upstream_reconciliation",
-            None,
-            1,
-            Some("outcome=foreground_pressure"),
-            available_at,
-        )
-        .await
-        .is_ok()
 }
 
 async fn defer_reconciliation_for_sqlite_admission(

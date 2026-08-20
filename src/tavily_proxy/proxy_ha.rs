@@ -183,7 +183,7 @@ impl TavilyProxy {
     pub fn admit_dashboard_rollup_integrity(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_dashboard_rollup_integrity() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: Some(permit),
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
             Err(reason) => SqliteAdmissionOutcome::Deferred {
                 reason: reason.as_str(),
@@ -407,7 +407,7 @@ impl TavilyProxy {
     pub fn admit_ha_outbox_gc(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_ha_outbox_gc() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: Some(permit),
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
             Err(reason) => SqliteAdmissionOutcome::Deferred {
                 reason: reason.as_str(),
@@ -418,7 +418,7 @@ impl TavilyProxy {
     pub fn admit_request_logs_gc(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_request_logs_gc() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: Some(permit),
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
             Err(reason) => SqliteAdmissionOutcome::Deferred {
                 reason: reason.as_str(),
@@ -435,7 +435,7 @@ impl TavilyProxy {
     pub fn admit_server_pressure_rebuild(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_server_pressure_rebuild() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: Some(permit),
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
             Err(reason) => SqliteAdmissionOutcome::Deferred {
                 reason: reason.as_str(),
@@ -446,7 +446,7 @@ impl TavilyProxy {
     pub fn admit_upstream_reconciliation_projection(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_upstream_reconciliation_projection() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
-                _permit: Some(permit),
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
             Err(reason) => SqliteAdmissionOutcome::Deferred {
                 reason: reason.as_str(),

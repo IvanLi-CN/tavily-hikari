@@ -834,11 +834,20 @@ pub struct TavilyProxy {
     pub(crate) backend_time: BackendTime,
 }
 
-/// Admission token for a bounded maintenance SQLite slice. The runtime owns
-/// the permit; callers can only retain it while doing the admitted work.
+/// Admission token for a bounded maintenance SQLite slice. Bulk work retains
+/// a runtime permit; the compatibility privacy-status admission is detached
+/// because that endpoint owns its separate bounded read session.
 #[derive(Debug)]
 pub struct SqliteMaintenanceAdmission {
-    _permit: Option<SqliteMaintenanceBulkPermit>,
+    _kind: SqliteMaintenanceAdmissionKind,
+}
+
+#[derive(Debug)]
+enum SqliteMaintenanceAdmissionKind {
+    Bulk {
+        _permit: SqliteMaintenanceBulkPermit,
+    },
+    DetachedRead,
 }
 
 #[derive(Debug)]
