@@ -48,6 +48,69 @@ pub(crate) struct ReconciliationRunObservationWrite {
 }
 
 impl KeyStore {
+    async fn apply_upstream_reconciliation_local_backoff_locked<T>(
+        transaction: &mut T,
+        pressure: bool,
+        now: i64,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<(i64, i64, i64), ProxyError>
+    where
+        T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
+    {
+        let (previous_streak, previous_level, _) = Self::reconciliation_backoff_state_locked(
+            transaction,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
+            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+        )
+        .await?;
+        let (streak, level, until) = if pressure {
+            let streak = previous_streak.saturating_add(1);
+            let level = if streak < 3 {
+                0
+            } else {
+                previous_level.saturating_add(1).clamp(1, 4)
+            };
+            let delay_secs = match level {
+                1 => 30,
+                2 => 60,
+                3 => 120,
+                4 => 300,
+                _ => 0,
+            };
+            (streak, level, now.saturating_add(delay_secs))
+        } else {
+            (0, 0, 0)
+        };
+        if !Self::reconciliation_claim_is_current_locked(transaction, claimed_job).await? {
+            let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
+            return Err(ProxyError::StaleClaim {
+                job_id,
+                claim_generation,
+            });
+        }
+        sqlx::query(
+            r#"INSERT INTO meta (key, value) VALUES (?, ?), (?, ?), (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
+        )
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1)
+        .bind(streak.to_string())
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1)
+        .bind(level.to_string())
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+        .bind(until.to_string())
+        .execute(&mut **transaction)
+        .await?;
+        if !pressure && previous_level > 0 {
+            sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_LAST_RECOVERED_AT_V1)
+                .bind(now.to_string())
+                .execute(&mut **transaction)
+                .await?;
+        }
+        Ok((streak, level, until))
+    }
+
     pub(crate) async fn finalize_deferred_upstream_reconciliation_claim(
         &self,
         job_id: i64,
