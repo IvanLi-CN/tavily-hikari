@@ -202,23 +202,39 @@ count.
 
 ## Visual Evidence
 
-PR: none (current-SHA evidence displayed in review; repository image asset awaits owner approval)
+PR: include
 
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
-- story_id_or_title: `Admin/HaNodeDetailPanel/Stalled` and `Mobile`
-- scenario: current three-channel ACK and GC health states, including stalled/deferred diagnostics
-- requested_viewport: `desktop default`
+- story_id_or_title: `Admin/Pages/System Settings Ha`
+- scenario: healthy dual-active topology diagnostics
+- requested_viewport: `1440x1000`
 - viewport_strategy: `storybook-viewport`
 - capture_scope: `browser-viewport`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
-- evidence_note: Captured from the final implementation SHA and displayed in the owner review.
-  The desktop and `393x852` mobile states show ACK/high-watermark/lag, retention, GC state, oldest
-  age, adaptive batch, progress, defer reason, retry time, debt mode, delete rate, foreground RPS,
-  SLO, deadline, and observed time for control, billing, and runtime. No stale screenshot is reused
-  and no image asset is committed until owner approval.
-- submission_gate: `owner_approval_pending`
+- evidence_note: Captured from final SHA `4cc38da204b4145b049fb0db0cd4bba84f2d3f3f`. The HA
+  settings summary adds core mode, the current control-plane leader, and the configured peer count.
+
+![HA settings topology diagnostics](./assets/ha-topology-diagnostics-desktop.png)
+
+PR: include
+
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- story_id_or_title: `Admin/Pages/Dashboard Ha Attention Mobile`
+- scenario: no configured peer diagnostic
+- requested_viewport: `393x852`
+- viewport_strategy: `storybook-viewport`
+- capture_scope: `browser-viewport`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- evidence_note: The compact Dashboard attention state identifies that no usable HA peer is
+  configured and links directly to HA settings without exposing administrator diagnostics to users.
+
+![Dashboard no-peer mobile attention](./assets/ha-dashboard-no-peer-mobile.png)
+
+- submission_gate: `owner_submission_approved`
 
 ## Acceptance
 
