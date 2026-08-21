@@ -313,40 +313,32 @@ async fn research_progress_window_requires_terminal_progress_without_pending_gro
             .pending_non_growing
     );
 
-    clock.set_now_ts(now + 1_201);
-    record_research_progress_window_observation(&proxy)
-        .await
-        .expect("restart after missing the fixed research observation window");
-    let missed_window = proxy
-        .upstream_privacy_status()
-        .await
-        .expect("read missed research observation window");
-    assert!(
-        !missed_window
-            .reconciliation_research_progress_window
-            .complete,
-        "a late sample must not be treated as a longer healthy ten-minute window"
-    );
-    assert_eq!(
-        missed_window
-            .reconciliation_research_progress_window
-            .window_seconds,
-        0
-    );
-
+    clock.set_now_ts(now + 601);
     proxy
         .mark_upstream_reconciliation_research_terminal("research-window-request")
         .await
-        .expect("mark research terminal in the next fixed window");
-    clock.set_now_ts(now + 1_801);
+        .expect("mark research terminal before the fixed window boundary");
+    clock.set_now_ts(now + 1_201);
     record_research_progress_window_observation(&proxy)
         .await
-        .expect("complete the next fixed research observation window");
+        .expect("complete the fixed window from a late observation");
     let advancing = proxy
         .upstream_privacy_status()
         .await
         .expect("read advancing research observation");
     assert!(advancing.reconciliation_research_progress_window.complete);
+    assert_eq!(
+        advancing
+            .reconciliation_research_progress_window
+            .window_seconds,
+        600
+    );
+    assert_eq!(
+        advancing
+            .reconciliation_research_progress_window
+            .window_ended_at,
+        Some(now + 1_200)
+    );
     assert!(
         advancing
             .reconciliation_research_progress_window

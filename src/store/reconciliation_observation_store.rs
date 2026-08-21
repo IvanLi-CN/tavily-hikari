@@ -122,18 +122,6 @@ impl KeyStore {
         const WINDOW_SECS: i64 = 10 * 60;
         let day_window =
             server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&chrono::Local));
-        let (terminal_count, pending_count) = sqlx::query_as::<_, (i64, i64)>(
-            r#"SELECT COUNT(DISTINCT CASE WHEN r.terminal_at IS NOT NULL THEN r.request_id END),
-                       COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL THEN r.request_id END)
-                  FROM upstream_reconciliation_research r
-                  JOIN upstream_reconciliation_usage u
-                    ON u.token_id = r.token_id AND u.period_code = r.period_code
-                 WHERE u.period_start >= ? AND u.period_start < ?"#,
-        )
-        .bind(day_window.start)
-        .bind(day_window.end)
-        .fetch_one(&mut **transaction)
-        .await?;
         let (
             active_period_start,
             active_started_at,
@@ -145,6 +133,33 @@ impl KeyStore {
                   FROM upstream_reconciliation_research_progress_window
                  WHERE id = 'local'"#,
         )
+        .fetch_one(&mut **transaction)
+        .await?;
+        let window_end = active_started_at.saturating_add(WINDOW_SECS);
+        let sample_at = if active_period_start == day_window.start
+            && active_started_at > 0
+            && now >= window_end
+        {
+            window_end
+        } else {
+            now
+        };
+        let (terminal_count, pending_count) = sqlx::query_as::<_, (i64, i64)>(
+            r#"SELECT COUNT(DISTINCT CASE
+                            WHEN r.terminal_at IS NOT NULL AND r.terminal_at <= ? THEN r.request_id
+                        END),
+                       COUNT(DISTINCT CASE
+                            WHEN r.terminal_at IS NULL OR r.terminal_at > ? THEN r.request_id
+                        END)
+                  FROM upstream_reconciliation_research r
+                  JOIN upstream_reconciliation_usage u
+                    ON u.token_id = r.token_id AND u.period_code = r.period_code
+                 WHERE u.period_start >= ? AND u.period_start < ?"#,
+        )
+        .bind(sample_at)
+        .bind(sample_at)
+        .bind(day_window.start)
+        .bind(day_window.end)
         .fetch_one(&mut **transaction)
         .await?;
 
@@ -163,7 +178,7 @@ impl KeyStore {
             .bind(pending_count)
             .execute(&mut **transaction)
             .await?;
-        } else if now.saturating_sub(active_started_at) == WINDOW_SECS {
+        } else if now >= window_end {
             sqlx::query(
                 r#"UPDATE upstream_reconciliation_research_progress_window
                        SET last_window_started_at = ?, last_window_ended_at = ?,
@@ -173,27 +188,10 @@ impl KeyStore {
                      WHERE id = 'local'"#,
             )
             .bind(active_started_at)
-            .bind(now)
+            .bind(window_end)
             .bind(terminal_count.saturating_sub(baseline_terminal_count))
             .bind(pending_count.saturating_sub(baseline_pending_count))
-            .bind(now)
-            .bind(terminal_count)
-            .bind(pending_count)
-            .execute(&mut **transaction)
-            .await?;
-        } else if now.saturating_sub(active_started_at) > WINDOW_SECS {
-            // A missed observation cannot prove progress for the fixed window.
-            // Restart from this durable sample instead of publishing a longer,
-            // deceptively healthy interval.
-            sqlx::query(
-                r#"UPDATE upstream_reconciliation_research_progress_window
-                       SET active_started_at = ?, baseline_terminal_count = ?,
-                           baseline_pending_count = ?, last_window_started_at = NULL,
-                           last_window_ended_at = NULL, last_window_terminal_delta = 0,
-                           last_window_pending_delta = 0
-                     WHERE id = 'local'"#,
-            )
-            .bind(now)
+            .bind(window_end)
             .bind(terminal_count)
             .bind(pending_count)
             .execute(&mut **transaction)
