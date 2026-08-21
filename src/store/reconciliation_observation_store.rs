@@ -163,7 +163,7 @@ impl KeyStore {
             .bind(pending_count)
             .execute(&mut **transaction)
             .await?;
-        } else if now.saturating_sub(active_started_at) >= WINDOW_SECS {
+        } else if now.saturating_sub(active_started_at) == WINDOW_SECS {
             sqlx::query(
                 r#"UPDATE upstream_reconciliation_research_progress_window
                        SET last_window_started_at = ?, last_window_ended_at = ?,
@@ -176,6 +176,23 @@ impl KeyStore {
             .bind(now)
             .bind(terminal_count.saturating_sub(baseline_terminal_count))
             .bind(pending_count.saturating_sub(baseline_pending_count))
+            .bind(now)
+            .bind(terminal_count)
+            .bind(pending_count)
+            .execute(&mut **transaction)
+            .await?;
+        } else if now.saturating_sub(active_started_at) > WINDOW_SECS {
+            // A missed observation cannot prove progress for the fixed window.
+            // Restart from this durable sample instead of publishing a longer,
+            // deceptively healthy interval.
+            sqlx::query(
+                r#"UPDATE upstream_reconciliation_research_progress_window
+                       SET active_started_at = ?, baseline_terminal_count = ?,
+                           baseline_pending_count = ?, last_window_started_at = NULL,
+                           last_window_ended_at = NULL, last_window_terminal_delta = 0,
+                           last_window_pending_delta = 0
+                     WHERE id = 'local'"#,
+            )
             .bind(now)
             .bind(terminal_count)
             .bind(pending_count)

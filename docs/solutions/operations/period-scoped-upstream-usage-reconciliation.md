@@ -208,10 +208,11 @@ reason and retry time.
 
 The scheduler must persist one deferred outcome through a single claim-fenced control transaction:
 finish the claimed job, advance independent local-backoff metadata, record local-pressure observation
-and retry time, and retain or create one delayed auto representative. Non-stale claimed failures are
-also typed defers, so no scheduler branch turns the finalization path into a terminal job error. If
-the transaction cannot acquire the writer, leave the claim running for stale recovery. Do not add an
-in-memory retry loop that can fan out jobs after restart.
+and retry time, and retain or create one delayed auto representative. Only explicit finalization-reserve
+exhaustion is a typed defer; other non-stale failures remain terminal job errors so the scheduler does
+not hide invariants or non-transient storage faults. If the transaction cannot acquire the writer, leave
+the claim running for stale recovery. Do not add an in-memory retry loop that can fan out jobs after
+restart.
 
 Research health is separate from settlement retries. For a current-period starvation investigation,
 observe a fixed ten-minute window: terminal rate must become positive and pending Research must not
