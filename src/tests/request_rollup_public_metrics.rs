@@ -798,7 +798,10 @@ async fn admin_summary_does_not_start_a_slow_background_flush() {
 
     let flush_arrived = pause.arrived.clone().notified_owned();
     proxy.nudge_request_stats_flush().await;
-    tokio::time::timeout(Duration::from_secs(1), flush_arrived)
+    // The worker's production slice remains wall-clock bounded to 50ms, but
+    // CI can spend more than one scheduler second starting a fresh SQLite
+    // worker after this test is launched alongside the neighboring admin cases.
+    tokio::time::timeout(Duration::from_secs(5), flush_arrived)
         .await
         .expect("explicit background flush reached post-flush pause");
 
