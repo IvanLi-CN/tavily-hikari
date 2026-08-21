@@ -318,6 +318,22 @@ async fn research_progress_window_requires_terminal_progress_without_pending_gro
         .mark_upstream_reconciliation_research_terminal("research-window-request")
         .await
         .expect("mark research terminal before the fixed window boundary");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        "#,
+    )
+    .bind("research-window-late-request")
+    .bind("research-window-token")
+    .bind("research-window-key")
+    .bind(period_code)
+    .bind(now + 1_201)
+    .bind(now + 1_201)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed pending research after the fixed window boundary");
     clock.set_now_ts(now + 1_201);
     record_research_progress_window_observation(&proxy)
         .await
@@ -338,6 +354,13 @@ async fn research_progress_window_requires_terminal_progress_without_pending_gro
             .reconciliation_research_progress_window
             .window_ended_at,
         Some(now + 1_200)
+    );
+    assert_eq!(
+        advancing
+            .reconciliation_research_progress_window
+            .pending_delta,
+        -1,
+        "research created after the boundary must not be counted in the completed window"
     );
     assert!(
         advancing

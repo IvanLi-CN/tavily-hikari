@@ -154,12 +154,14 @@ impl KeyStore {
                   FROM upstream_reconciliation_research r
                   JOIN upstream_reconciliation_usage u
                     ON u.token_id = r.token_id AND u.period_code = r.period_code
-                 WHERE u.period_start >= ? AND u.period_start < ?"#,
+                 WHERE u.period_start >= ? AND u.period_start < ?
+                   AND r.created_at <= ?"#,
         )
         .bind(sample_at)
         .bind(sample_at)
         .bind(day_window.start)
         .bind(day_window.end)
+        .bind(sample_at)
         .fetch_one(&mut **transaction)
         .await?;
 
