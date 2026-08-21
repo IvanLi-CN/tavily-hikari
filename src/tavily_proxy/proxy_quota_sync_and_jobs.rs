@@ -2657,6 +2657,23 @@ impl TavilyProxy {
             .await
     }
 
+    #[doc(hidden)]
+    pub async fn clear_upstream_reconciliation_local_backoff_claimed(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .update_upstream_reconciliation_local_backoff_claimed(
+                false,
+                self.backend_time.now_ts(),
+                job_id,
+                claim_generation,
+            )
+            .await
+            .map(|_| ())
+    }
+
     pub async fn scheduled_job_finish_claimed(
         &self,
         job_id: i64,

@@ -51,7 +51,10 @@
   than being silently downgraded. A deferred finalization uses one
   `ScheduledJobControl` transaction for the claim fence, local-backoff state, local-pressure
   observation, retry time, and single auto representative; failure to acquire that transaction
-  intentionally retains the running claim for stale recovery.
+  intentionally retains the running claim for stale recovery. Once the foreground gate reports low
+  pressure, its still-current claim clears the local-pressure backoff before entering the engine;
+  a fresh SQLite admission failure immediately records a new typed defer instead of suppressing
+  the recovery tail with an empty completion.
 - Research starvation is evaluated independently of settlement retry buckets. The operational
   acceptance window is ten minutes: terminal rate must become positive while pending Research does
   not grow. `upstream429` remains a rate-limited settlement bucket and is not evidence of Research

@@ -3,6 +3,144 @@ use super::upstream_support_and_manual_jobs::*;
 use super::*;
 
 #[tokio::test]
+async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_local_backoff() {
+    let db_path = temp_db_path("reconciliation-low-pressure-recovery");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-low-pressure-recovery".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = tavily_hikari::UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    let token = proxy
+        .create_access_token(Some("reconciliation-low-pressure-recovery"))
+        .await
+        .expect("create token");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-low-pressure-recovery")
+        .await
+        .expect("create upstream key");
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES (?, ?, 'recovery/S1', 'recovery-project', ?,
+                     ?, ?, 1, ?, ?, ?, 'shadow')"#,
+    )
+    .bind(&token.id)
+    .bind(&key_id)
+    .bind(format!("token:{}", token.id))
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&pool)
+    .await
+    .expect("insert shadow fixture");
+
+    let upstream = Router::new().route(
+        "/usage",
+        get(|| async { Json(serde_json::json!({ "key": { "usage": 0 } })) }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind usage upstream");
+    let address = listener.local_addr().expect("read usage upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, upstream.into_make_service())
+            .await
+            .expect("serve usage upstream");
+    });
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: format!("http://{address}"),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+    });
+    sqlx::query(
+        r#"INSERT INTO meta (key, value) VALUES
+             ('upstream_reconciliation_local_pressure_streak_v1', '3'),
+             ('upstream_reconciliation_local_backoff_level_v1', '1'),
+             ('upstream_reconciliation_local_backoff_until_v1', ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
+    )
+    .bind((now + 30).to_string())
+    .execute(&pool)
+    .await
+    .expect("seed sustained local pressure backoff");
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue reconciliation representative");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim reconciliation representative")
+        .expect("representative becomes running");
+
+    assert_eq!(
+        state.proxy.foreground_activity_rps(),
+        0,
+        "recovery worker starts after foreground traffic has drained"
+    );
+    assert!(
+        run_manual_claimed_job(
+            state.clone(),
+            "upstream_reconciliation".to_string(),
+            None,
+            ClaimedScheduledJob {
+                job_id: claim.id,
+                claim_generation: claim.claim_generation,
+                _job_execution_gate: None,
+            },
+            None,
+        )
+        .await
+    );
+    let completed: i64 = sqlx::query_scalar(
+        "SELECT completed_generation >= work_generation FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = 'recovery/S1'",
+    )
+    .bind(&token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("read shadow fixture completion");
+    assert_eq!(
+        completed, 1,
+        "a low-pressure recovery worker must not turn an eligible shadow terminal into an empty backoff completion"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
     let db_path = temp_db_path("ha-gc-worker-fair-wake");
     let db_str = db_path.to_string_lossy().to_string();

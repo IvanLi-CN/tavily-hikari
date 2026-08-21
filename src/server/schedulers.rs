@@ -2631,6 +2631,26 @@ async fn run_manual_claimed_job(
                 )
                 .await;
             }
+            match state
+                .proxy
+                .clear_upstream_reconciliation_local_backoff_claimed(job_id, claim_generation)
+                .await
+            {
+                Ok(()) => {}
+                Err(ProxyError::StaleClaim { .. }) => return false,
+                Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
+                    tracing::debug!(
+                        component = "reconciliation",
+                        event = "low_pressure_recovery_deferred",
+                        job_id,
+                        claim_generation,
+                        err = %error,
+                        "reconciliation retained its claim while low-pressure recovery could not start"
+                    );
+                    return false;
+                }
+                Err(error) => return finish(state, "error", error.to_string()).await,
+            }
             let run_result = state
                 .proxy
                 .run_upstream_reconciliation_once_claimed_outcome_with_remote_io_permit(

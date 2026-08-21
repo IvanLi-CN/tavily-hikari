@@ -6,7 +6,10 @@ Candidate windows are maintained in an indexed durable work projection. The engi
 starts primary settlement before research polling, permits at most two serial remote attempts per run, and gives
 research at most two seconds of the remaining time. Research exhaustion is diagnostic follow-up, not primary
 local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff
-(`2/5/10/30m`); non-429 failures do not reset the remote circuit.
+(`2/5/10/30m`); non-429 failures do not reset the remote circuit. A current claim that reaches a
+low-foreground recovery window clears only its local-pressure state before trying the engine again;
+if SQLite is still pressured, that attempt durably defers again. This preserves foreground yielding
+without letting a stale local backoff consume the whole recovery tail.
 
 Terminal completion is typed. Active non-zero delta uses `settled`, any zero delta uses
 `no_adjustment`, and compare-mode non-zero delta uses `observed` without writing billing truth.

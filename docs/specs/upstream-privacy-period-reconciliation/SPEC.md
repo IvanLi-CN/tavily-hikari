@@ -212,6 +212,10 @@
   persists the outcome, Then the job finish, local-backoff state, local-pressure observation, retry deadline, and one
   delayed representative commit in one claim-fenced control transaction; a control-acquire failure
   leaves the running claim for stale recovery and does not create a terminal error.
+- Given a local-pressure representative becomes eligible after foreground activity has drained, When its
+  claim remains current, Then the scheduler clears the local-pressure backoff before entering the engine;
+  a fresh SQLite admission failure still returns a typed defer, while eligible shadow work can reach a
+  terminal observation during the recovery tail.
 - Given current-period Research has pending work but no terminal progress, When its health is
   evaluated, Then use a fixed ten-minute observation window: terminal rate must become positive and
   pending work must not grow. Treat the `upstream429` retry bucket as a separate metric, never as
