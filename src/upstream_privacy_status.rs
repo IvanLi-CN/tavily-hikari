@@ -93,6 +93,22 @@ pub struct ReconciliationRunObservation {
     pub observed_at: Option<i64>,
 }
 
+/// A completed, fixed-duration observation of current-period Research. A
+/// window is healthy only when it observes terminal progress without pending
+/// Research growing; upstream 429 remains a separate retry diagnostic.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReconciliationResearchProgressWindow {
+    pub window_started_at: Option<i64>,
+    pub window_ended_at: Option<i64>,
+    pub window_seconds: i64,
+    pub terminal_delta: i64,
+    pub pending_delta: i64,
+    pub terminal_rate_positive: bool,
+    pub pending_non_growing: bool,
+    pub complete: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ReconciliationControllerStatus {
@@ -159,6 +175,8 @@ pub struct UpstreamPrivacyStatus {
     pub reconciliation_local_backoff: ReconciliationLocalBackoff,
     #[serde(default)]
     pub reconciliation_run_observation: ReconciliationRunObservation,
+    #[serde(default)]
+    pub reconciliation_research_progress_window: ReconciliationResearchProgressWindow,
     #[serde(default)]
     pub reconciliation_controller: ReconciliationControllerStatus,
     #[serde(default)]

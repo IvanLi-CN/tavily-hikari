@@ -439,6 +439,51 @@ impl KeyStore {
             research_terminal,
             research_pending,
         };
+        let (
+            active_started_at,
+            last_window_started_at,
+            last_window_ended_at,
+            last_window_terminal_delta,
+            last_window_pending_delta,
+        ) = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, i64, i64)>(
+            r#"SELECT active_started_at, last_window_started_at, last_window_ended_at,
+                       last_window_terminal_delta, last_window_pending_delta
+                  FROM upstream_reconciliation_research_progress_window
+                 WHERE id = 'local'"#,
+        )
+        .fetch_one(&mut **snapshot)
+        .await?;
+        let complete_research_window = last_window_started_at.zip(last_window_ended_at);
+        let (research_window_started_at, research_window_ended_at, research_window_seconds) =
+            if let Some((started_at, ended_at)) = complete_research_window {
+                (
+                    Some(started_at),
+                    Some(ended_at),
+                    ended_at.saturating_sub(started_at),
+                )
+            } else {
+                (
+                    (active_started_at > 0).then_some(active_started_at),
+                    None,
+                    now.saturating_sub(active_started_at).max(0),
+                )
+            };
+        let reconciliation_research_progress_window = ReconciliationResearchProgressWindow {
+            window_started_at: research_window_started_at,
+            window_ended_at: research_window_ended_at,
+            window_seconds: research_window_seconds,
+            terminal_delta: complete_research_window
+                .map(|_| last_window_terminal_delta)
+                .unwrap_or(0),
+            pending_delta: complete_research_window
+                .map(|_| last_window_pending_delta)
+                .unwrap_or(0),
+            terminal_rate_positive: complete_research_window.is_some()
+                && last_window_terminal_delta > 0,
+            pending_non_growing: complete_research_window.is_some()
+                && last_window_pending_delta <= 0,
+            complete: complete_research_window.is_some(),
+        };
         let daily_reconciliation_by_key = key_rows
             .into_iter()
             .map(|(key_id, terminal_research, pending_research, pending_project_ids)| {
@@ -611,6 +656,7 @@ impl KeyStore {
                 last_recovered_at: meta_i64(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_LAST_RECOVERED_AT_V1),
             },
             reconciliation_run_observation,
+            reconciliation_research_progress_window,
             reconciliation_controller: ReconciliationControllerStatus {
                 mode: controller_mode.as_str().to_string(),
                 activation_period_code,

@@ -205,6 +205,147 @@ async fn post_process_defer_finalization_is_atomic_and_never_marks_the_claim_err
     drop(proxy);
     let _ = std::fs::remove_file(db_path);
 }
+
+async fn record_research_progress_window_observation(
+    proxy: &TavilyProxy,
+) -> Result<(), ProxyError> {
+    proxy
+        .key_store
+        .record_upstream_reconciliation_engine_observation(
+            crate::store::ReconciliationRunObservationWrite {
+                claimed_job: None,
+                mode: "compare",
+                hydrate_ms: 0,
+                first_remote_ms: None,
+                remote_ms: 0,
+                finalization_ms: 0,
+                research_ms: 0,
+                settled: 0,
+                no_adjustment: 0,
+                observed: 0,
+                upstream_429: 0,
+                transport_failure: 0,
+                semantic_failure: 0,
+                local_pressure: 0,
+                last_transport_kind: None,
+                last_retryable_outcome: None,
+                continuation_reason: Some("observed"),
+                next_retry_at: None,
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn research_progress_window_requires_terminal_progress_without_pending_growth() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-research-window"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let period_code = "2026-08-21/S1";
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        "#,
+    )
+    .bind("research-window-token")
+    .bind("research-window-key")
+    .bind(period_code)
+    .bind("research-window-project")
+    .bind("token:research-window-token")
+    .bind(now - 60)
+    .bind(now + 3_600)
+    .bind(now - 60)
+    .bind(now - 60)
+    .bind(now - 60)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed current-period research usage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        "#,
+    )
+    .bind("research-window-request")
+    .bind("research-window-token")
+    .bind("research-window-key")
+    .bind(period_code)
+    .bind(now - 60)
+    .bind(now - 60)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed pending research");
+
+    record_research_progress_window_observation(&proxy)
+        .await
+        .expect("start research observation window");
+    clock.set_now_ts(now + 600);
+    record_research_progress_window_observation(&proxy)
+        .await
+        .expect("complete stalled research observation window");
+    let stalled = proxy
+        .upstream_privacy_status()
+        .await
+        .expect("read stalled research observation");
+    assert!(stalled.reconciliation_research_progress_window.complete);
+    assert!(
+        !stalled
+            .reconciliation_research_progress_window
+            .terminal_rate_positive
+    );
+    assert!(
+        stalled
+            .reconciliation_research_progress_window
+            .pending_non_growing
+    );
+
+    proxy
+        .mark_upstream_reconciliation_research_terminal("research-window-request")
+        .await
+        .expect("mark research terminal");
+    clock.set_now_ts(now + 1_200);
+    record_research_progress_window_observation(&proxy)
+        .await
+        .expect("complete advancing research observation window");
+    let advancing = proxy
+        .upstream_privacy_status()
+        .await
+        .expect("read advancing research observation");
+    assert!(advancing.reconciliation_research_progress_window.complete);
+    assert!(
+        advancing
+            .reconciliation_research_progress_window
+            .terminal_rate_positive
+    );
+    assert!(
+        advancing
+            .reconciliation_research_progress_window
+            .pending_non_growing
+    );
+    assert_eq!(
+        advancing
+            .reconciliation_research_progress_window
+            .window_seconds,
+        600
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
 use axum::{Json, Router, routing::get};
 use tokio::net::TcpListener;
 

@@ -276,7 +276,11 @@ impl KeyStore {
         .await?;
         generation_tx.finish(Ok(())).await?;
 
-        let mut cursor = 0_i64;
+        // Advance in the same order as the time index. The source fence still
+        // excludes rows inserted after the upper id was captured, while the
+        // time predicate prevents a historical id scan on long-lived nodes.
+        let mut cursor_created_at = hour_since;
+        let mut cursor_id = 0_i64;
         loop {
             if !should_continue() {
                 return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
@@ -286,30 +290,35 @@ impl KeyStore {
             let rows = sqlx::query_as::<_, (i64, i64, String)>(
                 r#"
                 SELECT id, created_at, result_status
-                FROM observability.request_logs
-                WHERE id > ?
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at > ? OR (created_at = ? AND id > ?))
                   AND id <= ?
                   AND visibility = ?
-                  AND created_at >= ?
                   AND request_user_id IS NOT NULL
                   AND counts_business_quota = 1
                   AND upstream_operation IS NOT NULL
                   AND result_status != ?
-                ORDER BY id ASC
+                ORDER BY created_at ASC, id ASC
                 LIMIT 500
                 "#,
             )
-            .bind(cursor)
+            .bind(hour_since)
+            .bind(cursor_created_at)
+            .bind(cursor_created_at)
+            .bind(cursor_id)
             .bind(upper_bound_request_log_id)
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(hour_since)
             .bind(OUTCOME_QUOTA_EXHAUSTED)
             .fetch_all(&self.pool)
             .await?;
             if rows.is_empty() {
                 break;
             }
-            cursor = rows.last().map(|(id, _, _)| *id).unwrap_or(cursor);
+            if let Some((id, created_at, _)) = rows.last() {
+                cursor_created_at = *created_at;
+                cursor_id = *id;
+            }
             let mut buckets = std::collections::BTreeMap::<
                 (&'static str, i64, i64),
                 (i64, i64),

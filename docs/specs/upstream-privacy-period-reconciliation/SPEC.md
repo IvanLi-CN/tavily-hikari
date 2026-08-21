@@ -216,6 +216,10 @@
   evaluated, Then use a fixed ten-minute observation window: terminal rate must become positive and
   pending work must not grow. Treat the `upstream429` retry bucket as a separate metric, never as
   Research backlog or terminal progress.
+- The additive `reconciliationResearchProgressWindow` diagnostic reports the most recently completed
+  ten-minute window, including terminal and pending deltas. An incomplete window is explicitly not
+  healthy; a completed window is healthy only when `terminalRatePositive` and `pendingNonGrowing`
+  are both true.
 - Given 管理员进入隐藏 session 管理页，When 使用状态/时间筛选并执行单条、批量或按筛选释放，Then 只有命中的活跃 `upstream_mcp` session 会被释放，已过期或已释放记录不会重复处理。
 
 ## 验收清单（Acceptance checklist）

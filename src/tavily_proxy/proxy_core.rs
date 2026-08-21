@@ -889,6 +889,11 @@ impl TavilyProxy {
                 event.generation = next_generation;
             }
         }
+        drop(buffered);
+        let mut writer = self.observability_deferred_writer.lock().await;
+        // A demotion creates a new serving generation. Its first qualifying
+        // rebuild is not throttled by the previous tenure.
+        writer.last_pressure_rebuild_started_at = None;
     }
 
     #[cfg(test)]
@@ -1401,7 +1406,36 @@ impl TavilyProxy {
         PostReadyServingTasksClaim::Suppressed { should_log }
     }
 
+    fn server_pressure_rebuild_is_due(&self) -> bool {
+        let now = self.backend_time.now_ts();
+        let Ok(writer) = self.observability_deferred_writer.try_lock() else {
+            return false;
+        };
+        let stale_long_enough = writer.pressure_stale_since.is_some_and(|since| {
+            now.saturating_sub(since) >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+        });
+        let due_to_overflow_or_coverage_loss =
+            writer.pressure_rebuild_requested || writer.pressure_unrecoverable_overflow;
+        (due_to_overflow_or_coverage_loss || stale_long_enough)
+            && writer.last_pressure_rebuild_started_at.is_none_or(|started| {
+                now.saturating_sub(started)
+                    >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+            })
+    }
+
     pub fn spawn_server_pressure_buckets_rebuild_once(&self) -> bool {
+        if !self.server_pressure_rebuild_is_due() {
+            return false;
+        }
+        self.start_server_pressure_buckets_rebuild_once()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_server_pressure_buckets_rebuild_once_for_test(&self) -> bool {
+        self.start_server_pressure_buckets_rebuild_once()
+    }
+
+    fn start_server_pressure_buckets_rebuild_once(&self) -> bool {
         let generation = self
             .server_pressure_rebuild_generation
             .load(Ordering::SeqCst);

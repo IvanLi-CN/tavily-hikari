@@ -115,7 +115,7 @@ impl ReconciliationEngine {
         job_id: i64,
         claim_generation: i64,
         remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> ClaimedReconciliationRunOutcome {
+    ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let proxy = proxy.clone();
         let finalization_proxy = proxy.clone();
         let usage_base = usage_base.to_string();
@@ -133,37 +133,22 @@ impl ReconciliationEngine {
         })
         .await;
         match run_result {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(ProxyError::StaleClaim { .. })) => ClaimedReconciliationRunOutcome::StaleClaim,
-            Ok(Err(error)) => {
-                let reason = Self::deferred_reason_for_claimed_failure(&error);
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(ProxyError::StaleClaim { .. })) => Ok(ClaimedReconciliationRunOutcome::StaleClaim),
+            Ok(Err(error)) if Self::post_process_exhaustion_is_deferred(&error) => {
                 tracing::warn!(
                     component = "reconciliation",
                     event = "claimed_run_deferred",
-                    defer_reason = reason,
+                    defer_reason = "local_pressure",
                     err = %error,
-                    "claimed reconciliation failure is retained for durable deferred finalization"
+                    "claimed reconciliation exhausted its reserved durable finalization window"
                 );
-                Self::deferred(&finalization_proxy, reason)
+                Ok(Self::deferred(&finalization_proxy, "local_pressure"))
             }
-            Err(error) => {
-                tracing::warn!(
-                    component = "reconciliation",
-                    event = "claimed_run_task_deferred",
-                    defer_reason = "retryable_failure",
-                    err = %error,
-                    "claimed reconciliation task ended before a durable transition"
-                );
-                Self::deferred(&finalization_proxy, "retryable_failure")
-            }
-        }
-    }
-
-    fn deferred_reason_for_claimed_failure(error: &ProxyError) -> &'static str {
-        if Self::post_process_exhaustion_is_deferred(error) {
-            "local_pressure"
-        } else {
-            "retryable_failure"
+            Ok(Err(error)) => Err(error),
+            Err(error) => Err(ProxyError::Other(format!(
+                "claimed reconciliation task join failed: {error}"
+            ))),
         }
     }
 
@@ -311,19 +296,9 @@ mod reconciliation_engine_tests {
     fn post_process_exhaustion_is_a_durable_defer_not_a_terminal_error() {
         let error = ProxyError::Other("reconciliation post-processing deadline exceeded".to_string());
         assert!(ReconciliationEngine::post_process_exhaustion_is_deferred(&error));
-        assert_eq!(
-            ReconciliationEngine::deferred_reason_for_claimed_failure(&error),
-            "local_pressure"
-        );
         assert!(!ReconciliationEngine::post_process_exhaustion_is_deferred(
             &ProxyError::Other("unrelated reconciliation failure".to_string())
         ));
-        assert_eq!(
-            ReconciliationEngine::deferred_reason_for_claimed_failure(&ProxyError::Other(
-                "unrelated reconciliation failure".to_string()
-            )),
-            "retryable_failure"
-        );
     }
 
     #[test]
@@ -412,9 +387,15 @@ impl ReconciliationOutcome {
     }
 }
 async fn await_reconciliation_post_process<T>(
-    deadline: std::time::Instant,
+    _deadline: std::time::Instant,
     operation: impl std::future::Future<Output = Result<T, ProxyError>>,
 ) -> Result<T, ProxyError> {
+    operation.await
+}
+
+fn ensure_reconciliation_post_process_reserve(
+    deadline: std::time::Instant,
+) -> Result<(), ProxyError> {
     if deadline
         .saturating_duration_since(std::time::Instant::now())
         .is_zero()
@@ -423,5 +404,5 @@ async fn await_reconciliation_post_process<T>(
             "reconciliation post-processing deadline exceeded".to_string(),
         ));
     }
-    operation.await
+    Ok(())
 }

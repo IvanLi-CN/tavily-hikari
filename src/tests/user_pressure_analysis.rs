@@ -103,6 +103,83 @@ async fn seed_pressure_attempt(
 }
 
 #[tokio::test]
+async fn analysis_pressure_rebuild_waits_for_overflow_coverage_loss_or_sustained_staleness() {
+    let db_path = temp_db_path("analysis-pressure-rebuild-hysteresis");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+    )
+    .await
+    .expect("create proxy");
+
+    assert!(
+        !proxy.spawn_server_pressure_buckets_rebuild_once(),
+        "a writable tenure alone must not rebuild pressure buckets"
+    );
+    assert!(!proxy.server_pressure_rebuild_is_active_for_test());
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn analysis_pressure_rebuild_source_slice_uses_the_time_cursor_index() {
+    let db_path = temp_db_path("analysis-pressure-rebuild-time-cursor");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+    )
+    .await
+    .expect("create proxy");
+
+    let plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT id, created_at, result_status
+        FROM observability.request_logs INDEXED BY idx_request_logs_time
+        WHERE created_at >= 0
+          AND (created_at > 0 OR (created_at = 0 AND id > 0))
+          AND id <= 9223372036854775807
+          AND visibility = 'visible'
+          AND request_user_id IS NOT NULL
+          AND counts_business_quota = 1
+          AND upstream_operation IS NOT NULL
+          AND result_status != 'quota_exhausted'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 500
+        "#,
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("explain server pressure rebuild source slice");
+    let details = plan
+        .iter()
+        .map(|row| {
+            row.try_get::<String, _>("detail")
+                .expect("query-plan detail")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        details.contains("idx_request_logs_time"),
+        "expected time-keyset source scan, got query plan:\n{details}"
+    );
+    assert!(
+        !details.contains("USE TEMP B-TREE"),
+        "time-keyset source scan must not sort the historical log range:\n{details}"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn analysis_pressure_snapshot_uses_rolling_1h_and_excludes_non_upstream_events() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
     let db_path = temp_db_path("analysis-pressure-snapshot-live");
@@ -549,11 +626,11 @@ async fn analysis_pressure_snapshot_background_rebuild_rehydrates_server_pressur
     );
 
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "reopened proxy should schedule exactly one background rebuild"
     );
     assert!(
-        !reopened.spawn_server_pressure_buckets_rebuild_once(),
+        !reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "background rebuild scheduling should be idempotent"
     );
     assert!(
@@ -686,11 +763,11 @@ async fn analysis_pressure_background_rebuild_retries_after_transient_failure() 
     let lock_handle =
         hold_sqlite_write_lock_for_test_for(&reopened.key_store.pool, Duration::from_secs(6)).await;
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "first background rebuild attempt should schedule"
     );
     assert!(
-        !reopened.spawn_server_pressure_buckets_rebuild_once(),
+        !reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "concurrent background rebuild attempts should still dedupe"
     );
     lock_handle
@@ -951,7 +1028,7 @@ async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
     let lock_handle =
         hold_sqlite_write_lock_for_test_for(&reopened.key_store.pool, Duration::from_secs(6)).await;
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "first background rebuild attempt should schedule"
     );
     reopened.cancel_server_pressure_buckets_rebuild().await;
@@ -977,7 +1054,7 @@ async fn analysis_pressure_background_rebuild_cancels_and_can_be_rescheduled() {
         .sqlite_runtime
         .mark_recent_contention_for_test();
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "serving promotion should reschedule after cancellation through the contention cooldown"
     );
 
@@ -1138,7 +1215,7 @@ async fn observability_deferred_writer_source_fence_does_not_double_count_rebuil
     drop(held);
 
     assert!(
-        proxy.spawn_server_pressure_buckets_rebuild_once(),
+        proxy.force_server_pressure_buckets_rebuild_once_for_test(),
         "source rebuild should schedule while the old delta remains queued"
     );
     tokio::time::timeout(Duration::from_secs(8), async {
@@ -1299,7 +1376,7 @@ async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
     .expect("reopen proxy");
 
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "first background rebuild attempt should schedule"
     );
 
@@ -1335,7 +1412,7 @@ async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if reopened.spawn_server_pressure_buckets_rebuild_once() {
+            if reopened.force_server_pressure_buckets_rebuild_once_for_test() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1442,7 +1519,7 @@ async fn analysis_pressure_cancel_requeues_buffered_events_for_next_generation()
     .expect("reopen proxy");
 
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "first background rebuild attempt should schedule"
     );
     reopened
@@ -1451,7 +1528,7 @@ async fn analysis_pressure_cancel_requeues_buffered_events_for_next_generation()
     reopened.cancel_server_pressure_buckets_rebuild().await;
 
     assert!(
-        reopened.spawn_server_pressure_buckets_rebuild_once(),
+        reopened.force_server_pressure_buckets_rebuild_once_for_test(),
         "next serving generation should be able to reschedule rebuild"
     );
 
@@ -1517,7 +1594,7 @@ async fn analysis_pressure_rebuild_drains_events_arriving_during_tail_replay() {
             .await;
     }
     proxy.pause_server_pressure_tail_replay_for_test();
-    assert!(proxy.spawn_server_pressure_buckets_rebuild_once());
+    assert!(proxy.force_server_pressure_buckets_rebuild_once_for_test());
     tokio::time::timeout(
         Duration::from_secs(2),
         proxy.wait_for_server_pressure_tail_replay_for_test(),
@@ -1584,7 +1661,7 @@ async fn analysis_pressure_rebuild_releases_phase_after_tail_replay_error() {
         .inject_server_pressure_buffered_event_for_test(Some(9_999), now - 30, OUTCOME_ERROR)
         .await;
     proxy.pause_server_pressure_tail_replay_for_test();
-    assert!(proxy.spawn_server_pressure_buckets_rebuild_once());
+    assert!(proxy.force_server_pressure_buckets_rebuild_once_for_test());
     tokio::time::timeout(
         Duration::from_secs(2),
         proxy.wait_for_server_pressure_tail_replay_for_test(),
@@ -1603,7 +1680,7 @@ async fn analysis_pressure_rebuild_releases_phase_after_tail_replay_error() {
     .await
     .expect("tail replay write error should release the rebuild phase");
     assert!(
-        proxy.spawn_server_pressure_buckets_rebuild_once(),
+        proxy.force_server_pressure_buckets_rebuild_once_for_test(),
         "a failed tail replay must leave the next rebuild schedulable"
     );
     proxy.cancel_server_pressure_buckets_rebuild().await;

@@ -79,6 +79,9 @@
   fence, writes only an inactive staged generation, then atomically publishes that generation before
   replaying its buffered tail. Old generations are cleaned in 25-row slices; no rebuild may delete
   the whole live bucket set or replace it with a partial result.
+- A writable tenure alone never starts that rebuild. It is admitted only for an overflow, confirmed
+  coverage loss, or five minutes of continuous stale pressure, and each serving generation spaces
+  qualifying rebuilds by at least five minutes.
 
 - 继续使用默认 `RUNTIME_LOG_FORMAT=json` + `stderr` 输出，保留 `text` fallback。
 - 新增的性能事件必须使用现有 `tracing` 结构化字段，按事件适用性包含：

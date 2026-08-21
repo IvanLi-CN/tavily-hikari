@@ -720,14 +720,14 @@ impl TavilyProxy {
         claim_generation: i64,
         remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
-        Ok(ReconciliationEngine::run_claimed(
+        ReconciliationEngine::run_claimed(
             self,
             usage_base,
             job_id,
             claim_generation,
             remote_io_permit,
         )
-        .await)
+        .await
     }
 
     async fn run_upstream_reconciliation_once_inner(
@@ -1338,13 +1338,7 @@ impl TavilyProxy {
                                 Self::RECONCILIATION_TOTAL_BUDGET_SECS
                                     .saturating_sub(Self::RECONCILIATION_POST_PROCESS_HEADROOM_SECS),
                             );
-                        let remaining = retry_bookkeeping_deadline
-                            .saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() {
-                            return Err(ProxyError::Other(
-                                "reconciliation retry bookkeeping deadline exceeded".to_string(),
-                            ));
-                        }
+                        ensure_reconciliation_post_process_reserve(retry_bookkeeping_deadline)?;
                         let cooldown_until = if reason_kind
                             == RECONCILIATION_RETRY_REASON_UPSTREAM_429
                         {
@@ -1358,13 +1352,6 @@ impl TavilyProxy {
                         } else {
                             retry_at.unwrap_or_else(|| self.backend_time.now_ts().saturating_add(300))
                         };
-                        let remaining = retry_bookkeeping_deadline
-                            .saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() {
-                            return Err(ProxyError::Other(
-                                "reconciliation retry bookkeeping deadline exceeded".to_string(),
-                            ));
-                        }
                         self.key_store
                             .mark_reconciliation_retry(
                                 &candidate,
@@ -1611,12 +1598,14 @@ impl TavilyProxy {
             .elapsed()
             .as_millis()
             .min(i64::MAX as u128) as i64;
-        let run_marker_result = await_reconciliation_post_process(
-            post_process_deadline,
-            self.key_store
-                .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts()),
-        )
-        .await;
+        // Do the only cooperative deadline check before any post-processing
+        // write. Once durable work begins, do not turn a partially applied
+        // sequence into a second local-pressure transition.
+        ensure_reconciliation_post_process_reserve(post_process_deadline)?;
+        let run_marker_result = self
+            .key_store
+            .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts())
+            .await;
         if let Err(err) = run_marker_result {
             if is_transient_sqlite_write_error(&err) {
                 tracing::debug!(

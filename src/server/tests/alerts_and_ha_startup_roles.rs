@@ -285,7 +285,7 @@ async fn startup_keeps_persisted_recovery_fenced_after_role_check() {
 }
 
 #[tokio::test]
-async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_serving_roles() {
+async fn persist_ha_status_snapshot_skips_unneeded_pressure_rebuild_for_serving_roles() {
     let db_path = temp_db_path("ha-post-ready-pressure-rebuild");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -395,22 +395,16 @@ async fn persist_ha_status_snapshot_spawns_post_ready_pressure_rebuild_for_servi
         .await
         .expect("persist serving HA status snapshot");
 
-    tokio::time::timeout(Duration::from_secs(8), async {
-        loop {
-            let bucket_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
-            )
-            .fetch_one(&pool)
-            .await
-            .expect("count rebuilt server pressure buckets");
-            if bucket_count >= 1 {
-                return bucket_count;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
+    let bucket_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+    )
+    .fetch_one(&pool)
     .await
-    .expect("serving HA snapshot should trigger background pressure rebuild");
+    .expect("count server pressure buckets before background backfill");
+    assert_eq!(
+        bucket_count, 0,
+        "a normal writable tenure must not start a pressure rebuild without coverage loss or staleness"
+    );
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -547,24 +541,29 @@ async fn post_ready_serving_tasks_run_once_per_writable_tenure() {
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            let bucket_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
-            )
-            .fetch_one(&pool)
-            .await
-            .expect("count rebuilt server pressure buckets");
             let summary = proxy
                 .user_dashboard_summary(&user.user_id, None)
                 .await
                 .expect("load user dashboard summary after post-ready backfill");
-            if bucket_count >= 1 && summary.business_calls_1h.total_count == 1 {
+            if summary.business_calls_1h.total_count == 1 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
-    .expect("first post-ready tasks should complete");
+    .expect("first post-ready business-call backfill should complete");
+
+    let bucket_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind = 'five_minute'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count server pressure buckets after post-ready backfill");
+    assert_eq!(
+        bucket_count, 0,
+        "a writable tenure alone must not rebuild pressure buckets"
+    );
 
     assert!(
         !spawn_post_ready_serving_tasks_for_status(state.clone(), &writable_status),
