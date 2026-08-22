@@ -2660,89 +2660,7 @@ async fn run_manual_claimed_job(
                     remote_io_permit.take(),
                 )
                 .await;
-            match run_result {
-                Ok(ClaimedReconciliationRunOutcome::Completed {
-                    settled,
-                    no_adjustment,
-                    observed,
-                }) => {
-                    match state.proxy.upstream_reconciliation_representative_available_at().await {
-                        Ok(Some(available_at)) => state
-                            .proxy
-                            .scheduled_job_finish_and_enqueue_auto_at(
-                                job_id,
-                                claim_generation,
-                                "upstream_reconciliation",
-                                None,
-                                1,
-                                Some(&format!(
-                                    "settled={settled} no_adjustment={no_adjustment} observed={observed} continuation_at={available_at}"
-                                )),
-                                available_at,
-                            )
-                            .await
-                            .is_ok(),
-                        Ok(None) => finish(
-                            state,
-                            "success",
-                            format!(
-                                "settled={settled} no_adjustment={no_adjustment} observed={observed}"
-                            ),
-                        )
-                        .await,
-                        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
-                            tracing::warn!(
-                                component = "reconciliation",
-                                event = "completed_claim_deferred",
-                                job_id,
-                                claim_generation,
-                                defer_reason = "local_pressure",
-                                "reconciliation completion bookkeeping deferred under local pressure"
-                            );
-                            defer_reconciliation_for_sqlite_admission(
-                                &state,
-                                job_id,
-                                claim_generation,
-                                "local_pressure",
-                                state.proxy.backend_time().now_ts().saturating_add(30),
-                            )
-                            .await
-                        }
-                        Err(err) => finish(state, "error", err.to_string()).await,
-                    }
-                }
-                Ok(ClaimedReconciliationRunOutcome::Deferred { reason, retry_at }) => {
-                    defer_reconciliation_for_sqlite_admission(
-                        &state,
-                        job_id,
-                        claim_generation,
-                        reason,
-                        retry_at,
-                    )
-                    .await
-                }
-                Ok(ClaimedReconciliationRunOutcome::StaleClaim) => false,
-                Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
-                    tracing::warn!(
-                        component = "reconciliation",
-                        event = "claimed_run_deferred",
-                        job_id,
-                        claim_generation,
-                        defer_reason = "local_pressure",
-                        error_kind = "unclassified",
-                        "reconciliation run did not reach a typed terminal outcome"
-                    );
-                    defer_reconciliation_for_sqlite_admission(
-                        &state,
-                        job_id,
-                        claim_generation,
-                        "local_pressure",
-                        state.proxy.backend_time().now_ts().saturating_add(30),
-                    )
-                    .await
-                }
-                Err(err) => finish(state, "error", err.to_string()).await,
-            }
+            persist_claimed_reconciliation_run(state, job_id, claim_generation, run_result).await
         }
         "auth_token_logs_gc" => {
             let _maintenance = acquire_db_maintenance_read_gate().await;
@@ -2802,6 +2720,106 @@ async fn run_manual_claimed_job(
             run_db_compaction_claimed_job(state, job_id, claim_generation).await
         }
         _ => finish(state, "error", format!("unsupported manual job type: {job_type}")).await,
+    }
+}
+
+async fn persist_claimed_reconciliation_run(
+    state: Arc<AppState>,
+    job_id: i64,
+    claim_generation: i64,
+    run_result: Result<ClaimedReconciliationRunOutcome, ProxyError>,
+) -> bool {
+    let finish = |state: Arc<AppState>, status: &'static str, message: String| async move {
+        let succeeded = status == "success";
+        let _ = state
+            .proxy
+            .scheduled_job_finish_claimed(job_id, claim_generation, status, Some(&message))
+            .await;
+        succeeded
+    };
+
+    match run_result {
+        Ok(ClaimedReconciliationRunOutcome::Completed {
+            settled,
+            no_adjustment,
+            observed,
+        }) => {
+            match state.proxy.upstream_reconciliation_representative_available_at().await {
+                Ok(Some(available_at)) => state
+                    .proxy
+                    .scheduled_job_finish_and_enqueue_auto_at(
+                        job_id,
+                        claim_generation,
+                        "upstream_reconciliation",
+                        None,
+                        1,
+                        Some(&format!(
+                            "settled={settled} no_adjustment={no_adjustment} observed={observed} continuation_at={available_at}"
+                        )),
+                        available_at,
+                    )
+                    .await
+                    .is_ok(),
+                Ok(None) => finish(
+                    state,
+                    "success",
+                    format!(
+                        "settled={settled} no_adjustment={no_adjustment} observed={observed}"
+                    ),
+                )
+                .await,
+                Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
+                    tracing::warn!(
+                        component = "reconciliation",
+                        event = "completed_claim_deferred",
+                        job_id,
+                        claim_generation,
+                        defer_reason = "local_pressure",
+                        "reconciliation completion bookkeeping deferred under local pressure"
+                    );
+                    defer_reconciliation_for_sqlite_admission(
+                        &state,
+                        job_id,
+                        claim_generation,
+                        "local_pressure",
+                        state.proxy.backend_time().now_ts().saturating_add(30),
+                    )
+                    .await
+                }
+                Err(err) => finish(state, "error", err.to_string()).await,
+            }
+        }
+        Ok(ClaimedReconciliationRunOutcome::Deferred { reason, retry_at }) => {
+            defer_reconciliation_for_sqlite_admission(
+                &state,
+                job_id,
+                claim_generation,
+                reason,
+                retry_at,
+            )
+            .await
+        }
+        Ok(ClaimedReconciliationRunOutcome::StaleClaim) => false,
+        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
+            tracing::warn!(
+                component = "reconciliation",
+                event = "claimed_run_deferred",
+                job_id,
+                claim_generation,
+                defer_reason = "local_pressure",
+                error_kind = "unclassified",
+                "reconciliation run did not reach a typed terminal outcome"
+            );
+            defer_reconciliation_for_sqlite_admission(
+                &state,
+                job_id,
+                claim_generation,
+                "local_pressure",
+                state.proxy.backend_time().now_ts().saturating_add(30),
+            )
+            .await
+        }
+        Err(err) => finish(state, "error", err.to_string()).await,
     }
 }
 

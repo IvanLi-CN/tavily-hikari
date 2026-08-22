@@ -201,6 +201,78 @@ async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
 }
 
 #[tokio::test]
+async fn reconciliation_scheduler_persists_typed_defer_without_a_terminal_error() {
+    let db_path = temp_db_path("reconciliation-scheduler-typed-defer");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-scheduler-typed-defer".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-scheduler-typed-defer-password",
+    )
+    .await;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue reconciliation representative");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim reconciliation representative")
+        .expect("representative becomes running");
+    let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
+
+    let succeeded = persist_claimed_reconciliation_run(
+        state.clone(),
+        claim.id,
+        claim.claim_generation,
+        Ok(ClaimedReconciliationRunOutcome::Deferred {
+            reason: "local_pressure",
+            retry_at,
+        }),
+    )
+    .await;
+    assert!(succeeded, "typed deadline defer must finalize the claim");
+
+    let statuses: Vec<(String,)> = sqlx::query_as(
+        "SELECT status FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read deferred reconciliation jobs");
+    assert_eq!(statuses.first().map(|row| row.0.as_str()), Some("success"));
+    assert_eq!(statuses.get(1).map(|row| row.0.as_str()), Some("queued"));
+    assert!(statuses.iter().all(|row| row.0 != "error"));
+
+    let observation: (Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT last_retryable_outcome, next_retry_at FROM upstream_reconciliation_run_observation WHERE id = 'local'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read deferred observation");
+    assert_eq!(observation.0.as_deref(), Some("local_pressure"));
+    assert_eq!(observation.1, Some(retry_at));
+    let continuation_available_at: i64 = sqlx::query_scalar(
+        "SELECT available_at FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read delayed representative");
+    assert_eq!(continuation_available_at, retry_at);
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
     let db_path = temp_db_path("ha-gc-worker-fair-wake");
     let db_str = db_path.to_string_lossy().to_string();
