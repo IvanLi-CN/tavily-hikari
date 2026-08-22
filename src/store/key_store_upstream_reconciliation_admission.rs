@@ -59,7 +59,7 @@ impl KeyStore {
 
     async fn begin_reconciliation_control(&self) -> Result<SqliteImmediateTransaction, ProxyError> {
         self.sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await
     }
 

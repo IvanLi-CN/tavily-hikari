@@ -80,7 +80,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut tx = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             let (mode, activation_period_code, activation_period_start, legacy_active, paused_reason, action): (
@@ -158,7 +158,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut tx = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             sqlx::query(

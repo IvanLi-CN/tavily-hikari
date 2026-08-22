@@ -896,6 +896,19 @@ impl SqliteRuntime {
         }
     }
 
+    pub(crate) async fn begin_scheduled_job_control(
+        &self,
+    ) -> Result<SqliteImmediateTransaction, ProxyError> {
+        // Control writes must yield before reconciliation loses its durable
+        // finalization reserve; cancellation leaves the running claim fenced
+        // for stale recovery instead of inventing a terminal result.
+        self.begin_immediate_before(
+            SqliteOperation::ScheduledJobControl,
+            Instant::now() + Duration::from_millis(100),
+        )
+        .await
+    }
+
     fn record_success(
         &self,
         operation: SqliteOperation,
@@ -2168,6 +2181,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scheduled_job_control_begin_respects_a_short_deadline() {
+        let runtime = single_connection_runtime().await;
+        let held = runtime
+            .inner
+            .pool
+            .acquire()
+            .await
+            .expect("hold the only connection");
+        let started = Instant::now();
+        let error = runtime
+            .begin_scheduled_job_control()
+            .await
+            .expect_err("scheduled-job control must yield under pool pressure");
+        assert!(is_transient_sqlite_write_error(&error));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        drop(held);
+    }
+
+    #[tokio::test]
     async fn alert_projection_read_snapshot_uses_and_restores_short_busy_timeout() {
         let runtime = single_connection_runtime().await;
         let mut snapshot = runtime
@@ -2505,7 +2537,7 @@ mod tests {
 
         let transaction = tokio::time::timeout(
             Duration::from_millis(100),
-            runtime.begin_immediate(SqliteOperation::ScheduledJobControl),
+            runtime.begin_scheduled_job_control(),
         )
         .await
         .expect("control transaction must not wait for the bulk permit")

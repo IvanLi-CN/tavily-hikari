@@ -141,6 +141,66 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
 }
 
 #[tokio::test]
+async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
+    let db_path = temp_db_path("reconciliation-unclassified-run-failure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-unclassified-run-failure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-unclassified-run-failure-password",
+    )
+    .await;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue reconciliation representative");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim reconciliation representative")
+        .expect("representative becomes running");
+
+    sqlx::query("DROP TABLE upstream_reconciliation_control_state")
+        .execute(&pool)
+        .await
+        .expect("inject an unclassified reconciliation read failure");
+
+    let succeeded = run_manual_claimed_job(
+        state.clone(),
+        "upstream_reconciliation".to_string(),
+        None,
+        ClaimedScheduledJob {
+            job_id: claim.id,
+            claim_generation: claim.claim_generation,
+            _job_execution_gate: None,
+        },
+        None,
+    )
+    .await;
+    assert!(!succeeded, "unclassified run failures must remain observable");
+    let statuses: Vec<(String,)> = sqlx::query_as(
+        "SELECT status FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read deferred reconciliation jobs");
+    assert_eq!(statuses.first().map(|row| row.0.as_str()), Some("error"));
+    assert!(statuses.iter().all(|row| row.0 != "queued"));
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
     let db_path = temp_db_path("ha-gc-worker-fair-wake");
     let db_str = db_path.to_string_lossy().to_string();

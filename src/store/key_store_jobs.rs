@@ -337,7 +337,7 @@ impl KeyStore {
         let started_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             if let Some((job_id, status, _current_trigger_source)) =
@@ -759,7 +759,7 @@ impl KeyStore {
         let finished_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             // A deferred online slice must not turn a short SQLite writer conflict
@@ -996,7 +996,7 @@ impl KeyStore {
         let started_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
                 let updated = sqlx::query(
@@ -1217,7 +1217,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             Self::abandon_stale_quota_sync_job_locked(&mut conn, job_type, key_id, now).await?;
@@ -1272,7 +1272,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = sqlx::query(
                 r#"
@@ -1342,7 +1342,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = sqlx::query(
             r#"UPDATE scheduled_jobs
@@ -1403,7 +1403,7 @@ impl KeyStore {
         let finished_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = sqlx::query(
             r#"UPDATE scheduled_jobs SET status = ?, message = ?, finished_at = ? WHERE id = ?"#,
@@ -1429,7 +1429,7 @@ impl KeyStore {
         let finished_at = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let write_result = match sqlx::query(
             r#"UPDATE scheduled_jobs
@@ -1461,7 +1461,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = sqlx::query(r#"UPDATE scheduled_jobs SET message = ? WHERE id = ?"#)
             .bind(message)

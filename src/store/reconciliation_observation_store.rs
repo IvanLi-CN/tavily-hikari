@@ -212,7 +212,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut tx = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         let result = async {
             let (_, _, local_backoff_until) =
@@ -318,7 +318,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let mut tx = self
             .sqlite_runtime
-            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .begin_scheduled_job_control()
             .await?;
         if let Some((job_id, claim_generation)) = observation.claimed_job {
             let claim_current: i64 = sqlx::query_scalar(

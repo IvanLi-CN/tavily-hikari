@@ -398,10 +398,7 @@ impl KeyStore {
         &self,
         timestamp: i64,
     ) -> Result<(), ProxyError> {
-        let mut conn = self
-            .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
-            .await?;
+        let mut transaction = self.sqlite_runtime.begin_scheduled_job_control().await?;
         let result = sqlx::query(
             r#"
             INSERT INTO meta (key, value)
@@ -411,11 +408,11 @@ impl KeyStore {
         )
         .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_RUN_AT_V1)
         .bind(timestamp.to_string())
-        .execute(&mut *conn)
+        .execute(&mut *transaction)
         .await;
         match result {
-            Ok(_) => conn.close().await,
-            Err(err) => Err(ProxyError::Database(err)),
+            Ok(_) => transaction.finish(Ok(())).await,
+            Err(err) => transaction.finish(Err(ProxyError::Database(err))).await,
         }
     }
 

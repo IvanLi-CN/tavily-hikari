@@ -2690,6 +2690,24 @@ async fn run_manual_claimed_job(
                             ),
                         )
                         .await,
+                        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
+                            tracing::warn!(
+                                component = "reconciliation",
+                                event = "completed_claim_deferred",
+                                job_id,
+                                claim_generation,
+                                defer_reason = "local_pressure",
+                                "reconciliation completion bookkeeping deferred under local pressure"
+                            );
+                            defer_reconciliation_for_sqlite_admission(
+                                &state,
+                                job_id,
+                                claim_generation,
+                                "local_pressure",
+                                state.proxy.backend_time().now_ts().saturating_add(30),
+                            )
+                            .await
+                        }
                         Err(err) => finish(state, "error", err.to_string()).await,
                     }
                 }
@@ -2704,6 +2722,25 @@ async fn run_manual_claimed_job(
                     .await
                 }
                 Ok(ClaimedReconciliationRunOutcome::StaleClaim) => false,
+                Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
+                    tracing::warn!(
+                        component = "reconciliation",
+                        event = "claimed_run_deferred",
+                        job_id,
+                        claim_generation,
+                        defer_reason = "local_pressure",
+                        error_kind = "unclassified",
+                        "reconciliation run did not reach a typed terminal outcome"
+                    );
+                    defer_reconciliation_for_sqlite_admission(
+                        &state,
+                        job_id,
+                        claim_generation,
+                        "local_pressure",
+                        state.proxy.backend_time().now_ts().saturating_add(30),
+                    )
+                    .await
+                }
                 Err(err) => finish(state, "error", err.to_string()).await,
             }
         }

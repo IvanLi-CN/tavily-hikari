@@ -873,6 +873,18 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
         .await
         .expect("release exclusive cold read lock");
     drop(cold_held);
+    let retry = client
+        .get(format!("http://{cold_addr}/api/settings/system/privacy-status"))
+        .header(reqwest::header::COOKIE, &cold_cookie)
+        .send()
+        .await
+        .expect("retry cold privacy status after pressure drains");
+    assert_eq!(retry.status(), reqwest::StatusCode::OK);
+    let retry_body: serde_json::Value = retry
+        .json()
+        .await
+        .expect("retry cold privacy status json");
+    assert_eq!(retry_body.get("coverage").and_then(|v| v.as_str()), Some("ok"));
 
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(cold_db_path);
