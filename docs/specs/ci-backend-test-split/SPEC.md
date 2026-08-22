@@ -67,6 +67,36 @@
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
+### Current execution contract
+
+- `Backend Shard Plan` does not depend on `web-assets`. It compiles all backend test targets once
+  with the `ci-test` profile and a minimal web fixture, verifies manifest ownership, uploads the
+  backend bundle, and exports at most 16 non-empty lanes.
+- The plan restores only the `ci-test` compilation directory from a cache keyed by platform,
+  toolchain, profile/linker configuration, and `Cargo.lock`. A cache hit may reuse valid
+  test-profile compilation; Cargo fingerprints rebuild changed project code. This cache is not a backend test
+  artifact and never replaces its bundle checksum verification.
+- Each `Backend Test Lane` downloads the self-contained bundle, materializes its bundled source
+  contract, verifies executable checksums while loading it, and executes its assigned shards in
+  order. A lane does not check out source files or install Bun, Rust, Cargo caches, or system
+  development packages.
+- The bundle writer emits only checksum-addressed artifact format 2. Readers keep format 1 support
+  while cached artifacts age out. One executable or support binary is stored once and referenced by
+  coverage-target metadata.
+- `build.rs` accepts `TAVILY_HIKARI_WEB_DIST_DIR`; the unset value remains `web/dist`. The frontend
+  asset job validates every path required by the minimal fixture, including HTML shells,
+  `version.json`, favicon, and branded assets.
+- Shards carry positive `estimated_seconds`. Lane generation uses stable LPT ordering: descending
+  estimate, shard ID for ties, and the currently lightest lane for placement. Estimates are rounded
+  from native shard observations with enough headroom for ordinary variance; a semantic split must
+  update the affected estimates as part of the same coverage-preserving change.
+- `prepare-artifacts` emits elapsed markers for executable compilation, test-list discovery, and
+  bundle staging. These markers are diagnostic evidence for CI tuning only; they do not create a
+  required check or automatically reject a run.
+- `Backend Tests` remains the stable owner-facing aggregate check. Its five-minute objective is
+  measured from `Backend Shard Plan.startedAt` through `Backend Tests.completedAt`; it is not a
+  workflow-wide timeout or an automated performance gate.
+
 ### Core flows
 
 - PR1：
@@ -117,6 +147,15 @@
 - Given 比较“调优前后耗时”
   When 统计最近成功 runs 的 job wall time
   Then 应使用 job `startedAt/completedAt` 而不是 run `createdAt/updatedAt`，并证明关键路径明显下降。
+
+- Given a backend artifact is downloaded by a lane
+  When the loader resolves an executable or support binary
+  Then its SHA-256 must equal its manifest key, and a checksum mismatch must fail before tests run.
+
+- Given a developer needs complete backend coverage outside CI
+  When they run `run-all` or `run-shard`
+  Then the runner defaults to the documented low-resource bounds; selection of a heavy execution
+  target remains outside the repository contract.
 
 ## 验收清单（Acceptance checklist）
 

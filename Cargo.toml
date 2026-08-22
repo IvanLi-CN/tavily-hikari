@@ -4,6 +4,12 @@ version = "0.2.0"
 edition = "2024"
 build = "build.rs"
 
+[profile.ci-test]
+inherits = "test"
+debug = 0
+strip = "debuginfo"
+incremental = false
+
 [dependencies]
 axum = { version = "0.7", features = ["macros", "json", "http1", "tokio"] }
 bytes = "1"

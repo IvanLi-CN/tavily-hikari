@@ -17,7 +17,7 @@
 - Backend
   - `cargo build` — compile the server.
   - `cargo run -- --help` — show CLI flags; `--bind/--port/--db-path` etc.
-  - `cargo fmt` — format Rust code; `cargo clippy -- -D warnings` — lint.
+  - `cargo fmt` — format Rust code; `cargo clippy --locked -j 2 -- -D warnings` — lint.
   - `cargo test` — run tests (add as you go).
 - Frontend (`web/`)
   - `bun install --frozen-lockfile` — install deps; `bun run --bun dev` — local dev (Vite under Bun runtime).
@@ -36,6 +36,7 @@
 
 - Rust: prefer module unit tests via `#[cfg(test)]` and integration tests under `tests/` when needed. Run with `cargo test`.
 - Frontend: no test tooling preconfigured; if introducing tests, prefer Vitest + React Testing Library in `web/`.
+- Backend execution: before selecting focused, shard, full, release, or Compose validation, read `docs/agents/testing.md`.
 
 ## Commit & Pull Request Guidelines
 

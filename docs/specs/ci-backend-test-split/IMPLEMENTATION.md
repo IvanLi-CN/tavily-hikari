@@ -4,9 +4,9 @@
 
 ## Current Status
 
-- Implementation: completed
-- Lifecycle: done
-- Catalog note: CI backend split / artifact reuse / stable aggregate gate
+- Implementation: in progress
+- Lifecycle: active
+- Catalog note: CI backend lanes, checksum-addressed artifacts, and stable aggregate gate
 
 ## Coverage / rollout summary
 
@@ -21,22 +21,62 @@
 
 ## Implemented Now
 
-- `.github/workflows/ci.yml`
-  - 新增 `Backend Shard Plan` job，在 CI 内先执行 shard coverage verifier，再导出 lib / bin / integration 三类 matrix。
-  - `backend-lib-tests`、`backend-bin-tests`、`backend-integration-tests` 已切到 manifest 驱动的 matrix shards。
-  - 稳定 owner-facing `Backend Tests` aggregate gate 继续保留。
-  - `Compose Smoke (ForwardAuth + Caddy)` 与 `Build (Release)` 不再等待整段 backend shards 收口后才启动。
-  - `backend-shard-plan` 现会先准备一次 `backend-test-artifacts`，后续 lib / bin / integration shards 统一下载并复用，不再各自重复 `cargo test --no-run`。
-- `scripts/ci_backend_test_manifest.json`
-  - 固化当前 lib / main-bin / support-bin / integration test 的 shard 归属。
-  - `forward_proxy::tests::` 已从 `lib-core` 拆成独立 `lib-forward-proxy` shard；`bin-admin-api` 则保留 shard 级 `filtered_process_workers=2` 的保守并发策略。
-  - 当前 selector 已切到真实测试模块前缀，例如 `tests::request_rollup::...`、`tests::usage_series_and_backfills::...`、`server::tests::tavily_http_search::...`、`server::tests::mcp_billing_and_sessions::...`，不再依赖旧的平铺 `tests::foo_` / `server::tests::bar_` 前缀去猜测测试归属。
-  - coverage verifier 已证明当前 union 覆盖 `396 lib + 334 main-bin` tests，且 `bin-support` 与 5 个 integration suites 全覆盖，无 overlap、无 unmatched。
-- `scripts/ci_backend_tests.py`
-  - `verify`：基于 `cargo test -- --list` 做 shard 覆盖等价校验并导出 matrix。
-  - `run-shard`：不再依赖 `cargo test FILTER` / `--skip FILTER` 的子串匹配，而是先生成 test executable，再按精确测试名列表用 `--exact` 直跑对应 test binary，避免重复命中或漏跑。
-  - `prepare-artifacts`：一次性构建全覆盖 test targets，再按 coverage target 拆分 artifact，并缓存每个 executable 的 `tests.json` 供 `verify --prebuilt-root` / `run-shard --prebuilt-root` 复用。
-  - 现支持 shard 级 `filtered_process_workers`，在不破坏覆盖等价性的前提下允许重 shard 局部降并发，避免为稳定性回退到整 shard 串行。
+- CI five-minute backend path
+  - `Backend Shard Plan` no longer waits for `web-assets`; it creates the minimal embedded-web
+    fixture, compiles all backend targets with `ci-test`, verifies coverage, uploads one backend
+    bundle, and exports a sixteen-lane matrix within the fixed maximum.
+  - The plan restores `target/ci-test` with a platform, Rust toolchain, profile/linker, and
+    `Cargo.lock` cache key. It retains Cargo fingerprint invalidation for changed source and keeps
+    the cached compilation state separate from the per-run, checksum-verified backend bundle.
+  - `Backend Test Lane` jobs now download, checksum-verify, and run a lane from the self-contained
+    bundle. The bundle includes a read-only source snapshot for tests that use the compile-time
+    manifest directory; the former lib/bin/integration jobs each repeated frontend artifact
+    downloads, system packages, Rust setup, and Cargo cache restoration.
+  - `Backend Tests` remains the stable aggregate check. The target is the native Actions interval
+    from plan start to aggregate completion, with no new required performance check.
+  - Unrelated heavy jobs keep their existing commands but wait for the backend aggregate, leaving
+    the hosted runner concurrency available for the fixed sixteen backend lanes. This changes only
+    job ordering; it does not alter release, lint, or version-layer validation semantics.
+- Artifact and lane contracts
+  - `ci-test` inherits `test` while disabling debug information and incremental compilation.
+  - `build.rs` can consume `TAVILY_HIKARI_WEB_DIST_DIR`; CI supplies the minimal fixture while the
+    normal `web/dist` fallback is unchanged.
+  - The bundle writer emits format 2 with one checksum-addressed copy per executable. Filenames
+    preserve each source binary's prefix so Cargo sibling-binary resolution works without adding a
+    second copy. The loader supports both formats and verifies SHA-256 before execution.
+  - `lib-request-rollup`, `lib-account-user`, `bin-admin-api`, and `bin-ha-rest` are split into
+    mutually exclusive semantic groups. Rollup integrity, alert projection, and reconciliation
+    are independent groups so measured long tails can be packed separately. Manifest estimates
+    feed stable LPT lane packing.
+  - Reconciliation coverage is divided into maintenance, upstream-reconciliation, and projection
+    groups. This keeps the long upstream test binary from queueing behind unrelated reconciliation
+    prefixes while the coverage verifier continues to reject overlap or omissions.
+  - Request rollup storage is divided into rollup storage, request-log retention, and scheduled
+    request-maintenance groups. Admin resources are divided into identity, observability, and
+    settings groups. The manifest contract tests preserve the old prefix unions, so the split can
+    only alter lane placement, not test ownership.
+  - The admin dashboard SSE refresh test is an independent single-process, single-thread shard.
+    Identity excludes that exact name, preserving one owner while preventing unrelated admin API
+    filters from delaying its event deadline. Operational maintenance has a four-process cap; all
+    other shards retain their explicit cap or the default of three.
+  - MCP main-binary coverage is split into mutually exclusive billing, rebalance-session,
+    rebalance-control, research, and system groups so long semantic prefixes cannot share one
+    lane tail. Research and system groups retain their serial process boundaries.
+  - Manifest weights are calibrated from native shard timings; affinity, reconciliation, LinuxDo,
+    reporting, and server HTTP contract retain enough weight to keep the sixteen-lane LPT output
+    within the 120-second lane budget after semantic splits.
+  - HA lifecycle coverage is divided into mutually exclusive lifecycle and lifecycle-state groups;
+    this keeps the long HA prefix family from becoming a single atomic lane tail.
+  - `prepare-artifacts` logs compilation, test-list discovery, and bundle-staging elapsed markers.
+    They make a cold-compile regression attributable without turning elapsed time into a CI gate.
+    Backend artifact upload uses a lower compression level to reduce CPU time on the critical path;
+    artifact metadata remains subject to the existing size budget.
+- Development execution
+  - `run-all`, `run-shard`, and `run-lane` accept Cargo-job, filtered-process-worker, and
+    filtered-test-thread controls. The local default is `2/1/2`; `--diagnostic` is `1/1/1`.
+  - Pre-commit commands now run sequentially and keep Clippy as
+    `cargo clippy --locked -j 2 -- -D warnings`.
+
 - `src/tests/mod.rs` + `src/tests/support.rs` + `src/tests/**`
   - 库内测试已从 `include!(\"chunk_*.rs\")` 机械切片切回真实语义模块，并把共享 helper 显式收敛到 `support` 层。
   - `src/tests/chunk_04_tail.rs` 已删除；observability / oauth / announcement / coalescer 等测试迁入语义模块文件。
@@ -45,7 +85,19 @@
 - `src/server/spa.rs` + `src/server/tests/admin_token_filters_and_maintenance.rs`
   - 修复 `registration-paused.html` 在 embedded web assets 开启时误覆盖本地静态 fallback 的回归，并补上 targeted regression test，确保 shard 后的 release/build path 保持原有行为。
 
-## Verification Evidence
+## Current Validation
+
+- `python3 scripts/test_ci_backend_tests.py`: passed eleven runner contract tests covering format 2
+  checksum verification, format 1 loading, deduplicated references, portable lane runtime, stable
+  LPT output, minimal web fixture, and resource defaults.
+- `actionlint .github/workflows/ci.yml`, `cargo fmt --all -- --check`, Markdown formatting, and
+  `cargo clippy --locked -j 2 -- -D warnings`: passed.
+- `cargo test --locked -j 2 --all-features --lib runtime_logging::tests::runtime_memory_helpers_parse_status_and_cgroup_values -- --exact --test-threads=2`: passed.
+
+## Historical Evidence
+
+The following evidence describes the earlier three-matrix topology. It remains useful for comparing
+behavioral coverage, but it is not evidence for the current lane topology or five-minute objective.
 
 - 本地 shard coverage 验证：
   - `python3 scripts/ci_backend_tests.py verify`
@@ -54,7 +106,7 @@
   - `python3 scripts/ci_backend_tests.py run-shard --id lib-account-user`
   - `python3 scripts/ci_backend_tests.py run-shard --id lib-request-rollup`
   - `python3 scripts/ci_backend_tests.py run-shard --id bin-admin-api`
-  - `python3 scripts/ci_backend_tests.py run-shard --id bin-mcp-core`
+  - `python3 scripts/ci_backend_tests.py run-shard --id bin-mcp-billing`
   - 结果表明最后几个慢 shard 主要由一串 `12-18s` 级顺序慢测试组成，而不是执行器挂死。
 - build-once fanout 本地证据：
   - `python3 scripts/ci_backend_tests.py prepare-artifacts --output-dir /tmp/backend-test-artifacts`：当前墙钟约 `70.71s`

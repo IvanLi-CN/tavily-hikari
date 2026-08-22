@@ -6,11 +6,14 @@ use std::{
 fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=web/dist");
+    println!("cargo:rerun-if-env-changed=TAVILY_HIKARI_WEB_DIST_DIR");
     println!("cargo:rustc-check-cfg=cfg(web_assets_embedded)");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set"));
     let generated_path = out_dir.join("embedded_web_assets.rs");
-    let dist_dir = Path::new("web/dist");
+    let dist_dir = env::var_os("TAVILY_HIKARI_WEB_DIST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("web/dist"));
 
     if dist_dir.is_dir() {
         println!("cargo:rustc-cfg=web_assets_embedded");
@@ -23,7 +26,7 @@ fn main() -> io::Result<()> {
 
         let mut files = Vec::new();
         let mut dirs = Vec::new();
-        collect_files(dist_dir, &mut files, &mut dirs)?;
+        collect_files(&dist_dir, &mut files, &mut dirs)?;
         files.sort();
         dirs.sort();
 
@@ -33,7 +36,7 @@ fn main() -> io::Result<()> {
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.display());
 
-            let rel = file.strip_prefix(dist_dir).expect("dist relative path");
+            let rel = file.strip_prefix(&dist_dir).expect("dist relative path");
             let dest = assets_out_dir.join(rel);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
@@ -44,7 +47,7 @@ fn main() -> io::Result<()> {
         let mut source =
             String::from("pub fn get(path: &str) -> Option<&'static [u8]> {\n    match path {\n");
         for file in &files {
-            let rel = file.strip_prefix(dist_dir).expect("dist relative path");
+            let rel = file.strip_prefix(&dist_dir).expect("dist relative path");
             let rel = rel.to_string_lossy().replace('\\', "/");
             let rel_literal = format!("{rel:?}");
             source.push_str(&format!(

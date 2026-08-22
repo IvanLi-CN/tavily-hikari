@@ -41,6 +41,7 @@
 - `KeyStore::new`、`open_for_request_logs_gc`、`TavilyProxy::new/with_endpoint/with_options` 的公开签名保持不变；注入入口通过 internal/test-only helper 提供。
 - 慢测中如仅需验证“同一秒内不应重写/重插/重排”的持久化行为，应优先使用显式时间戳控制，而不是依赖真实跨秒等待。
 - `python3 scripts/ci_backend_tests.py verify` 必须持续可用，且 backend 总测试数量不得减少。
+- runner 的低资源默认值只约束测试执行资源，不改变 `BackendTime`、生产 retry/backoff 或测试时间语义。
 
 ## Acceptance
 

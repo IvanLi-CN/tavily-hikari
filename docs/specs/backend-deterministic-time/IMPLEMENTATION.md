@@ -10,6 +10,10 @@
 
 ## Implemented Now
 
+- 执行器现在把低资源默认值与 CI fan-out 分开：开发期 `run-all` / `run-shard` 为
+  `2/1/2`，诊断模式为 `1/1/1`；CI 通过预构建 bundle 和 LPT lane 并发缩短墙钟。这没有
+  改变 `BackendTime` 的时钟注入边界或任何生产等待预算。
+
 - 新增 `src/backend_time.rs`
   - 统一 `now_ts()`、`now_utc()`、`deadline_after()`、`sleep()`。
   - 补充 test-only manual wall clock handle，用于显式推进持久化时间。
@@ -30,7 +34,7 @@
 - shard runner throughput
   - `scripts/ci_backend_tests.py run-shard` 不再对所有 shard 一律逐条 `--exact --test-threads=1` 串行执行。
   - 对 substring 匹配与 prefix 命中集合完全等价的安全前缀，改为单次批量执行；仅把少数不安全前缀残留测试回退到 `--exact`。
-  - `bin-admin-api`、`bin-tavily-http`、`bin-mcp-core`、`bin-linuxdo-forward`、`bin-ha-rest` 已可 100% 走批量前缀执行；`lib-account-user` 为 `90/92`，`lib-request-rollup` 为 `91/104`。
+  - `bin-admin-api`、`bin-tavily-http`、`bin-mcp-billing`、`bin-mcp-rebalance-session`、`bin-mcp-rebalance-control`、`bin-mcp-research`、`bin-mcp-system`、`bin-linuxdo-forward`、`bin-ha-rest` 已可 100% 走批量前缀执行；`lib-account-user` 与 `lib-request-rollup` 的原有范围由互斥语义 shard 共同覆盖。
   - shard runner 现支持 `serial_prefixes`：对共享 xray/runtime 或仍含进程级全局状态的前缀单独降回串行，其余前缀继续并发。
   - `scripts/ci_backend_tests.py` 支持 shard 级 `filtered_test_threads`，当前 `lib-request-rollup` 维持 `2` 线程，但 `tests::request_` 前缀单独串行；`lib-core` 的 `forward_proxy::tests::` / `tavily_proxy::tests::` 也单独串行，其余 shard 维持 `1`。
   - `scripts/ci_backend_test_manifest.json` 现把 `forward_proxy::tests::` 拆成独立 `lib-forward-proxy` shard，并支持 shard 级 `filtered_process_workers`；当前 `bin-admin-api` 维持 `2` worker，避免恢复高并发 flake。

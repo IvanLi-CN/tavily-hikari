@@ -1,5 +1,5 @@
 pre-commit:
-  parallel: true
+  parallel: false
   commands:
     format-markdown:
       files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
@@ -11,7 +11,7 @@ pre-commit:
       stage_fixed: true
     clippy:
       glob: "**/*.rs"
-      run: cargo clippy -- -D warnings
+      run: cargo clippy --locked -j 2 -- -D warnings
 
 commit-msg:
   commands:

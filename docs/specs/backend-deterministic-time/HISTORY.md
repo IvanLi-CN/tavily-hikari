@@ -13,6 +13,7 @@
 - 2026-06-16：在前缀批量执行后，新的关键路径收敛到 `forward_proxy::tests::` 干扰和 `bin-admin-api` 过高进程并发；因此把 `forward_proxy::tests::` 独立成 `lib-forward-proxy` shard，并给 shard runner 增加 per-shard `filtered_process_workers`，用更小的局部并发换取稳定的总墙钟下降。
 - 2026-08-05：taxonomy 语义审计确认三处产品持久化路径仍直接读取 `Utc::now()`；实现状态恢复为 partial，等待统一接入 `BackendTime` 后再收口。
 - 2026-08-05：后续实现先迁移已知的 request-log、rollup 与 billing persistence 路径，再经 review 补齐 migration、recharge、reconciliation 与 account rollup 的六个异常时间戳 fallback；`src/store/**` 的直接 `Utc::now()` 清零，并补齐 rollup 与 billing settlement 的 manual-clock 持久化回归，实现状态恢复为 completed。
+- 2026-08-20：CI 执行图改用低 debug 的预构建 bundle 与均衡 lanes。该变更只减少重复编译、传输和调度等待；`BackendTime` 仍是消除真实等待和保持时间语义的唯一机制。
 
 ## Boundary Notes
 
