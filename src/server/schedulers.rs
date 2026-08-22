@@ -2647,7 +2647,14 @@ async fn run_manual_claimed_job(
                         err = %error,
                         "reconciliation retained its claim while low-pressure recovery could not start"
                     );
-                    return false;
+                    return defer_reconciliation_for_sqlite_admission(
+                        &state,
+                        job_id,
+                        claim_generation,
+                        "local_pressure",
+                        state.proxy.backend_time().now_ts().saturating_add(30),
+                    )
+                    .await;
                 }
                 Err(error) => return finish(state, "error", error.to_string()).await,
             }
