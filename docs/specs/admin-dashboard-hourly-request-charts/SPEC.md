@@ -63,6 +63,10 @@
 - `request_logs` 是保留期内本地请求统计的事实源。审计必须使用既有
   `(visibility, created_at, id)` 索引分页读取，固定每个工作项的源数据 fence；不得在请求热路径新增
   写入，也不得在启动阶段重建原始日志。
+- rebalance 历史 recovery 的资格必须使用持久的
+  `visibility + gateway_mode=rebalance + experiment_variant=rebalance + upstream_operation=mcp`
+  标识；`request_kind_key` 等会被 canonicalization 触发器补全的字段不能作为“是否漏记”的证据。
+  recovery 语义版本落后时，必须重新建立单例的源范围、source fence 和 cursor，从保留源重新替换派生桶。
 - 审计工作项最多读取 500 条日志或消耗 150ms 读取预算。高密度时间片必须将游标和累计结果持久化，未
   完成前不得写入任何部分 rollup。
 - 聚合完成后才允许打开短写事务，精确替换受影响的分钟 rollup。写入目标为 100ms；超过 250ms 必须记

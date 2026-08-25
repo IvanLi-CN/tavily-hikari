@@ -74,6 +74,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `best-effort audit`: rebalance audit records are capped in memory and may report stale coverage
   when contention or capacity prevents persistence. A missing audit record never changes MCP
   response semantics, billing truth, or durable business work.
+- `rebalance audit`: an observational record of a rebalance MCP request. It is not billing truth
+  or durable business work, and its presence does not prove that a derived dashboard projection is
+  complete.
+- `dashboard rollup recovery`: automatic reconciliation of the dashboard's derived request
+  projection from retained rebalance audit records. It may correct the projection without changing
+  the original audit records or request outcome.
 - `staged pressure generation`: a source-fenced server-pressure rebuild generation that remains
   invisible until atomic publish. Source scans use 500-row keyset slices, transition events replay
   after publish, and obsolete generations are cleaned in 25-row slices so live-tail correctness

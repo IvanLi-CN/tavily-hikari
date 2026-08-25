@@ -8,7 +8,8 @@ const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN: Duration = Duration::from_millis(250);
 const DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS: i64 = SECS_PER_DAY;
 const DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS: i64 = 2 * SECS_PER_HOUR;
-const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
+// Reopen v1 states: canonicalization made the old NULL selector unreachable.
+const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardRollupIntegritySlice {
@@ -308,13 +309,13 @@ impl KeyStore {
             SELECT MIN(created_at), MAX(created_at)
             FROM request_logs
             WHERE visibility = ?
-              AND gateway_mode = 'rebalance'
+              AND gateway_mode = ?
               AND experiment_variant = 'rebalance'
               AND upstream_operation = 'mcp'
-              AND request_kind_key IS NULL
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(MCP_GATEWAY_MODE_REBALANCE)
         .fetch_one(&self.pool)
         .await?;
         let source_fence: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")

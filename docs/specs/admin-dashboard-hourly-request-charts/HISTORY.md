@@ -1,5 +1,6 @@
 # Admin 仪表盘请求趋势图表演进历史（#h2698）
 
+- 2026-08-25: 修复 rebalance 异步审计漏记后的历史 recovery 资格。canonicalization 会补全请求分类字段，恢复因此改用持久 gateway/variant/upstream 标识，并通过 recovery 版本升级重新扫描此前错误完成的状态；分钟与日桶仍由既有有界 integrity worker 自动修复。
 - 2026-07-24: 两张自然日较昨日差值图被积分柱图与积分面积图替换。积分视图同时展示本地
   估算和上游实扣；前者来自请求 rollup，后者来自 quota 样本差分。未采样上游桶保持未知，
   避免将缺失数据误报为零。
