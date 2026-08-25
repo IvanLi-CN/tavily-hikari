@@ -560,12 +560,6 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("create proxy");
-    sqlx::query(
-        "DROP TRIGGER IF EXISTS observability.trg_request_logs_canonical_request_kind_insert",
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("disable canonical trigger for legacy recovery fixture");
     let now = proxy.backend_time().now_ts();
     let range_start = local_day_bucket_start_utc_ts(now - 2 * SECS_PER_DAY);
     let recovery_start = range_start + SECS_PER_FIVE_MINUTES;
@@ -577,8 +571,21 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
         .await;
     }
     pin_integrity_after_hot_window(&proxy, now, range_start).await;
+    sqlx::query(
+        r#"
+        INSERT INTO dashboard_rollup_rebalance_recovery (
+            id, version, status, range_start, range_end, source_fence, cursor,
+            last_error, completed_at, updated_at
+        ) VALUES (1, 1, 'complete', NULL, NULL, 0, NULL, NULL, ?, ?)
+        "#,
+    )
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed the previously false-complete recovery state");
     let matched: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM request_logs WHERE gateway_mode = 'rebalance' AND experiment_variant = 'rebalance' AND upstream_operation = 'mcp' AND request_kind_key IS NULL",
+        "SELECT COUNT(*) FROM request_logs WHERE gateway_mode = 'rebalance' AND experiment_variant = 'rebalance' AND upstream_operation = 'mcp' AND request_kind_key IS NOT NULL",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
@@ -597,11 +604,23 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
         .expect("read recovery integrity status");
     assert_eq!(integrity_status.state, "repairing");
     assert!(integrity_status.unverified_bucket_count > 0);
+    let recovery_version: i64 =
+        sqlx::query_scalar("SELECT version FROM dashboard_rollup_rebalance_recovery WHERE id = 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read recovery version");
+    assert_eq!(recovery_version, 2);
     let second = proxy
         .run_dashboard_rollup_integrity_slice()
         .await
         .expect("resume fenced recovery slice");
     assert_eq!(second.state, "repaired");
+    let recovery_status_after_minute_repair: String =
+        sqlx::query_scalar("SELECT status FROM dashboard_rollup_rebalance_recovery WHERE id = 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read recovery status before day re-audit");
+    assert_eq!(recovery_status_after_minute_repair, "pending");
     let third = proxy
         .run_dashboard_rollup_integrity_slice()
         .await
@@ -637,6 +656,24 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
     .await
     .expect("read idempotent recovery rollup");
     assert_eq!(idempotent_total, 501);
+
+    drop(proxy);
+    let restarted = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("restart proxy after recovery completion");
+    restarted
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("verify completed recovery remains resumable after restart");
+    let restarted_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = 60 AND bucket_start >= ? AND bucket_start < ?",
+    )
+    .bind(recovery_start)
+    .bind(recovery_start + SECS_PER_FIVE_MINUTES)
+    .fetch_one(&restarted.key_store.pool)
+    .await
+    .expect("read restarted recovery rollup");
+    assert_eq!(restarted_total, 501);
 }
 
 async fn pin_integrity_hot_work(proxy: &TavilyProxy, range_start: i64, range_end: i64) {

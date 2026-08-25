@@ -8,7 +8,8 @@ const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN: Duration = Duration::from_millis(250);
 const DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS: i64 = SECS_PER_DAY;
 const DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS: i64 = 2 * SECS_PER_HOUR;
-const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
+// Reopen v1 states: canonicalization made the old NULL selector unreachable.
+const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardRollupIntegritySlice {
@@ -311,7 +312,6 @@ impl KeyStore {
               AND gateway_mode = 'rebalance'
               AND experiment_variant = 'rebalance'
               AND upstream_operation = 'mcp'
-              AND request_kind_key IS NULL
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)

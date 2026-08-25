@@ -27,6 +27,7 @@
 - 已验证本地日封存 JSON seal。保留期内的迟到数据修复会刷新 daily rollup 与 seal；GC 删除原始日志前
   检查最早可见候选日的 seal 及分钟、日级 rollup 一致性，已过期日的 daily rollup 可以由 seal 校验并恢复。
   仅含被抑制 retry shadow 的日期不属于 dashboard 事实源，不会无故阻塞日志 GC。
+- rebalance recovery 使用持久三字段标识发现历史审计行；恢复版本升级会重新打开此前错误标记为完成的单例，继续沿用 source fence、5 分钟分片和日级复核。
 - 请求统计 coalescer 现在有可等待的关闭协议；服务在 graceful shutdown 返回后最多等待 20 秒 drain，
   Compose 给出 30 秒容器终止宽限。
 
