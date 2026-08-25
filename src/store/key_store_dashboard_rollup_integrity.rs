@@ -309,12 +309,13 @@ impl KeyStore {
             SELECT MIN(created_at), MAX(created_at)
             FROM request_logs
             WHERE visibility = ?
-              AND gateway_mode = 'rebalance'
+              AND gateway_mode = ?
               AND experiment_variant = 'rebalance'
               AND upstream_operation = 'mcp'
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(MCP_GATEWAY_MODE_REBALANCE)
         .fetch_one(&self.pool)
         .await?;
         let source_fence: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")

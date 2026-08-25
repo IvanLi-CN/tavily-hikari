@@ -507,12 +507,13 @@ async fn insert_rebalance_recovery_log(proxy: &TavilyProxy, created_at: i64) {
         ) VALUES (
             NULL, 'POST', '/mcp', NULL, 200, 200,
             NULL, 'success', NULL, NULL,
-            NULL, 'rebalance', 'rebalance', 'mcp',
+            NULL, ?, 'rebalance', 'mcp',
             '{"jsonrpc":"2.0","method":"tools/call"}', '{"result":{}}', '[]', '[]',
             'visible', ?
         )
         "#,
     )
+    .bind(MCP_GATEWAY_MODE_REBALANCE)
     .bind(created_at)
     .execute(&proxy.key_store.pool)
     .await
@@ -585,8 +586,9 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
     .await
     .expect("seed the previously false-complete recovery state");
     let matched: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM request_logs WHERE gateway_mode = 'rebalance' AND experiment_variant = 'rebalance' AND upstream_operation = 'mcp' AND request_kind_key IS NOT NULL",
+        "SELECT COUNT(*) FROM request_logs WHERE gateway_mode = ? AND experiment_variant = 'rebalance' AND upstream_operation = 'mcp' AND request_kind_key IS NOT NULL",
     )
+    .bind(MCP_GATEWAY_MODE_REBALANCE)
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("count matching recovery source logs");
