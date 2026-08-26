@@ -2095,8 +2095,13 @@ impl TavilyProxy {
                         research_ms,
                         projection_source_read_ms = projection_metrics.cooperative_read_elapsed_ms,
                         projection_read_deadline_count = projection_metrics.cooperative_read_deadlines,
-                        projection_connection_cache_write_pages = projection_metrics
-                            .connection_cache_write_pages,
+                        projection_connection_cache_write_pages = %if projection_metrics.connection_cache_write_sampled
+                            && !projection_metrics.connection_cache_write_sample_failed
+                        {
+                            projection_metrics.connection_cache_write_pages.to_string()
+                        } else {
+                            "unknown".to_string()
+                        },
                         remote_wait_ms,
                         remote_hold_ms,
                         remote_active_attempts = remote_attempt_metrics

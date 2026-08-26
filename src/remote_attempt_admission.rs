@@ -42,6 +42,23 @@ pub struct RemoteAttemptLease {
     started_at: Instant,
 }
 
+/// Bounds scheduler task dispatch without representing an outbound request.
+/// The reconciliation variant owns the fairness turn, so every early return
+/// after a claim releases that turn automatically.
+#[derive(Debug)]
+#[doc(hidden)]
+pub enum RemoteJobDispatchPermit {
+    Standard(OwnedSemaphorePermit),
+    Reconciliation(ReconciliationDispatchPermit),
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct ReconciliationDispatchPermit {
+    controller: Arc<RemoteAttemptAdmissionController>,
+    _permit: OwnedSemaphorePermit,
+}
+
 impl Default for RemoteAttemptAdmissionController {
     fn default() -> Self {
         Self {
@@ -57,19 +74,44 @@ impl Default for RemoteAttemptAdmissionController {
 }
 
 impl RemoteAttemptAdmissionController {
-    pub fn try_acquire_manual_dispatch(&self) -> Option<OwnedSemaphorePermit> {
-        self.dispatch_slot.clone().try_acquire_owned().ok()
+    pub fn try_acquire_manual_dispatch(&self) -> Option<RemoteJobDispatchPermit> {
+        self.dispatch_slot
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(RemoteJobDispatchPermit::Standard)
     }
 
-    pub fn try_acquire_reconciliation_dispatch(&self) -> Option<OwnedSemaphorePermit> {
-        self.dispatch_slot.clone().try_acquire_owned().ok()
+    pub fn try_acquire_reconciliation_dispatch(&self) -> Option<RemoteJobDispatchPermit> {
+        self.dispatch_slot
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(RemoteJobDispatchPermit::Standard)
     }
 
-    pub fn try_acquire_nonmanual_dispatch(&self) -> Option<OwnedSemaphorePermit> {
+    pub fn try_acquire_aged_reconciliation_dispatch(
+        self: &Arc<Self>,
+    ) -> Option<RemoteJobDispatchPermit> {
+        let permit = self.dispatch_slot.clone().try_acquire_owned().ok()?;
+        self.require_reconciliation_turn();
+        Some(RemoteJobDispatchPermit::Reconciliation(
+            ReconciliationDispatchPermit {
+                controller: self.clone(),
+                _permit: permit,
+            },
+        ))
+    }
+
+    pub fn try_acquire_nonmanual_dispatch(&self) -> Option<RemoteJobDispatchPermit> {
         if self.reconciliation_turn_required() {
             return None;
         }
-        self.dispatch_slot.clone().try_acquire_owned().ok()
+        self.dispatch_slot
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(RemoteJobDispatchPermit::Standard)
     }
 
     pub fn require_reconciliation_turn(&self) {
@@ -150,6 +192,12 @@ impl Drop for RemoteAttemptLease {
     }
 }
 
+impl Drop for ReconciliationDispatchPermit {
+    fn drop(&mut self) {
+        self.controller.clear_reconciliation_turn();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,10 +220,18 @@ mod tests {
             "a manual attempt must not consume the automatic reconciliation turn"
         );
         drop(manual_attempt);
-        let dispatch = controller
-            .try_acquire_reconciliation_dispatch()
+        let claim_race_dispatch = controller
+            .try_acquire_aged_reconciliation_dispatch()
             .expect("reconciliation owns the next automatic dispatch");
-        drop(dispatch);
+        assert!(controller.reconciliation_turn_required());
+        // `scheduled_job_mark_running` can lose a claim race after dispatch
+        // admission. Dropping its permit must release the fairness turn.
+        drop(claim_race_dispatch);
+        assert!(
+            !controller.reconciliation_turn_required(),
+            "a claimed run that defers before HTTP releases its fairness turn"
+        );
+        controller.require_reconciliation_turn();
         let lease = controller
             .acquire_reconciliation_attempt()
             .await

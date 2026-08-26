@@ -47,6 +47,7 @@ pub use linuxdo_credit_recharge::*;
 pub use models::*;
 pub use remote_attempt_admission::{
     RemoteAttemptAdmissionController, RemoteAttemptLease, RemoteAttemptMetrics,
+    RemoteJobDispatchPermit,
 };
 pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,

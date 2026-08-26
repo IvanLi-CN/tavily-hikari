@@ -92,6 +92,7 @@
         "store::admin_passkey_store_tests::",
         "store::alert_grouping_tests::",
         "store::sqlite_runtime::tests::",
+        "store::sqlite_runtime::metrics_tests::",
         "store::tests::",
         "tavily_proxy::privacy_status_phase_budget_tests::",
         "tavily_proxy::tests::",

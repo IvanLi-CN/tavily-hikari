@@ -225,6 +225,7 @@ struct OperationWindow {
     rows_affected: u64,
     connection_cache_write_pages: u64,
     connection_cache_write_sampled: bool,
+    connection_cache_write_sample_failed: bool,
     cooperative_read_elapsed_ms: u64,
     cooperative_read_deadlines: u64,
     deferred_by_reason: BTreeMap<SqliteAdmissionDeferReason, u64>,
@@ -234,6 +235,9 @@ struct OperationWindow {
 pub(crate) struct SqliteOperationTelemetry {
     pub(crate) connection_cache_write_pages: u64,
     pub(crate) connection_cache_write_sampled: bool,
+    pub(crate) connection_cache_write_sample_failed: bool,
+    connection_cache_write_samples: u64,
+    connection_cache_write_sample_failures: u64,
     pub(crate) cooperative_read_elapsed_ms: u64,
     pub(crate) cooperative_read_deadlines: u64,
 }
@@ -244,7 +248,16 @@ impl SqliteOperationTelemetry {
             connection_cache_write_pages: self
                 .connection_cache_write_pages
                 .saturating_sub(earlier.connection_cache_write_pages),
-            connection_cache_write_sampled: self.connection_cache_write_sampled,
+            connection_cache_write_sampled: self.connection_cache_write_samples
+                > earlier.connection_cache_write_samples,
+            connection_cache_write_sample_failed: self.connection_cache_write_sample_failures
+                > earlier.connection_cache_write_sample_failures,
+            connection_cache_write_samples: self
+                .connection_cache_write_samples
+                .saturating_sub(earlier.connection_cache_write_samples),
+            connection_cache_write_sample_failures: self
+                .connection_cache_write_sample_failures
+                .saturating_sub(earlier.connection_cache_write_sample_failures),
             cooperative_read_elapsed_ms: self
                 .cooperative_read_elapsed_ms
                 .saturating_sub(earlier.cooperative_read_elapsed_ms),
@@ -1055,10 +1068,13 @@ impl SqliteRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let metrics = window.operations.entry(operation).or_default();
-        if let Some(pages) = pages {
-            metrics.connection_cache_write_pages =
-                metrics.connection_cache_write_pages.saturating_add(pages);
-            metrics.connection_cache_write_sampled = true;
+        match pages {
+            Some(pages) => {
+                metrics.connection_cache_write_pages =
+                    metrics.connection_cache_write_pages.saturating_add(pages);
+                metrics.connection_cache_write_sampled = true;
+            }
+            None => metrics.connection_cache_write_sample_failed = true,
         }
         drop(window);
 
@@ -1068,10 +1084,20 @@ impl SqliteRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let metrics = telemetry.entry(operation).or_default();
-        if let Some(pages) = pages {
-            metrics.connection_cache_write_pages =
-                metrics.connection_cache_write_pages.saturating_add(pages);
-            metrics.connection_cache_write_sampled = true;
+        match pages {
+            Some(pages) => {
+                metrics.connection_cache_write_pages =
+                    metrics.connection_cache_write_pages.saturating_add(pages);
+                metrics.connection_cache_write_sampled = true;
+                metrics.connection_cache_write_samples =
+                    metrics.connection_cache_write_samples.saturating_add(1);
+            }
+            None => {
+                metrics.connection_cache_write_sample_failed = true;
+                metrics.connection_cache_write_sample_failures = metrics
+                    .connection_cache_write_sample_failures
+                    .saturating_add(1);
+            }
         }
     }
 
@@ -2171,7 +2197,9 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 .map(|(reason, count)| format!("{}={count}", reason.as_str()))
                 .collect::<Vec<_>>()
                 .join("|");
-            let cache_write_pages = if metrics.connection_cache_write_sampled {
+            let cache_write_pages = if metrics.connection_cache_write_sampled
+                && !metrics.connection_cache_write_sample_failed
+            {
                 metrics.connection_cache_write_pages.to_string()
             } else {
                 "unknown".to_string()
@@ -2358,6 +2386,7 @@ mod tests {
                     || matches!(
                         relative.as_str(),
                         "src/store/sqlite_runtime.rs"
+                            | "src/store/sqlite_runtime_cooperative.rs"
                             | "src/store/immediate_transaction.rs"
                             | "src/store/key_store_bootstrap.rs"
                             | "src/store/key_store_migrations_a.rs"

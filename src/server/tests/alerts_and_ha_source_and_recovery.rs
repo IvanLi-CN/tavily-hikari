@@ -142,6 +142,83 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
 }
 
 #[tokio::test]
+async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
+    let db_path = temp_db_path("reconciliation-foreground-dispatch-release");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-foreground-dispatch-release".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-foreground-dispatch-release-password",
+    )
+    .await;
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS,
+        "fixture establishes foreground pressure before reconciliation starts"
+    );
+
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue reconciliation representative");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim reconciliation representative")
+        .expect("representative becomes running");
+    let controller = remote_attempt_admission_for_state(state.as_ref());
+    let dispatch = controller
+        .try_acquire_aged_reconciliation_dispatch()
+        .expect("scheduler admits the aged reconciliation turn");
+
+    assert!(
+        run_manual_claimed_job(
+            state.clone(),
+            "upstream_reconciliation".to_string(),
+            None,
+            ClaimedScheduledJob {
+                job_id: claim.id,
+                claim_generation: claim.claim_generation,
+                _job_execution_gate: None,
+            },
+            Some(dispatch),
+        )
+        .await,
+        "typed foreground defer persists a representative"
+    );
+    assert!(
+        !controller.reconciliation_turn_required(),
+        "a defer before HTTP releases the fairness turn"
+    );
+    drop(
+        controller
+            .try_acquire_nonmanual_dispatch()
+            .expect("a deferred reconciliation turn cannot block later automatic remote work"),
+    );
+
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' ORDER BY id",
+    )
+    .fetch_all(&connect_sqlite_test_pool(&db_str).await)
+    .await
+    .expect("read deferred reconciliation lifecycle");
+    assert_eq!(statuses, vec!["success", "queued"]);
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
     let db_path = temp_db_path("reconciliation-unclassified-run-failure");
     let db_str = db_path.to_string_lossy().to_string();

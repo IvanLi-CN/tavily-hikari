@@ -50,6 +50,23 @@ async fn sqlite_workload_window_reports_scoped_reconciliation_metrics() {
 }
 
 #[tokio::test]
+async fn cache_write_sampling_failure_is_reported_as_unknown() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    runtime.record_connection_cache_write_pages(SqliteOperation::ReconciliationProjection, Some(7));
+    runtime.record_connection_cache_write_pages(SqliteOperation::ReconciliationProjection, None);
+
+    let telemetry = runtime.operation_telemetry(SqliteOperation::ReconciliationProjection);
+    assert!(telemetry.connection_cache_write_sampled);
+    assert!(telemetry.connection_cache_write_sample_failed);
+
+    let window = runtime.inner.workload.lock().unwrap();
+    assert!(
+        format_operation_window(&window.operations)
+            .contains("connection_cache_write_pages=unknown")
+    );
+}
+
+#[tokio::test]
 async fn operation_telemetry_survives_workload_window_rotation() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
     runtime.record_connection_cache_write_pages(SqliteOperation::ReconciliationProjection, Some(7));

@@ -417,7 +417,7 @@ fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
 
 async fn dequeue_next_scheduled_job(
     state: &AppState,
-) -> Result<Option<(JobLog, Option<tokio::sync::OwnedSemaphorePermit>)>, ProxyError> {
+) -> Result<Option<(JobLog, Option<RemoteJobDispatchPermit>)>, ProxyError> {
     let candidates = state.proxy.fetch_queued_scheduled_jobs(16).await?;
     if candidates.is_empty() {
         return Ok(None);
@@ -426,7 +426,6 @@ async fn dequeue_next_scheduled_job(
     let controller = remote_attempt_admission_for_state(state);
     let mut selected = None;
     let mut remote_job_dispatch_permit = None;
-    let mut reconciliation_turn_selected = false;
 
     // A manual maintenance request retains its existing priority over the
     // automatic reconciliation fairness turn.
@@ -451,12 +450,10 @@ async fn dequeue_next_scheduled_job(
                 RECONCILIATION_REMOTE_TURN_WAIT_SECS,
             )
             .await?
-        && let Some(dispatch_permit) = controller.try_acquire_reconciliation_dispatch()
+        && let Some(dispatch_permit) = controller.try_acquire_aged_reconciliation_dispatch()
     {
-        controller.require_reconciliation_turn();
         remote_job_dispatch_permit = Some(dispatch_permit);
         selected = Some(aged_reconciliation);
-        reconciliation_turn_selected = true;
     }
 
     for candidate in candidates {
@@ -531,19 +528,14 @@ async fn dequeue_next_scheduled_job(
 
     match state.proxy.scheduled_job_mark_running(candidate.id).await? {
         Some(job) => Ok(Some((job, remote_job_dispatch_permit))),
-        None => {
-            if reconciliation_turn_selected {
-                controller.clear_reconciliation_turn();
-            }
-            Ok(None)
-        }
+        None => Ok(None),
     }
 }
 
 async fn run_queued_scheduled_job(
     state: Arc<AppState>,
     job: JobLog,
-    remote_job_dispatch_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    remote_job_dispatch_permit: Option<RemoteJobDispatchPermit>,
 ) {
     let job_type = job.job_type.clone();
     let key_id = job.key_id.clone();
@@ -2557,7 +2549,7 @@ async fn run_manual_claimed_job(
     job_type: String,
     key_id: Option<String>,
     mut claimed_job: ClaimedScheduledJob,
-    mut remote_job_dispatch_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    mut remote_job_dispatch_permit: Option<RemoteJobDispatchPermit>,
 ) -> bool {
     if job_type == "ha_outbox_gc" {
         return run_ha_outbox_gc_claimed_job(state, claimed_job).await;
@@ -2712,7 +2704,6 @@ async fn run_manual_claimed_job(
                 )
                 .await;
                 drop(remote_job_dispatch_permit.take());
-                remote_attempt_admission.clear_reconciliation_turn();
                 return deferred;
             }
             match state
@@ -2723,7 +2714,6 @@ async fn run_manual_claimed_job(
                 Ok(()) => {}
                 Err(ProxyError::StaleClaim { .. }) => {
                     drop(remote_job_dispatch_permit.take());
-                    remote_attempt_admission.clear_reconciliation_turn();
                     return false;
                 }
                 Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
@@ -2744,13 +2734,11 @@ async fn run_manual_claimed_job(
                     )
                     .await;
                     drop(remote_job_dispatch_permit.take());
-                    remote_attempt_admission.clear_reconciliation_turn();
                     return deferred;
                 }
                 Err(error) => {
                     let finished = finish(state, "error", error.to_string()).await;
                     drop(remote_job_dispatch_permit.take());
-                    remote_attempt_admission.clear_reconciliation_turn();
                     return finished;
                 }
             }
@@ -2766,7 +2754,6 @@ async fn run_manual_claimed_job(
             // Dispatch remains bounded while the actual upstream lease is
             // acquired only inside the outbound request path.
             drop(remote_job_dispatch_permit.take());
-            remote_attempt_admission.clear_reconciliation_turn();
             persist_claimed_reconciliation_run(state, job_id, claim_generation, run_result).await
         }
         "auth_token_logs_gc" => {
