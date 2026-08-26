@@ -660,16 +660,12 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
         loop {
             match dequeue_next_scheduled_job(state.as_ref()).await {
                 Ok(Some((job, reconciliation_turn))) => {
-                    if let Some(reconciliation_turn) = reconciliation_turn {
+                    let remote_io_job = scheduled_job_uses_remote_io(&job.job_type);
+                    if remote_io_job || reconciliation_turn.is_some() {
                         let run_state = state.clone();
                         let run_wake = wake.clone();
                         tokio::spawn(async move {
-                            run_queued_scheduled_job(
-                                run_state,
-                                job,
-                                Some(reconciliation_turn),
-                            )
-                            .await;
+                            run_queued_scheduled_job(run_state, job, reconciliation_turn).await;
                             run_wake.notify_one();
                         });
                     } else {

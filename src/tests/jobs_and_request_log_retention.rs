@@ -622,7 +622,8 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
         .expect("proxy created");
 
     let results = futures_util::future::join_all(
-        (0..8).map(|_| proxy.scheduled_job_claim("db_compaction", "manual", None, 1)),
+        (0..crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT)
+            .map(|_| proxy.scheduled_job_claim("db_compaction", "manual", None, 1)),
     )
     .await;
     let claimed: Vec<i64> = results

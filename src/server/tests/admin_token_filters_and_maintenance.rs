@@ -243,7 +243,7 @@ use super::upstream_support_and_manual_jobs::*;
     }
 
     #[tokio::test]
-    async fn maintenance_worker_limits_remote_io_jobs_to_one_active_run() {
+    async fn maintenance_worker_limits_remote_http_attempts_to_one_active_request() {
         let db_path = temp_db_path("maintenance-worker-remote-io-slot");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(
@@ -284,7 +284,7 @@ use super::upstream_support_and_manual_jobs::*;
         });
         spawn_maintenance_worker(state.clone());
 
-        let first_job_id = enqueue_scheduled_job(
+        let _first_job_id = enqueue_scheduled_job(
             state.as_ref(),
             "quota_sync",
             Some(&first_key_id),
@@ -292,7 +292,7 @@ use super::upstream_support_and_manual_jobs::*;
         )
         .await
         .expect("enqueue first quota sync");
-        let second_job_id = enqueue_scheduled_job(
+        let _second_job_id = enqueue_scheduled_job(
             state.as_ref(),
             "quota_sync",
             Some(&second_key_id),
@@ -301,38 +301,23 @@ use super::upstream_support_and_manual_jobs::*;
         .await
         .expect("enqueue second quota sync");
 
-        let running_snapshot_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let first_attempt_deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            let rows: Vec<(i64, String)> =
-                sqlx::query_as("SELECT id, status FROM scheduled_jobs ORDER BY id ASC")
-                    .fetch_all(&pool)
-                    .await
-                    .expect("fetch scheduled job statuses");
-            let running_count = rows.iter().filter(|(_, status)| status == "running").count();
-            let queued_count = rows.iter().filter(|(_, status)| status == "queued").count();
-            let first_status = rows
-                .iter()
-                .find(|(id, _)| *id == first_job_id)
-                .map(|(_, status)| status.as_str());
-            let second_status = rows
-                .iter()
-                .find(|(id, _)| *id == second_job_id)
-                .map(|(_, status)| status.as_str());
-            if hits.load(Ordering::SeqCst) == 1
-                && running_count == 1
-                && queued_count == 1
-                && first_status == Some("running")
-                && second_status == Some("queued")
-            {
+            if hits.load(Ordering::SeqCst) == 1 {
                 break;
             }
             assert!(
-                std::time::Instant::now() < running_snapshot_deadline,
-                "expected one running quota job and one queued quota job, rows={rows:?}, hits={}",
+                std::time::Instant::now() < first_attempt_deadline,
+                "expected exactly one blocked upstream request before releasing the remote lease, hits={}",
                 hits.load(Ordering::SeqCst)
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "local preparation may run concurrently, but only one HTTP attempt may hold the lease"
+        );
 
         release_tx.send(true).expect("release blocking usage server");
         let completion_deadline = std::time::Instant::now() + Duration::from_secs(3);
