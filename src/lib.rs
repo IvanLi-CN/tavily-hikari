@@ -46,8 +46,7 @@ pub use ha::*;
 pub use linuxdo_credit_recharge::*;
 pub use models::*;
 pub use remote_attempt_admission::{
-    RemoteAttemptAdmissionController, RemoteAttemptLease, RemoteAttemptMetrics,
-    RemoteJobDispatchPermit,
+    ReconciliationTurn, RemoteAttemptAdmissionController, RemoteAttemptLease, RemoteAttemptMetrics,
 };
 pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,
@@ -2261,6 +2260,7 @@ pub(crate) async fn resolve_registration_regions_with_remote_attempt_admission(
     ips: &[String],
     backend_time: &BackendTime,
     remote_attempt_admission: Option<&std::sync::Arc<RemoteAttemptAdmissionController>>,
+    manual_remote_attempt: bool,
 ) -> HashMap<String, String> {
     let pending = ips
         .iter()
@@ -2291,7 +2291,14 @@ pub(crate) async fn resolve_registration_regions_with_remote_attempt_admission(
         let mut attempt = 0usize;
         let response = loop {
             let remote_attempt = match remote_attempt_admission {
-                Some(controller) => controller.acquire_attempt().await.ok(),
+                Some(controller) => match if manual_remote_attempt {
+                    controller.acquire_manual_attempt().await
+                } else {
+                    controller.acquire_attempt().await
+                } {
+                    Ok(lease) => Some(lease),
+                    Err(_) => break 'batch_lookup,
+                },
                 None => None,
             };
             let response = client.post(&batch_url).json(batch).send().await;

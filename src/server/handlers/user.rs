@@ -414,20 +414,25 @@ pub(crate) async fn fetch_linuxdo_profile_from_refresh_token_with_remote_attempt
     cfg: &LinuxDoOAuthOptions,
     refresh_token: &str,
     remote_attempt_admission: &std::sync::Arc<tavily_hikari::RemoteAttemptAdmissionController>,
+    manual_remote_attempt: bool,
 ) -> Result<(OAuthAccountProfile, LinuxDoTokenResponse), LinuxDoSyncError> {
     let token_payload = {
-        let remote_attempt = remote_attempt_admission
-            .acquire_attempt()
-            .await
+        let remote_attempt = (if manual_remote_attempt {
+            remote_attempt_admission.acquire_manual_attempt().await
+        } else {
+            remote_attempt_admission.acquire_attempt().await
+        })
             .map_err(|reason| LinuxDoSyncError::Admission(reason.to_string()))?;
         let result = exchange_linuxdo_refresh_token(client, cfg, refresh_token).await;
         drop(remote_attempt);
         result?
     };
     let profile = {
-        let remote_attempt = remote_attempt_admission
-            .acquire_attempt()
-            .await
+        let remote_attempt = (if manual_remote_attempt {
+            remote_attempt_admission.acquire_manual_attempt().await
+        } else {
+            remote_attempt_admission.acquire_attempt().await
+        })
             .map_err(|reason| LinuxDoSyncError::Admission(reason.to_string()))?;
         let result =
             fetch_linuxdo_profile_with_access_token(client, cfg, &token_payload.access_token).await;

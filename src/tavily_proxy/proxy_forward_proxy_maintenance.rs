@@ -1001,6 +1001,7 @@ impl TavilyProxy {
             endpoints,
             refresh_mode,
             None,
+            false,
         )
         .await
     }
@@ -1011,6 +1012,7 @@ impl TavilyProxy {
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
         refresh_mode: ForwardProxyGeoRefreshMode,
         remote_attempt_admission: Option<std::sync::Arc<crate::RemoteAttemptAdmissionController>>,
+        manual_remote_attempt: bool,
     ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let cached = {
             let manager = self.forward_proxy.lock().await;
@@ -1098,7 +1100,22 @@ impl TavilyProxy {
                 }
 
                 let remote_attempt = match remote_attempt_admission {
-                    Some(controller) => controller.acquire_attempt().await.ok(),
+                    Some(controller) => match if manual_remote_attempt {
+                        controller.acquire_manual_attempt().await
+                    } else {
+                        controller.acquire_attempt().await
+                    } {
+                        Ok(lease) => Some(lease),
+                        Err(_) => {
+                            return ForwardProxyGeoCandidate {
+                                endpoint,
+                                host_ips: Vec::new(),
+                                regions: Vec::new(),
+                                source: ForwardProxyGeoSource::Unknown,
+                                geo_refreshed_at,
+                            };
+                        }
+                    },
                     None => None,
                 };
                 let trace = self
@@ -1151,6 +1168,7 @@ impl TavilyProxy {
             &geo_lookup_ips,
             &self.backend_time,
             remote_attempt_admission.as_ref(),
+            manual_remote_attempt,
         )
         .await;
 
@@ -1238,6 +1256,7 @@ impl TavilyProxy {
             geo_origin,
             force_all,
             None,
+            false,
         )
         .await
     }
@@ -1248,6 +1267,7 @@ impl TavilyProxy {
         geo_origin: &str,
         force_all: bool,
         remote_attempt_admission: Option<std::sync::Arc<crate::RemoteAttemptAdmissionController>>,
+        manual_remote_attempt: bool,
     ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let endpoints = {
             let manager = self.forward_proxy.lock().await;
@@ -1268,6 +1288,7 @@ impl TavilyProxy {
             endpoints,
             refresh_mode,
             remote_attempt_admission,
+            manual_remote_attempt,
         )
         .await
     }

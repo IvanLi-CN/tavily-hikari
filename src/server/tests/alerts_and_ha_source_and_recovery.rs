@@ -1,6 +1,7 @@
 use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 use super::*;
+use futures_util::FutureExt;
 
 #[tokio::test]
 async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_local_backoff() {
@@ -122,6 +123,7 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
                 _job_execution_gate: None,
             },
             None,
+            false,
         )
         .await
     );
@@ -142,7 +144,7 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
 }
 
 #[tokio::test]
-async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
+async fn reconciliation_foreground_defer_releases_scheduler_reconciliation_turn() {
     let db_path = temp_db_path("reconciliation-foreground-dispatch-release");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -177,9 +179,9 @@ async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
         .expect("claim reconciliation representative")
         .expect("representative becomes running");
     let controller = remote_attempt_admission_for_state(state.as_ref());
-    let dispatch = controller
-        .try_acquire_aged_reconciliation_dispatch()
-        .expect("scheduler admits the aged reconciliation turn");
+    let turn = controller
+        .reserve_aged_reconciliation_turn()
+        .expect("scheduler reserves the aged reconciliation turn");
 
     assert!(
         run_manual_claimed_job(
@@ -191,7 +193,8 @@ async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
                 claim_generation: claim.claim_generation,
                 _job_execution_gate: None,
             },
-            Some(dispatch),
+            Some(turn),
+            false,
         )
         .await,
         "typed foreground defer persists a representative"
@@ -202,8 +205,8 @@ async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
     );
     drop(
         controller
-            .try_acquire_nonmanual_dispatch()
-            .expect("a deferred reconciliation turn cannot block later automatic remote work"),
+            .reserve_aged_reconciliation_turn()
+            .expect("a deferred reconciliation turn permits later automatic work"),
     );
 
     let statuses: Vec<String> = sqlx::query_scalar(
@@ -214,6 +217,74 @@ async fn reconciliation_foreground_defer_releases_scheduler_remote_dispatch() {
     .expect("read deferred reconciliation lifecycle");
     assert_eq!(statuses, vec!["success", "queued"]);
 
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aged_reconciliation_turn_allows_other_remote_local_preparation() {
+    let db_path = temp_db_path("reconciliation-turn-does-not-serialize-preparation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-turn-does-not-serialize-preparation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-turn-does-not-serialize-preparation-password",
+    )
+    .await;
+    let now = state.proxy.backend_time().now_ts();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let reconciliation = state
+        .proxy
+        .scheduled_job_enqueue_at("upstream_reconciliation", "auto", None, 1, now - 121)
+        .await
+        .expect("enqueue aged reconciliation representative");
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+        .bind(now - 121)
+        .bind(now - 121)
+        .bind(reconciliation.job_id)
+        .execute(&pool)
+        .await
+        .expect("age reconciliation representative");
+    let geo_refresh = state
+        .proxy
+        .scheduled_job_enqueue("forward_proxy_geo_refresh", "auto", None, 1)
+        .await
+        .expect("enqueue a second automatic remote job");
+
+    let (reconciliation_job, turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("claim the aged reconciliation representative")
+        .expect("aged reconciliation is scheduled");
+    assert_eq!(reconciliation_job.id, reconciliation.job_id);
+    let turn = turn.expect("aged reconciliation owns the fairness turn");
+
+    let (other_remote_job, other_turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("schedule another remote job while reconciliation prepares locally")
+        .expect("the second remote job is not serialized behind local projection");
+    assert_eq!(other_remote_job.id, geo_refresh.job_id);
+    assert!(
+        other_turn.is_none(),
+        "only the aged reconciliation representative owns the fairness turn"
+    );
+    let controller = remote_attempt_admission_for_state(state.as_ref());
+    assert!(
+        controller.acquire_attempt().now_or_never().is_none(),
+        "an automatic remote job may prepare locally but waits for the aged reconciliation lease"
+    );
+    let request_lease = turn
+        .acquire_attempt()
+        .await
+        .expect("the matching reconciliation turn acquires the next outbound HTTP lease");
+    drop(request_lease);
+
+    drop(turn);
     drop(state);
     let _ = std::fs::remove_file(db_path);
 }
@@ -262,6 +333,7 @@ async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
             _job_execution_gate: None,
         },
         None,
+        false,
     )
     .await;
     assert!(!succeeded, "unclassified run failures must remain observable");

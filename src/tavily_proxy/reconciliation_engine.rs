@@ -47,6 +47,13 @@ pub enum ClaimedReconciliationRunOutcome {
 
 pub(crate) struct ReconciliationEngine;
 
+#[derive(Clone, Copy)]
+struct ReconciliationRemoteAttemptContext<'a> {
+    remote_attempt_admission: Option<&'a Arc<RemoteAttemptAdmissionController>>,
+    reconciliation_turn: Option<&'a crate::ReconciliationTurn>,
+    manual_remote_attempt: bool,
+}
+
 /// A stable, non-sensitive classification for failures before a reconciliation
 /// response can be interpreted. The category is durable diagnostics only: it
 /// never changes settlement or billing semantics.
@@ -84,6 +91,19 @@ impl TransportFailureKind {
     }
 }
 
+impl ReconciliationRemoteAttemptContext<'_> {
+    async fn acquire(self) -> Result<Option<crate::RemoteAttemptLease>, &'static str> {
+        match (self.reconciliation_turn, self.remote_attempt_admission) {
+        (Some(turn), _) => turn.acquire_attempt().await.map(Some),
+        (None, Some(controller)) if self.manual_remote_attempt => {
+            controller.acquire_manual_attempt().await.map(Some)
+        }
+        (None, Some(controller)) => controller.acquire_reconciliation_attempt().await.map(Some),
+        (None, None) => Ok(None),
+        }
+    }
+}
+
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
     const DEFER_RETRY_DELAY_SECS: i64 = 30;
@@ -115,6 +135,8 @@ impl ReconciliationEngine {
         job_id: i64,
         claim_generation: i64,
         remote_attempt_admission: Option<Arc<RemoteAttemptAdmissionController>>,
+        reconciliation_turn: Option<crate::ReconciliationTurn>,
+        manual_remote_attempt: bool,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let proxy = proxy.clone();
         let finalization_proxy = proxy.clone();
@@ -128,6 +150,8 @@ impl ReconciliationEngine {
                     &usage_base,
                     Some((job_id, claim_generation)),
                     remote_attempt_admission,
+                    reconciliation_turn.as_ref(),
+                    manual_remote_attempt,
                 )
                 .await
         })
@@ -231,6 +255,30 @@ impl ReconciliationEngine {
 
     fn clears_upstream_429(outcome: ReconciliationOutcome) -> bool {
         Self::clears_local_pressure(outcome)
+    }
+}
+
+impl TavilyProxy {
+    #[doc(hidden)]
+    pub async fn run_upstream_reconciliation_once_claimed_outcome_with_remote_attempt_turn(
+        &self,
+        usage_base: &str,
+        job_id: i64,
+        claim_generation: i64,
+        remote_attempt_admission: Option<Arc<RemoteAttemptAdmissionController>>,
+        reconciliation_turn: Option<crate::ReconciliationTurn>,
+        manual_remote_attempt: bool,
+    ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
+        ReconciliationEngine::run_claimed(
+            self,
+            usage_base,
+            job_id,
+            claim_generation,
+            remote_attempt_admission,
+            reconciliation_turn,
+            manual_remote_attempt,
+        )
+        .await
     }
 }
 
