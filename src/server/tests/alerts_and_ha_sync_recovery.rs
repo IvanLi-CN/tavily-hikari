@@ -45,6 +45,7 @@ async fn dual_active_peer_sync_does_not_mark_success_when_no_peer_is_reached() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let client = Client::builder()
         .timeout(Duration::from_millis(200))
@@ -337,6 +338,7 @@ async fn ha_standby_sync_resets_runtime_baseline_after_foreign_key_gap() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let source_url = format!("http://{source_addr}");
     let client = Client::new();
@@ -532,6 +534,7 @@ async fn dual_active_peer_runtime_baseline_does_not_delete_local_rows() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let client = Client::new();
@@ -781,6 +784,7 @@ async fn dual_active_peer_billing_sync_namespaces_peer_log_ids() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let client = Client::new();
@@ -1063,6 +1067,7 @@ async fn dual_active_peer_runtime_sync_merges_mutable_quota_counter_deltas() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let client = Client::new();

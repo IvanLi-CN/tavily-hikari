@@ -1,3 +1,5 @@
+use crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReconciliationProjectionSliceOutcome {
     Advanced { scanned_rows: i64, completed: bool },
@@ -47,6 +49,7 @@ enum ReconciliationProjectionWriteStatus {
 
 impl<'a> ReconciliationProjectionController<'a> {
     const SQLITE_PRESSURE_DEFER_SECS: i64 = 30;
+    const SOURCE_READ_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
     fn new(store: &'a KeyStore) -> Self {
         Self { store }
@@ -144,10 +147,13 @@ impl<'a> ReconciliationProjectionController<'a> {
         &self,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<ReconciliationProjectionSliceOutcome, ProxyError> {
-        let mut conn = self
+        let mut snapshot = self
             .store
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .begin_read_snapshot(SqliteOperation::ReconciliationProjection)
+            .await?;
+        snapshot
+            .arm_cooperative_run_budget(Self::SOURCE_READ_BUDGET)
             .await?;
         let read_result = async {
             let state: ReconciliationProjectionStateRow = sqlx::query_as(
@@ -157,7 +163,7 @@ impl<'a> ReconciliationProjectionController<'a> {
                       tx_hold_le_100, tx_hold_le_250, tx_hold_over_250
                FROM upstream_reconciliation_projection_state WHERE id = 'local'"#,
             )
-            .fetch_one(&mut *conn)
+            .fetch_one(&mut *snapshot)
             .await?;
             if state.5 != 0 {
                 return Ok((state, Vec::new()));
@@ -181,13 +187,18 @@ impl<'a> ReconciliationProjectionController<'a> {
             .bind(&state.1)
             .bind(&state.2)
             .bind(batch_size)
-            .fetch_all(&mut *conn)
+            .fetch_all(&mut *snapshot)
             .await?;
             Ok((state, rows))
         }
         .await;
         let (state, rows): (ReconciliationProjectionStateRow, Vec<ReconciliationProjectionSourceRow>) =
-            conn.complete_query(read_result).await?;
+            match snapshot.complete_cooperative_query(read_result).await? {
+                SqliteCooperativeQueryOutcome::Completed(result) => result,
+                SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                    return self.defer_source_read_budget(claimed_job).await;
+                }
+            };
         if state.5 != 0 {
             return Ok(ReconciliationProjectionSliceOutcome::Advanced {
                 scanned_rows: 0,
@@ -492,6 +503,31 @@ impl<'a> ReconciliationProjectionController<'a> {
         .fetch_one(&mut **tx)
         .await?
             != 0)
+    }
+
+    async fn defer_source_read_budget(
+        &self,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<ReconciliationProjectionSliceOutcome, ProxyError> {
+        match self
+            .record_deferred_slice(claimed_job, "projection_read_budget")
+            .await
+        {
+            Ok(true) => Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                reason: "projection_read_budget",
+            }),
+            Ok(false) => Ok(ReconciliationProjectionSliceOutcome::Advanced {
+                scanned_rows: 0,
+                completed: true,
+            }),
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                    reason: "projection_read_budget",
+                })
+            }
+            Err(ProxyError::StaleClaim { .. }) => Ok(ReconciliationProjectionSliceOutcome::StaleClaim),
+            Err(err) => Err(err),
+        }
     }
 }
 

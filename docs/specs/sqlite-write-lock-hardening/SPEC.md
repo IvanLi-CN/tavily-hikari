@@ -219,8 +219,8 @@ source when a usable persisted runtime already exists.
   budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
   representative row or claim-fenced stale recovery owns later retry.
 - Scheduler dequeue and next-wake reads are also `maintenance_control`: they acquire through the
-  same bounded operation path. If the remote-I/O slot makes the first candidate page ineligible,
-  the scheduler must perform one bounded local-only fallback lookup before yielding.
+  same bounded operation path. If an actual remote-attempt lease makes the first candidate page
+  ineligible, the scheduler must perform one bounded local-only fallback lookup before yielding.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
   stays synchronous and owner-facing reads use durable fallback instead of inheriting any write-side
@@ -373,8 +373,8 @@ source when a usable persisted runtime already exists.
 - Overlapping DB-backed maintenance jobs in one process run through one persisted queue and one
   maintenance worker, so a second job is accepted/coalesced as `queued` instead of competing for the
   SQLite writer slot.
-- With two queued remote-I/O maintenance jobs such as `quota_sync`, only one enters the active
-  remote phase at a time; the next job remains `queued` until that remote slot clears, while
+- With two queued remote-I/O maintenance jobs such as `quota_sync`, only one actual outbound request
+  runs at a time. Local preparation and durable finalization do not hold the request lease, while
   non-remote maintenance work may still advance.
 - Manual trigger API calls return a representative job id, job rows expose `trigger_source` plus
   `queued_at`, and duplicate active manual triggers coalesce onto the existing queued/running row
@@ -491,3 +491,12 @@ PR: none
   but must not leave the worker waiting past the run budget or report a durable success without
   recording the state transition; the deadline must end before the scheduler's outer timeout so
   cancellation cannot race the controlled timeout path.
+- Reconciliation source reads use a native SQLite progress-handler deadline rather than cancellation
+  of the awaiting task. A deadline interrupt is a typed defer before any merge transaction; handler
+  cleanup is mandatory before returning a connection to the pool.
+- A remote admission lease describes only one outbound HTTP attempt. It is not a broad maintenance
+  permit and must be released before reconciliation finalization or other SQLite work.
+
+## Related ADRs
+
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)

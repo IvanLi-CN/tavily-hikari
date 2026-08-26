@@ -209,6 +209,7 @@ use super::upstream_support_and_manual_jobs::*;
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
 
         let app = Router::new()
@@ -279,6 +280,7 @@ use super::upstream_support_and_manual_jobs::*;
             usage_base: format!("http://{upstream_addr}"),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
         spawn_maintenance_worker(state.clone());
 
@@ -387,6 +389,7 @@ use super::upstream_support_and_manual_jobs::*;
             usage_base: format!("http://{upstream_addr}"),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
         spawn_maintenance_worker(state.clone());
 

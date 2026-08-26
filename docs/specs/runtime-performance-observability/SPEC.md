@@ -41,7 +41,8 @@
 - SQLite workload 以固定 operation/workload class 在有界内存窗口聚合；每 60 秒最多一条
   `component=db event=sqlite_workload_window` INFO，报告调用量、pool/begin wait、transaction hold、
   fixed-bucket transaction-hold p95、retries、logical rows、admitted/deferred 与原因、当前/峰值 pool acquire waiter、窗口最小 idle、
-  错误/丢弃连接以及 process/cgroup write-byte delta。不得记录 SQL、参数或请求正文。
+  错误/丢弃连接、connection-level SQLite `CACHE_WRITE` page delta、cooperative source-read elapsed/deadline，
+  以及明确标为 process/cgroup aggregate 的 write-byte delta。不得记录 SQL、参数或请求正文。
 - `ha_outbox_gc_watchdog` 是短 `maintenance_control` state read，按同一窗口归因；它不输出逐次
   INFO/WARN，也不收集或输出 outbox inventory。
 - 内存字段同时报告 cgroup `anon/file/swap` 与进程 `RssAnon/RssFile/VmSwap`，避免把文件页缓存
@@ -185,3 +186,7 @@ PR: none
 
 - evidence_note: This change only adjusts runtime diagnostics and scheduler recovery. Any future
   UI-affecting change must add current-SHA visual evidence before selecting it for a PR.
+
+## Related ADRs
+
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)

@@ -50,7 +50,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   billing settlement rules only to work at or after its activation boundary; `active_paused`
   preserves work without scheduling a representative.
 - `projection slice`: one resumable, claim-fenced historical-usage page. Its bounded read happens
-  outside the write transaction; work merge and the stable keyset cursor advance commit atomically.
+  outside the write transaction. `ReconciliationProjection` source reads use a native SQLite
+  progress-handler deadline; a deadline is a typed defer before merge and cursor advance. The
+  handler is removed before the connection returns to the pool, otherwise that connection closes.
+  Work merge and the stable keyset cursor advance commit atomically.
 - `terminal outcome`: a current work generation that needs no retry. Active non-zero differences
   are `settled`, zero differences are `no_adjustment`, and compare-mode non-zero differences are
   `observed`.
@@ -63,6 +66,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   `response_body`, `invalid_endpoint`, `credentials_or_database`, or `unknown`) attached to the
   local reconciliation observation. It is diagnostic state, never a terminal result or billing
   decision.
+- `remote attempt lease`: the instance-owned one-at-a-time admission around an outbound upstream
+  HTTP request only. It excludes local projection, candidate hydration, durable finalization, and
+  Research bookkeeping. Manual work retains priority; automatic reconciliation waiting 120 seconds
+  owns the next non-manual attempt turn.
 
 ## Observability Boundaries
 
@@ -74,6 +81,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `best-effort audit`: rebalance audit records are capped in memory and may report stale coverage
   when contention or capacity prevents persistence. A missing audit record never changes MCP
   response semantics, billing truth, or durable business work.
+- `connection-scoped SQLite pages`: SQLite `CACHE_WRITE` page deltas sampled at operation-connection
+  boundaries. They may attribute an operation's SQLite cache writes. Process and cgroup write-byte
+  counters remain aggregate pressure labels and must not be presented as one query's writes.
 - `staged pressure generation`: a source-fenced server-pressure rebuild generation that remains
   invisible until atomic publish. Source scans use 500-row keyset slices, transition events replay
   after publish, and obsolete generations are cleaned in 25-row slices so live-tail correctness

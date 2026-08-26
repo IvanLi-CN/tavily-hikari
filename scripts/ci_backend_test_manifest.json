@@ -561,6 +561,7 @@
       "coverage_target": "lib",
       "run_args": ["--lib"],
       "include_prefixes": [
+        "remote_attempt_admission::tests::",
         "tests::upstream_reconciliation_continuation::",
         "tests::upstream_reconciliation_engine::",
         "tests::upstream_reconciliation_fencing::",

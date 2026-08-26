@@ -9,6 +9,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, warn};
 
+#[path = "sqlite_runtime_cooperative.rs"]
+mod cooperative;
+pub(crate) use cooperative::SqliteCooperativeQueryOutcome;
+
+#[cfg(test)]
+#[path = "sqlite_runtime_metrics_tests.rs"]
+mod metrics_tests;
+
 const SQLITE_WORKLOAD_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5_000;
 const ADMIN_PRIVACY_READ_RUN_BUDGET: Duration = Duration::from_secs(2);
@@ -29,6 +37,7 @@ pub(crate) enum SqliteAdmissionDeferReason {
     ForegroundPressure,
     PoolPressure,
     RecentContention,
+    QueryDeadline,
 }
 
 impl SqliteAdmissionDeferReason {
@@ -38,6 +47,7 @@ impl SqliteAdmissionDeferReason {
             Self::ForegroundPressure => "foreground_pressure",
             Self::PoolPressure => "pool_pressure",
             Self::RecentContention => "recent_contention",
+            Self::QueryDeadline => "query_deadline",
         }
     }
 }
@@ -213,7 +223,33 @@ struct OperationWindow {
     hold_ms: u64,
     hold_histogram: [u64; TRANSACTION_HOLD_BUCKET_UPPER_MS.len()],
     rows_affected: u64,
+    connection_cache_write_pages: u64,
+    cooperative_read_elapsed_ms: u64,
+    cooperative_read_deadlines: u64,
     deferred_by_reason: BTreeMap<SqliteAdmissionDeferReason, u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SqliteOperationTelemetry {
+    pub(crate) connection_cache_write_pages: u64,
+    pub(crate) cooperative_read_elapsed_ms: u64,
+    pub(crate) cooperative_read_deadlines: u64,
+}
+
+impl SqliteOperationTelemetry {
+    pub(crate) fn delta_since(self, earlier: Self) -> Self {
+        Self {
+            connection_cache_write_pages: self
+                .connection_cache_write_pages
+                .saturating_sub(earlier.connection_cache_write_pages),
+            cooperative_read_elapsed_ms: self
+                .cooperative_read_elapsed_ms
+                .saturating_sub(earlier.cooperative_read_elapsed_ms),
+            cooperative_read_deadlines: self
+                .cooperative_read_deadlines
+                .saturating_sub(earlier.cooperative_read_deadlines),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -256,8 +292,14 @@ struct SqliteRuntimeInner {
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
     workload: Mutex<WorkloadWindow>,
+    // Run summaries need monotonic operation counters. The 60-second workload
+    // window intentionally resets after emission and cannot be used as a
+    // before/after source for one reconciliation run.
+    operation_telemetry: Mutex<BTreeMap<SqliteOperation, SqliteOperationTelemetry>>,
     #[cfg(test)]
     fail_next_reconciliation_research_read: AtomicBool,
+    #[cfg(test)]
+    force_next_cooperative_query_deadline: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -413,8 +455,11 @@ impl SqliteRuntime {
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
+                operation_telemetry: Mutex::new(BTreeMap::new()),
                 #[cfg(test)]
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
+                #[cfg(test)]
+                force_next_cooperative_query_deadline: AtomicBool::new(false),
             }),
         }
     }
@@ -423,6 +468,13 @@ impl SqliteRuntime {
     pub(crate) fn fail_next_reconciliation_research_read_for_test(&self) {
         self.inner
             .fail_next_reconciliation_research_read
+            .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_cooperative_query_deadline_for_test(&self) {
+        self.inner
+            .force_next_cooperative_query_deadline
             .store(true, AtomicOrdering::Release);
     }
 
@@ -773,7 +825,7 @@ impl SqliteRuntime {
         operation: SqliteOperation,
     ) -> Result<SqliteOperationConnection, ProxyError> {
         let (conn, pool_wait) = self.acquire_pool_connection(operation).await?;
-        let (conn, restore_busy_timeout) =
+        let (mut conn, restore_busy_timeout) =
             match configure_operation_connection(conn, operation).await {
                 Ok(configured) => configured,
                 Err(err) => {
@@ -782,6 +834,7 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
+        let cache_write_pages_start = connection_cache_write_pages(&mut conn).await;
         Ok(SqliteOperationConnection {
             conn: Some(conn),
             runtime: self.clone(),
@@ -789,6 +842,7 @@ impl SqliteRuntime {
             pool_wait,
             started_at: Instant::now(),
             restore_busy_timeout,
+            cache_write_pages_start,
         })
     }
 
@@ -815,6 +869,7 @@ impl SqliteRuntime {
             begin_wait: Duration::ZERO,
             started_at: Instant::now(),
             restore_busy_timeout,
+            cache_write_pages_start: None,
             cooperative_run_deadline: None,
             #[cfg(test)]
             cooperative_run_budget_for_test: None,
@@ -865,6 +920,7 @@ impl SqliteRuntime {
         }
         snapshot.begin_wait = begin_started.elapsed();
         snapshot.started_at = Instant::now();
+        snapshot.cache_write_pages_start = connection_cache_write_pages(&mut snapshot).await;
         if matches!(operation, SqliteOperation::AdminPrivacyRead)
             && let Err(error) = snapshot
                 .arm_cooperative_run_budget(ADMIN_PRIVACY_READ_RUN_BUDGET)
@@ -923,6 +979,7 @@ impl SqliteRuntime {
                 return Err(err);
             }
         };
+        let cache_write_pages_start = connection_cache_write_pages(&mut transaction).await;
         Ok(SqliteImmediateTransaction {
             transaction: Some(transaction),
             runtime: self.clone(),
@@ -932,6 +989,7 @@ impl SqliteRuntime {
             started_at: Instant::now(),
             start_total_changes,
             restore_busy_timeout,
+            cache_write_pages_start,
         })
     }
 
@@ -987,6 +1045,76 @@ impl SqliteRuntime {
         );
     }
 
+    fn record_connection_cache_write_pages(&self, operation: SqliteOperation, pages: Option<u64>) {
+        let Some(pages) = pages else {
+            return;
+        };
+        let mut window = self
+            .inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = window.operations.entry(operation).or_default();
+        metrics.connection_cache_write_pages =
+            metrics.connection_cache_write_pages.saturating_add(pages);
+        drop(window);
+
+        let mut telemetry = self
+            .inner
+            .operation_telemetry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = telemetry.entry(operation).or_default();
+        metrics.connection_cache_write_pages =
+            metrics.connection_cache_write_pages.saturating_add(pages);
+    }
+
+    pub(crate) fn operation_telemetry(
+        &self,
+        operation: SqliteOperation,
+    ) -> SqliteOperationTelemetry {
+        let telemetry = self
+            .inner
+            .operation_telemetry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        telemetry.get(&operation).cloned().unwrap_or_default()
+    }
+
+    fn record_cooperative_read(
+        &self,
+        operation: SqliteOperation,
+        elapsed: Duration,
+        deadline_exceeded: bool,
+    ) {
+        let mut window = self
+            .inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = window.operations.entry(operation).or_default();
+        metrics.cooperative_read_elapsed_ms = metrics
+            .cooperative_read_elapsed_ms
+            .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
+        metrics.cooperative_read_deadlines = metrics
+            .cooperative_read_deadlines
+            .saturating_add(u64::from(deadline_exceeded));
+        drop(window);
+
+        let mut telemetry = self
+            .inner
+            .operation_telemetry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = telemetry.entry(operation).or_default();
+        metrics.cooperative_read_elapsed_ms = metrics
+            .cooperative_read_elapsed_ms
+            .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
+        metrics.cooperative_read_deadlines = metrics
+            .cooperative_read_deadlines
+            .saturating_add(u64::from(deadline_exceeded));
+    }
+
     pub(crate) fn record_deferred(
         &self,
         operation: SqliteOperation,
@@ -1038,8 +1166,8 @@ impl SqliteRuntime {
                     pool_wait_ms = pool_wait.as_millis() as u64,
                     begin_wait_ms = begin_wait.as_millis() as u64,
                     error_category,
-                    process_write_bytes = process_write_bytes.unwrap_or_default(),
-                    cgroup_write_bytes = cgroup_write_bytes.unwrap_or_default(),
+                    process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
+                    cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
                     "SQLite workload contention entered"
                 );
             } else {
@@ -1051,8 +1179,8 @@ impl SqliteRuntime {
                     pool_wait_ms = pool_wait.as_millis() as u64,
                     begin_wait_ms = begin_wait.as_millis() as u64,
                     error_category,
-                    process_write_bytes = process_write_bytes.unwrap_or_default(),
-                    cgroup_write_bytes = cgroup_write_bytes.unwrap_or_default(),
+                    process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
+                    cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
                     "sqlite runtime operation failed"
                 );
             }
@@ -1183,8 +1311,8 @@ impl SqliteRuntime {
             component = "db",
             event = "sqlite_workload_window",
             window_secs = now.saturating_duration_since(window.started_at).as_secs(),
-            process_write_bytes_delta = process_write_bytes_delta.unwrap_or_default(),
-            cgroup_write_bytes_delta = cgroup_write_bytes_delta.unwrap_or_default(),
+            process_write_bytes_delta_aggregate = process_write_bytes_delta.unwrap_or_default(),
+            cgroup_write_bytes_delta_aggregate = cgroup_write_bytes_delta.unwrap_or_default(),
             pool_size = self.inner.pool.size(),
             minimum_idle_connections = window.minimum_idle_connections.unwrap_or_default(),
             maximum_in_use_connections = window.maximum_in_use_connections,
@@ -1227,8 +1355,8 @@ impl SqliteRuntime {
             info!(
                 component = "db",
                 event = "sqlite_runtime_contention_recovered",
-                process_write_bytes = read_process_write_bytes().unwrap_or_default(),
-                cgroup_write_bytes = read_cgroup_write_bytes().unwrap_or_default(),
+                process_write_bytes_aggregate = read_process_write_bytes().unwrap_or_default(),
+                cgroup_write_bytes_aggregate = read_cgroup_write_bytes().unwrap_or_default(),
                 "SQLite workload contention recovered"
             );
         }
@@ -1278,6 +1406,7 @@ pub(crate) struct SqliteReadSnapshot {
     begin_wait: Duration,
     started_at: Instant,
     restore_busy_timeout: bool,
+    cache_write_pages_start: Option<u64>,
     cooperative_run_deadline: Option<Instant>,
     #[cfg(test)]
     cooperative_run_budget_for_test: Option<Duration>,
@@ -1293,6 +1422,7 @@ pub(crate) struct SqliteOperationConnection {
     pool_wait: Duration,
     started_at: Instant,
     restore_busy_timeout: bool,
+    cache_write_pages_start: Option<u64>,
 }
 
 impl SqliteOperationConnection {
@@ -1300,7 +1430,14 @@ impl SqliteOperationConnection {
         mut self,
         query_result: Result<T, sqlx::Error>,
     ) -> Result<T, ProxyError> {
-        let conn = self.conn.take().expect("SQLite operation connection");
+        let mut conn = self.conn.take().expect("SQLite operation connection");
+        record_connection_cache_write_delta(
+            &self.runtime,
+            self.operation,
+            self.cache_write_pages_start,
+            &mut conn,
+        )
+        .await;
         let restore_result = restore_operation_connection(conn, self.restore_busy_timeout).await;
         match (query_result, restore_result) {
             (Ok(value), Ok(())) => {
@@ -1366,11 +1503,18 @@ impl SqliteOperationConnection {
     }
 
     pub(crate) async fn close(mut self) -> Result<(), ProxyError> {
-        let Some(conn) = self.conn.take() else {
+        let Some(mut conn) = self.conn.take() else {
             // `BEGIN IMMEDIATE` already detached a failed physical connection.
             // There is no pool state left to restore on this error path.
             return Ok(());
         };
+        record_connection_cache_write_delta(
+            &self.runtime,
+            self.operation,
+            self.cache_write_pages_start,
+            &mut conn,
+        )
+        .await;
         if let Err(err) = restore_operation_connection(conn, self.restore_busy_timeout).await {
             let err = ProxyError::Database(err);
             self.runtime
@@ -1485,11 +1629,24 @@ impl SqliteReadSnapshot {
         &mut self,
         run_budget: Duration,
     ) -> Result<(), ProxyError> {
-        let deadline = Instant::now() + run_budget;
+        #[cfg(test)]
+        let force_deadline = self
+            .runtime
+            .inner
+            .force_next_cooperative_query_deadline
+            .swap(false, AtomicOrdering::AcqRel);
+        #[cfg(not(test))]
+        let force_deadline = false;
+        let deadline = force_deadline
+            .then(Instant::now)
+            .unwrap_or_else(|| Instant::now() + run_budget);
+        let progress_handler_ops = if force_deadline {
+            1
+        } else {
+            ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS
+        };
         let mut handle = self.lock_handle().await.map_err(ProxyError::Database)?;
-        handle.set_progress_handler(ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS, move || {
-            Instant::now() < deadline
-        });
+        handle.set_progress_handler(progress_handler_ops, move || Instant::now() < deadline);
         drop(handle);
         self.cooperative_run_deadline = Some(deadline);
         #[cfg(test)]
@@ -1547,7 +1704,14 @@ impl SqliteReadSnapshot {
         let rollback_result = sqlx::query("ROLLBACK").execute(&mut *self).await;
         match (query_result, rollback_result) {
             (Ok(value), Ok(_)) => {
-                let conn = self.conn.take().expect("SQLite read snapshot connection");
+                let mut conn = self.conn.take().expect("SQLite read snapshot connection");
+                record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
                 if let Err(restore_err) =
                     restore_operation_connection(conn, self.restore_busy_timeout).await
                 {
@@ -1602,7 +1766,14 @@ impl SqliteReadSnapshot {
         let result = sqlx::query("ROLLBACK").execute(&mut *self).await;
         match result {
             Ok(_) => {
-                let conn = self.conn.take().expect("SQLite read snapshot connection");
+                let mut conn = self.conn.take().expect("SQLite read snapshot connection");
+                record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
                 if let Err(restore_err) =
                     restore_operation_connection(conn, self.restore_busy_timeout).await
                 {
@@ -1693,6 +1864,38 @@ pub(crate) struct SqliteImmediateTransaction {
     started_at: Instant,
     start_total_changes: u64,
     restore_busy_timeout: bool,
+    cache_write_pages_start: Option<u64>,
+}
+
+async fn connection_cache_write_pages(connection: &mut SqliteConnection) -> Option<u64> {
+    let mut handle = connection.lock_handle().await.ok()?;
+    let mut current = 0_i32;
+    let mut highwater = 0_i32;
+    let result = unsafe {
+        libsqlite3_sys::sqlite3_db_status(
+            handle.as_raw_handle().as_ptr(),
+            libsqlite3_sys::SQLITE_DBSTATUS_CACHE_WRITE,
+            &mut current,
+            &mut highwater,
+            0,
+        )
+    };
+    (result == libsqlite3_sys::SQLITE_OK && current >= 0).then_some(current as u64)
+}
+
+fn connection_cache_write_delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
+    start.zip(end).map(|(start, end)| end.saturating_sub(start))
+}
+
+async fn record_connection_cache_write_delta(
+    runtime: &SqliteRuntime,
+    operation: SqliteOperation,
+    start: Option<u64>,
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) {
+    let end = connection_cache_write_pages(conn).await;
+    runtime
+        .record_connection_cache_write_pages(operation, connection_cache_write_delta(start, end));
 }
 
 struct BusyTimeoutResetGuard {
@@ -1710,6 +1913,13 @@ async fn configure_operation_connection(
         .configure(busy_timeout_ms)
         .await
         .map(|conn| (conn, true))
+}
+
+fn sqlite_query_interrupted(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(error) = error else {
+        return false;
+    };
+    error.code().as_deref() == Some("9") || error.message().contains("interrupted")
 }
 
 async fn restore_operation_connection(
@@ -1776,7 +1986,14 @@ impl SqliteImmediateTransaction {
             .take()
             .expect("SQLite immediate transaction");
         match transaction.rollback_connection().await {
-            Ok(conn) => {
+            Ok(mut conn) => {
+                record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
                 if let Err(err) =
                     restore_operation_connection(conn, self.restore_busy_timeout).await
                 {
@@ -1822,7 +2039,7 @@ impl SqliteImmediateTransaction {
                     .transaction
                     .take()
                     .expect("SQLite immediate transaction");
-                let conn = match transaction.commit_connection().await {
+                let mut conn = match transaction.commit_connection().await {
                     Ok(conn) => conn,
                     Err(err) => {
                         self.runtime.record_error(
@@ -1834,6 +2051,13 @@ impl SqliteImmediateTransaction {
                         return Err(err);
                     }
                 };
+                record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
                 if let Err(err) =
                     restore_operation_connection(conn, self.restore_busy_timeout).await
                 {
@@ -1942,7 +2166,7 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 .collect::<Vec<_>>()
                 .join("|");
             format!(
-                "{}/{}:calls={},deferred={},defer_reasons={},errors={},retries={},discarded={},pool_wait_ms={},begin_wait_ms={},hold_ms={},hold_p95_ms={},rows={}",
+                "{}/{}:calls={},deferred={},defer_reasons={},errors={},retries={},discarded={},pool_wait_ms={},begin_wait_ms={},hold_ms={},hold_p95_ms={},rows={},connection_cache_write_pages={},cooperative_read_elapsed_ms={},cooperative_read_deadlines={}",
                 operation.workload_class(),
                 operation.as_str(),
                 metrics.calls,
@@ -1956,6 +2180,9 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 metrics.hold_ms,
                 transaction_hold_p95_ms(&metrics.hold_histogram),
                 metrics.rows_affected,
+                metrics.connection_cache_write_pages,
+                metrics.cooperative_read_elapsed_ms,
+                metrics.cooperative_read_deadlines,
             )
         })
         .collect::<Vec<_>>()
@@ -2856,30 +3083,5 @@ mod tests {
             "caller deadline must bound pool acquisition and BEGIN"
         );
         drop(held);
-    }
-
-    #[tokio::test]
-    async fn workload_window_records_typed_admission_defers_without_statement_text() {
-        let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
-        runtime.record_deferred(
-            SqliteOperation::RequestStatsFlush,
-            SqliteAdmissionDeferReason::PoolPressure,
-        );
-
-        let window = runtime.inner.workload.lock().unwrap();
-        let metrics = &window.operations[&SqliteOperation::RequestStatsFlush];
-        assert_eq!(metrics.calls, 1);
-        assert_eq!(metrics.deferred, 1);
-        assert_eq!(
-            metrics
-                .deferred_by_reason
-                .get(&SqliteAdmissionDeferReason::PoolPressure),
-            Some(&1)
-        );
-        let formatted = format_operation_window(&window.operations);
-        assert!(formatted.contains("maintenance_bulk/request_stats_flush"));
-        assert!(formatted.contains("defer_reasons=pool_pressure=1"));
-        assert!(!formatted.contains("SELECT"));
-        assert!(!formatted.contains("INSERT"));
     }
 }

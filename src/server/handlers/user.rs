@@ -50,7 +50,7 @@ struct LinuxDoCallbackQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct LinuxDoTokenResponse {
+pub(crate) struct LinuxDoTokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
@@ -155,7 +155,8 @@ enum LinuxDoFinalizeResult {
 }
 
 #[derive(Debug)]
-enum LinuxDoSyncError {
+pub(crate) enum LinuxDoSyncError {
+    Admission(String),
     Transport {
         stage: &'static str,
         source: reqwest::Error,
@@ -181,6 +182,7 @@ enum LinuxDoSyncError {
 impl std::fmt::Display for LinuxDoSyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(detail) => write!(f, "linuxdo remote admission error: {detail}"),
             Self::Transport { stage, source } => write!(f, "{stage} transport error: {source}"),
             Self::UpstreamStatus {
                 stage,
@@ -407,14 +409,31 @@ async fn fetch_linuxdo_profile_from_authorization_code(
     Ok((profile, token_payload))
 }
 
-async fn fetch_linuxdo_profile_from_refresh_token(
+pub(crate) async fn fetch_linuxdo_profile_from_refresh_token_with_remote_attempt_admission(
     client: &reqwest::Client,
     cfg: &LinuxDoOAuthOptions,
     refresh_token: &str,
+    remote_attempt_admission: &std::sync::Arc<tavily_hikari::RemoteAttemptAdmissionController>,
 ) -> Result<(OAuthAccountProfile, LinuxDoTokenResponse), LinuxDoSyncError> {
-    let token_payload = exchange_linuxdo_refresh_token(client, cfg, refresh_token).await?;
-    let profile =
-        fetch_linuxdo_profile_with_access_token(client, cfg, &token_payload.access_token).await?;
+    let token_payload = {
+        let remote_attempt = remote_attempt_admission
+            .acquire_attempt()
+            .await
+            .map_err(|reason| LinuxDoSyncError::Admission(reason.to_string()))?;
+        let result = exchange_linuxdo_refresh_token(client, cfg, refresh_token).await;
+        drop(remote_attempt);
+        result?
+    };
+    let profile = {
+        let remote_attempt = remote_attempt_admission
+            .acquire_attempt()
+            .await
+            .map_err(|reason| LinuxDoSyncError::Admission(reason.to_string()))?;
+        let result =
+            fetch_linuxdo_profile_with_access_token(client, cfg, &token_payload.access_token).await;
+        drop(remote_attempt);
+        result?
+    };
     Ok((profile, token_payload))
 }
 

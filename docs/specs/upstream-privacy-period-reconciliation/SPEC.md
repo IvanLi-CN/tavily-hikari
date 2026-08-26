@@ -98,6 +98,18 @@
 - A claimed projection micro-slice owns its bulk permit in an independent task until the durable
   boundary completes. Cancelling the scheduler caller cannot release admission early or abandon an
   open projection transaction; claim and cursor fencing still reject obsolete work.
+- Projection source reads use a connection-local SQLite progress handler to enforce a 250ms native
+  read deadline. Its own `SQLITE_INTERRUPT` is `projection_read_budget`: it starts no merge
+  transaction, advances no cursor, and leaves one claim-fenced delayed representative. The handler
+  must be removed before pool return; uncertainty closes the physical connection.
+- The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
+  projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
+  Manual work keeps priority; an automatic reconciliation representative eligible for 120 seconds
+  owns the next non-manual request turn until it starts one request or ends through a typed
+  no-request boundary.
+- Projection SQL shape remains unchanged unless scoped read-deadline and connection-level evidence
+  shows this source read still dominates candidate performance. A query/index rewrite requires a
+  separate bounded change.
 - Every attempted work generation ends as exactly one typed result. `settled`, `no_adjustment`, and
   compare-mode `observed` are terminal. `upstream_429`, `transport_failure`, `semantic_failure`, and
   `local_pressure` are retryable and keep independent durable streaks and retry deadlines.
@@ -137,8 +149,10 @@
 
 ### 对账与 adjustment
 
-- `upstream_reconciliation` 使用 remote-I/O slot，并具有 20 秒单轮总预算；剩余预算不足时不得发起
-  新的上游请求，因此本地 HA GC 等维护任务不被长时间远程 I/O 占用。
+- `upstream_reconciliation` 只在实际 outbound HTTP request 期间取得全局唯一 remote-attempt
+  lease，并具有 20 秒单轮总预算；剩余预算不足时不得发起新的上游请求。candidate、projection、
+  hydrate、finalization 与 Research bookkeeping 不占该 lease，因此本地 HA GC 等维护任务不被长时间
+  远程 I/O 占用。
 - 全局 429 压力状态与 job continuation 原子持久化。连续三轮零结算且 429 占比至少一半后，按
   `2/5/10/30` 分钟退避，并采用 `max(退避, Retry-After)`；退避期间只保留一个 delayed
   representative job。
@@ -368,3 +382,7 @@ PR: include
   persistence and the candidate retry marker are each bounded by the remaining tail. If either
   write cannot complete within that budget, the run returns an explicit persistence error instead
   of reporting a successful reconciliation without durable retry state.
+
+## Related ADRs
+
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)

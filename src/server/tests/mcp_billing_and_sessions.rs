@@ -1396,6 +1396,7 @@ use tower::ServiceExt;
             usage_base: upstream.clone(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
         let app = Router::new()
             .route("/mcp", any(proxy_handler))

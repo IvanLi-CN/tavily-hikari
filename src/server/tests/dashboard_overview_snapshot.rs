@@ -83,6 +83,7 @@ async fn compute_signatures_reuses_dashboard_boundary_contract() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let snapshot = load_dashboard_overview_snapshot(&state)
@@ -149,6 +150,7 @@ async fn dashboard_overview_snapshot_caches_rebuilt_freshness_after_emitted_snap
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let initial = load_dashboard_overview_snapshot(&state)
@@ -240,6 +242,7 @@ async fn dashboard_overview_snapshot_keeps_summary_totals_in_sync_with_flushed_w
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     state.proxy.nudge_request_stats_flush().await;
@@ -311,6 +314,7 @@ async fn dashboard_overview_snapshot_is_reused_within_the_same_freshness_wave() 
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let first = load_dashboard_overview_snapshot(&state)
@@ -367,6 +371,7 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let initial = load_dashboard_overview_snapshot(&state)
@@ -442,6 +447,7 @@ async fn dashboard_pressure_returns_last_good_without_refresh() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
     let generation = {
@@ -510,6 +516,7 @@ async fn dashboard_pressure_allows_one_bounded_cold_build() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     for _ in 0..6 {
         state.proxy.record_foreground_activity();
@@ -558,6 +565,7 @@ async fn dashboard_startup_prewarm_reuses_the_first_snapshot_loader() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     tokio::time::timeout(
@@ -604,6 +612,7 @@ async fn dashboard_startup_prewarm_waits_past_the_request_budget_before_listenin
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pause = state
         .proxy
@@ -660,6 +669,7 @@ async fn dashboard_sse_defers_freshness_while_the_cold_loader_is_active() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
     {
@@ -712,6 +722,7 @@ async fn dashboard_cold_build_continues_after_the_first_request_times_out() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pause = state
         .proxy
@@ -767,6 +778,7 @@ async fn dashboard_overview_snapshot_recovers_from_stale_loading_flag() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     {
@@ -875,6 +887,7 @@ async fn dashboard_snapshot_event_uses_rebuilt_freshness_after_pending_rollups()
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let initial = load_dashboard_overview_snapshot(&state)
@@ -944,6 +957,7 @@ async fn dashboard_snapshot_event_emits_latest_log_cursor_from_rebuilt_snapshot(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
 
@@ -1041,6 +1055,7 @@ async fn dashboard_overview_snapshot_ignores_retained_out_request_logs_in_freshn
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
 
@@ -1116,6 +1131,7 @@ async fn dashboard_overview_freshness_notices_same_second_rollup_updates() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let initial = load_dashboard_overview_snapshot(&state)
@@ -1240,6 +1256,7 @@ async fn dashboard_overview_freshness_tracks_time_driven_stale_key_transitions()
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
 
@@ -1312,6 +1329,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_displayed_log_signature_chang
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
 
@@ -1422,6 +1440,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_trend_only_log_window_changes
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
     let base_created_at = Utc::now().timestamp();
@@ -1536,6 +1555,7 @@ async fn dashboard_overview_snapshot_does_not_reuse_recent_cache_after_freshness
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
 
@@ -1597,6 +1617,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_previous_month_lifecycle_chan
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
     let summary_windows = proxy.summary_windows().await.expect("summary windows");
@@ -1688,6 +1709,7 @@ async fn dashboard_overview_snapshot_rebuilds_when_month_quota_samples_backfill(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
     let summary_windows = proxy.summary_windows().await.expect("summary windows");
@@ -1776,6 +1798,7 @@ async fn dashboard_overview_snapshot_ignores_quota_baseline_backfills_for_cheap_
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let pool = connect_sqlite_test_pool(&db_str).await;
     let summary_windows = proxy.summary_windows().await.expect("summary windows");

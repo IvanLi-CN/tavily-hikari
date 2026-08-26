@@ -8,7 +8,8 @@
 
 - `sqlite_workload_window` now aggregates workload class, operation, admission decisions and defer
   reason, pool/begin waits, transaction hold time, rows, busy/timeout outcomes, acquire waiters,
-  minimum idle capacity, and process/cgroup write-byte deltas. Normal operations stay DEBUG;
+  minimum idle capacity, connection-scoped `CACHE_WRITE` pages, and cooperative read deadlines.
+  Process/cgroup write-byte deltas remain explicitly aggregate labels. Normal operations stay DEBUG;
   the window emits at most one INFO record per minute, while sustained pressure and recovery use
   state transitions.
 - The runtime reads `/proc` and cgroup I/O only for a window emission, slow/error path, or state

@@ -114,13 +114,12 @@ impl ReconciliationEngine {
         usage_base: &str,
         job_id: i64,
         claim_generation: i64,
-        remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        remote_attempt_admission: Option<Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let proxy = proxy.clone();
         let finalization_proxy = proxy.clone();
         let usage_base = usage_base.to_string();
         let run_result = tokio::spawn(async move {
-            let _remote_io_permit = remote_io_permit;
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
@@ -128,6 +127,7 @@ impl ReconciliationEngine {
                 .run_upstream_reconciliation_once_inner(
                     &usage_base,
                     Some((job_id, claim_generation)),
+                    remote_attempt_admission,
                 )
                 .await
         })

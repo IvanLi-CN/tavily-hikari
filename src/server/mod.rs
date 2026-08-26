@@ -61,14 +61,14 @@ use tavily_hikari::{
     ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
     ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption, OAuthAccountProfile,
     PaginatedAlertEvents, PaginatedAlertGroups, PendingBillingSettleOutcome, ProxyError,
-    ProxyRequest, ProxyResponse, ProxySummary, QUOTA_SYNC_JOB_TIMEOUT_SECS, RequestLogBodiesRecord,
-    RequestLogRecord, RequestLogsCatalog, RequestLogsCursor, RequestLogsCursorDirection,
-    RequestLogsCursorPage, RequestLogsGcOptions, StickyCreditsWindow, TavilyProxy,
-    TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogBillingFilter, TokenLogRecord,
-    TokenLogsCursorPage, TokenQuotaVerdict, TokenRequestKindOption, TokenSummary, TokenUsageBucket,
-    TrustedClientIpSettings, UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT,
-    USER_MONTHLY_BROKEN_LIMIT_DEFAULT, UserTokenLookup, analyze_mcp_attempt,
-    canonical_request_kind_key_for_filter, classify_token_request_kind,
+    ProxyRequest, ProxyResponse, ProxySummary, QUOTA_SYNC_JOB_TIMEOUT_SECS, QueuedScheduledJob,
+    RemoteAttemptAdmissionController, RequestLogBodiesRecord, RequestLogRecord, RequestLogsCatalog,
+    RequestLogsCursor, RequestLogsCursorDirection, RequestLogsCursorPage, RequestLogsGcOptions,
+    StickyCreditsWindow, TavilyProxy, TokenHourlyBucket, TokenHourlyRequestVerdict,
+    TokenLogBillingFilter, TokenLogRecord, TokenLogsCursorPage, TokenQuotaVerdict,
+    TokenRequestKindOption, TokenSummary, TokenUsageBucket, TrustedClientIpSettings,
+    UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT, USER_MONTHLY_BROKEN_LIMIT_DEFAULT, UserTokenLookup,
+    analyze_mcp_attempt, canonical_request_kind_key_for_filter, classify_token_request_kind,
     display_result_status_for_request_kind, effective_request_logs_gc_at,
     effective_token_daily_limit, effective_token_hourly_limit, effective_token_monthly_limit,
     extract_mcp_has_error_by_id_from_bytes, extract_mcp_usage_credits_by_id_from_bytes,
@@ -84,7 +84,7 @@ use tokio::signal;
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, Semaphore};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 use tokio_util::io::{ReaderStream, StreamReader};
 include!("state.rs");
 include!("schedulers.rs");

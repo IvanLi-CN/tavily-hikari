@@ -26,8 +26,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/server/tests/api_keys_and_registration.rs",
-        3300,
-        "User auth/profile integration coverage now also carries the dedicated billing summary endpoint contract and related recharge/user-console assertions while the legacy consolidated server test file still awaits a broader extraction pass.",
+        3310,
+        "User auth/profile integration coverage now also carries the dedicated billing summary endpoint contract, related recharge/user-console assertions, and AppState admission wiring while the legacy consolidated server test file still awaits a broader extraction pass.",
     ),
     (
         "src/server/tests/tavily_http_search.rs",
@@ -43,6 +43,16 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "src/store/key_store_ha.rs",
         3400,
         "HA outbox retention, peer health, cursor-gap markers, and bounded online cleanup remain together in the channel store module while the HA store extraction pass is pending.",
+    ),
+    (
+        "src/server/schedulers.rs",
+        3120,
+        "The scheduler retains the consolidated durable-job lifecycle while request-scoped remote-attempt admission is rolled out across existing maintenance job types; task-dispatch extraction remains a separate behavior-preserving change.",
+    ),
+    (
+        "src/store/sqlite_runtime.rs",
+        3175,
+        "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, and workload aggregation; cooperative query cleanup is isolated in its dedicated child module.",
     ),
 ];
 

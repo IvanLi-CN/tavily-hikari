@@ -1207,6 +1207,7 @@ async fn ha_standby_sync_does_not_repeat_zero_watermark_baseline() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let source_url = format!("http://{source_addr}");
     let client = Client::new();
@@ -1373,6 +1374,7 @@ async fn ha_standby_sync_recovers_after_invalid_baseline_stream() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let source_url = format!("http://{source_addr}");
     let client = Client::new();
@@ -1642,6 +1644,7 @@ async fn ha_standby_sync_recovers_after_invalid_events_stream() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let source_url = format!("http://{source_addr}");
     let client = Client::new();

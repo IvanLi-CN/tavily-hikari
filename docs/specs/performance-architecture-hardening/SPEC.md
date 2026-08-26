@@ -50,7 +50,8 @@
 - `HaRuntime` 发布单调递增 revision 的 writable authority；authority epoch 持久化在 SQLite，并与业务
   写入的最终 fence/commit 通过同一 SQLite writer serialization point 排序。旧 revision 不得继续
   claim、远端调用或写入。
-- `MaintenanceRuntime` 独占 worker、reaper、`JoinSet`、lease 和 remote-I/O slot 的生命周期。
+- `MaintenanceRuntime` 独占 worker、reaper、`JoinSet`、调度 lease 与 instance-owned
+  actual-request remote-attempt admission 的生命周期。
 - `SqliteRuntime` 唯一持有生产 pools、事务 guard、admission 和操作预算。迁移后的 HA read
   session、通用 audit snapshot 与 Dashboard integrity write 不得取得裸 pooled connection；取消或
   未完成 guard 必须丢弃物理连接。
@@ -246,7 +247,11 @@ PR: none
 - 风险：持久 projection 的 shadow 等价性不足会误导管理员读取，cutover 前必须证明覆盖一致。
 - 假设：单体 + SQLite 能在有界 admission 和 projection 架构下满足既定 SLO。
 
+## Related ADRs
+
+- [ADR 0001: HA Planned Cutover Control Plane](../../adr/0001-ha-planned-cutover-control-plane.md)
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
+
 ## 参考（References）
 
-- `../../adr/0001-ha-planned-cutover-control-plane.md`
 - `../../../CONTEXT.md`

@@ -2404,6 +2404,7 @@ async fn create_legacy_request_logs_source(pool: &sqlx::SqlitePool) {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
 
         let (sig, latest_id) = compute_signatures(&state)

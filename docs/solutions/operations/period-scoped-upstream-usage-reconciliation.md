@@ -40,6 +40,16 @@ then atomically merge work and CAS-advance the cursor in a short claim-fenced tr
 page between 25 and 100 rows from transaction time, and check the cooperative run budget only at safe
 boundaries. Never use cancellation as the normal way to end an open write transaction.
 
+Projection source reads use a 250ms connection-local SQLite progress-handler deadline. A deadline
+interrupt leaves the stable cursor unchanged and returns a durable typed defer; the handler must be
+removed before the connection can return to the pool. Keep the source SQL unchanged until scoped
+read timing proves it remains the bottleneck.
+
+The global remote limit is a lease around the actual outbound HTTP request, not the whole
+reconciliation run. Local projection, hydrate, finalization, and Research bookkeeping release the
+lease. Manual remote work retains priority, while an automatic reconciliation representative that
+has been eligible for 120 seconds receives the next non-manual remote turn.
+
 When the upstream only exposes cumulative usage counters, a proxy cannot do exact per-request
 billing by reading upstream state inline. Tavily Hikari solves this by splitting local billing
 into two phases: optimistic request-time charging, then one idempotent settlement per complete

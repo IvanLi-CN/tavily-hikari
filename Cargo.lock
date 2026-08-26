@@ -3314,6 +3314,7 @@ dependencies = [
  "html-escape",
  "httpdate",
  "libc",
+ "libsqlite3-sys",
  "log",
  "md5",
  "mime_guess",

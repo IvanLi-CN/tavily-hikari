@@ -62,6 +62,9 @@
 - Claimed reconciliation projection transfers that permit into its short transaction task. Caller
   cancellation drops only the join handle; the task retains admission through explicit commit or
   rollback, so it cannot expose an unfinished transaction or overlap a replacement bulk slice.
+- Reconciliation source reads run under a connection-local 250ms SQLite progress-handler deadline.
+  A matching interrupt is a typed deferred outcome before merge/cursor work; handler removal is
+  verified before pool return and uncertainty closes the physical connection.
 
 - Added a runtime logging contract for the online service surface based on `tracing` +
   `tracing-subscriber`. Runtime logging now defaults to JSON lines on stderr, exposes a documented
@@ -195,10 +198,10 @@
 - Scheduler loops now enqueue DB-backed maintenance work instead of trying to claim-and-run inline.
   One in-process maintenance worker consumes queued jobs, preserves manual-first priority, and
   reuses the existing per-job execution logic.
-- Remote-I/O maintenance families (`quota_sync*`, LinuxDo user sync, GEO refresh) now share one
-  worker-scoped remote slot. That keeps the queue from fan-out marking a burst of `/usage` or GEO
-  jobs as `running` all at once, while still allowing DB-only jobs such as `request_logs_gc` to
-  advance during a pending remote phase.
+- Remote-I/O maintenance families (`quota_sync*`, LinuxDo user sync, GEO refresh, and
+  reconciliation) share one instance-owned actual-request lease. The lease begins only at outbound
+  HTTP and releases after response/error handling, while DB-only jobs can advance during local
+  preparation or durable finalization.
 - Coalesced active jobs now promote `trigger_source` even while the representative row is already
   `running`, so a later manual trigger is visible in both the returned trigger response and the
   persisted job row instead of being silently hidden behind the original scheduler source.
@@ -227,7 +230,7 @@
 - `forward_proxy_geo_refresh` now follows the same split-phase model as quota sync and LinuxDo
   sync: remote trace/GEO discovery happens outside the DB execution gate, candidate persistence and
   `scheduled_jobs` completion happen inside a short DB window, and the worker may continue with
-  other queued non-remote jobs while the single remote-I/O slot is in flight.
+  other queued non-remote jobs while the single actual-request remote lease is in flight.
 - Online billing-subject serialization no longer uses `quota_subject_locks` as the request-path
   mutex. The hot path now uses an in-process subject guard, keeping fail-closed billing semantics
   while removing acquire/refresh/release writes for every billable request.

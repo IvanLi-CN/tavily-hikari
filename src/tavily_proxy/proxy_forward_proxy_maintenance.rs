@@ -996,6 +996,22 @@ impl TavilyProxy {
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
         refresh_mode: ForwardProxyGeoRefreshMode,
     ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
+        self.resolve_forward_proxy_geo_candidates_with_remote_attempt_admission(
+            geo_origin,
+            endpoints,
+            refresh_mode,
+            None,
+        )
+        .await
+    }
+
+    async fn resolve_forward_proxy_geo_candidates_with_remote_attempt_admission(
+        &self,
+        geo_origin: &str,
+        endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
+        refresh_mode: ForwardProxyGeoRefreshMode,
+        remote_attempt_admission: Option<std::sync::Arc<crate::RemoteAttemptAdmissionController>>,
+    ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let cached = {
             let manager = self.forward_proxy.lock().await;
             endpoints
@@ -1062,7 +1078,9 @@ impl TavilyProxy {
         let refreshed_at = self.backend_time.now_ts();
         let trace_timeout = Duration::from_millis(FORWARD_PROXY_TRACE_TIMEOUT_MS);
         let resolved_refresh = futures_util::stream::iter(refresh_targets.into_iter().map(
-            |(endpoint, cached_source, cached_ips, cached_regions, geo_refreshed_at)| async move {
+            |(endpoint, cached_source, cached_ips, cached_regions, geo_refreshed_at)| {
+                let remote_attempt_admission = remote_attempt_admission.clone();
+                async move {
                 if refresh_mode == ForwardProxyGeoRefreshMode::LazyFillMissing
                     && cached_source == ForwardProxyGeoSource::Trace
                     && geo_refreshed_at > 0
@@ -1079,10 +1097,15 @@ impl TavilyProxy {
                     };
                 }
 
-                if let Some((ip, _location)) = self
+                let remote_attempt = match remote_attempt_admission {
+                    Some(controller) => controller.acquire_attempt().await.ok(),
+                    None => None,
+                };
+                let trace = self
                     .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
-                    .await
-                {
+                    .await;
+                drop(remote_attempt);
+                if let Some((ip, _location)) = trace {
                     return ForwardProxyGeoCandidate {
                         endpoint,
                         host_ips: vec![ip],
@@ -1098,6 +1121,7 @@ impl TavilyProxy {
                     regions: Vec::new(),
                     source: ForwardProxyGeoSource::Negative,
                     geo_refreshed_at: refreshed_at,
+                }
                 }
             },
         ))
@@ -1122,8 +1146,13 @@ impl TavilyProxy {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let region_by_ip =
-            resolve_registration_regions(geo_origin, &geo_lookup_ips, &self.backend_time).await;
+        let region_by_ip = resolve_registration_regions_with_remote_attempt_admission(
+            geo_origin,
+            &geo_lookup_ips,
+            &self.backend_time,
+            remote_attempt_admission.as_ref(),
+        )
+        .await;
 
         let refreshed_candidates = resolved_refresh
             .into_iter()
@@ -1205,6 +1234,21 @@ impl TavilyProxy {
         geo_origin: &str,
         force_all: bool,
     ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
+        self.resolve_forward_proxy_geo_refresh_candidates_with_remote_attempt_admission(
+            geo_origin,
+            force_all,
+            None,
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn resolve_forward_proxy_geo_refresh_candidates_with_remote_attempt_admission(
+        &self,
+        geo_origin: &str,
+        force_all: bool,
+        remote_attempt_admission: Option<std::sync::Arc<crate::RemoteAttemptAdmissionController>>,
+    ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let endpoints = {
             let manager = self.forward_proxy.lock().await;
             manager
@@ -1219,8 +1263,13 @@ impl TavilyProxy {
         } else {
             ForwardProxyGeoRefreshMode::LazyFillMissing
         };
-        self.resolve_forward_proxy_geo_candidates(geo_origin, endpoints, refresh_mode)
-            .await
+        self.resolve_forward_proxy_geo_candidates_with_remote_attempt_admission(
+            geo_origin,
+            endpoints,
+            refresh_mode,
+            remote_attempt_admission,
+        )
+        .await
     }
 
     pub(crate) fn forward_proxy_geo_incomplete_retry_wait_secs(

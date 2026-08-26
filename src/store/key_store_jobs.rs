@@ -969,6 +969,66 @@ impl KeyStore {
         }
     }
 
+    pub(crate) async fn fetch_aged_queued_scheduled_job_by_type(
+        &self,
+        job_type: &str,
+        minimum_eligible_wait_secs: i64,
+    ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let priority_sql = Self::scheduled_job_effective_priority_sql(
+            "job_type",
+            "trigger_source",
+            "queued_at",
+        );
+        let query = format!(
+            r#"
+            SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
+                   {priority_sql} AS effective_priority
+            FROM scheduled_jobs
+            WHERE status = 'queued'
+              AND job_type = ?
+              AND available_at <= ?
+              AND ? - available_at >= ?
+            ORDER BY available_at ASC, queued_at ASC, id ASC
+            LIMIT 1
+            "#,
+        );
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+            .bind(now)
+            .bind(job_type)
+            .bind(now)
+            .bind(now)
+            .bind(minimum_eligible_wait_secs.max(0))
+            .fetch_optional(&mut *conn)
+            .await
+            .map(|row| {
+                row.map(
+                    |(id, job_type, trigger_source, key_id, attempt, queued_at, available_at, effective_priority)| {
+                        QueuedScheduledJob {
+                            id,
+                            job_type,
+                            trigger_source,
+                            key_id,
+                            attempt,
+                            queued_at,
+                            available_at,
+                            effective_priority,
+                        }
+                    },
+                )
+            })
+            .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(job), Ok(())) => Ok(job),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
+    }
+
     pub(crate) async fn next_queued_scheduled_job_available_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {

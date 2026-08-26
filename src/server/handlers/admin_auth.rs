@@ -2458,6 +2458,7 @@ mod admin_auth_last_login_method_tests {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
         (state, temp_dir)
     }

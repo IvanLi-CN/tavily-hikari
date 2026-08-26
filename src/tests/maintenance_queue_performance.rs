@@ -40,6 +40,65 @@ async fn scheduled_job_aging_prevents_request_logs_gc_from_starving_ha_gc() {
 }
 
 #[tokio::test]
+async fn aged_reconciliation_is_discoverable_beyond_the_dequeue_page() {
+    let db_path = temp_db_path("aged-reconciliation-remote-turn");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let now = Utc::now().timestamp();
+
+    for index in 0..17 {
+        let key_id = format!("fresh-quota-{index}");
+        sqlx::query(
+            "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+        )
+        .bind(&key_id)
+        .bind(format!("tvly-{key_id}"))
+        .bind(now)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("create queued quota key");
+        proxy
+            .scheduled_job_enqueue("quota_sync", "manual", Some(&key_id), 1)
+            .await
+            .expect("enqueue fresh remote quota job");
+    }
+    let reconciliation = proxy
+        .scheduled_job_enqueue_at("upstream_reconciliation", "auto", None, 1, now - 121)
+        .await
+        .expect("enqueue aged reconciliation");
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+        .bind(now - 121)
+        .bind(now - 121)
+        .bind(reconciliation.job_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("age reconciliation representative");
+
+    let first_page = proxy
+        .fetch_queued_scheduled_jobs(16)
+        .await
+        .expect("read scheduler page");
+    assert!(
+        first_page
+            .iter()
+            .all(|job| job.job_type != "upstream_reconciliation"),
+        "the aged representative sits behind the regular dequeue page"
+    );
+    let aged = proxy
+        .fetch_aged_queued_scheduled_job_by_type("upstream_reconciliation", 120)
+        .await
+        .expect("query aged reconciliation")
+        .expect("aged reconciliation remains discoverable");
+    assert_eq!(aged.id, reconciliation.job_id);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn blocked_remote_queue_page_does_not_hide_local_ha_gc_work() {
     let db_path = temp_db_path("scheduled-job-remote-head-local-fallback");
     let db_str = db_path.to_string_lossy().to_string();

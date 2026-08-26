@@ -81,6 +81,7 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
         usage_base: format!("http://{address}"),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     sqlx::query(
         r#"INSERT INTO meta (key, value) VALUES
@@ -340,6 +341,7 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let initial = state
@@ -529,6 +531,7 @@ async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     assert!(
         tokio::time::timeout(
@@ -664,6 +667,7 @@ async fn request_logs_gc_handoff_preserves_error_and_defers_to_stale_reaper() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     assert!(
         !tokio::time::timeout(
@@ -1276,6 +1280,7 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let (before_sig, _) = compute_signatures(&state)

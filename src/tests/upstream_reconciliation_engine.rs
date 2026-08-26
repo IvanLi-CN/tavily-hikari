@@ -606,6 +606,81 @@ async fn reconciliation_projection_is_cancellation_safe() {
 }
 
 #[tokio::test]
+async fn reconciliation_projection_read_deadline_interrupts_without_discarding_connection() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-projection-read-deadline"],
+        "http://127.0.0.1:9",
+        &db_string,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("disable live projection");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0 WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark projection incomplete");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES ('deadline-token', 'deadline-key', '2026-07-15/S1', 'deadline-project',
+                     'token:deadline-token', 1, 2, 1, 1, 2, 2, 'shadow')"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert pending projection source");
+
+    proxy
+        .key_store
+        .sqlite_runtime
+        .force_next_cooperative_query_deadline_for_test();
+    let outcome = proxy
+        .key_store
+        .advance_upstream_reconciliation_work_projection()
+        .await
+        .expect("source deadline is a typed defer");
+    assert!(matches!(
+        outcome,
+        ReconciliationProjectionSliceOutcome::Deferred {
+            reason: "projection_read_budget"
+        }
+    ));
+    let cursor: (String, String, String) = sqlx::query_as(
+        "SELECT cursor_token_id, cursor_key_id, cursor_period_code FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged cursor");
+    assert_eq!(cursor, (String::new(), String::new(), String::new()));
+    assert_eq!(
+        proxy
+            .key_store
+            .sqlite_runtime
+            .discarded_connections_for_test(SqliteOperation::ReconciliationProjection),
+        0,
+        "a native SQLite interrupt must leave a clean connection for the pool"
+    );
+    let tx = proxy
+        .key_store
+        .sqlite_runtime
+        .begin_immediate(SqliteOperation::ReconciliationProjection)
+        .await
+        .expect("next transaction begins after the interrupted source read");
+    tx.rollback().await.expect("rollback clean transaction");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn claimed_engine_run_reaches_a_safe_boundary_after_the_caller_is_cancelled() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -656,18 +731,13 @@ async fn claimed_engine_run_reaches_a_safe_boundary_after_the_caller_is_cancelle
         .expect("hold writer lock");
 
     let cancelled_proxy = Arc::clone(&proxy);
-    let remote_io_slot = Arc::new(tokio::sync::Semaphore::new(1));
-    let remote_io_permit = remote_io_slot
-        .clone()
-        .try_acquire_owned()
-        .expect("acquire remote I/O permit");
     let task = tokio::spawn(async move {
         cancelled_proxy
-            .run_upstream_reconciliation_once_claimed_outcome_with_remote_io_permit(
+            .run_upstream_reconciliation_once_claimed_outcome_with_remote_attempt_admission(
                 "http://127.0.0.1:9",
                 claim.id,
                 claim.claim_generation,
-                Some(remote_io_permit),
+                None,
             )
             .await
     });
@@ -681,10 +751,6 @@ async fn claimed_engine_run_reaches_a_safe_boundary_after_the_caller_is_cancelle
             .shutdown_maintenance_bulk(std::time::Duration::from_millis(50))
             .await,
         "shutdown must still observe the detached claimed run"
-    );
-    assert!(
-        remote_io_slot.clone().try_acquire_owned().is_err(),
-        "the detached claimed run must retain the remote I/O permit"
     );
     sqlx::query("ROLLBACK")
         .execute(&mut *writer)
@@ -700,10 +766,6 @@ async fn claimed_engine_run_reaches_a_safe_boundary_after_the_caller_is_cancelle
             .shutdown_maintenance_bulk(std::time::Duration::from_secs(2))
             .await,
         "detached claimed run reaches a safe shutdown boundary"
-    );
-    assert!(
-        remote_io_slot.try_acquire_owned().is_ok(),
-        "the remote I/O permit is released only after the run reaches a safe boundary"
     );
     assert_eq!(
         proxy

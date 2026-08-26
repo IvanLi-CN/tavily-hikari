@@ -8,6 +8,7 @@ mod forward_proxy;
 mod ha;
 mod linuxdo_credit_recharge;
 mod models;
+mod remote_attempt_admission;
 mod store;
 mod tavily_proxy;
 #[cfg(test)]
@@ -44,6 +45,9 @@ pub use forward_proxy::{
 pub use ha::*;
 pub use linuxdo_credit_recharge::*;
 pub use models::*;
+pub use remote_attempt_admission::{
+    RemoteAttemptAdmissionController, RemoteAttemptLease, RemoteAttemptMetrics,
+};
 pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,
     capture_runtime_memory_snapshot, emit_legacy_stdio_event, init_runtime_logging,
@@ -2251,10 +2255,11 @@ fn format_registration_region(country: &str, subdivision: &str, city: &str) -> O
     }
 }
 
-async fn resolve_registration_regions(
+pub(crate) async fn resolve_registration_regions_with_remote_attempt_admission(
     origin: &str,
     ips: &[String],
     backend_time: &BackendTime,
+    remote_attempt_admission: Option<&std::sync::Arc<RemoteAttemptAdmissionController>>,
 ) -> HashMap<String, String> {
     let pending = ips
         .iter()
@@ -2284,29 +2289,40 @@ async fn resolve_registration_regions(
     'batch_lookup: for batch in pending.chunks(API_KEY_IP_GEO_BATCH_SIZE) {
         let mut attempt = 0usize;
         let response = loop {
-            match client.post(&batch_url).json(batch).send().await {
+            let remote_attempt = match remote_attempt_admission {
+                Some(controller) => controller.acquire_attempt().await.ok(),
+                None => None,
+            };
+            let response = client.post(&batch_url).json(batch).send().await;
+            match response {
                 Ok(response)
                     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
                         && attempt == 0 =>
                 {
+                    drop(remote_attempt);
                     attempt += 1;
                     backend_time.sleep(Duration::from_millis(250)).await;
                     continue;
                 }
-                Ok(response) => break response,
+                Ok(response) => break (response, remote_attempt),
                 Err(err) if attempt == 0 => {
+                    drop(remote_attempt);
                     attempt += 1;
                     eprintln!("api key geo lookup request error, retrying once: {err}");
                     backend_time.sleep(Duration::from_millis(250)).await;
                 }
                 Err(err) => {
+                    drop(remote_attempt);
                     eprintln!("api key geo lookup request error: {err}");
                     continue 'batch_lookup;
                 }
             }
         };
 
+        let (response, remote_attempt) = response;
+
         if !response.status().is_success() {
+            drop(remote_attempt);
             eprintln!("api key geo lookup returned status: {}", response.status());
             continue;
         }
@@ -2314,10 +2330,12 @@ async fn resolve_registration_regions(
         let entries = match response.json::<Vec<CountryIsBatchEntry>>().await {
             Ok(entries) => entries,
             Err(err) => {
+                drop(remote_attempt);
                 eprintln!("api key geo lookup decode error: {err}");
                 continue;
             }
         };
+        drop(remote_attempt);
 
         for entry in entries {
             let Some(ip) = normalize_ip_string(&entry.ip) else {

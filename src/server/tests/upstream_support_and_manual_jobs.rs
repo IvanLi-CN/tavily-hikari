@@ -1462,6 +1462,7 @@ pub(super) async fn spawn_proxy_server_with_dev_and_ha(
         usage_base,
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let app = Router::new()
         .route("/health", get(health_check))
@@ -1509,6 +1510,7 @@ pub(super) async fn spawn_keys_admin_server(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1564,6 +1566,7 @@ pub(super) async fn spawn_keys_admin_server_with_usage_base(
         usage_base,
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1607,6 +1610,7 @@ pub(super) async fn spawn_keys_admin_server_with_geo_origin(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: geo_origin,
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1650,6 +1654,7 @@ pub(super) async fn spawn_keys_admin_server_with_usage_and_geo(
         usage_base,
         api_key_ip_geo_origin: geo_origin,
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     spawn_maintenance_worker(state.clone());
 
@@ -1692,6 +1697,7 @@ pub(super) async fn spawn_ha_admin_server(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     refresh_ha_peer_observation_store(&state).await;
 
@@ -2357,6 +2363,7 @@ pub(super) async fn spawn_builtin_keys_admin_server_with_state(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()
@@ -2455,6 +2462,7 @@ pub(super) async fn spawn_user_oauth_server_with_options(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()
@@ -2520,6 +2528,7 @@ pub(super) async fn spawn_user_oauth_recharge_server(
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()
@@ -2578,6 +2587,7 @@ pub(super) async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin:
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()
@@ -2631,6 +2641,7 @@ pub(super) async fn spawn_admin_tokens_server(proxy: TavilyProxy, dev_open_admin
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()
@@ -2693,6 +2704,7 @@ pub(super) async fn spawn_admin_forward_proxy_server_with_geo_origin(
         usage_base,
         api_key_ip_geo_origin,
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let app = Router::new()

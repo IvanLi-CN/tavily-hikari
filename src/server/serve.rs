@@ -120,6 +120,7 @@ async fn serve_with_shutdown(
         usage_base: usage_base.clone(),
         api_key_ip_geo_origin,
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     match state.proxy.abandon_active_scheduled_jobs().await {
         Ok(count) if count > 0 => {
@@ -2220,6 +2221,7 @@ mod serve_tests {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         };
 
         let session_token = state
@@ -2337,6 +2339,7 @@ mod serve_tests {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2397,6 +2400,7 @@ mod serve_tests {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2505,6 +2509,7 @@ mod serve_tests {
             usage_base: "http://127.0.0.1:58088".to_string(),
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
         });
 
         assert!(!state.ha.allows_full_writes().await);

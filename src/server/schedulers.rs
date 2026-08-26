@@ -75,6 +75,7 @@ const DASHBOARD_ALERT_PROJECTION_IDLE_OBSERVATION_SECS: i64 = 60;
 const DASHBOARD_ALERT_PROJECTION_INITIAL_DELAY_SECS: u64 = 30;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_RETRY_DELAY_SECS: i64 = 5 * 60;
 const SCHEDULED_JOB_WAIT_WARN_SECS: i64 = 5 * 60;
+const RECONCILIATION_REMOTE_TURN_WAIT_SECS: i64 = 120;
 const SCHEDULED_JOB_WAIT_WARN_SAMPLE_SECS: u64 = 5 * 60;
 static REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED_JOB_QUEUE_WAIT_WARN_WINDOWS: OnceLock<StdMutex<HashMap<String, Instant>>> =
@@ -326,6 +327,10 @@ async fn sync_key_quota_with_db_job_gate(
         let _maintenance = acquire_db_maintenance_read_gate().await;
         state.proxy.quota_sync_api_key_secret(key_id).await?
     };
+    let remote_attempt = remote_attempt_admission_for_state(state)
+        .acquire_attempt()
+        .await
+        .map_err(|reason| ProxyError::Other(reason.to_string()))?;
     let result = tokio::time::timeout(
         Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS),
         state
@@ -333,6 +338,7 @@ async fn sync_key_quota_with_db_job_gate(
             .fetch_usage_quota_for_sync_secret(&secret, &state.usage_base, key_id),
     )
     .await;
+    drop(remote_attempt);
 
     let (limit, remaining) = match result {
         Ok(Ok(quota)) => quota,
@@ -391,6 +397,10 @@ fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
     REMOTE_IO_SCHEDULED_JOB_TYPES.contains(&job_type)
 }
 
+fn scheduled_job_is_manual_remote(job: &QueuedScheduledJob) -> bool {
+    job.trigger_source == TRIGGER_SOURCE_MANUAL
+}
+
 fn scheduled_job_uses_db_execution_gate(job_type: &str) -> bool {
     job_type != "upstream_reconciliation"
 }
@@ -413,12 +423,55 @@ async fn dequeue_next_scheduled_job(
         return Ok(None);
     }
 
+    let controller = remote_attempt_admission_for_state(state);
     let mut selected = None;
-    let mut remote_io_permit = None;
+    let mut remote_job_dispatch_permit = None;
+
+    // A manual maintenance request retains its existing priority over the
+    // automatic reconciliation fairness turn.
+    if let Some(manual_remote) = candidates
+        .iter()
+        .find(|candidate| {
+            scheduled_job_uses_remote_io(&candidate.job_type)
+                && scheduled_job_is_manual_remote(candidate)
+        })
+        .cloned()
+        && let Some(dispatch_permit) = controller.try_acquire_manual_dispatch()
+    {
+        remote_job_dispatch_permit = Some(dispatch_permit);
+        selected = Some(manual_remote);
+    }
+
+    if selected.is_none()
+        && let Some(aged_reconciliation) = state
+            .proxy
+            .fetch_aged_queued_scheduled_job_by_type(
+                "upstream_reconciliation",
+                RECONCILIATION_REMOTE_TURN_WAIT_SECS,
+            )
+            .await?
+    {
+        controller.require_reconciliation_turn();
+        if let Some(dispatch_permit) = controller.try_acquire_reconciliation_dispatch() {
+            remote_job_dispatch_permit = Some(dispatch_permit);
+            selected = Some(aged_reconciliation);
+        }
+    }
+
     for candidate in candidates {
+        if selected.is_some() {
+            break;
+        }
         if scheduled_job_uses_remote_io(&candidate.job_type) {
-            if let Some(permit) = try_acquire_maintenance_remote_io_slot_for_state(state) {
-                remote_io_permit = Some(permit);
+            let dispatch_permit = if scheduled_job_is_manual_remote(&candidate) {
+                controller.try_acquire_manual_dispatch()
+            } else if candidate.job_type == "upstream_reconciliation" {
+                controller.try_acquire_reconciliation_dispatch()
+            } else {
+                controller.try_acquire_nonmanual_dispatch()
+            };
+            if let Some(dispatch_permit) = dispatch_permit {
+                remote_job_dispatch_permit = Some(dispatch_permit);
                 selected = Some(candidate);
                 break;
             }
@@ -430,9 +483,9 @@ async fn dequeue_next_scheduled_job(
     }
 
     if selected.is_none() {
-        // The remote-I/O slot is intentionally single-filed. Do not let an
-        // arbitrarily long remote queue hide eligible local maintenance behind
-        // the first dequeue page while that slot is busy.
+        // Do not let an arbitrarily long remote queue hide eligible local
+        // maintenance behind the first dequeue page while remote dispatch is
+        // already occupied.
         selected = state
             .proxy
             .fetch_next_queued_scheduled_job_excluding_types(&REMOTE_IO_SCHEDULED_JOB_TYPES)
@@ -476,7 +529,7 @@ async fn dequeue_next_scheduled_job(
     }
 
     match state.proxy.scheduled_job_mark_running(candidate.id).await? {
-        Some(job) => Ok(Some((job, remote_io_permit))),
+        Some(job) => Ok(Some((job, remote_job_dispatch_permit))),
         None => Ok(None),
     }
 }
@@ -484,7 +537,7 @@ async fn dequeue_next_scheduled_job(
 async fn run_queued_scheduled_job(
     state: Arc<AppState>,
     job: JobLog,
-    remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    remote_job_dispatch_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
     let job_type = job.job_type.clone();
     let key_id = job.key_id.clone();
@@ -498,7 +551,7 @@ async fn run_queued_scheduled_job(
         job_type.clone(),
         key_id.clone(),
         claimed_job,
-        remote_io_permit,
+        remote_job_dispatch_permit,
     )
     .await;
 }
@@ -661,12 +714,17 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
         let wake = maintenance_worker_wake_for_state(state.as_ref());
         loop {
             match dequeue_next_scheduled_job(state.as_ref()).await {
-                Ok(Some((job, remote_io_permit))) => {
-                    if let Some(remote_io_permit) = remote_io_permit {
+                Ok(Some((job, remote_job_dispatch_permit))) => {
+                    if let Some(remote_job_dispatch_permit) = remote_job_dispatch_permit {
                         let run_state = state.clone();
                         let run_wake = wake.clone();
                         tokio::spawn(async move {
-                            run_queued_scheduled_job(run_state, job, Some(remote_io_permit)).await;
+                            run_queued_scheduled_job(
+                                run_state,
+                                job,
+                                Some(remote_job_dispatch_permit),
+                            )
+                            .await;
                             run_wake.notify_one();
                         });
                     } else {
@@ -1705,8 +1763,15 @@ async fn run_linuxdo_user_status_sync_claimed_job(
                 continue;
             }
         };
+        let profile_result = fetch_linuxdo_profile_from_refresh_token_with_remote_attempt_admission(
+            &client,
+            cfg,
+            &refresh_token,
+            &remote_attempt_admission_for_state(state.as_ref()),
+        )
+        .await;
         let (profile, token_payload) =
-            match fetch_linuxdo_profile_from_refresh_token(&client, cfg, &refresh_token).await {
+            match profile_result {
                 Ok(result) => result,
                 Err(err) => {
                     let message = err.to_string();
@@ -2074,6 +2139,10 @@ async fn post_linuxdo_credit_system_full_refund(
         &order.out_trade_no,
         &money,
     );
+    let remote_attempt = remote_attempt_admission_for_state(state)
+        .acquire_attempt()
+        .await
+        .map_err(str::to_string)?;
     let response = reqwest::Client::new()
         .post(endpoint)
         .form(&params)
@@ -2082,6 +2151,7 @@ async fn post_linuxdo_credit_system_full_refund(
         .map_err(|err| err.to_string())?;
     let status = response.status();
     let text = response.text().await.map_err(|err| err.to_string())?;
+    drop(remote_attempt);
     if !status.is_success() {
         return Err(format!("refund endpoint returned {status}: {text}"));
     }
@@ -2426,11 +2496,15 @@ async fn run_forward_proxy_geo_refresh_claimed_job(
     } = claimed_job;
     drop(_job_execution_gate);
 
-    let candidates = match state
+    let candidates_result = state
         .proxy
-        .resolve_forward_proxy_geo_refresh_candidates(&state.api_key_ip_geo_origin, true)
-        .await
-    {
+        .resolve_forward_proxy_geo_refresh_candidates_with_remote_attempt_admission(
+            &state.api_key_ip_geo_origin,
+            true,
+            Some(remote_attempt_admission_for_state(state.as_ref())),
+        )
+        .await;
+    let candidates = match candidates_result {
         Ok(candidates) => candidates,
         Err(err) => {
             let _ = state
@@ -2477,7 +2551,7 @@ async fn run_manual_claimed_job(
     job_type: String,
     key_id: Option<String>,
     mut claimed_job: ClaimedScheduledJob,
-    mut remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    mut remote_job_dispatch_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> bool {
     if job_type == "ha_outbox_gc" {
         return run_ha_outbox_gc_claimed_job(state, claimed_job).await;
@@ -2660,13 +2734,17 @@ async fn run_manual_claimed_job(
             }
             let run_result = state
                 .proxy
-                .run_upstream_reconciliation_once_claimed_outcome_with_remote_io_permit(
+                .run_upstream_reconciliation_once_claimed_outcome_with_remote_attempt_admission(
                     &state.usage_base,
                     job_id,
                     claim_generation,
-                    remote_io_permit.take(),
+                    Some(remote_attempt_admission_for_state(state.as_ref())),
                 )
                 .await;
+            // Dispatch remains bounded while the actual upstream lease is
+            // acquired only inside the outbound request path.
+            drop(remote_job_dispatch_permit.take());
+            remote_attempt_admission_for_state(state.as_ref()).clear_reconciliation_turn();
             persist_claimed_reconciliation_run(state, job_id, claim_generation, run_result).await
         }
         "auth_token_logs_gc" => {

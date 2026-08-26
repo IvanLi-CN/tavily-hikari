@@ -28,8 +28,11 @@
 - Research 记录已加入持久化 poll 元数据；每轮现有 reconciliation job 先执行最多 20 条、每 Key 最多 4 条的 terminal sweep，历史 pending 自动进入恢复队列。终态写入与 settlement 均保持幂等。
 - 对账限流已改用 `period_reconciliation` 独立 Key cooldown：429 不再扇出写入同 Key 的全部窗口，其他 Key 可继续结算；状态 API/页面提供今日账号与账期覆盖、Research 收敛和 per-Key cooldown 进度。
 - `/api/users` compare-only 项新增 observed/standard-settled/degraded period count，用户列表和用量页在 hybrid 值旁展示标准对账覆盖及降级数。
-- reconciliation 运行于 remote-I/O slot，并受 20 秒总预算约束；全局 429 压力状态与 delayed
-  representative job 持久化，避免持续限流时每分钟空转并占用本地维护队列。
+- reconciliation keeps a one-at-a-time remote attempt lease only while an outbound HTTP request is
+  active and remains under the 20-second total budget. Local projection, hydrate, finalization, and
+  Research bookkeeping do not hold that lease; a 120-second eligible automatic representative owns
+  the next non-manual request turn. Global 429 pressure state and the delayed representative remain
+  durable, avoiding minute-by-minute empty work.
 - 候选页先以 period/settlement 索引限制扫描，再做有界 hydrate 与 Research `EXISTS` 判断；执行
   前后不再运行精确队列聚合。系统状态读取 bounded observation，未首次观测时保留 unknown/null
   语义。

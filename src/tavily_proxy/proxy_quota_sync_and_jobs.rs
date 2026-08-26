@@ -197,6 +197,7 @@ impl TavilyProxy {
         key_id: &str,
         usage_base: &str,
         project_id: &str,
+        remote_attempt_admission: Option<&Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<i64, (ProxyError, Option<i64>)> {
         let secret = self
             .key_store
@@ -214,6 +215,15 @@ impl TavilyProxy {
             )
         })?;
         let url = build_path_prefixed_url(&base, "/usage");
+        let remote_attempt = match remote_attempt_admission {
+            Some(controller) => Some(
+                controller
+                    .acquire_reconciliation_attempt()
+                    .await
+                    .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?,
+            ),
+            None => None,
+        };
         let response = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
                 client
@@ -236,6 +246,7 @@ impl TavilyProxy {
             .bytes()
             .await
             .map_err(|err| (ProxyError::Http(err), retry_after))?;
+        drop(remote_attempt);
         if !status.is_success() {
             return Err((
                 ProxyError::UsageHttp {
@@ -265,6 +276,7 @@ impl TavilyProxy {
         key_id: &str,
         usage_base: &str,
         request_id: &str,
+        remote_attempt_admission: Option<&Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<bool, (ProxyError, Option<i64>)> {
         let secret = self
             .key_store
@@ -283,6 +295,15 @@ impl TavilyProxy {
         })?;
         let path = format!("/research/{}", urlencoding::encode(request_id));
         let url = build_path_prefixed_url(&base, &path);
+        let remote_attempt = match remote_attempt_admission {
+            Some(controller) => Some(
+                controller
+                    .acquire_reconciliation_attempt()
+                    .await
+                    .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?,
+            ),
+            None => None,
+        };
         let response = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
                 client
@@ -304,6 +325,7 @@ impl TavilyProxy {
             .bytes()
             .await
             .map_err(|err| (ProxyError::Http(err), retry_after))?;
+        drop(remote_attempt);
         if !status.is_success() {
             return Err((
                 ProxyError::UsageHttp {
@@ -386,6 +408,7 @@ impl TavilyProxy {
         request_start_budget_secs: u64,
         request_deadline: std::time::Instant,
         claimed_job: Option<(i64, i64)>,
+        remote_attempt_admission: Option<&Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<(i64, i64, i64, i64, i64, bool), ProxyError> {
         let now = self.backend_time.now_ts();
         let remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
@@ -462,6 +485,7 @@ impl TavilyProxy {
                     &candidate.key_id,
                     usage_base,
                     &candidate.request_id,
+                    remote_attempt_admission,
                 ),
             )
             .await;
@@ -690,7 +714,7 @@ impl TavilyProxy {
         let deadline = std::time::Instant::now() + ReconciliationEngine::ONE_SHOT_ADMISSION_WAIT;
         loop {
             match self
-                .run_upstream_reconciliation_once_inner(usage_base, None)
+                .run_upstream_reconciliation_once_inner(usage_base, None, None)
                 .await?
             {
                 ClaimedReconciliationRunOutcome::Completed {
@@ -766,7 +790,7 @@ impl TavilyProxy {
         job_id: i64,
         claim_generation: i64,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
-        self.run_upstream_reconciliation_once_claimed_outcome_with_remote_io_permit(
+        self.run_upstream_reconciliation_once_claimed_outcome_with_remote_attempt_admission(
             usage_base,
             job_id,
             claim_generation,
@@ -776,19 +800,19 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
-    pub async fn run_upstream_reconciliation_once_claimed_outcome_with_remote_io_permit(
+    pub async fn run_upstream_reconciliation_once_claimed_outcome_with_remote_attempt_admission(
         &self,
         usage_base: &str,
         job_id: i64,
         claim_generation: i64,
-        remote_io_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        remote_attempt_admission: Option<Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         ReconciliationEngine::run_claimed(
             self,
             usage_base,
             job_id,
             claim_generation,
-            remote_io_permit,
+            remote_attempt_admission,
         )
         .await
     }
@@ -797,8 +821,16 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
         claimed_job: Option<(i64, i64)>,
+        remote_attempt_admission: Option<Arc<RemoteAttemptAdmissionController>>,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let started_at = std::time::Instant::now();
+        let projection_metrics_started = self
+            .key_store
+            .sqlite_runtime
+            .operation_telemetry(SqliteOperation::ReconciliationProjection);
+        let remote_attempt_metrics_started = remote_attempt_admission
+            .as_ref()
+            .map(|controller| controller.metrics());
         let mut local_admission_outcome = self.admit_upstream_reconciliation_projection();
         if matches!(
             local_admission_outcome,
@@ -1312,6 +1344,7 @@ impl TavilyProxy {
                             &key_id,
                             usage_base,
                             &candidate.project_id,
+                            remote_attempt_admission.as_ref(),
                         ),
                     )
                     .await;
@@ -1626,6 +1659,7 @@ impl TavilyProxy {
                     research_start_budget_secs,
                     research_deadline,
                     claimed_job,
+                    remote_attempt_admission.as_ref(),
                 )
                 .await
             {
@@ -1705,6 +1739,26 @@ impl TavilyProxy {
                 first_remote_ms,
                 remote_ms,
             }) => {
+                let remote_attempt_metrics = remote_attempt_admission
+                    .as_ref()
+                    .map(|controller| controller.metrics());
+                let remote_wait_ms = remote_attempt_metrics
+                    .zip(remote_attempt_metrics_started)
+                    .map(|(current, started)| {
+                        current.total_wait_ms.saturating_sub(started.total_wait_ms)
+                    })
+                    .unwrap_or_default();
+                let remote_hold_ms = remote_attempt_metrics
+                    .zip(remote_attempt_metrics_started)
+                    .map(|(current, started)| {
+                        current.total_hold_ms.saturating_sub(started.total_hold_ms)
+                    })
+                    .unwrap_or_default();
+                let projection_metrics = self
+                    .key_store
+                    .sqlite_runtime
+                    .operation_telemetry(SqliteOperation::ReconciliationProjection)
+                    .delta_since(projection_metrics_started);
                 // The cap stops partial settlement, but it is not a time or local
                 // preparation budget exhaustion in the persisted observation.
                 // The research sweep has its own small post-settlement budget;
@@ -1735,6 +1789,8 @@ impl TavilyProxy {
                     research_skipped_cooldown_count,
                     research_budget_exhausted,
                     budget_exhausted,
+                    remote_wait_ms,
+                    remote_hold_ms,
                 );
                 let (
                     _previous_duration_ms,
@@ -2037,6 +2093,15 @@ impl TavilyProxy {
                         remote_ms,
                         finalization_ms = finalization_ms.max(0),
                         research_ms,
+                        projection_source_read_ms = projection_metrics.cooperative_read_elapsed_ms,
+                        projection_read_deadline_count = projection_metrics.cooperative_read_deadlines,
+                        projection_connection_cache_write_pages = projection_metrics
+                            .connection_cache_write_pages,
+                        remote_wait_ms,
+                        remote_hold_ms,
+                        remote_active_attempts = remote_attempt_metrics
+                            .map(|metrics| metrics.active_attempts)
+                            .unwrap_or_default(),
                         continuation_reason = reconciliation_outcome.map(|value| value.as_str()),
                         next_retry_at,
                         budget_exhausted,
@@ -2803,6 +2868,16 @@ impl TavilyProxy {
         limit: usize,
     ) -> Result<Vec<QueuedScheduledJob>, ProxyError> {
         self.key_store.fetch_queued_scheduled_jobs(limit).await
+    }
+
+    pub async fn fetch_aged_queued_scheduled_job_by_type(
+        &self,
+        job_type: &str,
+        minimum_eligible_wait_secs: i64,
+    ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
+        self.key_store
+            .fetch_aged_queued_scheduled_job_by_type(job_type, minimum_eligible_wait_secs)
+            .await
     }
 
     pub async fn fetch_next_queued_scheduled_job_excluding_types(

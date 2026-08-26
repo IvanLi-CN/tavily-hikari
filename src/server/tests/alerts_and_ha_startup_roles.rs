@@ -34,6 +34,7 @@ async fn standby_server_startup_does_not_spawn_business_scheduled_jobs() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
 
     let spawned = spawn_background_tasks_for_current_role(state).await;
@@ -356,6 +357,7 @@ async fn persist_ha_status_snapshot_skips_unneeded_pressure_rebuild_for_serving_
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let status = tavily_hikari::HaStatusView {
         mode: tavily_hikari::HaMode::ActiveStandby,
@@ -499,6 +501,7 @@ async fn post_ready_serving_tasks_run_once_per_writable_tenure() {
         usage_base: "http://127.0.0.1:58088".to_string(),
         api_key_ip_geo_origin: "https://api.country.is".to_string(),
         dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
     });
     let writable_status = tavily_hikari::HaStatusView {
         mode: tavily_hikari::HaMode::ActiveStandby,
