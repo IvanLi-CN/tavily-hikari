@@ -224,6 +224,7 @@ struct OperationWindow {
     hold_histogram: [u64; TRANSACTION_HOLD_BUCKET_UPPER_MS.len()],
     rows_affected: u64,
     connection_cache_write_pages: u64,
+    connection_cache_write_sampled: bool,
     cooperative_read_elapsed_ms: u64,
     cooperative_read_deadlines: u64,
     deferred_by_reason: BTreeMap<SqliteAdmissionDeferReason, u64>,
@@ -232,6 +233,7 @@ struct OperationWindow {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SqliteOperationTelemetry {
     pub(crate) connection_cache_write_pages: u64,
+    pub(crate) connection_cache_write_sampled: bool,
     pub(crate) cooperative_read_elapsed_ms: u64,
     pub(crate) cooperative_read_deadlines: u64,
 }
@@ -242,6 +244,7 @@ impl SqliteOperationTelemetry {
             connection_cache_write_pages: self
                 .connection_cache_write_pages
                 .saturating_sub(earlier.connection_cache_write_pages),
+            connection_cache_write_sampled: self.connection_cache_write_sampled,
             cooperative_read_elapsed_ms: self
                 .cooperative_read_elapsed_ms
                 .saturating_sub(earlier.cooperative_read_elapsed_ms),
@@ -1046,17 +1049,17 @@ impl SqliteRuntime {
     }
 
     fn record_connection_cache_write_pages(&self, operation: SqliteOperation, pages: Option<u64>) {
-        let Some(pages) = pages else {
-            return;
-        };
         let mut window = self
             .inner
             .workload
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let metrics = window.operations.entry(operation).or_default();
-        metrics.connection_cache_write_pages =
-            metrics.connection_cache_write_pages.saturating_add(pages);
+        if let Some(pages) = pages {
+            metrics.connection_cache_write_pages =
+                metrics.connection_cache_write_pages.saturating_add(pages);
+            metrics.connection_cache_write_sampled = true;
+        }
         drop(window);
 
         let mut telemetry = self
@@ -1065,8 +1068,11 @@ impl SqliteRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let metrics = telemetry.entry(operation).or_default();
-        metrics.connection_cache_write_pages =
-            metrics.connection_cache_write_pages.saturating_add(pages);
+        if let Some(pages) = pages {
+            metrics.connection_cache_write_pages =
+                metrics.connection_cache_write_pages.saturating_add(pages);
+            metrics.connection_cache_write_sampled = true;
+        }
     }
 
     pub(crate) fn operation_telemetry(
@@ -2165,6 +2171,11 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 .map(|(reason, count)| format!("{}={count}", reason.as_str()))
                 .collect::<Vec<_>>()
                 .join("|");
+            let cache_write_pages = if metrics.connection_cache_write_sampled {
+                metrics.connection_cache_write_pages.to_string()
+            } else {
+                "unknown".to_string()
+            };
             format!(
                 "{}/{}:calls={},deferred={},defer_reasons={},errors={},retries={},discarded={},pool_wait_ms={},begin_wait_ms={},hold_ms={},hold_p95_ms={},rows={},connection_cache_write_pages={},cooperative_read_elapsed_ms={},cooperative_read_deadlines={}",
                 operation.workload_class(),
@@ -2180,7 +2191,7 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 metrics.hold_ms,
                 transaction_hold_p95_ms(&metrics.hold_histogram),
                 metrics.rows_affected,
-                metrics.connection_cache_write_pages,
+                cache_write_pages,
                 metrics.cooperative_read_elapsed_ms,
                 metrics.cooperative_read_deadlines,
             )

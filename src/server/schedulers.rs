@@ -426,6 +426,7 @@ async fn dequeue_next_scheduled_job(
     let controller = remote_attempt_admission_for_state(state);
     let mut selected = None;
     let mut remote_job_dispatch_permit = None;
+    let mut reconciliation_turn_selected = false;
 
     // A manual maintenance request retains its existing priority over the
     // automatic reconciliation fairness turn.
@@ -450,12 +451,12 @@ async fn dequeue_next_scheduled_job(
                 RECONCILIATION_REMOTE_TURN_WAIT_SECS,
             )
             .await?
+        && let Some(dispatch_permit) = controller.try_acquire_reconciliation_dispatch()
     {
         controller.require_reconciliation_turn();
-        if let Some(dispatch_permit) = controller.try_acquire_reconciliation_dispatch() {
-            remote_job_dispatch_permit = Some(dispatch_permit);
-            selected = Some(aged_reconciliation);
-        }
+        remote_job_dispatch_permit = Some(dispatch_permit);
+        selected = Some(aged_reconciliation);
+        reconciliation_turn_selected = true;
     }
 
     for candidate in candidates {
@@ -530,7 +531,12 @@ async fn dequeue_next_scheduled_job(
 
     match state.proxy.scheduled_job_mark_running(candidate.id).await? {
         Some(job) => Ok(Some((job, remote_job_dispatch_permit))),
-        None => Ok(None),
+        None => {
+            if reconciliation_turn_selected {
+                controller.clear_reconciliation_turn();
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -2694,9 +2700,10 @@ async fn run_manual_claimed_job(
         }
         "upstream_reconciliation" => {
             drop(_job_execution_gate);
+            let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
             let foreground_rps = state.proxy.foreground_activity_rps();
             if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
-                return defer_reconciliation_for_sqlite_admission(
+                let deferred = defer_reconciliation_for_sqlite_admission(
                     &state,
                     job_id,
                     claim_generation,
@@ -2704,6 +2711,9 @@ async fn run_manual_claimed_job(
                     state.proxy.backend_time().now_ts().saturating_add(30),
                 )
                 .await;
+                drop(remote_job_dispatch_permit.take());
+                remote_attempt_admission.clear_reconciliation_turn();
+                return deferred;
             }
             match state
                 .proxy
@@ -2711,7 +2721,11 @@ async fn run_manual_claimed_job(
                 .await
             {
                 Ok(()) => {}
-                Err(ProxyError::StaleClaim { .. }) => return false,
+                Err(ProxyError::StaleClaim { .. }) => {
+                    drop(remote_job_dispatch_permit.take());
+                    remote_attempt_admission.clear_reconciliation_turn();
+                    return false;
+                }
                 Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
                     tracing::debug!(
                         component = "reconciliation",
@@ -2721,7 +2735,7 @@ async fn run_manual_claimed_job(
                         err = %error,
                         "reconciliation retained its claim while low-pressure recovery could not start"
                     );
-                    return defer_reconciliation_for_sqlite_admission(
+                    let deferred = defer_reconciliation_for_sqlite_admission(
                         &state,
                         job_id,
                         claim_generation,
@@ -2729,8 +2743,16 @@ async fn run_manual_claimed_job(
                         state.proxy.backend_time().now_ts().saturating_add(30),
                     )
                     .await;
+                    drop(remote_job_dispatch_permit.take());
+                    remote_attempt_admission.clear_reconciliation_turn();
+                    return deferred;
                 }
-                Err(error) => return finish(state, "error", error.to_string()).await,
+                Err(error) => {
+                    let finished = finish(state, "error", error.to_string()).await;
+                    drop(remote_job_dispatch_permit.take());
+                    remote_attempt_admission.clear_reconciliation_turn();
+                    return finished;
+                }
             }
             let run_result = state
                 .proxy
@@ -2738,13 +2760,13 @@ async fn run_manual_claimed_job(
                     &state.usage_base,
                     job_id,
                     claim_generation,
-                    Some(remote_attempt_admission_for_state(state.as_ref())),
+                    Some(remote_attempt_admission.clone()),
                 )
                 .await;
             // Dispatch remains bounded while the actual upstream lease is
             // acquired only inside the outbound request path.
             drop(remote_job_dispatch_permit.take());
-            remote_attempt_admission_for_state(state.as_ref()).clear_reconciliation_turn();
+            remote_attempt_admission.clear_reconciliation_turn();
             persist_claimed_reconciliation_run(state, job_id, claim_generation, run_result).await
         }
         "auth_token_logs_gc" => {
