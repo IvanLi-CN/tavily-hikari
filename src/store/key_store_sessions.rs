@@ -102,10 +102,15 @@ impl KeyStore {
         }
         builder.push(")");
 
-        let rows = builder
-            .build_query_as::<(String, i64, i64)>()
-            .fetch_all(&self.pool)
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
+        let rows_result = builder
+            .build_query_as::<(String, i64, i64)>()
+            .fetch_all(&mut *conn)
+            .await;
+        let rows = conn.complete_query(rows_result).await?;
         Ok(rows
             .into_iter()
             .map(|(key_id, cooldown_until, retry_after_secs)| {

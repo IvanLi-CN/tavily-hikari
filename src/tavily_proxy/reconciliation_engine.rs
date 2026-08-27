@@ -120,6 +120,14 @@ impl ReconciliationEngine {
         }
     }
 
+    fn projection_read_budget_is_deferred(error: &ProxyError) -> bool {
+        matches!(
+            error,
+            ProxyError::Deferred { operation, reason }
+                if *operation == "reconciliation_projection" && reason == "projection_read_budget"
+        )
+    }
+
     fn post_process_exhaustion_is_deferred(error: &ProxyError) -> bool {
         matches!(
             error,

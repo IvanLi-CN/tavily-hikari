@@ -49,7 +49,6 @@ enum ReconciliationProjectionWriteStatus {
 
 impl<'a> ReconciliationProjectionController<'a> {
     const SQLITE_PRESSURE_DEFER_SECS: i64 = 30;
-    const SOURCE_READ_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
     fn new(store: &'a KeyStore) -> Self {
         Self { store }
@@ -147,58 +146,21 @@ impl<'a> ReconciliationProjectionController<'a> {
         &self,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<ReconciliationProjectionSliceOutcome, ProxyError> {
-        let mut snapshot = self
+        let mut state_connection = self
             .store
             .sqlite_runtime
-            .begin_read_snapshot(SqliteOperation::ReconciliationProjection)
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
-        snapshot
-            .arm_cooperative_run_budget(Self::SOURCE_READ_BUDGET)
-            .await?;
-        let read_result = async {
-            let state: ReconciliationProjectionStateRow = sqlx::query_as(
-                r#"SELECT cursor_token_id, cursor_key_id, cursor_period_code,
-                      batch_size, fast_slice_streak, completed,
-                      tx_hold_le_10, tx_hold_le_25, tx_hold_le_50,
-                      tx_hold_le_100, tx_hold_le_250, tx_hold_over_250
-               FROM upstream_reconciliation_projection_state WHERE id = 'local'"#,
-            )
-            .fetch_one(&mut *snapshot)
-            .await?;
-            if state.5 != 0 {
-                return Ok((state, Vec::new()));
-            }
-            let batch_size = state.3.clamp(
-                RECONCILIATION_PROJECTION_MIN_BATCH,
-                RECONCILIATION_PROJECTION_MAX_BATCH,
-            );
-            let rows = sqlx::query_as(
-                r#"SELECT u.token_id, u.key_id, u.period_code, u.project_id,
-                          u.billing_subject, u.settlement_mode, u.period_start,
-                          u.period_end, u.updated_at, s.status, s.delta_credits
-                   FROM upstream_reconciliation_usage u
-                   LEFT JOIN upstream_reconciliation_settlements s
-                     ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
-                   WHERE (u.token_id, u.key_id, u.period_code) > (?, ?, ?)
-                   ORDER BY u.token_id, u.key_id, u.period_code
-                   LIMIT ?"#,
-            )
-            .bind(&state.0)
-            .bind(&state.1)
-            .bind(&state.2)
-            .bind(batch_size)
-            .fetch_all(&mut *snapshot)
-            .await?;
-            Ok((state, rows))
-        }
+        let state_result: Result<ReconciliationProjectionStateRow, sqlx::Error> = sqlx::query_as(
+            r#"SELECT cursor_token_id, cursor_key_id, cursor_period_code,
+                  batch_size, fast_slice_streak, completed,
+                  tx_hold_le_10, tx_hold_le_25, tx_hold_le_50,
+                  tx_hold_le_100, tx_hold_le_250, tx_hold_over_250
+           FROM upstream_reconciliation_projection_state WHERE id = 'local'"#,
+        )
+        .fetch_one(&mut *state_connection)
         .await;
-        let (state, rows): (ReconciliationProjectionStateRow, Vec<ReconciliationProjectionSourceRow>) =
-            match snapshot.complete_cooperative_query(read_result).await? {
-                SqliteCooperativeQueryOutcome::Completed(result) => result,
-                SqliteCooperativeQueryOutcome::DeadlineExceeded => {
-                    return self.defer_source_read_budget(claimed_job).await;
-                }
-            };
+        let state = state_connection.complete_query(state_result).await?;
         if state.5 != 0 {
             return Ok(ReconciliationProjectionSliceOutcome::Advanced {
                 scanned_rows: 0,
@@ -208,6 +170,35 @@ impl<'a> ReconciliationProjectionController<'a> {
         let batch_size = state
             .3
             .clamp(RECONCILIATION_PROJECTION_MIN_BATCH, RECONCILIATION_PROJECTION_MAX_BATCH);
+        let mut snapshot = self
+            .store
+            .sqlite_runtime
+            .begin_reconciliation_read(ReconciliationReadKind::HistoricalProjection)
+            .await?;
+        let rows_result = sqlx::query_as(
+            r#"SELECT u.token_id, u.key_id, u.period_code, u.project_id,
+                      u.billing_subject, u.settlement_mode, u.period_start,
+                      u.period_end, u.updated_at, s.status, s.delta_credits
+               FROM upstream_reconciliation_usage u
+               LEFT JOIN upstream_reconciliation_settlements s
+                 ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
+               WHERE (u.token_id, u.key_id, u.period_code) > (?, ?, ?)
+               ORDER BY u.token_id, u.key_id, u.period_code
+               LIMIT ?"#,
+        )
+        .bind(&state.0)
+        .bind(&state.1)
+        .bind(&state.2)
+        .bind(batch_size)
+        .fetch_all(&mut *snapshot)
+        .await;
+        let rows: Vec<ReconciliationProjectionSourceRow> =
+            match snapshot.complete_query(rows_result).await? {
+                SqliteCooperativeQueryOutcome::Completed(rows) => rows,
+                SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                    return self.defer_source_read_budget(claimed_job).await;
+                }
+            };
         let Some(last) = rows.last().map(|row| (row.0.clone(), row.1.clone(), row.2.clone()))
         else {
             let mut tx = self

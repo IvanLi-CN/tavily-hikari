@@ -18,7 +18,7 @@ async fn workload_window_records_typed_admission_defers_without_statement_text()
             .get(&SqliteAdmissionDeferReason::PoolPressure),
         Some(&1)
     );
-    let formatted = format_operation_window(&window.operations);
+    let formatted = format_operation_window(&window.operations, &window.reconciliation_reads);
     assert!(formatted.contains("maintenance_bulk/request_stats_flush"));
     assert!(formatted.contains("defer_reasons=pool_pressure=1"));
     assert!(!formatted.contains("SELECT"));
@@ -41,7 +41,7 @@ async fn sqlite_workload_window_reports_scoped_reconciliation_metrics() {
     assert_eq!(telemetry.cooperative_read_deadlines, 1);
 
     let window = runtime.inner.workload.lock().unwrap();
-    let formatted = format_operation_window(&window.operations);
+    let formatted = format_operation_window(&window.operations, &window.reconciliation_reads);
     assert!(formatted.contains("connection_cache_write_pages=7"));
     assert!(formatted.contains("cooperative_read_elapsed_ms=42"));
     assert!(formatted.contains("cooperative_read_deadlines=1"));
@@ -61,7 +61,7 @@ async fn cache_write_sampling_failure_is_reported_as_unknown() {
 
     let window = runtime.inner.workload.lock().unwrap();
     assert!(
-        format_operation_window(&window.operations)
+        format_operation_window(&window.operations, &window.reconciliation_reads)
             .contains("connection_cache_write_pages=unknown")
     );
 }
@@ -89,4 +89,51 @@ async fn operation_telemetry_survives_workload_window_rotation() {
     assert_eq!(telemetry.connection_cache_write_pages, 7);
     assert_eq!(telemetry.cooperative_read_elapsed_ms, 42);
     assert_eq!(telemetry.cooperative_read_deadlines, 1);
+}
+
+#[tokio::test]
+async fn workload_window_reports_reconciliation_read_kinds_without_statement_text() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    for kind in ReconciliationReadKind::ALL {
+        runtime.record_reconciliation_read(
+            kind,
+            Duration::from_millis(42),
+            kind == ReconciliationReadKind::ResearchCandidates,
+            kind == ReconciliationReadKind::ResearchCandidates,
+            false,
+            Some(3),
+        );
+    }
+
+    let window = runtime
+        .inner
+        .workload
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let formatted = format_operation_window(&window.operations, &window.reconciliation_reads);
+    for kind in ReconciliationReadKind::ALL {
+        assert!(formatted.contains(&format!("reconciliation_read/{}:calls=1", kind.as_str())));
+    }
+    assert!(formatted.contains("deadlines=1"));
+    assert!(formatted.contains("deferred=1"));
+    assert!(!formatted.contains("SELECT"));
+}
+
+#[test]
+fn sqlite_file_state_sampling_reads_only_configured_database_paths() {
+    let directory = tempfile::tempdir().expect("create database directory");
+    let core = directory.path().join("core.db");
+    let observability = directory.path().join("observability.db");
+    std::fs::write(&core, [0_u8; 3]).expect("write core database fixture");
+    std::fs::write(format!("{}-wal", core.display()), [0_u8; 5]).expect("write core WAL fixture");
+    std::fs::write(&observability, [0_u8; 7]).expect("write observability fixture");
+
+    let formatted = format_sqlite_file_state(&SqliteFileStatePaths {
+        core: Some(core),
+        observability: Some(observability),
+    });
+    assert!(formatted.contains("core_db_bytes=3"));
+    assert!(formatted.contains("core_wal_bytes=5"));
+    assert!(formatted.contains("observability_db_bytes=7"));
+    assert!(formatted.contains("observability_wal_bytes=unknown"));
 }

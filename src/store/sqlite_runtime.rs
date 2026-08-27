@@ -3,6 +3,7 @@ use sqlx::{Connection, Sqlite, SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,6 +22,8 @@ const SQLITE_WORKLOAD_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_BUSY_TIMEOUT_MS: i64 = 5_000;
 const ADMIN_PRIVACY_READ_RUN_BUDGET: Duration = Duration::from_secs(2);
 const ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS: i32 = 1_000;
+const RECONCILIATION_READ_RUN_BUDGET: Duration = Duration::from_millis(250);
+const RECONCILIATION_READ_PROGRESS_HANDLER_OPS: i32 = 1_000;
 
 const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
@@ -80,6 +83,39 @@ pub(crate) enum SqliteOperation {
     ServerPressureRebuild,
     ReconciliationProjection,
     ScheduledJobControl,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ReconciliationReadKind {
+    CandidateRecent,
+    CandidateBacklog,
+    CandidateHydrate,
+    BillingHydrate,
+    ResearchCandidates,
+    HistoricalProjection,
+}
+
+impl ReconciliationReadKind {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 6] = [
+        Self::CandidateRecent,
+        Self::CandidateBacklog,
+        Self::CandidateHydrate,
+        Self::BillingHydrate,
+        Self::ResearchCandidates,
+        Self::HistoricalProjection,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CandidateRecent => "candidate_recent",
+            Self::CandidateBacklog => "candidate_backlog",
+            Self::CandidateHydrate => "candidate_hydrate",
+            Self::BillingHydrate => "billing_hydrate",
+            Self::ResearchCandidates => "research_candidates",
+            Self::HistoricalProjection => "historical_projection",
+        }
+    }
 }
 
 impl SqliteOperation {
@@ -231,6 +267,18 @@ struct OperationWindow {
     deferred_by_reason: BTreeMap<SqliteAdmissionDeferReason, u64>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ReconciliationReadWindow {
+    calls: u64,
+    elapsed_ms: u64,
+    deadlines: u64,
+    deferred: u64,
+    discarded_connections: u64,
+    connection_cache_write_pages: u64,
+    connection_cache_write_sampled: bool,
+    connection_cache_write_sample_failed: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SqliteOperationTelemetry {
     pub(crate) connection_cache_write_pages: u64,
@@ -272,6 +320,7 @@ impl SqliteOperationTelemetry {
 struct WorkloadWindow {
     started_at: Instant,
     operations: BTreeMap<SqliteOperation, OperationWindow>,
+    reconciliation_reads: BTreeMap<ReconciliationReadKind, ReconciliationReadWindow>,
     last_process_write_bytes: Option<u64>,
     last_cgroup_write_bytes: Option<u64>,
     minimum_idle_connections: Option<u32>,
@@ -279,11 +328,18 @@ struct WorkloadWindow {
     maximum_acquire_waiters: u32,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SqliteFileStatePaths {
+    core: Option<PathBuf>,
+    observability: Option<PathBuf>,
+}
+
 impl Default for WorkloadWindow {
     fn default() -> Self {
         Self {
             started_at: Instant::now(),
             operations: BTreeMap::new(),
+            reconciliation_reads: BTreeMap::new(),
             last_process_write_bytes: None,
             last_cgroup_write_bytes: None,
             minimum_idle_connections: None,
@@ -312,6 +368,7 @@ struct SqliteRuntimeInner {
     // window intentionally resets after emission and cannot be used as a
     // before/after source for one reconciliation run.
     operation_telemetry: Mutex<BTreeMap<SqliteOperation, SqliteOperationTelemetry>>,
+    file_state_paths: Mutex<SqliteFileStatePaths>,
     #[cfg(test)]
     fail_next_reconciliation_research_read: AtomicBool,
     #[cfg(test)]
@@ -472,6 +529,7 @@ impl SqliteRuntime {
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
                 operation_telemetry: Mutex::new(BTreeMap::new()),
+                file_state_paths: Mutex::new(SqliteFileStatePaths::default()),
                 #[cfg(test)]
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
                 #[cfg(test)]
@@ -505,6 +563,20 @@ impl SqliteRuntime {
         self.inner
             .foreground_activity
             .record_at(foreground_activity_slot());
+    }
+
+    pub(crate) fn configure_file_state_sampling(
+        &self,
+        core_database_path: &str,
+        observability_database_path: Option<&str>,
+    ) {
+        let mut paths = self
+            .inner
+            .file_state_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        paths.core = Some(PathBuf::from(core_database_path));
+        paths.observability = observability_database_path.map(PathBuf::from);
     }
 
     pub(crate) fn foreground_activity_rps(&self) -> i64 {
@@ -951,6 +1023,32 @@ impl SqliteRuntime {
         Ok(snapshot)
     }
 
+    pub(crate) async fn begin_reconciliation_read(
+        &self,
+        kind: ReconciliationReadKind,
+    ) -> Result<ReconciliationReadSession, ProxyError> {
+        let mut snapshot = self
+            .begin_read_snapshot(SqliteOperation::ReconciliationProjection)
+            .await?;
+        if let Err(error) = snapshot
+            .arm_cooperative_run_budget_with_cadence(
+                RECONCILIATION_READ_RUN_BUDGET,
+                RECONCILIATION_READ_PROGRESS_HANDLER_OPS,
+            )
+            .await
+        {
+            let close = snapshot.close_after_query(Some(&error)).await;
+            return match close {
+                Ok(()) => Err(error),
+                Err(close_error) => Err(close_error),
+            };
+        }
+        Ok(ReconciliationReadSession {
+            snapshot: Some(snapshot),
+            kind,
+        })
+    }
+
     pub(crate) async fn begin_immediate(
         &self,
         operation: SqliteOperation,
@@ -1147,6 +1245,42 @@ impl SqliteRuntime {
             .saturating_add(u64::from(deadline_exceeded));
     }
 
+    fn record_reconciliation_read(
+        &self,
+        kind: ReconciliationReadKind,
+        elapsed: Duration,
+        deadline_exceeded: bool,
+        deferred: bool,
+        discarded_connection: bool,
+        cache_write_pages: Option<u64>,
+    ) {
+        let mut window = self
+            .inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = window.reconciliation_reads.entry(kind).or_default();
+        metrics.calls = metrics.calls.saturating_add(1);
+        metrics.elapsed_ms = metrics
+            .elapsed_ms
+            .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
+        metrics.deadlines = metrics
+            .deadlines
+            .saturating_add(u64::from(deadline_exceeded));
+        metrics.deferred = metrics.deferred.saturating_add(u64::from(deferred));
+        metrics.discarded_connections = metrics
+            .discarded_connections
+            .saturating_add(u64::from(discarded_connection));
+        match cache_write_pages {
+            Some(pages) => {
+                metrics.connection_cache_write_pages =
+                    metrics.connection_cache_write_pages.saturating_add(pages);
+                metrics.connection_cache_write_sampled = true;
+            }
+            None => metrics.connection_cache_write_sample_failed = true,
+        }
+    }
+
     pub(crate) fn record_deferred(
         &self,
         operation: SqliteOperation,
@@ -1338,7 +1472,9 @@ impl SqliteRuntime {
             monotonic_delta(process_write_bytes, window.last_process_write_bytes);
         let cgroup_write_bytes_delta =
             monotonic_delta(cgroup_write_bytes, window.last_cgroup_write_bytes);
-        let top_operations = format_operation_window(&window.operations);
+        let top_operations =
+            format_operation_window(&window.operations, &window.reconciliation_reads);
+        let sqlite_file_state = self.sqlite_file_state();
         info!(
             component = "db",
             event = "sqlite_workload_window",
@@ -1350,11 +1486,13 @@ impl SqliteRuntime {
             maximum_in_use_connections = window.maximum_in_use_connections,
             current_acquire_waiters = self.inner.acquire_waiters.load(AtomicOrdering::Acquire),
             peak_acquire_waiters = window.maximum_acquire_waiters,
+            sqlite_file_state = %sqlite_file_state,
             top_operations,
             "SQLite workload summary"
         );
         window.started_at = now;
         window.operations.clear();
+        window.reconciliation_reads.clear();
         window.last_process_write_bytes = process_write_bytes;
         window.last_cgroup_write_bytes = cgroup_write_bytes;
         window.minimum_idle_connections = None;
@@ -1364,6 +1502,16 @@ impl SqliteRuntime {
             self.inner.acquire_waiters.load(AtomicOrdering::Acquire),
             AtomicOrdering::Release,
         );
+    }
+
+    fn sqlite_file_state(&self) -> String {
+        let paths = self
+            .inner
+            .file_state_paths
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        format_sqlite_file_state(&paths)
     }
 
     fn emit_contention_recovery_if_ready(&self, now: Instant) {
@@ -1444,6 +1592,12 @@ pub(crate) struct SqliteReadSnapshot {
     cooperative_run_budget_for_test: Option<Duration>,
     #[cfg(test)]
     cooperative_run_budget_checks_remaining_for_test: Option<usize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReconciliationReadSession {
+    snapshot: Option<SqliteReadSnapshot>,
+    kind: ReconciliationReadKind,
 }
 
 #[derive(Debug)]
@@ -1661,6 +1815,18 @@ impl SqliteReadSnapshot {
         &mut self,
         run_budget: Duration,
     ) -> Result<(), ProxyError> {
+        self.arm_cooperative_run_budget_with_cadence(
+            run_budget,
+            ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS,
+        )
+        .await
+    }
+
+    pub(crate) async fn arm_cooperative_run_budget_with_cadence(
+        &mut self,
+        run_budget: Duration,
+        progress_handler_ops: i32,
+    ) -> Result<(), ProxyError> {
         #[cfg(test)]
         let force_deadline = self
             .runtime
@@ -1675,7 +1841,7 @@ impl SqliteReadSnapshot {
         let progress_handler_ops = if force_deadline {
             1
         } else {
-            ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS
+            progress_handler_ops
         };
         let mut handle = self.lock_handle().await.map_err(ProxyError::Database)?;
         handle.set_progress_handler(progress_handler_ops, move || Instant::now() < deadline);
@@ -1852,6 +2018,69 @@ impl SqliteReadSnapshot {
     }
 }
 
+impl ReconciliationReadSession {
+    pub(crate) async fn complete_query<T>(
+        mut self,
+        query_result: Result<T, sqlx::Error>,
+    ) -> Result<SqliteCooperativeQueryOutcome<T>, ProxyError> {
+        self.snapshot
+            .take()
+            .expect("SQLite reconciliation read snapshot")
+            .complete_reconciliation_read(self.kind, query_result)
+            .await
+    }
+
+    pub(crate) async fn complete_query_or_defer<T>(
+        self,
+        query_result: Result<T, sqlx::Error>,
+    ) -> Result<T, ProxyError> {
+        match self.complete_query(query_result).await? {
+            SqliteCooperativeQueryOutcome::Completed(value) => Ok(value),
+            SqliteCooperativeQueryOutcome::DeadlineExceeded => Err(ProxyError::Deferred {
+                operation: "reconciliation_projection",
+                reason: "projection_read_budget".to_string(),
+            }),
+        }
+    }
+}
+
+impl Deref for ReconciliationReadSession {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        self.snapshot
+            .as_ref()
+            .expect("SQLite reconciliation read snapshot")
+            .deref()
+    }
+}
+
+impl DerefMut for ReconciliationReadSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.snapshot
+            .as_mut()
+            .expect("SQLite reconciliation read snapshot")
+            .deref_mut()
+    }
+}
+
+impl Drop for ReconciliationReadSession {
+    fn drop(&mut self) {
+        if let Some(snapshot) = self.snapshot.as_ref()
+            && snapshot.conn.is_some()
+        {
+            snapshot.runtime.record_reconciliation_read(
+                self.kind,
+                snapshot.started_at.elapsed(),
+                false,
+                false,
+                true,
+                None,
+            );
+        }
+    }
+}
+
 impl Deref for SqliteReadSnapshot {
     type Target = SqliteConnection;
 
@@ -1924,10 +2153,11 @@ async fn record_connection_cache_write_delta(
     operation: SqliteOperation,
     start: Option<u64>,
     conn: &mut sqlx::pool::PoolConnection<Sqlite>,
-) {
+) -> Option<u64> {
     let end = connection_cache_write_pages(conn).await;
-    runtime
-        .record_connection_cache_write_pages(operation, connection_cache_write_delta(start, end));
+    let delta = connection_cache_write_delta(start, end);
+    runtime.record_connection_cache_write_pages(operation, delta);
+    delta
 }
 
 struct BusyTimeoutResetGuard {
@@ -1951,7 +2181,20 @@ fn sqlite_query_interrupted(error: &sqlx::Error) -> bool {
     let sqlx::Error::Database(error) = error else {
         return false;
     };
-    error.code().as_deref() == Some("9") || error.message().contains("interrupted")
+    if error.code().as_deref() == Some("9") || error.message().contains("interrupted") {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        // SQLx can surface a test-forced interrupt during SQLite column metadata
+        // setup as this wrapper error rather than SQLite's native code 9. The
+        // caller still requires the connection-local deadline to have expired.
+        error
+            .message()
+            .contains("expected 0 columns for '' but got")
+    }
+    #[cfg(not(test))]
+    false
 }
 
 async fn restore_operation_connection(
@@ -2187,7 +2430,10 @@ fn monotonic_delta(current: Option<u64>, previous: Option<u64>) -> Option<u64> {
         .map(|(current, previous)| current.saturating_sub(previous))
 }
 
-fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindow>) -> String {
+fn format_operation_window(
+    operations: &BTreeMap<SqliteOperation, OperationWindow>,
+    reconciliation_reads: &BTreeMap<ReconciliationReadKind, ReconciliationReadWindow>,
+) -> String {
     operations
         .iter()
         .map(|(operation, metrics)| {
@@ -2224,8 +2470,53 @@ fn format_operation_window(operations: &BTreeMap<SqliteOperation, OperationWindo
                 metrics.cooperative_read_deadlines,
             )
         })
+        .chain(reconciliation_reads.iter().map(|(kind, metrics)| {
+            let cache_write_pages = if metrics.connection_cache_write_sampled
+                && !metrics.connection_cache_write_sample_failed
+            {
+                metrics.connection_cache_write_pages.to_string()
+            } else {
+                "unknown".to_string()
+            };
+            format!(
+                "reconciliation_read/{}:calls={},elapsed_ms={},deadlines={},deferred={},discarded={},connection_cache_write_pages={}",
+                kind.as_str(),
+                metrics.calls,
+                metrics.elapsed_ms,
+                metrics.deferred,
+                metrics.deadlines,
+                metrics.discarded_connections,
+                cache_write_pages,
+            )
+        }))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+fn format_sqlite_file_state(paths: &SqliteFileStatePaths) -> String {
+    let mut fields = Vec::with_capacity(4);
+    for (label, path) in [
+        ("core", paths.core.as_ref()),
+        ("observability", paths.observability.as_ref()),
+    ] {
+        let Some(path) = path else {
+            continue;
+        };
+        fields.push(format!("{label}_db_bytes={}", sqlite_file_size(path)));
+        let wal_path = PathBuf::from(format!("{}-wal", path.display()));
+        fields.push(format!("{label}_wal_bytes={}", sqlite_file_size(&wal_path)));
+    }
+    if fields.is_empty() {
+        "unconfigured".to_string()
+    } else {
+        fields.join(",")
+    }
+}
+
+fn sqlite_file_size(path: &std::path::Path) -> String {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn transaction_hold_p95_ms(histogram: &[u64; TRANSACTION_HOLD_BUCKET_UPPER_MS.len()]) -> u64 {
@@ -2784,6 +3075,50 @@ mod tests {
             .close()
             .await
             .expect("close next privacy session");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_read_sessions_interrupt_and_clean_each_read_kind() {
+        let runtime = single_connection_runtime().await;
+        for kind in ReconciliationReadKind::ALL {
+            runtime.force_next_cooperative_query_deadline_for_test();
+            let mut session = runtime
+                .begin_reconciliation_read(kind)
+                .await
+                .expect("begin bounded reconciliation read");
+            let query_result = sqlx::query_scalar::<_, i64>(
+                "WITH RECURSIVE counter(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000) SELECT SUM(value) FROM counter",
+            )
+            .fetch_one(&mut *session)
+            .await;
+            assert!(matches!(
+                session
+                    .complete_query(query_result)
+                    .await
+                    .expect("complete interrupted reconciliation read"),
+                SqliteCooperativeQueryOutcome::DeadlineExceeded
+            ));
+        }
+
+        assert_eq!(
+            runtime.discarded_connections_for_test(SqliteOperation::ReconciliationProjection),
+            0,
+            "a cleaned deadline session remains reusable"
+        );
+        let mut normal_session = runtime
+            .begin_reconciliation_read(ReconciliationReadKind::CandidateRecent)
+            .await
+            .expect("next reconciliation session is clean");
+        let normal_result = sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(&mut *normal_session)
+            .await;
+        assert_eq!(
+            normal_session
+                .complete_query_or_defer(normal_result)
+                .await
+                .expect("normal session completes"),
+            1
+        );
     }
 
     #[tokio::test]

@@ -40,10 +40,12 @@ then atomically merge work and CAS-advance the cursor in a short claim-fenced tr
 page between 25 and 100 rows from transaction time, and check the cooperative run budget only at safe
 boundaries. Never use cancellation as the normal way to end an open write transaction.
 
-Projection source reads use a 250ms connection-local SQLite progress-handler deadline. A deadline
-interrupt leaves the stable cursor unchanged and returns a durable typed defer; the handler must be
-removed before the connection can return to the pool. Keep the source SQL unchanged until scoped
-read timing proves it remains the bottleneck.
+Every reconciliation preparation source `SELECT` gets its own fresh 250ms connection-local SQLite
+progress-handler session: recent/backlog candidate lanes, candidate/billed-credit hydrate, Research
+candidates, and the historical projection page. A deadline interrupt leaves the stable cursor and
+work truth unchanged, stops later preparation and remote work, and records one claim-fenced
+30-second defer; the handler must be removed before the connection can return to the pool. Keep the
+source SQL unchanged until scoped read-kind timing proves it remains the bottleneck.
 
 The global remote limit is a lease around the actual outbound HTTP request, not the whole
 reconciliation run. Local projection, hydrate, finalization, and Research bookkeeping release the

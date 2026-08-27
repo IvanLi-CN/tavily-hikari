@@ -1343,6 +1343,10 @@ impl KeyStore {
             admin_privacy_read_pause: Arc::new(Mutex::new(None)),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
+        store.sqlite_runtime.configure_file_state_sampling(
+            &store.database_path,
+            store.observability_database_path.as_deref(),
+        );
         store.ensure_meta_schema().await?;
         Self::ensure_request_logs_schema_in_pool(&store.pool).await?;
         Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;

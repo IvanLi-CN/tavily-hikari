@@ -1000,6 +1000,12 @@ impl TavilyProxy {
                 .await
             {
                 Ok(batch) => batch,
+                Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                    return Ok(ReconciliationEngine::deferred(
+                        self,
+                        "projection_read_budget",
+                    ));
+                }
                 Err(err) if is_transient_sqlite_write_error(&err) => {
                     return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                 }
@@ -1046,6 +1052,16 @@ impl TavilyProxy {
                                 .await
                             {
                                 Ok(batch) => batch,
+                                Err(err)
+                                    if ReconciliationEngine::projection_read_budget_is_deferred(
+                                        &err,
+                                    ) =>
+                                {
+                                    return Ok(ReconciliationEngine::deferred(
+                                        self,
+                                        "projection_read_budget",
+                                    ));
+                                }
                                 Err(err) if is_transient_sqlite_write_error(&err) => {
                                     return Ok(ReconciliationEngine::deferred(
                                         self,
@@ -1102,6 +1118,12 @@ impl TavilyProxy {
                     .await
                 {
                     Ok(result) => result,
+                    Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                        return Ok(ReconciliationEngine::deferred(
+                            self,
+                            "projection_read_budget",
+                        ));
+                    }
                     Err(err) if is_transient_sqlite_write_error(&err) => {
                         return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                     }
@@ -2116,6 +2138,18 @@ impl TavilyProxy {
                     no_adjustment,
                     observed,
                 })
+            }
+            Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "preparation_deferred",
+                    reason = "projection_read_budget",
+                    "reconciliation source read reached its SQLite budget before a durable boundary"
+                );
+                Ok(ReconciliationEngine::deferred(
+                    self,
+                    "projection_read_budget",
+                ))
             }
             Err(err) if is_transient_sqlite_write_error(&err) => {
                 tracing::debug!(

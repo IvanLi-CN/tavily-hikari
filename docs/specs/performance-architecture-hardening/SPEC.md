@@ -84,6 +84,10 @@
 - 相同 wire payload 的 UPDATE 不产生 HA outbox 事件；有效变化恰好产生一条兼容事件。
 - reconciliation 使用持久 work projection、公平 cursor 和原子 runtime state，并区分本地压力、429、
   transport、semantic failure 与 budget exhaustion。
+- Reconciliation preparation keeps control metadata in `maintenance_control`; every bulk source
+  `SELECT` runs in its own 250ms native SQLite read session. A source-read deadline produces a
+  claim-fenced `projection_read_budget` defer and one 30-second continuation without beginning a
+  merge, completing work, or starting remote I/O.
 - Historical usage projection has a versioned lifecycle independent of candidate selection. A
   pending upgrade projects one bounded page only after durable candidates drain, while new usage
   is maintained by triggers. A completed lifecycle must not requeue a completed no-adjustment

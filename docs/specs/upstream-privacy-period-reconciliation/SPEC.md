@@ -98,10 +98,14 @@
 - A claimed projection micro-slice owns its bulk permit in an independent task until the durable
   boundary completes. Cancelling the scheduler caller cannot release admission early or abandon an
   open projection transaction; claim and cursor fencing still reject obsolete work.
-- Projection source reads use a connection-local SQLite progress handler to enforce a 250ms native
-  read deadline. Its own `SQLITE_INTERRUPT` is `projection_read_budget`: it starts no merge
-  transaction, advances no cursor, and leaves one claim-fenced delayed representative. The handler
-  must be removed before pool return; uncertainty closes the physical connection.
+- Every reconciliation preparation source `SELECT` uses a fresh `ReconciliationReadSession` with a
+  connection-local SQLite progress handler and a 250ms native read deadline. The covered reads are
+  recent/backlog candidate lanes, candidate/billed-credit hydrate, Research candidates, and the
+  historical projection source page; admission, claim, finish, and continuation metadata remain
+  short control operations. Its own `SQLITE_INTERRUPT` is `projection_read_budget`: it stops later
+  preparation and remote work, starts no merge transaction, advances no cursor, and leaves one
+  claim-fenced delayed representative after 30 seconds. The handler must be removed before pool
+  return; uncertainty closes the physical connection.
 - The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
   projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
   Manual work keeps priority; an automatic reconciliation representative eligible for 120 seconds

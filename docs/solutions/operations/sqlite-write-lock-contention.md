@@ -40,10 +40,12 @@ related_specs:
 - Derived pressure rebuilds are hysteretic and source-fenced. A transient deferred flush is not a
   rebuild trigger; overflow, coverage loss, or five minutes of stale state starts at most one
   bounded rebuild generation every five minutes.
-- A reconciliation source read needs a native SQLite deadline, not future cancellation. Install a
-  progress handler on the scoped connection, remove it before pool return, and close the physical
-  connection when cleanup cannot be confirmed. The deadline is a typed defer before any merge
-  transaction or cursor advance.
+- Each reconciliation preparation source read needs its own native SQLite deadline, not future
+  cancellation. Keep control metadata out of those sessions; install a progress handler on the
+  scoped connection for candidate lanes, both hydrate kinds, Research, and historical projection,
+  remove it before pool return, and close the physical connection when cleanup cannot be confirmed.
+  The deadline is a typed defer before any later preparation, merge transaction, cursor advance, or
+  remote request.
 - Report SQLite `CACHE_WRITE` pages from the operation connection separately from process/cgroup
   write-byte deltas. The latter are aggregate pressure evidence, not query attribution.
 

@@ -25,6 +25,8 @@ const RECONCILIATION_RECENT_LANE_BUDGET: i64 = 12;
 const RECONCILIATION_BACKLOG_LANE_BUDGET: i64 = 8;
 const RECONCILIATION_QUEUE_ESTIMATE_LIMIT: i64 = 64;
 
+use crate::store::sqlite_runtime::ReconciliationReadKind;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UpstreamReconciliationRunAdmissionState {
     pub(crate) claim_current: bool,
@@ -111,7 +113,7 @@ impl KeyStore {
     ) -> Result<UpstreamReconciliationRunAdmissionState, ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
         let read_result = async {
             let claim_current = if let Some((job_id, claim_generation)) = claimed_job {
@@ -1239,9 +1241,9 @@ impl KeyStore {
     ) -> Result<Vec<crate::models::UpstreamReconciliationResearchCandidate>, ProxyError> {
         let now = self.backend_time.now_ts();
         let day_window = server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
-        let mut conn = self
+        let mut session = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
             .await?;
         #[cfg(test)]
         if self
@@ -1252,7 +1254,7 @@ impl KeyStore {
                 Vec<crate::models::UpstreamReconciliationResearchCandidate>,
                 sqlx::Error,
             > = Err(sqlx::Error::PoolTimedOut);
-            return conn.complete_query(injected_result).await;
+            return session.complete_query_or_defer(injected_result).await;
         }
         let rows_result = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, i64, i64)>(
             r#"
@@ -1299,9 +1301,9 @@ impl KeyStore {
         .bind(day_window.start)
         .bind(day_window.end)
         .bind(limit.max(1))
-        .fetch_all(&mut *conn)
+        .fetch_all(&mut *session)
         .await;
-        let rows = conn.complete_query(rows_result).await?;
+        let rows = session.complete_query_or_defer(rows_result).await?;
         Ok(rows
             .into_iter()
             .map(|(request_id, token_id, key_id, period_code, billing_subject, period_end, poll_attempt_count, _, _)| {
@@ -1462,6 +1464,10 @@ impl KeyStore {
         newest_first: bool,
         scope: ReconciliationCandidateScope,
     ) -> Result<Vec<UpstreamReconciliationCandidateWork>, ProxyError> {
+        let read_kind = match &scope {
+            ReconciliationCandidateScope::Recent { .. } => ReconciliationReadKind::CandidateRecent,
+            ReconciliationCandidateScope::Backlog { .. } => ReconciliationReadKind::CandidateBacklog,
+        };
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"
             WITH eligible AS (
@@ -1559,15 +1565,12 @@ impl KeyStore {
             LIMIT "#,
             )
             .push_bind(limit.max(1));
-        let mut conn = self
-            .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
-            .await?;
+        let mut session = self.sqlite_runtime.begin_reconciliation_read(read_kind).await?;
         let rows_result = query
             .build_query_as::<UpstreamReconciliationCandidateRow>()
-            .fetch_all(&mut *conn)
+            .fetch_all(&mut *session)
             .await;
-        let rows = conn.complete_query(rows_result).await?;
+        let rows = session.complete_query_or_defer(rows_result).await?;
         Ok(self.build_upstream_reconciliation_candidates(rows, now))
     }
 
@@ -1688,15 +1691,15 @@ impl KeyStore {
                 .push(")");
         }
         query.push(" ORDER BY token_id ASC, period_code ASC, key_id ASC");
-        let mut conn = self
+        let mut session = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
             .await?;
         let rows_result = query
             .build_query_as::<(String, String, String)>()
-            .fetch_all(&mut *conn)
+            .fetch_all(&mut *session)
             .await;
-        let rows = conn.complete_query(rows_result).await?;
+        let rows = session.complete_query_or_defer(rows_result).await?;
         let mut grouped = std::collections::HashMap::new();
         for (token_id, period_code, key_id) in rows {
             grouped
@@ -1746,15 +1749,15 @@ impl KeyStore {
             GROUP BY requested.token_id, requested.period_code
             "#,
         );
-        let mut conn = self
+        let mut session = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .begin_reconciliation_read(ReconciliationReadKind::BillingHydrate)
             .await?;
         let rows_result = query
             .build_query_as::<(String, String, i64)>()
-            .fetch_all(&mut *conn)
+            .fetch_all(&mut *session)
             .await;
-        let rows = conn.complete_query(rows_result).await?;
+        let rows = session.complete_query_or_defer(rows_result).await?;
         Ok(rows
             .into_iter()
             .map(|(token_id, period_code, credits)| ((token_id, period_code), credits))

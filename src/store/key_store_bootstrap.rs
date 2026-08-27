@@ -684,6 +684,10 @@ impl KeyStore {
             admin_privacy_read_pause: Arc::new(Mutex::new(None)),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
+        store.sqlite_runtime.configure_file_state_sampling(
+            &store.database_path,
+            store.observability_database_path.as_deref(),
+        );
         // Existing deployments may predate newly added observability control
         // tables. Create only the small derived-schema objects before the
         // strict migration baseline check so warm upgrades remain online.
@@ -788,6 +792,10 @@ impl KeyStore {
             admin_privacy_read_pause: Arc::new(Mutex::new(None)),
             forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(HashSet::new()),
         };
+        store.sqlite_runtime.configure_file_state_sampling(
+            &store.database_path,
+            store.observability_database_path.as_deref(),
+        );
         instrument_db_operation(
             "sqlite request logs gc bootstrap schema",
             Some(gc_context.as_str()),

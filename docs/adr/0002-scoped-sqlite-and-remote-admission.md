@@ -20,13 +20,16 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 
 ## Decision
 
-- `ReconciliationProjection` source reads use a connection-local SQLite progress handler. It checks
-  a fixed 250ms deadline every 1,000 virtual-machine operations and maps its own interrupt to a
-  typed `projection_read_budget` deferred outcome.
+- Each reconciliation preparation source `SELECT` opens a fresh read snapshot through
+  `ReconciliationReadSession`. Candidate recent/backlog lanes, candidate and billed-credit hydrate,
+  Research candidates, and historical projection pages each use a connection-local SQLite progress
+  handler. It checks a fixed 250ms deadline every 1,000 virtual-machine operations and maps its own
+  interrupt to a typed `projection_read_budget` deferred outcome.
 - The handler is removed before the read connection is restored to the pool. If removal cannot be
   confirmed, the physical connection is closed instead of being reused.
-- A read-budget defer starts no merge transaction and advances no projection cursor. Existing
-  claim-fenced finish-and-enqueue logic records one delayed continuation.
+- A read-budget defer stops preparation at that statement boundary. It starts no projection merge
+  transaction, advances no cursor, starts no later preparation read or remote request, and existing
+  claim-fenced finish-and-enqueue logic records one delayed continuation after 30 seconds.
 - `RemoteAttemptAdmissionController` owns one process-local actual-request slot. A lease starts at
   the outbound HTTP boundary and ends after the response or transport error is read; local SQLite
   preparation and durable finalization never hold it.
@@ -34,8 +37,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   been eligible for 120 seconds, it owns the next non-manual remote turn until it starts one
   request or exits through a typed no-request terminal/deferred boundary.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read
-  elapsed/deadline counts per operation. Process and cgroup write bytes remain explicitly labelled
-  aggregate values.
+  calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
+  At the same low-frequency window boundary it may sample only configured core/observability DB and
+  WAL file metadata. Process and cgroup write bytes remain explicitly labelled aggregate values.
 - This ADR does not change the projection SQL shape. A keyset, batch-lookup, or index rewrite needs
   separate candidate evidence showing that the scoped source read remains the bottleneck.
 

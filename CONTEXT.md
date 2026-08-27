@@ -54,6 +54,11 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   progress-handler deadline; a deadline is a typed defer before merge and cursor advance. The
   handler is removed before the connection returns to the pool, otherwise that connection closes.
   Work merge and the stable keyset cursor advance commit atomically.
+- `reconciliation read session`: one fresh SQLite snapshot for one preparation source `SELECT`.
+  Recent/backlog candidates, candidate/billed-credit hydrate, Research candidates, and historical
+  projection each receive the native 250ms deadline independently. A deadline is
+  `projection_read_budget`: it stops later preparation and remote work and persists one
+  claim-fenced 30-second continuation without changing work, settlement, or billing truth.
 - `terminal outcome`: a current work generation that needs no retry. Active non-zero differences
   are `settled`, zero differences are `no_adjustment`, and compare-mode non-zero differences are
   `observed`.
@@ -84,6 +89,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `connection-scoped SQLite pages`: SQLite `CACHE_WRITE` page deltas sampled at operation-connection
   boundaries. They may attribute an operation's SQLite cache writes. Process and cgroup write-byte
   counters remain aggregate pressure labels and must not be presented as one query's writes.
+- `SQLite file state sample`: low-frequency metadata for only the configured core/observability DB
+  files and their WAL files. It is a size/state label for the workload window, never an inferred
+  per-query write total and never a checkpoint or directory scan.
 - `staged pressure generation`: a source-fenced server-pressure rebuild generation that remains
   invisible until atomic publish. Source scans use 500-row keyset slices, transition events replay
   after publish, and obsolete generations are cleaned in 25-row slices so live-tail correctness

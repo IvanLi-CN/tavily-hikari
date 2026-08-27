@@ -491,9 +491,12 @@ PR: none
   but must not leave the worker waiting past the run budget or report a durable success without
   recording the state transition; the deadline must end before the scheduler's outer timeout so
   cancellation cannot race the controlled timeout path.
-- Reconciliation source reads use a native SQLite progress-handler deadline rather than cancellation
-  of the awaiting task. A deadline interrupt is a typed defer before any merge transaction; handler
-  cleanup is mandatory before returning a connection to the pool.
+- Reconciliation preparation source reads use one fresh native SQLite progress-handler session per
+  statement rather than cancellation of the awaiting task. Recent/backlog candidates, candidate and
+  billed-credit hydrate, Research candidates, and historical projection source pages have a 250ms
+  deadline; a deadline interrupt is `projection_read_budget`, stops later preparation and remote
+  work, and atomically schedules the 30-second claim-fenced continuation. Handler cleanup is
+  mandatory before returning a connection to the pool.
 - A remote admission lease describes only one outbound HTTP attempt. It is not a broad maintenance
   permit and must be released before reconciliation finalization or other SQLite work.
 

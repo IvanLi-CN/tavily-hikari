@@ -626,17 +626,23 @@ async fn reconciliation_projection_read_deadline_interrupts_without_discarding_c
     .execute(&proxy.key_store.pool)
     .await
     .expect("mark projection incomplete");
-    sqlx::query(
-        r#"INSERT INTO upstream_reconciliation_usage (
-             token_id, key_id, period_code, project_id, billing_subject,
-             period_start, period_end, request_count, first_used_at,
-             last_used_at, updated_at, settlement_mode
-           ) VALUES ('deadline-token', 'deadline-key', '2026-07-15/S1', 'deadline-project',
-                     'token:deadline-token', 1, 2, 1, 1, 2, 2, 'shadow')"#,
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("insert pending projection source");
+    for index in 0..128 {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at,
+                 last_used_at, updated_at, settlement_mode
+               ) VALUES (?, ?, ?, ?, ?, 1, 2, 1, 1, 2, 2, 'shadow')"#,
+        )
+        .bind(format!("deadline-token-{index}"))
+        .bind(format!("deadline-key-{index}"))
+        .bind(format!("2026-07-15/S{index}"))
+        .bind(format!("deadline-project-{index}"))
+        .bind(format!("token:deadline-token-{index}"))
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert pending projection source");
+    }
 
     proxy
         .key_store
@@ -675,6 +681,132 @@ async fn reconciliation_projection_read_deadline_interrupts_without_discarding_c
         .await
         .expect("next transaction begins after the interrupted source read");
     tx.rollback().await.expect("rollback clean transaction");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing_changes() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 27, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-candidate-read-deadline"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.rebalance_mcp_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    for index in 0..128 {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_work (
+                 token_id, period_code, project_id, billing_subject, settlement_mode,
+                 period_start, period_end, scheduling_key_id, updated_at
+               ) VALUES (?, ?, ?, ?, 'shadow', ?, ?, ?, ?)"#,
+        )
+        .bind(format!("read-deadline-token-{index}"))
+        .bind(format!("2026-08-27/S{index}"))
+        .bind(format!("read-deadline-project-{index}"))
+        .bind(format!("token:read-deadline-token-{index}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(format!("read-deadline-key-{index}"))
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert eligible reconciliation work");
+    }
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+
+    proxy
+        .key_store
+        .sqlite_runtime
+        .force_next_cooperative_query_deadline_for_test();
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("candidate deadline becomes a typed defer");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "projection_read_budget",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+    let generations: (i64, i64) = sqlx::query_as(
+        "SELECT work_generation, completed_generation FROM upstream_reconciliation_work WHERE token_id = 'read-deadline-token-0'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged work generation");
+    assert!(
+        generations.0 > generations.1,
+        "a source-read deadline must not complete reconciliation work"
+    );
+    let settlements: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_settlements WHERE settlement_key = 'v1:read-deadline-token-0:2026-08-27/S0'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count settlements");
+    assert_eq!(
+        settlements, 0,
+        "a source-read deadline starts no settlement"
+    );
+    assert!(
+        proxy
+            .key_store
+            .sqlite_runtime
+            .operation_telemetry(SqliteOperation::ReconciliationProjection)
+            .cooperative_read_deadlines
+            >= 1,
+        "the native SQLite deadline is recorded on the reconciliation operation"
+    );
+
+    let persisted = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "projection_read_budget",
+            now + 30,
+        )
+        .await
+        .expect("persist the claim-fenced continuation");
+    assert!(
+        persisted.created || persisted.promoted,
+        "the current claim owns the deferred continuation"
+    );
+    let representatives: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), MIN(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read queued representative");
+    assert_eq!(representatives, (1, now + 30));
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

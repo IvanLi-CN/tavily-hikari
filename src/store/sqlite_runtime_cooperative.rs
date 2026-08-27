@@ -7,8 +7,18 @@ pub(crate) enum SqliteCooperativeQueryOutcome<T> {
 }
 
 impl SqliteReadSnapshot {
-    pub(crate) async fn complete_cooperative_query<T>(
+    pub(crate) async fn complete_reconciliation_read<T>(
+        self,
+        kind: ReconciliationReadKind,
+        query_result: Result<T, sqlx::Error>,
+    ) -> Result<SqliteCooperativeQueryOutcome<T>, ProxyError> {
+        self.complete_cooperative_query_inner(Some(kind), query_result)
+            .await
+    }
+
+    async fn complete_cooperative_query_inner<T>(
         mut self,
+        reconciliation_read_kind: Option<ReconciliationReadKind>,
         query_result: Result<T, sqlx::Error>,
     ) -> Result<SqliteCooperativeQueryOutcome<T>, ProxyError> {
         let deadline_expired = self
@@ -19,6 +29,16 @@ impl SqliteReadSnapshot {
             conn.detach().close().await.ok();
             self.runtime
                 .record_error(self.operation, self.pool_wait, self.begin_wait, &error);
+            if let Some(kind) = reconciliation_read_kind {
+                self.runtime.record_reconciliation_read(
+                    kind,
+                    self.started_at.elapsed(),
+                    false,
+                    false,
+                    true,
+                    None,
+                );
+            }
             return Err(error);
         }
 
@@ -26,7 +46,7 @@ impl SqliteReadSnapshot {
         match (query_result, rollback_result) {
             (Ok(value), Ok(_)) => {
                 let mut conn = self.conn.take().expect("SQLite read snapshot connection");
-                record_connection_cache_write_delta(
+                let cache_write_pages = record_connection_cache_write_delta(
                     &self.runtime,
                     self.operation,
                     self.cache_write_pages_start,
@@ -43,6 +63,16 @@ impl SqliteReadSnapshot {
                         self.begin_wait,
                         &err,
                     );
+                    if let Some(kind) = reconciliation_read_kind {
+                        self.runtime.record_reconciliation_read(
+                            kind,
+                            self.started_at.elapsed(),
+                            false,
+                            false,
+                            true,
+                            cache_write_pages,
+                        );
+                    }
                     return Err(err);
                 }
                 self.runtime.record_success(
@@ -57,11 +87,21 @@ impl SqliteReadSnapshot {
                     self.started_at.elapsed(),
                     false,
                 );
+                if let Some(kind) = reconciliation_read_kind {
+                    self.runtime.record_reconciliation_read(
+                        kind,
+                        self.started_at.elapsed(),
+                        false,
+                        false,
+                        false,
+                        cache_write_pages,
+                    );
+                }
                 Ok(SqliteCooperativeQueryOutcome::Completed(value))
             }
             (Err(query_err), Ok(_)) if deadline_expired && sqlite_query_interrupted(&query_err) => {
                 let mut conn = self.conn.take().expect("SQLite read snapshot connection");
-                record_connection_cache_write_delta(
+                let cache_write_pages = record_connection_cache_write_delta(
                     &self.runtime,
                     self.operation,
                     self.cache_write_pages_start,
@@ -78,6 +118,16 @@ impl SqliteReadSnapshot {
                         self.begin_wait,
                         &err,
                     );
+                    if let Some(kind) = reconciliation_read_kind {
+                        self.runtime.record_reconciliation_read(
+                            kind,
+                            self.started_at.elapsed(),
+                            true,
+                            true,
+                            true,
+                            cache_write_pages,
+                        );
+                    }
                     return Err(err);
                 }
                 self.runtime.record_cooperative_read(
@@ -87,6 +137,16 @@ impl SqliteReadSnapshot {
                 );
                 self.runtime
                     .record_deferred(self.operation, SqliteAdmissionDeferReason::QueryDeadline);
+                if let Some(kind) = reconciliation_read_kind {
+                    self.runtime.record_reconciliation_read(
+                        kind,
+                        self.started_at.elapsed(),
+                        true,
+                        true,
+                        false,
+                        cache_write_pages,
+                    );
+                }
                 Ok(SqliteCooperativeQueryOutcome::DeadlineExceeded)
             }
             (Err(query_err), _) => {
@@ -95,6 +155,16 @@ impl SqliteReadSnapshot {
                 let err = ProxyError::Database(query_err);
                 self.runtime
                     .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
+                if let Some(kind) = reconciliation_read_kind {
+                    self.runtime.record_reconciliation_read(
+                        kind,
+                        self.started_at.elapsed(),
+                        false,
+                        false,
+                        true,
+                        None,
+                    );
+                }
                 Err(err)
             }
             (Ok(_), Err(rollback_err)) => {
@@ -103,6 +173,16 @@ impl SqliteReadSnapshot {
                 let err = ProxyError::Database(rollback_err);
                 self.runtime
                     .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
+                if let Some(kind) = reconciliation_read_kind {
+                    self.runtime.record_reconciliation_read(
+                        kind,
+                        self.started_at.elapsed(),
+                        false,
+                        false,
+                        true,
+                        None,
+                    );
+                }
                 Err(err)
             }
         }
