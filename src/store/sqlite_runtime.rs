@@ -2072,6 +2072,14 @@ impl ReconciliationReadSession {
             }),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn expire_deadline_after_query_for_test(&mut self) {
+        self.snapshot
+            .as_mut()
+            .expect("SQLite reconciliation read snapshot")
+            .cooperative_run_deadline = Some(Instant::now());
+    }
 }
 
 impl Deref for ReconciliationReadSession {
@@ -3135,6 +3143,21 @@ mod tests {
             0,
             "a cleaned deadline session remains reusable"
         );
+        let mut completed_after_deadline = runtime
+            .begin_reconciliation_read(ReconciliationReadKind::CandidateRecent)
+            .await
+            .expect("begin reconciliation read that completes at the boundary");
+        let completed_result = sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(&mut *completed_after_deadline)
+            .await;
+        completed_after_deadline.expire_deadline_after_query_for_test();
+        assert!(matches!(
+            completed_after_deadline
+                .complete_query(completed_result)
+                .await
+                .expect("a result beyond the deadline becomes a typed defer"),
+            SqliteCooperativeQueryOutcome::DeadlineExceeded
+        ));
         let mut normal_session = runtime
             .begin_reconciliation_read(ReconciliationReadKind::CandidateRecent)
             .await

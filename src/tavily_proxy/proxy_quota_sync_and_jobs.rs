@@ -818,7 +818,7 @@ impl TavilyProxy {
         manual_remote_attempt: bool,
     ) -> Result<ClaimedReconciliationRunOutcome, ProxyError> {
         let started_at = std::time::Instant::now();
-        let projection_metrics_started = self
+        let reconciliation_read_metrics_started = self
             .key_store
             .sqlite_runtime
             .operation_telemetry(SqliteOperation::ReconciliationProjection);
@@ -1783,11 +1783,11 @@ impl TavilyProxy {
                         current.total_hold_ms.saturating_sub(started.total_hold_ms)
                     })
                     .unwrap_or_default();
-                let projection_metrics = self
+                let reconciliation_read_metrics = self
                     .key_store
                     .sqlite_runtime
                     .operation_telemetry(SqliteOperation::ReconciliationProjection)
-                    .delta_since(projection_metrics_started);
+                    .delta_since(reconciliation_read_metrics_started);
                 // The cap stops partial settlement, but it is not a time or local
                 // preparation budget exhaustion in the persisted observation.
                 // The research sweep has its own small post-settlement budget;
@@ -2122,12 +2122,12 @@ impl TavilyProxy {
                         remote_ms,
                         finalization_ms = finalization_ms.max(0),
                         research_ms,
-                        projection_source_read_ms = projection_metrics.cooperative_read_elapsed_ms,
-                        projection_read_deadline_count = projection_metrics.cooperative_read_deadlines,
-                        projection_connection_cache_write_pages = %if projection_metrics.connection_cache_write_sampled
-                            && !projection_metrics.connection_cache_write_sample_failed
+                        reconciliation_source_read_ms = reconciliation_read_metrics.cooperative_read_elapsed_ms,
+                        reconciliation_source_read_deadline_count = reconciliation_read_metrics.cooperative_read_deadlines,
+                        reconciliation_source_connection_cache_write_pages = %if reconciliation_read_metrics.connection_cache_write_sampled
+                            && !reconciliation_read_metrics.connection_cache_write_sample_failed
                         {
-                            projection_metrics.connection_cache_write_pages.to_string()
+                            reconciliation_read_metrics.connection_cache_write_pages.to_string()
                         } else {
                             "unknown".to_string()
                         },

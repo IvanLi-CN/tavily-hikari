@@ -44,6 +44,58 @@ impl SqliteReadSnapshot {
 
         let rollback_result = sqlx::query("ROLLBACK").execute(&mut *self).await;
         match (query_result, rollback_result) {
+            // A statement can finish between progress-handler callbacks. Its result is still
+            // beyond the read session's contract, so discard it before preparation can advance.
+            (Ok(_), Ok(_)) if deadline_expired => {
+                let mut conn = self.conn.take().expect("SQLite read snapshot connection");
+                let cache_write_pages = record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
+                if let Err(restore_err) =
+                    restore_operation_connection(conn, self.restore_busy_timeout).await
+                {
+                    let err = ProxyError::Database(restore_err);
+                    self.runtime.record_error(
+                        self.operation,
+                        self.pool_wait,
+                        self.begin_wait,
+                        &err,
+                    );
+                    if let Some(kind) = reconciliation_read_kind {
+                        self.runtime.record_reconciliation_read(
+                            kind,
+                            self.started_at.elapsed(),
+                            true,
+                            true,
+                            true,
+                            cache_write_pages,
+                        );
+                    }
+                    return Err(err);
+                }
+                self.runtime.record_cooperative_read(
+                    self.operation,
+                    self.started_at.elapsed(),
+                    true,
+                );
+                self.runtime
+                    .record_deferred(self.operation, SqliteAdmissionDeferReason::QueryDeadline);
+                if let Some(kind) = reconciliation_read_kind {
+                    self.runtime.record_reconciliation_read(
+                        kind,
+                        self.started_at.elapsed(),
+                        true,
+                        true,
+                        false,
+                        cache_write_pages,
+                    );
+                }
+                Ok(SqliteCooperativeQueryOutcome::DeadlineExceeded)
+            }
             (Ok(value), Ok(_)) => {
                 let mut conn = self.conn.take().expect("SQLite read snapshot connection");
                 let cache_write_pages = record_connection_cache_write_delta(
