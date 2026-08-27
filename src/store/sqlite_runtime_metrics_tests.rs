@@ -95,11 +95,12 @@ async fn operation_telemetry_survives_workload_window_rotation() {
 async fn workload_window_reports_reconciliation_read_kinds_without_statement_text() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
     for kind in ReconciliationReadKind::ALL {
+        let deadline = kind == ReconciliationReadKind::ResearchCandidates;
         runtime.record_reconciliation_read(
             kind,
             Duration::from_millis(42),
-            kind == ReconciliationReadKind::ResearchCandidates,
-            kind == ReconciliationReadKind::ResearchCandidates,
+            deadline,
+            deadline || kind == ReconciliationReadKind::CandidateRecent,
             false,
             Some(3),
         );
@@ -114,8 +115,12 @@ async fn workload_window_reports_reconciliation_read_kinds_without_statement_tex
     for kind in ReconciliationReadKind::ALL {
         assert!(formatted.contains(&format!("reconciliation_read/{}:calls=1", kind.as_str())));
     }
-    assert!(formatted.contains("deadlines=1"));
-    assert!(formatted.contains("deferred=1"));
+    assert!(formatted.contains(
+        "reconciliation_read/candidate_recent:calls=1,elapsed_ms=42,deadlines=0,deferred=1"
+    ));
+    assert!(formatted.contains(
+        "reconciliation_read/research_candidates:calls=1,elapsed_ms=42,deadlines=1,deferred=1"
+    ));
     assert!(!formatted.contains("SELECT"));
 }
 

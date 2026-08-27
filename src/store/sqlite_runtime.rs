@@ -2513,8 +2513,8 @@ fn format_operation_window(
                 kind.as_str(),
                 metrics.calls,
                 metrics.elapsed_ms,
-                metrics.deferred,
                 metrics.deadlines,
+                metrics.deferred,
                 metrics.discarded_connections,
                 cache_write_pages,
             )
