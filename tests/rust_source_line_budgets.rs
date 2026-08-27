@@ -51,8 +51,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/sqlite_runtime.rs",
-        3175,
-        "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, and workload aggregation; cooperative query cleanup is isolated in its dedicated child module.",
+        3550,
+        "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
     ),
 ];
 
